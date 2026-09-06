@@ -129,8 +129,10 @@ FDB the tests run against).
   a binary that was never installed). It skips a **masked** unit, because a mask is a
   deliberate "never run this here" and a watchdog that restarts through one defeats the
   enforcement.
-- **`orphan-fdb-sweep`** (every 5 min): kills FDB testcontainers running > 30 min (orphans
-  whose parent test died) and pins Ryuk's OOM score so the kernel reaps it last.
+- **`orphan-fdb-sweep`** (every 5 min): kills FDB testcontainers running > 30 min that were
+  started BEFORE the running job's `Runner.Worker` (orphans whose parent test died), and pins
+  Ryuk's OOM score so the kernel reaps it last. The start-time comparison is load-bearing and
+  its own section below: without it this swept the LIVE container of every long-running test.
 - **`bazel-cache-prune`** (hourly): trims `/mnt/ci-data/bazel-disk-cache` to a 60%
   volume-usage target, oldest-mtime-first (Bazel ≥ 7 touches entries on cache hit, so
   mtime order is LRU order). Runs the stale-output-base sweep *first*, because those
@@ -283,6 +285,129 @@ Incident narrative goes here instead. Two things worth knowing about the budget:
   remote slot. Without that, the watchdog restarts a supervisor binary that was never
   installed, forever — measured `NRestarts` across the pool: 1143, 94, 4115 and 2141,
   against a unit reporting `disabled` the whole time, which is what made it easy to miss.
+
+## The orphan FDB sweep removed live test containers for five weeks
+
+`orphan-fdb-sweep.timer` runs `orphan-fdb-sweep.sh` every five minutes, and its FDB arm used
+to `docker rm -fv` any `foundationdb/foundationdb*` container older than 1800 seconds, under
+the comment *"no per-test container lives that long, so these are orphans"*. Three nightly
+lanes do exactly that: rowdiff, stress and factory each hold ONE container for hours. So the
+sweep was not sweeping orphans — it was force-removing the live container of every
+long-running test on this fleet, at 1800s plus up to the timer's five-minute phase.
+
+That is the measured band. The lanes died 30m48s, 33m13s and 33m47s into their runs, against
+a booked eight-night range of 31m31s..34m00s (mean 1959s, sigma ~55s). It also explains every
+observation that two carefully-refuted memory hypotheses could not:
+
+| observation | why |
+|---|---|
+| container found GONE, not exited | `docker rm -fv` removes it |
+| `OOMKilled=false`, nothing in the kernel log | nothing was OOM-killed |
+| a fresh dial BLACKHOLES rather than being refused | no container left to refuse |
+| tracks elapsed time, not work done | the trigger is literally an age |
+| 2.8% spread across five hosts | every box runs the same timer |
+| never reproduced on the dev box | the dev box has no such timer |
+
+The last row was read for weeks as *"the dev box has more RAM"*. It was *"the dev box has no
+sweeper"*.
+
+Corroborated by a boundary nobody had looked for: the rowdiff nightly was **green for its
+first eleven nights** (2026-07-20..07-31) and has failed **every night since 2026-08-01** —
+the day this pool was stood up. `cloud-init` is `PER_INSTANCE`, so a box provisioned before
+the sweep's match-by-image-name fix (`6819cfbcb`, 2026-06-01) kept writing the version that
+matched nothing and swept nothing; the working version only reached boxes provisioned after
+it.
+
+**The fix** compares each container's start time against the running `Runner.Worker`'s. A
+container newer than the worker belongs to the job in flight, so its age says nothing about
+whether it is abandoned; one OLDER than the worker is an orphan from a previous job and stays
+eligible.
+
+The first version of this fix was a blanket "skip everything while a job runs", which is the
+rule the retired scaler's own sweeper had (*"runs only when no runner is active on that box, so
+a dead test's leaked FDB container is an orphan and removing it cannot disturb a concurrent
+job"*) — two sweepers with one job, one guarded and one not, and the guarded one is the one that
+does not run. A review lap pointed out that a blanket skip trades one leak for another: a
+cancelled job's ~700 MB orphan survives the whole of the next job, and back-to-back work need
+never expose the idle tick that would sweep it. The timer samples every five minutes; a nightly
+lane runs for four hours. Comparing start times keeps both properties.
+
+`pgrep -x`, matching the process NAME, and **never** `-f`, which matches any command line
+*containing* the string. That is not a stylistic preference and the hazard is not theoretical:
+while this guard was being tested, `pgrep -f 'Runner[.]Worker'` on the dev box reported a
+worker present with no runner anywhere on it — the match was an unrelated agent whose own
+`grep -E 'Runner\.(Listener|Worker)'` command line carried the text. A guard that fires
+spuriously does not fail safe here; it silently retires the sweep and the disk fills.
+
+`-x` is correct for this fleet because cloud-init installs the official
+`actions-runner-linux-x64` tarball, which ships `Runner.Worker` as an **apphost** binary
+launched directly, so `comm` is `Runner.Worker` (13 chars, under the 15-char truncation) and
+the sweep runs as root, which can see it. A framework-dependent packaging would run it as
+`dotnet Runner.Worker.dll` and `-x` would miss — `tools/bazelscaleset`'s cmdline matcher
+carries that shape as a defensive case, and an intermediate version of this guard used `-f` on
+the strength of it. That was reading a test table as a description of the fleet. If the runner
+packaging ever changes, this guard goes silent in the direction that returns the bug.
+
+The worker's start time comes from `ps -o etimes=`, **not** `stat -c %Y /proc/<pid>`. That
+looks like a process start time and is not: it is when the procfs inode was allocated — the
+first lookup after a cache miss — so it is biased late and unboundedly so. Measured on a dev
+box: `/proc/1` read 3 seconds late, a fresh process 1–2. Two ways that restores the original
+incident. If the first lookup is the sweep's own tick, the worker reads as minutes younger
+than it is and the job's own container becomes "older than the worker". And a dentry evicted
+under memory pressure and re-looked-up at hour 3 of a four-hour lane moves the worker's
+apparent start to hour 3, at which point the live container is swept.
+
+An unreadable age fails **closed** — every container is protected rather than none — and says
+so on stdout, which the unit's journal keeps. Failing closed silently would leave a permanently
+disarmed sweep looking exactly like a healthy one.
+
+`docker rm -fv`'s `-v` is load-bearing for a reason worth keeping out of the script: without it
+every orphan kill strands the container's anonymous volume, because testcontainers' Ryuk only
+reaps volumes for containers it removes ITSELF. Force-removed orphans leaked ~1 GB/day until the
+root disk filled — observed at 289 dangling volumes, 29.7 GB.
+
+One seam in the start-time comparison, accepted rather than papered over: `now` is
+CLOCK_REALTIME while `ps -o etimes=` is boottime-derived, so a suspend is safe (both advance
+together) but an NTP **step** skews `wstart` by the step. Sweeping a live container needs
+`age > 1800` *and* `sepoch < wstart` at once, i.e. a forward step of roughly 26 minutes in the
+middle of a job; post-boot chrony slews rather than steps. And `docker inspect` reports
+`StartedAt` in realtime regardless, so no formulation of this comparison avoids mixing the two
+clocks.
+
+All five arms are driven, and committed rather than driven by hand:
+`infra/orphan_fdb_sweep_test.sh` extracts the shipped script out of `cloud-init.yaml` (so it
+cannot drift from what the boxes run) and executes it against stubbed `docker`, `ps` and
+`pgrep`, needing neither a daemon nor a runner. `//infra:infra_test` runs it.
+
+| arm | container | worker | outcome |
+|---|---|---|---|
+| A | older than the 1800s threshold, started AFTER the worker | running | survives |
+| B | started BEFORE the worker | running | **removed** |
+| C | old | none | removed |
+| D | young | none | survives |
+| E | old | running, age unreadable | survives (fail closed) |
+
+Arm A carries the detail that makes it worth having: the container is over the age threshold,
+so the sweep WOULD remove it without the guard. A fixture under the threshold passes either
+way and proves nothing — which is what the first draft of that case did, and it failed.
+
+Note what that does and does not establish: the arms prove the guard's LOGIC with stubs. That a
+real worker's `comm` is `Runner.Worker` rests on the tarball's packaging, not on
+an observation from one of these boxes, and neither has the timer been caught firing —
+`journalctl -u orphan-fdb-sweep.service` around one of the recorded death timestamps would turn
+the inference into an observation.
+
+**Deployment, and it is the remaining owner action:** `cloud-init` is `PER_INSTANCE`, so this
+fixes boxes provisioned from here on. The live fleet keeps the old script until re-provisioned
+or until the file is edited in place.
+
+**Budget note:** this guard fits with about one line of `user_data` budget to spare. No figure
+is given here on purpose: it has been wrong twice, once because a later trim in the same round
+moved it and once because the guard itself grew. `//infra:infra_test` computes it on every run
+and prints it under `--test_output=all` (a passing Go test's `t.Logf` is otherwise hidden);
+read it there. What does not change is the shape of the constraint — anything you add to
+`cloud-init.yaml` has to come out of a budget with roughly one line left in it, so the next
+person to touch that file is trimming, not adding.
 
 ## Ephemeral runner (opt-in)
 

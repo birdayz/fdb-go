@@ -71,10 +71,8 @@ package plans
 // exact index and verify it against a saved key), SERIALIZES its whole state
 // into the continuation (in-memory sort carries its remaining sorted buffer;
 // unordered union carries a per-child slot; the recursive union carries its
-// temp-table frontier on every emitted row), carries state BESIDE the bytes in
-// the scratch (the two distinct plans), or REFUSES to resume at all rather than
-// restarting (the buffered union fallback returns UnsupportedContinuationError
-// when the branch column names are not statically known). None re-emits.
+// temp-table frontier on every emitted row), or carries state BESIDE the bytes
+// in the scratch (the two distinct plans). None re-emits.
 //
 // WHAT WOULD RE-ARM THIS. A future cursor whose resume can re-emit an
 // already-emitted row: one that restarts an inner instead of resuming it, or

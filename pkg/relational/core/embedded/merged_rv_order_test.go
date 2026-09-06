@@ -301,62 +301,112 @@ func TestMergedInRVOrderRefusesWhatItCannotAlign(t *testing.T) {
 	}
 }
 
-// projectionLabelAlreadyUsed is the one thing separating a RENAME from a
-// machinery DEDUP when a projection's output schema disagrees with the name a
-// projected reference carries. Both look identical at the slot — `N` over a read
-// of `ID`, `X_2` over a read of `X` — and only the presence of the same label at
-// an EARLIER slot says which one it is. It is driven directly because the two
-// readings are one boolean apart and the corpus reaches each through a different
-// query shape (a CTE column list vs. a repeated SELECT item).
-func TestProjectionLabelAlreadyUsedSeparatesRenameFromDedup(t *testing.T) {
+// frozenSchemaRenamesSlot is the one thing separating a RENAME from a
+// machinery DEDUP when a projection's frozen output schema disagrees with the
+// name a projected item carries. Both look identical at the slot — `N` over a
+// read of `ID`, `X_2` over an alias `X` — and only the NATURAL schema (the same
+// program and aliases, deduplicated by the same rule) says which one it is: a
+// frozen name the natural schema also produces is the dedup; one it does not is
+// a rename. The earlier answer looked for the label at an EARLIER slot, which
+// is what a dedup leaves behind but not what it is: a rename of a repeated
+// alias (`WITH r(a, b) AS (SELECT x AS a, y AS a …)`) was misread as a dedup
+// and the second column kept the alias the column list had replaced. Driven
+// directly because the readings are one boolean apart and the corpus reaches
+// each through a different query shape.
+func TestFrozenSchemaRenamesSlotSeparatesRenameFromDedup(t *testing.T) {
 	t.Parallel()
+	repeatedAlias := values.DedupFieldNames([]string{"A", "A"})
+	single := values.DedupFieldNames([]string{"ID"})
 	for _, tc := range []struct {
 		name    string
-		earlier []executor.ColumnDef
-		label   string
+		natural []string
+		slot    int
+		frozen  string
 		want    bool
 		why     string
 	}{
 		{
-			"first slot", nil, "N", false,
-			"nothing precedes it, so its output name is a rename",
+			"dedup of a repeated alias", repeatedAlias, 1, "A_2", false,
+			"the natural schema names the second A exactly so; the label keeps the alias",
 		},
 		{
-			"no earlier match",
-			[]executor.ColumnDef{{Name: "ID", Label: "ID"}},
-			"N", false,
-			"a different earlier label cannot have forced a dedup suffix",
+			"first of the repeated pair", repeatedAlias, 0, "A", false,
+			"nothing was renamed at slot 0",
 		},
 		{
-			"earlier match",
-			[]executor.ColumnDef{{Name: "X", Label: "X"}},
-			"X", true,
-			"the repeated label is what the output schema deduplicated",
+			"column-list rename of the repeated alias", repeatedAlias, 1, "B", true,
+			"B is a name the natural schema never produces, so the schema renamed the slot",
 		},
 		{
-			"earlier match differing in case",
-			[]executor.ColumnDef{{Name: "x", Label: "x"}},
-			"X", true,
-			"identifier comparison is case-insensitive here as everywhere else",
+			"column-list rename of a lone reference", single, 0, "N", true,
+			"N over a read of ID is a rename, not a dedup",
 		},
 		{
-			"earlier match via the qualified Name's leaf",
-			[]executor.ColumnDef{{Name: "C.ID"}},
-			"ID", true,
-			"a column with no Label displays as its Name's bare leaf",
-		},
-		{
-			"empty label",
-			[]executor.ColumnDef{{Name: "X", Label: "X"}},
-			"", false,
-			"an empty label names nothing and cannot collide",
+			"slot past the natural schema", single, 1, "N", true,
+			"a slot the natural schema does not describe cannot be a dedup of it",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			if got := projectionLabelAlreadyUsed(tc.earlier, tc.label); got != tc.want {
-				t.Fatalf("projectionLabelAlreadyUsed(%+v, %q) = %v, want %v — %s",
-					tc.earlier, tc.label, got, tc.want, tc.why)
+			if got := frozenSchemaRenamesSlot(tc.natural, tc.slot, tc.frozen); got != tc.want {
+				t.Fatalf("frozenSchemaRenamesSlot(natural, %d, %q) = %v, want %v — %s",
+					tc.slot, tc.frozen, got, tc.want, tc.why)
+			}
+		})
+	}
+}
+
+// The name-model leg merge publishes a repeated leg column under its SQL label
+// twice ([G G]) while the ordinal RC names the second slot by the
+// name-addressability suffix (G_2). That pair is the SAME sequence, exactly as
+// positionalAligned reads it at serve time; reading it as a divergence routed
+// every duplicate-name leg through the RC-derived fallback, which publishes
+// the suffix as a column label. A genuinely different name, or a reordering,
+// still diverges.
+func TestMergedRVSequenceDivergesToleratesARepeatedDisplayName(t *testing.T) {
+	t.Parallel()
+	rc := values.NewRawRecordConstructorValue(
+		values.RecordConstructorField{Name: "G", Value: values.LiteralValue(int64(0))},
+		values.RecordConstructorField{Name: "G_2", Value: values.LiteralValue(int64(0))},
+		values.RecordConstructorField{Name: "ID", Value: values.LiteralValue(int64(0))},
+		values.RecordConstructorField{Name: "W", Value: values.LiteralValue(int64(0))},
+	)
+	col := func(name, label string) executor.ColumnDef { return executor.ColumnDef{Name: name, Label: label} }
+	for _, tc := range []struct {
+		name   string
+		merged []executor.ColumnDef
+		want   bool
+		why    string
+	}{
+		{
+			"repeated display over the suffixed slot",
+			[]executor.ColumnDef{col("U.G", "G"), col("U.G_2", "G"), col("C.ID", "ID"), col("C.W", "W")},
+			false,
+			"the second G is the same sequence position the RC names G_2",
+		},
+		{
+			"a different second name",
+			[]executor.ColumnDef{col("U.G", "G"), col("U.X", "X"), col("C.ID", "ID"), col("C.W", "W")},
+			true,
+			"X is not G_2 under any reading",
+		},
+		{
+			"a repeated display over a slot the RC names otherwise",
+			[]executor.ColumnDef{col("U.G", "G"), col("U.G", "G"), col("C.G", "G"), col("C.W", "W")},
+			true,
+			"the third G deduplicates to G_3 and the RC names that slot ID; skipping repeated displays would have accepted it",
+		},
+		{
+			"reordered legs",
+			[]executor.ColumnDef{col("C.ID", "ID"), col("C.W", "W"), col("U.G", "G"), col("U.G_2", "G")},
+			true,
+			"the merge walked the physical leg order, not FROM order",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := mergedRVSequenceDiverges(rc, tc.merged); got != tc.want {
+				t.Fatalf("mergedRVSequenceDiverges = %v, want %v — %s", got, tc.want, tc.why)
 			}
 		})
 	}

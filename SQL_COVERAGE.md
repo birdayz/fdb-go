@@ -15,17 +15,17 @@ outcome, so it cannot go stale. For the ANSI-standard scorecard see
 - **unsupported** — an explicitly-unsupported feature we cleanly reject (SQLSTATE `0A000`/`0AF00`/`0AF01`/`42883`).
 - **error-path** — correct rejection/constraint semantics (unknown column, overflow, unique violation, type mismatch, …): supported behaviour, not a gap.
 
-**363 scenarios · 2929 test cases** — 2564 supported (87.5%), 114 unsupported-feature pins, 251 error-path pins.
+**371 scenarios · 3059 test cases** — 2680 supported (87.6%), 115 unsupported-feature pins, 264 error-path pins.
 
 | Feature area | Cases | Supported | Unsupported | Error-path | Supported % |
 |---|--:|--:|--:|--:|--:|
 | Aggregates & GROUP BY | 345 | 312 | 19 | 14 | 90.4% |
-| Joins | 303 | 288 | 2 | 13 | 95.0% |
+| Joins | 313 | 296 | 2 | 15 | 94.6% |
 | Subqueries (EXISTS / IN / scalar) | 313 | 258 | 35 | 20 | 82.4% |
-| CTEs | 108 | 77 | 7 | 24 | 71.3% |
-| Set operations (UNION / INTERSECT / EXCEPT) | 61 | 52 | 5 | 4 | 85.2% |
+| CTEs | 179 | 137 | 7 | 35 | 76.5% |
+| Set operations (UNION / INTERSECT / EXCEPT) | 68 | 59 | 5 | 4 | 86.8% |
 | DML (INSERT / UPDATE / DELETE) | 238 | 202 | 4 | 32 | 84.9% |
-| Ordering & pagination | 122 | 118 | 0 | 4 | 96.7% |
+| Ordering & pagination | 133 | 129 | 0 | 4 | 97.0% |
 | Scalar functions & expressions | 381 | 328 | 21 | 32 | 86.1% |
 | Predicates & WHERE | 104 | 102 | 0 | 2 | 98.1% |
 | Column resolution & aliasing | 59 | 30 | 0 | 29 | 50.8% |
@@ -36,6 +36,6 @@ outcome, so it cannot go stale. For the ANSI-standard scorecard see
 | Keys & primary keys | 133 | 128 | 0 | 5 | 96.2% |
 | Error codes & validation | 39 | 10 | 3 | 26 | 25.6% |
 | End-to-end scenarios | 20 | 20 | 0 | 0 | 100.0% |
-| Other | 298 | 261 | 11 | 26 | 87.6% |
-| **Total** | **2929** | **2564** | **114** | **251** | **87.5%** |
+| Other | 329 | 291 | 12 | 26 | 88.4% |
+| **Total** | **3059** | **2680** | **115** | **264** | **87.6%** |
 

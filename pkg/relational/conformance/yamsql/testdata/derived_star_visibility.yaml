@@ -1,0 +1,97 @@
+# A derived table or CTE whose body is a projection-less star over a join
+# takes its SQL columns from the star-expansion rules — an unnest AS/AT alias
+# shadows a same-named outer column, and the ephemeral __ROW_VERSION
+# pseudo-column stays hidden (Java's SemanticAnalyzer.expandStar →
+# nonEphemeralVisible; derived_star_row_versions.yaml) — so such a body is published by the builders that
+# know those rules, never by the exact labels of its built row. Beside it: a
+# body that labels two columns by quoted, case-distinct names states two
+# columns, and a reference resolves to its slot by exact spelling; and a
+# SELECT expression carrying an `AS` that the post-GROUP-BY reclassification
+# turns into a grouping key keeps its alias.
+name: derived_star_visibility
+schema_template: |
+  CREATE TABLE things (id BIGINT, x BIGINT, arr BIGINT ARRAY, PRIMARY KEY (id))
+  CREATE TABLE ql (id BIGINT, foo BIGINT, bar BIGINT, PRIMARY KEY (id))
+  CREATE TABLE tv (id BIGINT, v BIGINT, PRIMARY KEY (id))
+  CREATE TABLE rv (id BIGINT, "__ROW_VERSION" STRING, v BIGINT, PRIMARY KEY (id))
+  CREATE TABLE rw (id BIGINT, w BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO things VALUES (1, 5, [7, 8])
+  - INSERT INTO rv VALUES (1, 'a', 10), (2, 'b', 20)
+  - INSERT INTO rw VALUES (1, 5)
+  - INSERT INTO ql VALUES (1, 1, 10)
+  - INSERT INTO tv VALUES (1, 15), (2, 25), (3, 17)
+tests:
+  # (1) The unnest alias X shadows the outer column X in a star body: the
+  # published row carries ONE X, the element, in both spellings.
+  - query: SELECT d.x FROM (SELECT * FROM things, things.arr AS x) d
+    columns: ["X"]
+    rows:
+      - [7]
+      - [8]
+  - query: WITH d AS (SELECT * FROM things, things.arr AS x) SELECT d.x FROM d
+    columns: ["X"]
+    rows:
+      - [7]
+      - [8]
+  - query: SELECT d.x FROM (SELECT * FROM things, things.arr AS x) d WHERE d.x = 8
+    columns: ["X"]
+    rows:
+      - [8]
+  # (2) is derived_star_row_versions.yaml: the same rule over row-versioned
+  # tables, whose star hides the ephemeral __ROW_VERSION slot.
+  # (3) Quoted, case-distinct labels are two columns; each reference reads
+  # its own slot, in either order, through a WHERE, and through a CTE.
+  - query: SELECT c."x", c."X" FROM (SELECT foo AS "x", bar AS "X" FROM ql) c
+    columns: ["x", "X"]
+    rows:
+      - [1, 10]
+  - query: SELECT c."X", c."x" FROM (SELECT foo AS "x", bar AS "X" FROM ql) c
+    columns: ["X", "x"]
+    rows:
+      - [10, 1]
+  - query: SELECT c."X" FROM (SELECT foo AS "x", bar AS "X" FROM ql) c WHERE c."X" = 10
+    columns: ["X"]
+    rows:
+      - [10]
+  - query: WITH c AS (SELECT foo AS "x", bar AS "X" FROM ql) SELECT c."x", c."X" FROM c
+    columns: ["x", "X"]
+    rows:
+      - [1, 10]
+  # (4) An aliased SELECT expression reclassified into a grouping key after
+  # GROUP BY parsing keeps its alias, in both spellings.
+  - query: WITH u AS (SELECT v / 10 AS bucket, COUNT(*) AS n FROM tv GROUP BY v / 10) SELECT u.bucket FROM u ORDER BY u.bucket
+    columns: ["BUCKET"]
+    rows:
+      - [1]
+      - [2]
+  - query: SELECT u.bucket, u.n FROM (SELECT v / 10 AS bucket, COUNT(*) AS n FROM tv GROUP BY v / 10) u ORDER BY u.n DESC
+    columns: ["BUCKET", "N"]
+    rows:
+      - [1, 2]
+      - [2, 1]
+  # (5) A REAL column named "__ROW_VERSION" (real-column-wins: a STRING the
+  # table declares, no row-version storage) is star-visible and is not the
+  # ephemeral pseudo-column: the star body publishes it, and a WHERE, a GROUP
+  # BY and a plain read bind it in both spellings. Classifying the pseudo-
+  # column by its name alone declined this body's row and the CTE spelling
+  # did not plan.
+  - query: WITH d AS (SELECT * FROM rv, rw) SELECT d.v FROM d WHERE d."__ROW_VERSION" = 'a'
+    columns: ["V"]
+    rows:
+      - [10]
+  - query: SELECT d.v FROM (SELECT * FROM rv, rw) d WHERE d."__ROW_VERSION" = 'a'
+    columns: ["V"]
+    rows:
+      - [10]
+  - query: WITH d AS (SELECT * FROM rv, rw) SELECT d."__ROW_VERSION", COUNT(*) FROM d GROUP BY d."__ROW_VERSION"
+    columns: ["__ROW_VERSION", "COUNT(*)"]
+    unordered: true
+    rows:
+      - [a, 1]
+      - [b, 1]
+  - query: WITH d AS (SELECT * FROM rv, rw) SELECT d.v FROM d ORDER BY d.v
+    columns: ["V"]
+    rows:
+      - [10]
+      - [20]

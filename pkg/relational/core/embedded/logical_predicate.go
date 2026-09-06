@@ -345,6 +345,32 @@ func exactVirtualScopeSource(
 		labels = derived
 	}
 	columns := make([]semantic.Column, len(record.Fields))
+	// The FLOWED layout is the exact row itself, field names included: the
+	// names the plan flows are the names this source's quantified object must
+	// state, or the scope and the plan disagree about one row. A projection
+	// over a join names a repeated bare leaf by its qualified datum key
+	// (GA.G beside G) and a record constructor names a repeated output by the
+	// name-addressability suffix (K, K_2); the exact derivation of a
+	// PROJECTION or an AGGREGATE mirrors the record constructor the body
+	// flows, and only there is it stated as the layout. A projection-less
+	// join's exact type names its fields by the leg-qualified datum keys of
+	// the retired row map (A.AID), which is not the row the executor's
+	// positional merge flows, so such a body keeps the SQL labels as its only
+	// row — the behaviour every read of it had before — rather than a layout
+	// no binding declares. Publishing the SQL labels
+	// as the layout instead made every read bound to the quantified object —
+	// a WHERE, a sort key, an aggregate key or operand over a unique column of
+	// such a body — refused at execution as `edge lookup U: read as
+	// RECORD(G,G,W), declared RECORD(GA.G,G,W)` or as an undeclared binding,
+	// where the projection the translator inlines answered. The SQL labels
+	// stay the columns exposed for resolution, so a read that spells a
+	// repeated name is ambiguous (42702) and a unique name resolves to its
+	// position; a column whose label and flowed name differ is, by that same
+	// rule, never resolved by name.
+	var flowed []semantic.Column
+	if bodyFlowsARecordConstructor(op) {
+		flowed = make([]semantic.Column, len(record.Fields))
+	}
 	for i, field := range record.Fields {
 		name := field.Name
 		if len(labels) > 0 {
@@ -355,16 +381,58 @@ func exactVirtualScopeSource(
 			return semantic.ScopeSource{}, false
 		}
 		columns[i] = column
+		if flowed != nil {
+			flowed[i] = column
+			flowed[i].Id = semantic.FromNormalized(field.Name)
+		}
 	}
 	aliasID := semantic.FromNormalized(alias)
-	return semantic.ScopeSource{
+	source := semantic.ScopeSource{
 		Table: &semantic.StaticTable{
 			TableName:    semantic.FromSegments([]string{alias}, false),
 			TableColumns: columns,
 		},
 		Alias:           aliasID,
 		CorrelationName: aliasID.Name(),
-	}, true
+	}
+	if flowed != nil {
+		source.FlowedColumns = flowed
+		source.FlowedNullable = record.Nullable
+	}
+	return source, true
+}
+
+// bodyFlowsARecordConstructor reports whether a body's row is a record
+// constructor's — a projection or an aggregate at the top, under the
+// row-preserving wrappers (filter, sort, limit, distinct) — so that the exact
+// type's field names are the names the executor emits and may be stated as the
+// source's flowed layout. A join, a scan or a set operation at the top flows a
+// row the exact type does not name the same way.
+func bodyFlowsARecordConstructor(op logical.LogicalOperator) bool {
+	for {
+		switch typed := op.(type) {
+		case *logical.LogicalFilter:
+			op = typed.Input
+		case *logical.LogicalSort:
+			op = typed.Input
+		case *logical.LogicalLimit:
+			op = typed.Input
+		case *logical.LogicalDistinct:
+			op = typed.Input
+		case *logical.LogicalUnion:
+			// A union flows its FIRST leg's row: the translator aligns every
+			// other leg onto it (RFC-242), so the first leg's constructor is
+			// the row the union emits.
+			if len(typed.Inputs) == 0 {
+				return false
+			}
+			op = typed.Inputs[0]
+		case *logical.LogicalProject, *logical.LogicalAggregate:
+			return true
+		default:
+			return false
+		}
+	}
 }
 
 // semanticColumnFromExactType is the lossless subset of the rich cascades type
@@ -405,15 +473,25 @@ func semanticColumnFromExactType(name string, typ values.Type) (semantic.Column,
 		}
 		return column, true
 	case *values.RecordType:
-		if typed.RecordName != "RECORD" || len(typed.Fields) == 0 {
+		if len(typed.Fields) == 0 {
 			// expr.structColumnType deliberately treats a RECORD with no
-			// StructFields as unresolved, and semantic.Column has no separate
-			// record-name carrier: its Type must literally be "RECORD" to take
-			// that bridge. Publishing either shape would therefore change the
-			// exact record identity on the round trip.
+			// StructFields as unresolved, so a fieldless record has no
+			// representation that survives the round trip.
 			return semantic.Column{}, false
 		}
+		// Type is the SQL kind, literally "RECORD", which is what takes the
+		// expr.structColumnType bridge; the record's NAME travels in
+		// StructTypeName, the carrier that bridge reads — a declared STRUCT
+		// column's descriptor name, or nothing for an anonymous record, which
+		// the bridge then rebuilds anonymous — so the round trip mints the same
+		// values.RecordType under the same name. The kind is never a name. Declining every
+		// nominal record here left a projected STRUCT-typed nested field
+		// (`SELECT x.child.v FROM (SELECT t.p.child FROM t) x`, child a
+		// declared STRUCT) with no exact row to publish: the whole derived
+		// source declined, and the read was refused as a projection slot
+		// with no resolved Value.
 		column.Type = "RECORD"
+		column.StructTypeName = typed.RecordName
 		column.StructFields = make([]semantic.Column, len(typed.Fields))
 		seen := make(map[string]struct{}, len(typed.Fields))
 		for i, field := range typed.Fields {
@@ -459,6 +537,15 @@ func semanticColumnFromExactType(name string, typ values.Type) (semantic.Column,
 func projectionOutputNames(sq *selectQuery) []string {
 	if sq == nil || sq.projCols == nil {
 		return nil
+	}
+	// A `<qualifier>.*` item is ONE sentinel slot here and EVERY column of that
+	// source in the built body, so a name list drawn from these slots has the
+	// wrong width for a mixed star (`SELECT a.*, b.y`) and the exact derivation
+	// declines it. The body's own labels are the authority for such a list.
+	for _, qualifier := range sq.projStarQualifiers {
+		if qualifier != "" {
+			return nil
+		}
 	}
 	names := make([]string, len(sq.projCols))
 	for i, column := range sq.projCols {
@@ -595,6 +682,20 @@ func buildDerivedTableSourceWithCTEs(
 		return buildDerivedTableSourceFromTerm(md, alias, body, cteScopes)
 	case *antlrgen.SetQueryContext:
 		if source, ok := buildDerivedTableSourceFromUnion(md, alias, body, cteScopes); ok {
+			// The structural fold states the SQL names and the folded types; the
+			// exact body, under those names, adds the FLOWED layout — the first
+			// leg's constructor row, which is what the union emits — so a read
+			// bound to the source's quantified object over a leg that repeats a
+			// bare leaf binds the row the plan declares (`SELECT u.w FROM (SELECT
+			// ga.g, c.id AS g, c.w FROM ga, c UNION ALL …) u WHERE u.w = 1` was
+			// refused as an edge-layout mismatch while its CTE spelling answered).
+			names := make([]string, len(source.Table.Columns()))
+			for i, column := range source.Table.Columns() {
+				names[i] = column.Id.Name()
+			}
+			if exact, exactOK := buildExactVirtualScopeSourceForBody(md, alias, body, cteScopes, names); exactOK {
+				return exact, true
+			}
 			return source, true
 		}
 		// The structural fold above types the union one BRANCH at a time, and a
@@ -840,7 +941,21 @@ func buildDerivedTableSourceFromTerm(
 		if innerSQ.projCols != nil {
 			cols = make([]semantic.Column, 0, len(innerSQ.projCols))
 			for i, col := range innerSQ.projCols {
-				name := col.name
+				// An unaliased QUALIFIED reference (`u.w`) is output under its
+				// bare name, as every projection labels it; naming the column by
+				// its display spelling published U.W, and `x.w` over
+				// `(SELECT u.w FROM (…) u) x` was 42703.
+				// A nested path into the inner derived row (`u.w.x`) is decided
+				// by its shape, before any lookup, as in the single-table arm.
+				if nestedProjectedPath(col, innerSQ.tableAlias) {
+					return buildExactVirtualScopeSourceForBody(
+						md, alias, body, cteScopes, projectionOutputNames(innerSQ),
+					)
+				}
+				name := col.bare
+				if name == "" {
+					name = col.name
+				}
 				if i < len(innerSQ.projAliases) && innerSQ.projAliases[i] != "" {
 					name = innerSQ.projAliases[i]
 				}
@@ -856,6 +971,13 @@ func buildDerivedTableSourceFromTerm(
 				// (x.h.city) and array typing work at all.
 				resolved, found := lookupSourceColumn(srcCols, col.bare, col.name)
 				if !found {
+					// The same net as the single-table arm: the alias that names a
+					// struct column of the inner derived row.
+					if len(col.segs) >= 2 {
+						return buildExactVirtualScopeSourceForBody(
+							md, alias, body, cteScopes, projectionOutputNames(innerSQ),
+						)
+					}
 					return semantic.ScopeSource{}, false
 				}
 				cols = append(cols, renameCarriedColumn(resolved, name))
@@ -948,6 +1070,34 @@ func buildDerivedTableSourceFromTerm(
 			}
 			continue
 		}
+		// A NESTED path — the body source's qualifier stripped, two or more
+		// segments remain (`t1.w.x` is `w.x`: the struct column w's field x) —
+		// is decided by its SHAPE, before any lookup, and goes to the exact
+		// derivation, which resolves the path and types the slot. Deciding it
+		// after a lookup by the leaf name re-committed RFC-238's error: a leaf
+		// with a top-level homonym (`st2.p.sk` beside a STRING column sk) was
+		// typed as that column, and the read was refused. An unqualified
+		// `w.x` cannot be told from a qualifier here either, and takes the
+		// same door.
+		// A decline here is FINAL. The exact derivation declines a body whose
+		// row it cannot state exactly: a slot the semantic column model has no
+		// carrier for (semanticColumnFromExactType), a result type that is not
+		// exact (a NULL literal beside the path: "placeholder type is not
+		// exact"), a width or label disagreement. Handing such a path to the
+		// walk below would look its leaf up by name — LookupColumnRelaxed matches
+		// names, never struct fields, so a post-decline HIT is always a top-level
+		// homonym — and type it as that column: the error the shape rule exists
+		// to prevent. Today no decline here is one the walk would answer
+		// differently (the NULL slot declines the walk too; a nominal record
+		// publishes under its name; an enum field arrives already typed STRING),
+		// so finality decides no outcome yet: it is the rule, not a fix. The
+		// whole source declining is the honest answer; every reader of it then
+		// reports the unresolved slot.
+		if nestedProjectedPath(col, bodySourceName) {
+			return buildExactVirtualScopeSourceForBody(
+				md, alias, body, cteScopes, projectionOutputNames(innerSQ),
+			)
+		}
 		// Structured segments; a rebased/computed name is one opaque label.
 		bareName := col.bare
 		if bareName == "" {
@@ -955,6 +1105,19 @@ func buildDerivedTableSourceFromTerm(
 		}
 		innerCol, found := semantic.LookupColumnRelaxed(innerTbl, semantic.FromNormalized(bareName))
 		if !found {
+			// The net under the shape rule: a body source whose alias equals
+			// a struct column's name (`st2 AS p`, column p) makes `p.co` the
+			// struct's field — Java's lookupNestedField resolves P.CO through
+			// the attribute P when the qualified form P.P fails — while the
+			// shape rule read P as the qualifier and stripped it. A reference
+			// of two or more segments whose leaf is not a column goes to the
+			// exact derivation; a one-segment miss is a mistyped column and
+			// declines without a body build.
+			if len(col.segs) >= 2 {
+				return buildExactVirtualScopeSourceForBody(
+					md, alias, body, cteScopes, projectionOutputNames(innerSQ),
+				)
+			}
 			return semantic.ScopeSource{}, false
 		}
 		outName := bareName
@@ -1020,19 +1183,39 @@ func buildDerivedTableSourceFromJoinBody(
 	if innerSQ.tableName == "" {
 		return semantic.ScopeSource{}, false
 	}
-	// A projection-less lateral-unnest body has a complete positional schema
-	// even though its FROM list is syntactically a join. Derive that narrow
-	// shape before the generic join-body path (which correctly declines dotted
-	// correlated sources).
-	if src, ok := buildDerivedUnnestScopeSource(md, alias, innerSQ); ok {
-		return src, true
-	}
-	for _, e := range innerSQ.projExprs {
-		if e != nil {
-			return buildExactVirtualScopeSourceForSelect(
-				md, alias, innerSQ, nil, projectionOutputNames(innerSQ),
-			)
+	// The body's EXACT row first — the same order the aggregate arm and the CTE
+	// arms take — so the source carries the flowed layout the plan flows
+	// (exactVirtualScopeSource) beside the SQL names. The catalog walk below
+	// states SQL names only; a body that repeats a bare leaf (`ga.g` beside
+	// `c.id AS g`) then minted a quantified object over [G G W] for a row the
+	// plan declares as [GA.G G W], and every read bound to it — a WHERE, a sort
+	// key, an aggregate key — was refused at execution as an edge-layout
+	// mismatch while the CTE spelling of the same body answered. The walk
+	// remains the fallback for a row the exact derivation cannot state, and it
+	// is the ONLY fallback: a walk that cannot describe a leg has nothing
+	// further to try, because the exact derivation already declined. An
+	// aggregate body never reaches this builder (buildDerivedTableSourceFromTerm
+	// takes its aggregate arm first).
+	//
+	//
+	// A STAR body's SQL columns are derived by the star-expansion rules, which
+	// the exact labels do not apply: an unnest AS/AT alias shadows a same-named
+	// outer column, and the ephemeral __ROW_VERSION pseudo-column stays hidden
+	// (Java's nonEphemeralVisible). So the same order the CTE arm takes: the
+	// unnest builder, which knows the shadowing rule, answers the star over a
+	// base table and its lateral unnests first (exact-first made `d.x` over
+	// `(SELECT * FROM things, things.arr AS x)` ambiguous), and an exact row
+	// that carries the pseudo-column is declined in favour of the catalog walk
+	// below, which hides it (exact-first made a star over row-versioned tables
+	// state two hidden slots the reader's row does not carry).
+	names := projectionOutputNames(innerSQ)
+	if names == nil {
+		if src, ok := buildDerivedUnnestScopeSource(md, alias, innerSQ); ok {
+			return src, true
 		}
+	}
+	if src, ok := buildExactVirtualScopeSourceForSelect(md, alias, innerSQ, nil, names); ok && !exactStarRowCarriesAnEphemeral(innerSQ, src) {
+		return src, true
 	}
 	cat := rlcatalog.Wrap(md)
 	analyzer := semantic.NewAnalyzer(cat, false)
@@ -1066,28 +1249,21 @@ func buildDerivedTableSourceFromJoinBody(
 	}
 	// A leg this catalog walk cannot describe — a LATERAL ARRAY UNNEST
 	// (`C."ARR" AS "X"`, which resolveLeg declines as a dotted source), a
-	// derived leg, a USING leg — is not a reason to have no scope at all. The
-	// body still has one exact row, and the exact derivation (the same one the
-	// translator runs) can state it. Before RFC-232 the decline landed on a
-	// text-resolved column and the query still planned; now it lands on nothing,
-	// and an outer `SELECT t.ak` over such a body failed with `projection slot 0
-	// has no resolved Value`.
-	exactFallback := func() (semantic.ScopeSource, bool) {
-		return buildExactVirtualScopeSourceForSelect(
-			md, alias, innerSQ, nil, projectionOutputNames(innerSQ))
-	}
+	// derived leg, a USING leg — is a decline: the exact derivation above has
+	// already had the body, and this walk is what remains for a row it could
+	// not state.
 	primary, ok := resolveLeg(innerSQ.tableName, innerSQ.tableAlias, innerSQ.sourceSegments)
 	if !ok {
-		return exactFallback()
+		return semantic.ScopeSource{}, false
 	}
 	legs := []bodyLeg{primary}
 	for _, j := range innerSQ.joins {
 		if j.derivedQuery != nil || len(j.usingHiddenCols) > 0 || j.usingUids != nil {
-			return exactFallback()
+			return semantic.ScopeSource{}, false
 		}
 		leg, legOK := resolveLeg(j.tableName, j.alias, j.segments)
 		if !legOK {
-			return exactFallback()
+			return semantic.ScopeSource{}, false
 		}
 		legs = append(legs, leg)
 	}
@@ -1540,12 +1716,20 @@ func aggOutputCols(sq *selectQuery, md *recordlayer.RecordMetaData) []aggOutputC
 			continue
 		}
 		name := ac.outName
-		if name == "" {
-			if ac.groupCol != "" {
+		if ac.groupCol != "" && !ac.groupColAliased {
+			// An UNALIASED grouping key is output under its bare name — the same
+			// rule aggregateProjectionItem applies when it labels the body's
+			// projection, where the slot is named by the stripped reference, G
+			// for `ga.g`. The parser mints outName from the reference's display
+			// spelling, and publishing that (GA.G) advertised a name no reader
+			// could write: `u.g` over `(SELECT ga.g, SUM(v) AS s FROM ga GROUP
+			// BY ga.g) u` was 42703 in both the derived-table and the CTE form.
+			name = ac.groupColBare
+			if name == "" {
 				name = ac.groupCol
-			} else {
-				continue
 			}
+		} else if name == "" {
+			continue
 		}
 		if ac.aggFunc == "" {
 			// A GROUPING KEY, not an aggregate: the output column IS the source
@@ -2040,8 +2224,7 @@ func buildWherePredicateFromCTEScope(
 	analyzer := semantic.NewAnalyzer(cat, false)
 	scope := semantic.NewScope(nil)
 	if tableAlias != "" {
-		src.Alias = semantic.FromNormalized(tableAlias)
-		src.CorrelationName = tableAlias
+		src = cteSourceAs(src, semantic.FromNormalized(tableAlias), tableAlias)
 	}
 	if err := scope.AddSource(src); err != nil {
 		return nil, false
@@ -2055,34 +2238,19 @@ func buildWherePredicateFromCTEScope(
 	return pred, true
 }
 
-// buildCTEColumnSource derives a ScopeSource from a CTE body's query
-// context. Extracts the projected column names and their types from the
-// underlying real table's metadata. Declines on complex shapes (SELECT *,
-// aggregates, computed expressions, derived tables, JOINs) — same
-// restrictions as buildDerivedTableSource.
-// scopeSourceNamesUnique reports whether a derived source advertises each of
-// its column names exactly once. A published row with two same-named columns is
-// AMBIGUOUS by construction: the resolver decides a reference by which sources
-// carry the name, so one of the two would be picked arbitrarily and, worse, a
-// bare reference the enclosing scope should call ambiguous would bind silently.
-// Complete-schema-or-decline: a body with any duplicate output name publishes
-// nothing, and its reader goes loud.
-func scopeSourceNamesUnique(src semantic.ScopeSource) bool {
-	if src.Table == nil {
-		return false
-	}
-	columns := src.Table.Columns()
-	seen := make(map[string]struct{}, len(columns))
-	for _, column := range columns {
-		name := column.Id.Name()
-		if _, duplicate := seen[name]; duplicate {
-			return false
-		}
-		seen[name] = struct{}{}
-	}
-	return true
-}
-
+// buildCTEColumnSource derives the ScopeSource a CTE body publishes to the
+// enclosing query: the row the body really emits, name for name, ordinal for
+// ordinal. A single-table body is read from the catalog; a body with a JOIN, a
+// derived table, or an aggregate is BUILT and publishes its exact result row,
+// the same order the derived-table path takes, so the two spellings of one
+// body resolve identically. A repeated output name is published as stated:
+// the semantic scope counts every same-named column of one source as a
+// separate candidate, so a reader that names it reports 42702 in every read
+// path (measured across SELECT, WHERE, ON, ORDER BY, GROUP BY, HAVING, EXISTS
+// and a scalar subquery, byte-identical to the derived-table form). Declining
+// the registration instead never made the reader loud: the CTE fell to the
+// ON-only class and a reference to the repeated name bound whichever
+// duplicate that class happened to find first.
 func buildCTEColumnSource(
 	md *recordlayer.RecordMetaData,
 	cteName string,
@@ -2156,6 +2324,34 @@ func buildCTEColumnSource(
 		if src, ok := buildDerivedUnnestScopeSource(md, cteName, innerSQ); ok {
 			return src, true, nil
 		}
+		// A star body over MORE than that — a second base table beside the
+		// unnest, an EXISTS in its WHERE — is the gathered multi-source unnest
+		// cluster, and it stays out of the global scope on purpose. The
+		// translator flows that cluster as its raw per-leg positional seed and
+		// binds an aggregate's keys and operands over the CTE to that seed by
+		// ordinal (exactGatheredCTEGroupKeyValue, which admits only a CTE absent
+		// from cteScopes). A published exact row minted a read over the CTE's
+		// own quantified object instead, and nothing declares that object at
+		// execution: `WITH d AS (SELECT * FROM a, b, a.arr AS x …) SELECT d.aid,
+		// COUNT(*) FROM d GROUP BY d.aid` failed as an undeclared binding —
+		// with a unique-name body at the merge-base already, and with a
+		// repeated-name body once the uniqueness gate below it was gone. The
+		// decline is keyed on the SHAPE (a lateral-unnest leg the narrow
+		// admission above did not take), never on the names.
+		// A nil projCols is also what an AGGREGATE body has — its items were
+		// reclassified into aggCols — and that body flows a projected row the
+		// aggregate arm below publishes exactly; only the genuine star body is
+		// the raw cluster.
+		//
+		if len(innerSQ.aggCols) == 0 && !innerSQ.countStar {
+			resolvesToTable := newUnnestTableResolver(md, defaultEmbeddedSchema)
+			for i, j := range innerSQ.joins {
+				visible := visibleFromAliases(innerSQ.tableName, innerSQ.tableAlias, innerSQ.joins[:i], resolvesToTable)
+				if isLateralUnnestJoin(j, visible, resolvesToTable) {
+					return semantic.ScopeSource{}, false, nil
+				}
+			}
+		}
 	}
 	if innerSQ.derivedQuery != nil ||
 		len(innerSQ.joins) > 0 ||
@@ -2166,23 +2362,71 @@ func buildCTEColumnSource(
 		// bind. Build the body instead and publish its EXACT result type — the
 		// same row execution flows, so every admitted name binds the ordinal
 		// the body really emits and there is no partial schema to mis-bind
-		// against. A body whose row has a shape semantic.Column cannot carry
-		// losslessly declines: the enclosing join's ON clause then reads the
-		// separate cteOnScopes marker (registerCTEOnOnlyScope) and goes LOUD on
-		// drop risk, never a silent ON drop. A body that does not BUILD raises
-		// its OWN error instead — the mistake is inside the CTE, and reporting
-		// it as the reader's generic drop-risk names the wrong query.
-		src, ok, bodyErr := buildExactScopeSourceOrBodyError(md, cteName, innerSQ, priorCTEs, nil)
+		// against. Repeated output names included: a row with two columns
+		// named G is published with both, and the reader's own ambiguity
+		// check answers 42702 for either spelling of the body. The uniqueness
+		// gate this arm once had was the silent bind it claimed to prevent:
+		// the declined CTE fell to the ON-only class, and u.g then bound one
+		// duplicate in SELECT and the other in ORDER BY. A body whose row has
+		// a shape semantic.Column cannot carry losslessly declines: the
+		// enclosing join's ON clause then reads the separate cteOnScopes marker
+		// (registerCTEOnOnlyScope) and goes LOUD on drop risk, never a silent
+		// ON drop. A body that does not BUILD raises its OWN error instead —
+		// the mistake is inside the CTE, and reporting it as the reader's
+		// generic drop-risk names the wrong query.
+		//
+		// The parsed projection is the output-NAME authority, exactly as it is
+		// for the derived-table spelling of the same body: the exact derivation
+		// labels a qualified reference by its datum key (`ga.g` is GA.G there),
+		// and under that label the row `SELECT ga.g, c.id AS g` carried GA.G and
+		// G — two distinct names for what SQL calls G twice, so u.g bound the
+		// second and never met the ambiguity check. A star body spells no
+		// projection and keeps the derivation's labels.
+		src, ok, bodyErr := buildExactScopeSourceOrBodyError(md, cteName, innerSQ, priorCTEs, projectionOutputNames(innerSQ))
 		if bodyErr != nil {
 			return semantic.ScopeSource{}, false, bodyErr
 		}
-		if !ok || !scopeSourceNamesUnique(src) {
+		if !ok || exactStarRowCarriesAnEphemeral(innerSQ, src) {
 			return semantic.ScopeSource{}, false, nil
 		}
 		return src, true, nil
 	}
 	if len(innerSQ.aggCols) > 0 || innerSQ.countStar {
-		src, ok := buildDerivedTableSourceFromAgg(cteName, innerSQ, md)
+		// Same order as the derived-table path (buildDerivedTableSourceWithCTEs):
+		// build the body and publish its EXACT row first, and only fall back to
+		// the parse-tree derivation when the exact one has nothing to publish.
+		// The parse-tree derivation types an aggregate from its argument's
+		// CATALOG column, so an expression argument (`SUM(v * 2) AS s`) came out
+		// UNKNOWN, and a reader binding `u.s` by plan-time ordinal then found a
+		// source that could not state its row — a CTE that failed as a join leg
+		// while the identical body worked as a derived table. A body that does
+		// not build raises its own error, exactly as the join-bodied arm above.
+		// aggOutputCols is the output-name authority, as it is for the
+		// derived-table spelling (buildDerivedTableSourceFromTerm), so a
+		// grouping key spelled `ga.g` is published as G in both forms.
+		aggColumns := aggOutputCols(innerSQ, md)
+		aggNames := make([]string, len(aggColumns))
+		for i, column := range aggColumns {
+			aggNames[i] = column.name
+		}
+		src, ok, bodyErr := buildExactScopeSourceOrBodyError(md, cteName, innerSQ, priorCTEs, aggNames)
+		if bodyErr != nil {
+			return semantic.ScopeSource{}, false, bodyErr
+		}
+		if ok {
+			// Published as the exact derivation states it, repeated output
+			// names included: a reader that names a repeated column meets the
+			// row's own ambiguity check and reports 42702, Java's
+			// AMBIGUOUS_COLUMN — measured, and the same answer the derived-table
+			// form of the body gives. A registration-time decline never made the
+			// reader loud: measured on the join-bodied arm before it published
+			// its row, the declined CTE bound one duplicate in SELECT and the
+			// other in ORDER BY. The parse-tree fallback below is reached only for
+			// a row the exact derivation could not carry, never for one it
+			// published.
+			return src, true, nil
+		}
+		src, ok = buildDerivedTableSourceFromAgg(cteName, innerSQ, md)
 		if !ok {
 			return semantic.ScopeSource{}, false, nil
 		}
@@ -2248,7 +2492,21 @@ func buildCTEColumnSource(
 		copy(columns, allCols)
 	} else {
 		columns = make([]semantic.Column, 0, len(innerSQ.projCols))
+		cteBodySource := innerSQ.tableAlias
+		if cteBodySource == "" {
+			segs := strings.Split(innerSQ.tableName, ".")
+			cteBodySource = segs[len(segs)-1]
+		}
 		for i, col := range innerSQ.projCols {
+			// A nested path (`st2.p.sk`) is decided by its shape before any
+			// lookup and typed by the exact derivation, as in the derived-table
+			// arms: looked up by its leaf it was typed as a top-level homonym.
+			if nestedProjectedPath(col, cteBodySource) {
+				src, ok := buildExactVirtualScopeSourceForBody(
+					md, cteName, body, priorCTEs, projectionOutputNames(innerSQ),
+				)
+				return src, ok, nil
+			}
 			bareName := col.bare
 			if bareName == "" {
 				bareName = col.name
@@ -2259,6 +2517,17 @@ func buildCTEColumnSource(
 			}
 			innerCol, found := semantic.LookupColumnRelaxed(innerTbl, semantic.FromNormalized(bareName))
 			if !found {
+				// The net under the shape rule, as in the derived-table arms: the
+				// alias that names a struct column (`st2 AS p`, `p.co`). Without it
+				// this arm declines and the bare projection still answers through a
+				// later fallback, but a WHERE on the published column fails to
+				// translate (0AF00) because that fallback publishes no typed row.
+				if len(col.segs) >= 2 {
+					src, ok := buildExactVirtualScopeSourceForBody(
+						md, cteName, body, priorCTEs, projectionOutputNames(innerSQ),
+					)
+					return src, ok, nil
+				}
 				return semantic.ScopeSource{}, false, nil
 			}
 			// The virtual column carries the OUTPUT name the CTE body
@@ -2950,9 +3219,7 @@ func buildWherePredicateForJoinsWithCTEScopes(
 		if src, found := cteScopes[strings.ToUpper(tableName)]; found && src.Table != nil {
 			// found-with-nil-Table is a TOMBSTONE (declared CTE, schema
 			// underivable) — decline instead of AddSource(nil) nil-deref.
-			src.Alias = aliasID
-			src.CorrelationName = binding
-			return scope.AddSource(src) == nil
+			return scope.AddSource(cteSourceAs(src, aliasID, binding)) == nil
 		}
 		return false
 	}
@@ -4203,13 +4470,10 @@ func buildSelectScope(
 				if alias == "" {
 					aliasID = semantic.FromNormalized(tableName)
 				}
-				return scope.AddSource(nullSupplyingSource(semantic.ScopeSource{
-					Table:                src.Table,
-					Alias:                aliasID,
-					CorrelationName:      bindingOrAlias(bindingID, aliasID),
-					AdditionalQualifiers: additionalTableQualifiers(tableName, alias),
-					HiddenColumns:        hiddenColumnSet(hidden),
-				}, paddedAt(padded, position))) == nil
+				cteSrc := cteSourceAs(src, aliasID, bindingOrAlias(bindingID, aliasID))
+				cteSrc.AdditionalQualifiers = additionalTableQualifiers(tableName, alias)
+				cteSrc.HiddenColumns = hiddenColumnSet(hidden)
+				return scope.AddSource(nullSupplyingSource(cteSrc, paddedAt(padded, position))) == nil
 			}
 		}
 		tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(tableName, "."), false))
@@ -4306,6 +4570,22 @@ func nullSupplyingSource(src semantic.ScopeSource, nullSupplying bool) semantic.
 		return src
 	}
 	src.Table = nullSupplyingTable{Table: src.Table}
+	return src
+}
+
+// cteSourceAs re-aliases a registered CTE source for the query block that
+// reads it, carrying the source WHOLE — its flowed layout, hidden columns and
+// shadowing state included — under the block's alias and runtime binding.
+// Rebuilding the source from its Table alone dropped the flowed layout, so the
+// quantified object a read of the CTE minted stated the SQL labels rather than
+// the row the body flows, and the read was refused at execution as `edge
+// lookup U: read as RECORD(G,G,W), declared RECORD(GA.G,G,W)` for every body
+// whose runtime names differ from its SQL names — a join projection that
+// repeats a bare leaf, a projection that repeats an alias. Every site that
+// installs a CTE source into a reading scope goes through here.
+func cteSourceAs(src semantic.ScopeSource, alias semantic.Identifier, binding string) semantic.ScopeSource {
+	src.Alias = alias
+	src.CorrelationName = binding
 	return src
 }
 
@@ -6465,10 +6745,9 @@ func buildProjectionResolverWithCTEScopes(sq *selectQuery, md *recordlayer.Recor
 		// present, else the alias.
 		binding := bindingOrAlias(bindingID, aliasID)
 		if src, ok := cteScopes[strings.ToUpper(tableName)]; ok {
-			src.Alias = aliasID
-			src.CorrelationName = binding
-			src.HiddenColumns = hiddenColumnSet(hidden)
-			return scope.AddSource(nullSupplyingSource(src, paddedAt(padded, position))) == nil
+			cteSrc := cteSourceAs(src, aliasID, binding)
+			cteSrc.HiddenColumns = hiddenColumnSet(hidden)
+			return scope.AddSource(nullSupplyingSource(cteSrc, paddedAt(padded, position))) == nil
 		}
 		tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(tableName, "."), false))
 		if err != nil {
@@ -9937,9 +10216,7 @@ func buildOuterScopeSources(sq *selectQuery, md *recordlayer.RecordMetaData, sch
 			if src.Table == nil {
 				return
 			}
-			src.Alias = a
-			src.CorrelationName = bindingOrAlias(bindingID, a)
-			sources = append(sources, src)
+			sources = append(sources, cteSourceAs(src, a, bindingOrAlias(bindingID, a)))
 			return
 		}
 		tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(tableName, "."), false))
@@ -10591,17 +10868,23 @@ func (p *existsSubqueryPlanner) addCorrelatedJoinScopeSource(innerScope *semanti
 		jAlias = j.tableName
 	}
 	jTbl, jErr := analyzer.ResolveTable(semantic.FromSegments(strings.Split(j.tableName, "."), false))
+	var jCTE semantic.ScopeSource
 	if jErr != nil {
 		// CTE-aware fallback (mirrors the primary source): a CTE join leg resolves
-		// via the enclosing query's CTE registry, not the catalog.
-		if src, found := p.cteScopes[strings.ToUpper(j.tableName)]; found {
-			jTbl, jErr = src.Table, nil
+		// via the enclosing query's CTE registry, not the catalog, and is carried
+		// whole (cteSourceAs).
+		if src, found := p.cteScopes[strings.ToUpper(j.tableName)]; found && src.Table != nil {
+			jCTE, jErr = src, nil
 		}
 	}
 	if jErr != nil {
 		return jErr
 	}
 	jAliasID := semantic.FromNormalized(jAlias)
+	if jCTE.Table != nil {
+		_ = innerScope.AddSource(cteSourceAs(jCTE, jAliasID, jAliasID.Name()))
+		return nil
+	}
 	_ = innerScope.AddSource(semantic.ScopeSource{
 		Table: jTbl, Alias: jAliasID, CorrelationName: jAliasID.Name(),
 	})
@@ -10735,6 +11018,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 
 	innerScope := semantic.NewScope(outerScope)
 	viaCTE := false
+	var cteSrc semantic.ScopeSource
 	tbl, tblErr := analyzer.ResolveTable(semantic.FromSegments(strings.Split(sq.tableName, "."), false))
 	if tblErr != nil {
 		// CTE-aware fallback: a CTE inner source (`WITH c AS (…) … EXISTS (SELECT …
@@ -10745,7 +11029,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 		// columns walks correctly instead of failing "table not found". (A derived
 		// `(SELECT …) AS d` inner is not WITH-registered and stays a clean error.)
 		if src, found := p.cteScopes[strings.ToUpper(sq.tableName)]; found {
-			tbl, tblErr, viaCTE = src.Table, nil, true
+			tbl, tblErr, viaCTE, cteSrc = src.Table, nil, true, src
 		}
 	}
 	if tblErr != nil {
@@ -10805,9 +11089,13 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 	if mintedInnerCorr != "" {
 		innerCorrName = mintedInnerCorr
 	}
-	_ = innerScope.AddSource(semantic.ScopeSource{
-		Table: tbl, Alias: aliasID, CorrelationName: innerCorrName,
-	})
+	innerSource := semantic.ScopeSource{Table: tbl, Alias: aliasID, CorrelationName: innerCorrName}
+	if viaCTE {
+		// Carried whole (cteSourceAs): the flowed layout is what the inner
+		// reads bind against.
+		innerSource = cteSourceAs(cteSrc, aliasID, innerCorrName)
+	}
+	_ = innerScope.AddSource(innerSource)
 
 	// Join sources are added to the inner scope INCREMENTALLY in the join loop
 	// below — each leg registered right BEFORE its own ON is walked — so an ON at
@@ -10841,9 +11129,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 	// nested EXISTS's reference to THIS level's source emits the identity
 	// the runtime actually binds — the minted scan alias — not the SQL name
 	// (which may be an outer leg's).
-	nestedOuterScopes = append(nestedOuterScopes, semantic.ScopeSource{
-		Table: tbl, Alias: aliasID, CorrelationName: innerCorrName,
-	})
+	nestedOuterScopes = append(nestedOuterScopes, innerSource)
 	nestedPlanner := &existsSubqueryPlanner{
 		md:          p.md,
 		schemaName:  p.schemaName,
@@ -13049,4 +13335,51 @@ func operatorContains(root, target logical.LogicalOperator) bool {
 		}
 	}
 	return false
+}
+
+// exactStarRowCarriesAnEphemeral reports whether the exact row derived for a
+// STAR body states the ephemeral __ROW_VERSION pseudo-column. A star hides it
+// (Java's SemanticAnalyzer.expandStar → nonEphemeralVisible), so a row that
+// carries it is not the row the star's reader sees: published, `WITH d AS
+// (SELECT * FROM aa, bb) SELECT d.y FROM d ORDER BY d.y` over row-versioned
+// tables minted a read over a six-column row with two hidden version slots
+// that no runtime binding declares, and the derived spelling could not adopt
+// its physical output names. A body that spells its projection names every
+// column it emits and is never declined here.
+//
+// The pseudo-column is the one of VERSION type: a REAL column a table declares
+// under that name (real-column-wins; `"__ROW_VERSION" STRING`) is star-visible
+// and is not it, so the name alone does not decide.
+func exactStarRowCarriesAnEphemeral(innerSQ *selectQuery, src semantic.ScopeSource) bool {
+	if innerSQ == nil || projectionOutputNames(innerSQ) != nil || src.Table == nil {
+		return false
+	}
+	isPseudo := func(c semantic.Column) bool {
+		return c.Id.Name() == values.PseudoFieldRowVersion && c.Type == "VERSION"
+	}
+	for _, c := range src.Table.Columns() {
+		if isPseudo(c) {
+			return true
+		}
+	}
+	for _, c := range src.FlowedColumns {
+		if isPseudo(c) {
+			return true
+		}
+	}
+	return false
+}
+
+// nestedProjectedPath reports whether a projected column reference reaches
+// INTO a column — `t.w.x`, or `w.x` — by its shape alone: with the body
+// source's own qualifier stripped, two or more segments remain. A reference
+// is not looked up by its leaf name to find this out; RFC-238's finding is
+// that which dot is the qualifier is structure, and a leaf that happens to
+// share a top-level column's name must not be mistaken for that column.
+func nestedProjectedPath(col projCol, bodySourceName string) bool {
+	segs := col.segs
+	if len(segs) > 1 && bodySourceName != "" && strings.EqualFold(segs[0], bodySourceName) {
+		segs = segs[1:]
+	}
+	return len(segs) >= 2
 }

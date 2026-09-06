@@ -1086,9 +1086,15 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 			strings.Join(rows, ",") != "0" {
 			t.Fatalf("quoted-alias shadow read at X=3 must see the INNER x ({1,NULL}), not the outer BID: rows=%v err=%v, want [0]", rows, err)
 		}
-		// duplicate output name X; WHERE X=1 must not pick one column.
-		loud0AF00(t, `WITH "V" AS (SELECT "BID" AS "X" FROM LB) SELECT (WITH "V" AS (SELECT LB."BID" AS "X", LB."K" AS "X" FROM "V" LEFT JOIN LB ON "V"."X" = LB."BID") SELECT COUNT(*) FROM "V" WHERE "X" = 1) FROM LB LIMIT 1`,
-			"duplicate-name shadow read")
+		// duplicate output name X; WHERE X=1 must not pick one column. The
+		// body is published as stated, repeated name included, and the read of
+		// X meets the scope's own ambiguity check: 42702, Java's
+		// AMBIGUOUS_COLUMN — the same answer the derived-table spelling gives.
+		// Declining the whole source (0AF00) was the earlier pin; measured, the
+		// declined CTE fell to the ON-only class and a read of the repeated
+		// name bound one duplicate or the other silently.
+		loudCode(t, `WITH "V" AS (SELECT "BID" AS "X" FROM LB) SELECT (WITH "V" AS (SELECT LB."BID" AS "X", LB."K" AS "X" FROM "V" LEFT JOIN LB ON "V"."X" = LB."BID") SELECT COUNT(*) FROM "V" WHERE "X" = 1) FROM LB LIMIT 1`,
+			"42702", "duplicate-name shadow read")
 		// The comma-multi-leg shadow. Declining the join-bodied inner used to be
 		// the only thing standing between this shape and the flatten-evasion
 		// silent class, so it was pinned loud whatever the reason. The inner IS
@@ -1117,8 +1123,9 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 	//   - QUALIFIED read (V."X") resolves too, rather than a silent NULL;
 	//   - a 2+-extra-leg shadow read whose correlation cannot ordinalize is
 	//     still LOUD — the arm below is the pin against the panic returning;
-	//   - a DUPLICATE-name body declines the WHOLE source, so even a read of a
-	//     unique column in it is loud (complete-schema-or-decline; see Q55 (d)).
+	//   - a DUPLICATE-name body is published whole: a read of a unique column
+	//     in it answers, and only a read that spells the repeated name is
+	//     ambiguous (42702; see Q55 (b) and (d)).
 	t.Run("Q54_shadow_read_reach_boundary", func(t *testing.T) {
 		// The QUALIFIED read `V.X` over the inner V=[X] RESOLVES (a
 		// single-namespace derived source, unique leaf `X` — GetByName
@@ -1132,42 +1139,31 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 		if ePanic == nil {
 			t.Fatal("comma-multi-leg shadow read must be LOUD (an install panicked here), got rows")
 		}
-		// duplicate X in the body: complete-or-decline declines the WHOLE source
-		// (0AF00), even for the unique Y — a partial "keep Y, drop X" install
-		// is unsound (a dropped dup name rebinds to another enclosing source).
-		// Recovering the unique-Y reach would need a poison-marker refinement
-		// that isn't implemented yet.
-		_, eDupY := run(t, `WITH "C" AS (SELECT LA."K" AS "X", LB."K" AS "X", LA."AID" AS "Y" FROM LA JOIN LB ON LA."AID" = LB."BID") SELECT "C"."Y", "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."Y" = "C2"."CID"`)
-		if eDupY == nil || !strings.Contains(eDupY.Error(), "0AF00") {
-			t.Fatalf("duplicate-X body must decline the whole source (0AF00), got: %v", eDupY)
-		}
+		// duplicate X in the body: the body is published as stated, repeated
+		// name included, so the UNIQUE Y reads through it and answers — LA JOIN
+		// LB on AID=BID is the single row AID=1, which joins CC to 900. Only a
+		// read that spells X meets the ambiguity check (Q55 (b)). The whole
+		// source used to decline (0AF00) on the theory that a repeated name
+		// could bind silently; measured, the DECLINE was the silent bind (the
+		// declined CTE fell to the ON-only class), and Java answers this query.
+		check(t, `WITH "C" AS (SELECT LA."K" AS "X", LB."K" AS "X", LA."AID" AS "Y" FROM LA JOIN LB ON LA."AID" = LB."BID") SELECT "C"."Y", "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."Y" = "C2"."CID"`,
+			"1|900")
 	})
-	// Q55 — the ON-only CTE schema is COMPLETE-SCHEMA-OR-DECLINE. It installs as
-	// ONE source of the enclosing join; the resolver decides bare-ref ambiguity
-	// by which SOURCES carry a name, so a PARTIAL install (advertise some runtime
-	// columns, drop others) is unsound — a dropped column whose runtime key
-	// another enclosing source also carries lets a bare ref SILENTLY bind there.
-	// Any obstruction therefore declines the WHOLE source (loud 0AF00), never a
-	// partial table. Obstructions, each keyed by the RUNTIME-emitted name
-	// (executeProjection uppercases every output key): a quoted CASE-SENSITIVE
-	// alias (`AS "x"` → runtime "X", no correct-case ref can name it), and a
-	// DUPLICATE runtime name (`AS X, AS X`, or `AS "x", AS "X"` — both emit "X").
+	// Q55 — the CTE row an enclosing join's ON reads is the row the body
+	// emits, PUBLISHED WHOLE, repeated names included. It installs as ONE
+	// source of the enclosing join and the resolver decides ambiguity by
+	// counting every candidate — within the source and across sources — so a
+	// repeated name is never bound silently: a read that spells it is 42702,
+	// and a read of a unique column beside it answers. This section once pinned
+	// COMPLETE-SCHEMA-OR-DECLINE (any repeated name withheld the whole source,
+	// 0AF00); measured, the decline WAS the silent bind — the withheld CTE fell
+	// to the ON-only class and a read of the repeated name took whichever
+	// duplicate that class found first — and the derived-table spelling of every
+	// body below already answered as Java does.
 	t.Run("Q55_on_only_schema_complete_or_decline", func(t *testing.T) {
 		// The regression each case guards against is a future schema change
-		// that silently RESOLVES the obstructed reference and returns wrong
-		// joined rows instead of declining. All obstructions decline the
-		// whole source → a uniform 0AF00 (the caller's ON-drop guard), so
-		// pin the CODE, not just err != nil.
-		mustLoud := func(t *testing.T, sql string) {
-			t.Helper()
-			rows, err := run(t, sql)
-			if err == nil {
-				t.Fatalf("expected a LOUD 0AF00 decline, got rows=%v", rows)
-			}
-			if !strings.Contains(err.Error(), "0AF00") {
-				t.Fatalf("expected 0AF00, got: %v", err)
-			}
-		}
+		// that silently RESOLVES an ambiguous reference and returns wrong
+		// joined rows instead of reporting the ambiguity, so
 		// (a) quoted-lowercase alias `AS "x"`. The engine no longer folds an
 		//     output name, so `AS "x"` publishes a column called x and the
 		//     AUTHORED spelling is the one that resolves exactly. THE
@@ -1213,21 +1209,28 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 		if rows, err := run(t, `WITH "C" AS (SELECT LA."AID" AS "x", LA."K" AS "X" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."xX" = "C2"."CID"`); err == nil {
 			t.Fatalf("a folded reference matching BOTH case-variants must be loud, got rows=%v", rows)
 		}
-		// (b) DUPLICATE output name X — a `C."X"` ref declines, never a silent
-		//     pick of the first of the two X columns.
-		mustLoud(t, `WITH "C" AS (SELECT LA."AID" AS "X", LB."BID" AS "X", LA."K" AS "Y" FROM LA JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."X" = "C2"."CID"`)
-		// (c) the UNSOUND partial-install hole: a dup name is
-		//     DROPPED from a partial schema and REBINDS to another enclosing
-		//     source. C has dup AID; the enclosing scope also has L.AID; a BARE
-		//     `AID` in the ON is AMBIGUOUS (C's dup vs L's) and MUST NOT silently
-		//     bind to L.AID and return cross-product rows. Complete-or-decline
-		//     closes it: the dup-bodied C declines wholesale → 0AF00.
-		mustLoud(t, `WITH "C" AS (SELECT LA."AID" AS "AID", LB."BID" AS "AID", LA."K" AS "Y" FROM LA JOIN LB ON LA."AID" = LB."BID") SELECT "L"."AID" FROM "C" JOIN LA AS "L" ON "AID" = "L"."AID"`)
-		// (d) even a UNIQUE reference (Y) into a body that has a dup ELSEWHERE
-		//     declines — the whole source is untrustworthy once any column is
-		//     obstructed (the reach cost of complete-or-decline; a full-reach
-		//     poison-marker fix that keeps unique columns is not implemented yet).
-		mustLoud(t, `WITH "C" AS (SELECT LA."AID" AS "X", LB."BID" AS "X", LA."K" AS "Y" FROM LA JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."Y" = "C2"."CID"`)
+		// (b) DUPLICATE output name X — a `C."X"` ref is AMBIGUOUS (42702,
+		//     Java's AMBIGUOUS_COLUMN), never a silent pick of the first of the
+		//     two X columns. The body is published as stated and the scope counts
+		//     both X columns of the one source; declining the source (0AF00) was
+		//     the earlier pin, and the derived-table spelling always said 42702.
+		loudCode(t, `WITH "C" AS (SELECT LA."AID" AS "X", LB."BID" AS "X", LA."K" AS "Y" FROM LA JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."X" = "C2"."CID"`,
+			"42702", "qualified read of a repeated output name")
+		// (c) the partial-install hole this gate once closed: a dup name
+		//     DROPPED from a partial schema REBINDS to another enclosing source.
+		//     C has dup AID; the enclosing scope also has L.AID; a BARE `AID`
+		//     in the ON is AMBIGUOUS (C's two AIDs and L's) and MUST NOT silently
+		//     bind to L.AID and return cross-product rows. The complete row is
+		//     published, so the scope counts all three candidates: 42702.
+		loudCode(t, `WITH "C" AS (SELECT LA."AID" AS "AID", LB."BID" AS "AID", LA."K" AS "Y" FROM LA JOIN LB ON LA."AID" = LB."BID") SELECT "L"."AID" FROM "C" JOIN LA AS "L" ON "AID" = "L"."AID"`,
+			"42702", "bare read of a name three sources carry")
+		// (d) a UNIQUE reference (Y) into a body that has a dup ELSEWHERE
+		//     answers: the row is published whole, and only the repeated name is
+		//     ambiguous. Y is LA.K = 100 over the single joined row; the ON
+		//     matches it to CC.CID = 1 through the arithmetic, so the value
+		//     (900) proves Y bound and bound to LA.K.
+		check(t, `WITH "C" AS (SELECT LA."AID" AS "X", LB."BID" AS "X", LA."K" AS "Y" FROM LA JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."Y" = "C2"."CID" + 99`,
+			"900")
 		// (e) POSITIVE control — a CLEAN body (all-unique, case-safe) still
 		//     INSTALLS and resolves (this is not a blanket always-decline).
 		if _, err := run(t, `WITH "C" AS (SELECT LA."AID" AS "P", LB."BID" AS "Q" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."P" = "C2"."CID"`); err != nil {
@@ -1241,17 +1244,31 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 	// and returned rows, and a duplicate aggregate alias silent-first-matched —
 	// both now decline the whole source (0AF00), while a clean aggregate alias
 	// still resolves.
+	// Q57 — a read bound to the CTE's quantified object over a join body that
+	// repeats a BARE leaf (`LA."K"` beside `LB."K"`, no alias): an aggregate
+	// key, a sort key, a WHERE. The projection declares the repeated leaf under
+	// its qualified datum key (LA.K / LB.K) while the SQL names are K, K; the
+	// scope states the SQL names for resolution and the plan's row as the
+	// FLOWED layout, and the source is carried whole into every reading scope
+	// (cteSourceAs), so the object the read binds is the row the plan flows.
+	// Before that the read was refused at execution as an edge-layout mismatch
+	// or an undeclared binding — the derived spelling since before RFC-242, the
+	// CTE spelling once its body was published rather than served by the name
+	// model. Both spellings answer now; LA JOIN LB on AID=BID is the single row
+	// AID=1, and the aliased twin beside them is the control that never failed.
+	t.Run("Q57_reads_bound_to_a_repeated_bare_leaf_body_answer", func(t *testing.T) {
+		check(t, `WITH "C" AS (SELECT LA."K", LB."K", LA."AID" AS "Y" FROM LA JOIN LB ON LA."AID" = LB."BID") SELECT "C"."Y", COUNT(*) FROM "C" GROUP BY "C"."Y"`,
+			"1|1")
+		check(t, `SELECT "C"."Y", COUNT(*) FROM (SELECT LA."K", LB."K", LA."AID" AS "Y" FROM LA JOIN LB ON LA."AID" = LB."BID") "C" GROUP BY "C"."Y"`,
+			"1|1")
+		check(t, `WITH "C" AS (SELECT LA."K", LB."K", LA."AID" AS "Y" FROM LA JOIN LB ON LA."AID" = LB."BID") SELECT "C"."Y" FROM "C" ORDER BY "C"."Y"`,
+			"1")
+		check(t, `SELECT "C"."Y" FROM (SELECT LA."K", LB."K", LA."AID" AS "Y" FROM LA JOIN LB ON LA."AID" = LB."BID") "C" WHERE "C"."Y" = 1`,
+			"1")
+		check(t, `WITH "C" AS (SELECT LA."K" AS "KA", LB."K" AS "KB", LA."AID" AS "Y" FROM LA JOIN LB ON LA."AID" = LB."BID") SELECT "C"."Y", COUNT(*) FROM "C" GROUP BY "C"."Y"`,
+			"1|1")
+	})
 	t.Run("Q56_agg_on_only_schema_complete_or_decline", func(t *testing.T) {
-		mustLoud := func(t *testing.T, sql string) {
-			t.Helper()
-			rows, err := run(t, sql)
-			if err == nil {
-				t.Fatalf("expected a LOUD 0AF00 decline, got rows=%v", rows)
-			}
-			if !strings.Contains(err.Error(), "0AF00") {
-				t.Fatalf("expected 0AF00, got: %v", err)
-			}
-		}
 		// The quoted-lowercase alias obstruction is retired here for the same
 		// reason as its projection twin (Q55 (a)), and the arms invert the same
 		// way: nothing folds an output name, so the AUTHORED spelling is the
@@ -1270,8 +1287,10 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 		if _, err := run(t, `WITH "C" AS (SELECT MIN(LA."AID") AS "x" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."xx" = "C2"."CID"`); err == nil {
 			t.Fatal("a spelling that matches the published aggregate row neither exactly nor case-insensitively must not resolve")
 		}
-		// duplicate aggregate output name → decline.
-		mustLoud(t, `WITH "C" AS (SELECT MIN(LA."AID") AS "X", MAX(LB."BID") AS "X" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."X" = "C2"."CID"`)
+		// duplicate aggregate output name → the read of X is ambiguous (42702),
+		// as it is for the projection twin (Q55 (b)); the source is published.
+		loudCode(t, `WITH "C" AS (SELECT MIN(LA."AID") AS "X", MAX(LB."BID") AS "X" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."X" = "C2"."CID"`,
+			"42702", "qualified read of a repeated aggregate output name")
 		// POSITIVE control: a clean aggregate alias still installs and resolves.
 		if _, err := run(t, `WITH "C" AS (SELECT MIN(LA."AID") AS "M" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."M" = "C2"."CID"`); err != nil {
 			t.Fatalf("clean aggregate alias must still resolve, got: %v", err)

@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"strings"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -54,8 +55,7 @@ func TestPushRequestedOrderingThroughProjection_PushesTranslatedOrdering(t *test
 	projectionRef := expressions.InitialOf(projection)
 	constraints := NewConstraintMap()
 	setProjectionRequestedOrdering(constraints, projectionRef, []properties.RequestedOrderingPart{{
-		Value: requestedOrderingOutputField(
-			projection.GetInner().GetAlias(), projection.GetResultValue(), 0),
+		Value:     projectionCurrentRequest(t, projectionRef, projection, 0),
 		SortOrder: properties.RequestedSortOrderAscending,
 	}})
 	runRequestedOrderingProjection(t, projection, projectionRef, constraints, true)
@@ -65,7 +65,20 @@ func TestPushRequestedOrderingThroughProjection_PushesTranslatedOrdering(t *test
 		t.Fatalf("pushed orderings = %v ok=%v, want one part", pushed, ok)
 	}
 	part := pushed[0].GetParts()[0]
-	assertRequestedOrderingField(t, part.Value, a)
+	// The pushed part is stated in the CHILD group's current-row space, as
+	// the child's members answer ordering questions there; the expectation
+	// crosses the same rebase.
+	assertRequestedOrderingField(t, part.Value, requestedOrderingAtChildCurrent(t, projection, a))
+	// Independently of the shared rebase helper: the pushed part is rooted at
+	// the child's CURRENT row and names input column A.
+	if roots := values.GetCorrelatedToOfValue(part.Value); len(roots) != 1 {
+		t.Fatalf("pushed part roots = %v, want exactly the current correlation", roots)
+	} else if _, current := roots[values.CurrentCorrelation()]; !current {
+		t.Fatalf("pushed part roots = %v, want the current correlation", roots)
+	}
+	if name := values.ExplainValue(part.Value); !strings.Contains(name, "A") {
+		t.Fatalf("pushed part = %s, want input column A", name)
+	}
 	if part.SortOrder != properties.RequestedSortOrderAscending {
 		t.Fatalf("pushed direction = %v, want ASC", part.SortOrder)
 	}
@@ -86,8 +99,7 @@ func TestPushRequestedOrderingThroughProjection_ComputedSlot(t *testing.T) {
 	projectionRef := expressions.InitialOf(projection)
 	constraints := NewConstraintMap()
 	setProjectionRequestedOrdering(constraints, projectionRef, []properties.RequestedOrderingPart{{
-		Value: requestedOrderingOutputField(
-			projection.GetInner().GetAlias(), projection.GetResultValue(), 0),
+		Value:     projectionCurrentRequest(t, projectionRef, projection, 0),
 		SortOrder: properties.RequestedSortOrderAscending,
 	}})
 	runRequestedOrderingProjection(t, projection, projectionRef, constraints, true)
@@ -96,9 +108,10 @@ func TestPushRequestedOrderingThroughProjection_ComputedSlot(t *testing.T) {
 	if !ok || len(pushed) != 1 || len(pushed[0].GetParts()) != 1 {
 		t.Fatalf("pushed orderings = %v ok=%v, want one computed key", pushed, ok)
 	}
-	if !values.ValuesStructurallyEqual(pushed[0].GetParts()[0].Value, add) {
+	want := requestedOrderingAtChildCurrent(t, projection, add)
+	if !values.ValuesStructurallyEqual(pushed[0].GetParts()[0].Value, want) {
 		t.Fatalf("pushed key = %s, want computed key %s",
-			values.ExplainValue(pushed[0].GetParts()[0].Value), values.ExplainValue(add))
+			values.ExplainValue(pushed[0].GetParts()[0].Value), values.ExplainValue(want))
 	}
 }
 
@@ -112,14 +125,21 @@ func TestPushRequestedOrderingThroughProjection_NoMatchDoesNotPush(t *testing.T)
 	foreignOutput := values.NewRecordType("projection_foreign_output", false, []values.Field{
 		{Name: "NONEXISTENT", FieldType: values.NullableLong},
 	})
-	wrongSlot := requestedOrderingFieldForType(
-		projection.GetInner().GetAlias(), foreignOutput, "NONEXISTENT")
+	// A request over a DIFFERENT exact output layout cannot be rebased into
+	// this projection's current-row space (the rebase matches the root by
+	// correlation AND exact type), so it reaches the rule rooted at the
+	// quantifier it was spelled over — not this group's constraint, and LOUD.
+	over := expressions.ForEachQuantifier(projectionRef)
+	wrongSlot := requestedOrderingFieldForType(over.GetAlias(), foreignOutput, "NONEXISTENT")
 	constraints := NewConstraintMap()
 	setProjectionRequestedOrdering(constraints, projectionRef, []properties.RequestedOrderingPart{{
 		Value: wrongSlot, SortOrder: properties.RequestedSortOrderAscending,
 	}})
-	runRequestedOrderingProjection(t, projection, projectionRef, constraints, true)
-
+	call := projectionRuleCall(t, projection, projectionRef, constraints)
+	if err := call.Err(); err == nil || !strings.Contains(err.Error(), "not at the projection's current row") {
+		t.Fatalf("a request over a foreign layout must fail the call loudly; err = %v", err)
+	}
+	call.applyPendingConstraints()
 	if _, ok := Get(constraints, projection.GetInner().GetRangesOver(), RequestedOrderingConstraintKey); ok {
 		t.Fatal("ordering from a different exact output layout must fail closed")
 	}
@@ -135,8 +155,7 @@ func TestPushRequestedOrderingThroughProjection_DescPreserved(t *testing.T) {
 	projectionRef := expressions.InitialOf(projection)
 	constraints := NewConstraintMap()
 	setProjectionRequestedOrdering(constraints, projectionRef, []properties.RequestedOrderingPart{{
-		Value: requestedOrderingOutputField(
-			projection.GetInner().GetAlias(), projection.GetResultValue(), 0),
+		Value:     projectionCurrentRequest(t, projectionRef, projection, 0),
 		SortOrder: properties.RequestedSortOrderDescending,
 	}})
 	runRequestedOrderingProjection(t, projection, projectionRef, constraints, true)
@@ -146,7 +165,7 @@ func TestPushRequestedOrderingThroughProjection_DescPreserved(t *testing.T) {
 		t.Fatalf("pushed orderings = %v ok=%v, want one part", pushed, ok)
 	}
 	part := pushed[0].GetParts()[0]
-	assertRequestedOrderingField(t, part.Value, a)
+	assertRequestedOrderingField(t, part.Value, requestedOrderingAtChildCurrent(t, projection, a))
 	if part.SortOrder != properties.RequestedSortOrderDescending {
 		t.Fatalf("pushed direction = %v, want DESC", part.SortOrder)
 	}
@@ -165,13 +184,11 @@ func TestPushRequestedOrderingThroughProjection_MultipleSortKeys(t *testing.T) {
 	constraints := NewConstraintMap()
 	setProjectionRequestedOrdering(constraints, projectionRef, []properties.RequestedOrderingPart{
 		{
-			Value: requestedOrderingOutputField(
-				projection.GetInner().GetAlias(), projection.GetResultValue(), 0),
+			Value:     projectionCurrentRequest(t, projectionRef, projection, 0),
 			SortOrder: properties.RequestedSortOrderAscending,
 		},
 		{
-			Value: requestedOrderingOutputField(
-				projection.GetInner().GetAlias(), projection.GetResultValue(), 1),
+			Value:     projectionCurrentRequest(t, projectionRef, projection, 1),
 			SortOrder: properties.RequestedSortOrderDescending,
 		},
 	})
@@ -182,8 +199,8 @@ func TestPushRequestedOrderingThroughProjection_MultipleSortKeys(t *testing.T) {
 		t.Fatalf("pushed orderings = %v ok=%v, want two parts", pushed, ok)
 	}
 	parts := pushed[0].GetParts()
-	assertRequestedOrderingField(t, parts[0].Value, x)
-	assertRequestedOrderingField(t, parts[1].Value, y)
+	assertRequestedOrderingField(t, parts[0].Value, requestedOrderingAtChildCurrent(t, projection, x))
+	assertRequestedOrderingField(t, parts[1].Value, requestedOrderingAtChildCurrent(t, projection, y))
 	if parts[0].SortOrder != properties.RequestedSortOrderAscending ||
 		parts[1].SortOrder != properties.RequestedSortOrderDescending {
 		t.Fatalf("pushed directions = [%v, %v], want [ASC, DESC]",
@@ -200,8 +217,7 @@ func TestPushRequestedOrderingThroughProjection_NotConstraintOnlyDoesNotPush(t *
 	projectionRef := expressions.InitialOf(projection)
 	constraints := NewConstraintMap()
 	setProjectionRequestedOrdering(constraints, projectionRef, []properties.RequestedOrderingPart{{
-		Value: requestedOrderingOutputField(
-			projection.GetInner().GetAlias(), projection.GetResultValue(), 0),
+		Value:     projectionCurrentRequest(t, projectionRef, projection, 0),
 		SortOrder: properties.RequestedSortOrderAscending,
 	}})
 	runRequestedOrderingProjection(t, projection, projectionRef, constraints, false)
@@ -233,8 +249,7 @@ func TestPushRequestedOrderingThroughProjection_NoYield(t *testing.T) {
 	projectionRef := expressions.InitialOf(projection)
 	constraints := NewConstraintMap()
 	setProjectionRequestedOrdering(constraints, projectionRef, []properties.RequestedOrderingPart{{
-		Value: requestedOrderingOutputField(
-			projection.GetInner().GetAlias(), projection.GetResultValue(), 0),
+		Value:     projectionCurrentRequest(t, projectionRef, projection, 0),
 		SortOrder: properties.RequestedSortOrderAscending,
 	}})
 	call := runRequestedOrderingProjection(t, projection, projectionRef, constraints, true)
@@ -261,8 +276,91 @@ func TestPushRequestedOrderingThroughProjection_LazyRequestDoesNotPush(t *testin
 	setProjectionRequestedOrdering(constraints, projectionRef, []properties.RequestedOrderingPart{{
 		Value: foreignAliasRequest, SortOrder: properties.RequestedSortOrderAscending,
 	}})
-	runRequestedOrderingProjection(t, projection, projectionRef, constraints, true)
+	// A foreign root is a defect of the pusher and is LOUD, not skipped:
+	// the rule fails the call and pushes nothing.
+	call := projectionRuleCall(t, projection, projectionRef, constraints)
+	if err := call.Err(); err == nil || !strings.Contains(err.Error(), "not at the projection's current row") {
+		t.Fatalf("a foreign-rooted request must fail the call loudly; err = %v", err)
+	}
+	call.applyPendingConstraints()
 	if _, ok := Get(constraints, projection.GetInner().GetRangesOver(), RequestedOrderingConstraintKey); ok {
 		t.Fatal("ordering rooted at a foreign projection alias must fail closed")
+	}
+}
+
+// requestedOrderingAtChildCurrent restates a value the projection's input
+// quantifier names in that quantifier's current-row space — where the
+// projection push rule states the constraint it pushes.
+func requestedOrderingAtChildCurrent(t *testing.T, projection *expressions.LogicalProjectionExpression, v values.Value) values.Value {
+	t.Helper()
+	rebased, err := requestedOrderingAtInnerCurrent(properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{{Value: v, SortOrder: properties.RequestedSortOrderAscending}},
+		properties.DistinctnessPreserveDistinctness, false), projection.GetInner())
+	if err != nil {
+		t.Fatalf("rebase into the child's current-row space: %v", err)
+	}
+	return rebased.GetParts()[0].Value
+}
+
+// projectionCurrentRequest states output slot `ordinal` of the projection the
+// way a constraint on its Reference is stated in production: over a quantifier
+// ranging over that Reference, rebased into the Reference's current-row space
+// (requestedOrderingAtInnerCurrent, which every pusher applies before storing
+// the constraint).
+func projectionCurrentRequest(t *testing.T, projectionRef *expressions.Reference, projection *expressions.LogicalProjectionExpression, ordinal int) values.Value {
+	t.Helper()
+	over := expressions.ForEachQuantifier(projectionRef)
+	spelled := requestedOrderingOutputField(over.GetAlias(), projection.GetResultValue(), ordinal)
+	rebased, err := requestedOrderingAtInnerCurrent(properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{{Value: spelled, SortOrder: properties.RequestedSortOrderAscending}},
+		properties.DistinctnessPreserveDistinctness, false), over)
+	if err != nil {
+		t.Fatalf("rebase into the projection's current-row space: %v", err)
+	}
+	return rebased.GetParts()[0].Value
+}
+
+// projectionRuleCall runs the projection push rule on one constraint-only
+// call and returns the call, so a test can read a LOUD failure off it.
+func projectionRuleCall(t *testing.T, projection *expressions.LogicalProjectionExpression, projectionRef *expressions.Reference, constraints *ConstraintMap) *ImplementationRuleCall {
+	t.Helper()
+	rule := NewPushRequestedOrderingThroughProjectionRule()
+	bindings := rule.Matcher().BindMatches(matching.NewBindings(), projection)
+	if len(bindings) != 1 {
+		t.Fatalf("matcher bindings = %d, want one", len(bindings))
+	}
+	call := &ImplementationRuleCall{
+		Bindings:       bindings[0],
+		Reference:      projectionRef,
+		Constraints:    constraints,
+		constraintOnly: true,
+	}
+	rule.OnMatch(call)
+	return call
+}
+
+// A request with no single row to push through — here a part with no
+// correlation at all, a literal — is not a pusher's defect: the rule declines
+// silently (nothing pushed, no failure), unlike a request rooted at a named
+// foreign quantifier, which is loud.
+func TestPushRequestedOrderingThroughProjection_NoRootDeclinesSilently(t *testing.T) {
+	t.Parallel()
+
+	input := requestedOrderingQuantifier("T", "projection_input")
+	projection := mustRequestedOrderingConstruct(expressions.NewLogicalProjectionExpressionWithAliases(
+		[]values.Value{requestedOrderingField(input, "A")}, []string{"a"}, input))
+	projectionRef := expressions.InitialOf(projection)
+	constraints := NewConstraintMap()
+	setProjectionRequestedOrdering(constraints, projectionRef, []properties.RequestedOrderingPart{{
+		Value:     &values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
+		SortOrder: properties.RequestedSortOrderAscending,
+	}})
+	call := projectionRuleCall(t, projection, projectionRef, constraints)
+	if err := call.Err(); err != nil {
+		t.Fatalf("a request with no root must decline silently, not fail: %v", err)
+	}
+	call.applyPendingConstraints()
+	if _, ok := Get(constraints, projection.GetInner().GetRangesOver(), RequestedOrderingConstraintKey); ok {
+		t.Fatal("a request with no root must push nothing")
 	}
 }

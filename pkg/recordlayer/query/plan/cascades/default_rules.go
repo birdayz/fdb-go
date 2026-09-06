@@ -225,10 +225,10 @@ func PlanningExplorationRules() []ExpressionRule {
 //
 // AN EARLIER VERSION OF THIS NOTE ALSO CLAIMED RecordQueryUnionPlan "is an
 // eager concat that DECLINES a continuation", and the executor says otherwise.
-// executeUnion routes to executeUnionStreaming whenever every branch's column
-// names are statically known — lazy, per-branch CursorFactory, resuming off a
-// branch-tagged ConcatContinuation. Only executeUnionBuffered declines, and only
-// on the fallback where the names are not statically known. On the eagerness
+// executeUnion is a lazy, per-branch CursorFactory chain resuming off a
+// branch-tagged ConcatContinuation. (A buffered fallback that declined to
+// resume once existed for branches whose column names could not be read off
+// the plan; every plan states its row now and RFC-242 deleted it.) On the eagerness
 // axis the deletion in fact moved the OTHER way: the surviving
 // executeUnorderedUnion opens every child cursor up front. Keeping the wrong
 // reason next to a right conclusion is how a later reader talks themselves into

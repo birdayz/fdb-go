@@ -67,13 +67,13 @@ Anything later found to mint a key joins it rather than being argued out of it.
 | `clustered_outer_scalar.go:509` | `leg.binding + "." + leg.typ.Fields[i].Name` | GONE |
 | `clustered_outer_scalar.go:537` | `ToUpper(innerAlias) + "." + scalarCol` | GONE |
 | `qualifyAndMergeColumns` (two sites) | `alias + "." + ToUpper(c.Name)` | GONE |
-| `cascades_translator.go:4204` (unnest leg mint) | `leg + "." + ToUpper(rootName)` | GONE |
+| `cascades_translator.go:4076` (unnest leg mint) | `leg + "." + ToUpper(rootName)` | GONE |
 
 The `clustered_outer_scalar` and `scalar_subquery_seed` sites already disagree
 among THEMSELVES on the case question — `:509` keeps the leg's own slot name
 verbatim while `:143` and `:537` fold the alias.
 
-`cascades_translator.go:4204` is not bookkeeping and the previous draft filed it
+`cascades_translator.go:4076` is not bookkeeping and the previous draft filed it
 that way: it mints `LEG.COL`, resolves it through `mergedType.FieldIndexUnique`,
 and BAKES the resulting ordinal into a predicate, across five merged and chained
 UNNEST paths. It is a producer and a consumer in one place, so leaving it out
@@ -311,14 +311,14 @@ than at the end.
 1. Add the structured qualifier alongside the rendered name. No behaviour
    change; golden byte-identical.
 2. Move label derivation off the split, onto the structured qualifier.
-3. Collapse ALL EIGHT renderers, not the first two — including `qualifyAndMergeColumns` (two sites) and the UNNEST leg mint at `cascades_translator.go:4204`, which the table marks GONE and an earlier step list silently left standing: `legColumns`' join arm defers
+3. Collapse ALL EIGHT renderers, not the first two — including `qualifyAndMergeColumns` (two sites) and the UNNEST leg mint at `cascades_translator.go:4076`, which the table marks GONE and an earlier step list silently left standing: `legColumns`' join arm defers
    to `logicalLegFields`, and `scalar_subquery_seed.go:143`,
    `clustered_outer_scalar.go:509` and `:537` defer to the same boundary, where
    the descriptor-name decision also moves. Collapsing a subset leaves live
    paths spelling keys independently — and those three already disagree with
    each other on case.
 4. Migrate `derivedOutputColumns`' own recovery at
-   `cascades_translator.go:925` (`strings.LastIndexByte`) onto the structured
+   `cascades_translator.go:932` (`strings.LastIndexByte`) onto the structured
    qualifier. It is a SECOND parser and the first draft's step list left it
    standing while deleting the first one's limits, which would have hidden the
    same ambiguity one site over.
@@ -461,7 +461,7 @@ has **8** non-test hits repo-wide under `pkg/relational/core`
 (`grep -rn --include='*.go' 'strings.LastIndexByte' pkg/relational/core/ | grep -v '_test.go' | wc -l`),
 so a sweep returning 0 there is a broken command, not a finished migration.
 
-`cascades_translator.go:925` recovers a qualifier by the LAST dot, with the same
+`cascades_translator.go:932` recovers a qualifier by the LAST dot, with the same
 ambiguity and none of `parseColRef`'s paren protection — deleting `colref.go`'s
 documented limits while that site lives moves the ambiguity somewhere
 undocumented rather than removing it. Step 4 is what makes step 7 honest.
@@ -581,7 +581,7 @@ which is where its table-locality comes from — it has no drop-list and no
 per-type catch.
 
 BOTH LOOPS, NOT JUST THE PRIMARY ONE. `buildMatchCandidates` continues into
-`c.md.GetAllIndexes()` (`cascades_generator.go:2858`) — every index in the
+`c.md.GetAllIndexes()` (`cascades_generator.go:2862`) — every index in the
 SCHEMA — and each resulting `metadataIndexDef` derives its row type through the
 same `PositionalTypeForRecordLayout` (`:3433`, `:3462`). So a colliding table
 that owns ANY secondary index reproduces the panic for a query that never names
@@ -626,7 +626,7 @@ already holds one before it constructs the context:
 `cascades_generator.go:488` and `:1161`, and `scalar_subquery_planning.go:70`,
 each build `ref`/`subRef` first and pass it to `PlanWithContext` on the next
 line. That is Java's `planPartial` shape (`CascadesPlanner.java:378-388`). So
-`buildCascadesPlanContext` (`cascades_generator.go:2746`) takes the reference and
+`buildCascadesPlanContext` (`cascades_generator.go:2750`) takes the reference and
 narrows there; the `sync.Once` defers only the BUILDING, not the reference.
 
 An empty result then yields an empty candidate set, which is what Java does too
@@ -641,7 +641,7 @@ CREATE TABLE innocent (id BIGINT, v BIGINT, PRIMARY KEY (id))
 ```
 
 `SELECT id FROM innocent` must ANSWER, matching Java, and `SELECT id FROM coll`
-must still FAIL, also matching Java — at `cascades_translator.go:3031`, which
+must still FAIL, also matching Java — at `cascades_translator.go:2903`, which
 builds the scan leaf's row type from the one table the query names and is
 already table-local. `DecodedNameCollisionJavaProbe` asserts both directions on
 both engines. The criterion is met when its Go INNOCENT arm flips to
@@ -762,13 +762,13 @@ and reading what actually reddened:
 ```
 values.NewRecordType                      type.go:768   panics
 executor.PositionalTypeForRecordLayout    query_result.go:277
-embedded.buildMatchCandidates             cascades_generator.go:2827
-embedded.GetMatchCandidates               cascades_generator.go:2776
+embedded.buildMatchCandidates             cascades_generator.go:2831
+embedded.GetMatchCandidates               cascades_generator.go:2780
 cascades.MatchLeafRule.OnMatch            rule_match_leaf.go:59
 ```
 
 `buildMatchCandidates` walks every record type in the metadata. Two guards skip
-a type outright — no primary key (`cascades_generator.go:2805`) and no key
+a type outright — no primary key (`cascades_generator.go:2809`) and no key
 components (`:2809`) — and every type that survives both gets a positional type
 built from its descriptor. A third guard (`:2823`) does NOT skip: a type with no
 descriptor still gets a candidate, flowing `UnknownType`, so it is the only one
@@ -778,7 +778,7 @@ because the CONSTRUCTION is schema-wide, not because the failure mode is a
 panic.
 
 Note where COLL itself fails, because it is NOT here: the scan leaf's row type
-is built at `cascades_translator.go:3016`, from `t.tableColumns(s.Table)` — the
+is built at `cascades_translator.go:2888`, from `t.tableColumns(s.Table)` — the
 one table the query names. That path is already table-local and already the
 right place for the colliding table to fail. Only the candidate loop is
 schema-wide.
@@ -840,7 +840,7 @@ WithoutChildren` compares its record-type list element by element and has no
 metadata to resolve with — nor should it: it is structural equality on a memo
 expression. So the two sides have to AGREE BY CONSTRUCTION. Today they cannot:
 `buildMatchCandidates` passes `[]string{rt.Name}` (stored,
-`cascades_generator.go:2842`) and `cascades_translator.go:3032` passes
+`cascades_generator.go:2846`) and `cascades_translator.go:2904` passes
 `[]string{s.Table}` (SQL).
 
 The visible cost, same query shape over one schema, one per table:
@@ -869,7 +869,7 @@ as unrelated drift.
 
 **THE DECISION: the plan tree carries STORAGE names, translated AT EVERY POINT
 A TABLE NAME ENTERS IT.** In Go that is four sites, not the one an earlier draft
-named: the scan leaf (`cascades_translator.go:3032`, `s.Table`) and the three
+named: the scan leaf (`cascades_translator.go:2904`, `s.Table`) and the three
 DML targets — INSERT `:10750` (`ins.Table`), UPDATE `:10792` (`upd.Target`),
 DELETE `:10814` (`del.Target`). Candidates keep `rt.Name`;
 `EqualsWithoutChildren` then compares like with like and never learns about
@@ -886,7 +886,7 @@ bare basename names two files here, not one. THE UPDATE TARGET IS NOT JUST A NAM
 that constrains how it may be translated. `executeUpdate` builds the target
 quantified-object value as
 `NewQuantifiedObjectValue(NamedCorrelationIdentifier(p.GetTargetRecordType()),
-...)` (`executor.go:4361-4363`), and the SET right-hand sides are correlated to
+...)` (`executor.go:4110-4112`), and the SET right-hand sides are correlated to
 it. Re-spelling `upd.Target` alone would leave `SET name = name` bound to a
 correlation nobody publishes.
 
@@ -895,9 +895,9 @@ and that is not one option of two. Java never couples them:
 `QueryVisitor.java:836` sets `targetRecordType` from `getStorageName()` at
 construction, and `UpdateExpression.java:100-105` correlates the transforms to
 the SOURCE quantifier only. Go's coupling is its own, originating at
-`logical_predicate.go:6838` where `buildSelectScope` takes the bare table name
+`logical_predicate.go:7117` where `buildSelectScope` takes the bare table name
 as the alias. "Rebase the transforms onto the new identifier" would preserve
-that divergence while working around it. INSERT has no such coupling: `executor.go:4213`
+that divergence while working around it. INSERT has no such coupling: `executor.go:3962`
 resolves ITS target through the tolerant `GetRecordType` -- an INSERT-only
 path, not the general tolerance an earlier draft read it as.
 
@@ -983,7 +983,7 @@ FIRST: "escaped names only", from a SELECT-only measurement. Wrong as method —
 SELECT and DML did not resolve a table name the same way and nothing said so.
 
 SECOND: "two populations, and case is the larger one", after measuring DML.
-`recordTypeCI` (`logical_predicate.go:6630`) resolved a DML target
+`recordTypeCI` (`logical_predicate.go:6909`) resolved a DML target
 CASE-INSENSITIVELY, so an unquoted `DELETE FROM customer` against a table
 declared `"Customer"` VALIDATED and then planned
 `Delete(CUSTOMER, PredicatesFilter(Scan(CUSTOMER), [1 preds]))` — a target
@@ -998,7 +998,7 @@ VALIDATION DIVERGENCE, and every other path already said so. Java rejects —
 UNDEFINED_TABLE / "Unknown table RESTAURANT"
 (`CaseSensitivityQueryTests.caseSensitiveConnectionTestCase3`). Go's SELECT path
 rejects. Go's `INSERT … VALUES` rejects, through `md.GetRecordType(insOp.Table)`
-(`cascades_generator.go:1074`). Only UPDATE and DELETE folded.
+(`cascades_generator.go:1076`). Only UPDATE and DELETE folded.
 
 So the DML target now resolves strictly, and the case arm leaves this section
 entirely. **Canonicalising it — which is what this section proposed one revision
@@ -1030,7 +1030,7 @@ correct response.
 
 
 **THE CANDIDATE SIDE MUST NOT MOVE.** `rt.Name` reaches candidates at four
-places (`cascades_generator.go:2842`, `:3471`, `:3695`, `:3770`) and those are
+places (`cascades_generator.go:2846`, `:3471`, `:3695`, `:3770`) and those are
 cross-compared in `rule_aggregate_data_access.go:84,299`; converting one
 silently disables aggregate matching. `queriedRecordTypes` flows into physical
 plans (`primary_scan_match_candidate.go:393,432`). Translating on the QUERY side
@@ -1077,11 +1077,11 @@ change.
 
 **THE CONTINUATION SALT DOES MOVE, and saying it does not was wrong.**
 `PrimaryScanRule.OnMatch` builds the physical plan from the LOGICAL leaf's
-names (`rule_primary_scan.go:46`), and `executor.go:323` feeds that plan to
+names (`rule_primary_scan.go:46`), and `executor.go:320` feeds that plan to
 `primaryScanRangeFingerprintSalt` — so for an escaped table the salt input goes
 from `MY$TABLE` to `MY__1TABLE`. That is harmless, but only for a reason with an
 expiry condition, which is why it has to be written down rather than waved
-through: the salt is computed ONLY when `len(comps) > 0` (`executor.go:322`),
+through: the salt is computed ONLY when `len(comps) > 0` (`executor.go:319`),
 and an escaped table has no pushed-down comparisons today, so no continuation
 can exist through that path to be invalidated. The fix creates the pushdown and
 the salt in the same stroke. Anything that changes that ordering — a partial
@@ -1132,7 +1132,7 @@ values. The classification split is asserted nowhere. In
 THIS revision the set has FIVE members. Three cite a doc comment on purpose:
 `positional_row.go:7`, `colref.go:95` and `full_unordered_scan.go:110-118`. Two
 are this section's own narrative naming cites it CORRECTED —
-`derived_unnest.go:250` and `cascades_generator.go:2826` — which read weak
+`derived_unnest.go:250` and `cascades_generator.go:2830` — which read weak
 precisely because they name lines that have since moved, the thing the sentences
 around them say.
 
@@ -1185,7 +1185,7 @@ number, because it reads as measured.
 
 What IS reproducible, and is all this section needs: it was never seven; the
 drift is dominated by whole-file shifts rather than moves between functions
-(`cascades_generator.go:2826` alone moved four further times, `:2840` → `:2839` →
+(`cascades_generator.go:2830` alone moved four further times, `:2840` → `:2839` →
 `:2848` → `:2858`, every one staying inside the same function); and the corpus
 figures above are printed by a committed test rather than quoted from memory. If
 a branch-wide count is ever wanted, ship the counter next to the claim — four
@@ -1212,7 +1212,7 @@ an exact `SemanticAnalyzer.getTable` before anything looks at a column.
 
 UPDATE IS ON BOTH SIDES, BY CLAUSE, and that is the shape to carry away rather
 than "UPDATE is fixed". Its SET-column check had its own `recordTypeCI` call
-(`logical_predicate.go:6729`) that folded case purely to find a descriptor, so
+(`logical_predicate.go:7008`) that folded case purely to find a descriptor, so
 making it strict leaves `rt` nil for an unresolvable target, the SET check
 declines, and the 42F01 answers. Its WHERE clause does not go through that
 check at all.
@@ -1252,7 +1252,7 @@ text — a different risk class.
 derives the plan's result-column types, and that lookup is NIL-TOLERANT. On a
 miss the descriptor stays nil and the types are invented: one derivation reports
 every GROUP BY column as `STRING` and an aggregate over a COLUMN as `BIGINT`
-(`cascades_generator.go:4189`), the other reports GROUP BY columns as `BIGINT`
+(`cascades_generator.go:4193`), the other reports GROUP BY columns as `BIGINT`
 (`:4256`) and reaches its miss only when EVERY child plan misses. `COUNT(*)` is
 `BIGINT` with or without the miss, so it is the one output not degraded.
 Plausible values, wrong types, no error — and which wrong type you get depends

@@ -123,7 +123,10 @@ func aggregateProjectionItem(ac aggSelectCol, strip func(string) string) (name, 
 		}
 	case ac.groupCol != "":
 		name = strip(ac.groupCol)
-		if ac.outName != "" && !strings.EqualFold(ac.outName, ac.groupCol) {
+		// Alias presence is the parser's fact (groupColAliased), never inferred
+		// from outName equalling the reference: `ga.g AS "GA.G"` is aliased,
+		// and inferring it labelled that column G.
+		if ac.groupColAliased && ac.outName != "" {
 			alias = ac.outName
 		}
 	}

@@ -166,14 +166,66 @@ func rowScalarToProtoValue(fd protoreflect.FieldDescriptor, v any) (protoreflect
 // field can receive: a UUID (carried as a neutral [16]byte, matching
 // PromoteValue's representation) and a nested record.
 //
-// A nested record arrives as a proto.Message because the plan-time bake stamps
-// every constructor in the plan from ONE repository, so the child constructor
-// already built a message of exactly this field's descriptor. That is the
-// property that lets Java's deepCopyIfNeeded reconciliation
-// (RecordConstructorValue.java:165-216) have nothing to reconcile here; when
-// the descriptors disagree anyway the copy is still performed rather than
-// assumed away, so a mixed-provenance message cannot be set into a foreign
-// descriptor.
+// A nested record arrives as a proto.Message when the plan-time bake stamped
+// the child constructor: the bake works from ONE repository per plan, so a
+// stamped child has built a message of exactly this field's descriptor.
+//
+// "Stamped" is load-bearing there, not a formality, and it is the CHILD's
+// stampedness that the sentence needs. NOT every constructor is stamped: a plan
+// whose row names one field twice poisons its repository, and the constructors
+// resolved after that point get no descriptor at all (TODO.md, "A join row that
+// names one field twice leaves its plan's rows unstamped").
+//
+// What an unstamped constructor then PRODUCES is not one thing, and "its row is
+// a map" is too broad: on that plan the join and flat-map result constructors
+// never run Evaluate at all — the emitting paths build dense positional rows the
+// result set reads by ordinal — so only a constructor whose Evaluate fallback
+// actually runs, a computed STRUCT among them, hands back a name-keyed map.
+//
+// Reaching this code only proves the PARENT was stamped — Evaluate calls
+// buildRecordMessage when its own descriptor is non-nil — and parent and child
+// stampedness are different facts. The pair where they differ does NOT degrade
+// the way the rest of that booking describes: a stamped parent builds a message,
+// an unstamped child hands it a map, the map reaches the final arm below and is
+// refused, so the query FAILS rather than answering in a weaker type.
+// TestAStampedParentWithAnUnstampedChildFailsTheQuery pins that consequence.
+//
+// The bake DOES produce that pair, and a plain SQL query reaches it. It takes
+// THREE things lining up, which is one more than two earlier write-ups claimed:
+// the child constructor's own type is unsynthesisable (a field name protobuf
+// will not carry, so it never stamps and evaluates to a map) and a promotion
+// whose TARGET is synthesisable, because unification ANONYMISES disagreeing
+// field names and so erases the offending one. Only then does the parent's type
+// carry a stampable shape while the child underneath does not. Leave the same
+// bad name on BOTH elements and the target keeps it, the parent cannot stamp
+// either, and the whole value degrades to maps and ANSWERS.
+//
+// That describes THIS site. The same array with nothing stamped above it
+// answers RAGGED instead — one element a message, one a map — and the wider
+// gap it belongs to shows up at other sites for reasons that have nothing to do
+// with the field name: a UNION refuses to promote a record to the anonymised
+// record unification produces, whether the names are protobuf-legal or not.
+// TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes measures those with their
+// controls, TestUnificationErasesAFieldNameOnlyWhenTheNamesDisagree the erasure,
+// and TestWhichRecordTypesCanBeGivenADescriptor the stamping predicate. TODO.md,
+// "A record literal that is not stamped reaches a stamped parent", carries the
+// closure. Read the table rather than this summary: four rounds summarised it
+// wrongly before this one, each refuted by a row nobody had run.
+//
+// A DIRECT field child is a different case and stays in step with its parent,
+// for two reasons TestTheBakeStampsAParentAndItsChildTogetherOrNeither asserts
+// rather than narrates: the child's type resolves to the parent's own field
+// message, and the visit order puts a FIRST-field child immediately after its
+// parent. Read that scope — a child in a later field has the preceding fields'
+// subtrees between it and its parent, so nothing there speaks for it. Those two
+// arms are the states that FIXTURE reaches, not an enumeration of what the bake
+// can do; what they exclude is the harmful ordering.
+//
+// The stamped case is the property that lets Java's deepCopyIfNeeded
+// reconciliation (RecordConstructorValue.java:165-216) have nothing to
+// reconcile here; when the descriptors disagree anyway the copy is still
+// performed rather than assumed away, so a mixed-provenance message cannot be
+// set into a foreign descriptor.
 func rowMessageToProtoValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.Value, error) {
 	md := fd.Message()
 	if md == nil {

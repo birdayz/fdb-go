@@ -67,7 +67,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"strings"
 	"sync"
 
 	"github.com/google/uuid"
@@ -489,9 +488,12 @@ func sourceRowType(src semantic.ScopeSource) *values.RecordType {
 // either way. Only what the quantifier FLOWS is in question here.
 // sourceColumnOrdinal returns the 0-based position of field within the
 // resolved source's declared column order — the LOGICAL ordinal of the
-// column in the row the source flows. Matching is case-insensitive first-match
-// over ONE source's declared columns — see the caller for why first-match is
-// sound on that list and is not the rule for a merged layout.
+// column in the row the source flows. Matching is by EXACT spelling over ONE
+// source's declared columns: the reference was resolved against those columns
+// (or against the SQL labels a flowed layout stands beside) and arrives
+// carrying the column's own spelling, so a folded match here could only pair
+// it with a DIFFERENT column that folds the same — which is how `c."x"` and
+// `c."X"` over one body once both read slot 0.
 //
 // It also returns the FLOWED TYPE a reference's quantifier object may state for
 // this source (flowedTypeFor) and the DOMAIN token for the layout the ordinal
@@ -512,8 +514,46 @@ func sourceColumnOrdinal(src semantic.ScopeSource, field string) (int, *values.R
 	if rowType == nil {
 		return 0, nil, false
 	}
+	// A source that states a FLOWED layout beside its SQL columns names its
+	// slots as the plan flows them — a repeated bare leaf under its qualified
+	// datum key, a repeated output under the name-addressability suffix — and
+	// those are not names a reference spells. The reference was resolved
+	// against the SQL columns, so the ordinal is its POSITION in that list, and
+	// the flowed layout, parallel to it by construction, is what the ordinal
+	// indexes. Looking the SQL name up in the flowed layout instead missed
+	// every column whose two names differ.
+	if labels := src.Table.Columns(); len(src.FlowedColumns) > 0 && len(labels) == len(rowType.Fields) {
+		// PARALLEL lists: a source that states a flowed layout the same width
+		// as its SQL columns (an exact derived source) is resolved by position.
+		//
+		// The reference was resolved against these labels by EXACT spelling —
+		// a quoted label keeps its case, so `AS "x"` and `AS "X"` are two
+		// columns — and the position is looked up the same way. A folded
+		// first match mapped both spellings to the first slot, and
+		// `SELECT c."x", c."X"` over that body answered the first column
+		// twice. There is no folded fallback: the reference arrives with the
+		// label's own spelling, so a miss here names no column of this source.
+		for i, c := range labels {
+			if c.Id.Name() == field {
+				return i, rowType, true
+			}
+		}
+		return 0, nil, false
+	}
+	// The layout IS the SQL list (an ordinary table), or it is deliberately
+	// WIDER than it: an AT-only WITH ORDINALITY source exposes the ordinal
+	// alias alone while its row still carries the unexposed element in slot 0
+	// (unnestVirtualScopeSource), and the exposed name is looked up in that
+	// row. Those are the two shapes this branch serves; a flowed layout that
+	// is NARROWER than the SQL list is not a shape any source states.
+	// Exact spelling here too: a derived body that labels two columns
+	// `AS "x"` and `AS "X"` states both in its row, and a folded first match
+	// read the first for either reference. The row's field names are the
+	// column spellings the reference was resolved against (a descriptor's
+	// stored spelling reaches both), so a folded fallback had nothing to
+	// match that an exact match does not.
 	for i, f := range rowType.Fields {
-		if strings.EqualFold(f.Name, field) {
+		if f.Name == field {
 			return i, rowType, true
 		}
 	}
@@ -558,7 +598,16 @@ func resolvedSourceColumnRef(col semantic.Column, src semantic.ScopeSource, acce
 
 	path := make([]values.FieldRequest, 0, 1+len(accessors))
 	if !wholeShadowingObject {
-		root, requestErr := values.FieldByNameAndOrdinal(field, ordinal)
+		// The request names the slot as the FLOWED layout names it — the name
+		// the row beneath the quantified object carries — which for a column
+		// whose SQL name and runtime name differ is the runtime one. The
+		// reference was resolved by its SQL name above; the read is by ordinal,
+		// and the name on it is what the ordinal read verifies against.
+		slotName := field
+		if ordinal < len(rowType.Fields) && rowType.Fields[ordinal].Name != "" {
+			slotName = rowType.Fields[ordinal].Name
+		}
+		root, requestErr := values.FieldByNameAndOrdinal(slotName, ordinal)
 		if requestErr != nil {
 			return nil, requestErr
 		}
@@ -2068,15 +2117,14 @@ func structColumnType(col semantic.Column) values.Type {
 			FieldType: columnCascadesType(f),
 		})
 	}
-	name := col.StructTypeName
-	if name == "" {
-		// Synthetic semantic catalogs predate nominal STRUCT identity and use
-		// Type="RECORD" as both kind and fixture name. Keep those fixtures
-		// usable while production rlcatalog columns carry the descriptor's exact
-		// full name in StructTypeName.
-		name = col.Type
-	}
-	return values.NewRecordType(name, col.Nullable, fields)
+	// An empty StructTypeName is an ANONYMOUS record — a record constructor's
+	// row published through a derived table or CTE, a synthetic fixture's
+	// struct — and it stays anonymous: the proto repository mints a unique
+	// message name for every anonymous shape (Java's ProtoUtils.uniqueTypeName),
+	// whereas the literal kind "RECORD" used as a name made two different
+	// anonymous shapes in one row claim one descriptor, and the driver handed
+	// their array elements back as raw maps. Type is the SQL kind, never a name.
+	return values.NewRecordType(col.StructTypeName, col.Nullable, fields)
 }
 
 // columnCascadesType maps a resolved semantic.Column to its cascades

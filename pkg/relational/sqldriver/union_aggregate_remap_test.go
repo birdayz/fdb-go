@@ -7,18 +7,17 @@ import (
 	"testing"
 )
 
-// TestFDB_UnionAggregateColumnRemap is the RFC-078 / TODO 7.6-union-remap
-// regression: a UNION whose branches are STREAMING AGGREGATES with mismatched
-// output aliases, read downstream BY NAME, must return all rows — not silently
-// drop the non-first branch's rows (which it did, returning NULL, on master).
+// TestFDB_UnionAggregateColumnRemap is the RFC-078 regression: a UNION whose
+// branches are STREAMING AGGREGATES with mismatched output aliases, read
+// downstream BY NAME, must return all rows — not silently drop the non-first
+// branch's rows (which it did, returning NULL, when the executor concatenated
+// branch cursors under each branch's own names).
 //
-// Two pre-existing executor defects combined: (1) executeUnorderedUnion concatenated
-// branch cursors with NO column normalization (unlike the sibling concat RecordQueryUnionPlan),
-// and (2) planColumnNamesWithMD descended through a StreamingAgg to its input scan and
-// returned the SCAN's columns, so even the sibling path's position-remap saw both
-// branches as identical and never fired. Now planColumnNamesWithMD reports the
-// aggregate's output schema (group keys + alias) and executeUnorderedUnion remaps later
-// branches to the first branch's names.
+// What makes it hold today is the translator alone: exactUnionResultRow states
+// one row for the union, named by the first branch, and normalizeUnionLeg
+// re-emits every differing branch onto it by ordinal, so the physical legs
+// already agree before any executor runs (RFC-242 removed the executor-side
+// re-typing that used to be the second half of the story).
 func TestFDB_UnionAggregateColumnRemap(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {

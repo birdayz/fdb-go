@@ -23,17 +23,17 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**363 scenarios · 2929 query/assertion cases** across 18 feature areas — 2564 supported, 114 unsupported-feature pins, 251 error-path pins.
+**371 scenarios · 3059 query/assertion cases** across 18 feature areas — 2680 supported, 115 unsupported-feature pins, 264 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
 | Aggregates & GROUP BY | 53 | 345 | 312 | 19 | 14 |
-| Joins | 64 | 303 | 288 | 2 | 13 |
+| Joins | 66 | 313 | 296 | 2 | 15 |
 | Subqueries (EXISTS / IN / scalar) | 46 | 313 | 258 | 35 | 20 |
-| CTEs | 13 | 108 | 77 | 7 | 24 |
-| Set operations (UNION / INTERSECT / EXCEPT) | 11 | 61 | 52 | 5 | 4 |
+| CTEs | 14 | 179 | 137 | 7 | 35 |
+| Set operations (UNION / INTERSECT / EXCEPT) | 12 | 68 | 59 | 5 | 4 |
 | DML (INSERT / UPDATE / DELETE) | 26 | 238 | 202 | 4 | 32 |
-| Ordering & pagination | 16 | 122 | 118 | 0 | 4 |
+| Ordering & pagination | 17 | 133 | 129 | 0 | 4 |
 | Scalar functions & expressions | 34 | 381 | 328 | 21 | 32 |
 | Predicates & WHERE | 12 | 104 | 102 | 0 | 2 |
 | Column resolution & aliasing | 7 | 59 | 30 | 0 | 29 |
@@ -44,8 +44,8 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Keys & primary keys | 5 | 133 | 128 | 0 | 5 |
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
-| Other | 35 | 298 | 261 | 11 | 26 |
-| **Total** | **363** | **2929** | **2564** | **114** | **251** |
+| Other | 38 | 329 | 291 | 12 | 26 |
+| **Total** | **371** | **3059** | **2680** | **115** | **264** |
 
 ## Aggregates & GROUP BY
 
@@ -116,6 +116,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `cross_join` | 17 | 15 | 0 | 2 | Every spelling of a JOIN that means "cartesian product" — `CROSS JOIN`, |
 | `cross_join_filter` | 3 | 3 | 0 | 0 | Cross join with various filter patterns |
 | `cross_join_no_predicate` | 2 | 2 | 0 | 0 | CROSS JOIN without predicates |
+| `cte_expression_aggregate_join_leg` | 6 | 4 | 0 | 2 | A non-recursive CTE whose body carries an EXPRESSION aggregate, used as a |
 | `cte_join` | 3 | 3 | 0 | 0 | CTE used in JOIN |
 | `derived_table_join` | 3 | 3 | 0 | 0 | Derived tables (subqueries in FROM) with joins |
 | `distinct_join` | 3 | 3 | 0 | 0 | SELECT DISTINCT on JOIN / comma-join results — dedup happens on |
@@ -172,6 +173,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `select_star_join` | 2 | 2 | 0 | 0 | SELECT * in joins |
 | `self_join` | 6 | 5 | 0 | 1 | Self-joins — same table referenced twice in the FROM with distinct |
 | `self_join_advanced` | 3 | 3 | 0 | 0 | Advanced self-join patterns |
+| `union_join_leg_aggregate_forms` | 4 | 4 | 0 | 0 | A UNION of grouped-aggregate branches used as a JOIN LEG, over the aggregate |
 | `update_with_join` | 2 | 2 | 0 | 0 | UPDATE with subquery-based conditions |
 
 ## Subqueries (EXISTS / IN / scalar)
@@ -234,6 +236,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `cte_error_codes` | 6 | 2 | 0 | 4 | Java's cte.yamsql error tests: CTE-specific validation errors. |
 | `cte_java_patterns` | 8 | 6 | 0 | 2 | CTE patterns from Java's cte.yamsql. |
 | `cte_multi_reference` | 2 | 2 | 0 | 0 | CTE referenced multiple times |
+| `cte_published_row_names` | 71 | 60 | 0 | 11 | The row a CTE body publishes to its enclosing query is the row the body |
 | `cte_recursive_tree` | 3 | 3 | 0 | 0 | Recursive CTE tree traversal |
 | `cte_star_column_aliases` | 3 | 2 | 0 | 1 | a CTE column-alias list over a STAR body. |
 | `cte_with_insert` | 2 | 1 | 0 | 1 | CTE used in INSERT ... |
@@ -256,6 +259,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `union_columns` | 12 | 7 | 2 | 3 | UNION column-binding: SQL standard is positional, not name-based. |
 | `union_comprehensive` | 4 | 3 | 1 | 0 | Comprehensive UNION tests |
 | `union_empty_tables_java` | 9 | 9 | 0 | 0 | UNION ALL behavior on empty tables |
+| `union_quoted_identifiers` | 7 | 7 | 0 | 0 | A UNION ALL whose legs are aligned by the translator must not be re-aligned |
 | `union_star` | 5 | 5 | 0 | 0 | Java's union.yamsql tests UNION ALL with SELECT * on either side. |
 | `union_with_aggregate` | 2 | 2 | 0 | 0 | UNION combined with aggregates |
 
@@ -309,6 +313,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `order_by_nulls` | 4 | 4 | 0 | 0 | Java-conformant NULL ordering (swingshift-35, 3b87574d): |
 | `order_by_nulls_java` | 8 | 8 | 0 | 0 | ORDER BY with NULL values and multiple |
 | `ordering_same_leaf_cross_quantifier` | 4 | 4 | 0 | 0 | The ordering property's key identity must carry the CORRELATION, not just the |
+| `ordering_through_a_projection` | 11 | 11 | 0 | 0 | A requested ordering crosses a projection by the projection's result value, |
 | `rfc202_version_index_ordered` | 1 | 1 | 0 | 0 | — |
 
 ## Scalar functions & expressions
@@ -472,6 +477,8 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `comparison_promotion_gate` | 14 | 10 | 0 | 4 | unpromotable comparisons reject at |
 | `computed_column_names` | 6 | 6 | 0 | 0 | Verifies that unnamed computed expressions in SELECT projections |
 | `datetime_edge_pins` | 9 | 6 | 0 | 3 | DATE/TIMESTAMP extension edge coverage |
+| `derived_star_row_versions` | 4 | 3 | 1 | 0 | A projection-less star over row-versioned tables hides both legs' |
+| `derived_star_visibility` | 13 | 13 | 0 | 0 | A derived table or CTE whose body is a projection-less star over a join |
 | `empty_result_edge_cases_java` | 11 | 11 | 0 | 0 | Empty result handling in various |
 | `empty_table_operations` | 9 | 9 | 0 | 0 | Operations on empty tables |
 | `float_column` | 10 | 10 | 0 | 0 | FLOAT (32-bit) column type. |
@@ -494,6 +501,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `quoted_identifier_columns` | 6 | 5 | 0 | 1 | A QUOTED identifier keeps its case; an unquoted one folds to upper. |
 | `quoted_identifier_labels` | 40 | 37 | 1 | 2 | THE RESULT-SET LABEL IS WHERE THE USER SEES THE NAME, so it is the one |
 | `quoted_identifier_pins` | 4 | 4 | 0 | 0 | quoted-identifier shapes that must keep |
+| `repeated_output_names` | 14 | 14 | 0 | 0 | A repeated output name is reported as the user spelled it, once per column, |
 | `select_no_from` | 6 | 0 | 6 | 0 | FROM-less SELECT — fdb-relational 4.11.1.0's QueryVisitor.visitSimpleTable |
 | `select_star_single_table` | 4 | 4 | 0 | 0 | SELECT * from single table |
 | `set_op_fetch_pushdown` | 2 | 2 | 0 | 0 | set operations push below the fetch |

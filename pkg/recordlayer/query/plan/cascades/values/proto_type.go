@@ -27,13 +27,28 @@ package values
 // structural choices, which are copied from the same Java methods.
 //
 // THE ONE DELIBERATE DIVERGENCE — synthetic type names. Java names an
-// anonymous type ProtoUtils.uniqueTypeName() = "__type__" + a RANDOM
-// UUID (ProtoUtils.java:85-95), fresh on every call. Go keeps the exact
-// FORMAT but derives the name from a per-repository counter, so identical
-// input types produce identical descriptors and a test can assert on one.
-// This cannot break compatibility with Java, and the reason is not a judgement
-// call: Java's own name is random, so no Java reader can be keyed on it and
-// no two Java runs agree on it either. Every consumer is structural.
+// anonymous type ProtoUtils.uniqueTypeName() = "__type__" + a RANDOM UUID
+// (ProtoUtils.java:85-95), fresh on every call. Go derives the name from a
+// per-repository counter, so identical input types produce identical
+// descriptors and a test can assert on one. No Java reader can be keyed on
+// the name — Java's own is random and no two Java runs agree on it — so every
+// consumer is structural and the divergence cannot break compatibility.
+//
+// The PREFIX diverges too, and that one is load-bearing rather than cosmetic.
+// Java's randomness buys collision-freedom against a DECLARED name by luck;
+// a counter has no such luck, and `"__type__" + digits` is reachable by
+// escaping — the struct type `__type$` escapes to exactly `__type__1`
+// (protoname: a leading `__` is preserved, `$` becomes `__1`). One name over
+// two shapes is then either refused as a user error that is not one, or
+// emitted twice so the file never validates and every record in the plan
+// falls back to a map. Go buys the same freedom by CONSTRUCTION instead:
+// `__0` is an invalid START sequence for a user identifier (protoname
+// rejects it), and no accepted identifier escapes INTO a leading `__0`
+// either — the escapes insert `__0`/`__1`/`__2`, all of which begin with an
+// underscore, so an output starting `__0` requires an input starting `__0`,
+// which is rejected. A synthetic name is therefore unreachable, and the
+// register-time guard below only ever sees a genuine declared-vs-declared
+// clash. TestSyntheticTypeNamesAreUnreachableFromAnyIdentifier pins it.
 
 import (
 	"fmt"
@@ -75,6 +90,31 @@ type ProtoTypeError struct {
 
 func (e *ProtoTypeError) Error() string {
 	return fmt.Sprintf("cannot synthesise a protobuf descriptor for %s: %s", e.TypeName, e.Reason)
+}
+
+// DeclaredNameClashError reports two record shapes DECLARED under one name in
+// one repository — `STRUCT foo (1 AS p)` beside `STRUCT foo (2 AS p, 3 AS q)`.
+// Each has a message form, but two DescriptorProtos of one name make a file
+// that does not validate. Java refuses the second REGISTRATION
+// (registerTypeToTypeNameMapping: IllegalArgumentException) and would fail
+// again at build; Go refuses at the same point. It is a different failure from
+// a ProtoTypeError, which is a type with NO message form: a caller that keeps
+// a map representation for the latter must not swallow this one. Anonymous
+// shapes never take part — their namespace is unreachable from any identifier
+// (see the file header).
+type DeclaredNameClashError struct {
+	// Name is the protobuf MESSAGE name both shapes claim — the declared
+	// record name after escaping (`a.b` is reported as `a__2b`), because that
+	// is what collides and what Java's guard compares
+	// (registerTypeToTypeNameMapping's inverse lookup is over proto names).
+	Name string
+	// Existing is the shape already defined under Name; Incoming the second.
+	Existing Type
+	Incoming Type
+}
+
+func (e *DeclaredNameClashError) Error() string {
+	return fmt.Sprintf("record name %q is declared with two shapes: %v and %v", e.Name, e.Existing, e.Incoming)
 }
 
 // canonicalizeNullability is Java's TypeRepository.canonicalizeNullability
@@ -248,17 +288,45 @@ func (p *TypeProtoRepository) defineAndResolveLocked(t Type) (string, error) {
 	return "", nil
 }
 
-// registerLocked is Java's Builder.registerTypeToTypeNameMapping.
-func (p *TypeProtoRepository) registerLocked(t Type, name string) {
-	p.entries = append(p.entries, typeNameEntry{typ: canonicalizeNullability(t), name: name})
+// registerLocked is Java's Builder.registerTypeToTypeNameMapping
+// (TypeRepository.java:530-546), guard included: a name already bound to a
+// DIFFERENT type is refused, where Java throws IllegalArgumentException
+// ("Name %s is already registered with a different type"). Java places the
+// guard here rather than in the record arm, so every path that names a type
+// is covered by one check; Go follows.
+//
+// Reached only for a type with no structural match — defineAndResolveLocked
+// returns the registered name first — so an entry already holding this name is
+// a different shape claiming it. Since synthetic names are unreachable (see
+// the file header), that is always one DECLARED name over two shapes: two
+// DescriptorProtos of one name, a file that does not validate, which without
+// this guard reached the driver as raw maps and no error.
+func (p *TypeProtoRepository) registerLocked(t Type, name string) error {
+	canonical := canonicalizeNullability(t)
+	for i := range p.entries {
+		if p.entries[i].name == name {
+			return &DeclaredNameClashError{
+				Name:     name,
+				Existing: p.entries[i].typ,
+				Incoming: canonical,
+			}
+		}
+	}
+	p.entries = append(p.entries, typeNameEntry{typ: canonical, name: name})
 	p.compiled = nil
+	return nil
 }
 
+// syntheticTypeNamePrefix opens the namespace no user identifier can reach.
+// See the file header: `__0` is an invalid start sequence and nothing escapes
+// into one, so a synthetic name never collides with a declared record's.
+const syntheticTypeNamePrefix = "__0type__"
+
 // uniqueTypeNameLocked is Java's ProtoUtils.uniqueTypeName with a
-// deterministic suffix — see the file header for why the divergence is safe.
+// deterministic suffix in an unreachable namespace — see the file header.
 func (p *TypeProtoRepository) uniqueTypeNameLocked() string {
 	p.counter++
-	return fmt.Sprintf("__type__%d", p.counter)
+	return fmt.Sprintf("%s%d", syntheticTypeNamePrefix, p.counter)
 }
 
 // defineProtoTypeLocked is Java's Type.defineProtoType dispatch. The default
@@ -296,7 +364,9 @@ func (p *TypeProtoRepository) defineRecordLocked(rt *RecordType) error {
 	// Register BEFORE walking the fields. Java gets the same protection from
 	// its recursion terminating on the BiMap, and without it a record type
 	// that reaches itself recurses until the stack ends.
-	p.registerLocked(rt, typeName)
+	if err := p.registerLocked(rt, typeName); err != nil {
+		return err
+	}
 
 	for i, f := range rt.Fields {
 		ft := f.FieldType
@@ -342,7 +412,9 @@ func (p *TypeProtoRepository) defineArrayLocked(at *ArrayType) error {
 	}
 	// Java registers the array's OWN unique name first, unconditionally, and
 	// then defines whatever the array's representation needs.
-	p.registerLocked(at, p.uniqueTypeNameLocked())
+	if err := p.registerLocked(at, p.uniqueTypeNameLocked()); err != nil {
+		return err
+	}
 	if at.Nullable && at.ElementType.Code() != TypeCodeUnknown {
 		_, err := p.defineAndResolveLocked(nullableArrayWrapperType(at.ElementType))
 		return err

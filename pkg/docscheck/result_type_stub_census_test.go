@@ -458,7 +458,17 @@ func TestResultTypeConsumersFailClosed(t *testing.T) {
 	// walk had no production caller once the arm went, so these are reads that
 	// stopped happening rather than reads that moved to a stronger authority. The
 	// stable census moves GUARDED 14 -> 12 and PROPAGATED 29 -> 28.
-	const wantForward, wantGuarded, wantPropagated = 1, 12, 28
+	// RFC-242 then deleted the three union re-alignment mechanisms, and three
+	// reads went with them — again deletions, not migrations. Two were GUARDED
+	// tail reads that type-asserted a union leg's `GetResultType()` to
+	// *RecordType to fold its field names (`physicalPlanColumnNames` in the
+	// implementation rule, `planColumnNamesWithMD` in the executor); one was
+	// PROPAGATED, passing a leg's declared type into `columnRenameValue` to build
+	// a rename Map. The translator states every leg's row and both set-operation
+	// constructors assert it, so nothing reads a leg's declared type to compare
+	// legs any more. The stable census moves GUARDED 12 -> 10 and
+	// PROPAGATED 28 -> 27.
+	const wantForward, wantGuarded, wantPropagated = 1, 10, 27
 	if counts["FORWARD"] != wantForward || counts["GUARDED"] != wantGuarded || counts["PROPAGATED"] != wantPropagated {
 		t.Fatalf("consumer split moved: FORWARD=%d (want %d) GUARDED=%d (want %d) "+
 			"PROPAGATED=%d (want %d), total %d.\n"+

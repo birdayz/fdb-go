@@ -8201,7 +8201,68 @@ work; unrelated to any wire/query change.
   bridge IP blackholes, which is why the CI stack sits in `net.(*netFD).connect`
   instead of taking an RST. A live container with a dead process would refuse the
   connection. The false OOM flag is why this has looked inexplicable.
-  **NO MECHANISM IS ESTABLISHED.** That is a positive statement, not an
+  **THE MECHANISM IS NOW ESTABLISHED, AND IT IS OURS. Everything from here to the
+  end of this item is the record of not finding it; read this paragraph first.**
+  `/usr/local/bin/orphan-fdb-sweep.sh`, written by `infra/cloud-init.yaml` and
+  enabled on every provisioned box (`systemctl enable --now
+  orphan-fdb-sweep.timer`), runs every five minutes and does, for every
+  `foundationdb/foundationdb*` container it can see:
+
+      if [ "$age" -gt 1800 ]; then docker rm -fv "$id"; fi
+
+  under the comment "Kill FDB containers running > 30 min — no per-test container
+  lives that long, so these are orphans". Three nightly lanes do exactly that:
+  rowdiff, stress and factory each hold ONE container for hours. So the sweep was
+  not sweeping orphans, it was force-removing the live container of every
+  long-running test on this fleet, at 1800s plus up to the timer's 5-minute phase
+  — which IS the measured band, 30m48s / 33m13s / 33m47s and the booked
+  31m31s..34m00s.
+
+  It accounts for every observation above that the two memory hypotheses could
+  not. The container is found GONE rather than exited, because `docker rm -fv`
+  removes it; `OOMKilled=false` and no kernel OOM line, because nothing was
+  OOM-killed; the bridge IP blackholes instead of refusing, because there is no
+  container left to refuse; it tracks ELAPSED TIME rather than work done, because
+  the trigger is literally an age; it holds 2.8% across five hosts, because every
+  box runs the same timer; and it never reproduced on the dev box, which has no
+  such timer — the one piece of evidence that was read as "the dev box has more
+  RAM" and was really "the dev box has no sweeper".
+
+  Corroborated by a boundary nobody had looked for: this nightly ran GREEN for its
+  first eleven nights, 2026-07-20..07-31, and has failed every night from
+  2026-08-01 — the day `infra/README.md` records the drain pool being stood up.
+  cloud-init is PER_INSTANCE, so a box provisioned before the sweeper's
+  match-by-image-name fix (`6819cfbcb`, 2026-06-01) kept writing the version that
+  matched nothing, which is why this only began when a new pool was provisioned.
+
+  FIXED at the source in the same change that records this. The first repair was a
+  blanket "skip everything while a job runs", and that traded one leak for another:
+  an orphan left by a previous cancelled job is exempt too, and with a five-minute
+  timer against a four-hour lane the box need never be idle for a tick. What ships
+  compares START TIMES — the removal arm reads the running `Runner.Worker`'s age
+  (`pgrep -x`, then `ps -o etimes=`; the apphost this fleet's tarball ships), and a
+  container that started AFTER the worker is that job's own and survives while an
+  older one is swept even mid-job. An unreadable worker age fails CLOSED and says
+  "sweep disarmed", because a permanently disarmed sweep that says nothing looks
+  exactly like a healthy one.
+
+  The arms are a committed suite, `infra/orphan_fdb_sweep_test.sh`, which extracts
+  the script from `cloud-init.yaml` and runs it against stubbed `docker`/`ps`/`pgrep`
+  — not the three-arm hand test an earlier version of this entry described, which
+  left nothing anyone could re-run. `pgrep -x` and not `-f` deliberately: `-f`
+  matches any command line CONTAINING the string, and the first version of the
+  test proved the guard "worked" while actually reporting a phantom worker, because
+  the test harness's own argv contained the pattern.
+
+  CAVEAT, and it is the remaining owner action: cloud-init is PER_INSTANCE, so this
+  fixes boxes provisioned from here on. The live fleet keeps the old script until
+  re-provisioned or until the file is edited in place. That is a concrete, one-file
+  deployment step rather than the diagnosis this item has been stuck on for weeks.
+
+  **NO MECHANISM WAS ESTABLISHED FOR WEEKS, and the record of that is kept below
+  rather than deleted, because two refuted hypotheses and the reasons they were
+  refuted are exactly what a later reader needs to not re-propose them.** That is a
+  positive statement, not an
   omission: the two memory hypotheses that fit the signature were each pursued
   and each REFUTED by measurement, and nothing has replaced them. Recorded in
   full because a refuted hypothesis is a result, and because both are the kind
@@ -8245,6 +8306,54 @@ work; unrelated to any wire/query change.
   outcomes are mutually exclusive — exit 1 + io_error/1510 = tmpfs ENOSPC;
   exit 137 + OOMKilled=true = kernel OOM-kill; exit 143 + no fatal trace =
   stopped externally — so the NEXT run settles this without further guessing.
+
+  **That last sentence is REFUTED, and the instrument is the reason.** The step has
+  since run — run 34011921618, a night with a real death to describe (T+30m48s) —
+  and it settled nothing while reporting success. It captured NO container evidence
+  at all: its own unfiltered `docker ps -a`, which is the positive control for the
+  filtered loop beside it, listed exactly one container, the testcontainers reaper.
+  So the loop over `--filter ancestor=foundationdb/foundationdb:7.3.77` iterated
+  zero times — no inspect, no logs, no `Severity="40"` events, no `df` — and the
+  step exited 0 and uploaded the artifact anyway. Not a mismatched filter:
+  `.bazelrc:44` sets `FDB_VERSION=7.3.77` and `pkg/testcontainers/foundationdb`
+  builds that exact tag. Either way the step's premise — "before any cleanup, so
+  the exited container is still inspectable" — was never true, and the fix is the
+  same: take the evidence while the container is alive.
+
+  WHAT removed it was got wrong here first, and the wrong answer is kept because it
+  is the one a reader will reach for. This paragraph said "the sweep binary's own
+  testcontainers cleanup when that process exits", and ruled out the scaler's
+  `sweepOrphanFDB` on the grounds that it "runs only when no runner is active on the
+  box" — which is true of the SCALER's copy and false of the cloud-init copy that is
+  actually deployed. The remover is `orphan-fdb-sweep.sh`, mid-test, and it is also
+  what killed the cluster in the first place; see the mechanism paragraph at the top
+  of this item. Two sweepers with the same job, one guarded and one not, and the
+  guarded one is the one that does not run.
+
+  FIXED in the same change that records this, because a dump that cannot tell
+  "nothing happened" from "the corpse was already removed" is worse than no dump:
+  a watcher step now starts BEFORE the sweeps, streams the container's stdout to a
+  file from first sighting (where the fatal line appears) and keeps the LAST
+  successful `docker inspect` — the one still carrying ExitCode and OOMKilled after
+  removal — and an empty capture on a night the sweep FAILED is now an `::error::`
+  annotation rather than a green step. Validated against a real container before
+  shipping (busybox printing a marker then exiting 9, force-removed while the
+  watcher was still polling — the removal being the part the old step cannot
+  survive): the marker, `exit=9 oom=false running=false`, the exit logged once
+  rather than once per poll, and the removal itself all came through. All four arms
+  of the empty-capture alarm were driven by hand too — empty+failed → error,
+  empty+passed → notice, live container captured → quiet, watcher-only capture →
+  quiet — because a gate whose quiet arms have never been driven is a gate that can
+  only be shown to fire, not to stay silent when it should.
+  Only the RowDiff lane is instrumented, deliberately: the three outcomes above are
+  mutually exclusive, so ONE capture names the mechanism, and Stress and Factory die
+  in the same band from the same first symptom. If tomorrow's capture is ambiguous
+  rather than decisive, copy the watcher to those two — the step is self-contained
+  and the reason for a second and third sample would then be a real one rather than
+  redundancy bought in advance.
+  So the NEXT run settles this; the previous sentence said that once already and
+  this one is only worth more because the instrument it rests on has now been shown
+  to fire.
   DONE = mechanism confirmed from that artifact, the cause fixed rather than
   absorbed by the circuit breaker, and a pin that reds if the sweep's usable
   lifetime regresses below its budget again.
@@ -8830,8 +8939,7 @@ Whoever rules should also note that (b) narrows MORE than the defect: the simple
 parenthesized condition was never wrong, so rejecting it is a behaviour change
 unrelated to the bug that prompted the measurement.
 
-- [ ] **CQ-77 (OWNER ACTION, not code) — `frl-pin-bump` has failed 27/27 because
-  Actions cannot create PRs.** · XS
+- [x] **CQ-77 (OWNER ACTION, not code) — `frl-pin-bump` could not create PRs.** · XS
   Flip **Settings → Actions → General → Workflow permissions → "Allow GitHub
   Actions to create and approve pull requests"**. Until then the Java-pin bump
   workflow cannot open its PR and every run fails.
@@ -8840,6 +8948,28 @@ unrelated to the bug that prompted the measurement.
   that was false: it appeared in no TODO file at all. A status page asserting an
   item is booked is how an item stays unbooked.
   DONE = the setting is flipped and one `frl-pin-bump` run opens a PR.
+
+  **Done — and it was done on 2026-08-01, the day it was booked; the item stayed
+  open for 36 days after its own DONE criterion was met.** The setting is flipped
+  and the workflow has opened thirteen PRs, twelve of them merged
+  (`gh pr list --state all --head bot/frl-pin-bump --limit 20`), the earliest on
+  2026-08-01 (#562) and the latest still open (#769).
+
+  The booked figure was also wrong by the time it was read, in the way this file
+  keeps warning about: "failed 27/27" was a count over a window that had closed.
+  Measured 2026-09-06 with `gh run list --workflow=frl-pin-bump.yml --limit 200
+  --json createdAt,conclusion`, sorted by date, over all 65 runs the API returns:
+  **29 consecutive failures from 2026-07-03 to 2026-07-31, then success from
+  2026-08-01 onward — 35 successes and one failure, on 2026-08-31.** A ratio with
+  no window is a fact about a tree nobody can identify, and this one decayed into
+  an escalation that was going to be raised to the owner as still-blocked.
+
+  That single 2026-08-31 red is a DIFFERENT and still-live cause, so it is fixed
+  at the site rather than recorded here: `go get fdb.dev@master` fell through the
+  proxy to the direct VCS path and git refused the `--unshallow`
+  (`fatal: shallow file has changed since we read it`). The mechanism, the run id,
+  and the remedy are in `.github/workflows/frl-pin-bump.yml` at the step that
+  takes it.
 
 - [ ] **No *general-purpose* window functions — and Java has none either.** Investigation (RFC-045): Java's relational layer has **no** general streaming window operator. The general `windowClause` is commented out in Java's grammar ("don't want to deal with them now"); `LAG`/`LEAD` are grammar tokens with **no** value class; `RankValue implements Value.IndexOnlyValue` (computable only from a rank/leaderboard index, never over a result set). The **only** working window function in Java is `ROW_NUMBER() OVER (... ORDER BY <distance>) <= K` via `QUALIFY`, used exclusively for **vector/HNSW K-NN search**. So "match Java's window functions" ≡ "finish the vector/HNSW relational parity" — tracked as **Phase 9** below. General windowing over plain tables would be a *Go-only extension Java lacks entirely* (allowed if wire-compat holds + deep tests), not parity — deferred, not in Phase 9.
 
@@ -8998,3 +9128,570 @@ covered by the correctness suite and the golden plan diff, not by this table.
 ---
 
 
+
+- [ ] **CI: the self-hosted nightly runner loses its FDB container about 30 minutes into every
+  Docker-backed nightly, and three nets have been red or dead on that account (found 2026-09-05
+  while triaging the fuzz nightly for RFC-242).** Read off the run logs, not inferred:
+  - `Nightly RowDiff` — every run from 2026-08-24 to 2026-09-04 red or cancelled. The deep sweep
+    logs `WARN fdbgo: connection to server failed address=172.16.0.3:4500` ~30 min in, every
+    later seed reports `INFRA … open catalog store: failed to read store info: context deadline
+    exceeded`, and the job sits until the 4h test timeout (`panic: test timed out after 4h0m0s`,
+    run 33837050450) or is cancelled. Zero MISMATCH lines in the 09-01..09-04 runs: the red is
+    the container, not the engine.
+  - `Nightly Stress` — red since 2026-08-30. Run 33855529576: `TestFDB_Stress_1M` fails at
+    `bulkInsert: INSERT [674000..674500): XX000: open catalog store: … transaction_too_old (1007)`,
+    then `connection to server failed 172.16.0.4:4500`, and every later test fails in 60s with
+    `dial localhost:49951: connect: connection refused` — the mapped port is gone, so the
+    container (or dockerd) died, it is not a client reconnect defect.
+  - `Nightly Factory` growth lane — run 33848551268 killed with exit 137 (`Killed … bazelisk run
+    //cmd/factory-run`) followed by "The runner has received a shutdown signal"; the committed
+    corpus lane passed. Exit 137 is SIGKILL, consistent with the OOM killer on the runner host.
+  - `Nightly Coverage` — the "Race detector (SQL conformance corpora)" step is cancelled every
+    night since 2026-08-30 by the job's `timeout-minutes: 150`; Reconcile reports the coverage
+    net's last genuine run as 2026-08-08 (27 days). The lane has outgrown its timeout; the
+    factorycorpus race run alone was at 536s when cut.
+  - `Nightly Reconcile` fails on two counts: the stale coverage heartbeat above, and open PR #769
+    (`bot/frl-pin-bump`) carrying none of its 7 required checks — the bot-PR shape CLAUDE.md
+    already names (its pull_request runs are created and held at `action_required`, and a
+    held run surfaces no check).
+  What is NOT in this entry: the fuzz nightly, whose two real crashers RFC-242 and the
+  `FuzzRebaseValue_NoPanic` fixture fix close, and whose three `context deadline exceeded`
+  90-second failures `cmd/fuzzrun` already classifies and retries clean.
+  **Fixed in the RFC-242 pull request (a workflow edit, verified by the next nightly, not
+  locally):** `frl-pin-bump.yml` now dispatches `ci.yml`, `hosted-smoke.yml` and
+  `nightly-libfdbc.yml` against its branch after opening or updating the PR (the `pull_request`
+  runs the bot PR raises are created and held at `action_required` — every bot push since the
+  PR existed, measured in `frl-pin-bump.yml`'s header; the hold has only been observed on
+  `pull_request` runs, and a `workflow_dispatch` run is not one; the job's permissions gained
+  `actions: write`, which the dispatch call needs), and `ci.yml` gained the `workflow_dispatch`
+  trigger. If tomorrow's Reconcile still lists `#769` as ABSENT, the dispatched runs were held
+  too and a token with a real actor is the remaining fix.
+  **Corrected while reviewing:** a draft blamed the coverage lane's `timeout-minutes: 150` and
+  raised it; the six cancelled runs lasted 3, 55, 11, 67, 8 and 51 minutes with no
+  maximum-execution-time annotation, so the cap never fired and the cancellations are the
+  host class below. The cap stays at 150 and its comment now says so.
+  **THE STOP IS WITHDRAWN for the container deaths.** It read: "the container deaths under
+  Stress / RowDiff / Factory are on the runner host (memory headroom, or what is killing
+  containers thirty minutes into a run); nothing in this repository can observe or change
+  that." The killer is `/usr/local/bin/orphan-fdb-sweep.sh`, which this repository writes
+  (`infra/cloud-init.yaml`) and which force-removes any FDB container older than 1800s with no
+  check for a job in flight. It is fixed there. What remains is not a diagnosis but a
+  deployment: cloud-init is PER_INSTANCE, so the live fleet keeps the old script until
+  re-provisioned. The mechanism paragraph at the top of the container-death item carries the
+  evidence, including the green-then-red boundary at the 2026-08-01 pool provision.
+
+  A STOP is the right instrument and this one was reached honestly — but it was reached
+  without reading `infra/`, which is in the repository it said could change nothing. The
+  measurements below stand and are what the fix was checked against:
+  RowDiff run 34011921618 at T+30m48s, Stress run 33955095551 at T+33m13s, Factory's growth
+  lane at T+33m47s, each first announced by `WARN fdbgo: connection to server failed`.
+  The three are not the same measurement and the difference is stated rather than averaged
+  away: only RowDiff has a `random_seeds` RUN line to time from, so the other two are timed
+  from JOB START and include build time — upper bounds on the same quantity, not further
+  samples of it. Factory's other job, the committed-corpus regression net, finishes in 8m and
+  passes — the lanes that die are the ones that run long enough to.
+
+  **The Coverage half of that STOP is WITHDRAWN — it is not the same class, and it may not be
+  the host at all.** The entry above got the durations right and stopped one line short of the
+  signature. Every `nightly-coverage` run from 2026-08-31 to 2026-09-05 — six for six, with
+  the elapsed time before the kill beside each so the spread is checkable rather than
+  inherited: 33372201141 55m05s, 33482174785 10m39s, 33600989307 67m05s, 33725730764 8m24s,
+  33846896797 51m36s, 33950734274 13m09s — ends on step 6 with
+
+      ##[error]The runner has received a shutdown signal. This can happen when the runner
+      service is stopped, or a manually started runner is canceled.
+
+  and every later step `skipped`. That is the RUNNER being stopped, not the job being
+  cancelled and not a container dying — a different mechanism from the three lanes above, and
+  an eight-fold spread in elapsed time rules out a timeout on its own.
+
+  **A first draft of this entry blamed `tools/bazelscaleset` and it is WITHDRAWN, because that
+  package is not deployed.** The reasoning had reached one function — `Scaler.shutdown()` is
+  the only path that sends SIGTERM rather than SIGKILL, it signals every runner in `s.running`
+  with no busy check, and its grace flag's own help says "before SIGKILLing **in-flight**
+  runners" — and it fit the signature exactly. It is still undeployed code: `infra/main.tf`
+  sets `runner_mode` to `classic` and records the supervisor as retired, `infra/cloud-init.yaml`
+  disables, deletes and MASKS `bazelscaleset.service` on every box, and `infra/README.md` states
+  zero scaler units fleet-wide, verified. A whole analysis was written from the source without
+  ever asking whether the source runs. `infra/README.md` warns, on the line above, that this
+  fleet's naming "has already cost one investigation an evening"; this is the same mistake with
+  a different label. Read the deployment before reading the code.
+
+  What IS on those boxes is the classic `actions.runner.*` service, so the sender is that
+  service's own stop path, systemd, or the host. None of it is measured. Do not write any
+  candidate down as the cause.
+  DONE = the sender of that signal identified from the box (the runner's `_diag` logs and the
+  journal at one of those six timestamps), the path fixed so a busy runner drains instead of
+  stopping, and a pin that reds when a coverage run is killed with steps still pending.
+
+  **Also one short:** this entry calls the bot pin-bump PR "the one repository-editable cause"
+  of Reconcile's red. `gh pr list --state open` gives a second: #745 (`factory/batch`, also
+  bot-authored) is **DIRTY**, so GitHub cannot compute `refs/pull/745/merge` and its
+  `pull_request` workflows cannot fire — the DIRTY face `CLAUDE.md` records, distinct from
+  #769's held-runs face. Merging the base fires every workflow within seconds; until someone
+  does, Reconcile stays red even with #769 fixed.
+
+  Measured 2026-09-06, because an earlier version of this paragraph got the dates wrong in a
+  way worth keeping as a warning. It said "conflicted since 2026-08-12" and "its newest checks
+  are from that date". 2026-08-12 is the PR's `createdAt` — not a conflict onset, which the
+  GitHub API does not expose at all. The head branch's last commit is 2026-08-24, and six
+  checks DID run, on 2026-08-29, with `Build, Lint & Test` FAILING among them. So "never fire
+  at all" was false as written: they fired, and have not fired since. What is verifiable is the
+  state now and the date it was read, which is what this paragraph says instead of inferring an
+  onset from whichever timestamp was nearest to hand.
+
+- [ ] **Exact quantifier binding over a CTE or derived body: the derived gathered-unnest star.**
+  A read addressed to a CTE's or derived table's own quantified object is bound at execution
+  against the row the body flows. RFC-242's second adjacent finding made the scope state that
+  row as its flowed layout (`exactVirtualScopeSource`, `FlowedColumns`), carried a registered
+  CTE source whole into every reading scope (`cteSourceAs`), and let the resolver take a
+  column's ordinal from its SQL position while naming the read by the flowed slot — so a
+  WHERE, a sort key, an aggregate key or operand over a unique column of a body that repeats
+  a bare leaf or an alias answers in both spellings, as does the union-bodied derived table.
+  Two reads of a gathered multi-source unnest star body remain, both pre-existing at the
+  merge-base in the same form (measured on SimFDB over `a(aid, k, arr)`, `b(bid, k)`, `ee(ck)`
+  with one row each, at the merge-base `36b97f1e9` and at this head):
+  - an aggregate over the DERIVED spelling — `SELECT d.aid, COUNT(*) FROM (SELECT * FROM a,
+    b, a.arr AS x) d GROUP BY d.aid` — is refused at execution: `exact QOV "D" (…) has no
+    declared runtime binding`; a projection or a WHERE over the same derived table answers;
+  - a WHERE over the CTE spelling — `WITH d AS (SELECT * FROM a, b, a.arr AS x) SELECT d.aid
+    FROM d WHERE d.aid = 1` — does not plan (`0AF00: Cascades planner could not plan query`);
+    a projection or an aggregate over the same CTE answers (`TestFDB_UnnestExistsGather`,
+    `agg_cte_*`).
+  Two more, of the same class, over ROW-VERSIONED tables (a schema template ending in
+  `WITH OPTIONS(store_row_versions=true)`; measured on SimFDB at the same two commits over
+  `aa(id, y)`, `bb(id, z)` and `things3(id, x, arr)`, one row each):
+  - a WHERE over the derived star join — `SELECT d.y FROM (SELECT * FROM aa, bb) d WHERE d.y
+    = 10` — is refused at execution as `edge lookup D: read as RECORD(ID,Y,ID,Z), declared
+    RECORD(AA.ID,Y,BB.ID,Z)`; the same read without row versions answers, and an ORDER BY over
+    the same derived table answers in both spellings (`derived_star_row_versions.yaml`).
+    `expandBareStarForRowVersion` has already rewritten this body into the explicit
+    projection, and that projection declares its slots by the leg-qualified datum key while
+    the derived scope's catalog walk publishes the bare names;
+  - a star over a lateral unnest — `SELECT d.x FROM (SELECT * FROM things3, things3.arr AS x)
+    d` — does not plan (`0AF00: derived projection input slot 0 cannot adopt its physical
+    output names`), and its CTE spelling fails as `XX000: unclassified planner failure`; the
+    same body over a table without row versions answers [7],[8] in both spellings
+    (`derived_star_visibility.yaml`). The rewritten projection carries the outer X beside the
+    element X (four slots, as the top-level `SELECT *` over the same FROM list returns), while
+    the derived unnest scope shadows the outer column and states three.
+  The CTE spelling stays out of the global scope by shape and its aggregate binds through the
+  translator's seed bake (`exactGatheredCTEGroupKeyValue`); the derived spelling has no such
+  arm, and `translateAggregate`'s positional-gather comment already books the
+  projected-output-layout ordinalization it needs (Java answers GROUP BY over a projecting
+  derived source, GroupByQueryTests:699). One boundary for both is what closes them: a
+  projection-less body's quantifier declared at execution, or the body normalized to the
+  explicit projection Java's expandStar always produces.
+
+- [ ] **Ordering through a projection reaches the child group but not the index.**
+  `SELECT u.g FROM (SELECT g FROM ga) u ORDER BY u.g` over `CREATE INDEX ga_g ON ga (g)` plans
+  `Project(InMemorySort(Project(Scan(GA))))` while `SELECT g FROM ga ORDER BY g` plans
+  `Project(IndexScan(GA_G, [*]))`; `… ORDER BY u.h DESC` over `id AS h` sorts in memory while
+  `SELECT id FROM ga ORDER BY id DESC` takes `Scan(GA) REVERSE` (measured on the explain-differ
+  dump at RFC-242 r9, `ordering_through_a_projection.yaml` pins both halves). Two mechanisms,
+  one now fixed: `PushRequestedOrderingThroughProjectionRule` pushed the constraint through the
+  projection's result value with the INNER quantifier's alias as the upper alias and without the
+  rebase into the child's current-row space, so a constraint rooted at the projection's current
+  — how every constraint arrives — failed the push-down's root check and nothing was pushed;
+  RFC-242 r9 routes it through `requestedOrderingBelow`, and the constraint now reaches the scan
+  group as `_current.G#1` (`TestPushRequestedOrderingThroughProjection_*`). What remains is on
+  the receiving side: a zero-prefix index match carries NO matched ordering parts
+  (`MatchInfo.GetMatchedOrderingParts()` is empty for a match over a `FullUnorderedScan`, so
+  `SatisfiesRequestedOrdering` in `abstract_data_access_rule.go` returns nil for every candidate
+  — for the base query too; instrumented at r9), and the ordered full index scan / reverse scan
+  are produced only by `OrderedIndexScanRule`, whose matcher is a `LogicalSort` DIRECTLY over a
+  `FullUnorderedScan`, and by the sort-over-scan reverse arm. Java has neither gap:
+  `MatchInfo.getMatchedOrderingParts` is computed from the candidate's ordering key parts for
+  every match, bound or not (`AbstractDataAccessRule.satisfiesRequestedOrdering` consumes them),
+  which is what makes an ordering-driven index scan appear under any expression the constraint
+  crosses. Closing it is a port of that: matched ordering parts for the zero-prefix match, so the
+  data-access rule keeps the ordered full index scan (the zero-prefix skip already exempts a
+  scan that satisfies a requested ordering) and the reverse direction, and the Go-only
+  `OrderedIndexScanRule` retires. Until then a sort over a derived table's or CTE's column is
+  never answered by an index, and a DESC over its primary key never by a reverse scan.
+  **That closure was misdiagnosed** (Graefe, r9 delta, measured): the ordering-parts machinery
+  IS ported — `adjustMatchForMatchableSort` and `ValueIndexScanMatchCandidate.ComputeMatchedOrderingParts`
+  emit unbound columns — and the zero-prefix match carries none because the scan group's ONE
+  partial match is the unadjusted leaf (candidateRef = the candidate's scan) and it never climbs to
+  the candidate's `MatchableSortExpression`: `matchWithCandidate` refuses at `correlatedToEquals`
+  (`rule_adjust_match.go`), Go's stand-in for Java's
+  `candidateExpression.getCorrelatedTo().equals(otherRangesOver.getCorrelatedTo())`, which requires
+  ZERO node-local correlations on the candidate expression — and the candidate's own
+  `SelectExpression` reports two: the placeholder's parameter alias (Go's
+  `Placeholder.GetCorrelatedTo` counts it; Java's `PredicateWithValueAndRanges.getCorrelatedTo` is
+  value ∪ ranges only) and its own inner quantifier's alias (Java's `getCorrelatedTo` subtracts
+  the aliases the expression owns). The stand-in's comment defers to the `Quantifier.GetCorrelatedTo`
+  divergence, which `DIVERGENCES.md` marks CLOSED (RFC-189 A4). The closure is Java's set equality
+  in `matchWithCandidate` with those two exclusions; after it the leaf match climbs, the
+  zero-prefix skip's ordering exemption keeps the ordered full scan, and both Go-only ordered-scan
+  rules (`OrderedIndexScanRule`, `OrderedPrimaryScanRule`) retire. The refusal is pinned:
+  `TestAdjustMatches_LeafMatchDoesNotClimb` (a value-index candidate, a scan-leaf
+  match, no adjusted twin) — it turns red when the climb works, and is then re-pinned to the climb.
+  That gate is the ONLY one: with the match seeded as `MatchLeafRule` seeds it (the MaxMatchMap
+  built) and `correlatedToEquals` admitted under mutation, the leaf match climbs through the
+  candidate's select to its `MatchableSortExpression` and carries an ordering part (measured at
+  r12; an r11 reading of a second gate at `adjustMatchForSelect` was a fixture artifact — a seed
+  without the MaxMatchMap stops at that adjuster's nil-map check, which the planner never builds).
+
+- [ ] **An IN subquery over an aggregate or DISTINCT body does not translate.**
+  `SELECT c.id FROM c WHERE c.id IN (SELECT ga.g FROM ga GROUP BY ga.g)` fails
+  `0AF00: Cascades translation failed`, and so do the same subquery with a `HAVING COUNT(*) > 1`,
+  with a `WHERE ga.v > 6` before the GROUP BY, and `IN (SELECT DISTINCT ga.g FROM ga)` — four
+  shapes, measured on the explain-differ dump at RFC-242 r11 and identical at the merge-base
+  `36b97f1e9` (schema `ga(id, g, v)`, `c(id, w)`). A correlated `EXISTS` over a GROUP BY /
+  HAVING subquery is refused by design with its own message. The IN translator handles a plain
+  projecting subquery and not one whose body aggregates or de-duplicates; Java plans all four
+  (the IN subquery becomes a semi-join over the aggregate's result). Surfaced by Graefe's r9
+  delta lap on PR #770 while probing derived-table group-bys; out of that RFC's scope (the
+  union-leg alignment and the CTE/derived row) and booked here with the shapes.
+
+- [ ] **An array literal with a NULL element cannot be read through a CTE or derived table.**
+  `WITH c2 AS (SELECT [x.id, NULL] AS s, x.id AS a FROM ts AS x, t AS y WHERE x.id = y.id)
+  SELECT a + 1 AS b FROM c2 ORDER BY a` fails `0AF00: projection slot 0 has no resolved Value`,
+  and the plain read `SELECT a FROM c2` with it; identical at RFC-242's merge-base `36b97f1e9`
+  (schema `t(id, v)`, `ts(id, n nst)`). Java types the literal's element as
+  `maximumType(LONG, NULL)` = LONG NULLABLE (`AbstractArrayConstructorValue.resolveElementType`,
+  `Type.maximumType`'s NULL case), and Go's exact derivation agrees — but `semantic.Column`
+  carries the array CONTAINER's nullability only (`IsArray` + `Nullable`), its forward bridge
+  `expr.columnCascadesType` forces every element NOT NULL (Java's DDL rule for column arrays),
+  and so `semanticColumnFromExactType` declines a nullable element as unrepresentable and the
+  whole row with it — the join body then has no publisher, and every read of the CTE hits the
+  loud floor. That decline is what `TestOrderByExactMetadata_UnderivableCTEComputedKeyStaysLoud`
+  and `…ProjectionStaysLoud` use as their specimen (their fourth, after nominal records began
+  publishing under RFC-242 r14), so closing this moves the specimen again and those pins say
+  so. Two closures: an `ElementNullable` bit on `semantic.Column` set by the reverse bridge and
+  honoured by the forward one (small, one more field on a string-typed carrier), or carrying
+  the exact `values.Type` on the column so every round trip is lossless at once (nominal
+  records, nullable elements, nested arrays, enums) and the string kinds stay for the semantic
+  layer's own checks; the second is the long-term shape and is RFC-232's residual to close, not
+  RFC-242's. Booked from RFC-242 r14 with the reproducer.
+
+- [ ] **The exact derivation types an enum field as STRING.**
+  `SELECT t.p.color FROM t` over Java-authored metadata whose `Paint.color` is a proto enum
+  (this DDL declares no enum) derives the exact result row `RECORD<COLOR STRING NULL>`: the
+  catalog kind `ENUM` bridges forward to `values.TypeString` (`expr.sqlTypeToCascadesType`,
+  the `"STRING", "ENUM"` arm), so every resolved reference to an enum field is a STRING while
+  the scan row the executor flows carries the `values.EnumType` `enumTypeForProto` mints — one
+  layer before the carrier gap booked as "An array literal with a NULL element cannot be read
+  through a CTE or derived table" (RFC-232's residual), and distinct from it. Java's
+  `Type.Enum` flows end to end. Pinned as the reason a shape-decided nested path never meets
+  the bridge's enum decline (`TestDerivedNestedEnumFieldTypesAsStringSoTheShapeRuleNeverDeclines`,
+  red once this closes: that pin then names the homonym shape to hold as a loud decline). The
+  closure is an exact enum in the resolver's flowed type, with the comparison and promotion
+  gates taught the enum lane; surfaced by RFC-242 r15's measurement and out of that RFC's
+  scope.
+
+- [ ] **A table with a fieldless nested-message column cannot be queried at all.**
+  Java-authored metadata only (this DDL cannot declare an empty STRUCT: 42601). A record type
+  `T { id INT64; sk STRING; p Paint { sk INT64 }; e Empty {} }` built from a descriptor
+  (`protodesc.NewFile`, the pattern `key_component_types_test.go` uses) resolves as a table, but
+  `SELECT t.sk FROM t` fails `42703: column "T.SK" does not exist` and `SELECT t.p.sk FROM t`
+  fails `42703: column reference with qualifier "T.P" cannot be resolved`; drop the column `e`
+  and both plan. Identical at RFC-242's merge-base `36b97f1e9`. Measured cause: the catalog
+  publishes `e` as `RECORD` with no StructFields, `expr.structColumnType` turns a fieldless
+  record into `UNKNOWN`, and the table's flowed row (`expr.SourceRowType`) then carries an
+  UNKNOWN field, after which no reference into that row resolves. The catalog leaves
+  StructFields empty for a SECOND population — a self-referential message re-entered on the
+  descent path (`rlcatalog.columnForField`'s recursion stop, whose comment calls the column
+  "still resolvable, an ordinary miss"), so a recursive message column poisons its table the
+  same way (inferred from the code; not measured) — and a fieldless `values.RecordType` cannot
+  serve that arm: the two need a carrier that tells a genuinely empty message from a cut-off
+  recursion. Java's
+  `Type.Record.fromDescriptor` is a record with zero fields, not an unknown; the closure is a
+  fieldless `values.RecordType` for a fieldless message (with `semanticColumnFromExactType`'s
+  fieldless decline and `retagInlineValuesRecordType` reconciled to it), and a pin over a
+  descriptor-built table. Surfaced by RFC-242 r15 while probing an unrelated decline of the
+  exact derivation beside a nested path (`@claude`'s r14 shape); out of that RFC's scope (the
+  union-leg alignment and the CTE/derived row) and booked here with the reproducer.
+
+- [ ] **A join row that names one field twice leaves its plan's rows unstamped.**
+  `NewRawRecordConstructorValue` keeps field names VERBATIM — by design, for ordinal-join seeds,
+  where the two legs of `SELECT * FROM a JOIN b` legitimately both carry `ID` and positional
+  access makes the duplicate unambiguous. Such a row's synthesised descriptor cannot validate
+  (`proto: descriptor "__0type__2.ID" already declared`), `FinalizePlan` swallows that as it
+  swallows every non-clash descriptor failure, and the constructor is left with no descriptor.
+  What that costs is descriptor IDENTITY, not data, and it is USER-VISIBLE. A computed STRUCT
+  selected through such a plan comes back as a raw `map[string]any`, where the same statement
+  with the repeated name removed returns an `api.Struct` carrying the same values — measured
+  over FDB: same values, wrong type, because there is no descriptor to present it with.
+  Removing the repeat is not a one-token edit, and the booking must not pretend it is: the
+  dialect cannot rename a base column in place, so the control ALSO wraps `c_md` in a derived
+  table to rename through (`FULL OUTER JOIN (SELECT id AS cid FROM c_md)`), and derived-table
+  projections are themselves descriptor-relevant. The attribution therefore rests on THREE
+  reads, and it is each adjacent PAIR that isolates one factor: the witness (repeat, no
+  wrapper) against the third read (repeat, wrapper) holds the repeat fixed and shows the
+  wrapper changes nothing; the third read against the control (no repeat, wrapper) holds the
+  wrapper fixed and shows the repeat is what flips map to struct. The SET varies both factors
+  deliberately — that is how it proves one of them inert, and saying it varies one would be the
+  two-read claim again. The third read is written `SELECT id AS id` beside the control's
+  `SELECT id AS cid`, differing in the alias and the `c.id`/`c.cid` reference it forces,
+  nothing else, and comes back the SAME raw map `{X:1 Y:10}` the witness gives — asserted as a
+  map of exactly that size with those values, not merely as not-a-struct, which is what shows
+  the wrapper inert rather than just harmless. The CTE also names its struct `RR` so it cannot
+  collide with the stored column's `R`, leaving `ID` as the single repeated name. Dropping the
+  join, leaving a second repeat in place, or omitting the third read could not tell which
+  caused the raw map.
+
+  No DATA is lost: the emitting paths (executeProjection, the flat-map cursor's
+  record-constructor arm, evaluateOrdinalJoinRow) build dense positional rows the result set
+  reads by ORDINAL, so both `ID` slots arrive with their own values (measured with a predicate
+  that keeps them different; with both equal the check cannot discriminate). The scope is the
+  constructors resolved AFTER the bad message, in walk order — not every computed row: on the
+  pinned query the root projection was resolved first and keeps its descriptor. A STORED struct
+  column read through the same poisoned plan is unaffected — it carries its own stored
+  descriptor, not a constructor's — so the damage is confined to COMPUTED rows, pinned with the
+  rest. (Two different axes, and they are not the same word: WITHIN a plan the failure spreads
+  across the whole repository, and ACROSS row kinds it stops at computed ones.) Pinned in both
+  directions by `TestFDB_ADuplicateNameJoinRowLosesItsStructTypeNotItsValues` (the STRUCT comes
+  back a map through the duplicate, and an `api.Struct` once the repeat is removed — removed
+  through a derived-table rename, with the third read showing that wrapper inert; the exact
+  outer-join rows arrive; a stored struct column through the same plan keeps its type), which
+  reddens on the computed-struct half when this closes.
+
+  "Identity, not data" does NOT hold for one shape, and that shape is reachable from plain SQL:
+  a STAMPED parent constructor over an UNSTAMPED record-typed child. That pair has no map
+  fallback: the parent builds a message, the child hands it a map, and the map cannot be stored
+  in a message field, so the query FAILS instead of answering in a weaker type.
+  `TestAStampedParentWithAnUnstampedChildFailsTheQuery` pins that consequence over the values
+  API. Two facts keep a parent and its DIRECT field child in step — `WalkValue` visits a parent
+  immediately before its children, and the parent's type CONTAINS the child's, so a stamped
+  parent means the child's message was already compiled — and
+  `TestTheBakeStampsAParentAndItsChildTogetherOrNeither` asserts each directly rather than
+  reasoning from it. A type-changing WRAPPER between parent and child defeats the second, and
+  that is REACHABLE: it has its own booking below, with an SQL reproducer. An earlier round
+  concluded from these two facts that the pair could not occur at all; that was wrong, and the
+  retraction is recorded here rather than in a rewritten sentence.
+
+  Reproduced by `WITH d AS (SELECT id AS bid, EXISTS (…) AS foo FROM b_md) SELECT a.id, c.id,
+  d.foo FROM a_md AS a JOIN d ON a.id = d.bid FULL OUTER JOIN c_md AS c ON a.id + 1 = c.id` —
+  the text both pins run, its predicate chosen so the two `ID` slots differ — whose row is
+  `RECORD<ID, S, BID, FOO, ID>`. WITHIN one plan the failure spreads across the whole
+  REPOSITORY, not just that row: compilation is per-repository and the bad message stays in it,
+  so every type asked for afterwards fails the same way — THREE of the FOUR constructors in
+  that plan end up with no descriptor though only ONE repeats a name, and the fourth — resolved
+  before the bad message was appended — keeps its descriptor, so the damage is walk-order
+  dependent. That three-of-four is a MEASUREMENT, not an invariant, and six files quote it, so
+  the census pin asserts the exact shape beside its floors: if the specimen moves, it fails and
+  names all six to re-measure rather than letting the number rot behind a green floor. The query
+  answers today, and returns every field: the rows travel positionally and
+  are read by ordinal. Pinned as it stands:
+  `TestFinalizePlanLeavesTheDuplicateNameJoinRowUnstamped` (the query, with a no-repeat control
+  that must stamp) and `TestDuplicateFieldNameRowPoisonsTheWholeRepository` (the mechanism and
+  its order dependence). Java refuses the row outright (`Type.Record.normalizeFields`
+  disambiguates duplicate INDEXES, not names; two `ID` fields throw in
+  `computeFieldNameFieldMap`'s `ImmutableMap.toImmutableMap`), so the silence is Go's
+  divergence. Closure: give the ordinal row the name-addressability suffix this port already
+  uses elsewhere (`K`, `K_2`) at construction, so the descriptor validates and the row is a
+  struct with both values; the pin reddens then and must assert both survive.
+  Booked from RFC-242 r21 with the reproducer.
+
+- [ ] **A record literal that is not stamped reaches a stamped parent, and the query fails or
+  answers ragged.** `FinalizePlan` stamps each record constructor from its own type. A
+  constructor whose type protobuf cannot carry — `(1 AS "$lead")`, or `(1 AS "1x")`; Java's
+  `ProtoUtils` rule, correctly ported — never stamps and evaluates to a name-keyed map. A
+  stamped parent builds a message and cannot store a map in a message field. Whether that
+  happens turns on the promotion TARGET, because unifying elements of differing shape ANONYMISES
+  their fields and so ERASES an offending name from what the parent's type carries. Measured
+  over real SQL on a non-empty table: `SELECT ([(1 AS "$lead"), (2 AS A)] AS CH) FROM t` FAILS
+  with `cannot store map[string]interface {} in message field` — target anonymised, parent
+  stamps, child does not. The same array with the SAME bad name on both elements ANSWERS as a
+  uniform raw map with its values, because the target keeps the name and the parent cannot stamp
+  either. And with nothing stamped above the array — `SELECT [(1 AS "$lead"), (2 AS A)] FROM
+  t`, no outer record — it ANSWERS RAGGED: one element a `MessageStruct`, one a raw map, in
+  one array. That last is the worst of the three, because nothing reports it at all. PINNED by
+  `TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes`, a table of query texts and outcomes
+  covering all three of those plus the controls that make each attributable — the bad name
+  second, a leading digit instead of a dollar, a promotion with good names, and no promotion at
+  all. Answering rows assert the leaf field NAMES as well as the values, so the anonymisation is
+  visible end-to-end (`_0` where the element wrote `A`, and `A` surviving where no promotion
+  happens). Failing rows assert their error text. Docker-free companions:
+  `TestUnificationErasesAFieldNameOnlyWhenTheNamesDisagree` (the erasure, both directions plus
+  the both-disagree diagonal) and `TestWhichRecordTypesCanBeGivenADescriptor` (the stamping
+  predicate). Read the table, not a summary of it: four successive rounds each summarised it and
+  were refuted by a row nobody had run. PRE-EXISTING, measured: every outcome is identical at
+  the merge-base `36b97f1e9` (only the synthetic-name prefix differs, `__type__` there against
+  `__0type__` now). CLOSURE. Java never relies on the wrapped constructor being stamped.
+  `PromoteValue.java` carries a `promotionTrie` (`CoercionTrieNode`, `:207`, `:220`) built by
+  `computePromotionsTrie` (`:354`, record arm `:408-429`), and evaluation calls
+  `MessageHelpers.coerceObject` (`:269`) after fetching the target's descriptor from the type
+  repository, so the target's message is built AT EVALUATION, per field. The promote is injected
+  PER ELEMENT (`AbstractArrayConstructorValue:172-176`), so `promoteToType` is the element
+  RECORD — which is what makes `Verify.verify(promoteToType.isRecord())` at `:265` hold; read
+  as "the array is promoted", that assert fails and the port aims at the wrong node.
+  `MessageHelpers:466` casts `current` to `Message`, so Java's coercion CONSUMES a message the
+  child already built: the port unit is the trie AND the registration model, not the trie alone.
+  Go's cascades PromoteValue carries no trie — `git grep -lnE 'CoercionTrie|coercionTrie' --
+  '*.go'` returns only the two generated protobuf files and
+  `pkg/recordlayer/query/plan/plans/update.go`. Do NOT paper it over by making message fields
+  accept a map: Java coerces with a known target descriptor and a per-field plan, not by copying
+  a map by name. The RAGGED case may need its own answer, but not for the reason an earlier
+  draft gave: the promote is per ELEMENT, so no stamped parent is required to coerce it. What it
+  lacks is a `Message` for `MessageHelpers.coerceObject` to consume, which is the registration
+  half of the port unit already named above rather than a separate mechanism. A live lead the
+  table supplies: a TWO-FIELD CASE branch already coerces a record and anonymises the
+  disagreeing field to `_1`, so something on that path does what the array path does not. Find
+  out what before writing the port. Booked from RFC-242 r36 and re-characterised at r38, r39,
+  r40 and r41 as reviewers refuted each account. The measurements survived; the explanations did
+  not.
+
+- [ ] **Unifying two record literals of differing numeric width is refused at evaluation.**
+  `SELECT ([(1 AS A), (2.5 AS A)] AS CH) FROM t` over a NON-EMPTY table fails with `cannot
+  synthesise a protobuf descriptor for __0type__4: field number 1 is int32 in the source
+  (__0type__5.A) but double in the target (__0type__4.A)`. Every field name here is one protobuf
+  will carry, and it reproduces with differing names too (`[(1 AS A), (2.5 AS B)]`). WHERE IT
+  HAPPENS: NOT at descriptor synthesis. Both descriptors synthesise — the error names them
+  both, which it could not otherwise — and the refusal comes from `copyFieldsByNumber`'s
+  kind-mismatch guard in `record_constructor_message.go` at EVALUATION. The `cannot synthesise a
+  protobuf descriptor for` prefix is `ProtoTypeError`'s stock wording and it misled an earlier
+  draft of this entry. SAME SITE AND CAUSE as the booking above: a stamped parent is handed a
+  child the promotion never coerced — a raw map there, a wrong-KIND message here. Two work
+  items because the fixes may land separately; one cause, and the coercion trie closes both
+  arms. PRE-EXISTING, measured: identical at the merge-base `36b97f1e9`. PINNED as rows of
+  `TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes` asserting the width-mismatch text
+  specifically, in both the agreeing-name and differing-name spellings, so neither can be
+  satisfied by the other booking's failure. Booked from RFC-242 r39, found by a reviewer varying
+  the dimension the pin held fixed.
+
+- [ ] **A UNION is refused when a LEG still NAMES a field the common type anonymised, and Java
+  accepts it.** `SELECT (1 AS A) AS C FROM t UNION ALL SELECT (2 AS B) AS C FROM t` fails with
+  `42F65: UNION output slot 0 cannot adopt the common type: source type RECORD<A INT NOT NULL>
+  is not promotable to RECORD<INT NOT NULL>`. Every field name here is one protobuf will carry,
+  so this is NOT the unstamped-child booking above; that was the first of four wrong readings.
+  WHAT IS REFUSED, narrowed by measurement: not records (agreeing names promote), not widening
+  (`(1 AS A)` UNION `(2.5 AS A)` answers, both legs), and not the whole record being anonymous
+  — `(1 AS A, 3 AS Z)` UNION `(2 AS A, 4 AS Y)` is refused against `RECORD<A INT NOT NULL, INT
+  NOT NULL>`, where only the second field is anonymous. An anonymous field in the common TYPE is
+  not itself the trigger: when BOTH legs are already anonymous — two identical two-field CASE
+  branches — the union ANSWERS, and it answers even with a real promote through the anonymous
+  slot. What is refused is a LEG that still NAMES a field the common type anonymised, at any
+  depth: the same refusal appears one level down for `((1 AS A) AS N)` UNION `((2 AS B) AS N)`.
+  An earlier draft titled this by the target rather than the leg, which the both-anonymous row
+  and its promote counterpart refute together. CAUSE, read from the source rather than inferred.
+  `exactUnionResultRow` computes the common row with `MaximumType`, and `exactUnionSlotValue`
+  then gates each leg on `MaximumType(leg, target).Equals(target)`. That predicate cannot accept
+  its own common row: `MaximumType`'s record arm resolves a disagreeing name pair by KEEPING the
+  named side (`values/type.go`, the `f2.Name == ""` arm), so `MaximumType(RECORD<A INT>,
+  RECORD<INT>)` is `RECORD<A INT>`, not the target. The gate is built from a function that is
+  not idempotent under name erasure — `max(a, max(a,b)) != max(a,b)` once a name has been
+  dropped. One anonymous field suffices because `RecordType.Equals` is all-or-nothing, which is
+  also why the title's "whenever" is safe rather than a guess. JAVA ACCEPTS IT, so this is a
+  CONFORMANCE DIVERGENCE and not only a gap. `PromoteValue.isPromotionNeeded` recurses records
+  POSITIONALLY over `getElementTypes()` and never reads a field name (`PromoteValue.java`, the
+  `inType.isRecord() && promoteToType .isRecord()` arm: it checks the element COUNT, then
+  recurses per ordinal). `inject` never consults a maximum type at all. DIRECTION. Not the
+  coercion trie — that is the other two bookings' unit and it does not apply here. Replace the
+  max-equality gate with Java's shape: decide promotability positionally over element types, and
+  let the promote carry the target. An earlier draft of this entry said "the same missing
+  machinery, the promotion trie again", which was the fourth wrong mechanism for this site; it
+  is corrected here rather than rewritten away. PRE-EXISTING, measured: identical at the
+  merge-base `36b97f1e9`. PINNED as ten rows of
+  `TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes`: the refusal, the same refusal with two
+  synthesisable names, the agreeing-name union that answers, the agreeing-name union that WIDENS
+  and answers on both legs, the partially-anonymised two-field union that is still refused, the
+  BOTH-ANONYMOUS union that ANSWERS, the same pair again with a real PROMOTE through the
+  anonymous slot — the two of them TOGETHER refute titling this by the target, the first
+  showing an anonymous target can answer and the second that the gate is genuinely reached,
+  since equal leg types skip leg normalisation — anonymisation NESTED one level down, a
+  THREE-leg union where two legs agree, and the same gate reached through a RECURSIVE CTE. The
+  failing rows assert the anonymous TARGET by name, not just the error family, so a run where
+  alignment picked a NAMED common type would redden. SECOND CALL SITE, and the closure must
+  cover it: `exactUnionSlotValue` is also called from the recursive-CTE output alignment, which
+  wraps the identical refusal in `0AF00` instead of `42F65`. That row guards against a
+  CALL-SITE-LOCAL patch. It is not an argument that the closure needs two fixes: the direction
+  this booking prescribes, positional promotability at the gate, covers both callers by
+  construction, since `recursiveCTECommonResultRow` derives its target with the same per-ordinal
+  maximum. Pinned as its own row. Booked from RFC-242 r41, cause and direction corrected at r43,
+  rows actually committed and the CTE call site added at r44, counts corrected at r45.
+
+- [ ] **`TestSourceCommentHygiene` scans only `*.go`, and its subject is not Go-specific.**
+  The rule it enforces — no reviewer or shift attribution in source comments — is about SOURCE
+  COMMENTS, and this repo reasons at length in shell and YAML comments: `infra/cloud-init.yaml`,
+  `infra/orphan_fdb_sweep_test.sh`, `pkg/docscheck/rowdiff_watcher_suite.sh`, the nightly
+  workflows. The gate's file set is `gitDeliverableFiles(root, "*.go")`
+  (`pkg/docscheck/source_hygiene_test.go`), so none of them are scanned.
+
+  Found by violating it twice in one change and having a reviewer catch what the gate could not:
+  "Three reviewers reached this independently" and "a review pointed out what that hides" both
+  shipped through a green `just test`.
+
+  **Measured 2026-09-06, and the entry got its own measurement wrong TWICE before this. Both
+  errors are kept, because they are the useful part and they are the same error twice.**
+
+  First version: 29 files, ZERO violations — a free ratchet touching nothing. Wrong three ways.
+  The glob `'*.sh' '*.yml'` does not match `*.yaml`, so it EXCLUDED `infra/cloud-init.yaml`, a
+  file the same sentence named as an example; the pattern listed `graefe|torvalds` but not
+  `codex`; so "0 matches" was a fact about a malformed search reported as a fact about the repo.
+
+  Second version: 429 files, 48 with attribution. The population was right and the PATTERN was
+  still invented — three of the eight regexes the gate actually uses. `bannedCommentPatterns`
+  (`pkg/docscheck/source_hygiene_test.go`) also bans `(day|night|swing)shift-[0-9]+`,
+  `audit #[0-9]+`, a generic `\breviewers?\b`, `@claude`, and review-round labels. The lesson is
+  the same one twice: I wrote a pattern from memory of the RULE instead of reading the GATE.
+
+  Third and measured against the gate's own list, over `git ls-files '*.sh' '*.yml' '*.yaml'`
+  (429 files): **57 files match.** A raw line scan gives 122 lines; a comment-only scan — which
+  is what the gate would do — gives fewer, so take the FILE count as the load-bearing figure.
+  Of the 57, **eight** are source-like — SEVEN workflows plus `infra/cloud-init.yaml` — and **49**
+  are `yamsql/testdata/*.yaml`, genuine rather than false positives ("Subquery false-positive
+  guard (Torvalds review)", "Codex-caught: CAST of a NON-string source to UUID"). The
+  seven-and-41 split written here first was a fourth arithmetic error in the same paragraph, and
+  it under-stated the workflow half — the half that is not test data.
+
+  So this is NOT a free ratchet. It is a gate extension plus a 57-file cleanup, and the cleanup
+  is the larger half — which is what someone needs to know before starting, and is the opposite
+  of what the first two versions of this paragraph said.
+
+  Not done on the RFC-242 branch deliberately: the Go path parses an AST and reports per comment
+  GROUP; a shell/YAML path is a different mechanism (line-based `#` scanning, with its own
+  quoting and heredoc hazards) needing its own arms and its own review lap, and 57 files of
+  comment edits do not belong inside a change about union leg alignment.
+
+- [ ] **A review gate was running into a void for a whole branch, and the reporting layer rendered
+  "no findings" and "not read" identically.** RFC-242's PR ran a four-gate loop. One of the four
+  posts its verdict as a GitHub comment whose first line is a header (`Claude finished … — View
+  job`) with the review body beneath. Every status summary read the header and never fetched the
+  body, so for the length of the branch that gate was not a gate — it was a log nobody tailed.
+
+  Measured when it finally surfaced, and the command is given because the first figure reported
+  here did not reproduce for a reviewer who checked it:
+
+      gh api --paginate 'repos/birdayz/fdb-go/issues/770/comments' \
+        | jq -s '[.[]|.[]] | map(select(.user.login|test("claude")) | select(.id <= 5561694850))'
+
+  → **66 claude-authored comments**: **34** carry an ACK verdict, **12** a NAK verdict, **20**
+  neither (34+12+20=66). Append the classifier to count VERDICTS rather than marker occurrences —
+  one per comment, anchored to a line start:
+
+      | jq '[.[]|select(.body|test("(^|\n)\\*\\*ACK for head";""))]|length'
+
+  Every NAK is followed by that same gate's ACK on a later head.
+
+  The upper BOUND on the comment id is load-bearing and was added third. Without it the query
+  answers about a corpus that grows while the review continues: the unbounded form returned 65 when
+  first written here and 66 an hour later, so the figure was stale before anyone could check it.
+  Three earlier versions of this paragraph were also wrong — "51" was `grep -c 'Claude finished'`,
+  comments containing one header line rather than comments by that author; a reviewer
+  reproduced the API call and got a different total, which is how the header-string error surfaced;
+  and the first bounded version counted OCCURRENCES of the marker string, which is a different
+  population from verdicts. The comment at the bound quotes both markers while discussing an
+  earlier census, so it was counted as its own evidence and inflated ACK to 35 and NAK to 13. The
+  13 contradicted the "twelve NAKs" stated four paragraphs below, in the same entry, and the
+  contradiction was on the page before any reviewer read it — an internal inconsistency is the
+  cheapest possible check and it went unrun.
+  A census of a live thread needs a bound in the same way a ratio needs both SHAs. So the findings were real and the gate was doing its job.
+  Two of its NAKs were closed only because a different reviewer independently found the same
+  defect — convergence, not process.
+
+  Two things make this worth a durable entry rather than a resolution to be more careful:
+
+  1. **The failure is the branch's own headline class.** A reporting layer that cannot distinguish
+     *passed* from *never ran* renders both as success; here it could not distinguish *reviewed
+     with no findings* from *never read*, and a truncated header rendered both identically. It is
+     the fifteenth face, applied to a review gate instead of a test.
+  2. **The first correction was itself unscoped.** The initial report said "two NAKs, both closed
+     anyway" — read off the tail of a verdict list rather than counted. The true figure is twelve.
+     An unscoped count reported as evidence, inside the correction of a reporting failure.
+
+  What would close it: any status that claims a gate ACKed must have fetched that gate's BODY for
+  the head in question, and a count of its verdicts must come from counting them. Mechanically:
+  `gh pr view <n> --json comments` and read `.body`, never the rendered preview.

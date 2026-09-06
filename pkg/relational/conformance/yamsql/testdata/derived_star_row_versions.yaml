@@ -1,0 +1,47 @@
+# A projection-less star over row-versioned tables hides both legs'
+# ephemeral __ROW_VERSION slots (Java's SemanticAnalyzer.expandStar →
+# nonEphemeralVisible): the row a derived table or CTE publishes is the four
+# visible columns. Published under the exact labels of the built body, the
+# CTE spelling minted a read over a six-column row with two hidden version
+# slots that no runtime binding declares, and the derived spelling could not
+# adopt its physical output names.
+name: derived_star_row_versions
+schema_template: |
+  CREATE TABLE aa (id BIGINT, y BIGINT, PRIMARY KEY (id))
+  CREATE TABLE bb (id BIGINT, z BIGINT, PRIMARY KEY (id))
+  CREATE TABLE things (id BIGINT, x BIGINT, arr BIGINT ARRAY, PRIMARY KEY (id))
+  WITH OPTIONS(store_row_versions=true)
+setup:
+  - INSERT INTO aa VALUES (1, 20), (2, 10)
+  - INSERT INTO bb VALUES (1, 3)
+  - INSERT INTO things VALUES (1, 5, [7, 8])
+tests:
+  - query: SELECT d.y FROM (SELECT * FROM aa, bb) d ORDER BY d.y
+    columns: ["Y"]
+    rows:
+      - [10]
+      - [20]
+  - query: WITH d AS (SELECT * FROM aa, bb) SELECT d.y FROM d ORDER BY d.y
+    columns: ["Y"]
+    rows:
+      - [10]
+      - [20]
+  - query: SELECT d.y, d.z FROM (SELECT * FROM aa, bb) d ORDER BY d.y
+    columns: ["Y", "Z"]
+    rows:
+      - [10, 3]
+      - [20, 3]
+  # A NEGATIVE pin of a row-versioned shape booked in TODO.md ("Exact
+  # quantifier binding over a CTE or derived body"): a star over a lateral
+  # unnest in a row-versioned table does not plan — the row-version rewrite
+  # carries the outer X beside the element X while the derived unnest scope
+  # shadows it — and its answer over a table without row versions is [7],[8]
+  # (derived_star_visibility.yaml). Its CTE spelling fails as an XX000
+  # planner failure, and a WHERE over the derived star join is refused at
+  # execution with a raw resolution error (`edge lookup D`); neither is a
+  # SQLSTATE this corpus may credit as a correct rejection, so both are
+  # pinned in Go beside the answering ORDER BY
+  # (TestFDB_DerivedStarRowVersionsWhere, TestFDB_DerivedStarRowVersionsUnnestCTE).
+  # When this plans, the pin turns red and is re-pinned to the rows.
+  - query: SELECT d.x FROM (SELECT * FROM things, things.arr AS x) d
+    error_code: "0AF00"

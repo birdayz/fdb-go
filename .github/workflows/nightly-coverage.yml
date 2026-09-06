@@ -21,6 +21,28 @@ jobs:
     # corpora step runs one target at a time on purpose. A 60-minute cap would
     # cancel the job mid-race and report it as infrastructure noise rather than
     # as the coverage it is.
+    #
+    # NOT the cause of the 2026-08-30..09-04 cancellations, which a draft of
+    # RFC-242 blamed on this cap: those six runs lasted 3, 55, 11, 67, 8 and 51
+    # minutes and ended in "The operation was canceled." with no
+    # maximum-execution-time annotation, so nothing here fired.
+    #
+    # And NOT the same class as the FDB container deaths either, which is what
+    # this comment used to say next. Those are `orphan-fdb-sweep.sh` removing a
+    # live test's container after 1800s and are fixed at the source. These runs
+    # end differently, six for six (2026-08-31..09-05, elapsed 55m05s, 10m39s,
+    # 67m05s, 8m24s, 51m36s, 13m09s):
+    #
+    #     ##[error]The runner has received a shutdown signal. This can happen when
+    #     the runner service is stopped, or a manually started runner is canceled.
+    #
+    # That is the RUNNER being stopped, not a container dying, and an eight-fold
+    # spread in elapsed time rules out any timeout on its own. What stops it is
+    # NOT established and must not be guessed at here: the boxes run the classic
+    # `actions.runner.*` service (infra/main.tf's runner_mode defaults to
+    # `classic`, and cloud-init disables, deletes and masks the scale-set
+    # supervisor), so the scaler's teardown paths cannot be the sender however
+    # well they fit. TODO.md carries the open item and what would discriminate.
     timeout-minutes: 150
 
     steps:

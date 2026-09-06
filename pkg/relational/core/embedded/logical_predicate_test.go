@@ -12,8 +12,12 @@ import (
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/parser"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
+	"fdb.dev/pkg/relational/core/query/expr"
 	"fdb.dev/pkg/relational/core/query/logical"
 	"fdb.dev/pkg/relational/core/query/semantic"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protodesc"
+	"google.golang.org/protobuf/types/descriptorpb"
 )
 
 // parseQueryFromSelect parses SQL and returns the IQueryContext from
@@ -1653,18 +1657,162 @@ func TestSemanticColumnFromExactTypeDeclinesUnrepresentableArrayElementNullabili
 	}
 }
 
-func TestSemanticColumnFromExactTypeDeclinesUnrepresentableRecordName(t *testing.T) {
+func TestSemanticColumnFromExactTypeCarriesRecordName(t *testing.T) {
 	t.Parallel()
 	fields := []values.Field{{Name: "V", FieldType: values.NotNullLong}}
 
-	representable := values.NewRecordType("RECORD", false, fields)
-	column, ok := semanticColumnFromExactType("S", representable)
-	if !ok || column.Type != "RECORD" || len(column.StructFields) != 1 {
-		t.Fatalf("representable record = %+v, ok=%v", column, ok)
+	// A record whose NAME happens to be RECORD is a named record: the kind is
+	// never a name, so nothing mints this shape, and one that arrives keeps it.
+	namedRecord := values.NewRecordType("RECORD", false, fields)
+	column, ok := semanticColumnFromExactType("S", namedRecord)
+	if !ok || column.Type != "RECORD" || column.StructTypeName != "RECORD" || len(column.StructFields) != 1 {
+		t.Fatalf("record named RECORD = %+v, ok=%v, want Type RECORD carrying the name RECORD", column, ok)
 	}
 
+	// A nominal record (a declared STRUCT's type) is published with its name
+	// in StructTypeName, the carrier the forward bridge reads first, so the
+	// round trip mints a record of the same name. Declining it instead left a
+	// projected STRUCT-typed nested field with no exact row to publish.
 	named := values.NewRecordType("DECLARED_STRUCT", false, fields)
-	if column, ok := semanticColumnFromExactType("S", named); ok {
-		t.Fatalf("record name with no semantic carrier was published as exact: %+v", column)
+	column, ok = semanticColumnFromExactType("S", named)
+	if !ok || column.Type != "RECORD" || column.StructTypeName != "DECLARED_STRUCT" || len(column.StructFields) != 1 {
+		t.Fatalf("nominal record = %+v, ok=%v, want Type RECORD carrying DECLARED_STRUCT", column, ok)
+	}
+	row := expr.SourceRowType(semantic.ScopeSource{Table: &semantic.StaticTable{TableColumns: []semantic.Column{column}}})
+	if row == nil || len(row.Fields) != 1 {
+		t.Fatalf("row over the published column = %v, want one field", row)
+	}
+	rebuilt, isRecord := row.Fields[0].FieldType.(*values.RecordType)
+	if !isRecord || rebuilt.RecordName != "DECLARED_STRUCT" || !rebuilt.Equals(named) {
+		t.Fatalf("round trip of the nominal record = %v, want %v under the same name", row.Fields[0].FieldType, named)
+	}
+
+	fieldless := values.NewRecordType("DECLARED_STRUCT", false, nil)
+	if column, ok := semanticColumnFromExactType("S", fieldless); ok {
+		t.Fatalf("fieldless record was published as exact: %+v", column)
+	}
+
+	// An anonymous record — a record constructor's row — stays anonymous on the
+	// round trip, so two different anonymous shapes in one row get two synthetic
+	// descriptor names instead of both claiming the literal "RECORD".
+	unnamed := values.NewRecordType("", false, fields)
+	column, ok = semanticColumnFromExactType("S", unnamed)
+	if !ok || column.Type != "RECORD" || column.StructTypeName != "" {
+		t.Fatalf("anonymous record = %+v, ok=%v, want Type RECORD with no StructTypeName", column, ok)
+	}
+	row = expr.SourceRowType(semantic.ScopeSource{Table: &semantic.StaticTable{TableColumns: []semantic.Column{column}}})
+	rebuilt, isRecord = row.Fields[0].FieldType.(*values.RecordType)
+	if !isRecord || rebuilt.RecordName != "" || !rebuilt.Equals(unnamed) {
+		t.Fatalf("round trip of the anonymous record = %v, want it anonymous (no record name)", row.Fields[0].FieldType)
+	}
+}
+
+func TestSemanticColumnFromExactTypeDeclinesEnum(t *testing.T) {
+	t.Parallel()
+	// An enum has no lossless semantic carrier: the catalog kind "ENUM"
+	// bridges forward to a plain STRING (sqlTypeToCascadesType), so publishing
+	// one here would change the exact type on the round trip. This is the
+	// bridge's own contract, reached by no SQL shape today — the exact logical
+	// derivation types an enum field as that STRING before it gets here
+	// (TestDerivedNestedEnumFieldTypesAsStringSoTheShapeRuleNeverDeclines).
+	enum := values.NewEnumType("COLOR", false, []values.EnumValue{{Name: "RED", Number: 1}})
+	if column, ok := semanticColumnFromExactType("C", enum); ok {
+		t.Fatalf("enum was published as an exact semantic column: %+v", column)
+	}
+	record := values.NewRecordType("PAINT", false, []values.Field{{Name: "C", FieldType: enum}})
+	if column, ok := semanticColumnFromExactType("P", record); ok {
+		t.Fatalf("record carrying an enum field was published as exact: %+v", column)
+	}
+}
+
+// enumHomonymMetaData is a table whose struct column P carries an enum field
+// COLOR beside a top-level STRING column COLOR — Java-authored metadata, since
+// this DDL declares no enum. An enum is the one leaf the semantic column model
+// cannot state (semanticColumnFromExactType), so a nested path to it is the
+// shape to watch for the shape rule's exact route declining; with a homonym at
+// the top level it is also the shape where re-resolving a declined path by
+// its leaf would type the slot as that STRING.
+func enumHomonymMetaData(t *testing.T) *recordlayer.RecordMetaData {
+	t.Helper()
+	label := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL
+	longKind := descriptorpb.FieldDescriptorProto_TYPE_INT64
+	stringKind := descriptorpb.FieldDescriptorProto_TYPE_STRING
+	enumKind := descriptorpb.FieldDescriptorProto_TYPE_ENUM
+	messageKind := descriptorpb.FieldDescriptorProto_TYPE_MESSAGE
+	file, err := protodesc.NewFile(&descriptorpb.FileDescriptorProto{
+		Name:    proto.String("enum_homonym_test.proto"),
+		Package: proto.String("enumhomonymtest"),
+		Syntax:  proto.String("proto2"),
+		EnumType: []*descriptorpb.EnumDescriptorProto{{
+			Name:  proto.String("Color"),
+			Value: []*descriptorpb.EnumValueDescriptorProto{{Name: proto.String("RED"), Number: proto.Int32(1)}},
+		}},
+		MessageType: []*descriptorpb.DescriptorProto{
+			// Paint is NESTED so the metadata builder sees one record type, T.
+			{Name: proto.String("T"), NestedType: []*descriptorpb.DescriptorProto{{
+				Name: proto.String("Paint"), Field: []*descriptorpb.FieldDescriptorProto{{
+					Name: proto.String("color"), Number: proto.Int32(1), Label: &label, Type: &enumKind,
+					TypeName: proto.String(".enumhomonymtest.Color"),
+				}},
+			}}, Field: []*descriptorpb.FieldDescriptorProto{
+				{Name: proto.String("id"), Number: proto.Int32(1), Label: &label, Type: &longKind},
+				{Name: proto.String("color"), Number: proto.Int32(2), Label: &label, Type: &stringKind},
+				{
+					Name: proto.String("p"), Number: proto.Int32(3), Label: &label, Type: &messageKind,
+					TypeName: proto.String(".enumhomonymtest.T.Paint"),
+				},
+			}},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("build descriptor: %v", err)
+	}
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(file)
+	builder.GetRecordType("T").SetPrimaryKey(recordlayer.Field("id"))
+	md, err := builder.Build()
+	if err != nil {
+		t.Fatalf("build metadata: %v", err)
+	}
+	return md
+}
+
+func TestDerivedNestedEnumFieldTypesAsStringSoTheShapeRuleNeverDeclines(t *testing.T) {
+	t.Parallel()
+	md := enumHomonymMetaData(t)
+	// A NEGATIVE result, pinned: the shape rule's decline is final in every arm
+	// (a declined exact route is never re-resolved by the leaf lookup, which
+	// would type the slot as the top-level homonym), and today no shape reaches
+	// a decline the walk would answer differently: a NULL literal beside the
+	// path declines the exact route ("placeholder type is not exact") and the
+	// walk alike, and the one unrepresentable leaf Java-authored metadata can
+	// put under a nested path — an enum — arrives already typed STRING (the
+	// catalog kind ENUM bridges to STRING; TODO.md, "The exact derivation types
+	// an enum field as STRING"), so the nested path publishes beside the STRING
+	// homonym.
+	// When the exact derivation starts carrying enums, this goes red: the
+	// decline is then reachable, and this shape (a STRING `color` beside the
+	// enum `p.color`) is the one to pin as a loud decline, never as the homonym.
+	for _, sql := range []string{
+		`SELECT x.color FROM (SELECT t.p.color FROM t) x`,
+		`WITH x AS (SELECT t.p.color FROM t) SELECT x.color FROM x`,
+		`SELECT x.color FROM (SELECT t.color FROM t) x`,
+	} {
+		plan, _, err := PlanRecordQueryWithSubqueries(sql, md, nil)
+		if err != nil || plan == nil {
+			t.Fatalf("%s: plan %v, err %v; the exact derivation no longer states the enum field as STRING — "+
+				"the shape rule's decline is reachable now, pin this homonym shape as a loud decline", sql, plan, err)
+		}
+	}
+	sq := parseSelect(t, `SELECT t.p.color FROM t`)
+	if !nestedProjectedPath(sq.projCols[0], sq.tableName) {
+		t.Fatalf("t.p.color is not decided as a nested path; the arm under test is not the shape rule's")
+	}
+	src, ok := buildExactVirtualScopeSourceForSelect(md, "X", sq, nil, nil)
+	if !ok {
+		t.Fatal("the exact derivation declined the enum field; the shape rule's decline is reachable now — pin the homonym shape as a loud decline")
+	}
+	cols := src.Table.Columns()
+	if len(cols) != 1 || cols[0].Id.Name() != "COLOR" || cols[0].Type != "STRING" {
+		t.Fatalf("exact row over the enum field = %+v, want the one STRING column COLOR", cols)
 	}
 }

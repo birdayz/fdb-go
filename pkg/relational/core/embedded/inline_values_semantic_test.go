@@ -163,8 +163,8 @@ func TestBuildInlineValuesLogicalRetagsNestedDefinitionAndCommonType(t *testing.
 		t.Fatalf("result type = %#v, want B/C/W record", source.ResultType())
 	}
 	nested, ok := row.Fields[2].FieldType.(*values.RecordType)
-	if !ok || nested.RecordName != "RECORD" || nested.Nullable || len(nested.Fields) != 3 {
-		t.Fatalf("W type = %#v, want exact non-null RECORD<X,Y,Z>", row.Fields[2].FieldType)
+	if !ok || nested.RecordName != "" || nested.Nullable || len(nested.Fields) != 3 {
+		t.Fatalf("W type = %#v, want exact non-null anonymous RECORD<X,Y,Z>", row.Fields[2].FieldType)
 	}
 	for i, want := range []string{"X", "Y", "Z"} {
 		if nested.Fields[i].Name != want || nested.Fields[i].Ordinal != i {
@@ -185,8 +185,8 @@ func TestBuildInlineValuesLogicalRetagsNestedDefinitionAndCommonType(t *testing.
 			t.Fatalf("row %d = %T, want three-field RecordConstructorValue", rowIndex, element)
 		}
 		w, ok := top.Fields[2].Value.(*values.RecordConstructorValue)
-		if !ok || w.TypeName() != "RECORD" || !w.Type().Equals(nested) {
-			t.Fatalf("row %d W constructor = %#v type=%v, want named exact %v", rowIndex, top.Fields[2].Value, top.Fields[2].Value.Type(), nested)
+		if !ok || w.TypeName() != "" || !w.Type().Equals(nested) {
+			t.Fatalf("row %d W constructor = %#v type=%v, want anonymous exact %v", rowIndex, top.Fields[2].Value, top.Fields[2].Value.Type(), nested)
 		}
 		for i, want := range []string{"X", "Y", "Z"} {
 			if w.Fields[i].Name != want {
@@ -215,8 +215,8 @@ func TestBuildInlineValuesLogicalRetagsQuotedArrayOfRecordDefinition(t *testing.
 		t.Fatalf("w type = %#v, want non-null array", row.Fields[0].FieldType)
 	}
 	element, ok := array.ElementType.(*values.RecordType)
-	if !ok || element.RecordName != "RECORD" || len(element.Fields) != 3 {
-		t.Fatalf("w element = %#v, want RECORD<x,y,z>", array.ElementType)
+	if !ok || element.RecordName != "" || len(element.Fields) != 3 {
+		t.Fatalf("w element = %#v, want anonymous RECORD<x,y,z>", array.ElementType)
 	}
 	for i, want := range []string{"x", "y", "z"} {
 		if element.Fields[i].Name != want {
@@ -232,8 +232,8 @@ func TestBuildInlineValuesLogicalRetagsQuotedArrayOfRecordDefinition(t *testing.
 	top := collection.Elements[0].(*values.RecordConstructorValue)
 	wArray := top.Fields[0].Value.(*values.ArrayConstructorValue)
 	w := wArray.Elements[0].(*values.RecordConstructorValue)
-	if w.TypeName() != "RECORD" || !w.Type().Equals(element) {
-		t.Fatalf("array element constructor type = %v (name %q), want %v", w.Type(), w.TypeName(), element)
+	if w.TypeName() != "" || !w.Type().Equals(element) {
+		t.Fatalf("array element constructor type = %v (name %q), want anonymous %v", w.Type(), w.TypeName(), element)
 	}
 }
 
@@ -258,7 +258,7 @@ func TestBuildInlineValuesLogicalRejectsInvalidNestedDefinitions(t *testing.T) {
 	}
 }
 
-func TestRetagInlineValuesRecordTypeIsCopyOnWriteAndRejectsForeignIdentity(t *testing.T) {
+func TestRetagInlineValuesRecordTypeIsCopyOnWriteAndKeepsANamedSourcesName(t *testing.T) {
 	t.Parallel()
 	fields := []values.Field{
 		{Name: "_0", FieldType: values.NotNullInt, Ordinal: 0},
@@ -270,9 +270,9 @@ func TestRetagInlineValuesRecordTypeIsCopyOnWriteAndRejectsForeignIdentity(t *te
 	if err != nil {
 		t.Fatalf("retag exact anonymous record: %v", err)
 	}
-	if retagged == source || retagged.RecordName != "RECORD" ||
+	if retagged == source || retagged.RecordName != "" ||
 		retagged.Fields[0].Name != "X" || retagged.Fields[1].Name != "Y" {
-		t.Fatalf("retagged = %#v, want copied RECORD<X,Y>", retagged)
+		t.Fatalf("retagged = %#v, want a copied, still anonymous RECORD<X,Y>", retagged)
 	}
 	if source.RecordName != "" || source.Fields[0].Name != "_0" || source.Fields[1].Name != "_1" {
 		t.Fatalf("retag mutated source type: %#v", source)
@@ -281,10 +281,12 @@ func TestRetagInlineValuesRecordTypeIsCopyOnWriteAndRejectsForeignIdentity(t *te
 		t.Fatalf("retagged type is not exact: %v", err)
 	}
 
-	foreign := values.NewRecordType("FOREIGN", false, fields)
-	if _, err := retagInlineValuesRecordType(foreign, definitions); err == nil ||
-		!strings.Contains(err.Error(), "nominal record type") {
-		t.Fatalf("foreign nominal record retag error = %v, want loud nominal-identity rejection", err)
+	// A named source is renamed field by field and KEEPS its name, as Java's
+	// TypeUtils.setFieldNames does; rejecting it refused what Java accepts.
+	named := values.NewRecordType("FOREIGN", false, fields)
+	renamed, err := retagInlineValuesRecordType(named, definitions)
+	if err != nil || renamed.RecordName != "FOREIGN" || renamed.Fields[0].Name != "X" || renamed.Fields[1].Name != "Y" {
+		t.Fatalf("named record retag = %#v, err %v; want FOREIGN RECORD<X,Y>", renamed, err)
 	}
 	malformed := &values.RecordType{Fields: []values.Field{{Name: "_0", FieldType: values.NotNullInt, Ordinal: 1}}}
 	if _, err := retagInlineValuesRecordType(malformed, definitions[:1]); err == nil ||

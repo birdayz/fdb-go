@@ -30,6 +30,7 @@ go_test(
         "main.tf",
         "migrate-ci-volume.sh",
         "migrate_ci_volume_test.sh",
+        "orphan_fdb_sweep_test.sh",
         "//:go.mod",
     ],
     deps = ["@in_gopkg_yaml_v3//:yaml_v3"],

@@ -128,7 +128,9 @@ func TestExplodePlanElementRow_TrustsOnlyItsFinalizedElementConstructor(t *testi
 		if err != nil {
 			t.Fatalf("construct explode: %v", err)
 		}
-		cascades.FinalizePlan(plan)
+		if err := cascades.FinalizePlan(plan); err != nil {
+			t.Fatalf("FinalizePlan: %v", err)
+		}
 		if constructor.MessageDescriptor() == nil {
 			t.Fatal("FinalizePlan did not stamp inline record constructor")
 		}

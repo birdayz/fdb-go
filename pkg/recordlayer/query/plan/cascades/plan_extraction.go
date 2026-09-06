@@ -415,8 +415,9 @@ func physicalFallbackLess(
 // selector implements to enable extraction-time sort elimination.
 type SortElisionSelector interface {
 	// OrderedChildWinner returns a physical member of childRef whose
-	// ordering satisfies sortExpr's keys, or nil (sort must stay).
-	OrderedChildWinner(sortExpr *expressions.LogicalSortExpression, childRef *expressions.Reference) expressions.RelationalExpression
+	// ordering satisfies the requested ordering, stated in childRef's own
+	// current-row space, or nil (sort must stay).
+	OrderedChildWinner(requested *properties.RequestedOrdering, childRef *expressions.Reference) expressions.RelationalExpression
 	// OrderingSourceRef reports whether expr merely PRESERVES its
 	// input's order, returning the child group the ordering flows from.
 	// Extraction pins that group when eliding a sort (see
@@ -447,14 +448,18 @@ func sortWinnerFromChild(
 	if childRef == nil {
 		return nil, nil
 	}
-	winner := elider.OrderedChildWinner(sortExpr, childRef)
+	requested := sortExpressionToRequestedOrdering(sortExpr)
+	if requested.IsPreserve() {
+		return nil, nil
+	}
+	winner := elider.OrderedChildWinner(requested, childRef)
 	if err := plannerContextErr(ctx); err != nil {
 		return nil, err
 	}
 	if winner == nil || !isPhysicalPlan(winner) {
 		return nil, nil
 	}
-	rebuilt, err := rebuildOrderedSpine(ctx, winner, sortExpr, elider, sel, stats, visited, map[*expressions.Reference]bool{})
+	rebuilt, err := rebuildOrderedSpine(ctx, winner, requested, elider, sel, stats, visited, map[*expressions.Reference]bool{})
 	if err != nil {
 		if cancelErr := plannerContextErr(ctx); cancelErr != nil {
 			return nil, cancelErr
@@ -486,7 +491,7 @@ func sortWinnerFromChild(
 func rebuildOrderedSpine(
 	ctx context.Context,
 	e expressions.RelationalExpression,
-	sortExpr *expressions.LogicalSortExpression,
+	requested *properties.RequestedOrdering,
 	elider SortElisionSelector,
 	sel BestMemberSelector,
 	stats properties.StatisticsProvider,
@@ -519,7 +524,14 @@ func rebuildOrderedSpine(
 				return nil, nil // cycle on the spine — decline elision
 			}
 			pinned[srcRef] = true
-			om := elider.OrderedChildWinner(sortExpr, srcRef)
+			// The request crosses a reshaping wrapper by its result value
+			// (requestedOrderingBelow); a level it cannot cross declines the
+			// elision, and the sort stays.
+			below, ok := requestedOrderingBelow(e, requested)
+			if !ok {
+				return nil, nil
+			}
+			om := elider.OrderedChildWinner(below, srcRef)
 			if err := plannerContextErr(ctx); err != nil {
 				return nil, err
 			}
@@ -530,7 +542,7 @@ func rebuildOrderedSpine(
 			if compatibilityErr != nil || !compatible {
 				return nil, nil // incompatible spine — keep the explicit sort
 			}
-			inner, err := rebuildOrderedSpine(ctx, om, sortExpr, elider, sel, stats, visited, pinned)
+			inner, err := rebuildOrderedSpine(ctx, om, below, elider, sel, stats, visited, pinned)
 			if err != nil {
 				return nil, err
 			}

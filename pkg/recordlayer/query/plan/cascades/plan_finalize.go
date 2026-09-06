@@ -1,6 +1,8 @@
 package cascades
 
 import (
+	"errors"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
@@ -41,17 +43,60 @@ import (
 // execution and each page rebuilds its cursor hierarchy from it concurrently,
 // so stamping at execution time would be a data race on values.
 //
-// A type with no message form (a bare scalar record field, an erased array)
-// yields a *values.ProtoTypeError from MessageDescriptorFor. That is NOT a
-// query failure: the constructor simply stays unstamped and evaluates to its
-// name-keyed map, exactly as it did before the bake existed.
-func FinalizePlan(plan plans.RecordQueryPlan) {
+// Every OTHER descriptor failure leaves the constructor unstamped, evaluating
+// to its name-keyed map exactly as it did before the bake existed, and is not
+// a query failure. The failures that reach it, enumerated rather than
+// characterised — a COUNT is the same over-claim one layer up:
+//
+//   - a type with no message form (a bare scalar record field, an erased
+//     array), a *values.ProtoTypeError, which
+//     TestFinalizePlanReturnsTheNameClashAndKeepsTheMapForNoMessageForm drives;
+//   - a record or field name protoname cannot ESCAPE (`$lead`, `a-b`, a name
+//     starting `__0`), also a *values.ProtoTypeError but NOT a missing message
+//     form — defineRecordLocked refuses it before a message is built;
+//   - a synthesised file that does not VALIDATE for a reason other than a
+//     declared-name clash, returned by compileLocked through the same call.
+//     A FULL OUTER JOIN over legs that both carry `ID` reaches it: the
+//     ordinal row is built by NewRawRecordConstructorValue, which keeps field
+//     names VERBATIM by design (NewRecordConstructorValue suffixes instead —
+//     `ID`, `ID_2`), so its descriptor cannot validate. Compilation is
+//     per-REPOSITORY and the bad message stays in it, so the damage is NOT
+//     that row alone: every type asked for after it fails the same way. On
+//     the query below THREE of the four constructors end up with no descriptor though only
+//     ONE repeats a name, and the fourth keeps the descriptor it was given
+//     before the bad message was appended — so which rows survive is
+//     walk-order dependent. It costs descriptor IDENTITY rather than data —
+//     the emitting paths build dense positional rows the result set reads by
+//     ordinal, so every field still arrives. TODO.md's "A join row that names
+//     one field twice leaves its plan's rows unstamped" carries the closure;
+//     TestFinalizePlanLeavesTheDuplicateNameJoinRowUnstamped pins the query and
+//     TestDuplicateFieldNameRowPoisonsTheWholeRepository the mechanism.
+//
+// Turning the third loud refuses a query that answers today, so it stays
+// swallowed and pinned instead.
+//
+// One declared name over two shapes — `STRUCT foo (1 AS p)` beside `STRUCT
+// foo (2 AS p, 3 AS q)` — is a query failure, and the one error this returns
+// (values.DeclaredNameClashError): each constructor has a message form, and
+// the two DescriptorProtos of one name make a file that does not validate.
+// Java throws there (TypeRepository.build); swallowing it here let the driver
+// hand such a row back as raw maps with no error.
+func FinalizePlan(plan plans.RecordQueryPlan) error {
 	if plan == nil {
-		return
+		return nil
 	}
-	repo := values.NewTypeProtoRepository()
-	seenPlans := map[plans.RecordQueryPlan]struct{}{}
-	stampPlanNode(plan, repo, seenPlans)
+	st := &planStamper{repo: values.NewTypeProtoRepository()}
+	ForEachPlanRecordConstructor(plan, func(rc *values.RecordConstructorValue) {
+		stampRecordConstructor(rc, st)
+	})
+	return st.nameClash
+}
+
+// planStamper carries the one repository a plan's constructors are stamped
+// from, and the first declared-name clash the walk met.
+type planStamper struct {
+	repo      *values.TypeProtoRepository
+	nameClash error
 }
 
 // feedsAWrite reports whether this plan node and everything beneath it
@@ -99,30 +144,9 @@ func feedsAWrite(plan plans.RecordQueryPlan) bool {
 	return false
 }
 
-// stampPlanNode walks the plan DAG. Plans are DAGs, not trees — a shared
-// sub-plan is reachable by more than one edge — so the seen-set is required for
-// termination, exactly as validatePlanNode needs it.
-func stampPlanNode(plan plans.RecordQueryPlan, repo *values.TypeProtoRepository, seen map[plans.RecordQueryPlan]struct{}) {
-	if plan == nil {
-		return
-	}
-	if _, ok := seen[plan]; ok {
-		return
-	}
-	seen[plan] = struct{}{}
-
-	if feedsAWrite(plan) {
-		return
-	}
-
-	stampNodeLocalValues(plan, repo)
-
-	for _, c := range plan.GetChildren() {
-		stampPlanNode(c, repo, seen)
-	}
-}
-
-// stampNodeLocalValues reaches every value tree hanging off THIS plan node.
+// forEachNodeLocalValue reaches every value tree hanging off THIS plan node.
+// It does not walk the plan — ForEachPlanRecordConstructor does that, and owns
+// the DAG seen-set and the write-fed prune.
 //
 // GetResultValue() alone is not enough. Many plans flow their inner's value
 // through GetResultValue and keep the computed tree in a node-local field
@@ -145,40 +169,40 @@ func stampPlanNode(plan plans.RecordQueryPlan, repo *values.TypeProtoRepository,
 // FinalizePlan. A plan that grows a new value-bearing field, or one whose
 // subtree stops being reachable, fails that test rather than silently going
 // unstamped.
-func stampNodeLocalValues(plan plans.RecordQueryPlan, repo *values.TypeProtoRepository) {
-	stampValue(plan.GetResultValue(), repo)
+func forEachNodeLocalValue(plan plans.RecordQueryPlan, emit func(values.Value)) {
+	emit(plan.GetResultValue())
 
 	switch p := plan.(type) {
 	case *plans.RecordQueryProjectionPlan:
-		stampValues(p.GetProjections(), repo)
+		forEachValue(p.GetProjections(), emit)
 	case *plans.RecordQueryPredicatesFilterPlan:
-		stampPredicates(p.GetPredicates(), repo)
+		forEachPredicateValue(p.GetPredicates(), emit)
 	case *plans.RecordQueryFilterPlan:
-		stampPredicates(p.GetPredicates(), repo)
+		forEachPredicateValue(p.GetPredicates(), emit)
 	case *plans.RecordQueryNestedLoopJoinPlan:
-		stampPredicates(p.GetPredicates(), repo)
+		forEachPredicateValue(p.GetPredicates(), emit)
 	case *plans.RecordQueryStreamingAggregationPlan:
-		stampValues(p.GetGroupingKeys(), repo)
+		forEachValue(p.GetGroupingKeys(), emit)
 		for _, a := range p.GetAggregates() {
-			stampValue(a.Operand, repo)
+			emit(a.Operand)
 		}
 	case *plans.RecordQueryScanPlan:
-		stampValues(p.GetPrimaryKeyValues(), repo)
-		stampScanComparisons(p.GetScanComparisons(), repo)
+		forEachValue(p.GetPrimaryKeyValues(), emit)
+		forEachScanComparisonValue(p.GetScanComparisons(), emit)
 	case *plans.RecordQueryIndexPlan:
-		stampValues(p.GetCommonPrimaryKeyValues(), repo)
-		stampScanComparisons(p.GetScanComparisons(), repo)
+		forEachValue(p.GetCommonPrimaryKeyValues(), emit)
+		forEachScanComparisonValue(p.GetScanComparisons(), emit)
 	case *plans.RecordQueryAggregateIndexPlan:
 		// The wrapped index scan is a STRUCTURAL field, not a child: this plan
 		// is Java's RecordQueryPlanWithNoChildren and GetChildren returns nil.
 		// So the plan walk never descends into it and only this arm reaches its
 		// comparands and common primary key. Recursing through
-		// stampNodeLocalValues rather than repeating the index-plan field list
+		// forEachNodeLocalValue rather than repeating the index-plan field list
 		// keeps the two in step by construction. The nil guard is for the
 		// struct-literal test plans that bypass the constructor — a typed-nil
 		// pointer in an interface is not == nil, so it must be checked here.
 		if idx := p.GetIndexPlan(); idx != nil {
-			stampNodeLocalValues(idx, repo)
+			forEachNodeLocalValue(idx, emit)
 		}
 	case *plans.RecordQueryCoveringIndexPlan:
 		// The second plan of the same shape, and for the same reason: the
@@ -186,7 +210,7 @@ func stampNodeLocalValues(plan plans.RecordQueryPlan, repo *values.TypeProtoRepo
 		// likewise implements RecordQueryPlanWithNoChildren), GetChildren
 		// returns nil, so the plan walk never descends into it.
 		//
-		// Recursing through stampNodeLocalValues rather than reading this
+		// Recursing through forEachNodeLocalValue rather than reading this
 		// plan's own delegating GetScanComparisons/GetCommonPrimaryKeyValues is
 		// deliberate: the delegates would have to be re-enumerated here every
 		// time the index-plan arm above grows a field, and the day they drift
@@ -195,116 +219,175 @@ func stampNodeLocalValues(plan plans.RecordQueryPlan, repo *values.TypeProtoRepo
 		// field-number-keyed message. Recursion keeps the two in step by
 		// construction.
 		if idx := p.GetIndexPlan(); idx != nil {
-			stampNodeLocalValues(idx, repo)
+			forEachNodeLocalValue(idx, emit)
 		}
 	case *plans.RecordQueryVectorIndexPlan:
-		stampScanComparisons(p.GetPrefixComparisons(), repo)
-		stampValue(p.GetQueryVector(), repo)
-		stampValue(p.GetK(), repo)
+		forEachScanComparisonValue(p.GetPrefixComparisons(), emit)
+		emit(p.GetQueryVector())
+		emit(p.GetK())
 	case *plans.RecordQueryInMemorySortPlan:
 		for _, sk := range p.GetSortKeys() {
-			stampValue(sk.ValueExpr, repo)
+			emit(sk.ValueExpr)
 		}
 	case *plans.RecordQueryMergeSortUnionPlan:
-		stampValues(p.GetComparisonKeys(), repo)
+		forEachValue(p.GetComparisonKeys(), emit)
 	case *plans.RecordQueryInUnionPlan:
-		stampValues(p.GetComparisonKeys(), repo)
+		forEachValue(p.GetComparisonKeys(), emit)
 	case *plans.RecordQueryIntersectionPlan:
-		stampValues(p.GetComparisonKeyValues(), repo)
+		forEachValue(p.GetComparisonKeyValues(), emit)
 	case *plans.RecordQueryMultiIntersectionOnValuesPlan:
-		stampValues(p.GetComparisonKey(), repo)
+		forEachValue(p.GetComparisonKey(), emit)
 	case *plans.RecordQueryComparatorPlan:
-		stampValues(p.GetComparisonKeyValues(), repo)
+		forEachValue(p.GetComparisonKeyValues(), emit)
 	case *plans.RecordQueryExplodePlan:
-		stampValue(p.GetCollectionValue(), repo)
+		emit(p.GetCollectionValue())
 	case *plans.RecordQueryValuesPlan:
-		stampValues(p.GetColumns(), repo)
+		forEachValue(p.GetColumns(), emit)
 	case *plans.RecordQueryTableFunctionPlan:
-		stampValue(p.GetStreamValue(), repo)
+		emit(p.GetStreamValue())
 	case *plans.RecordQueryFirstOrDefaultPlan:
-		stampValue(p.GetDefaultValue(), repo)
+		emit(p.GetDefaultValue())
 	case *plans.RecordQueryDefaultOnEmptyPlan:
-		stampValue(p.GetDefaultValue(), repo)
+		emit(p.GetDefaultValue())
 	case *plans.RecordQueryLimitPlan:
-		stampValue(p.GetLimitValue(), repo)
+		emit(p.GetLimitValue())
 	}
 }
 
-// stampValues stamps each value in a slice.
-func stampValues(vs []values.Value, repo *values.TypeProtoRepository) {
+// ForEachPlanRecordConstructor visits every RecordConstructorValue the plan-time
+// bake considers, in the bake's own order. FinalizePlan IS this walk — it calls
+// this function and stamps what it is handed — so the two are not "kept in
+// step", they are the same code, and a census taken here counts exactly the
+// population the bake did.
+//
+// That identity is the point. A census that walks only result values and child
+// edges misses every constructor reached through a projection list, a predicate,
+// a grouping key, a scan comparand, a default value or a structural plan field,
+// and it misses them SILENTLY — a smaller population that still reads like a
+// measurement. A census that walks MORE than the bake fails the other way, and
+// this function shipped that bug once: it descended into write-fed subtrees the
+// bake prunes, so it reported constructors FinalizePlan never stamps and would
+// have inflated any DML census. Both directions are why the walk is shared
+// rather than described.
+//
+// Write-fed subtrees are excluded, node and descendants, because the bake
+// excludes them: a plan feeding an INSERT, UPDATE, DELETE or temp-table insert
+// has its row shape fixed by the TARGET's declared descriptor, not by the
+// constructor's own inferred type, so stamping there would bake the wrong
+// descriptor. TestFinalizePlanCoversStructuralKey asserts that exclusion is
+// deliberate, and TestTheCensusWalkPrunesWriteFedSubtreesAsTheBakeDoes pins that
+// this walk and the bake agree about it.
+//
+// The value walk continues THROUGH a constructor rather than pruning at it: a
+// constructor's children can hold further constructors (a nested record
+// literal), and those need their own descriptors — which, coming from the same
+// repository, are identical to the ones their parent's descriptor references.
+// That containment is what makes a stamped parent imply a stamped child, and
+// TestTheBakeStampsAParentAndItsChildTogetherOrNeither pins it.
+//
+// visit is called once per constructor occurrence, so a value reachable by two
+// routes is visited twice; plan NODES are visited once each.
+func ForEachPlanRecordConstructor(plan plans.RecordQueryPlan, visit func(*values.RecordConstructorValue)) {
+	seen := map[plans.RecordQueryPlan]struct{}{}
+	var walk func(plans.RecordQueryPlan)
+	walk = func(p plans.RecordQueryPlan) {
+		if p == nil {
+			return
+		}
+		if _, done := seen[p]; done {
+			return
+		}
+		seen[p] = struct{}{}
+		if feedsAWrite(p) {
+			return
+		}
+		forEachNodeLocalValue(p, func(v values.Value) {
+			if v == nil {
+				return
+			}
+			values.WalkValue(v, func(node values.Value) bool {
+				if rc, ok := node.(*values.RecordConstructorValue); ok {
+					visit(rc)
+				}
+				return true
+			})
+		})
+		for _, c := range p.GetChildren() {
+			walk(c)
+		}
+	}
+	walk(plan)
+}
+
+// forEachValue emits each value in a slice.
+func forEachValue(vs []values.Value, emit func(values.Value)) {
 	for _, v := range vs {
-		stampValue(v, repo)
+		emit(v)
 	}
 }
 
-// stampPredicates crosses from the predicate spine into the value spine. The
+// forEachPredicateValue crosses from the predicate spine into the value spine. The
 // two walkers are disjoint — WalkPredicate does not descend into Values and
 // WalkValue does not descend into predicates — so a predicate's value operands
 // are only reachable by walking both.
-func stampPredicates(preds []predicates.QueryPredicate, repo *values.TypeProtoRepository) {
+func forEachPredicateValue(preds []predicates.QueryPredicate, emit func(values.Value)) {
 	for _, p := range preds {
 		predicates.WalkPredicate(p, func(node predicates.QueryPredicate) bool {
 			switch q := node.(type) {
 			case *predicates.ComparisonPredicate:
-				stampValue(q.Operand, repo)
-				stampValue(q.Comparison.Operand, repo)
+				emit(q.Operand)
+				emit(q.Comparison.Operand)
 			case *predicates.ValuePredicate:
-				stampValue(q.Value, repo)
+				emit(q.Value)
 			case *predicates.ExistentialValuePredicate:
-				stampValue(q.Value, repo)
-				stampValue(q.Comparison.Operand, repo)
+				emit(q.Value)
+				emit(q.Comparison.Operand)
 			case *predicates.Placeholder:
-				stampValue(q.Value, repo)
-				stampComparisonRange(q.CompRange, repo)
+				emit(q.Value)
+				forEachComparisonRangeValue(q.CompRange, emit)
 			}
 			return true
 		})
 	}
 }
 
-// stampScanComparisons reaches the comparands baked into a scan's ranges.
-func stampScanComparisons(ranges []*predicates.ComparisonRange, repo *values.TypeProtoRepository) {
+// forEachScanComparisonValue reaches the comparands baked into a scan's ranges.
+func forEachScanComparisonValue(ranges []*predicates.ComparisonRange, emit func(values.Value)) {
 	for _, r := range ranges {
-		stampComparisonRange(r, repo)
+		forEachComparisonRangeValue(r, emit)
 	}
 }
 
-// stampComparisonRange stamps every comparand of one range. GetComparisons()
+// forEachComparisonRangeValue emits every comparand of one range. GetComparisons()
 // enumerates equality and inequality comparisons uniformly, so a range shape
 // added later cannot slip past a hand-branched IsEquality/IsInequality test.
-func stampComparisonRange(r *predicates.ComparisonRange, repo *values.TypeProtoRepository) {
+func forEachComparisonRangeValue(r *predicates.ComparisonRange, emit func(values.Value)) {
 	if r == nil {
 		return
 	}
 	for _, c := range r.GetComparisons() {
 		if c != nil {
-			stampValue(c.Operand, repo)
+			emit(c.Operand)
 		}
 	}
 }
 
-// stampValue walks one value tree and stamps every record constructor in it.
-//
-// The walk continues THROUGH a stamped constructor rather than pruning at it:
-// a constructor's children can hold further constructors (a nested record
-// literal), and those need their own descriptors — which, coming from the same
-// repository, are identical to the ones their parent's descriptor references.
-func stampValue(v values.Value, repo *values.TypeProtoRepository) {
-	if v == nil {
+// stampRecordConstructor is the whole of the bake, per constructor. Everything
+// else in this file is the traversal that decides WHICH constructors reach it,
+// and this function walks nothing.
+func stampRecordConstructor(rc *values.RecordConstructorValue, st *planStamper) {
+	md, err := st.repo.MessageDescriptorFor(rc.Type())
+	if err != nil {
+		var clash *values.DeclaredNameClashError
+		if errors.As(err, &clash) && st.nameClash == nil {
+			// One declared name over two shapes: a query failure, carried out of
+			// the walk (FinalizePlan).
+			st.nameClash = err
+		}
+		// Otherwise a type with no message form, or a file that does not
+		// validate for another reason (see FinalizePlan's doc). Not a query
+		// failure — the constructor keeps its map representation.
 		return
 	}
-	values.WalkValue(v, func(node values.Value) bool {
-		rc, ok := node.(*values.RecordConstructorValue)
-		if !ok {
-			return true
-		}
-		md, err := repo.MessageDescriptorFor(rc.Type())
-		if err != nil {
-			// A type with no message form. Not a query failure — the
-			// constructor keeps its map representation.
-			return true
-		}
-		rc.SetMessageDescriptor(md)
-		return true
-	})
+	rc.SetMessageDescriptor(md)
 }

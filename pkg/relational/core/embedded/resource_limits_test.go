@@ -100,7 +100,7 @@ func TestRFC106a_SQLSTATEMap(t *testing.T) {
 		name string
 		err  error
 	}{
-		{"materialization", &executor.MaterializationLimitExceededError{Limit: 100_000, Context: "buffered union"}},
+		{"materialization", &executor.MaterializationLimitExceededError{Limit: 100_000, Context: "recursive DFS children"}},
 		{"sortBuffer", &executor.SortBufferExceededError{Rows: 6_000_000, Limit: 5_000_000}},
 		{"scanLimitFail", &recordlayer.ScanLimitReachedError{Reason: recordlayer.ScanLimitReached}},
 	}
@@ -122,7 +122,7 @@ func TestRFC106a_SQLSTATEMap(t *testing.T) {
 	// RFC-180 WS-A: a resume attempt on a cursor shape with no continuation
 	// support declines typed — 0A000, not 54F01 and never a generic error.
 	{
-		got := translateExecError(&executor.UnsupportedContinuationError{Shape: "buffered union"})
+		got := translateExecError(&executor.UnsupportedContinuationError{Shape: "nested loop join FULL OUTER (does not resume)"})
 		var apiErr *api.Error
 		if !errors.As(got, &apiErr) || apiErr.Code != api.ErrCodeUnsupportedOperation {
 			t.Fatalf("UnsupportedContinuationError → %v, want *api.Error 0A000", got)

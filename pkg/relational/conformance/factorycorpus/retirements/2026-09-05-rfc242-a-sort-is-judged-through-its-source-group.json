@@ -1,0 +1,73 @@
+{
+  "format_version": 2,
+  "rfc": "RFC-242",
+  "date": "2026-09-05",
+  "reason": "A sort over an order-preserving wrapper is judged through the wrapper's source group with the request restated through its result value; a Fetch over an equality-bound index scan now satisfies ORDER BY \u003cbound key\u003e, id without a sort. Plan shape only: renderings, schema, setup and frozen rows verified unchanged.",
+  "base_commit": "36b97f1e91b5c88658e8d759668b981ffebfcb7d",
+  "before_census_sha256": "f880f87f07f5e7282714360f9bde0ba98e746d08565098c597cb8aa294e950e0",
+  "after_census_sha256": "31f736031be26c2cd9af2cf30db17074573b59b8aac6db9746b7c5629bfce32e",
+  "before_tree_sha256": "e9475d69742b9a53d053938b81d808c403b23b43e5626f273f3c4505c06cab4a",
+  "after_tree_sha256": "3594d91abd536f3512c6d236163100cad077358461c4723f0fdf8cfc74f4e78b",
+  "changes": [
+    {
+      "name": "single__and_arith-cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "13b9fb0ce5e9f287d24c3d9f0894b445909e4e631c686814ec991fdde74b4532",
+      "new_sha256": "712a551f96be6b3c235c1b2c64416076725f18595de11fd0e87af0faa5aea4fb"
+    },
+    {
+      "name": "single__and_between-cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "2b1e1e0b6087042572c908358ee218e019e7d0b2fd2398ed65ceaac1d8672c25",
+      "new_sha256": "62235c7709e0583393d93bd6710cab16799d95e079dfc4483b025ecad24363d2"
+    },
+    {
+      "name": "single__and_case-cmp-numfn__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "0707b3b986cd057050391ad50984934ac8be4e4317a24fb66f656466b93ec061",
+      "new_sha256": "c744679016c4e9c9d3d13a3eefaea78d5b15154c6e17023be57fa2536dc5a964"
+    },
+    {
+      "name": "single__and_cmp-colcol__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "c6a8b70f118f04d0f42b8ec0497b0915da05d973bc201da6b845f5d011b60591",
+      "new_sha256": "96272d4bf6b71451a36d0fa23ffd8de4834c8c40b278cfe5f04e6d6961cd538a"
+    },
+    {
+      "name": "single__and_cmp-in__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "b577ce172bd73e97c82259c3832eb4cae35a86fb17066f9fea7abaab879157bf",
+      "new_sha256": "cb4915a15074f1e8c16172cb25b9d3835d2bd989e8d59b2d8fa8146eb1021f52"
+    },
+    {
+      "name": "single__and_cmp-numfn__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "c3446d7c54727cc9f7c87a710cf2e8d866ca1032c366f29ebd85f0ef49ff9910",
+      "new_sha256": "507e1823b63552f76863f033b3d91adc4ecb91969d3d9f37d7433554e606899f"
+    },
+    {
+      "name": "single__and_cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "4eb5dd97ca32d41b9b295571b64d2513d409e664cdbfebe078d14396dba70771",
+      "new_sha256": "ed8e73ca7970595cece701e32a4b50f8c78f14912f8cc8791e2ad252bd898809"
+    },
+    {
+      "name": "single__and_not_cmp-cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "2b50ba1f42477eea0b7de7a042527b8d7f189f57e6743f5819d3f7c74aa59e32",
+      "new_sha256": "020d8d6ce0b882d0174c02bf0d5f0bc59cf0618b2d5dc9d9efec04ba168377d0"
+    },
+    {
+      "name": "single__and_not_in-cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "2f928a276c3dcf8c5bfb458f16f623dbb990dd27de49471bb35ff3e5aa94f989",
+      "new_sha256": "ac048f9fb20361a3652d80216a3145f26a247056a0fb53dfbd93627591b3db96"
+    },
+    {
+      "name": "single__and_not_numfn-cmp__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "532d02a626bd240b7e9efa6f6ae044f8a41af8e14d64958249db452a2276b0e3",
+      "new_sha256": "8b5d9e82e8e76c2e722f1d05a2b88b11256bf2cdbd224c27034fa3f3145589dc"
+    }
+  ]
+}
