@@ -50,6 +50,21 @@
 #     lands a signal inside a rename. What the arms do drive is what the
 #     construction is FOR: a failed copy publishes nothing, exactly one
 #     generation survives the prune, and no staging outlives the copier.
+#   - the TERM arm of the watcher's trap. `trap 'exit' TERM INT` is what makes
+#     the EXIT trap reachable at all, since an untrapped SIGTERM kills a shell
+#     without running EXIT — but removing it reddens NOTHING here, because the
+#     stop lands inside `docker cp`, the copy then fails, and the failure branch
+#     removes the staging directory before the trap would have. Removing the EXIT
+#     trap DOES redden. So the arm drives the cleanup, not the chaining that
+#     reaches it, and the chaining is asserted from the shell's documented
+#     behaviour rather than from a run.
+#   - `mv -T` as such. The generation counter already guarantees the target does
+#     not exist, so `-T` is a second, structural refusal to nest rather than a
+#     behaviour the fixtures can reach: replacing it with a plain `mv` reddens
+#     nothing. It is kept because the two mechanisms fail differently — a counter
+#     bug silently nests and returns 0, and that is what `-T` refuses — but no
+#     arm here shows it doing so. What the arms DO catch is the counter breaking:
+#     pinning `gen` at a constant reddens two trace-capture arms.
 #   - anything about a REAL fdbserver: every trace here is a fixture, so this
 #     pins the plumbing and not the format it carries.
 #
@@ -101,6 +116,11 @@ case "$1" in
     ;;
   exec) exit 1 ;;   # df sampling is not what these cases are about
   cp)
+    # A slow copy, so the stop signal is GUARANTEED to land inside it rather
+    # than landing there once in a thousand runs. Without this knob the staging
+    # arms pass because the window is narrow, not because it is closed — which
+    # is what a review measured by widening exactly this call.
+    [ -f "$WATCHTEST_STATE/slowcp" ] && sleep 3
     # `docker cp c1:/var/fdb/logs/. dest/`
     # The container can vanish BETWEEN the loop's inspect and its copy; this
     # knob is that window, which no phase can express on its own.
@@ -132,8 +152,19 @@ start_watcher() {
   return 1
 }
 stop_watcher() {
-  [ -s "$WORK/fdb-watch.pid" ] && kill -TERM -"$(cat "$WORK/fdb-watch.pid")" 2>/dev/null
-  sleep 1
+  # CONFIRM the group is gone rather than sleeping once and assuming it. Three
+  # arms read the workspace after this returns, and a stop that has not landed
+  # turns each of them into a race against a loop that is still writing. The
+  # workflow's own stop step escalates the same way, so this mirrors what ships.
+  [ -s "$WORK/fdb-watch.pid" ] || return 0
+  pgid=$(cat "$WORK/fdb-watch.pid")
+  kill -TERM -"$pgid" 2>/dev/null
+  for _ in $(seq 1 40); do
+    kill -0 -"$pgid" 2>/dev/null || return 0
+    sleep 0.25
+  done
+  kill -KILL -"$pgid" 2>/dev/null
+  sleep 0.5
 }
 
 echo "rowdiff fdb-watch:"
@@ -204,7 +235,7 @@ if start_watcher 3600; then
   # Read AFTER the quiesce: staging exists for a moment on every copy, so a live
   # check reports a failure whenever it lands in that moment — a flake, not a
   # finding.
-  if ls -d "$WORK"/.fdb-logs-* >/dev/null 2>&1; then
+  if ls -d "$WORK"/.fdb-logs-*-exit.new >/dev/null 2>&1; then
     bad "the exit-transition copy leaves no staging directory"
   else
     ok "the exit-transition copy leaves no staging directory"
@@ -229,7 +260,7 @@ if start_watcher 3600; then
   echo stopped > "$STATE/phase"
   sleep 4
   stop_watcher
-  if ls -d "$WORK"/.fdb-logs-* >/dev/null 2>&1; then
+  if ls -d "$WORK"/.fdb-logs-*-exit.new >/dev/null 2>&1; then
     bad "a FAILED exit copy leaves no staging directory"
   else
     ok "a FAILED exit copy leaves no staging directory"
@@ -276,25 +307,51 @@ if start_watcher 1; then
   # failure whenever the check lands between the `mkdir` and the rename, which is
   # a flake and not a finding. Stop first, then read.
   sleep 3
-  stop_watcher
 
-  # ONE generation, not a growing pile. The publish renames onto a fresh
-  # timestamped name — atomic, and the target never pre-exists, so no signal can
-  # catch a half-written published directory — and the previous generation is
-  # pruned only AFTER the new one is in place. Without the prune this directory
-  # grows one entry per cycle for the whole lane.
+  # END ON A FAILING CYCLE. Without this the last cycle SUCCEEDS, and a
+  # successful publish consumes its staging directory by renaming it — so the
+  # periodic failure branch's `rm -rf` could be deleted and the staging arm below
+  # would still be green. Measured: with the case ending on a success, that
+  # mutation reddened nothing. The failing cycle is what gives the arm its teeth,
+  # and it is the same vacuity the exit path's arm had.
+  # …and make that last cycle SLOW, so the stop lands mid-copy. This is what
+  # gives the staging arm below its teeth: the copy loop is asleep almost all
+  # of the time, so a signal at a random instant essentially never lands in the
+  # window, and five clean runs cannot tell p=0 from p a thousandth.
+  touch "$STATE/slowcp"
+  touch "$STATE/cpfail"
+  sleep 3
+  stop_watcher
+  rm -f "$STATE/slowcp"
+
+  # ONE generation, not a growing pile. The publish renames staging onto a name
+  # carrying a per-cycle COUNTER, with `mv -T` so it can never nest, and the
+  # previous generation is removed only AFTER the new one is in place — so the
+  # glob never sees zero and never sees two. Without the prune this grows one
+  # entry per cycle for the whole lane.
   gens=$(ls -d "$WORK"/fdb-logs-c1.* 2>/dev/null | wc -l)
   if [ "$gens" = 1 ]; then
     ok "exactly one published generation survives the prune"
   else
     bad "exactly one published generation survives the prune (found $gens)"
   fi
-  # And nothing dot-prefixed is left behind. A staging leftover is invisible to
-  # the dump's glob but still litters the workspace the upload walks.
-  if ls -d "$WORK"/.fdb-logs-* >/dev/null 2>&1; then
-    bad "no staging directory outlives the copier"
+  # The published generation must hold the traces DIRECTLY. A publish that nested
+  # instead of replacing leaves them one level down, where the dump's `grep -r`
+  # still finds them but the file list the dump prints does not — and the
+  # generation count above still reads 1, so nesting is invisible to it.
+  if find "$WORK"/fdb-logs-c1.* -mindepth 1 -type d 2>/dev/null | grep -q .; then
+    bad "the published generation holds no nested directory ($(find "$WORK"/fdb-logs-c1.* -mindepth 1 -type d | tr '\n' ' '))"
   else
-    ok "no staging directory outlives the copier"
+    ok "the published generation holds no nested directory"
+  fi
+  # And nothing dot-prefixed is left behind by THIS loop. The glob names the
+  # periodic staging specifically: both loops stage under `.fdb-logs-*`, so a
+  # shared glob makes a leak in either fire whichever arm happens to run, which
+  # is how a periodic leak was once reported as an exit one.
+  if ls -d "$WORK"/.fdb-logs-c1.new >/dev/null 2>&1; then
+    bad "the PERIODIC copier leaves no staging directory"
+  else
+    ok "the PERIODIC copier leaves no staging directory"
   fi
 else
   bad "the watcher never recorded a pid (cpfail case)"
@@ -416,7 +473,7 @@ alarm_case "a watcher inspect is evidence" '=== host ===' 'ts c1 exit=1' failure
 #
 # There are TWO copies, one per step, and covering one is how a suite reports the
 # guard as covered while the other stays free to be deleted. Measured on this
-# file as committed, at 28 arms: deleting the forensics copy reddens exactly one
+# file as committed, at 29 arms: deleting the forensics copy reddens exactly one
 # arm, and deleting the WATCHER copy reddens exactly one — the other one — where
 # before the extraction named a step and deleting the watcher's reddened NONE.
 # (An earlier version of this sentence said "at 18 arms", which was the count of

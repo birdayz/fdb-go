@@ -188,6 +188,29 @@ jobs:
           echo "watching image foundationdb/foundationdb:$ver"
           cat > fdb-watch.sh <<'SH'
           #!/usr/bin/env bash
+          # STAGING BELONGS TO NOBODY ONCE THIS SCRIPT IS SIGNALLED.
+          #
+          # The stop step signals this whole process group at an arbitrary point,
+          # and the likeliest instant to be inside is a COPY — the only slow thing
+          # here. A signal there leaves a `.fdb-logs-*.new` directory on the
+          # runner. Harmless to the dump and to the upload, which both skip a
+          # dot-prefixed name, but litter — and it made "no staging outlives the
+          # copier" a claim that held only because the window is narrow. Measured
+          # by widening the copy until the stop was guaranteed to land inside it:
+          # the assertion failed. The suite drives that window deterministically
+          # rather than hoping to hit it.
+          #
+          # ONE trap, at the top, not one per loop. Both stagings live in this
+          # working directory, so a single glob covers the periodic copier's and
+          # the exit copy's alike; a per-subshell trap as well was measured to be
+          # redundant — removing either alone changed nothing, and only removing
+          # both reddened the arm, which is two mechanisms for one job.
+          #
+          # The TERM arm is what makes the EXIT arm reachable: an untrapped SIGTERM
+          # kills the shell without running EXIT at all, so `exit` here is what
+          # turns the signal into an ordinary exit that the EXIT trap sees.
+          trap 'rm -rf .fdb-logs-*.new' EXIT
+          trap 'exit' TERM INT
           img="foundationdb/foundationdb:$FDB_IMAGE_TAG"
           # The script records its OWN pid. Under `setsid` it is a session leader, so
           # its pid IS its process-group id and killing that group takes the
@@ -236,6 +259,7 @@ jobs:
               # construction. Its one weakness is staleness — up to one cycle — and
               # the exit-transition copy below cuts it to nothing on every path
               # where the container STOPS rather than being removed outright.
+              gen=0; prevgen=""
               ( while docker inspect "$c" >/dev/null 2>&1; do
                   # PUBLISH BY ATOMIC RENAME ONTO A NAME THAT DOES NOT EXIST.
                   #
@@ -261,19 +285,38 @@ jobs:
                   # be a byte no reader can trust.
                   #
                   # A rename onto a fresh name has none of them. `rename(2)` on one
-                  # filesystem is atomic, the target never pre-exists, and the previous
-                  # generation is only pruned AFTER the new one is in place — so at
-                  # every instant, including any instant a signal can land, the glob
-                  # sees exactly one COMPLETE snapshot. Generations sort by the epoch
-                  # stamp; only the newest survives the prune. The `.` separator keeps
-                  # `fdb-logs-$c.*` from ever matching the exit copy's `fdb-logs-$c-exit`.
+                  # The generation name is a COUNTER, not a timestamp, and the
+                  # predecessor is REMEMBERED rather than re-derived by listing.
+                  # Both are load-bearing, and both replace something measured to
+                  # be wrong rather than something merely inelegant.
+                  #
+                  # A `$(date +%s)` stamp is not unique. Two cycles inside one
+                  # second hand `mv` a target that already EXISTS, and `mv` of a
+                  # directory onto an existing directory does not fail — it moves
+                  # the source INSIDE it and returns 0. The copy then sits at
+                  # `fdb-logs-$c.<ts>/.fdb-logs-$c.new`, one level below where the
+                  # dump reads, while the exit status says the publish succeeded
+                  # and a "how many generations are there" check still sees
+                  # exactly one. Silent, and green. It is the same mv-nests trap
+                  # this loop's sibling already had, reached from the other side.
+                  # A counter cannot repeat.
+                  #
+                  # And `ls | sort | head -n -1` orders LEXICOGRAPHICALLY, so it
+                  # is correct only while every stamp has the same width: `.9`
+                  # sorts after `.10` and `.100`. Epoch seconds are 10 digits
+                  # until 2286, which makes the bug real and dormant — the worst
+                  # kind to leave in a prune whose job is deleting things.
+                  # Remembering the previous name removes the ordering question
+                  # instead of answering it, and removes parsing `ls` with it.
+                  gen=$((gen + 1))
                   rm -rf ".fdb-logs-$c.new"
                   if mkdir -p ".fdb-logs-$c.new" &&
                      docker cp "$c:/var/fdb/logs/." ".fdb-logs-$c.new/" >/dev/null 2>&1 &&
-                     mv ".fdb-logs-$c.new" "fdb-logs-$c.$(date +%s)"; then
-                    ls -d "fdb-logs-$c."* 2>/dev/null | sort | head -n -1 | while read -r old; do
-                      rm -rf "$old"
-                    done
+                     mv -T ".fdb-logs-$c.new" "fdb-logs-$c.$gen"; then
+                    # Only AFTER the new generation is in place, so the glob never
+                    # sees zero of them.
+                    [ -n "$prevgen" ] && rm -rf "$prevgen"
+                    prevgen="fdb-logs-$c.$gen"
                   else
                     rm -rf ".fdb-logs-$c.new"
                   fi
@@ -323,17 +366,21 @@ jobs:
                       # Promoted on success too, so an EXISTING directory always
                       # means a copy that worked and an empty one always means a
                       # cluster that wrote nothing.
-                      # Same rename-onto-a-fresh-name publish as the periodic copy,
-                      # and here the destination is unique by construction so no
-                      # prune is needed. `mv -f` onto an EXISTING directory would not
-                      # replace it — it nests the source inside and returns 0, so the
-                      # success line below would be written for a copy that landed one
-                      # level too deep. Renaming onto a name that does not exist
-                      # cannot express that outcome.
-                      rm -rf ".fdb-logs-$seen-exit.new" "fdb-logs-$seen-exit"
+                      # Same publish as the periodic copy, and here the destination is
+                      # unique per container so no prune is needed. `mv -T` is what
+                      # makes it safe rather than the name being fresh: plain `mv` onto
+                      # an EXISTING directory does not replace it, it moves the source
+                      # INSIDE and returns 0, so the success line below would be written
+                      # for a copy that landed one level too deep. An earlier version
+                      # here `rm -rf`d the destination first to prevent that, which is
+                      # the window shape this file spent a round removing — a defect
+                      # traded one step over, again, one line under the comment saying
+                      # not to. `-T` refuses the nest structurally (measured: rc=1,
+                      # "Directory not empty") and needs no window to do it.
+                      rm -rf ".fdb-logs-$seen-exit.new"
                       if mkdir -p ".fdb-logs-$seen-exit.new" &&
                          docker cp "$seen:/var/fdb/logs/." ".fdb-logs-$seen-exit.new/" >/dev/null 2>&1 &&
-                         mv ".fdb-logs-$seen-exit.new" "fdb-logs-$seen-exit"; then
+                         mv -T ".fdb-logs-$seen-exit.new" "fdb-logs-$seen-exit"; then
                         echo "$(date -u +%FT%TZ) $seen logs copied complete at exit" >> fdb-watch.log
                       else
                         rm -rf ".fdb-logs-$seen-exit.new"
