@@ -288,7 +288,14 @@ jobs:
               sleep 1
               if out=$(POLLER="$3" docker ps -aq --filter "id=$1" 2>/dev/null); then
                 if [ -n "$out" ]; then
-                  outage_start=0
+                  # BOTH "present" exits must clear BOTH pieces of state. Clearing
+                  # only the clock here left `misses` set, so a copier that rode
+                  # out an outage and recovered THROUGH THE RE-ISSUE — the exact
+                  # shape the re-issue exists for — skipped one more cycle than it
+                  # needed to. Measured: `down,id` leaves misses=0 and the body
+                  # runs; `down,empty,id` left misses=1 and the body was skipped
+                  # with the container present and the daemon answering.
+                  outage_start=0; misses=0
                   return 0
                 fi
                 gone_reason=removed
@@ -421,11 +428,17 @@ jobs:
                   # anywhere. A daemon reload or an overloaded box produces exactly
                   # that blip — on the box this watcher exists to explain.
                   #
-                  # So: tolerate consecutive misses, and END LOUDLY rather than by
-                  # falling out of a condition. Three misses is the container being
-                  # gone; one is the daemon being busy. The break is logged because a
-                  # capture that stops has to say it stopped — the whole failure this
-                  # replaces was a stop nobody could see.
+                    # So: ask a question that separates them, and END LOUDLY rather
+                    # than by falling out of a condition. `still_there` decides GONE
+                    # from two consecutive rc-0-with-empty answers and OUTAGE from a
+                    # daemon that will not answer; `$misses` counts only the second
+                    # kind and decides nothing but whether to skip a cycle. An earlier
+                    # design counted misses toward a REMOVAL — "three misses is the
+                    # container being gone" — and that sentence outlived the design by
+                    # a round, sitting directly above the loop a reader is trying to
+                    # understand. The break is logged because a capture that stops has
+                    # to say it stopped: the failure this replaces was a stop nobody
+                    # could see.
                   ( launch=$launches; gen=0; prevgen=""; copyfail=""; misses=0
                     while still_there "$c" "periodic copy" copier; do
                       # Tolerating a blip means skipping this cycle, not ending.

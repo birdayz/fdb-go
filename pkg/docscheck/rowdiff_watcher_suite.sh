@@ -158,6 +158,8 @@ STUB
 chmod +x "$BIN/rm"
 
 fail=0
+# Snapshot the tree before any case runs; the arm at the end compares against it.
+TREE_BEFORE=$(git status --porcelain 2>/dev/null | md5sum)
 ok() { printf '  ok   %s\n' "$1"; }
 bad() { printf '  FAIL %s\n' "$1"; fail=1; }
 
@@ -844,18 +846,26 @@ exit 0
 STUB
 chmod +x "$DBIN/docker"
 
-dec_case() {  # $1 name, $2 answer sequence, $3 want-rc, $4 want-reason, $5 want-clock
+dec_case() {  # $1 name, $2 sequence, $3 want-rc, $4 want-reason, $5 want-clock, $6 want-misses
+  # $7 is the STARTING `misses`, i.e. "already riding out an outage". Without it
+# every case begins healthy and the RECOVERY paths cannot be reached at all —
+# one call cannot both enter an outage and come out of it.
+#
+# $6 exists because the two "present" exits were asymmetric: one cleared the
+  # clock AND the skip signal, the other only the clock, so a recovery through
+  # the RE-ISSUE path skipped a cycle it did not need to. rc/reason/clock are
+  # identical in both, so nothing here could see it.
   printf '%s' "$2" > "$DST/seq"; echo 0 > "$DST/n"
   # Run in the scratch dir: `still_there` appends to `fdb-watch.log` in its CWD,
   # and without this the arms write that file into the REPO ROOT — measured, it
   # showed up as an untracked file after a run.
   got=$(cd "$DST" && DECST="$DST" PATH="$DBIN:$PATH" bash -c '
-    maxOutageSeconds=600; outage_start=0; misses=0; gone_reason=
+    maxOutageSeconds=600; misses=$2; outage_start=$([ "$2" = 0 ] && echo 0 || echo 1); gone_reason=
     . "$1"
     still_there c1 "periodic copy" copier; rc=$?
-    printf "%s %s %s" "$rc" "${gone_reason:-none}" "$([ "$outage_start" = 0 ] && echo stopped || echo started)"
-  ' _ "$DEC" 2>/dev/null | tail -1)
-  want="$3 $4 $5"
+    printf "%s %s %s %s" "$rc" "${gone_reason:-none}" "$([ "$outage_start" = 0 ] && echo stopped || echo started)" "$misses"
+  ' _ "$DEC" "${7:-0}" 2>/dev/null | tail -1)
+  want="$3 $4 $5 ${6:-0}"
   if [ "$got" = "$want" ]; then ok "$1"; else bad "$1: got [$got], want [$want]"; fi
 }
 
@@ -864,9 +874,15 @@ dec_case "two empty answers mean REMOVED"                    empty,empty 1 remov
 # The daemon answering mid-reload — the shape the re-issue exists for.
 dec_case "empty then present is a reload, not a removal"     empty,id    0 none    stopped
 # THE ONE THAT SHIPPED WRONG: empty, then the daemon goes down. An outage.
-dec_case "empty then UNREACHABLE is an outage, not a removal" empty,down  0 none    started
+dec_case "empty then UNREACHABLE is an outage, not a removal" empty,down  0 none    started 1
 # And an outright outage from the first call.
-dec_case "unreachable from the first call is an outage"      down,down   0 none    started
+dec_case "unreachable from the first call is an outage"      down,down   0 none    started 1
+# Recovery through each of the two "present" exits must leave the SAME state —
+# both mean "the container is alive", and only one used to say so to the caller.
+# Started already riding out an outage (misses=2), so the recovery is what is
+# being measured rather than the entry.
+dec_case "recovery on the FIRST sample clears the skip signal"  id       0 none stopped 0 2
+dec_case "recovery through the RE-ISSUE clears it too"          empty,id 0 none stopped 0 2
 
 # The DUMP block, which is a different piece of the same instrument and was not
 # covered until it broke. A refactor emptied `[ -d "$d" ]` to `[ -d "" ]` in the
@@ -1008,7 +1024,7 @@ alarm_case "an inspect WITH traces on a failed night is evidence" '=== host ==='
 #
 # There are TWO copies, one per step, and covering one is how a suite reports the
 # guard as covered while the other stays free to be deleted. Measured on this
-# file as committed, at 50 arms: deleting the forensics copy reddens exactly one
+# file as committed, at 53 arms: deleting the forensics copy reddens exactly one
 # arm, and deleting the WATCHER copy reddens exactly one — the other one — where
 # before the extraction named a step and deleting the watcher's reddened NONE.
 # (An earlier version of this sentence said "at 18 arms", which was the count of
@@ -1051,6 +1067,22 @@ guard_cases() {
 
 guard_cases "Capture FDB container forensics" "          {"
 guard_cases "Watch the FDB container while it is alive" '          echo "watching image foundationdb/foundationdb:$ver"'
+
+# THE HARNESS MUST NOT WRITE INTO THE REPOSITORY. Every case here extracts a
+# fragment of the shipped script and runs it, and a fragment that writes a
+# RELATIVE path writes wherever the suite was invoked from — which is the repo
+# root. That already happened once: the decision-table arms left an untracked
+# `fdb-watch.log` behind, and nothing failed. It was caught by reading `git
+# status`, which is no signal at all, and the cause is structural rather than a
+# one-off, because running extracted fragments IS the technique this suite is
+# built on. So the property is asserted rather than remembered.
+if command -v git >/dev/null 2>&1 && git rev-parse --git-dir >/dev/null 2>&1; then
+  if [ "$(git status --porcelain | md5sum)" = "$TREE_BEFORE" ]; then
+    ok "the suite leaves the working tree unchanged"
+  else
+    bad "the suite leaves the working tree unchanged (git status changed; a fragment wrote a relative path into the repo)"
+  fi
+fi
 
 if [ "$fail" -ne 0 ]; then
   echo "FAILURES"
