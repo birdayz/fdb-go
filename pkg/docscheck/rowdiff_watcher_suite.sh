@@ -1105,9 +1105,9 @@ alarm_case "an inspect WITH traces on a failed night is evidence" '=== host ==='
 # claimed they were — "deleting the forensics copy reddens exactly one arm, and
 # deleting the WATCHER copy reddens exactly one, the other one". The second half
 # is true; the first never was, at any committed revision. Re-measured on this
-# file at 60 arms, and again at the previous head to establish which:
+# file at 63 arms, and again at the previous head to establish which:
 #
-#   delete the WATCHER copy    -> 60 arms run, 1 red. `armed` is still set when
+#   delete the WATCHER copy    -> 63 arms run, 1 red. `armed` is still set when
 #                                 awk reaches the forensics `ver="`, so the
 #                                 extraction silently borrows the OTHER step's
 #                                 guard and the pinned case fails on it.
@@ -1167,9 +1167,19 @@ guard_cases "Watch the FDB container while it is alive" '          echo "watchin
 # a scratch run that would have evaporated with the shell it ran in; they are
 # cases now, which is the only form in which they keep holding.
 #
-# Each case runs in its own directory, so none of them can move the repo-root
-# digest the arm below compares.
-DWORK=$(mktemp -d); keep "$DWORK"
+# All six share ONE directory and run in ORDER, deliberately: an append has to
+# follow the file it appends to, and an equal-length rewrite has to follow the
+# length it is matching. They are therefore order-dependent, and inserting a case
+# between two of them can change what a later one measures. What the shared
+# directory does buy is that none of them touches the repo root, so none can move
+# the digest the arm at the end of this file compares.
+DIGWORK=$(mktemp -d); keep "$DIGWORK"
+# Seeded BEFORE any case runs, and that is the whole point of it: the nested
+# cases below can only move the digest if it recurses INTO a directory. Create
+# the directory inside a case instead and they pass on the new top-level NAME
+# alone, proving nothing about recursion — which is exactly how the recursion
+# arm was missing while five content arms looked like thorough coverage.
+mkdir -p "$DIGWORK/fdb-logs-c1.1-3"
 
 # The control. An UNSCOPED digest of the same shape, so every case can assert
 # that its mutation LANDED before the scoped digest's answer means anything.
@@ -1182,12 +1192,12 @@ wide_digest() {
   done | md5sum
 }
 
-digest_case() {   # $1 name, $2 want moved|same, $3 mutation, evaluated in $DWORK
-  before=$(cd "$DWORK" && suite_artifacts | md5sum)
-  wide_before=$(cd "$DWORK" && wide_digest)
-  ( cd "$DWORK" && eval "$3" ) 2>/dev/null
-  wide_after=$(cd "$DWORK" && wide_digest)
-  after=$(cd "$DWORK" && suite_artifacts | md5sum)
+digest_case() {   # $1 name, $2 want moved|same, $3 mutation, evaluated in $DIGWORK
+  before=$(cd "$DIGWORK" && suite_artifacts | md5sum)
+  wide_before=$(cd "$DIGWORK" && wide_digest)
+  ( cd "$DIGWORK" && eval "$3" ) 2>/dev/null
+  wide_after=$(cd "$DIGWORK" && wide_digest)
+  after=$(cd "$DIGWORK" && suite_artifacts | md5sum)
   if [ "$wide_before" = "$wide_after" ]; then
     bad "digest: $1: the mutation did not land, so the case measured nothing"
     return
@@ -1196,16 +1206,22 @@ digest_case() {   # $1 name, $2 want moved|same, $3 mutation, evaluated in $DWOR
   if [ "$got" = "$2" ]; then ok "digest: $1 ($got)"; else bad "digest: $1: got $got, want $2"; fi
 }
 
-# What these six arms catch, measured by mutating the digest and re-running.
+# What these nine arms catch, measured at 63 arms by mutating the digest and
+# re-running. Every count below is over that population.
 # The NOT-covered shape first, because that is the half a description of the
 # code cannot produce: a filename containing a literal NEWLINE splits at
 # `read -r` and both halves render as `dir`, so a content change to it is
 # invisible. Confirmed fail-open; no fragment can construct such a name, since
 # every one is built from `$$`, a timestamp or a container id.
 #
-#   prior `xargs -r du -ab` form   -> 1 red: the same-size pid rewrite, only.
-#   `md5sum` with no `dir` line    -> 1 red: the empty generation directory, only.
-#   a constant digest              -> 5 red: every `moved` case.
+#   inner `find {}` -> `-print`   -> 3 red: the three NESTED cases, and only
+#                                    those. This is the recursion arm; without it
+#                                    the five flat cases were all green under a
+#                                    digest that never descended.
+#   prior `xargs -r du -ab` form  -> 2 red: both EQUAL-LENGTH rewrites, the flat
+#                                    one and the nested one.
+#   `md5sum` with no `dir` line   -> 1 red: the empty generation directory.
+#   a constant digest             -> 8 red: every `moved` case.
 #
 # The first line is the correction this round is about, and it is narrower than
 # it looks: `du -ab` DID see the new log, the append, the pid file and the empty
@@ -1226,6 +1242,19 @@ digest_case "a same-size pid rewrite moves it"        moved 'echo 67890 > fdb-wa
 # An EMPTY generation directory. Hashing files alone renders it identical to a
 # directory that is not there — the empty-set reading, inside the digest itself.
 digest_case "an empty generation directory registers" moved 'mkdir -p fdb-logs-c1.1-7'
+# RECURSION, which the five cases above do not touch: every one of them writes a
+# TOP-LEVEL name, so replacing the inner recursive `find` with a plain `-print`
+# leaves all of them green while a wrong-CWD write inside an existing generation
+# directory goes invisible — the original blind spot the digest went recursive
+# for. `fdb-logs-c1.1-3` already exists, seeded above, so nothing here can pass
+# on a new top-level entry.
+digest_case "a file inside an existing generation directory registers" moved \
+  'echo aa > fdb-logs-c1.1-3/trace.xml'
+digest_case "an append inside a generation directory moves it" moved \
+  'echo bb >> fdb-logs-c1.1-3/trace.xml'
+# Both blind spots at once: nested AND equal length (6 bytes for 6).
+digest_case "an equal-length rewrite inside a generation directory moves it" moved \
+  'printf "xx\nyy\n" > fdb-logs-c1.1-3/trace.xml'
 # And the REACH. The gitignored Java reference checkout is not this suite's
 # artifact; a concurrent build in it must not redden a watcher arm.
 digest_case "a change in the Java reference tree does not" same \

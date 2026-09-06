@@ -152,4 +152,23 @@ func TestRowdiffWatcherBehaviour(t *testing.T) {
 		t.Fatal("rowdiff_watcher_suite.sh did not report ALL OK — a suite that exits 0 without " +
 			"reporting is the empty-set green this repository keeps finding")
 	}
+
+	// A FLOOR ON THE ARM COUNT, because "ALL OK" is also what a suite that stopped
+	// early prints nothing of, and what one whose arms silently did not run would
+	// print. That has happened here: an arm asked `git rev-parse --git-dir`, which
+	// a Bazel runfiles tree does not have, so the suite reported 53 arms locally
+	// and 52 under the runner that gates merges, and the missing arm was the one
+	// added to catch a neighbouring silence. Deleting a case is then invisible to
+	// this gate, while three comments in the suite quote arm counts as measurements.
+	//
+	// The alarm is COLLAPSE, not growth: adding arms is the normal direction of
+	// travel and must not fail the build, so this is a floor rather than equality.
+	// If arms are ever deliberately retired, lower the floor in the same commit and
+	// say why — do not delete it, or the silence comes back unwatched.
+	const armFloor = 63
+	arms := strings.Count(string(out), "\n  ok   ")
+	if arms < armFloor {
+		t.Fatalf("rowdiff_watcher_suite.sh reported %d passing arms, want at least %d — "+
+			"arms disappeared rather than failed, which reports as green", arms, armFloor)
+	}
 }
