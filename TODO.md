@@ -9631,9 +9631,11 @@ covered by the correctness suite and the golden plan diff, not by this table.
   Third and measured against the gate's own list, over `git ls-files '*.sh' '*.yml' '*.yaml'`
   (429 files): **57 files match.** A raw line scan gives 122 lines; a comment-only scan — which
   is what the gate would do — gives fewer, so take the FILE count as the load-bearing figure.
-  Of the 57, seven are source-like (six workflows plus `infra/cloud-init.yaml`) and the rest are
-  `yamsql/testdata/*.yaml`, genuine rather than false positives ("Subquery false-positive guard
-  (Torvalds review)", "Codex-caught: CAST of a NON-string source to UUID").
+  Of the 57, **eight** are source-like — SEVEN workflows plus `infra/cloud-init.yaml` — and **49**
+  are `yamsql/testdata/*.yaml`, genuine rather than false positives ("Subquery false-positive
+  guard (Torvalds review)", "Codex-caught: CAST of a NON-string source to UUID"). The
+  seven-and-41 split written here first was a fourth arithmetic error in the same paragraph, and
+  it under-stated the workflow half — the half that is not test data.
 
   So this is NOT a free ratchet. It is a gate extension plus a 57-file cleanup, and the cleanup
   is the larger half — which is what someone needs to know before starting, and is the opposite
@@ -9641,5 +9643,30 @@ covered by the correctness suite and the golden plan diff, not by this table.
 
   Not done on the RFC-242 branch deliberately: the Go path parses an AST and reports per comment
   GROUP; a shell/YAML path is a different mechanism (line-based `#` scanning, with its own
-  quoting and heredoc hazards) needing its own arms and its own review lap, and 48 files of
+  quoting and heredoc hazards) needing its own arms and its own review lap, and 57 files of
   comment edits do not belong inside a change about union leg alignment.
+
+- [ ] **A review gate was running into a void for a whole branch, and the reporting layer rendered
+  "no findings" and "not read" identically.** RFC-242's PR ran a four-gate loop. One of the four
+  posts its verdict as a GitHub comment whose first line is a header (`Claude finished … — View
+  job`) with the review body beneath. Every status summary read the header and never fetched the
+  body, so for the length of the branch that gate was not a gate — it was a log nobody tailed.
+
+  Measured when it finally surfaced: **51 comments, 33 ACKs and 12 NAKs**, every NAK followed by
+  that same gate's ACK on a later head. So the findings were real and the gate was doing its job.
+  Two of its NAKs were closed only because a different reviewer independently found the same
+  defect — convergence, not process.
+
+  Two things make this worth a durable entry rather than a resolution to be more careful:
+
+  1. **The failure is the branch's own headline class.** A reporting layer that cannot distinguish
+     *passed* from *never ran* renders both as success; here it could not distinguish *reviewed
+     with no findings* from *never read*, and a truncated header rendered both identically. It is
+     the fifteenth face, applied to a review gate instead of a test.
+  2. **The first correction was itself unscoped.** The initial report said "two NAKs, both closed
+     anyway" — read off the tail of a verdict list rather than counted. The true figure is twelve.
+     An unscoped count reported as evidence, inside the correction of a reporting failure.
+
+  What would close it: any status that claims a gate ACKed must have fetched that gate's BODY for
+  the head in question, and a count of its verdicts must come from counting them. Mechanically:
+  `gh pr view <n> --json comments` and read `.body`, never the rendered preview.

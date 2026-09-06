@@ -121,7 +121,17 @@ set -uo pipefail
 cd "$(dirname "$0")/../.."
 
 SCRIPT=$(mktemp); BIN=$(mktemp -d); WORK=$(mktemp -d); STATE=$(mktemp -d)
-trap 'rm -rf "$SCRIPT" "$BIN" "$WORK" "$STATE"' EXIT
+# ONE cleanup list, appended to as each section mints its temporaries, and ONE
+# trap set once. There used to be five `trap ... EXIT` lines, each naming the
+# temporaries known at that point — so every later one silently REPLACED the
+# earlier, and the last one omitted three directories the decision table had
+# created. With an isolated TMPDIR that leaked the stub and its log on every run.
+# A trap that is rewritten as the file grows is a trap that forgets whatever was
+# added before the rewrite.
+TMPKEEP=""
+keep() { TMPKEEP="$TMPKEEP $*"; }
+trap 'rm -rf $TMPKEEP' EXIT
+keep "$SCRIPT" "$BIN" "$WORK" "$STATE"
 
 # Extract the heredoc body the workflow writes as fdb-watch.sh.
 awk '
@@ -158,8 +168,16 @@ STUB
 chmod +x "$BIN/rm"
 
 fail=0
-# Snapshot the tree before any case runs; the arm at the end compares against it.
-TREE_BEFORE=$(git status --porcelain 2>/dev/null | md5sum)
+# Snapshot the CWD before any case runs; the arm at the end compares against it.
+# The exact names any extracted fragment can create, relative to wherever the
+# suite was invoked. Scoped deliberately: a bare listing would also catch another
+# agent working in the same checkout.
+suite_artifacts() {
+  find . -maxdepth 1 \( -name 'fdb-watch.log' -o -name 'fdb-logs-*' \
+    -o -name '.fdb-logs-*' -o -name 'fdb-df-*' -o -name 'fdb-container-*' \
+    -o -name 'fdb-last-inspect-*' -o -name 'fdb-forensics.txt' \) 2>/dev/null | sort
+}
+CWD_BEFORE=$(suite_artifacts | md5sum)
 ok() { printf '  ok   %s\n' "$1"; }
 bad() { printf '  FAIL %s\n' "$1"; fail=1; }
 
@@ -197,6 +215,12 @@ case "$1" in
        [ "$(date +%s)" -lt "$(cat "$WATCHTEST_STATE/outage-until")" ] &&
        { [ ! -f "$WATCHTEST_STATE/outage-poller" ] ||
          [ "$(cat "$WATCHTEST_STATE/outage-poller")" = "${POLLER:-}" ]; }; then
+      # SENTINEL. An arm that asserts "no failure was logged" passes just as well
+      # when the outage window opened and closed between two polls and NOTHING
+      # observed it — the window is nominal seconds and a cycle is a sleep plus
+      # command overhead. Without this the arm is green whether the skip branch
+      # exists or not, which is the empty-set reading, not a measurement.
+      echo "${POLLER:-?}" >> "$WATCHTEST_STATE/outage-hits"
       exit 1   # daemon unreachable: rc 1, no output
     fi
     want=""
@@ -689,6 +713,7 @@ echo running > "$STATE/phase"
 if start_watcher 1; then
   sleep 3
   before=$(ls -d "$WORK"/fdb-logs-c1.* 2>/dev/null | sort | tail -1)
+  rm -f "$STATE/outage-hits"
   echo copier > "$STATE/outage-poller"
   echo $(( $(date +%s) + 2 )) > "$STATE/outage-until"
   sleep 5
@@ -698,6 +723,13 @@ if start_watcher 1; then
     ok "a transient inspect failure does not end periodic capture"
   else
     bad "a transient inspect failure does not end periodic capture (stuck at $(basename "${before:-none}"))"
+  fi
+  # The outage must actually have been OBSERVED by this poller before a
+  # zero-failure count means anything.
+  if grep -q copier "$STATE/outage-hits" 2>/dev/null; then
+    ok "the injected outage was observed by the copier"
+  else
+    bad "the injected outage was observed by the copier (no poller hit the outage window — the arm below would be vacuous)"
   fi
   # A TOLERATED OUTAGE SKIPS THE BODY. `still_there` sets `$misses` while it is
   # riding one out, and the poller reads it to skip — without that the copy is
@@ -830,7 +862,7 @@ rm -f "$STATE/second" "$STATE/phase-c1" "$STATE/phase-c2"; echo gone > "$STATE/p
 # with the outage clock never started — a false `GONE` line reached through the
 # re-issue that had been added to prevent a different false reading.
 DEC=$(mktemp); DBIN=$(mktemp -d); DST=$(mktemp -d)
-trap 'rm -rf "$SCRIPT" "$BIN" "$WORK" "$STATE" "$DUMP" "$DWORK" "$ALARM" "$AWORK" "$GUARD" "$GWORK" "$DEC" "$DBIN" "$DST"' EXIT
+keep "$DEC" "$DBIN" "$DST"
 sed -n '/^still_there() {/,/^}$/p' "$SCRIPT" > "$DEC"
 [ -s "$DEC" ] || { echo "FATAL: could not extract still_there"; exit 1; }
 grep -q 'gone_reason' "$DEC" || { echo "FATAL: still_there extraction has no reason arm"; exit 1; }
@@ -895,7 +927,7 @@ dec_case "recovery through the RE-ISSUE clears it too"          empty,id 0 none 
 # So the block is extracted and run the same way the watcher is, against a
 # fixture holding what the watcher would have written.
 DUMP=$(mktemp); DWORK=$(mktemp -d)
-trap 'rm -rf "$SCRIPT" "$BIN" "$WORK" "$STATE" "$DUMP" "$DWORK"' EXIT
+keep "$DUMP" "$DWORK"
 # Anchor on the STEP, not on the first ten-space brace in the file. There are
 # three such braces; taking the first works only while this block stays first,
 # and a new block above it would silently reroute the extraction while both
@@ -962,7 +994,7 @@ done
 # an `::error::` annotation and did not exit non-zero, so the step stayed GREEN
 # while announcing it had captured nothing.
 ALARM=$(mktemp); AWORK=$(mktemp -d)
-trap 'rm -rf "$SCRIPT" "$BIN" "$WORK" "$STATE" "$DUMP" "$DWORK" "$ALARM" "$AWORK"' EXIT
+keep "$ALARM" "$AWORK"
 awk '
   /^          have_inspect=0$/ { inb = 1 }
   inb { print substr($0, 11) }
@@ -1024,14 +1056,14 @@ alarm_case "an inspect WITH traces on a failed night is evidence" '=== host ==='
 #
 # There are TWO copies, one per step, and covering one is how a suite reports the
 # guard as covered while the other stays free to be deleted. Measured on this
-# file as committed, at 53 arms: deleting the forensics copy reddens exactly one
+# file as committed, at 54 arms: deleting the forensics copy reddens exactly one
 # arm, and deleting the WATCHER copy reddens exactly one — the other one — where
 # before the extraction named a step and deleting the watcher's reddened NONE.
 # (An earlier version of this sentence said "at 18 arms", which was the count of
 # an uncommitted intermediate. A population no committed revision ever had is
 # worse than no population at all: it cannot be seen to go stale.)
 GUARD=$(mktemp); GWORK=$(mktemp -d)
-trap 'rm -rf "$SCRIPT" "$BIN" "$WORK" "$STATE" "$DUMP" "$DWORK" "$ALARM" "$AWORK" "$GUARD" "$GWORK"' EXIT
+keep "$GUARD" "$GWORK"
 mkdir -p "$GWORK"
 
 # $1 step name, $2 the literal line FOLLOWING the guard in that step. Terminating
@@ -1068,21 +1100,28 @@ guard_cases() {
 guard_cases "Capture FDB container forensics" "          {"
 guard_cases "Watch the FDB container while it is alive" '          echo "watching image foundationdb/foundationdb:$ver"'
 
-# THE HARNESS MUST NOT WRITE INTO THE REPOSITORY. Every case here extracts a
-# fragment of the shipped script and runs it, and a fragment that writes a
-# RELATIVE path writes wherever the suite was invoked from — which is the repo
-# root. That already happened once: the decision-table arms left an untracked
-# `fdb-watch.log` behind, and nothing failed. It was caught by reading `git
-# status`, which is no signal at all, and the cause is structural rather than a
-# one-off, because running extracted fragments IS the technique this suite is
-# built on. So the property is asserted rather than remembered.
-if command -v git >/dev/null 2>&1 && git rev-parse --git-dir >/dev/null 2>&1; then
-  if [ "$(git status --porcelain | md5sum)" = "$TREE_BEFORE" ]; then
-    ok "the suite leaves the working tree unchanged"
-  else
-    bad "the suite leaves the working tree unchanged (git status changed; a fragment wrote a relative path into the repo)"
-  fi
+# THE HARNESS MUST NOT WRITE INTO THE DIRECTORY IT RUNS FROM. Every case extracts
+# a fragment of the shipped script and runs it, and a fragment that writes a
+# RELATIVE path writes wherever the suite was invoked from. That already happened
+# once: the decision-table arms left an untracked `fdb-watch.log` in the repo
+# root, and nothing failed — it was caught by reading `git status`, which is no
+# signal at all. The cause is structural, not a one-off, because running
+# extracted fragments IS the technique this suite is built on.
+#
+# The check names the files a FRAGMENT CAN WRITE, and does not ask git. Two
+# reasons, both measured. Under Bazel the suite runs from a runfiles tree with no
+# `.git`, so a `git rev-parse` guard was false, the arm never emitted, and the
+# suite reported 53 arms locally against 52 under the runner that actually gates
+# merges — an arm that silently does not run, in the arm added to catch a
+# neighbouring silence. And run locally in a shared checkout, `git status`
+# reddens for any CONCURRENT agent's edit, so it fails for things this suite did
+# not do. A scoped `find` is true in both places and answers only for this suite.
+if [ "$(suite_artifacts | md5sum)" = "$CWD_BEFORE" ]; then
+  ok "the suite leaves its working directory unchanged"
+else
+  bad "the suite leaves its working directory unchanged (a fragment wrote a relative path into $(pwd))"
 fi
+
 
 if [ "$fail" -ne 0 ]; then
   echo "FAILURES"
