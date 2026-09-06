@@ -39,11 +39,13 @@ import (
 //     the query ANSWERS as a uniform map with its values. And with nothing
 //     stamped above the array at all, it answers RAGGED: one element a message,
 //     one a map. That last is the worst of them, because nothing reports it.
-//   - UNION. A loud 42F65 — but not about the name and not about records. It
-//     fails IDENTICALLY for two synthesisable names, answers when the names
-//     agree even with differing WIDTHS, and still fails when only ONE of two
-//     fields disagrees. So what this site refuses is a target carrying an
-//     ANONYMOUS field, and refusing it makes a legal SQL union unrunnable.
+//   - UNION. A loud 42F65 — but not about the name, not about records, and not
+//     about the target being anonymous either. It fails identically for two
+//     synthesisable names; it answers when the names agree, even across widths;
+//     and it ANSWERS when BOTH legs are already anonymous, promoting through the
+//     anonymous slot. What it refuses is a LEG that still NAMES a field the
+//     common type anonymised, at any depth. Refusing it makes a legal SQL union
+//     unrunnable, and Java accepts the same query.
 //   - CASE. With ONE field per branch it answers flattened: a bare leaf under
 //     the outer alias, no nested record, the same for good names and bad. With
 //     TWO fields a record DOES survive and IS coerced, the disagreeing field
@@ -82,7 +84,13 @@ func TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes(t *testing.T) {
 	const (
 		mapInMessage  = "cannot store map[string]interface {} in message field"
 		widthMismatch = "but double in the target"
-		notPromotable = "is not promotable to"
+		// The refusal names the TARGET. Matching only "is not promotable to"
+		// would still pass if alignment had chosen a NAMED common type, which is
+		// the opposite of what these rows attribute the failure to.
+		anonTarget       = "is not promotable to RECORD<INT NOT NULL> NOT NULL"
+		partlyAnonTarget = "is not promotable to RECORD<A INT NOT NULL, INT NOT NULL> NOT NULL"
+		nestedAnonTarget = "is not promotable to RECORD<N RECORD<INT NOT NULL> NOT NULL> NOT NULL"
+		unionSlotRefusal = "42F65: UNION output slot 0 cannot adopt the common type"
 	)
 
 	for _, tc := range []struct {
@@ -99,20 +107,22 @@ func TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes(t *testing.T) {
 		wantRagged bool
 		// exactly one of these three is set
 		failsWith string
+		// andFailsWith is a SECOND substring the same refusal must contain, for
+		// rows whose attribution depends on more than the error's family.
+		andFailsWith string
 		// Per element: the field name, and the value it must still carry. Both
 		// are written out per row rather than derived from the index, because a
 		// derived expectation is how a wrong value passes unnoticed.
 		wantFields []string
 		wantVals   []float64
 		wantStruct bool
-		// For a wantStruct row: the leaf field names and numbers, in walk order.
-		// Names matter as much as values — unification ANONYMISES disagreeing
-		// fields, so a leaf still called `A` would mean the erasure this whole
-		// account rests on did not happen.
-		wantLeafNames []string
-		wantLeafVals  []float64
-		// wantRows defaults to 1. A UNION row legitimately returns two.
-		wantRows int
+		// For a wantStruct row: the leaves of EACH returned row, one entry per
+		// row. Per row, not concatenated: pooling them and sorting would let a
+		// leaf from row one stand in for a missing leaf in row two, which is
+		// the cross-row misattribution a UNION makes easy. Names matter as much
+		// as values — unification ANONYMISES disagreeing fields, so a leaf still
+		// called `A` would mean the erasure this account rests on did not happen.
+		wantLeaves []leafRow
 	}{
 		{
 			why:       "one unsynthesisable name beside a good one: differing shapes anonymise the target, so the target IS synthesisable, the parent stamps, and the child's map is refused",
@@ -153,15 +163,13 @@ func TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes(t *testing.T) {
 			// `_0` is what an ANONYMOUS field becomes in the synthesised
 			// descriptor. Seeing the element's own `A`/`B` here instead would
 			// mean unification kept the names and the account is wrong.
-			wantLeafNames: []string{"_0", "_0"},
-			wantLeafVals:  []float64{1, 2},
+			wantLeaves: []leafRow{{names: []string{"_0", "_0"}, vals: []float64{1, 2}}},
 		},
 		{
-			why:           "neither factor: no promotion at all, so the agreeing name SURVIVES — the contrast that shows the row above is really measuring the erasure",
-			elems:         `(1 AS A), (2 AS A)`,
-			wantStruct:    true,
-			wantLeafNames: []string{"A", "A"},
-			wantLeafVals:  []float64{1, 2},
+			why:        "neither factor: no promotion at all, so the agreeing name SURVIVES — the contrast that shows the row above is really measuring the erasure",
+			elems:      `(1 AS A), (2 AS A)`,
+			wantStruct: true,
+			wantLeaves: []leafRow{{names: []string{"A", "A"}, vals: []float64{1, 2}}},
 		},
 		{
 			why:       "SYNTHESISABLE names but differing numeric widths: the same site refusing a wrong-KIND message instead of a map, and the error text's synthesis prefix is ProtoTypeError's stock wording, not where it happened",
@@ -187,53 +195,55 @@ func TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes(t *testing.T) {
 			// value under `CH`. That flattening is unexplained, and it is why an
 			// earlier round read this row as evidence that no record is ever
 			// coerced here. The two-field row below shows one is.
-			wantLeafNames: []string{"CH"},
-			wantLeafVals:  []float64{1},
+			wantLeaves: []leafRow{{names: []string{"CH"}, vals: []float64{1}}},
 		},
 		{
-			why:       "the same two literals unified by a UNION: a LOUD refusal — but read the next two rows before attributing it to the bad name",
-			query:     `SELECT (1 AS "$lead") AS C FROM t UNION ALL SELECT (2 AS A) AS C FROM t`,
-			failsWith: notPromotable,
+			why:          "the same two literals unified by a UNION: a LOUD refusal — but read the next two rows before attributing it to the bad name",
+			query:        `SELECT (1 AS "$lead") AS C FROM t UNION ALL SELECT (2 AS A) AS C FROM t`,
+			failsWith:    anonTarget,
+			andFailsWith: unionSlotRefusal,
 		},
 		{
-			why:       "the UNION control that matters: TWO SYNTHESISABLE names, disagreeing, and it fails IDENTICALLY. So this site has nothing to do with what protobuf can carry — it refuses to promote a record to the anonymised record unification produces, and that is a legal SQL union Go will not run",
-			query:     `SELECT (1 AS A) AS C FROM t UNION ALL SELECT (2 AS B) AS C FROM t`,
-			failsWith: notPromotable,
+			why:          "the UNION control that matters: TWO SYNTHESISABLE names, disagreeing, and it fails IDENTICALLY. So this site has nothing to do with what protobuf can carry — it refuses to promote a record to the anonymised record unification produces, and that is a legal SQL union Go will not run",
+			query:        `SELECT (1 AS A) AS C FROM t UNION ALL SELECT (2 AS B) AS C FROM t`,
+			failsWith:    anonTarget,
+			andFailsWith: unionSlotRefusal,
 		},
 		{
-			why:           "and the same union with AGREEING names answers, BOTH legs, so the refusal is the anonymisation and not unions of records in general",
-			query:         `SELECT (1 AS A) AS C FROM t UNION ALL SELECT (2 AS A) AS C FROM t`,
-			wantStruct:    true,
-			wantRows:      2,
-			wantLeafNames: []string{"A", "A"},
-			wantLeafVals:  []float64{1, 2},
+			why:        "and the same union with AGREEING names answers, BOTH legs, so the refusal is the anonymisation and not unions of records in general",
+			query:      `SELECT (1 AS A) AS C FROM t UNION ALL SELECT (2 AS A) AS C FROM t`,
+			wantStruct: true,
+			wantLeaves: []leafRow{
+				{names: []string{"A"}, vals: []float64{1}},
+				{names: []string{"A"}, vals: []float64{2}},
+			},
 		},
 		{
-			why:           "the CASE control: SYNTHESISABLE disagreeing names give the same one-field result as the bad-name CASE row above, so nothing at this site varies with the name",
-			query:         `SELECT (CASE WHEN id=1 THEN (1 AS A) ELSE (2 AS B) END AS CH) FROM t`,
-			wantStruct:    true,
-			wantLeafNames: []string{"CH"},
-			wantLeafVals:  []float64{1},
+			why:        "the CASE control: SYNTHESISABLE disagreeing names give the same one-field result as the bad-name CASE row above, so nothing at this site varies with the name",
+			query:      `SELECT (CASE WHEN id=1 THEN (1 AS A) ELSE (2 AS B) END AS CH) FROM t`,
+			wantStruct: true,
+			wantLeaves: []leafRow{{names: []string{"CH"}, vals: []float64{1}}},
 		},
 		{
-			why:           "TWO fields per CASE branch, and now a record DOES survive as a record and IS coerced — the disagreeing field comes back `_1`, anonymised exactly as unification does. So the CASE site coerces records; the rows above are flattened only because a single-field branch is. Something on this path does what the array path does not, and finding out what is the first step of the port",
-			query:         `SELECT (CASE WHEN id=1 THEN (1 AS A, 3 AS Z) ELSE (2 AS A, 4 AS Y) END AS CH) FROM t`,
-			wantStruct:    true,
-			wantLeafNames: []string{"A", "_1"},
-			wantLeafVals:  []float64{1, 3},
+			why:        "TWO fields per CASE branch, and now a record DOES survive as a record and IS coerced — the disagreeing field comes back `_1`, anonymised exactly as unification does. So the CASE site coerces records; the rows above are flattened only because a single-field branch is. Something on this path does what the array path does not, and finding out what is the first step of the port",
+			query:      `SELECT (CASE WHEN id=1 THEN (1 AS A, 3 AS Z) ELSE (2 AS A, 4 AS Y) END AS CH) FROM t`,
+			wantStruct: true,
+			wantLeaves: []leafRow{{names: []string{"A", "_1"}, vals: []float64{1, 3}}},
 		},
 		{
-			why:           "a UNION whose names AGREE but whose widths differ: it ANSWERS, both legs. So record promotion in a union is not refused in general — only a target carrying an ANONYMOUS field is",
-			query:         `SELECT (1 AS A) AS C FROM t UNION ALL SELECT (2.5 AS A) AS C FROM t`,
-			wantStruct:    true,
-			wantRows:      2,
-			wantLeafNames: []string{"A", "A"},
-			wantLeafVals:  []float64{1, 2.5},
+			why:        "a UNION whose names AGREE but whose widths differ: it ANSWERS, both legs. So record promotion in a union is not refused in general — only a target carrying an ANONYMOUS field is",
+			query:      `SELECT (1 AS A) AS C FROM t UNION ALL SELECT (2.5 AS A) AS C FROM t`,
+			wantStruct: true,
+			wantLeaves: []leafRow{
+				{names: []string{"A"}, vals: []float64{1}},
+				{names: []string{"A"}, vals: []float64{2.5}},
+			},
 		},
 		{
-			why:       "PARTIAL anonymisation in a union: `A` agrees and `Z`/`Y` do not, so the target is `RECORD<A INT, INT>` and it is still refused. One anonymous field is enough, which is what makes the refusal about the anonymous field rather than about the record",
-			query:     `SELECT (1 AS A, 3 AS Z) AS C FROM t UNION ALL SELECT (2 AS A, 4 AS Y) AS C FROM t`,
-			failsWith: notPromotable,
+			why:          "PARTIAL anonymisation in a union: `A` agrees and `Z`/`Y` do not, so the target is `RECORD<A INT, INT>` and it is still refused. One anonymous field is enough, which is what makes the refusal about the anonymous field rather than about the record",
+			query:        `SELECT (1 AS A, 3 AS Z) AS C FROM t UNION ALL SELECT (2 AS A, 4 AS Y) AS C FROM t`,
+			failsWith:    partlyAnonTarget,
+			andFailsWith: unionSlotRefusal,
 		},
 	} {
 		query := tc.query
@@ -252,6 +262,11 @@ func TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes(t *testing.T) {
 				t.Errorf("%s failed with %v, want a failure containing %q: a different error means "+
 					"this shape is refused somewhere else now and the row no longer describes it",
 					query, qErr, tc.failsWith)
+			}
+			if tc.andFailsWith != "" && !strings.Contains(qErr.Error(), tc.andFailsWith) {
+				t.Errorf("%s failed with %v, which does not contain %q: this row's attribution needs "+
+					"both halves, and the error's family alone would not distinguish it",
+					query, qErr, tc.andFailsWith)
 			}
 			continue
 		}
@@ -272,12 +287,8 @@ func TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes(t *testing.T) {
 			t.Errorf("%s: rows.Err after %d row(s): %v", query, len(got), rErr)
 		}
 		rows.Close()
-		wantRows := tc.wantRows
-		if wantRows == 0 {
-			wantRows = 1
-		}
-		if len(got) != wantRows {
-			t.Errorf("%s returned %d rows, want exactly %d", query, len(got), wantRows)
+		if !tc.wantStruct && len(got) != 1 {
+			t.Errorf("%s returned %d rows, want exactly 1", query, len(got))
 			continue
 		}
 		if tc.wantRagged {
@@ -298,40 +309,41 @@ func TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes(t *testing.T) {
 			continue
 		}
 		if tc.wantStruct {
-			if _, isStruct := got[0].(api.Struct); !isStruct {
-				t.Errorf("%s = %T, want an api.Struct. %s — a map or any other carrier here would "+
-					"mean the bake stopped stamping this shape", query, got[0], tc.why)
+			if len(tc.wantLeaves) != len(got) {
+				t.Errorf("%s returned %d row(s) and declares %d leaf expectation(s): every row needs "+
+					"its own, or a row goes unexamined", query, len(got), len(tc.wantLeaves))
 				continue
 			}
-			// The outer carrier is not enough: a struct with an EMPTY `CH`, or
-			// with the element's original field name where unification should
-			// have anonymised it, is still an api.Struct. Walk to the leaves and
-			// assert the names and the numbers.
-			if len(tc.wantLeafNames) == 0 {
-				t.Errorf("%s is a wantStruct row with no leaf expectation, so the assertion below "+
-					"passes on anything: declare wantLeafNames/wantLeafVals or drop the row", query)
-				continue
-			}
-			// Every row, not just the first: a multi-row expectation that
-			// examines one row leaves the rest unmeasured. Sorted by value,
-			// because UNION ALL leg order is not pinned here and asserting it
-			// would make this row about something else.
-			var names, others []string
-			var vals []float64
-			for _, row := range got {
-				rowNames, rowVals, rowOthers := leaves(t, row)
-				names = append(names, rowNames...)
-				vals = append(vals, rowVals...)
-				others = append(others, rowOthers...)
-			}
-			sortLeavesByValue(names, vals)
-			if len(others) != 0 {
-				t.Errorf("%s reached %d non-numeric leaf/leaves %q: this row asserts numbers, and a "+
-					"leaf the walker cannot read would otherwise be invisible", query, len(others), others)
-			}
-			if !leafNamesEqual(names, tc.wantLeafNames) || !leafValsEqual(vals, tc.wantLeafVals) {
-				t.Errorf("%s leaves = %q/%v, want %q/%v. %s", query, names, vals,
-					tc.wantLeafNames, tc.wantLeafVals, tc.why)
+			// EVERY row is checked, and each against its OWN expectation. A
+			// carrier check on the first row alone would miss a second row that
+			// degraded to a raw map — the ragged outcome this file calls the
+			// worst of them — and pooling the leaves across rows before sorting
+			// would let a leaf from one row stand in for a missing leaf in
+			// another, which a UNION makes easy.
+			for i, row := range got {
+				want := tc.wantLeaves[i]
+				if reason := leafExpectationProblem(want.names, want.vals); reason != "" {
+					t.Errorf("%s row %d has a leaf expectation that %s", query, i, reason)
+					continue
+				}
+				if _, isStruct := row.(api.Struct); !isStruct {
+					t.Errorf("%s row %d = %T, want an api.Struct. %s — a map or any other carrier "+
+						"here would mean the bake stopped stamping this shape", query, i, row, tc.why)
+					continue
+				}
+				names, vals, others := leaves(t, row)
+				sortLeavesByValue(names, vals)
+				sorted := leafRow{names: append([]string(nil), want.names...), vals: append([]float64(nil), want.vals...)}
+				sortLeavesByValue(sorted.names, sorted.vals)
+				if len(others) != 0 {
+					t.Errorf("%s row %d reached %d non-numeric leaf/leaves %q: this row asserts "+
+						"numbers, and a leaf the walker cannot read would otherwise be invisible",
+						query, i, len(others), others)
+				}
+				if !leafNamesEqual(names, sorted.names) || !leafValsEqual(vals, sorted.vals) {
+					t.Errorf("%s row %d leaves = %q/%v, want %q/%v. %s", query, i, names, vals,
+						sorted.names, sorted.vals, tc.why)
+				}
 			}
 			continue
 		}
@@ -498,4 +510,94 @@ func (s sortableLeaves) Less(i, j int) bool {
 		return s.vals[i] < s.vals[j]
 	}
 	return s.names[i] < s.names[j]
+}
+
+// leafRow is one returned row's expected leaves. Rows are expected separately
+// rather than pooled, so a leaf from one row cannot stand in for a missing leaf
+// in another.
+type leafRow struct {
+	names []string
+	vals  []float64
+}
+
+// leafExpectationProblem reports why a row's declared leaf expectation cannot
+// decide anything, or "" when it can.
+//
+// Extracted so it can be DRIVEN. Inline, it was a guard no test reached: every
+// row in the table declares an expectation, so deleting the check left the whole
+// target green while a future row could pass by asserting nothing.
+func leafExpectationProblem(names []string, vals []float64) string {
+	if len(names) == 0 {
+		return "is empty, so the comparison below succeeds on any result: declare the leaves, " +
+			"or drop the row"
+	}
+	if len(names) != len(vals) {
+		return fmt.Sprintf("has %d name(s) and %d value(s): a per-leaf expectation with mismatched "+
+			"halves cannot be checked, and would fail for the wrong reason", len(names), len(vals))
+	}
+	return ""
+}
+
+// TestTheLeafExpectationGuardRejectsWhatCannotDecide drives that guard, which no
+// row in the table reaches.
+func TestTheLeafExpectationGuardRejectsWhatCannotDecide(t *testing.T) {
+	t.Parallel()
+	if got := leafExpectationProblem(nil, nil); got == "" {
+		t.Error("an EMPTY leaf expectation was accepted: a row declaring nothing then passes on " +
+			"any result at all, which is the false green this file exists to prevent")
+	}
+	if got := leafExpectationProblem([]string{"A", "B"}, []float64{1}); got == "" {
+		t.Error("a MISMATCHED leaf expectation was accepted: it would redden for the wrong reason, " +
+			"which reads as a finding")
+	}
+	if got := leafExpectationProblem([]string{"A"}, []float64{1}); got != "" {
+		t.Errorf("a well-formed leaf expectation was rejected (%s): the guard must refuse only what "+
+			"cannot decide, or it blocks the rows it exists to protect", got)
+	}
+}
+
+// TestTheLeafWalkerReportsWhatItCannotRead drives the walker's other rejection
+// path, which no row in the table reaches either: every row there holds only
+// numeric leaves, so restoring the walker's old silent default arm would leave
+// the whole target green. Docker-free on purpose, since the table it protects
+// skips entirely without a container.
+func TestTheLeafWalkerReportsWhatItCannotRead(t *testing.T) {
+	t.Parallel()
+	names, vals, others := leaves(t, map[string]any{"N": int64(7), "S": "not a number", "Z": nil})
+	if len(names) != 1 || names[0] != "N" || len(vals) != 1 || vals[0] != 7 {
+		t.Errorf("numeric leaves = %q/%v, want [N]/[7]", names, vals)
+	}
+	if len(others) != 2 {
+		t.Fatalf("unreadable leaves = %q, want two — the string and the nil. If the walker drops "+
+			"them again, every assertion built on it goes blind to a leaf that is not a number, "+
+			"which is how a wrong carrier passes as a right value", others)
+	}
+	joined := strings.Join(others, " ")
+	for _, want := range []string{"S=", "Z=", "not a number"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("unreadable leaves %q do not name %q: the report has to identify WHICH leaf, "+
+				"or it cannot be acted on", others, want)
+		}
+	}
+}
+
+// TestTheLeafSortKeepsNamesWithTheirValues pins the pairing every leaf assertion
+// depends on. Sorting the names and the values as two independent slices
+// compiles, passes a length check, and silently reorders one against the other —
+// the first draft of that helper did exactly that.
+func TestTheLeafSortKeepsNamesWithTheirValues(t *testing.T) {
+	t.Parallel()
+	names := []string{"c", "a", "b"}
+	vals := []float64{3, 1, 2}
+	sortLeavesByValue(names, vals)
+	for i, want := range []struct {
+		name string
+		val  float64
+	}{{"a", 1}, {"b", 2}, {"c", 3}} {
+		if names[i] != want.name || vals[i] != want.val {
+			t.Fatalf("after sorting, leaf %d = %s/%v, want %s/%v: the sort must move names and "+
+				"values TOGETHER, or every assertion is about a pairing no query produced",
+				i, names[i], vals[i], want.name, want.val)
+		}
+	}
 }

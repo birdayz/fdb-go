@@ -9357,22 +9357,42 @@ covered by the correctness suite and the golden plan diff, not by this table.
   satisfied by the other booking's failure. Booked from RFC-242 r39, found by a reviewer varying
   the dimension the pin held fixed.
 
-- [ ] **A UNION is refused whenever the common type carries an ANONYMOUS field.**
-  `SELECT (1 AS A) AS C FROM t UNION ALL SELECT (2 AS B) AS C FROM t` fails with `42F65: UNION
-  output slot 0 cannot adopt the common type: source type RECORD<A INT NOT NULL> is not
-  promotable to RECORD<INT NOT NULL>`. Every name is one protobuf will carry; the same union
-  with AGREEING names answers. WHAT IS REFUSED, narrowed by measurement rather than asserted:
-  not records (agreeing names promote), not widening (`(1 AS A)` UNION `(2.5 AS A)` answers,
-  both legs), and not the whole record being anonymous — `(1 AS A, 3 AS Z)` UNION `(2 AS A, 4
-  AS Y)` is refused against `RECORD<A INT NOT NULL, INT NOT NULL>`, where only the second field
-  is anonymous. ONE anonymous field in the common type is enough. Two earlier readings of this
-  were wrong: first that it was a fourth outcome of the booking above (it uses no bad name at
-  all), then that record promotion in a union is refused in general (widening agreeing names
-  answers). PRE-EXISTING, measured: identical at the merge-base `36b97f1e9`. PINNED as five rows
-  of `TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes`: the refusal, the same refusal with two
+- [ ] **A UNION is refused when a LEG still NAMES a field the common type anonymised, and Java
+  accepts it.** `SELECT (1 AS A) AS C FROM t UNION ALL SELECT (2 AS B) AS C FROM t` fails with
+  `42F65: UNION output slot 0 cannot adopt the common type: source type RECORD<A INT NOT NULL>
+  is not promotable to RECORD<INT NOT NULL>`. Every field name here is one protobuf will carry,
+  so this is NOT the unstamped-child booking above; that was the first of four wrong readings.
+  WHAT IS REFUSED, narrowed by measurement: not records (agreeing names promote), not widening
+  (`(1 AS A)` UNION `(2.5 AS A)` answers, both legs), and not the whole record being anonymous
+  — `(1 AS A, 3 AS Z)` UNION `(2 AS A, 4 AS Y)` is refused against `RECORD<A INT NOT NULL, INT
+  NOT NULL>`, where only the second field is anonymous. An anonymous field in the common TYPE is
+  not itself the trigger: when BOTH legs are already anonymous — two identical two-field CASE
+  branches — the union ANSWERS, and it answers even with a real promote through the anonymous
+  slot. What is refused is a LEG that still NAMES a field the common type anonymised, at any
+  depth: the same refusal appears one level down for `((1 AS A) AS N)` UNION `((2 AS B) AS N)`.
+  An earlier draft titled this by the target rather than the leg, which the both-anonymous row
+  refutes. CAUSE, read from the source rather than inferred. `exactUnionResultRow` computes the
+  common row with `MaximumType`, and `exactUnionSlotValue` then gates each leg on
+  `MaximumType(leg, target).Equals(target)`. That predicate cannot accept its own common row:
+  `MaximumType`'s record arm resolves a disagreeing name pair by KEEPING the named side
+  (`values/type.go`, the `f2.Name == ""` arm), so `MaximumType(RECORD<A INT>, RECORD<INT>)` is
+  `RECORD<A INT>`, not the target. The gate is built from a function that is not idempotent
+  under name erasure — `max(a, max(a,b)) != max(a,b)` once a name has been dropped. One
+  anonymous field suffices because `RecordType.Equals` is all-or-nothing, which is also why the
+  title's "whenever" is safe rather than a guess. JAVA ACCEPTS IT, so this is a CONFORMANCE
+  DIVERGENCE and not only a gap. `PromoteValue.isPromotionNeeded` recurses records POSITIONALLY
+  over `getElementTypes()` and never reads a field name (`PromoteValue.java`, the
+  `inType.isRecord() && promoteToType .isRecord()` arm: it checks the element COUNT, then
+  recurses per ordinal). `inject` never consults a maximum type at all. DIRECTION. Not the
+  coercion trie — that is the other two bookings' unit and it does not apply here. Replace the
+  max-equality gate with Java's shape: decide promotability positionally over element types, and
+  let the promote carry the target. An earlier draft of this entry said "the same missing
+  machinery, the promotion trie again", which was the fourth wrong mechanism for this site; it
+  is corrected here rather than rewritten away. PRE-EXISTING, measured: identical at the
+  merge-base `36b97f1e9`. PINNED as five rows of
+  `TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes`: the refusal, the same refusal with two
   synthesisable names, the agreeing-name union that answers, the agreeing-name union that WIDENS
-  and answers, and the partially-anonymised two-field union that is still refused. Java's answer
-  is the promotion trie again — a record coercion built per field rather than a promotability
-  predicate that must already hold. Check whether Java accepts this union before deciding the
-  direction: if it does, this is a conformance divergence and not only a gap. Booked from
-  RFC-242 r41.
+  and answers on both legs, and the partially-anonymised two-field union that is still refused.
+  The failing rows assert the anonymous TARGET by name, not just the error family, so a run
+  where alignment picked a NAMED common type would redden. Booked from RFC-242 r41, cause and
+  direction corrected at r43.
