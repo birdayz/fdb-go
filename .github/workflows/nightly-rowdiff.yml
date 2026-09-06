@@ -259,11 +259,13 @@ jobs:
           kill -- -$$ 2>/dev/null || true
           SH
           chmod +x fdb-watch.sh
-          # A stale pid file from an earlier run on this PERSISTENT box would make the
-          # cleanup step signal a recycled process group. The window-check path makes
-          # that reachable: when the window is closed, Checkout is skipped and the
-          # workspace still holds last night's files.
-          rm -f fdb-watch.pid
+          # No `rm -f fdb-watch.pid` here, deliberately, and the reason is worth a line
+          # because an earlier version of this step had one: it would be a no-op on
+          # every path it can execute. This step runs only when the window is open,
+          # which means `actions/checkout@v5` ran, and its default `clean: true` is a
+          # `git clean -ffdx` that has already removed the untracked pid file. The
+          # stale-pid hazard is real but lives on the CLOSED-window path, where this
+          # step does not run at all — it is handled by gating the stop step, not here.
           FDB_IMAGE_TAG="$ver" setsid nohup ./fdb-watch.sh >/dev/null 2>&1 &
           # Wait for the script to record its own pid rather than assuming it has.
           for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s fdb-watch.pid ] && break; sleep 1; done
@@ -375,7 +377,17 @@ jobs:
         # thing. Verified with `kill -0` on the recorded pid rather than by grepping a
         # command line — two earlier readings of this same test said the watcher had
         # SURVIVED, and both were the harness matching itself.
-        if: always()
+        #
+        # `always()` AND the window gate, and the gate is the whole fix for the
+        # stale-pid hazard. On a closed-window night `Checkout` is skipped, so the
+        # workspace still holds LAST night's pid file, and no step has run that could
+        # have cleared it — an ungated `always()` would then signal a process group
+        # that has since been recycled on this persistent box. Gated, there is nothing
+        # to stop on a night nothing was started. An earlier attempt put an `rm` in the
+        # START step instead, which is gated the same way and so misses exactly this
+        # path, while being redundant on the path it does run (checkout's default
+        # `clean: true` has already removed the untracked file).
+        if: ${{ always() && steps.window.outputs.ok == 'true' }}
         run: |
           if [ ! -s fdb-watch.pid ]; then
             echo "no fdb-watch.pid — the watcher either never started or never recorded itself"
@@ -394,7 +406,9 @@ jobs:
           else
             echo "watcher $pid stopped"
           fi
-          # Whatever happened, do not leave a pid behind for tomorrow's run to signal.
+          # Leave no pid behind. Belt to checkout's braces: the next open-window run
+          # would `git clean` it anyway, but that depends on checkout's `clean` default
+          # staying true, and this does not.
           rm -f fdb-watch.pid
 
       - name: Capture FDB container forensics

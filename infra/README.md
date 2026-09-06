@@ -352,9 +352,13 @@ turn the inference into an observation.
 fixes boxes provisioned from here on. The live fleet keeps the old script until re-provisioned
 or until the file is edited in place.
 
-**Budget note:** landing this guard left **13 bytes** of `user_data` headroom. The next comment
-added to `cloud-init.yaml` will fail `//infra:infra_test`, which is the gate working as
-designed — but it means the next person to touch that file is trimming, not adding.
+**Budget note:** landing this guard left **30 bytes** of `user_data` headroom, measured at
+`405ef67a6` — `//infra:infra_test` prints the figure on every run, so take it from there rather
+than from here. It read 13 bytes one commit earlier and this paragraph said so for a round after
+a trim had moved it, which is the same failure as any other number written into prose without
+its head: it is a fact about a file, and the file changes. What does not change is the shape of
+the constraint — anything you add to `cloud-init.yaml` has to come out of a budget with roughly
+one line left in it, so the next person to touch that file is trimming, not adding.
 
 ## Ephemeral runner (opt-in)
 
