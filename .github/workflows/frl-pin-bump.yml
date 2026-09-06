@@ -118,9 +118,22 @@ jobs:
           # entry has to be discarded first. Loud on the second failure rather than
           # retried again: a bump that cannot resolve master is a real problem, and the
           # schedule already retries tomorrow.
-          if ! go get "fdb.dev@master"; then
-            echo "::warning::go get fell through to the direct VCS path and failed; discarding the shallow module clone and retrying once"
-            rm -rf "$(go env GOMODCACHE)/cache/vcs"
+          #
+          # Only the ONE clone go names is discarded. `cache/vcs` holds every module's
+          # clone, so removing the whole directory to fix one entry would charge every
+          # other module a re-clone for a fault that was never theirs. go's own message
+          # carries the path, so there is nothing to guess — and when it does not carry
+          # one, this is not the shallow-clone fault at all and widening the delete
+          # would BE the guess. Fail there instead.
+          if ! out="$(go get "fdb.dev@master" 2>&1)"; then
+            printf '%s\n' "$out"
+            bad="$(printf '%s' "$out" | grep -oE '/[^ ]*/cache/vcs/[0-9a-f]+' | head -1 || true)"
+            if [ -z "$bad" ]; then
+              echo "::error::go get failed and named no cache/vcs path, so this is not the shallow-clone fault and there is nothing specific to discard"
+              exit 1
+            fi
+            echo "::warning::go get fell through to the direct VCS path and failed; discarding the shallow clone at $bad and retrying once"
+            rm -rf "$bad"
             go get "fdb.dev@master"
           fi
           go mod tidy

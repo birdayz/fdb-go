@@ -8245,6 +8245,46 @@ work; unrelated to any wire/query change.
   outcomes are mutually exclusive — exit 1 + io_error/1510 = tmpfs ENOSPC;
   exit 137 + OOMKilled=true = kernel OOM-kill; exit 143 + no fatal trace =
   stopped externally — so the NEXT run settles this without further guessing.
+
+  **That last sentence is REFUTED, and the instrument is the reason.** The step has
+  since run — run 34011921618, a night with a real death to describe (T+30m48s) —
+  and it settled nothing while reporting success. It captured NO container evidence
+  at all: its own unfiltered `docker ps -a`, which is the positive control for the
+  filtered loop beside it, listed exactly one container, the testcontainers reaper.
+  So the loop over `--filter ancestor=foundationdb/foundationdb:7.3.77` iterated
+  zero times — no inspect, no logs, no `Severity="40"` events, no `df` — and the
+  step exited 0 and uploaded the artifact anyway. Not a mismatched filter:
+  `.bazelrc:44` sets `FDB_VERSION=7.3.77` and `pkg/testcontainers/foundationdb`
+  builds that exact tag. `sweepOrphanFDB` is ruled out too — it runs only when no
+  runner is active on the box. The container is removed by the sweep binary's own
+  testcontainers cleanup when that process exits, which is before any later step
+  can run, so the step's premise — "before any cleanup, so the exited container is
+  still inspectable" — was never true.
+
+  FIXED in the same change that records this, because a dump that cannot tell
+  "nothing happened" from "the corpse was already removed" is worse than no dump:
+  a watcher step now starts BEFORE the sweeps, streams the container's stdout to a
+  file from first sighting (where the fatal line appears) and keeps the LAST
+  successful `docker inspect` — the one still carrying ExitCode and OOMKilled after
+  removal — and an empty capture on a night the sweep FAILED is now an `::error::`
+  annotation rather than a green step. Validated against a real container before
+  shipping (busybox printing a marker then exiting 9, force-removed while the
+  watcher was still polling — the removal being the part the old step cannot
+  survive): the marker, `exit=9 oom=false running=false`, the exit logged once
+  rather than once per poll, and the removal itself all came through. All four arms
+  of the empty-capture alarm were driven by hand too — empty+failed → error,
+  empty+passed → notice, live container captured → quiet, watcher-only capture →
+  quiet — because a gate whose quiet arms have never been driven is a gate that can
+  only be shown to fire, not to stay silent when it should.
+  Only the RowDiff lane is instrumented, deliberately: the three outcomes above are
+  mutually exclusive, so ONE capture names the mechanism, and Stress and Factory die
+  in the same band from the same first symptom. If tomorrow's capture is ambiguous
+  rather than decisive, copy the watcher to those two — the step is self-contained
+  and the reason for a second and third sample would then be a real one rather than
+  redundancy bought in advance.
+  So the NEXT run settles this; the previous sentence said that once already and
+  this one is only worth more because the instrument it rests on has now been shown
+  to fire.
   DONE = mechanism confirmed from that artifact, the cause fixed rather than
   absorbed by the circuit breaker, and a pin that reds if the sweep's usable
   lifetime regresses below its budget again.
@@ -9062,9 +9102,50 @@ covered by the correctness suite and the golden plan diff, not by this table.
   maximum-execution-time annotation, so the cap never fired and the cancellations are the
   host class below. The cap stays at 150 and its comment now says so.
   **STOP — needs the owner, not a checkout:** the container deaths under Stress / RowDiff /
-  Factory and the external cancellations of Coverage are on the runner host (memory headroom,
-  or what is killing containers and jobs thirty minutes into a run); nothing in this
-  repository can observe or change that.
+  Factory are on the runner host (memory headroom, or what is killing containers thirty
+  minutes into a run); nothing in this repository can observe or change that. Re-measured
+  2026-09-05/06 and still true of the container deaths, now on three lanes in one band:
+  RowDiff run 34011921618 at T+30m48s, Stress run 33955095551 at T+33m13s, Factory's growth
+  lane at T+33m47s, each first announced by `WARN fdbgo: connection to server failed`.
+  The three are not the same measurement and the difference is stated rather than averaged
+  away: only RowDiff has a `random_seeds` RUN line to time from, so the other two are timed
+  from JOB START and include build time — upper bounds on the same quantity, not further
+  samples of it. Factory's other job, the committed-corpus regression net, finishes in 8m and
+  passes — the lanes that die are the ones that run long enough to.
+
+  **The Coverage half of that STOP is WITHDRAWN — it is not the same class, and it may not be
+  the host at all.** The entry above got the durations right and stopped one line short of the
+  signature. Every `nightly-coverage` run from 2026-08-31 to 2026-09-05 — six for six, with
+  the elapsed time before the kill beside each so the spread is checkable rather than
+  inherited: 33372201141 55m05s, 33482174785 10m39s, 33600989307 67m05s, 33725730764 8m24s,
+  33846896797 51m36s, 33950734274 13m09s — ends on step 6 with
+
+      ##[error]The runner has received a shutdown signal. This can happen when the runner
+      service is stopped, or a manually started runner is canceled.
+
+  and every later step `skipped`. That is the RUNNER being stopped, not the job being
+  cancelled and not a container dying — a different mechanism from the three lanes above, and
+  an eight-fold spread in elapsed time rules out a timeout on its own. It matters because runner lifetime is
+  owned by `tools/bazelscaleset`, which IS in this repository, so "nothing here can change
+  that" is not established for this half. Two of its kill paths look innocent and are recorded
+  so they are not re-proposed: `watchJobStart` (scaler.go:449) re-checks `r.busy` under the
+  same lock `HandleJobStarted` sets it under, and `watchTerminal` (scaler.go:528) fires only
+  after GitHub reports the job terminal — and neither would produce this message anyway, since
+  both `SIGKILL` while the runner logs "received a shutdown signal" on a GRACEFUL stop. The
+  untested candidates are scale-DOWN in `HandleDesiredRunnerCount`, `shutdown()`, and remote
+  slot teardown powering off a box under a live job. None of them is measured; do not write
+  any of them down as the cause.
+  DONE = the sender of that signal identified from the scaler's own log at one of those six
+  timestamps, the path fixed so a busy runner drains instead of stopping, and a pin that reds
+  when a coverage run is killed with steps still pending.
+
+  **Also one short:** this entry calls the bot pin-bump PR "the one repository-editable cause"
+  of Reconcile's red. `gh pr list --state open` gives a second: #745 (`factory/batch`, also
+  bot-authored) is **DIRTY**, conflicted since 2026-08-12, so GitHub cannot compute
+  `refs/pull/745/merge` and its `pull_request` workflows never fire at all — the DIRTY face
+  `CLAUDE.md` records, distinct from #769's held-runs face. Its newest checks are from that
+  date and `Build, Lint & Test` FAILS among them. Merging the base fires every workflow within
+  seconds; until someone does, Reconcile stays red even with #769 fixed.
 
 - [ ] **Exact quantifier binding over a CTE or derived body: the derived gathered-unnest star.**
   A read addressed to a CTE's or derived table's own quantified object is bound at execution

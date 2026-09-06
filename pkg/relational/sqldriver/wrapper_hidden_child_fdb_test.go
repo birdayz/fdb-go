@@ -35,15 +35,29 @@ import (
 // after one. The scope is this comment, not the table.
 //
 // Not every one of those pointers fails the same way, and the difference decides
-// where to look first after an insertion. Most POINT AT evidence ("the bad-name
-// CASE row above"), so a retarget makes them unhelpful, and several would read as
-// self-contradictory to anyone who followed them. Two kinds do worse, because
-// they ASSERT something about the row they point at rather than directing you to
-// it: the comparative "worse than the failure above", whose truth depends on
-// which row that is, and the forward "the two-field row below shows one is",
-// which attributes a specific finding to a row not yet read. Those flip from true
-// to false with nothing inconsistent left on the page. Insert a row next to one
-// of them and re-read it, not just the row you added.
+// where to look first after an insertion. The test is one question, and it is
+// written as a question rather than as a taxonomy because a taxonomy of this
+// invites a count and a count here has gone stale every time: ASK WHETHER THE
+// SENTENCE WOULD STILL BE TRUE IF THE ROW IT POINTS AT WERE A DIFFERENT ROW.
+// A pointer that merely DIRECTS you somewhere survives that — it becomes
+// unhelpful, and several would read as self-contradictory to anyone who followed
+// them, which is a failure that announces itself. A pointer that ASSERTS
+// something about the row does not survive it: it becomes false, quietly, with
+// nothing inconsistent left on the page.
+//
+// The asserting ones are not one shape, and these are worked examples of the
+// question rather than a list to match against: the comparative ("worse than the
+// failure above"), the forward-attributing ("the two-field row below shows one
+// is"), the interpretive ("the contrast that shows the row above is really
+// measuring the erasure"), and the backward-attributing — causal ("the rows above
+// are flattened only because a single-field branch is"), by origin ("built by the
+// two-field CASE above"), by equality ("the same one-field result as the bad-name
+// CASE row above"). The reason that is a sample and not a census: a previous
+// version of this paragraph named the first two and said there were TWO kinds,
+// which was written by describing the two examples in hand rather than by asking
+// the question of every row. The third was found by asking it, and asking it once
+// more turned up the rest. Apply the question. Insert a row and re-read what sits
+// either side of it, not just the row you added.
 //
 // A control is built by removing what you BELIEVE is the cause, so it inherits
 // whatever the belief got wrong and passes either way; a table has no belief in

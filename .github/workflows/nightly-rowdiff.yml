@@ -146,6 +146,78 @@ jobs:
           echo "start=$START" >> "$GITHUB_OUTPUT"
           echo "Sweeping seeds $START..$(( START + SEEDS - 1 )) ($SEEDS seeds)"
 
+      - name: Watch the FDB container while it is alive
+        # The forensics step below used to say it ran "before any cleanup, so the
+        # exited container is still inspectable". That premise is false, and it was
+        # measured false rather than reasoned about: on run 34011921618 the step ran,
+        # exited 0, and uploaded an artifact containing NO container evidence at all.
+        # Its own unfiltered `docker ps -a` — which is the positive control for the
+        # filtered loop beside it — listed exactly one container, the testcontainers
+        # reaper. The foundationdb container was gone, under any tag, so the loop
+        # iterated zero times: no inspect, no logs, no Severity=40 events, no df.
+        # That night had a real death to describe (the cluster went at T+30m48s),
+        # and the instrument the booking calls the thing that "settles this without
+        # further guessing" reported success while describing nothing.
+        #
+        # Not a bad filter: `.bazelrc` sets FDB_VERSION=7.3.77 and
+        # pkg/testcontainers/foundationdb builds `foundationdb/foundationdb:$FDB_VERSION`,
+        # so the tag matches. The container is removed by the sweep binary's own
+        # testcontainers cleanup when that process exits — which is before any later
+        # step can run. Evidence has to be taken while it is ALIVE.
+        #
+        # So this watcher starts first and outlives the sweeps: it streams the
+        # container's stdout to a file from first sighting (where `Fatal Error: Disk
+        # i/o operation failed` appears), and keeps the LAST successful inspect,
+        # which is the one still carrying ExitCode and OOMKilled after the container
+        # is removed. Validated against a real container before shipping — busybox
+        # printing a marker then exiting 9, force-removed while this script was still
+        # polling, which is the part the step below cannot survive: the marker came
+        # through the streamed log, `exit=9 oom=false running=false` through the last
+        # inspect, the exit was logged once rather than once per poll, and the removal
+        # itself was recorded. Every arm of the empty-capture alarm below was driven
+        # by hand too: empty capture on a failed sweep -> error, on a passed sweep ->
+        # notice, a live container captured -> quiet, watcher-only capture -> quiet.
+        #
+        # No `set -e`: a watcher that dies on the first transient docker error is a
+        # watcher that reports nothing, which is the failure it exists to fix.
+        if: steps.window.outputs.ok == 'true'
+        run: |
+          cat > fdb-watch.sh <<'SH'
+          #!/usr/bin/env bash
+          img="foundationdb/foundationdb:${FDB_VERSION:-7.3.77}"
+          seen=""; exited=""
+          while true; do
+            c="$(docker ps -aq --filter "ancestor=$img" 2>/dev/null | head -1)"
+            if [ -n "$c" ] && [ "$c" != "$seen" ]; then
+              seen="$c"; exited=""
+              echo "$(date -u +%FT%TZ) watching $c" >> fdb-watch.log
+              docker logs -f "$c" >> "fdb-container-$c.log" 2>&1 &
+            fi
+            if [ -n "$seen" ]; then
+              if inspect="$(docker inspect "$seen" --format 'exit={{.State.ExitCode}} oom={{.State.OOMKilled}} running={{.State.Running}} err={{.State.Error}} started={{.State.StartedAt}} finished={{.State.FinishedAt}}' 2>/dev/null)"; then
+                printf '%s %s %s\n' "$(date -u +%FT%TZ)" "$seen" "$inspect" > fdb-last-inspect.txt
+                # Log the TRANSITION once. Logging every poll after the exit turns a
+                # one-line finding into hundreds and buries the line that matters.
+                case "$inspect" in
+                  *"running=false"*)
+                    if [ -z "$exited" ]; then
+                      exited=1
+                      echo "$(date -u +%FT%TZ) $seen EXITED: $inspect" >> fdb-watch.log
+                    fi
+                    ;;
+                esac
+              else
+                echo "$(date -u +%FT%TZ) $seen GONE (removed; last inspect is in fdb-last-inspect.txt)" >> fdb-watch.log
+                seen=""; exited=""
+              fi
+            fi
+            sleep 2
+          done
+          SH
+          chmod +x fdb-watch.sh
+          nohup ./fdb-watch.sh >/dev/null 2>&1 &
+          echo "fdb watcher started (pid $!); the runner reaps it when the job ends"
+
       - name: Run rowdiff deep sweep
         if: steps.window.outputs.ok == 'true'
         id: sweep
@@ -241,13 +313,28 @@ jobs:
         # The sweep's FDB testcontainer dies partway through EVERY night this job
         # has run, and this step exists to name the mechanism the next time it
         # does. Runs on success or failure — a healthy night's output is the
-        # control the failing night is read against — and before any cleanup, so
-        # the exited container is still inspectable.
+        # control the failing night is read against.
+        #
+        # It used to claim it also ran "before any cleanup, so the exited container
+        # is still inspectable". It does not: by the time it runs, the sweep binary
+        # has exited and testcontainers has removed the container, so this dump's
+        # own loop finds nothing (measured on run 34011921618, which had a real
+        # death to describe). That is why the watcher step above exists, why its
+        # files are folded in here, and why an empty capture on a FAILING night is
+        # now an error annotation instead of a green step and an artifact that
+        # reads like evidence.
         #
         # MEASURED across eight nights on FIVE distinct runners, elapsed from the
         # `random_seeds` RUN line to the first `WARN fdbgo: connection to server
         # failed`: 31m39s, 32m46s, 31m31s, 32m27s, 33m47s, 33m17s, ~34m00s,
-        # 31m45s — mean 1959s, sigma ~55s (2.8%). Five hosts holding 2.8% is a
+        # 31m45s — mean 1959s, sigma ~55s (2.8%) OVER THOSE EIGHT. Run 34011921618
+        # is a ninth point at 30m48s, taken later and left out of the statistics
+        # rather than folded silently into them; it sits just below the eight. The
+        # same nights' Stress (33m13s, run 33955095551) and Factory growth lane
+        # (33m47s) sit inside them but are NOT the same measurement: neither lane
+        # has a `random_seeds` RUN line, so those two are timed from JOB START and
+        # therefore include build time — upper bounds on the same quantity, not
+        # more samples of it. Five hosts holding 2.8% is a
         # software-deterministic failure, not a wedged box; and it tracks ELAPSED
         # TIME rather than seeds walked (which vary 20% across the same nights).
         #
@@ -284,6 +371,11 @@ jobs:
         #   exit 143 + no fatal trace              -> stopped externally
         # `|| true` throughout: forensics must never turn a green sweep red.
         if: ${{ !cancelled() && steps.window.outputs.ok == 'true' }}
+        env:
+          # The empty-capture alarm below is gated on this rather than on the
+          # capture alone, so a healthy night cannot be reddened by having nothing
+          # to explain.
+          SWEEP_OUTCOME: ${{ steps.sweep.outcome }}
         run: |
           {
             echo "=== host ==="; free -m || true; df -h || true
@@ -300,15 +392,42 @@ jobs:
               echo "=== container disk $c ==="
               docker exec "$c" df -h /var/fdb/data 2>/dev/null || true
             done
+            echo "=== watcher: transitions seen while the container was alive ==="
+            cat fdb-watch.log 2>/dev/null || echo "(no fdb-watch.log — the watcher never wrote one)"
+            echo "=== watcher: last inspect before the container was removed ==="
+            cat fdb-last-inspect.txt 2>/dev/null || echo "(no fdb-last-inspect.txt)"
+            echo "=== watcher: container stdout (tail) ==="
+            tail -n 120 fdb-container-*.log 2>/dev/null || echo "(no fdb-container-*.log)"
           } > fdb-forensics.txt 2>&1 || true
           tail -200 fdb-forensics.txt || true
+          # A capture that cannot tell "nothing happened" from "the corpse was
+          # removed before we looked" settles nothing, and the previous version of
+          # this step reported the second as success. On a night where the sweep
+          # FAILED there was something to capture, so an empty capture is a defect
+          # in the instrument and says so. A healthy night stays quiet: forensics
+          # must never redden a green sweep, which is why this is gated on the
+          # sweep's own outcome rather than on the capture alone.
+          if ! grep -q '^=== inspect ' fdb-forensics.txt && [ ! -s fdb-last-inspect.txt ]; then
+            if [ "${SWEEP_OUTCOME:-}" = "failure" ]; then
+              echo "::error::FDB container forensics captured NOTHING — no live container at dump time and the watcher recorded no inspect — on a night the sweep failed. Fix the watcher before reading this artifact as evidence about the cluster's death."
+            else
+              echo "::notice::no FDB container evidence captured, and the sweep did not fail — nothing to explain tonight"
+            fi
+          fi
 
       - name: Upload FDB container forensics
         if: ${{ !cancelled() && steps.window.outputs.ok == 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: rowdiff-fdb-forensics
-          path: fdb-forensics.txt
+          # The watcher's raw files ride along beside the dump: `fdb-forensics.txt`
+          # folds them in, but the streamed container log can be long and the dump
+          # only tails it.
+          path: |
+            fdb-forensics.txt
+            fdb-watch.log
+            fdb-last-inspect.txt
+            fdb-container-*.log
           if-no-files-found: warn
 
       - name: Report sweep summary
