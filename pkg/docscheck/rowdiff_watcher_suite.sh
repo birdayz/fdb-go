@@ -42,40 +42,33 @@
 #     `logs` arm sleeps without emitting a byte, so what it holds here is the
 #     stub's silence rather than anything a container said.
 #   - the ATOMICITY the publish rests on. The copy lands in a dot-prefixed
-#     staging directory and is published by renaming it onto a fresh timestamped
-#     name that never pre-exists, so `rename(2)` on one filesystem makes the
-#     appearance of a generation indivisible: no signal can catch a half-written
-#     published directory, and the previous generation is pruned only after the
-#     new one is in place. That property is relied on, not driven — no arm here
-#     lands a signal inside a rename. What the arms do drive is what the
-#     construction is FOR: a failed copy publishes nothing, exactly one
-#     generation survives the prune, and no staging outlives the copier.
-#   - the TERM arm of the watcher's trap. `trap 'exit' TERM INT` is what makes
-#     the EXIT trap reachable at all, since an untrapped SIGTERM kills a shell
-#     without running EXIT — but removing it reddens NOTHING here, because the
-#     stop lands inside `docker cp`, the copy then fails, and the failure branch
-#     removes the staging directory before the trap would have. Removing the EXIT
-#     trap DOES redden. So the arm drives the cleanup, not the chaining that
-#     reaches it, and the chaining is asserted from the shell's documented
-#     behaviour rather than from a run.
-#   - `mv -T` as such. The generation counter already guarantees the target does
-#     not exist, so `-T` is a second, structural refusal to nest rather than a
-#     behaviour the fixtures can reach: replacing it with a plain `mv` reddens
-#     nothing. It is kept because the two mechanisms fail differently — a counter
-#     bug silently nests and returns 0, and that is what `-T` refuses — but no
-#     arm here shows it doing so. What the arms DO catch is the counter breaking:
-#     pinning `gen` at a constant reddens two trace-capture arms.
-#   - the RETIRE-BEFORE-DELETE rename, as such. An old generation is renamed to a
-#     dot-prefixed trash name before `rm -rf` runs on it, because `rm -rf` is
-#     interruptible and a deletion cut in half leaves a directory that still
-#     matches `fdb-logs-*` and is then listed and uploaded as evidence (measured
-#     on a deep tree: an interrupted delete left 6170 of 8000 files, still
-#     matching). Dropping the RENAME reddens the generation-count arm; dropping
-#     the trash DELETION reddens nothing, because the trap at the top of the
-#     watcher removes every dot-prefixed leftover on the way out. So the arms
-#     drive the retire and the sweep, and the trash deletion is the redundant
-#     middle — kept because the trap only runs when the script exits, and a lane
-#     running for four hours should not accumulate trash until then.
+#     staging directory and is published by renaming it onto `$launch-$gen`, a
+#     name that never pre-exists, so `rename(2)` on one filesystem makes a
+#     generation's appearance indivisible. No arm lands a signal inside a RENAME
+#     — that property is relied on. Signals inside the two SLOW operations either
+#     side of it are driven: inside the copy (the `slowcp` knob) and inside the
+#     retiring deletion (the `slowrm` shim). What the arms drive is what the
+#     construction is for — a failed copy publishes nothing, one generation
+#     survives, a deletion cut short leaves nothing published behind, and no
+#     staging outlives the copier.
+#   - the TERM arm of the watcher's trap. It makes the exit prompt and explicit,
+#     and it is NOT what makes the EXIT trap reachable: removing it reddens
+#     nothing, and measured directly, a group SIGTERM with an EXIT trap set and
+#     no TERM trap still ran that trap 5 times out of 5 on bash 5.3.15. An
+#     earlier version of this entry justified the arm from documented behaviour
+#     nobody here had run, which is the substitution this file exists to catch.
+#   - the trash DELETION, as distinct from the retire rename. Dropping the rename
+#     is driven — a deletion cut short then leaves a published generation behind,
+#     which the slow-`rm` shim makes deterministic. Dropping the DELETION reddens
+#     nothing, because the trap removes every dot-prefixed leftover on the way
+#     out. It is kept anyway: a trap only runs at exit, and a four-hour lane
+#     should not accumulate a retired generation per cycle until then.
+#   - TWO copiers for one container. `$c` is `docker ps -aq … | head -1`, so with
+#     two containers in a lane the older one can be re-selected after the newer
+#     goes and get a SECOND copier while its first is still looping. Generation
+#     names are scoped by a parent-shell launch counter so the two cannot collide,
+#     but no case here starts a second container at all — the stub serves exactly
+#     one. The scoping is reasoned, not driven.
 #   - anything about a REAL fdbserver: every trace here is a fixture, so this
 #     pins the plumbing and not the format it carries.
 #
@@ -96,6 +89,22 @@ awk '
 # Sanity-check the EXTRACTION only. Asserting the behaviour's own text here would
 # make a removed behaviour look like a broken test rather than a failing case.
 grep -q 'fdb-watch.pid' "$SCRIPT" || { echo "FATAL: extraction has no pid handshake"; exit 1; }
+
+# `rm` shim. Slow ONLY for the names the retire path deletes, so a case can put
+# the stop signal inside a deletion deterministically. Everything else delegates
+# straight through, so the shim cannot perturb the rest of the run.
+cat > "$BIN/rm" <<'STUB'
+#!/bin/bash
+if [ -f "$WATCHTEST_STATE/slowrm" ]; then
+  for a in "$@"; do
+    case "$a" in
+      .fdb-logs-*.trash|fdb-logs-*.[0-9]*) sleep 3; break ;;
+    esac
+  done
+fi
+exec /usr/bin/rm "$@"
+STUB
+chmod +x "$BIN/rm"
 
 fail=0
 ok() { printf '  ok   %s\n' "$1"; }
@@ -213,7 +222,10 @@ if start_watcher 1; then
   # Removal: the last inspect must SURVIVE it, per container.
   echo gone > "$STATE/phase"
   sleep 3
-  ls "$WORK"/fdb-last-inspect-*.txt >/dev/null 2>&1 \
+  # `[ -s ]`, not `ls`: the alarm below counts an inspect as evidence only when it
+  # is NON-EMPTY, so an arm that accepts a zero-byte file accepts one the alarm
+  # would reject — the suite and the instrument disagreeing about what counts.
+  [ -s "$(ls "$WORK"/fdb-last-inspect-*.txt 2>/dev/null | head -1)" ] \
     && ok "the last inspect survives removal" \
     || bad "the last inspect survives removal"
   grep -q 'GONE' "$WORK/fdb-watch.log" 2>/dev/null \
@@ -364,9 +376,11 @@ if start_watcher 1; then
   else
     ok "the published generation holds no nested directory"
   fi
-  # And nothing dot-prefixed is left behind by THIS loop. The glob names the
-  # periodic staging specifically: both loops stage under `.fdb-logs-*`, so a
-  # shared glob makes a leak in either fire whichever arm happens to run, which
+  # And nothing dot-prefixed is left behind by THIS loop. The glob covers the
+  # periodic loop's whole namespace — its staging AND its `.trash`, which is
+  # deliberate — while excluding the exit loop's, since `.fdb-logs-c1.*` does not
+  # match `.fdb-logs-c1-exit.new`. Both loops stage under `.fdb-logs-*`, so a
+  # SHARED glob makes a leak in either fire whichever arm happens to run, which
   # is how a periodic leak was once reported as an exit one.
   if ls -d "$WORK"/.fdb-logs-c1.* >/dev/null 2>&1; then
     bad "the PERIODIC copier leaves no staging directory"
@@ -379,6 +393,62 @@ fi
 rm -f "$STATE/cpfail"
 # Hand the container back GONE. The sections below are written against an
 # absent container, and a case that leaves one running silently retargets them.
+echo gone > "$STATE/phase"
+
+# `mv -T` DRIVEN, not asserted. An earlier version of this file recorded `-T` in
+# the not-covered list on the grounds that the generation counter already makes
+# the target unique, so nothing could reach the nesting case. That was true of
+# the PERIODIC path and false of the EXIT one, whose destination is a fixed name:
+# occupy it and the publish must REFUSE rather than nest. Measured with plain
+# `mv`: the copy lands at `fdb-logs-c1-exit/.fdb-logs-c1-exit.new` and the log
+# still says "copied complete at exit" — silent success over misplaced evidence.
+rm -rf "$STATE/logs"; mkdir -p "$STATE/logs"; echo running > "$STATE/phase"
+echo '<Event Severity="40" Type="SharedTLogFailed"/>' > "$STATE/logs/trace.001.xml"
+if start_watcher 3600; then
+  sleep 1
+  # Occupy the exit destination with a NON-EMPTY directory before the transition.
+  mkdir -p "$WORK/fdb-logs-c1-exit"
+  echo '<Event Severity="10" file="squatter"/>' > "$WORK/fdb-logs-c1-exit/old.xml"
+  echo stopped > "$STATE/phase"
+  sleep 4
+  stop_watcher
+  if [ -d "$WORK/fdb-logs-c1-exit/.fdb-logs-c1-exit.new" ]; then
+    bad "an occupied exit destination is REFUSED, not nested into"
+  else
+    ok "an occupied exit destination is REFUSED, not nested into"
+  fi
+  grep -q 'NOT copied at exit' "$WORK/fdb-watch.log" 2>/dev/null \
+    && ok "a refused exit publish is reported as NOT copied" \
+    || bad "a refused exit publish is reported as NOT copied"
+else
+  bad "the watcher never recorded a pid (occupied-exit case)"
+fi
+echo gone > "$STATE/phase"
+
+# THE RETIRE RENAME, DRIVEN. `rm -rf` is interruptible, so a generation is
+# renamed to a dot-prefixed trash name — atomically — before deletion touches it.
+# Deleting it directly instead reddens nothing UNLESS a deletion is actually cut
+# short, which is why an earlier version of this file wrongly recorded the rename
+# as covered by the generation-count arm: that arm catches the retire being
+# skipped entirely, not the retire being done unsafely. The `slowrm` shim makes
+# the interrupt land inside the deletion every time.
+rm -rf "$STATE/logs"; mkdir -p "$STATE/logs"; echo running > "$STATE/phase"
+echo '<Event Severity="40" Type="SharedTLogFailed"/>' > "$STATE/logs/trace.001.xml"
+if start_watcher 1; then
+  sleep 3
+  touch "$STATE/slowrm"
+  sleep 2
+  stop_watcher
+  rm -f "$STATE/slowrm"
+  gens=$(ls -d "$WORK"/fdb-logs-c1.* 2>/dev/null | wc -l)
+  if [ "$gens" -le 1 ]; then
+    ok "a deletion cut short leaves no published generation behind"
+  else
+    bad "a deletion cut short leaves no published generation behind (found $gens: $(ls -d "$WORK"/fdb-logs-c1.* | tr '\n' ' '))"
+  fi
+else
+  bad "the watcher never recorded a pid (slow-rm case)"
+fi
 echo gone > "$STATE/phase"
 
 # The DUMP block, which is a different piece of the same instrument and was not
@@ -423,7 +493,12 @@ if grep -q 'Severity="40"' "$DWORK/fdb-forensics.txt" 2>/dev/null; then
 else
   bad "the dump reads the trace directory the watcher wrote"
 fi
-if grep -q 'fdb-last-inspect-c1.txt' "$DWORK/fdb-forensics.txt" 2>/dev/null; then
+# Assert the CONTENT, not the header. `grep -q 'fdb-last-inspect-c1.txt'` matches
+# the `--- $i` line the loop prints BEFORE `cat`, so deleting the `cat` reddens
+# nothing and the arm reports that the dump "reads" a file it only NAMED. The
+# same husk as the generation-count arm, in the assertion rather than the
+# fixture: presence taken for content.
+if grep -q 'exit=1 oom=false' "$DWORK/fdb-forensics.txt" 2>/dev/null; then
   ok "the dump reads the per-container last inspect"
 else
   bad "the dump reads the per-container last inspect"
@@ -493,7 +568,7 @@ alarm_case "a watcher inspect is evidence" '=== host ===' 'ts c1 exit=1' failure
 #
 # There are TWO copies, one per step, and covering one is how a suite reports the
 # guard as covered while the other stays free to be deleted. Measured on this
-# file as committed, at 30 arms: deleting the forensics copy reddens exactly one
+# file as committed, at 33 arms: deleting the forensics copy reddens exactly one
 # arm, and deleting the WATCHER copy reddens exactly one — the other one — where
 # before the extraction named a step and deleting the watcher's reddened NONE.
 # (An earlier version of this sentence said "at 18 arms", which was the count of

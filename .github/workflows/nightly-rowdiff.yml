@@ -206,9 +206,14 @@ jobs:
           # redundant — removing either alone changed nothing, and only removing
           # both reddened the arm, which is two mechanisms for one job.
           #
-          # The TERM arm is what makes the EXIT arm reachable: an untrapped SIGTERM
-          # kills the shell without running EXIT at all, so `exit` here is what
-          # turns the signal into an ordinary exit that the EXIT trap sees.
+          # The TERM arm makes the exit PROMPT and explicit. It does not make the
+          # EXIT trap reachable — an earlier version of this comment said an
+          # untrapped SIGTERM kills the shell without running EXIT at all, which is
+          # documented behaviour that was never run here and is false on this
+          # bash: with an EXIT trap set and no TERM trap, a group SIGTERM still
+          # ran it 5 times out of 5. Keep the arm; do not justify it from a manual
+          # page instead of a measurement, which is the substitution this whole
+          # change is a record of.
           trap 'rm -rf .fdb-logs-*' EXIT
           trap 'exit' TERM INT
           img="foundationdb/foundationdb:$FDB_IMAGE_TAG"
@@ -227,6 +232,10 @@ jobs:
           # outlived the job it claimed to be bounded by.
           deadline=$(( $(date +%s) + 17400 ))
           seen=""; exited=""
+          # Every copier launch gets a number the NEXT launch cannot reuse. See the
+          # generation-name comment in the copy loop for why a per-loop counter
+          # alone is not enough.
+          launches=0
           while [ "$(date +%s)" -lt "$deadline" ]; do
             c="$(docker ps -aq --filter "ancestor=$img" 2>/dev/null | head -1)"
             if [ -n "$c" ] && [ "$c" != "$seen" ]; then
@@ -259,8 +268,9 @@ jobs:
               # construction. Its one weakness is staleness — up to one cycle — and
               # the exit-transition copy below cuts it to nothing on every path
               # where the container STOPS rather than being removed outright.
-              gen=0; prevgen=""
-              ( while docker inspect "$c" >/dev/null 2>&1; do
+              launches=$((launches + 1))
+              ( launch=$launches; gen=0; prevgen=""; copyfail=""
+                while docker inspect "$c" >/dev/null 2>&1; do
                   # PUBLISH BY ATOMIC RENAME ONTO A NAME THAT DOES NOT EXIST.
                   #
                   # Three shapes were tried here and the first two each traded the
@@ -285,34 +295,43 @@ jobs:
                   # be a byte no reader can trust.
                   #
                   # A rename onto a fresh name has none of them. `rename(2)` on one
-                  # The generation name is a COUNTER, not a timestamp, and the
-                  # predecessor is REMEMBERED rather than re-derived by listing.
-                  # Both are load-bearing, and both replace something measured to
-                  # be wrong rather than something merely inelegant.
+                  # THE GENERATION NAME IS `$launch-$gen`, AND BOTH HALVES ARE
+                  # LOAD-BEARING. This is the fourth naming scheme here; the first
+                  # three each fixed the previous one's collision and introduced
+                  # their own, so the reasoning is written out.
                   #
-                  # A `$(date +%s)` stamp is not unique. Two cycles inside one
-                  # second hand `mv` a target that already EXISTS, and `mv` of a
-                  # directory onto an existing directory does not fail — it moves
-                  # the source INSIDE it and returns 0. The copy then sits at
-                  # `fdb-logs-$c.<ts>/.fdb-logs-$c.new`, one level below where the
-                  # dump reads, while the exit status says the publish succeeded
-                  # and a "how many generations are there" check still sees
-                  # exactly one. Silent, and green. It is the same mv-nests trap
-                  # this loop's sibling already had, reached from the other side.
-                  # A counter cannot repeat.
+                  # `$(date +%s)` alone is not unique. Two cycles inside one second
+                  # hand `mv` a target that already EXISTS, and `mv` of a directory
+                  # onto an existing directory does not fail — it moves the source
+                  # INSIDE it and returns 0. The copy then sits one level below
+                  # where the dump reads while the exit status says success and a
+                  # "how many generations" check still sees exactly one. Silent,
+                  # and green.
                   #
-                  # And `ls | sort | head -n -1` orders LEXICOGRAPHICALLY, so it
-                  # is correct only while every stamp has the same width: `.9`
-                  # sorts after `.10` and `.100`. Epoch seconds are 10 digits
-                  # until 2286, which makes the bug real and dormant — the worst
-                  # kind to leave in a prune whose job is deleting things.
-                  # Remembering the previous name removes the ordering question
-                  # instead of answering it, and removes parsing `ls` with it.
+                  # A per-loop COUNTER alone is not unique either, and that is
+                  # subtler: it is unique within one copier and this script can run
+                  # TWO for the same container. `$c` is `docker ps -aq … | head -1`,
+                  # and a copier is launched whenever `$c` differs from `$seen`. With
+                  # two containers in a lane, `head -1` names the newer; when that
+                  # one goes, `head -1` reverts to the older, which is still alive
+                  # and still has its first copier looping — and a second one starts
+                  # with `gen=0`. Both then mint the same names. `$launch` is a
+                  # counter in the PARENT shell, so a relaunch cannot reuse it, and
+                  # `$gen` is per loop, so a cycle cannot. Composed, not traded.
+                  #
+                  # `mv -T` is the third guard and the only structural one: whatever
+                  # a naming bug does, `-T` refuses to nest rather than returning 0.
+                  #
+                  # The predecessor is REMEMBERED, not re-derived by listing:
+                  # `ls | sort | head -n -1` orders lexicographically, so it is
+                  # correct only while every name has the same width — `.9` sorts
+                  # after `.10`. Remembering removes the ordering question instead of
+                  # answering it, and removes parsing `ls` with it.
                   gen=$((gen + 1))
                   rm -rf ".fdb-logs-$c.new"
                   if mkdir -p ".fdb-logs-$c.new" &&
                      docker cp "$c:/var/fdb/logs/." ".fdb-logs-$c.new/" >/dev/null 2>&1 &&
-                     mv -T ".fdb-logs-$c.new" "fdb-logs-$c.$gen"; then
+                     mv -T ".fdb-logs-$c.new" "fdb-logs-$c.$launch-$gen"; then
                     # RETIRE BY RENAME, THEN DELETE. `rm -rf` is interruptible,
                     # and the stop signal reaches this group at an arbitrary
                     # point: a deletion cut in half leaves a partially dismantled
@@ -328,11 +347,35 @@ jobs:
                     # Order matters: this runs only AFTER the new generation is in
                     # place, so the glob never sees zero.
                     if [ -n "$prevgen" ]; then
-                      mv -T "$prevgen" ".$prevgen.trash" 2>/dev/null &&
+                      # A FAILED retire must be loud. `&&` correctly skips the
+                      # delete, and the old generation then stays published while
+                      # `prevgen` is reassigned below — so nothing ever points at it
+                      # again and it is orphaned PERMANENTLY, silently, with the
+                      # error swallowed by `2>/dev/null`. Once is harmless; a
+                      # persistent failure leaks one generation per cycle, about 290
+                      # over a lane, on the box whose disk pressure is what this
+                      # whole watcher exists to explain.
+                      if mv -T "$prevgen" ".$prevgen.trash" 2>/dev/null; then
                         rm -rf ".$prevgen.trash"
+                      else
+                        echo "$(date -u +%FT%TZ) could not retire $prevgen; it is orphaned and will not be swept" >> fdb-watch.log
+                      fi
                     fi
-                    prevgen="fdb-logs-$c.$gen"
+                    prevgen="fdb-logs-$c.$launch-$gen"
+                    [ -n "$copyfail" ] &&
+                      echo "$(date -u +%FT%TZ) $c periodic copy recovered" >> fdb-watch.log
+                    copyfail=""
                   else
+                    # SAY SO, once per run of failures. The exit branch logs its
+                    # failure and this one did not, so a copier that could inspect
+                    # but never copy produced a lane with no traces and nothing
+                    # saying why. Logging every cycle would bury the line that
+                    # matters under hundreds, which is the trap the exit-transition
+                    # log one section down is written around, so this logs the
+                    # TRANSITION into failing and the transition back out.
+                    [ -z "$copyfail" ] &&
+                      echo "$(date -u +%FT%TZ) $c periodic copy FAILING (inspect still succeeds)" >> fdb-watch.log
+                    copyfail=1
                     rm -rf ".fdb-logs-$c.new"
                   fi
                   sleep 60
