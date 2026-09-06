@@ -25,27 +25,34 @@ import (
 // are the measurement and the prose is downstream of them, which is why this
 // comment stops at what the rows show and does not generalise past it.
 //
-// What the rows show. A record constructor whose own type protobuf cannot carry
-// evaluates to a name-keyed map instead of a message, and what happens to that
-// map depends entirely on WHERE the literal lands. Four sites, four outcomes,
-// same two literals:
+// What the rows show. Unifying two record shapes ANONYMISES the fields whose
+// names disagree, and three sites then treat that anonymised target differently.
+// Two of the three do not depend on the field name being one protobuf can carry
+// at all — the controls that establish that are in the table, and each earlier
+// account went wrong by not running them.
 //
-//   - as an ARRAY element under a record: the parent stamps, is handed a map,
-//     and REFUSES it — the query does not answer;
-//   - as an array element with nothing stamped above it: the array comes back
-//     RAGGED, one element a message and one a map, and the query ANSWERS. That
-//     is the worst of the four, because nothing reports it;
-//   - through a CASE: it COERCES and answers cleanly, so nothing about this is
-//     inherent to unifying two record shapes;
-//   - through a UNION: a loud 42F65 refusal, the only site that neither fails
-//     obscurely nor answers wrongly.
+//   - ARRAY element. Here the bad name IS the variable. An element whose own
+//     type protobuf cannot carry never stamps and evaluates to a name-keyed map.
+//     If the anonymised target erased that name the parent stamps, is handed the
+//     map, and REFUSES it — the query does not answer. If both elements carry
+//     the SAME bad name the target keeps it, the parent cannot stamp either, and
+//     the query ANSWERS as a uniform map with its values. And with nothing
+//     stamped above the array at all, it answers RAGGED: one element a message,
+//     one a map. That last is the worst of them, because nothing reports it.
+//   - UNION. A loud 42F65. But it fails IDENTICALLY for two perfectly
+//     synthesisable names, and answers when the names agree — so this site
+//     refuses to promote a record to the anonymised record unification produces,
+//     full stop. That is a legal SQL union Go will not run, and it has nothing
+//     to do with what protobuf can name.
+//   - CASE. Answers, with one leaf under the OUTER alias and no nested record —
+//     the same for good names and bad. Nothing here varies with the name, and
+//     nothing shows a record being coerced, because no record survives as a
+//     record to coerce. Why a record literal in a CASE branch is not
+//     record-typed there is unexplained and is not claimed to be.
 //
-// Within the array-element site, whether it fails or degrades turns on the
-// promotion TARGET: unification erases a field name when the two names disagree
-// and keeps it when they agree, so the same bad name fails beside a different
-// name and answers beside itself. TestUnificationErasesAFieldNameOnlyWhenTheNamesDisagree
-// pins that erasure, and TestWhichRecordTypesCanBeGivenADescriptor the stamping
-// predicate under it.
+// TestUnificationErasesAFieldNameOnlyWhenTheNamesDisagree pins the erasure and
+// TestWhichRecordTypesCanBeGivenADescriptor the stamping predicate, both without
+// Docker.
 //
 // Every outcome here reproduces identically at the merge-base `36b97f1e9`, so
 // none is a regression of the work this ships with. TODO.md carries the
@@ -102,6 +109,8 @@ func TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes(t *testing.T) {
 		// account rests on did not happen.
 		wantLeafNames []string
 		wantLeafVals  []float64
+		// wantRows defaults to 1. A UNION row legitimately returns two.
+		wantRows int
 	}{
 		{
 			why:       "one unsynthesisable name beside a good one: differing shapes anonymise the target, so the target IS synthesisable, the parent stamps, and the child's map is refused",
@@ -180,9 +189,29 @@ func TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes(t *testing.T) {
 			wantLeafVals:  []float64{1},
 		},
 		{
-			why:       "the same two literals unified by a UNION, this RFC's own subject: a LOUD refusal, which is the only one of the four sites that neither fails obscurely nor answers wrongly",
+			why:       "the same two literals unified by a UNION: a LOUD refusal — but read the next two rows before attributing it to the bad name",
 			query:     `SELECT (1 AS "$lead") AS C FROM t UNION ALL SELECT (2 AS A) AS C FROM t`,
 			failsWith: notPromotable,
+		},
+		{
+			why:       "the UNION control that matters: TWO SYNTHESISABLE names, disagreeing, and it fails IDENTICALLY. So this site has nothing to do with what protobuf can carry — it refuses to promote a record to the anonymised record unification produces, and that is a legal SQL union Go will not run",
+			query:     `SELECT (1 AS A) AS C FROM t UNION ALL SELECT (2 AS B) AS C FROM t`,
+			failsWith: notPromotable,
+		},
+		{
+			why:           "and the same union with AGREEING names answers, so the refusal is the anonymisation and not unions of records in general",
+			query:         `SELECT (1 AS A) AS C FROM t UNION ALL SELECT (2 AS A) AS C FROM t`,
+			wantStruct:    true,
+			wantRows:      2,
+			wantLeafNames: []string{"A"},
+			wantLeafVals:  []float64{1},
+		},
+		{
+			why:           "the CASE control: SYNTHESISABLE disagreeing names give the same result as the bad-name CASE row above — one INT leaf under the outer alias, no nested record. Nothing about the CASE site varies with the name, and no record survives as a record to be coerced",
+			query:         `SELECT (CASE WHEN id=1 THEN (1 AS A) ELSE (2 AS B) END AS CH) FROM t`,
+			wantStruct:    true,
+			wantLeafNames: []string{"CH"},
+			wantLeafVals:  []float64{1},
 		},
 	} {
 		query := tc.query
@@ -221,8 +250,12 @@ func TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes(t *testing.T) {
 			t.Errorf("%s: rows.Err after %d row(s): %v", query, len(got), rErr)
 		}
 		rows.Close()
-		if len(got) != 1 {
-			t.Errorf("%s returned %d rows, want exactly 1", query, len(got))
+		wantRows := tc.wantRows
+		if wantRows == 0 {
+			wantRows = 1
+		}
+		if len(got) != wantRows {
+			t.Errorf("%s returned %d rows, want exactly %d", query, len(got), wantRows)
 			continue
 		}
 		if tc.wantRagged {
@@ -252,7 +285,16 @@ func TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes(t *testing.T) {
 			// with the element's original field name where unification should
 			// have anonymised it, is still an api.Struct. Walk to the leaves and
 			// assert the names and the numbers.
-			names, vals := leaves(t, got[0])
+			if len(tc.wantLeafNames) == 0 {
+				t.Errorf("%s is a wantStruct row with no leaf expectation, so the assertion below "+
+					"passes on anything: declare wantLeafNames/wantLeafVals or drop the row", query)
+				continue
+			}
+			names, vals, others := leaves(t, got[0])
+			if len(others) != 0 {
+				t.Errorf("%s reached %d non-numeric leaf/leaves %q: this row asserts numbers, and a "+
+					"leaf the walker cannot read would otherwise be invisible", query, len(others), others)
+			}
 			if !leafNamesEqual(names, tc.wantLeafNames) || !leafValsEqual(vals, tc.wantLeafVals) {
 				t.Errorf("%s leaves = %q/%v, want %q/%v. %s", query, names, vals,
 					tc.wantLeafNames, tc.wantLeafVals, tc.why)
@@ -319,7 +361,7 @@ func asFloat(v any) (float64, bool) {
 // raw maps are all walked, because which of the three a row produces is exactly
 // what the table is measuring — a walker that handled only one would decide the
 // answer before looking.
-func leaves(t *testing.T, v any) (names []string, vals []float64) {
+func leaves(t *testing.T, v any) (names []string, vals []float64, others []string) {
 	t.Helper()
 	var walk func(name string, node any)
 	walk = func(name string, node any) {
@@ -356,11 +398,16 @@ func leaves(t *testing.T, v any) (names []string, vals []float64) {
 			if f, isNumber := asFloat(node); isNumber {
 				names = append(names, name)
 				vals = append(vals, f)
+				return
 			}
+			// NOT dropped. A leaf this walker cannot read — a NULL, a string, a
+			// carrier nobody anticipated — would otherwise be invisible to every
+			// assertion built on it, which is the failure this whole file is about.
+			others = append(others, fmt.Sprintf("%s=%T(%v)", name, node, node))
 		}
 	}
 	walk("", v)
-	return names, vals
+	return names, vals, others
 }
 
 func leafNamesEqual(a, b []string) bool {

@@ -200,16 +200,17 @@ func rowScalarToProtoValue(fd protoreflect.FieldDescriptor, v any) (protoreflect
 // bad name on BOTH elements and the target keeps it, the parent cannot stamp
 // either, and the whole value degrades to maps and ANSWERS.
 //
-// That describes THIS site. It does not describe the defect, which is wider:
-// the same two literals answer with a RAGGED array where nothing above them is
-// stamped, coerce cleanly through a CASE, and draw a loud refusal through a
-// UNION. Four sites, four outcomes.
-// TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes measures all four,
-// TestUnificationErasesAFieldNameOnlyWhenTheNamesDisagree the erasure, and
-// TestWhichRecordTypesCanBeGivenADescriptor the stamping predicate. TODO.md,
-// "A record literal protobuf cannot name is handled four different ways",
-// carries the closure. Read the table rather than this summary: three rounds
-// summarised it wrongly before this one.
+// That describes THIS site. The same array with nothing stamped above it
+// answers RAGGED instead — one element a message, one a map — and the wider
+// gap it belongs to shows up at other sites for reasons that have nothing to do
+// with the field name: a UNION refuses to promote a record to the anonymised
+// record unification produces, whether the names are protobuf-legal or not.
+// TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes measures those with their
+// controls, TestUnificationErasesAFieldNameOnlyWhenTheNamesDisagree the erasure,
+// and TestWhichRecordTypesCanBeGivenADescriptor the stamping predicate. TODO.md,
+// "A record literal that is not stamped reaches a stamped parent", carries the
+// closure. Read the table rather than this summary: four rounds summarised it
+// wrongly before this one, each refuted by a row nobody had run.
 //
 // A DIRECT field child is a different case and stays in step with its parent,
 // for two reasons TestTheBakeStampsAParentAndItsChildTogetherOrNeither asserts

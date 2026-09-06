@@ -134,6 +134,24 @@ func TestUnificationErasesAFieldNameOnlyWhenTheNamesDisagree(t *testing.T) {
 		t.Fatal("the target that KEPT `$lead` was given a descriptor: it must be refused, or the " +
 			"parent would stamp and that query would fail instead of degrading")
 	}
+
+	// The diagonal the two rows above leave out: names disagree AND types
+	// disagree. Without it this test covers only one axis at a time, and the
+	// end-to-end table has a row on exactly this cell — the differing-name,
+	// differing-width array, which fails for the OTHER reason. Erasure has to
+	// still happen there, or that row's failure would be attributable to a lost
+	// erasure rather than to the width.
+	goodDouble := NewRecordType("", false, []Field{{Name: "B", FieldType: NotNullDouble}})
+	bothDisagree := MaximumType(badInt, goodDouble)
+	if bothDisagree == nil {
+		t.Fatal("unifying {$lead:int} with {B:double} produced no common type: the differing-name, " +
+			"differing-width row in the SQL table then fails before it reaches the width, and its " +
+			"error would be describing something else")
+	}
+	if got := fieldNames(t, bothDisagree); len(got) != 1 || got[0] != "" {
+		t.Fatalf("unifying {$lead:int} with {B:double} gave field names %q, want one ANONYMOUS "+
+			"field: erasure must not depend on the two types agreeing", got)
+	}
 }
 
 func fieldNames(t *testing.T, typ Type) []string {

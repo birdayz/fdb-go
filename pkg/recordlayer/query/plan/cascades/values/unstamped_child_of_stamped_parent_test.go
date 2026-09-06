@@ -18,12 +18,12 @@ import (
 // the offending name. Both are needed: leave the same bad name on both elements
 // and the target keeps it, the parent cannot stamp either, and the query answers
 // as a uniform raw map instead. TODO.md, "A record literal protobuf cannot name
-// is handled four different ways", carries the closure, and
-// TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes measures all four sites — the
-// same literals also answer with a RAGGED array where nothing above them is
-// stamped, coerce through a CASE, and draw a loud refusal through a UNION. Read
-// that table rather than any summary of it, this one included: three rounds
-// each summarised it wrongly, and the rows are what survived.
+// reaches a stamped parent", carries the closure, and
+// TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes measures it with the controls
+// that make it attributable — including the same array with nothing stamped
+// above it, which answers RAGGED instead. Read that table rather than any
+// summary of it, this one included: four rounds each summarised it wrongly, and
+// the rows are what survived.
 //
 // The cost here is NOT the one the booking describes. Everywhere else an
 // unstamped constructor degrades a struct to a raw map and keeps its values —
