@@ -587,7 +587,7 @@ jobs:
             # than only on a match, and print the file list so an EMPTY directory is
             # distinguishable from a directory of traces with nothing fatal in them.
             for d in fdb-logs-*; do
-              [ -d "" ] || continue
+              [ -d "$d" ] || continue
               echo "--- $d (files)"; ls -la "$d" | tail -n +2
               echo "--- $d (Severity=40)"; grep -rho 'Severity="40"[^>]*' "$d" | tail -40
             done 2>/dev/null || echo "(no fdb-logs-* directories)"
@@ -633,7 +633,6 @@ jobs:
             fdb-watch.log
             fdb-last-inspect-*.txt
             fdb-logs-*/**
-            fdb-logs-*-exit/**
             fdb-df-*.txt
             fdb-container-*.log
           if-no-files-found: warn

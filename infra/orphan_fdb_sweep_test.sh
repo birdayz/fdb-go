@@ -108,7 +108,7 @@ run_case() {
     unreadable) touch "$STATE/worker" ;;
     *) touch "$STATE/worker"; echo "$3" > "$STATE/etimes" ;;
   esac
-  SWEEPTEST_STATE="$STATE" PATH="$BIN:$PATH" bash "$SCRIPT" >/dev/null 2>&1
+  SWEEPTEST_STATE="$STATE" PATH="$BIN:$PATH" bash "$SCRIPT" > "$STATE/out" 2>&1
   got=removed
   [ -s "$STATE/removed" ] || got=survived
   if [ "$got" = "$4" ]; then ok "$1 ($got)"; else bad "$1: got $got, want $4"; fi
@@ -130,6 +130,13 @@ run_case "young container, no worker"                600   "" survived
 # E: fail CLOSED. A worker exists but its age is unreadable, so nothing is swept
 #    rather than everything.
 run_case "worker present, age unreadable"           3600 unreadable survived
+# Failing closed is only half of it. A permanently disarmed sweep that says
+# nothing looks exactly like a healthy one, which is the shape this whole change
+# is a record of — so the disarm has to be visible, and visible is an assertion
+# rather than an intention.
+grep -q "sweep disarmed" "$STATE/out" \
+  && ok "the disarm says so, into the unit journal" \
+  || bad "the disarm says so, into the unit journal"
 
 if [ "$fail" -ne 0 ]; then
   echo "FAILURES"

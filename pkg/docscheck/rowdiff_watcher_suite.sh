@@ -170,6 +170,44 @@ else
   bad "the watcher never recorded a pid (exit-copy case)"
 fi
 
+# The DUMP block, which is a different piece of the same instrument and was not
+# covered until it broke. A refactor emptied `[ -d "$d" ]` to `[ -d "" ]` in the
+# loop that reads the watcher's copied trace directories: always false, so the
+# body never ran, and the `|| echo "(no …)"` fallback did not fire either because
+# the `for` still exits 0. A night with a dead cluster then reads exactly like a
+# clean one — the empty-set false green, inside the change whose whole point was
+# letting the dump read that directory.
+#
+# So the block is extracted and run the same way the watcher is, against a
+# fixture holding what the watcher would have written.
+DUMP=$(mktemp); DWORK=$(mktemp -d)
+trap 'rm -rf "$SCRIPT" "$BIN" "$WORK" "$STATE" "$DUMP" "$DWORK"' EXIT
+awk '
+  /^          \{$/ { inb = 1 }
+  inb { print substr($0, 11) }
+  inb && /^          \} > fdb-forensics\.txt/ { exit }
+' .github/workflows/nightly-rowdiff.yml > "$DUMP"
+[ -s "$DUMP" ] || { echo "FATAL: extracted an empty dump block"; exit 1; }
+grep -q 'fdb-logs-' "$DUMP" || { echo "FATAL: dump extraction has no trace-directory arm"; exit 1; }
+
+mkdir -p "$DWORK/fdb-logs-c1-exit"
+echo '<Event Severity="40" Type="SharedTLogFailed"/>' > "$DWORK/fdb-logs-c1-exit/trace.001.xml"
+echo 'ts c1 exit=1 oom=false' > "$DWORK/fdb-last-inspect-c1.txt"
+# The extracted block ENDS with `} > fdb-forensics.txt`, so its output lands in
+# that file rather than on stdout — which is the artifact the night is read from,
+# and therefore the right thing to assert against.
+( cd "$DWORK" && PATH="$BIN:$PATH" WATCHTEST_STATE="$STATE" bash "$DUMP" >/dev/null 2>&1 )
+if grep -q 'Severity="40"' "$DWORK/fdb-forensics.txt" 2>/dev/null; then
+  ok "the dump reads the trace directory the watcher wrote"
+else
+  bad "the dump reads the trace directory the watcher wrote"
+fi
+if grep -q 'fdb-last-inspect-c1.txt' "$DWORK/fdb-forensics.txt" 2>/dev/null; then
+  ok "the dump reads the per-container last inspect"
+else
+  bad "the dump reads the per-container last inspect"
+fi
+
 if [ "$fail" -ne 0 ]; then
   echo "FAILURES"
   exit 1
