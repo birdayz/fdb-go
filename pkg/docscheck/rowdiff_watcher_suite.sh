@@ -1100,13 +1100,25 @@ alarm_case "an inspect WITH traces on a failed night is evidence" '=== host ==='
 # it the arm here whose absence would reinstate a SHIPPED bug.
 #
 # There are TWO copies, one per step, and covering one is how a suite reports the
-# guard as covered while the other stays free to be deleted. Measured on this
-# file as committed, at 54 arms: deleting the forensics copy reddens exactly one
-# arm, and deleting the WATCHER copy reddens exactly one — the other one — where
-# before the extraction named a step and deleting the watcher's reddened NONE.
-# (An earlier version of this sentence said "at 18 arms", which was the count of
-# an uncommitted intermediate. A population no committed revision ever had is
-# worse than no population at all: it cannot be seen to go stale.)
+# guard as covered while the other stays free to be deleted. Both deletions are
+# caught, but NOT by the same mechanism, and an earlier version of this comment
+# claimed they were — "deleting the forensics copy reddens exactly one arm, and
+# deleting the WATCHER copy reddens exactly one, the other one". The second half
+# is true; the first never was, at any committed revision. Re-measured on this
+# file at 60 arms, and again at the previous head to establish which:
+#
+#   delete the WATCHER copy    -> 60 arms run, 1 red. `armed` is still set when
+#                                 awk reaches the forensics `ver="`, so the
+#                                 extraction silently borrows the OTHER step's
+#                                 guard and the pinned case fails on it.
+#   delete the FORENSICS copy  -> the extraction finds no `ver="` after its step,
+#                                 because it is the last one, so the FATAL fires
+#                                 and the suite ABORTS at 49 arms. Zero red.
+#
+# Both are detections and the coverage claim holds, so this is a wrong
+# description rather than a hole. It is recorded because the shape is this
+# branch's own: a symmetry asserted from reading the code, where the two sides
+# run through different machinery and only one was ever driven.
 GUARD=$(mktemp); GWORK=$(mktemp -d)
 keep "$GUARD" "$GWORK"
 mkdir -p "$GWORK"
@@ -1145,6 +1157,79 @@ guard_cases() {
 guard_cases "Capture FDB container forensics" "          {"
 guard_cases "Watch the FDB container while it is alive" '          echo "watching image foundationdb/foundationdb:$ver"'
 
+
+# THE DIGEST IS DRIVEN, NOT ONLY CONSULTED. The arm below asks whether
+# `suite_artifacts` MOVED, and on the green path it compares an empty digest
+# against an empty one — so a digest that always returns the same bytes passes it
+# forever. A `find` that matches nothing and a digest that compares a property
+# the watcher cannot change both fail OPEN, in the instrument this suite uses to
+# check itself. Two corrections were made to `suite_artifacts` on the strength of
+# a scratch run that would have evaporated with the shell it ran in; they are
+# cases now, which is the only form in which they keep holding.
+#
+# Each case runs in its own directory, so none of them can move the repo-root
+# digest the arm below compares.
+DWORK=$(mktemp -d); keep "$DWORK"
+
+# The control. An UNSCOPED digest of the same shape, so every case can assert
+# that its mutation LANDED before the scoped digest's answer means anything.
+# Without it the `same` cases pass when the mutation silently fails, which is the
+# reading this whole file exists to refuse: `mkdir` returning non-zero would
+# otherwise be indistinguishable from the scoping working.
+wide_digest() {
+  find . -mindepth 1 2>/dev/null | sort | while IFS= read -r p; do
+    if [ -f "$p" ]; then md5sum "$p" 2>/dev/null; else printf 'dir %s\n' "$p"; fi
+  done | md5sum
+}
+
+digest_case() {   # $1 name, $2 want moved|same, $3 mutation, evaluated in $DWORK
+  before=$(cd "$DWORK" && suite_artifacts | md5sum)
+  wide_before=$(cd "$DWORK" && wide_digest)
+  ( cd "$DWORK" && eval "$3" ) 2>/dev/null
+  wide_after=$(cd "$DWORK" && wide_digest)
+  after=$(cd "$DWORK" && suite_artifacts | md5sum)
+  if [ "$wide_before" = "$wide_after" ]; then
+    bad "digest: $1: the mutation did not land, so the case measured nothing"
+    return
+  fi
+  got=same; [ "$before" != "$after" ] && got=moved
+  if [ "$got" = "$2" ]; then ok "digest: $1 ($got)"; else bad "digest: $1: got $got, want $2"; fi
+}
+
+# What these six arms catch, measured by mutating the digest and re-running.
+# The NOT-covered shape first, because that is the half a description of the
+# code cannot produce: a filename containing a literal NEWLINE splits at
+# `read -r` and both halves render as `dir`, so a content change to it is
+# invisible. Confirmed fail-open; no fragment can construct such a name, since
+# every one is built from `$$`, a timestamp or a container id.
+#
+#   prior `xargs -r du -ab` form   -> 1 red: the same-size pid rewrite, only.
+#   `md5sum` with no `dir` line    -> 1 red: the empty generation directory, only.
+#   a constant digest              -> 5 red: every `moved` case.
+#
+# The first line is the correction this round is about, and it is narrower than
+# it looks: `du -ab` DID see the new log, the append, the pid file and the empty
+# directory — it reports apparent size AND path, so an added path or a changed
+# length moves it. It was blind to exactly one shape, a rewrite of equal length.
+# The `dir` line is not recovering something `du` lacked either; it stops
+# `md5sum` alone from losing a directory with no files in it.
+# A new artifact, and an APPEND to it. The append is what the names-only digest
+# could not see, and the reason the digest went recursive at all.
+digest_case "a new watcher log registers"             moved 'echo one > fdb-watch.log'
+digest_case "an append to an existing log moves it"   moved 'echo two >> fdb-watch.log'
+# The same-size rewrite. `du -ab` compares apparent SIZE, so `12345` becoming
+# `67890` was invisible to it while the comment above claimed contents. This is
+# the arm that measures the `md5sum` correction, and it is the one that goes red
+# against the `du -ab` form.
+digest_case "a pid file registers"                    moved 'echo 12345 > fdb-watch.pid'
+digest_case "a same-size pid rewrite moves it"        moved 'echo 67890 > fdb-watch.pid'
+# An EMPTY generation directory. Hashing files alone renders it identical to a
+# directory that is not there — the empty-set reading, inside the digest itself.
+digest_case "an empty generation directory registers" moved 'mkdir -p fdb-logs-c1.1-7'
+# And the REACH. The gitignored Java reference checkout is not this suite's
+# artifact; a concurrent build in it must not redden a watcher arm.
+digest_case "a change in the Java reference tree does not" same \
+  'mkdir -p fdb-record-layer/core && date +%s%N > fdb-record-layer/core/build.out'
 # THE HARNESS MUST NOT WRITE INTO THE DIRECTORY IT RUNS FROM. Every case extracts
 # a fragment of the shipped script and runs it, and a fragment that writes a
 # RELATIVE path writes wherever the suite was invoked from. That already happened

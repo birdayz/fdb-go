@@ -9658,15 +9658,26 @@ covered by the correctness suite and the golden plan diff, not by this table.
       gh api --paginate 'repos/birdayz/fdb-go/issues/770/comments' \
         | jq -s '[.[]|.[]] | map(select(.user.login|test("claude")) | select(.id <= 5561694850))'
 
-  → **66 claude-authored comments**, carrying **35** occurrences of `**ACK for head` and **13** of
-  `**NAK for head`. Every NAK is followed by that same gate's ACK on a later head.
+  → **66 claude-authored comments**: **34** carry an ACK verdict, **12** a NAK verdict, **20**
+  neither (34+12+20=66). Append the classifier to count VERDICTS rather than marker occurrences —
+  one per comment, anchored to a line start:
+
+      | jq '[.[]|select(.body|test("(^|\n)\\*\\*ACK for head";""))]|length'
+
+  Every NAK is followed by that same gate's ACK on a later head.
 
   The upper BOUND on the comment id is load-bearing and was added third. Without it the query
   answers about a corpus that grows while the review continues: the unbounded form returned 65 when
   first written here and 66 an hour later, so the figure was stale before anyone could check it.
-  Two earlier versions of this paragraph were also wrong — "51" was `grep -c 'Claude finished'`,
-  comments containing one header line rather than comments by that author; and a reviewer
-  reproduced the API call and got a different total, which is how the header-string error surfaced.
+  Three earlier versions of this paragraph were also wrong — "51" was `grep -c 'Claude finished'`,
+  comments containing one header line rather than comments by that author; a reviewer
+  reproduced the API call and got a different total, which is how the header-string error surfaced;
+  and the first bounded version counted OCCURRENCES of the marker string, which is a different
+  population from verdicts. The comment at the bound quotes both markers while discussing an
+  earlier census, so it was counted as its own evidence and inflated ACK to 35 and NAK to 13. The
+  13 contradicted the "twelve NAKs" stated four paragraphs below, in the same entry, and the
+  contradiction was on the page before any reviewer read it — an internal inconsistency is the
+  cheapest possible check and it went unrun.
   A census of a live thread needs a bound in the same way a ratio needs both SHAs. So the findings were real and the gate was doing its job.
   Two of its NAKs were closed only because a different reviewer independently found the same
   defect — convergence, not process.
