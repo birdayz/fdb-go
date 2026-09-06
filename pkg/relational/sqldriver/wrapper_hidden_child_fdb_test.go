@@ -19,7 +19,9 @@ import (
 // successive rounds each named a mechanism, built a control around it, and had
 // the mechanism refuted by a row nobody had run — "a type-changing wrapper is
 // enough", then "a wrapper over an unsynthesisable child is enough", then a
-// three-condition account that the last four rows below break. A control is
+// three-condition account the site rows break, and a fourth that titled the union defect by
+// its target until the both-anonymous row refuted that too. (No row count here: this table has
+// grown every round, and a positional pointer into it goes stale the next time it does.) A control is
 // built by removing what you BELIEVE is the cause, so it inherits whatever the
 // belief got wrong and passes either way; a table has no belief in it. The rows
 // are the measurement and the prose is downstream of them, which is why this
