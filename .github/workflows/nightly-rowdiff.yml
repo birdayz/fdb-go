@@ -279,24 +279,39 @@ jobs:
           still_there() {   # $1 container, $2 what is ending, $3 poller name
             if out=$(POLLER="$3" docker ps -aq --filter "id=$1" 2>/dev/null); then
               if [ -n "$out" ]; then
-                outage_start=0
+                outage_start=0; misses=0
                 return 0
               fi
               # rc 0 with EMPTY output is the only reading that means REMOVED,
               # and it is the one place this design decides on a single sample.
-              # A daemon answering mid-reload is the shape that would otherwise
-              # be read as a removal, so re-issue once before acting on it.
+              # A daemon answering mid-reload produces it, so re-issue once.
               sleep 1
-              if out=$(POLLER="$3" docker ps -aq --filter "id=$1" 2>/dev/null) && [ -n "$out" ]; then
-                outage_start=0
-                return 0
+              if out=$(POLLER="$3" docker ps -aq --filter "id=$1" 2>/dev/null); then
+                if [ -n "$out" ]; then
+                  outage_start=0
+                  return 0
+                fi
+                gone_reason=removed
+                echo "$(date -u +%FT%TZ) $1 is gone; ending $2" >> fdb-watch.log
+                return 1
               fi
-              gone_reason=removed
-              echo "$(date -u +%FT%TZ) $1 is gone; ending $2" >> fdb-watch.log
-              return 1
+              # THE RE-ISSUE ITSELF COULD NOT REACH THE DAEMON. That is an
+              # outage, not a removal, and it must fall through to the outage
+              # path below rather than inheriting the empty first answer.
+              # Collapsing it into "not present" is exactly the defect
+              # `gone_reason` exists to prevent — reached, when this was first
+              # written, through the re-issue added to prevent a different one.
+              # Measured on the shipped function: rc0-empty then rc1 returned
+              # `gone_reason=removed` with the outage clock never started.
             fi
             now=$(date +%s)
             [ "${outage_start:-0}" = 0 ] && outage_start=$now
+            # THE SKIP SIGNAL. The pollers read `$misses` to skip their body
+            # while the daemon is unreachable, and it must be set HERE or those
+            # branches are dead — a `docker cp` issued during an outage fails and
+            # logs `periodic copy FAILING (inspect still succeeds)`, which is
+            # false in exactly the state it prints in.
+            misses=$((misses + 1))
             [ $(( now - outage_start )) -lt "$maxOutageSeconds" ] && return 0
             gone_reason=outage
             echo "$(date -u +%FT%TZ) docker unreachable ${maxOutageSeconds}s; ending $2 for $1 (NOT a removal)" >> fdb-watch.log

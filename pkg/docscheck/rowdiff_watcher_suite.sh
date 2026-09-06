@@ -252,6 +252,15 @@ case "$1" in
     esac
     ;;
   cp)
+    # A daemon outage is GLOBAL: if `docker ps` cannot reach it, neither can
+    # `docker cp`. Modelling the outage only in the `ps` arm made the copier's
+    # SKIP signal undrivable — without the skip the body runs, and against a
+    # still-working `cp` it succeeds, so nothing distinguishes skipping from
+    # not skipping.
+    if [ -f "$WATCHTEST_STATE/outage-until" ] &&
+       [ "$(date +%s)" -lt "$(cat "$WATCHTEST_STATE/outage-until")" ]; then
+      exit 1
+    fi
     # A slow copy, so the stop signal is GUARANTEED to land inside it rather
     # than landing there once in a thousand runs. Without this knob the staging
     # arms pass because the window is narrow, not because it is closed — which
@@ -682,10 +691,22 @@ if start_watcher 1; then
   echo $(( $(date +%s) + 2 )) > "$STATE/outage-until"
   sleep 5
   after=$(ls -d "$WORK"/fdb-logs-c1.* 2>/dev/null | sort | tail -1)
+  nfail=$(grep -c 'periodic copy FAILING' "$WORK/fdb-watch.log" 2>/dev/null)
   if [ -n "$after" ] && [ "$before" != "$after" ]; then
     ok "a transient inspect failure does not end periodic capture"
   else
     bad "a transient inspect failure does not end periodic capture (stuck at $(basename "${before:-none}"))"
+  fi
+  # A TOLERATED OUTAGE SKIPS THE BODY. `still_there` sets `$misses` while it is
+  # riding one out, and the poller reads it to skip — without that the copy is
+  # attempted against an unreachable daemon, fails, and logs `periodic copy
+  # FAILING (inspect still succeeds)`, which is false in the exact state it
+  # prints in. The skip is the difference between a quiet outage and a log full
+  # of a diagnosis that contradicts itself.
+  if [ "$nfail" = 0 ]; then
+    ok "a tolerated outage skips the copy instead of failing it"
+  else
+    bad "a tolerated outage skips the copy instead of failing it (got $nfail FAILING lines)"
   fi
   # And a REAL removal must still end it, loudly — otherwise the tolerance has
   # traded a false stop for a loop that never stops, which is this file's
@@ -795,6 +816,54 @@ else
   bad "the watcher never recorded a pid (two-copier case)"
 fi
 rm -f "$STATE/second" "$STATE/phase-c1" "$STATE/phase-c2"; echo gone > "$STATE/phase"
+
+# `still_there`'s DECISION TABLE, driven as a unit.
+#
+# The whole design rests on one distinction `docker inspect` cannot make, so the
+# function is extracted and driven against a scripted `docker` whose answers are
+# a fixed sequence. That reaches states the lifecycle cases cannot: the one that
+# matters is a container reading EMPTY and then the daemon going down inside the
+# one-second confirmation window, which is not reachable by any phase fixture
+# because it is a race between two calls. It shipped once, reading `removed`
+# with the outage clock never started — a false `GONE` line reached through the
+# re-issue that had been added to prevent a different false reading.
+DEC=$(mktemp); DBIN=$(mktemp -d); DST=$(mktemp -d)
+trap 'rm -rf "$SCRIPT" "$BIN" "$WORK" "$STATE" "$DUMP" "$DWORK" "$ALARM" "$AWORK" "$GUARD" "$GWORK" "$DEC" "$DBIN" "$DST"' EXIT
+sed -n '/^still_there() {/,/^}$/p' "$SCRIPT" > "$DEC"
+[ -s "$DEC" ] || { echo "FATAL: could not extract still_there"; exit 1; }
+grep -q 'gone_reason' "$DEC" || { echo "FATAL: still_there extraction has no reason arm"; exit 1; }
+cat > "$DBIN/docker" <<'STUB'
+#!/bin/bash
+n=$(cat "$DECST/n" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "$DECST/n"
+case "$(cut -d, -f"$n" < "$DECST/seq")" in
+  empty) exit 0 ;;
+  id)    echo c1; exit 0 ;;
+  down)  exit 1 ;;
+esac
+exit 0
+STUB
+chmod +x "$DBIN/docker"
+
+dec_case() {  # $1 name, $2 answer sequence, $3 want-rc, $4 want-reason, $5 want-clock
+  printf '%s' "$2" > "$DST/seq"; echo 0 > "$DST/n"
+  got=$(DECST="$DST" PATH="$DBIN:$PATH" bash -c '
+    maxOutageSeconds=600; outage_start=0; misses=0; gone_reason=
+    . "$1"
+    still_there c1 "periodic copy" copier; rc=$?
+    printf "%s %s %s" "$rc" "${gone_reason:-none}" "$([ "$outage_start" = 0 ] && echo stopped || echo started)"
+  ' _ "$DEC" 2>/dev/null | tail -1)
+  want="$3 $4 $5"
+  if [ "$got" = "$want" ]; then ok "$1"; else bad "$1: got [$got], want [$want]"; fi
+}
+
+# A container really gone: two empty answers in a row, and only then `removed`.
+dec_case "two empty answers mean REMOVED"                    empty,empty 1 removed stopped
+# The daemon answering mid-reload — the shape the re-issue exists for.
+dec_case "empty then present is a reload, not a removal"     empty,id    0 none    stopped
+# THE ONE THAT SHIPPED WRONG: empty, then the daemon goes down. An outage.
+dec_case "empty then UNREACHABLE is an outage, not a removal" empty,down  0 none    started
+# And an outright outage from the first call.
+dec_case "unreachable from the first call is an outage"      down,down   0 none    started
 
 # The DUMP block, which is a different piece of the same instrument and was not
 # covered until it broke. A refactor emptied `[ -d "$d" ]` to `[ -d "" ]` in the
@@ -936,7 +1005,7 @@ alarm_case "an inspect WITH traces on a failed night is evidence" '=== host ==='
 #
 # There are TWO copies, one per step, and covering one is how a suite reports the
 # guard as covered while the other stays free to be deleted. Measured on this
-# file as committed, at 45 arms: deleting the forensics copy reddens exactly one
+# file as committed, at 50 arms: deleting the forensics copy reddens exactly one
 # arm, and deleting the WATCHER copy reddens exactly one — the other one — where
 # before the extraction named a step and deleting the watcher's reddened NONE.
 # (An earlier version of this sentence said "at 18 arms", which was the count of

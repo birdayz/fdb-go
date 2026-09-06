@@ -9614,26 +9614,30 @@ covered by the correctness suite and the golden plan diff, not by this table.
   "Three reviewers reached this independently" and "a review pointed out what that hides" both
   shipped through a green `just test`.
 
-  **Measured 2026-09-06, and the first version of this entry got the measurement wrong in three
-  ways — kept here because the errors are the useful part.** It claimed 29 files and ZERO
-  violations, i.e. a free ratchet touching nothing. All three claims were false:
+  **Measured 2026-09-06, and the entry got its own measurement wrong TWICE before this. Both
+  errors are kept, because they are the useful part and they are the same error twice.**
 
-  - the glob was `'*.sh' '*.yml'`, which does not match `*.yaml` — so it EXCLUDED
-    `infra/cloud-init.yaml`, a file the same sentence named as an example;
-  - the search pattern listed `graefe|torvalds` but not `codex`, which is the most common of the
-    three in this tree;
-  - so "0 matches" was a fact about a malformed search, reported as a fact about the repo.
+  First version: 29 files, ZERO violations — a free ratchet touching nothing. Wrong three ways.
+  The glob `'*.sh' '*.yml'` does not match `*.yaml`, so it EXCLUDED `infra/cloud-init.yaml`, a
+  file the same sentence named as an example; the pattern listed `graefe|torvalds` but not
+  `codex`; so "0 matches" was a fact about a malformed search reported as a fact about the repo.
 
-  Correct figures, `git ls-files '*.sh' '*.yml' '*.yaml'` → **429 files**, of which
-  `git grep -lniE 'codex|graefe|torvalds|review round|nightshift-|swingshift-'` matches **48
-  files / 86 lines**. Seven are source-like (six workflows plus `infra/cloud-init.yaml`); the
-  other 41 are `yamsql/testdata/*.yaml`, and they are genuine attribution rather than false
-  positives — "Subquery false-positive guard (Torvalds review)", "Codex-caught: CAST of a
-  NON-string source to UUID".
+  Second version: 429 files, 48 with attribution. The population was right and the PATTERN was
+  still invented — three of the eight regexes the gate actually uses. `bannedCommentPatterns`
+  (`pkg/docscheck/source_hygiene_test.go`) also bans `(day|night|swing)shift-[0-9]+`,
+  `audit #[0-9]+`, a generic `\breviewers?\b`, `@claude`, and review-round labels. The lesson is
+  the same one twice: I wrote a pattern from memory of the RULE instead of reading the GATE.
 
-  So this is NOT a free ratchet. It is a gate extension plus a 48-file cleanup, and the cleanup
-  is the larger half. That is worth knowing before starting, which is the whole reason the
-  corrected number is here rather than the comfortable one.
+  Third and measured against the gate's own list, over `git ls-files '*.sh' '*.yml' '*.yaml'`
+  (429 files): **57 files match.** A raw line scan gives 122 lines; a comment-only scan — which
+  is what the gate would do — gives fewer, so take the FILE count as the load-bearing figure.
+  Of the 57, seven are source-like (six workflows plus `infra/cloud-init.yaml`) and the rest are
+  `yamsql/testdata/*.yaml`, genuine rather than false positives ("Subquery false-positive guard
+  (Torvalds review)", "Codex-caught: CAST of a NON-string source to UUID").
+
+  So this is NOT a free ratchet. It is a gate extension plus a 57-file cleanup, and the cleanup
+  is the larger half — which is what someone needs to know before starting, and is the opposite
+  of what the first two versions of this paragraph said.
 
   Not done on the RFC-242 branch deliberately: the Go path parses an AST and reports per comment
   GROUP; a shell/YAML path is a different mechanism (line-based `#` scanning, with its own
