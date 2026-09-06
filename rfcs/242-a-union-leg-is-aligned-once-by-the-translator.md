@@ -371,11 +371,29 @@ streaming-aggregate cursors (`CanonicalAggColumnName`), which name a cursor's *o
 rather than compare two legs'.
 
 ## Performance
-
 None expected. The deleted code ran once per union implementation (a walk over each leg's plan
 chain) and once per union execution (a walk plus, when names disagreed, a per-row `MapCursor`).
 The census shows the per-row path never engaged on a committed shape. No cost-model input
-changes; no plan choice changes — the goldens are expected to move by zero lines, and the
+changes.
+
+On plan choice, this section said "the goldens are expected to move by zero lines" and that was
+wrong — it described the union fix and was written as a claim about the whole branch, which is the
+failure this RFC spends several sections on. Measured, `36b97f1e9..HEAD` over
+`pkg/relational/conformance/explaindiff/testdata/plan_shape.golden`: **18060 → 19045 lines,
++1090 / −105**.
+
+Scoped to what each change did:
+
+- **The union fix moves no existing plan.** `UnorderedUnion(` lines REMOVED: **0**. Added: 18 —
+  shapes that could not plan before and now do. So no query that planned before plans differently;
+  the goldens grow where the branch made previously-unplannable shapes plannable.
+- **The removals are the adjacent finding, not this one.** 32 of the 105 removed lines are
+  `RecordQueryInMemorySortPlan`, which is the sort elimination the third adjacent finding reports
+  and measures ("16 queries lose an in-memory sort"). That section is the authority on it; this one
+  should not have implied the number was zero.
+
+`just golden` remains the gate. What it measures is that the movement is exactly the movement
+these two sections account for — not that there is none.
 `just golden` gate is the measurement.
 
 ## Test plan
