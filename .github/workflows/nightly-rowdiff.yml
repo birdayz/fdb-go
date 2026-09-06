@@ -221,28 +221,57 @@ jobs:
           trap 'rm -rf .fdb-logs-*' EXIT
           trap 'exit' TERM INT
 
-          # SHARED BY BOTH POLLERS. A failed `docker inspect` is not a removed
-          # container — a daemon reload or an overloaded box produces one — and
-          # both loops used their CONDITION as the liveness test, so a single
-          # blip ended them permanently and silently. Measured on the shipped
-          # shape: the last generation stopped advancing while the control went
-          # on, with nothing logged anywhere.
+          # SHARED BY ALL THREE POLLERS: is this container GONE, or is the daemon
+          # merely not answering?
           #
-          # Returns 0 while the container should still be polled, including
-          # while tolerating a blip; the caller checks `$misses` to decide
-          # whether to skip its body this cycle. Returns 1 only once the
-          # container is really gone, and says so — a poller that stops has to
-          # announce it, because the defect this replaces was a stop nobody
-          # could see. `misses` is the CALLER's variable: each poller runs in
-          # its own subshell, so each has its own copy.
+          # `docker inspect` cannot tell those apart — it returns 1 for both — and
+          # every loop here used its exit status as a liveness test, so one blip
+          # ended trace capture permanently and silently, and the main loop wrote
+          # a false GONE line dating a death that had not happened.
+          #
+          # `docker ps -aq --filter id=<id>` separates them, measured:
+          #
+          #     present             rc 0, prints the id
+          #     removed             rc 0, EMPTY
+          #     daemon unreachable  rc 1, empty
+          #
+          # So the removal is decided by the OUTPUT and the outage by the STATUS.
+          # A genuine removal ends the poller IMMEDIATELY — no waiting out a miss
+          # budget, which is what a count-based test had to do because it could
+          # not see the difference — and only an unreachable daemon is tolerated.
+          #
+          # That is why there is no tuned constant here any more. An earlier
+          # version tolerated three consecutive `inspect` failures, and the
+          # threshold was a guess in the wrong unit: a blip has a DURATION, a
+          # count is that duration divided by a poll interval, and the pollers
+          # poll at different rates, so one number meant three different
+          # tolerances. `maxOutagePolls` below is only a BACKSTOP against a daemon
+          # that never comes back, and it can be generous precisely because no
+          # genuine removal depends on it.
+          #
+          # $1 container, $2 what is ending, $3 a name for THIS poller (the suite aims
+          # its daemon-outage knob by it; the shipped code only passes it through).
+          # Returns 0 while the container should
+          # still be polled, including while riding out an outage; the caller
+          # checks `$misses` to decide whether to skip its body this cycle.
+          # Returns 1 once the container is gone or the daemon has been
+          # unreachable too long, and says WHICH — a poller that stops has to
+          # announce it, because the defect this replaces was a stop nobody could
+          # see. `misses` is the CALLER's variable: each poller runs in its own
+          # subshell, so each has its own.
+          maxOutagePolls=20
           still_there() {
-            if docker inspect "$1" >/dev/null 2>&1; then
-              misses=0
-              return 0
+            if out=$(POLLER="$3" docker ps -aq --filter "id=$1" 2>/dev/null); then
+              if [ -n "$out" ]; then
+                misses=0
+                return 0
+              fi
+              echo "$(date -u +%FT%TZ) $1 is gone; ending $2" >> fdb-watch.log
+              return 1
             fi
             misses=$((misses + 1))
-            [ "$misses" -lt 3 ] && return 0
-            echo "$(date -u +%FT%TZ) $1 inspect failed $misses times running; ending $2" >> fdb-watch.log
+            [ "$misses" -lt "$maxOutagePolls" ] && return 0
+            echo "$(date -u +%FT%TZ) docker unreachable for $misses polls; ending $2 for $1" >> fdb-watch.log
             return 1
           }
           img="foundationdb/foundationdb:$FDB_IMAGE_TAG"
@@ -276,7 +305,7 @@ jobs:
           while [ "$(date +%s)" -lt "$deadline" ]; do
             c="$(docker ps -aq --filter "ancestor=$img" 2>/dev/null | head -1)"
             if [ -n "$c" ] && [ "$c" != "$seen" ]; then
-              seen="$c"
+              seen="$c"; misses=0
               echo "$(date -u +%FT%TZ) watching $c" >> fdb-watch.log
               # LAUNCH THE BACKGROUND JOBS AT MOST ONCE PER CONTAINER.
               #
@@ -355,7 +384,7 @@ jobs:
                   # capture that stops has to say it stopped — the whole failure this
                   # replaces was a stop nobody could see.
                   ( launch=$launches; gen=0; prevgen=""; copyfail=""; misses=0
-                    while still_there "$c" "periodic copy"; do
+                    while still_there "$c" "periodic copy" copier; do
                       # Tolerating a blip means skipping this cycle, not ending.
                       # The sleep is on its own line deliberately: the suite's
                       # interval override rewrites a line that is exactly
@@ -481,7 +510,7 @@ jobs:
                   # remove it or every poll leaves litter (measured: `.new` files left
                   # behind when the exec could not run).
                   ( misses=0
-                    while still_there "$c" "df sampling"; do
+                    while still_there "$c" "df sampling" df; do
                       if [ "$misses" -gt 0 ]; then
                         sleep 30
                         continue
@@ -553,10 +582,21 @@ jobs:
                     ;;
                 esac
               else
-                echo "$(date -u +%FT%TZ) $seen GONE (removed; its last inspect is fdb-last-inspect-$seen.txt)" >> fdb-watch.log
-                # NOT exitlogged: a container that has been REMOVED must not have its
-                # transition re-armed if `head -1` hands it back later.
-                seen=""
+                # A FAILED `docker inspect` IS NOT A REMOVAL HERE EITHER. This
+                # arm used to write GONE on a single failure — the line a
+                # triaging reader uses to DATE the cluster's death — so a daemon
+                # blip produced a false removal at a false time and cleared
+                # `seen`, so the container was "re-selected" moments later.
+                # Measured with the container running throughout: `watching c1`,
+                # `c1 GONE`, `watching c1`. The same defect as the two pollers,
+                # in the third caller, and this is the one whose output is read
+                # as EVIDENCE rather than as a poller's own bookkeeping.
+                if ! still_there "$seen" "watching $seen" main; then
+                  echo "$(date -u +%FT%TZ) $seen GONE (removed; its last inspect is fdb-last-inspect-$seen.txt)" >> fdb-watch.log
+                  # NOT exitlogged: a container that has been REMOVED must not
+                  # have its transition re-armed if `head -1` hands it back.
+                  seen=""
+                fi
               fi
             fi
             sleep 2
@@ -897,12 +937,31 @@ jobs:
           # carries `!cancelled()` and still runs.
           have_inspect=0
           for i in fdb-last-inspect-*.txt; do [ -s "$i" ] && have_inspect=1; done
+          # THE TWO KINDS OF EVIDENCE HAVE DIFFERENT AUTHORS, and this alarm used
+          # to accept either as proof of a capture. `fdb-last-inspect-*.txt` is
+          # written by the MAIN loop; `fdb-logs-*` by the COPIER. So a copier that
+          # died left an inspect behind, the alarm went green, and the trace
+          # directory — the primary evidence, the only thing that says WHY the
+          # cluster died — was stale or absent with nothing saying so. "Present,
+          # therefore captured", one level up, at the gate rather than in an arm.
+          #
+          # Scoped to the case where the copier's snapshot is the ONLY possible
+          # evidence: a LIVE container in the dump was read directly — inspect,
+          # logs and `Severity=40` events — so its absence of `fdb-logs-*` is not
+          # a blind night. It is an inspect ALONE, with no live container and no
+          # traces, that means the copier stopped before the cluster did.
+          have_traces=0
+          for d in fdb-logs-*; do [ -d "$d" ] && have_traces=1; done
           if ! grep -q '^=== inspect ' fdb-forensics.txt && [ "$have_inspect" = 0 ]; then
             if [ "${SWEEP_OUTCOME:-}" = "failure" ] || [ "${PAGING_OUTCOME:-}" = "failure" ]; then
               echo "::error::FDB container forensics captured NOTHING — no live container at dump time and the watcher recorded no inspect — on a night a sweep failed. Fix the watcher before reading this artifact as evidence about the cluster's death."
               exit 1
             fi
             echo "::notice::no FDB container evidence captured, and neither sweep failed — nothing to explain tonight"
+          elif ! grep -q '^=== inspect ' fdb-forensics.txt && [ "$have_traces" = 0 ] &&
+               { [ "${SWEEP_OUTCOME:-}" = "failure" ] || [ "${PAGING_OUTCOME:-}" = "failure" ]; }; then
+            echo "::error::FDB forensics has an inspect but NO trace directory on a night a sweep failed — the copier stopped before the cluster did, so this artifact cannot say why. Check fdb-watch.log for an 'ending periodic copy' line."
+            exit 1
           fi
 
       - name: Upload FDB container forensics

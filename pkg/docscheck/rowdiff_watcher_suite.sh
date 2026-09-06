@@ -28,7 +28,7 @@
 #
 # WHAT THIS DOES NOT COVER — and these are TWO lists, not one.
 #
-# They were one heading until a review pointed out what that hides. The list was
+# They were one heading, and that hid something. The list was
 # 4 entries when this file was committed and reached 10; all four originals
 # survived verbatim, while every entry anyone actually picked up became an arm on
 # the first attempt. Three of those four are in the second list below. So the
@@ -51,7 +51,9 @@
 #   - the TERM arm of the watcher's trap. It makes the exit prompt and explicit,
 #     and it is NOT what makes the EXIT trap reachable: removing it reddens
 #     nothing, and measured on the platform that matters — bash 5.2.21 in
-#     `ubuntu:24.04`, which `infra/main.tf` pins for this fleet — a group SIGTERM
+#     `ubuntu:24.04` (the CONTAINER; the fleet boots Hetzner's same-release
+#     `ubuntu-24.04` rolling label per `infra/main.tf`, which is not the same
+#     artifact and which Hetzner refreshes) — a group SIGTERM
 #     with an EXIT trap set and NO TERM trap still ran that trap 5 times out of 5
 #     (and 5 of 5 on the dev box's 5.3.15). An earlier version of this entry
 #     justified the arm from documented behaviour nobody here had run, which is
@@ -64,20 +66,17 @@
 #     out. It is kept anyway: a trap only runs at exit, and a four-hour lane
 #     should not accumulate a retired generation per cycle until then.
 #   - a counter CROSSING between two copiers, and so the NESTING that `mv -T`
-#     refuses on the periodic path. This is now doubly unreachable and the reason
-#     changed: a launch-site guard means a re-selected container gets no second
-#     copier at all, so there is nothing to cross. Before that guard it was still
-#     unreachable, because both copiers sleep the same interval and the second
-#     starts later, so the first leads by a fixed margin forever — crossing needs
-#     asymmetric cycle times, which the stub cannot make without telling the two
-#     apart. What IS driven is the guard: exactly one launch id among a
-#     re-selected container's generations, with a companion arm proving the case
-#     actually re-selected it. Measured, and it is why an obvious-looking arm was
-#     deleted rather than kept: `mv -T` -> `mv` on the periodic publish reddens
-#     NOTHING, so a "no nested directory" assertion there is green with the bug
-#     fully present. On the EXIT path the destination is a fixed name, a
-#     collision IS reachable, and the nesting is driven — that asymmetry is why
-#     one path has the arm and the other has this entry.
+#     refuses on the periodic path. Doubly unreachable: a launch-site guard means
+#     a re-selected container gets no second copier, so there is nothing to
+#     cross, and even without it both copiers sleep the same interval with the
+#     second starting later, so the first leads by a fixed margin forever.
+#     Crossing needs asymmetric cycle times, which the stub cannot make without
+#     telling the two apart. It is why an obvious-looking arm was DELETED rather
+#     than kept: `mv -T` -> `mv` on the periodic publish reddens NOTHING, so a
+#     "no nested directory" assertion there is green with the bug fully present.
+#     On the EXIT path the destination is a fixed name, a collision IS reachable,
+#     and the nesting is driven — that asymmetry is why one path has the arm and
+#     the other has this entry.
 #   - anything about a REAL fdbserver: every trace here is a fixture, so this
 #     pins the plumbing and not the format it carries.
 #
@@ -87,8 +86,11 @@
 #   - the dump's loop over LIVE containers. The stub answers `phase=gone` by the
 #     time the dump runs, so that loop iterates an empty set here. Its arms are
 #     unexercised; only the trace-directory and last-inspect arms are driven.
-#   - `docker exec` entirely — the stub refuses it, so the `df` sampler and the
-#     in-container reads are unpinned.
+#   - the dump's IN-CONTAINER reads (`docker exec … grep Severity=40`, and its
+#     `df`). The stub answers `docker exec … df`, which is what gave the df
+#     SAMPLER an observable and let its retry wiring be driven at all; every
+#     other `exec` shape is still refused, so the dump's own in-container arms
+#     are unpinned.
 #   - the watcher's deadline and its process-group teardown, which the workflow
 #     comments describe and which were driven by hand against real processes.
 #   - the container log stream the watcher backgrounds with `docker logs -f`,
@@ -169,14 +171,46 @@ cphase() {
 phase=$(cphase "")
 case "$1" in
   ps)
-    # `docker ps -aq` lists NEWEST FIRST, which is what makes `head -1` flip
-    # between containers as they come and go — the whole mechanism under test.
-    if [ -f "$WATCHTEST_STATE/second" ] && [ "$(cphase c2)" != gone ]; then
-      echo c2
+    # Two shapes, and they answer different questions.
+    #
+    #   `docker ps -aq --filter ancestor=<image>`  — who is there? (selection)
+    #   `docker ps -aq --filter id=<id>`           — is THIS one there? (liveness)
+    #
+    # The liveness shape is what lets the watcher tell a REMOVED container (rc 0,
+    # empty) from an UNREACHABLE daemon (rc 1), which `docker inspect` cannot.
+    # The daemon-outage knob therefore lives here, and it is aimed: `POLLER` is
+    # exported by each caller, so a case can blip ONE poller. Without that aim
+    # the knob hit whichever polled first — all three callers issue the same
+    # command — and an arm could pass having blipped a poller it was not about.
+    if [ -f "$WATCHTEST_STATE/outage-until" ] &&
+       [ "$(date +%s)" -lt "$(cat "$WATCHTEST_STATE/outage-until")" ] &&
+       { [ ! -f "$WATCHTEST_STATE/outage-poller" ] ||
+         [ "$(cat "$WATCHTEST_STATE/outage-poller")" = "${POLLER:-}" ]; }; then
+      exit 1   # daemon unreachable: rc 1, no output
     fi
-    [ "$(cphase c1)" = gone ] || echo c1
+    want=""
+    for a in "$@"; do
+      case "$a" in id=*) want=${a#id=} ;; esac
+    done
+    if [ -n "$want" ]; then
+      [ "$(cphase "$want")" = gone ] || echo "$want"
+    else
+      # `docker ps -aq` lists NEWEST FIRST, which is what makes `head -1` flip
+      # between containers as they come and go — the whole mechanism under test.
+      if [ -f "$WATCHTEST_STATE/second" ] && [ "$(cphase c2)" != gone ]; then
+        echo c2
+      fi
+      [ "$(cphase c1)" = gone ] || echo c1
+    fi
     ;;
   inspect)
+    # The main loop reads state with `docker inspect --format`; that call is NOT
+    # routed through `still_there`, so failing it is a separate knob. It is the
+    # shape that produced a FALSE `GONE`: inspect flaky, container present.
+    if [ -f "$WATCHTEST_STATE/inspect-outage-until" ] &&
+       [ "$(date +%s)" -lt "$(cat "$WATCHTEST_STATE/inspect-outage-until")" ]; then
+      exit 1
+    fi
     # `docker inspect <id> [--format <fmt>]` — the id is FIRST at every call site
     # in the watcher (`docker inspect "$c"`, `docker inspect "$seen" --format …`).
     # An earlier version took `${@: -1}`, the LAST argument, under a comment
@@ -184,17 +218,6 @@ case "$1" in
     # FORMAT STRING as the container id, `cphase` fell back to the global phase,
     # and the per-container fixture was half-inert with nothing reporting it.
     id="$2"
-    # ONE transient failure, aimed at ONE of the two callers. `docker inspect`
-    # failing is not the container being gone — a daemon reload or an overloaded
-    # box produces exactly this — and the copier used the loop CONDITION as its
-    # liveness test, so a single blip ended capture forever, silently. The COPIER
-    # calls `docker inspect <id>` with no `--format`; the MAIN loop calls it with
-    # one, so the two are separable and the arm can say which was hit.
-    case " $* " in *--format*) who=main ;; *) who=copier ;; esac
-    if [ -f "$WATCHTEST_STATE/blip-$who" ]; then
-      rm -f "$WATCHTEST_STATE/blip-$who"
-      exit 1
-    fi
     p=$(cphase "$id")
     [ "$p" = gone ] && exit 1
     if [ "$p" = running ]; then
@@ -209,7 +232,16 @@ case "$1" in
     # leaves a container running, which is how this arm was found to be wrong.
     case " $* " in *" -f "*) sleep 3600 ;; *) echo "(stub container stdout)" ;; esac
     ;;
-  exec) exit 1 ;;   # df sampling is not what these cases are about
+  exec)
+    # `docker exec <id> df -h <path>` — the df sampler's only observable. It used
+    # to be refused outright, which left the sampler with nothing to assert on:
+    # reverting its retry wiring reddened no arm at all. Answering it makes
+    # `fdb-df-<id>.txt` a thing that either keeps being refreshed or stops.
+    case " $* " in
+      *" df "*) echo "Filesystem Size Used Avail Use% Mounted"; echo "/dev/x 98G 54G 39G 59% /var/fdb/data" ;;
+      *) exit 1 ;;
+    esac
+    ;;
   cp)
     # A slow copy, so the stop signal is GUARANTEED to land inside it rather
     # than landing there once in a thousand runs. Without this knob the staging
@@ -231,7 +263,12 @@ exit 0
 STUB
 chmod +x "$BIN/docker"
 
-# $1 = the periodic copy interval in seconds. Cases that want the periodic path
+# $1 = the poller interval in seconds, applied to BOTH pollers. The df sampler's
+# `sleep 30` was outside this override for a long time, which left its whole
+# retry branch untested at speed: reverting its wiring reddened no arm, because
+# in a few seconds it never polled twice.
+#
+# $1 = the poller interval in seconds. Cases that want the periodic path
 # pass 1; the case that isolates the EXIT-TRANSITION copy passes a number larger
 # than the case's own lifetime, so the periodic loop cannot be what captured
 # anything. Without that knob the two paths are indistinguishable, which is
@@ -241,7 +278,7 @@ start_watcher() {
   rm -rf "$WORK"; mkdir -p "$WORK"
   cp "$SCRIPT" "$WORK/fdb-watch.sh"; chmod +x "$WORK/fdb-watch.sh"
   # A short deadline so a case cannot hang the suite.
-  sed -i -e 's/^deadline=.*/deadline=$(( $(date +%s) + 30 ))/' -e "s/^\\( *\\)sleep 60\$/\\1sleep ${1:-1}/" "$WORK/fdb-watch.sh"
+  sed -i -e 's/^deadline=.*/deadline=$(( $(date +%s) + 30 ))/' -e "s/^\\( *\\)sleep 60$/\\1sleep ${1:-1}/" -e "s/^\\( *\\)sleep 30$/\\1sleep ${1:-1}/" "$WORK/fdb-watch.sh"
   ( cd "$WORK" && WATCHTEST_STATE="$STATE" FDB_IMAGE_TAG=x PATH="$BIN:$PATH" \
       setsid nohup ./fdb-watch.sh >/dev/null 2>&1 & )
   for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$WORK/fdb-watch.pid" ] && return 0; sleep 1; done
@@ -470,9 +507,10 @@ if start_watcher 1; then
 else
   bad "the watcher never recorded a pid (cpfail case)"
 fi
-rm -f "$STATE/cpfail"
+rm -f "$STATE/cpfail" "$STATE/outage-until" "$STATE/outage-poller"
 # Hand the container back GONE. The sections below are written against an
 # absent container, and a case that leaves one running silently retargets them.
+rm -f "$STATE/outage-until" "$STATE/outage-poller"
 echo gone > "$STATE/phase"
 
 # `mv -T` DRIVEN, not asserted. An earlier version of this file recorded `-T` in
@@ -503,6 +541,7 @@ if start_watcher 3600; then
 else
   bad "the watcher never recorded a pid (occupied-exit case)"
 fi
+rm -f "$STATE/outage-until" "$STATE/outage-poller"
 echo gone > "$STATE/phase"
 
 # THE RETIRE RENAME, DRIVEN. `rm -rf` is interruptible, so a generation is
@@ -520,6 +559,7 @@ if start_watcher 1; then
   sleep 2
   stop_watcher
   rm -f "$STATE/slowrm"
+  rm -f "$STATE/outage-until" "$STATE/outage-poller"
   gens=$(ls -d "$WORK"/fdb-logs-c1.* 2>/dev/null | wc -l)
   # `= 1`, not `-le 1`: zero means the copier published NOTHING, which is the
   # empty-set false green this whole file is built around — and it was sitting
@@ -532,6 +572,48 @@ if start_watcher 1; then
 else
   bad "the watcher never recorded a pid (slow-rm case)"
 fi
+rm -f "$STATE/outage-until" "$STATE/outage-poller"
+echo gone > "$STATE/phase"
+
+# A DAEMON OUTAGE MUST NOT BE LOGGED AS A REMOVAL. The main loop's `GONE` line is
+# what a triaging reader uses to DATE the cluster's death, so a false one is
+# worse than a missing one: it asserts a removal, at a time, that did not happen,
+# and it clears `seen` so the same live container is "re-selected" a tick later.
+# Measured on the shipped shape with the container running throughout:
+# `watching c1` / `c1 GONE` / `watching c1`. The knob is AIMED at this poller —
+# all three issue the same command, so an unaimed knob proves nothing about
+# which one was hit.
+rm -rf "$STATE/logs"; mkdir -p "$STATE/logs"
+echo '<Event Severity="40" Type="SharedTLogFailed"/>' > "$STATE/logs/trace.001.xml"
+rm -f "$STATE/second" "$STATE/phase-c1" "$STATE/phase-c2"
+echo running > "$STATE/phase"
+if start_watcher 1; then
+  sleep 2
+  echo $(( $(date +%s) + 3 )) > "$STATE/inspect-outage-until"
+  # The df sampler must ride out the SAME outage: its file keeps being refreshed
+  # across it. It had no observable at all until the stub answered `docker exec
+  # … df`, which is why reverting its retry wiring reddened nothing — and its
+  # `sleep 30` sat outside the interval override, so in a few seconds it never
+  # polled twice either. Both had to be fixed before this could be an arm.
+  dfbefore=$(stat -c %Y "$WORK/fdb-df-c1.txt" 2>/dev/null || echo 0)
+  sleep 5
+  rm -f "$STATE/inspect-outage-until"
+  dfafter=$(stat -c %Y "$WORK/fdb-df-c1.txt" 2>/dev/null || echo 0)
+  stop_watcher
+  ngone=$(grep -c 'GONE (removed' "$WORK/fdb-watch.log" 2>/dev/null)
+  if [ "$ngone" = 0 ]; then
+    ok "a daemon outage is not logged as a removal"
+  else
+    bad "a daemon outage is not logged as a removal (got $ngone GONE lines for a live container)"
+  fi
+  if [ "$dfafter" != 0 ] && [ "$dfafter" != "$dfbefore" ]; then
+    ok "the df sampler survives an outage and keeps sampling"
+  else
+    bad "the df sampler survives an outage and keeps sampling (before=$dfbefore after=$dfafter)"
+  fi
+else
+  bad "the watcher never recorded a pid (main-outage case)"
+fi
 echo gone > "$STATE/phase"
 
 # A TRANSIENT `docker inspect` FAILURE MUST NOT END CAPTURE. The copier's loop
@@ -539,8 +621,8 @@ echo gone > "$STATE/phase"
 # and `cp` still working — stopped trace collection permanently and said nothing.
 # Measured on the shipped shape before the fix: the last generation stayed put
 # over the following seconds where the control advanced, and no line was written
-# anywhere. Three reviewers reached this independently; it is on the overloaded
-# box that the watcher exists to explain.
+# anywhere. It is the failure mode of the overloaded box that this watcher
+# exists to explain, which is what makes it worth an arm rather than a note.
 rm -rf "$STATE/logs"; mkdir -p "$STATE/logs"
 echo '<Event Severity="40" Type="SharedTLogFailed"/>' > "$STATE/logs/trace.001.xml"
 rm -f "$STATE/second" "$STATE/phase-c1" "$STATE/phase-c2"
@@ -548,7 +630,8 @@ echo running > "$STATE/phase"
 if start_watcher 1; then
   sleep 3
   before=$(ls -d "$WORK"/fdb-logs-c1.* 2>/dev/null | sort | tail -1)
-  touch "$STATE/blip-copier"
+  echo copier > "$STATE/outage-poller"
+  echo $(( $(date +%s) + 2 )) > "$STATE/outage-until"
   sleep 5
   after=$(ls -d "$WORK"/fdb-logs-c1.* 2>/dev/null | sort | tail -1)
   if [ -n "$after" ] && [ "$before" != "$after" ]; then
@@ -562,23 +645,30 @@ if start_watcher 1; then
   grep -q 'inspect failed' "$WORK/fdb-watch.log" 2>/dev/null \
     && bad "a single blip did not report the copier as ended" \
     || ok "a single blip is not reported as the container ending"
-  # THE TOLERANCE MUST STILL BE BOUNDED. Tolerating a blip is only correct if a
-  # genuine removal still ends the loop — otherwise the fix has traded a false
-  # stop for a copier that never stops, which is this file's signature failure
-  # and would leak one process per container for the life of the box. So drive
-  # the other direction in the same case: make the container really go, and
-  # require the loop to end AND to say so.
+  # A REMOVAL MUST END THE COPIER — and the assertion is that it ENDED, not that
+  # it SAID so. Those are different claims and only one of them is the point: a
+  # `still_there` whose final `return 1` became `return 0` keeps polling forever
+  # after removal and emits the same line on EVERY poll, so an arm that greps for
+  # the message passes with the copier spinning. Measured — that one-line
+  # mutation left all arms green. Counting the line separates them: a copier that
+  # ends logs it once, a copier that spins logs it every cycle.
+  #
+  # Removal is now decided by `docker ps -aq --filter id=` returning EMPTY with
+  # rc 0, so it is immediate rather than waiting out a miss budget.
+  rm -f "$STATE/outage-until" "$STATE/outage-poller"
   echo gone > "$STATE/phase"
-  sleep 6
-  if grep -q 'inspect failed .* times running; ending periodic copy' "$WORK/fdb-watch.log" 2>/dev/null; then
-    ok "a genuinely removed container ends the copier, and it says so"
+  sleep 4
+  nend=$(grep -c 'is gone; ending periodic copy' "$WORK/fdb-watch.log" 2>/dev/null)
+  if [ "$nend" = 1 ]; then
+    ok "a removed container ends the copier exactly once"
   else
-    bad "a genuinely removed container ends the copier, and it says so"
+    bad "a removed container ends the copier exactly once (got $nend)"
   fi
   stop_watcher
 else
   bad "the watcher never recorded a pid (blip case)"
 fi
+rm -f "$STATE/outage-until" "$STATE/outage-poller"
 echo gone > "$STATE/phase"
 
 # TWO COPIERS FOR ONE CONTAINER, which is what makes the generation name need a
@@ -762,9 +852,16 @@ alarm_case "empty capture + deep sweep failed exits non-zero" '=== host ===' '' 
 alarm_case "empty capture + PAGING sweep failed exits non-zero" '=== host ===' '' success failure 1
 # And a genuinely quiet night must stay quiet.
 alarm_case "empty capture + both sweeps green stays green" '=== host ===' '' success success 0
-# Evidence present, from either source, is not an empty capture.
+# Evidence present — but the two sources are not interchangeable, and this pair
+# is where that is pinned. A LIVE container in the dump was read directly, so it
+# is evidence on its own. An inspect ALONE is not: the inspect comes from the
+# main loop and the traces from the copier, so an inspect with NO trace
+# directory on a failed night means the copier stopped before the cluster did —
+# the artifact then cannot say why, and saying nothing is what the alarm exists
+# to prevent. It used to pass, on the strength of a file written by the wrong
+# author.
 alarm_case "a live container in the dump is evidence" '=== inspect c1 ===' '' failure success 0
-alarm_case "a watcher inspect is evidence" '=== host ===' 'ts c1 exit=1' failure success 0
+alarm_case "an inspect with no traces on a failed night is NOT evidence" '=== host ===' 'ts c1 exit=1' failure success 1
 
 # The TAG GUARD, which sits ABOVE the body each of these steps runs and so falls
 # outside every block extracted for them. It exists because the forensics step
@@ -775,7 +872,7 @@ alarm_case "a watcher inspect is evidence" '=== host ===' 'ts c1 exit=1' failure
 #
 # There are TWO copies, one per step, and covering one is how a suite reports the
 # guard as covered while the other stays free to be deleted. Measured on this
-# file as committed, at 41 arms: deleting the forensics copy reddens exactly one
+# file as committed, at 43 arms: deleting the forensics copy reddens exactly one
 # arm, and deleting the WATCHER copy reddens exactly one — the other one — where
 # before the extraction named a step and deleting the watcher's reddened NONE.
 # (An earlier version of this sentence said "at 18 arms", which was the count of

@@ -9602,3 +9602,26 @@ covered by the correctness suite and the golden plan diff, not by this table.
   construction, since `recursiveCTECommonResultRow` derives its target with the same per-ordinal
   maximum. Pinned as its own row. Booked from RFC-242 r41, cause and direction corrected at r43,
   rows actually committed and the CTE call site added at r44, counts corrected at r45.
+
+- [ ] **`TestSourceCommentHygiene` scans only `*.go`, and its subject is not Go-specific.**
+  The rule it enforces — no reviewer or shift attribution in source comments — is about SOURCE
+  COMMENTS, and this repo now carries load-bearing comments in shell and YAML: `infra/cloud-init.yaml`,
+  `infra/orphan_fdb_sweep_test.sh`, `pkg/docscheck/rowdiff_watcher_suite.sh`, and the nightly
+  workflows all reason in comments at length. The gate's file set is `gitDeliverableFiles(root, "*.go")`
+  (`pkg/docscheck/source_hygiene_test.go`), so none of them are scanned.
+
+  Found by violating it twice in one change and having a reviewer catch what the gate could not:
+  "Three reviewers reached this independently" and "a review pointed out what that hides" both
+  shipped through a green `just test`. That is the gate's own scope sentence exceeding its
+  coverage — the failure this repo documents at length — in the gate written to catch that class.
+
+  It is a FREE ratchet today, which is the argument for doing it now rather than when it is not:
+  `git ls-files '*.sh' '*.yml'` is 29 files, and a sweep for attribution-shaped text
+  (`per <name>`, reviewer names, `review round`, `nightshift-`, `swingshift-`) across them matches
+  **0**. So the extension adds a gate arm and changes no existing file.
+
+  Not done here deliberately, and this is the honest reason rather than a scheduling one: the Go
+  path parses an AST and reports per comment GROUP, and a shell/YAML path is a different mechanism
+  (line-based `#` scanning, with its own quoting and heredoc hazards) that needs its own arms and
+  its own review lap. Bolting it onto a branch already in its ninth review round would put an
+  unreviewed gate mechanism inside a change about something else.
