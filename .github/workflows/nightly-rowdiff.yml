@@ -191,8 +191,11 @@ jobs:
           # A deadline, so this cannot outlive the job even if the cleanup step never
           # runs. `while true` plus `nohup` on a PERSISTENT box is how a nightly
           # leaves a poller behind that then attaches `docker logs -f` to tomorrow's
-          # containers. The job's own cap is timeout-minutes: 300.
-          deadline=$(( $(date +%s) + 18600 ))
+          # containers. 17400s = 290 min, INSIDE the job's own 300-minute cap rather
+          # than past it: this starts a couple of minutes in, so 290 from here still
+          # lands before the cap. An earlier value of 18600 was 310 minutes and
+          # outlived the job it claimed to be bounded by.
+          deadline=$(( $(date +%s) + 17400 ))
           seen=""; exited=""
           while [ "$(date +%s)" -lt "$deadline" ]; do
             c="$(docker ps -aq --filter "ancestor=$img" 2>/dev/null | head -1)"
@@ -249,8 +252,18 @@ jobs:
             sleep 2
           done
           echo "$(date -u +%FT%TZ) watcher deadline reached, exiting" >> fdb-watch.log
+          # The deadline bounds THIS process; the `docker logs -f` and trace-poller
+          # children have no deadline of their own and would outlive it, which is the
+          # same leak one level down. Signal the whole group — this process is its
+          # leader — and let the exit follow.
+          kill -- -$$ 2>/dev/null || true
           SH
           chmod +x fdb-watch.sh
+          # A stale pid file from an earlier run on this PERSISTENT box would make the
+          # cleanup step signal a recycled process group. The window-check path makes
+          # that reachable: when the window is closed, Checkout is skipped and the
+          # workspace still holds last night's files.
+          rm -f fdb-watch.pid
           FDB_IMAGE_TAG="$ver" setsid nohup ./fdb-watch.sh >/dev/null 2>&1 &
           # Wait for the script to record its own pid rather than assuming it has.
           for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s fdb-watch.pid ] && break; sleep 1; done
@@ -381,6 +394,8 @@ jobs:
           else
             echo "watcher $pid stopped"
           fi
+          # Whatever happened, do not leave a pid behind for tomorrow's run to signal.
+          rm -f fdb-watch.pid
 
       - name: Capture FDB container forensics
         # The sweep's FDB testcontainer dies partway through EVERY night this job
@@ -455,12 +470,19 @@ jobs:
           SWEEP_OUTCOME: ${{ steps.sweep.outcome }}
           PAGING_OUTCOME: ${{ steps.paging.outcome }}
         run: |
+          # The SAME one copy of the tag the watcher uses. This loop used to hardcode
+          # `:7.3.77`, twenty lines under a comment claiming there was no third copy —
+          # and a stale ancestor filter emptying a loop is the exact failure this whole
+          # step exists to report. A missing pin is loud rather than silently matching
+          # nothing.
+          ver="$(sed -n 's/^test --test_env=FDB_VERSION=//p' .bazelrc | head -1)"
+          [ -n "$ver" ] || { echo "::error::no FDB_VERSION in .bazelrc — this dump's container filter would match nothing and report it as 'no container'"; exit 1; }
           {
             echo "=== host ==="; free -m || true; df -h || true
             journalctl -k --since "-6h" 2>/dev/null | grep -iE "oom|killed process" | tail -40 || true
             echo "=== containers (including exited) ==="
             docker ps -a --format '{{.ID}} {{.Image}} {{.Status}} {{.Names}}' || true
-            for c in $(docker ps -aq --filter ancestor=foundationdb/foundationdb:7.3.77); do
+            for c in $(docker ps -aq --filter "ancestor=foundationdb/foundationdb:$ver"); do
               echo "=== inspect $c ==="
               docker inspect "$c" --format 'exit={{.State.ExitCode}} oom={{.State.OOMKilled}} err={{.State.Error}} restarts={{.RestartCount}} started={{.State.StartedAt}} finished={{.State.FinishedAt}}' || true
               echo "=== docker logs $c (tail) ==="

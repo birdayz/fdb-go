@@ -8236,7 +8236,8 @@ work; unrelated to any wire/query change.
   matched nothing, which is why this only began when a new pool was provisioned.
 
   FIXED at the source in the same change that records this: the removal arm now
-  skips while a job is in flight (`pgrep -x Runner.Worker`), which is the rule the
+  skips while a job is in flight (`pgrep -x Runner.Worker`, the apphost this fleet's
+  tarball ships), which is the rule the
   retired scaler's own sweeper already had and this copy was written without.
   Orphans are still swept — the timer runs every five minutes and the box is idle
   between jobs. All three arms driven by hand before shipping: worker present +

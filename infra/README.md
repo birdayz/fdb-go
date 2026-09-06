@@ -324,13 +324,29 @@ box, so a dead test's leaked FDB container is an orphan and removing it cannot d
 concurrent job"*); the cloud-init copy was written without it. Two sweepers with one job, one
 guarded and one not — and the guarded one is the one that does not run.
 
-`pgrep -x`, matching the process NAME, and not `-f`, which matches any command line
-*containing* the string. That is not a stylistic preference: the first version of the guard
-used `-f`, and the test written to prove it worked reported the guard FIRING with no runner
-on the box at all, because the test harness's own shell had the pattern in its argv. A guard
-that fires spuriously does not fail safe here — it silently retires the sweep. All three arms
-were driven before shipping: worker present + old container → survives; no worker + old
-container → removed; the same container once the worker exits → removed.
+`pgrep -x`, matching the process NAME, and **never** `-f`, which matches any command line
+*containing* the string. That is not a stylistic preference and the hazard is not theoretical:
+while this guard was being tested, `pgrep -f 'Runner[.]Worker'` on the dev box reported a
+worker present with no runner anywhere on it — the match was an unrelated agent whose own
+`grep -E 'Runner\.(Listener|Worker)'` command line carried the text. A guard that fires
+spuriously does not fail safe here; it silently retires the sweep and the disk fills.
+
+`-x` is correct for this fleet because cloud-init installs the official
+`actions-runner-linux-x64` tarball, which ships `Runner.Worker` as an **apphost** binary
+launched directly, so `comm` is `Runner.Worker` (13 chars, under the 15-char truncation) and
+the sweep runs as root, which can see it. A framework-dependent packaging would run it as
+`dotnet Runner.Worker.dll` and `-x` would miss — `tools/bazelscaleset`'s cmdline matcher
+carries that shape as a defensive case, and an intermediate version of this guard used `-f` on
+the strength of it. That was reading a test table as a description of the fleet. If the runner
+packaging ever changes, this guard goes silent in the direction that returns the bug.
+
+All three arms were driven before shipping: worker present + old container → survives; no
+worker + old container → removed; the same container once the worker exits → removed. Note
+what that does and does not establish: the arms prove the guard's LOGIC with a stand-in
+process. That a real worker's `comm` is `Runner.Worker` rests on the tarball's packaging, not
+on an observation from one of these boxes, and neither has the timer been caught firing —
+`journalctl -u orphan-fdb-sweep.service` around one of the recorded death timestamps would
+turn the inference into an observation.
 
 **Deployment, and it is the remaining owner action:** `cloud-init` is `PER_INSTANCE`, so this
 fixes boxes provisioned from here on. The live fleet keeps the old script until re-provisioned
