@@ -41,14 +41,15 @@
 #     file as a side effect, and no case reads it or asserts on it: the stub's
 #     `logs` arm sleeps without emitting a byte, so what it holds here is the
 #     stub's silence rather than anything a container said.
-#   - the PROMOTE WINDOW itself. The publish merges rather than doing `rm -rf`
-#     then `mv` because that pair leaves an instant with neither directory
-#     present, and the stop step signals the copy loop's process group at an
-#     arbitrary point. That instant is a timing race and no arm here observes
-#     it; what is driven is the behaviour that distinguishes the two shapes, a
-#     rotated-away file surviving the next publish. Restoring `rm -rf` + `mv`
-#     reddens that arm, so the shapes are told apart — but the race is closed by
-#     construction, not by a test that has seen it happen.
+#   - the ATOMICITY the publish rests on. The copy lands in a dot-prefixed
+#     staging directory and is published by renaming it onto a fresh timestamped
+#     name that never pre-exists, so `rename(2)` on one filesystem makes the
+#     appearance of a generation indivisible: no signal can catch a half-written
+#     published directory, and the previous generation is pruned only after the
+#     new one is in place. That property is relied on, not driven — no arm here
+#     lands a signal inside a rename. What the arms do drive is what the
+#     construction is FOR: a failed copy publishes nothing, exactly one
+#     generation survives the prune, and no staging outlives the copier.
 #   - anything about a REAL fdbserver: every trace here is a fixture, so this
 #     pins the plumbing and not the format it carries.
 #
@@ -199,25 +200,58 @@ if start_watcher 3600; then
   grep -rq 'Severity="40"' "$WORK"/fdb-logs-*-exit/ 2>/dev/null \
     && ok "the exit-transition copy alone captures the terminal line" \
     || bad "the exit-transition copy alone captures the terminal line"
-  # The EXIT path stages too, and its cleanup had no arm — the periodic path's
-  # cleanup was covered and vouched for a sibling that was not.
+  stop_watcher
+  # Read AFTER the quiesce: staging exists for a moment on every copy, so a live
+  # check reports a failure whenever it lands in that moment — a flake, not a
+  # finding.
   if ls -d "$WORK"/.fdb-logs-* >/dev/null 2>&1; then
     bad "the exit-transition copy leaves no staging directory"
   else
     ok "the exit-transition copy leaves no staging directory"
   fi
-  stop_watcher
 else
   bad "the watcher never recorded a pid (exit-copy case)"
 fi
 
-# A COPY THAT FAILS must publish nothing. `mkdir` before `docker cp`, with the
-# copy's failure swallowed, exposes `fdb-logs-$c` either way — and the dump then
-# reads an empty directory, which it cannot tell from a healthy cluster that
-# wrote no fatal trace. Worse than a missing directory, because the alarm below
-# accepts a last-inspect as evidence and the trace section stays blank while
-# LOOKING like it was read. The container vanishing between the loop's inspect
-# and its copy is that window, and it is what the `cpfail` knob is.
+# The exit copy FAILING. The arm above cannot see the failure branch's cleanup —
+# on a copy that succeeds the staging directory is consumed by the rename, so
+# deleting that branch's `rm -rf` changes nothing and the arm stays green. This
+# was measured: the first version of that arm was vacuous against exactly the
+# mutation it was written for. So the failure is driven directly, with `cpfail`
+# held across the transition, and both halves are asserted — nothing staged is
+# left behind, and the watcher SAYS the copy did not happen rather than leaving
+# a reader to infer it from an absent directory.
+rm -rf "$STATE/logs"; mkdir -p "$STATE/logs"; echo running > "$STATE/phase"
+echo '<Event Severity="40" Type="SharedTLogFailed"/>' > "$STATE/logs/trace.001.xml"
+touch "$STATE/cpfail"
+if start_watcher 3600; then
+  sleep 2
+  echo stopped > "$STATE/phase"
+  sleep 4
+  stop_watcher
+  if ls -d "$WORK"/.fdb-logs-* >/dev/null 2>&1; then
+    bad "a FAILED exit copy leaves no staging directory"
+  else
+    ok "a FAILED exit copy leaves no staging directory"
+  fi
+  grep -q 'NOT copied at exit' "$WORK/fdb-watch.log" 2>/dev/null \
+    && ok "a FAILED exit copy says so in the watcher log" \
+    || bad "a FAILED exit copy says so in the watcher log"
+else
+  bad "the watcher never recorded a pid (failing-exit case)"
+fi
+rm -f "$STATE/cpfail"; echo gone > "$STATE/phase"
+
+# THE PUBLISH IS ALL-OR-NOTHING, and what it publishes is one COMPLETE snapshot.
+#
+# `mkdir` before `docker cp` with the failure swallowed exposes `fdb-logs-$c`
+# either way, and the dump then reads an empty directory it cannot tell from a
+# healthy cluster that wrote no fatal trace — worse than a missing directory,
+# because the alarm below accepts a last-inspect as evidence, so the trace
+# section stays blank while LOOKING like it was read. The container vanishing
+# between the loop's inspect and its copy is that window, and it is what the
+# `cpfail` knob is: no container phase can express it, since `inspect` has to
+# succeed and `cp` has to fail in the same cycle.
 rm -rf "$STATE/logs"; mkdir -p "$STATE/logs"
 echo '<Event Severity="40" Type="SharedTLogFailed"/>' > "$STATE/logs/trace.001.xml"
 echo running > "$STATE/phase"; touch "$STATE/cpfail"
@@ -228,50 +262,40 @@ if start_watcher 1; then
   else
     ok "a failed copy publishes no trace directory"
   fi
-  # And the staging directory must not be left behind either — a dot-prefixed
-  # leftover is invisible to the dump's glob but still litters the workspace the
-  # upload globs.
-  if ls -d "$WORK"/.fdb-logs-* >/dev/null 2>&1; then
-    bad "a failed copy leaves no staging directory"
-  else
-    ok "a failed copy leaves no staging directory"
-  fi
-  # The same copy SUCCEEDING then publishes, so the case above is about the
+  # The same copy SUCCEEDING then publishes, so the arm above is about the
   # failure and not about the watcher never getting that far.
   rm -f "$STATE/cpfail"
   sleep 4
   grep -rq 'Severity="40"' "$WORK"/fdb-logs-*/ 2>/dev/null \
     && ok "the copy publishes once it succeeds" \
     || bad "the copy publishes once it succeeds"
-  # And the SUCCESS path cleans its staging too. The publish merges into the
-  # published directory rather than replacing it — `rm -rf` then `mv` leaves a
-  # window with neither, and the stop step signals this loop's process group at
-  # an arbitrary point — so the staging removal is a separate statement that a
-  # later edit could drop while everything above stayed green.
-  if ls -d "$WORK"/.fdb-logs-* >/dev/null 2>&1; then
-    bad "a successful copy leaves no staging directory"
-  else
-    ok "a successful copy leaves no staging directory"
-  fi
-  # MERGE, not replace. The publish is `mkdir -p` + `cp -a` into the existing
-  # directory rather than `rm -rf` + `mv`, because that pair leaves a window in
-  # which NEITHER exists and the stop step signals this loop's process group at
-  # an arbitrary point. The window itself is not observable from here — it is a
-  # timing race — so what is driven is the behaviour that distinguishes the two
-  # shapes: a file the cluster has since ROTATED AWAY stays in the published
-  # snapshot under a merge and vanishes under a replace. That is also the
-  # behaviour wanted on its own terms, since the dump lists the directory and a
-  # stale name is visible rather than silent.
-  rm -f "$STATE/logs/trace.001.xml"
-  echo '<Event Severity="10" file="second"/>' > "$STATE/logs/trace.002.xml"
-  sleep 4
-  if grep -rq 'SharedTLogFailed' "$WORK"/fdb-logs-*/ 2>/dev/null &&
-     grep -rq 'file="second"' "$WORK"/fdb-logs-*/ 2>/dev/null; then
-    ok "a rotated-away trace file survives the next publish"
-  else
-    bad "a rotated-away trace file survives the next publish"
-  fi
+
+  # Let several more cycles run, then QUIESCE before looking at staging or
+  # counting generations. Both are mid-cycle states of a loop that recreates its
+  # staging directory every second: asserting against a live copier reports a
+  # failure whenever the check lands between the `mkdir` and the rename, which is
+  # a flake and not a finding. Stop first, then read.
+  sleep 3
   stop_watcher
+
+  # ONE generation, not a growing pile. The publish renames onto a fresh
+  # timestamped name — atomic, and the target never pre-exists, so no signal can
+  # catch a half-written published directory — and the previous generation is
+  # pruned only AFTER the new one is in place. Without the prune this directory
+  # grows one entry per cycle for the whole lane.
+  gens=$(ls -d "$WORK"/fdb-logs-c1.* 2>/dev/null | wc -l)
+  if [ "$gens" = 1 ]; then
+    ok "exactly one published generation survives the prune"
+  else
+    bad "exactly one published generation survives the prune (found $gens)"
+  fi
+  # And nothing dot-prefixed is left behind. A staging leftover is invisible to
+  # the dump's glob but still litters the workspace the upload walks.
+  if ls -d "$WORK"/.fdb-logs-* >/dev/null 2>&1; then
+    bad "no staging directory outlives the copier"
+  else
+    ok "no staging directory outlives the copier"
+  fi
 else
   bad "the watcher never recorded a pid (cpfail case)"
 fi
@@ -392,7 +416,7 @@ alarm_case "a watcher inspect is evidence" '=== host ===' 'ts c1 exit=1' failure
 #
 # There are TWO copies, one per step, and covering one is how a suite reports the
 # guard as covered while the other stays free to be deleted. Measured on this
-# file as committed, at 27 arms: deleting the forensics copy reddens exactly one
+# file as committed, at 28 arms: deleting the forensics copy reddens exactly one
 # arm, and deleting the WATCHER copy reddens exactly one — the other one — where
 # before the extraction named a step and deleting the watcher's reddened NONE.
 # (An earlier version of this sentence said "at 18 arms", which was the count of

@@ -237,31 +237,43 @@ jobs:
               # the exit-transition copy below cuts it to nothing on every path
               # where the container STOPS rather than being removed outright.
               ( while docker inspect "$c" >/dev/null 2>&1; do
-                  # Promote only on success — the shape the `df` sampler below
-                  # already uses, for the same reason. `mkdir` before the copy
-                  # PUBLISHES `fdb-logs-$c` whether or not the copy worked, and the
-                  # failure is swallowed, so a container removed between the inspect
-                  # and the cp leaves an EMPTY directory the dump cannot tell from a
-                  # healthy cluster that wrote no fatal trace. Staging also keeps the
-                  # last GOOD snapshot instead of replacing it with a blank one. The
-                  # staging name is dot-prefixed so the dump's `fdb-logs-*` glob
-                  # cannot pick it up mid-copy.
+                  # PUBLISH BY ATOMIC RENAME ONTO A NAME THAT DOES NOT EXIST.
+                  #
+                  # Three shapes were tried here and the first two each traded the
+                  # defect for the same defect one step over, which is why this one
+                  # is written out at length.
+                  #
+                  # `mkdir -p "fdb-logs-$c"` then `docker cp … || true` publishes the
+                  # directory whether or not the copy worked, so a container removed
+                  # between the loop's inspect and its cp leaves an EMPTY directory
+                  # the dump cannot tell from a healthy cluster that wrote no fatal
+                  # trace.
+                  #
+                  # Staging plus `rm -rf` + `mv` fixes that and opens an instant in
+                  # which NEITHER directory exists; the stop step signals this loop's
+                  # process group at an arbitrary point, so landing there destroys the
+                  # last good snapshot.
+                  #
+                  # Staging plus `cp -a` into the published directory closes that and
+                  # opens a third: a host copy interrupted mid-file — SIGTERM, or the
+                  # runner's disk filling — leaves a TRUNCATED file published, and the
+                  # complete staging copy is then removed. Every published byte would
+                  # be a byte no reader can trust.
+                  #
+                  # A rename onto a fresh name has none of them. `rename(2)` on one
+                  # filesystem is atomic, the target never pre-exists, and the previous
+                  # generation is only pruned AFTER the new one is in place — so at
+                  # every instant, including any instant a signal can land, the glob
+                  # sees exactly one COMPLETE snapshot. Generations sort by the epoch
+                  # stamp; only the newest survives the prune. The `.` separator keeps
+                  # `fdb-logs-$c.*` from ever matching the exit copy's `fdb-logs-$c-exit`.
                   rm -rf ".fdb-logs-$c.new"
                   if mkdir -p ".fdb-logs-$c.new" &&
-                     docker cp "$c:/var/fdb/logs/." ".fdb-logs-$c.new/" >/dev/null 2>&1; then
-                    # Merge INTO the published directory rather than replacing it.
-                    # `rm -rf` followed by `mv` leaves a window where neither exists,
-                    # and the stop step SIGTERMs this loop's process group at an
-                    # arbitrary point — landing in that window would delete a good
-                    # snapshot and leave the dump reporting no directory at all,
-                    # which is the failure this staging was added to prevent, one
-                    # step further along. Trace files are append-and-rotate, so
-                    # copying over them by name is the same content, and a file the
-                    # cluster has since rotated away is harmless: the dump lists the
-                    # directory, so a stale name is visible rather than silent.
-                    mkdir -p "fdb-logs-$c"
-                    cp -a ".fdb-logs-$c.new/." "fdb-logs-$c/" 2>/dev/null || true
-                    rm -rf ".fdb-logs-$c.new"
+                     docker cp "$c:/var/fdb/logs/." ".fdb-logs-$c.new/" >/dev/null 2>&1 &&
+                     mv ".fdb-logs-$c.new" "fdb-logs-$c.$(date +%s)"; then
+                    ls -d "fdb-logs-$c."* 2>/dev/null | sort | head -n -1 | while read -r old; do
+                      rm -rf "$old"
+                    done
                   else
                     rm -rf ".fdb-logs-$c.new"
                   fi
@@ -311,18 +323,17 @@ jobs:
                       # Promoted on success too, so an EXISTING directory always
                       # means a copy that worked and an empty one always means a
                       # cluster that wrote nothing.
-                      # Same merge shape as the periodic copy above, and for one
-                      # more reason besides consistency: `mv -f` of a directory
-                      # ONTO an existing directory does not replace it, it nests
-                      # the source INSIDE it — and returns 0, so the success line
-                      # below would be written for a copy that landed one level
-                      # too deep. Merging cannot express that outcome.
-                      rm -rf ".fdb-logs-$seen-exit.new"
+                      # Same rename-onto-a-fresh-name publish as the periodic copy,
+                      # and here the destination is unique by construction so no
+                      # prune is needed. `mv -f` onto an EXISTING directory would not
+                      # replace it — it nests the source inside and returns 0, so the
+                      # success line below would be written for a copy that landed one
+                      # level too deep. Renaming onto a name that does not exist
+                      # cannot express that outcome.
+                      rm -rf ".fdb-logs-$seen-exit.new" "fdb-logs-$seen-exit"
                       if mkdir -p ".fdb-logs-$seen-exit.new" &&
-                         docker cp "$seen:/var/fdb/logs/." ".fdb-logs-$seen-exit.new/" >/dev/null 2>&1; then
-                        mkdir -p "fdb-logs-$seen-exit"
-                        cp -a ".fdb-logs-$seen-exit.new/." "fdb-logs-$seen-exit/" 2>/dev/null || true
-                        rm -rf ".fdb-logs-$seen-exit.new"
+                         docker cp "$seen:/var/fdb/logs/." ".fdb-logs-$seen-exit.new/" >/dev/null 2>&1 &&
+                         mv ".fdb-logs-$seen-exit.new" "fdb-logs-$seen-exit"; then
                         echo "$(date -u +%FT%TZ) $seen logs copied complete at exit" >> fdb-watch.log
                       else
                         rm -rf ".fdb-logs-$seen-exit.new"
