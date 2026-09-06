@@ -1142,7 +1142,7 @@ func TestTheCensusWalkPrunesWriteFedSubtreesAsTheBakeDoes(t *testing.T) {
 // degrading to a raw map. A type-changing WRAPPER between the two breaks the
 // containment fact below, because the parent's type then contains the wrapper's
 // TARGET shape rather than the constructor underneath it.
-// TestFDB_AWrapperOverAnUnsynthesisableRecordFailsTheQuery reproduces that from
+// TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes reproduces that from
 // plain SQL, and TODO.md carries its closure. An earlier round asserted the
 // general unreachability from these two facts alone; that was wrong, and this
 // comment is deliberately narrower than the reasoning it replaces.
@@ -1270,7 +1270,7 @@ func TestTheBakeStampsAParentAndItsChildTogetherOrNeither(t *testing.T) {
 		t.Fatalf("over a poisoned repository parent stamped=%v child stamped=%v, want NEITHER. A "+
 			"stamped parent beside an unstamped child is the pair that makes a query FAIL rather "+
 			"than degrade to a raw map. A wrapper between parent and child already reaches it "+
-			"(TestFDB_AWrapperOverAnUnsynthesisableRecordFailsTheQuery); this arm is about the DIRECT "+
+			"(TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes); this arm is about the DIRECT "+
 			"child, and if it goes red that route is open too",
 			poisonedParent.MessageDescriptor() != nil, poisonedChild.MessageDescriptor() != nil)
 	}

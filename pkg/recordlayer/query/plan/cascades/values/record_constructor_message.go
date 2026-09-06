@@ -191,22 +191,27 @@ func rowScalarToProtoValue(fd protoreflect.FieldDescriptor, v any) (protoreflect
 // TestAStampedParentWithAnUnstampedChildFailsTheQuery pins that consequence.
 //
 // The bake DOES produce that pair, and a plain SQL query reaches it. It takes
-// TWO things at once, measured as a 2x2 by
-// TestFDB_AWrapperOverAnUnsynthesisableRecordFailsTheQuery: a child whose own
-// type cannot be synthesised at all (a field name protobuf will not carry), AND
-// a type-changing WRAPPER between parent and child, which leaves the parent's
-// type carrying the wrapper's target shape rather than the constructor
-// underneath — so the parent stamps while the child cannot. Either alone is
-// harmless: the bad name alone fails the parent's synthesis too and everything
-// degrades to maps together, and the wrapper alone stamps everything. TODO.md,
-// "A stamped record constructor over a wrapper-hidden child fails the query",
-// carries the closure.
-// TestTheBakeStampsAParentAndItsChildTogetherOrNeither asserts each of those
-// two facts directly — the child's type resolving to the parent's own field
-// message, and the visit ORDER putting the child immediately after the parent —
-// and then asserts the two states the bake can reach, both stamped or both
-// unstamped, positively rather than as the absence of the mixed pair. If any of
-// that goes red the failure above is armed.
+// THREE things lining up, which is one more than two earlier write-ups claimed:
+// the child constructor's own type is unsynthesisable (a field name protobuf
+// will not carry); a promotion sits between it and the parent; and that
+// promotion's TARGET is itself synthesisable, because unifying disagreeing
+// elements ANONYMISES their fields and so erases the offending name. Only then
+// does the parent's type carry a stampable shape while the child underneath
+// does not. Leave the same bad name on BOTH elements and the target keeps it,
+// the parent cannot stamp either, and the whole value degrades to maps and
+// ANSWERS. TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes measures the outcomes
+// and TestWhichRecordTypesCanBeGivenADescriptor the stamping predicate under
+// them. TODO.md, "A stamped record constructor over a wrapper-hidden child fails
+// the query", carries the closure.
+//
+// A DIRECT field child is a different case and stays in step with its parent,
+// for two reasons TestTheBakeStampsAParentAndItsChildTogetherOrNeither asserts
+// rather than narrates: the child's type resolves to the parent's own field
+// message, and the visit order puts a FIRST-field child immediately after its
+// parent. Read that scope — a child in a later field has the preceding fields'
+// subtrees between it and its parent, so nothing there speaks for it. Those two
+// arms are the states that FIXTURE reaches, not an enumeration of what the bake
+// can do; what they exclude is the harmful ordering.
 //
 // The stamped case is the property that lets Java's deepCopyIfNeeded
 // reconciliation (RecordConstructorValue.java:165-216) have nothing to

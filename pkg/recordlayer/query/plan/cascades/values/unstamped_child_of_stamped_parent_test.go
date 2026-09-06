@@ -17,9 +17,10 @@ import (
 // wrapper keeps the child's shape out of the parent's type, so the parent
 // stamps while the child cannot. TODO.md, "A stamped record constructor over a
 // wrapper-hidden child fails the query", carries the closure, and
-// TestFDB_AWrapperOverAnUnsynthesisableRecordFailsTheQuery measures the whole
-// 2x2 over real SQL: each half alone is harmless, and only together do they
-// fail.
+// TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes measures the outcomes over
+// real SQL as a table, and TestWhichRecordTypesCanBeGivenADescriptor the
+// stamping predicate under them. Read that table rather than any summary of it:
+// two rounds each summarised it wrongly, and the rows are what survived.
 //
 // The cost here is NOT the one the booking describes. Everywhere else an
 // unstamped constructor degrades a struct to a raw map and keeps its values —
