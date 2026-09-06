@@ -1162,9 +1162,12 @@ func TestTheCensusWalkPrunesWriteFedSubtreesAsTheBakeDoes(t *testing.T) {
 //     within one walk nothing touches the repository between them and a
 //     poisoning cannot land in the gap. Asserted on the visit ORDER itself.
 //
-// The two arms below are the states the bake can be in, and both are asserted
+// The two arms below are the states this FIXTURE reaches, and both are asserted
 // positively — both stamped, or both unstamped — so neither can pass by being
-// empty.
+// empty. They are not an enumeration of everything the bake can do: what they
+// exclude is the HARMFUL ordering, a stamped parent over an unstamped child.
+// The reverse pairing is out of reach here only because the repository's
+// poisoning is sticky, which nothing below asserts.
 func TestTheBakeStampsAParentAndItsChildTogetherOrNeither(t *testing.T) {
 	t.Parallel()
 
@@ -1199,10 +1202,11 @@ func TestTheBakeStampsAParentAndItsChildTogetherOrNeither(t *testing.T) {
 			"measuring containment at all", field)
 	}
 	if field.Message() != childDesc {
-		t.Fatalf("the child's own lookup returned %v where the parent's CH field references %v: "+
-			"the child is being given a SECOND message rather than the one already registered, so "+
-			"containment does not hold and the two lookups can fail independently",
-			childDesc.FullName(), field.Message().FullName())
+		t.Fatalf("the child's own lookup returned %v (%p) where the parent's CH field references "+
+			"%v (%p): the child is being given a SECOND message rather than the one already "+
+			"registered, so containment does not hold and the two lookups can fail independently. "+
+			"The two names can READ the same — identity is the claim, not the name",
+			childDesc.FullName(), childDesc, field.Message().FullName(), field.Message())
 	}
 
 	// ADJACENCY, asserted on the walk order itself. Post-order, or any order that

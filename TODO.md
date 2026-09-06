@@ -9312,9 +9312,19 @@ covered by the correctness suite and the golden plan diff, not by this table.
   PINNED by `TestFDB_AWrapperHiddenRecordConstructorFailsTheQuery`, which asserts the failure
   AND a one-element control that needs no promotion and answers, so the wrapper is the
   variable. It reddens when this closes: assert the ROWS then.
-  CLOSURE. Read Java's `PromoteValue` record coercion first (`PromoteValue.java`, the record
-  arm of `resolvePromotionFunction`) and decide there whether the wrapped constructor should
-  be stamped with the TARGET's descriptor, or the target's message built from the map at
-  evaluation. Do not paper it over by making the message field accept a map: that would hide
-  a real shape mismatch behind a name-keyed copy.
+  CLOSURE, and Java already answers the fork. `PromoteValue.java:254-274`: when the target is a
+  record, Java fetches `context.getTypeRepository().getMessageDescriptor(promoteToType)` and
+  calls `MessageHelpers.coerceObject(promotionTrie, …)`, so the target's message is built AT
+  EVALUATION from a coercion trie (`computePromotionsTrie`, record arm at :408-429) carried on
+  the PromoteValue itself (`:207`, `:220`). It never stamps the wrapped child with the target's
+  descriptor — that option is wrong by construction, since the two shapes differ, which is the
+  whole reason the promotion exists. Go's cascades PromoteValue carries no such trie:
+  `git grep -ln 'CoercionTrie|coercionTrie' -- '*.go'` returns only generated protobuf files and
+  `pkg/recordlayer/query/plan/plans/update.go`, nothing on the value path, and Go's
+  `PromoteValue.Evaluate` coerces numerics and otherwise passes a record child through
+  UNCHANGED — which is exactly how the name-keyed map reaches a stamped parent's message field.
+  So the port unit is `CoercionTrieNode` plus `MessageHelpers.coerceObject`, and it is a
+  subsystem port rather than a patch. Do NOT paper it over by making message fields accept a
+  map: Java coerces with a known target descriptor and a per-field plan, not by copying a map
+  by name.
   Booked from RFC-242 r36, where the reachability claim it refutes was written.

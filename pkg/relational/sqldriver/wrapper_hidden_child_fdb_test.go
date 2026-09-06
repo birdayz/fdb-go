@@ -79,15 +79,17 @@ func TestFDB_AWrapperHiddenRecordConstructorFailsTheQuery(t *testing.T) {
 			"describes the defect it names", wrapperHidden, err)
 	}
 
-	// The counterweight, and the thing that makes the wrapper the variable: one
-	// element needs no promotion, so nothing is hidden and the same shape
-	// answers. Without this the assertion above would also pass if array
-	// literals of record type were rejected outright.
-	const noWrapper = `SELECT ([(1 AS A)] AS CH) FROM t`
+	// The counterweight, varying ONE thing: two elements again, so the array's
+	// arity and its record-ness are held fixed, and only the SHAPE difference that
+	// forces the promotion is removed. A single-element control would have varied
+	// element count too, and would leave "two-element record arrays fail" as an
+	// unexcluded explanation for the failure above.
+	const noWrapper = `SELECT ([(1 AS A), (2 AS A)] AS CH) FROM t`
 	control, err := db.QueryContext(ctx, noWrapper)
 	if err != nil {
-		t.Fatalf("%s: %v — a single-element array of records must still answer, or the failure "+
-			"above is not attributable to the promotion the second element forces", noWrapper, err)
+		t.Fatalf("%s: %v — two records of the SAME shape need no promotion and must still "+
+			"answer, or the failure above is not attributable to the shape difference and could "+
+			"just as well be about arrays of records", noWrapper, err)
 	}
 	defer control.Close()
 	if !control.Next() {
