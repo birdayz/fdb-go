@@ -144,10 +144,9 @@ func feedsAWrite(plan plans.RecordQueryPlan) bool {
 	return false
 }
 
-// stampPlanNode walks the plan DAG. Plans are DAGs, not trees — a shared
-// sub-plan is reachable by more than one edge — so the seen-set is required for
-// termination, exactly as validatePlanNode needs it.
 // forEachNodeLocalValue reaches every value tree hanging off THIS plan node.
+// It does not walk the plan — ForEachPlanRecordConstructor does that, and owns
+// the DAG seen-set and the write-fed prune.
 //
 // GetResultValue() alone is not enough. Many plans flow their inner's value
 // through GetResultValue and keep the computed tree in a node-local field
@@ -279,6 +278,13 @@ func forEachNodeLocalValue(plan plans.RecordQueryPlan, emit func(values.Value)) 
 // deliberate, and TestTheCensusWalkPrunesWriteFedSubtreesAsTheBakeDoes pins that
 // this walk and the bake agree about it.
 //
+// The value walk continues THROUGH a constructor rather than pruning at it: a
+// constructor's children can hold further constructors (a nested record
+// literal), and those need their own descriptors — which, coming from the same
+// repository, are identical to the ones their parent's descriptor references.
+// That containment is what makes a stamped parent imply a stamped child, and
+// TestTheBakeStampsAParentAndItsChildTogetherOrNeither pins it.
+//
 // visit is called once per constructor occurrence, so a value reachable by two
 // routes is visited twice; plan NODES are visited once each.
 func ForEachPlanRecordConstructor(plan plans.RecordQueryPlan, visit func(*values.RecordConstructorValue)) {
@@ -366,14 +372,9 @@ func forEachComparisonRangeValue(r *predicates.ComparisonRange, emit func(values
 	}
 }
 
-// stampValue walks one value tree and stamps every record constructor in it.
-//
-// The walk continues THROUGH a stamped constructor rather than pruning at it:
-// a constructor's children can hold further constructors (a nested record
-// literal), and those need their own descriptors — which, coming from the same
-// repository, are identical to the ones their parent's descriptor references.
 // stampRecordConstructor is the whole of the bake, per constructor. Everything
-// else in this file is the traversal that decides WHICH constructors reach it.
+// else in this file is the traversal that decides WHICH constructors reach it,
+// and this function walks nothing.
 func stampRecordConstructor(rc *values.RecordConstructorValue, st *planStamper) {
 	md, err := st.repo.MessageDescriptorFor(rc.Type())
 	if err != nil {

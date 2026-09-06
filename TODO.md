@@ -9253,19 +9253,19 @@ covered by the correctness suite and the golden plan diff, not by this table.
   outer-join rows arrive; a stored struct column through the same plan keeps its type), which
   reddens on the computed-struct half when this closes.
 
-  "Identity, not data" holds for every shape measured so far and is NOT known to hold for one:
+  "Identity, not data" does NOT hold for one shape, and that shape is reachable from plain SQL:
   a STAMPED parent constructor over an UNSTAMPED record-typed child. That pair has no map
   fallback: the parent builds a message, the child hands it a map, and the map cannot be stored
   in a message field, so the query FAILS instead of answering in a weaker type.
   `TestAStampedParentWithAnUnstampedChildFailsTheQuery` pins that consequence over the values
-  API. The bake cannot PRODUCE the pair, and that is now a pinned property rather than an
-  absence of witnesses: `WalkValue` visits a parent immediately before its children, so nothing
-  touches the repository in between, and the parent's descriptor is synthesised from its own
-  type, which contains the child's — so a stamped parent means the child's message was already
-  compiled. `TestTheBakeStampsAParentAndItsChildTogetherOrNeither` drives both directions, over
-  a clean repository and a poisoned one. The search behind "no route" is that argument plus the
-  two pins, not a survey of queries: if either premise stops holding, the failure is armed, and
-  the pin says so in its message rather than leaving a reader to re-derive it.
+  API. Two facts keep a parent and its DIRECT field child in step — `WalkValue` visits a parent
+  immediately before its children, and the parent's type CONTAINS the child's, so a stamped
+  parent means the child's message was already compiled — and
+  `TestTheBakeStampsAParentAndItsChildTogetherOrNeither` asserts each directly rather than
+  reasoning from it. A type-changing WRAPPER between parent and child defeats the second, and
+  that is REACHABLE: it has its own booking below, with an SQL reproducer. An earlier round
+  concluded from these two facts that the pair could not occur at all; that was wrong, and the
+  retraction is recorded here rather than in a rewritten sentence.
 
   Reproduced by `WITH d AS (SELECT id AS bid, EXISTS (…) AS foo FROM b_md) SELECT a.id, c.id,
   d.foo FROM a_md AS a JOIN d ON a.id = d.bid FULL OUTER JOIN c_md AS c ON a.id + 1 = c.id` —
@@ -9289,3 +9289,32 @@ covered by the correctness suite and the golden plan diff, not by this table.
   uses elsewhere (`K`, `K_2`) at construction, so the descriptor validates and the row is a
   struct with both values; the pin reddens then and must assert both survive.
   Booked from RFC-242 r21 with the reproducer.
+
+- [ ] **A stamped record constructor over a wrapper-hidden child fails the query.**
+  `SELECT ([(1 AS "$lead"), (2 AS A)] AS CH) FROM t` over a NON-EMPTY table fails with
+  `cannot synthesise a protobuf descriptor for __0type__2.CH: cannot store
+  map[string]interface {} in message field`. Not a wrong answer and not a weaker type — the
+  query does not answer at all.
+  MECHANISM. `FinalizePlan` stamps each record constructor with a descriptor synthesised from
+  its OWN inferred type, and a stamped constructor then builds a protobuf message, expecting
+  every record-typed field to hand it a message too. An unstamped constructor hands back a
+  name-keyed map, which cannot be stored in a message field. A parent and its DIRECT field
+  child cannot disagree, because the parent's type contains the child's, so synthesising the
+  parent registers the child's message. A type-changing WRAPPER between them breaks exactly
+  that: array unification promotes the two differently-shaped elements to a common anonymous
+  target, so the parent's type carries the TARGET's shape and the constructor underneath is
+  never registered — stamped parent, unstamped child. Measured on the planner side: seven
+  constructors, three unstamped, two stamped-over-unstamped pairs.
+  PRE-EXISTING, measured: the same query fails identically at the merge-base `36b97f1e9`
+  (only the synthetic-name prefix differs, `__type__2` there against `__0type__2` now), so it
+  is not a regression of the work it was found beside. Found by a reviewer refuting an
+  unreachability claim, not by the suite.
+  PINNED by `TestFDB_AWrapperHiddenRecordConstructorFailsTheQuery`, which asserts the failure
+  AND a one-element control that needs no promotion and answers, so the wrapper is the
+  variable. It reddens when this closes: assert the ROWS then.
+  CLOSURE. Read Java's `PromoteValue` record coercion first (`PromoteValue.java`, the record
+  arm of `resolvePromotionFunction`) and decide there whether the wrapped constructor should
+  be stamped with the TARGET's descriptor, or the target's message built from the map at
+  evaluation. Do not paper it over by making the message field accept a map: that would hide
+  a real shape mismatch behind a name-keyed copy.
+  Booked from RFC-242 r36, where the reachability claim it refutes was written.

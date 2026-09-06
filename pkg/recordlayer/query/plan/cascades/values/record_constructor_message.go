@@ -190,13 +190,20 @@ func rowScalarToProtoValue(fd protoreflect.FieldDescriptor, v any) (protoreflect
 // refused, so the query FAILS rather than answering in a weaker type.
 // TestAStampedParentWithAnUnstampedChildFailsTheQuery pins that consequence.
 //
-// The bake cannot produce that pair, and the reason is worth stating because it
-// is the only thing keeping the failure unreachable: WalkValue visits a parent
-// IMMEDIATELY before its children, so nothing touches the repository in between,
-// and the parent's descriptor is synthesised from its own type, which CONTAINS
-// the child's — so a parent that stamped means the child's message was already
-// compiled. Together, parent stamped implies child stamped.
-// TestTheBakeStampsAParentAndItsChildTogetherOrNeither pins both directions. If
+// The bake DOES produce that pair, and a plain SQL query reaches it:
+// TestFDB_AWrapperHiddenRecordConstructorFailsTheQuery. Two facts keep a parent
+// and its DIRECT field child in step — WalkValue visits a parent immediately
+// before its children, so nothing touches the repository in between, and the
+// parent's type CONTAINS the child's, so a parent that stamped means the child's
+// message was already compiled — but a type-changing WRAPPER between the two
+// defeats the second: the parent's type then contains the wrapper's target
+// shape, not the constructor underneath it, so that constructor is never
+// registered by its parent's synthesis. TODO.md carries the closure.
+// TestTheBakeStampsAParentAndItsChildTogetherOrNeither asserts each of those
+// two facts directly — the child's type resolving to the parent's own field
+// message, and the visit ORDER putting the child immediately after the parent —
+// and then asserts the two states the bake can reach, both stamped or both
+// unstamped, positively rather than as the absence of the mixed pair. If any of
 // that goes red the failure above is armed.
 //
 // The stamped case is the property that lets Java's deepCopyIfNeeded
