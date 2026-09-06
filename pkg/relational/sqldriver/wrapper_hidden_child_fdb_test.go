@@ -22,9 +22,16 @@ import (
 // unsynthesisable child is enough"; a conjunction the site rows break; and a
 // title that named the union defect by its TARGET until the both-anonymous pair
 // refuted that too. No count of them is given, deliberately: the list has grown
-// every round and a number in front of it is one more thing to update. For the
-// same reason nothing here counts the table's ROWS or points into it by
-// position — both go stale the next time it grows, and both already have.
+// every round and a number in front of it is one more thing to update. THIS
+// COMMENT likewise names what the rows show rather than where they sit, for the
+// same reason — both a count and a position went stale here already.
+//
+// The row prose below does still cross-reference by position ("the row above",
+// "read the next two rows"), and that is a real hazard an insertion can silently
+// retarget. It is left because a reader walking the rows in order is served by
+// it, and it is written down because three successive attempts to state this
+// paragraph's scope claimed more than the file does. The scope is this comment,
+// not the table.
 //
 // A control is built by removing what you BELIEVE is the cause, so it inherits
 // whatever the belief got wrong and passes either way; a table has no belief in
