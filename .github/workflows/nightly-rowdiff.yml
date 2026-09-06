@@ -208,19 +208,21 @@ jobs:
               # there was one. It cannot be read after removal, so take it now and
               # keep taking it — the last copy before the container goes is the one
               # that matters.
-              # Promote a snapshot only when the exec SUCCEEDED. An empty result from
-              # a successful exec is a real finding — "no fatal trace" is one of the
-              # three outcomes this whole dump exists to separate — while a failed
-              # exec means the container went away mid-read and says nothing. A plain
-              # `>` redirection creates the file either way, so the failure branch has
-              # to remove it or every poll leaves litter (measured: `.new` files left
+              # STREAM the trace, do not sample it. A sampler cannot capture the event
+              # it exists for: when fdbserver dies on the fatal I/O failure, the
+              # image's foreground process exits and the container stops at
+              # essentially the same instant, so every `docker exec` after that
+              # boundary fails and the last promoted snapshot is the PRE-crash one —
+              # no `Severity="40"`, and ENOSPC still indistinguishable from any other
+              # I/O error, which is the whole question. An open `tail -F` is already
+              # inside the container when the line is written.
+              docker exec "$c" sh -c 'tail -F -n +1 /var/fdb/logs/*.xml 2>/dev/null' >> "fdb-trace-$c.xml" 2>/dev/null &
+              # The data filesystem still has to be sampled — there is no stream for a
+              # `df` — so it keeps the promote-only-on-success shape. A plain `>`
+              # creates the file even when the exec fails, so the failure branch has to
+              # remove it or every poll leaves litter (measured: `.new` files left
               # behind when the exec could not run).
               ( while docker inspect "$c" >/dev/null 2>&1; do
-                  if docker exec "$c" sh -c 'grep -ho "Severity=\"40\"[^>]*" /var/fdb/logs/*.xml 2>/dev/null | tail -40' > "fdb-trace-$c.txt.new" 2>/dev/null; then
-                    mv -f "fdb-trace-$c.txt.new" "fdb-trace-$c.txt"
-                  else
-                    rm -f "fdb-trace-$c.txt.new"
-                  fi
                   if docker exec "$c" df -h /var/fdb/data > "fdb-df-$c.txt.new" 2>/dev/null; then
                     mv -f "fdb-df-$c.txt.new" "fdb-df-$c.txt"
                   else
@@ -270,7 +272,12 @@ jobs:
           FDB_IMAGE_TAG="$ver" setsid nohup ./fdb-watch.sh >/dev/null 2>&1 &
           # Wait for the script to record its own pid rather than assuming it has.
           for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s fdb-watch.pid ] && break; sleep 1; done
-          [ -s fdb-watch.pid ] || { echo "::error::the watcher did not record a pid; it is unmanageable, so do not leave it running"; exit 1; }
+          # Loud, and honest about what happens next: the watcher is already detached
+          # by this point, so failing here does not stop it. What bounds it is its own
+          # deadline, and what still gets a chance to stop it is the cleanup step —
+          # which is why that step gates on this one not being SKIPPED rather than on
+          # it succeeding.
+          [ -s fdb-watch.pid ] || { echo "::error::the watcher recorded no pid within 10s; it is detached and unnameable, so nothing can signal it and only its own deadline bounds it"; exit 1; }
           echo "fdb watcher started, pid $(cat fdb-watch.pid); the cleanup step stops it and a deadline bounds it either way"
 
       - name: Run rowdiff deep sweep
@@ -379,29 +386,41 @@ jobs:
         # command line — two earlier readings of this same test said the watcher had
         # SURVIVED, and both were the harness matching itself.
         #
-        # The condition is "stop what THIS JOB started", and it took three tries to
-        # say that. `always()` alone signalled last night's pid on a closed-window
-        # night, when `Checkout` is skipped and the workspace still holds it.
-        # `always() && window.ok` fixed that one and left a second: a plain `if:` is
-        # implicitly `success() && …`, so on a Checkout FAILURE with the window open
-        # the start step is skipped while this one still runs — and `git clean` never
-        # ran either, so the stale file is right there. Gating on the start step's own
-        # outcome is the predicate both of those were approximating.
+        # The condition is "the start step may have launched something", and it took
+        # four tries to say it. `always()` alone signalled last night's pid on a
+        # closed-window night, when `Checkout` is skipped and the workspace still
+        # holds it. `always() && window.ok` fixed that and left a second path: a plain
+        # `if:` is implicitly `success() && …`, so on a Checkout FAILURE with the
+        # window open the start step is skipped while this one still runs, over a file
+        # `git clean` never removed. `outcome == 'success'` fixed THAT and opened a
+        # third in the other direction — the start step launches the watcher with
+        # `setsid` and only THEN can fail its pid handshake or be cancelled, so
+        # requiring success skips cleanup for a process that is demonstrably running.
+        #
+        # `!= 'skipped'` is the predicate all three were approximating, and it is
+        # exact rather than lucky: `skipped` is the ONLY outcome that means no line of
+        # that step ran, and every other outcome — success, failure, cancelled — is
+        # reachable with the watcher already detached. Walked: window closed
+        # (skipped), Checkout failed (skipped), watcher fine (success), watcher failed
+        # after launch (failure), job cancelled (success), start step cancelled
+        # (cancelled). Only the first two must not signal, and only those two skip.
         #
         # An `rm` in the start step is NOT the fix and was tried: it is gated the same
         # way, so it misses the same paths, and on the path it does run checkout's
         # default `clean: true` has already removed the file.
-        if: ${{ always() && steps.watcher.outcome == 'success' }}
+        if: ${{ always() && steps.watcher.outcome != 'skipped' }}
         run: |
           if [ ! -s fdb-watch.pid ]; then
             echo "no fdb-watch.pid — the watcher either never started or never recorded itself"
             exit 0
           fi
           pid="$(cat fdb-watch.pid)"
-          # Belt to the gate's braces: check the pid IS the watcher before signalling
-          # its group. The gate already means this job started one, but a pid is a
-          # recyclable number and the cost of being wrong is signalling a stranger's
-          # process group as root on a persistent box. Reading one specific
+          # Belt to the gate's braces: check the pid is A watcher — not THE watcher,
+          # which this cannot tell and does not need to; a sibling lane's would match
+          # the same cmdline, and the point is only to refuse a pid that is a stranger
+          # or no longer a process at all. The gate already means this job started
+          # one, but a pid is a recyclable number and a non-numeric one would have
+          # been passed straight to `kill -TERM -notanumber`. Reading one specific
           # `/proc/<pid>/cmdline` is not the `pkill -f` self-match trap: it asks about
           # a process we named, not about every process whose argv mentions a string.
           if ! [ -r "/proc/$pid/cmdline" ] || ! tr '\0' ' ' < "/proc/$pid/cmdline" | grep -q 'fdb-watch[.]sh'; then
@@ -525,8 +544,16 @@ jobs:
             cat fdb-watch.log 2>/dev/null || echo "(no fdb-watch.log — the watcher never wrote one)"
             echo "=== watcher: last inspect per container, before removal ==="
             for i in fdb-last-inspect-*.txt; do [ -e "$i" ] && { echo "--- $i"; cat "$i"; }; done 2>/dev/null || echo "(no fdb-last-inspect-*.txt)"
-            echo "=== watcher: fdbserver Severity=40 trace events, taken while alive ==="
-            for t in fdb-trace-*.txt; do [ -e "$t" ] && { echo "--- $t"; cat "$t"; }; done 2>/dev/null || echo "(no fdb-trace-*.txt)"
+            echo "=== watcher: fdbserver Severity=40 events, from the streamed trace ==="
+            # The stream carries the whole trace; the dump wants the fatal lines and
+            # the tail. A trace file that EXISTS and contains no Severity=40 is a
+            # finding — "stopped externally, no fatal trace" is one of the three
+            # outcomes — so print the header either way rather than only on a match.
+            for t in fdb-trace-*.xml; do
+              [ -e "$t" ] || continue
+              echo "--- $t (Severity=40)"; grep -ho 'Severity="40"[^>]*' "$t" | tail -40
+              echo "--- $t (tail)"; tail -20 "$t"
+            done 2>/dev/null || echo "(no fdb-trace-*.xml)"
             echo "=== watcher: /var/fdb/data usage, taken while alive ==="
             for d in fdb-df-*.txt; do [ -e "$d" ] && { echo "--- $d"; cat "$d"; }; done 2>/dev/null || echo "(no fdb-df-*.txt)"
             echo "=== watcher: container stdout (tail) ==="
@@ -568,7 +595,7 @@ jobs:
             fdb-forensics.txt
             fdb-watch.log
             fdb-last-inspect-*.txt
-            fdb-trace-*.txt
+            fdb-trace-*.xml
             fdb-df-*.txt
             fdb-container-*.log
           if-no-files-found: warn

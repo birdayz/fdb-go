@@ -47,10 +47,14 @@ func TestResultBaseForAnErasedRecordTakesTheCarrierlessExit(t *testing.T) {
 	if base.resultValue == nil {
 		t.Fatal("the erased exit published no result value at all")
 	}
+	// %s renders both an erased record and a nullable one as "RECORD", so a bare
+	// pair reads "RECORD, want RECORD" on the failure that matters most. Print the
+	// Go type and the nullability beside it.
 	if got := base.resultValue.Type(); !got.Equals(erased) {
-		t.Fatalf("erased exit published type %s, want %s: the fallback is supposed to carry "+
-			"the snapshotted flowed type unchanged, which is what makes leg 0's type the "+
-			"flowed type on this route too", got, erased)
+		t.Fatalf("erased exit published type %s (%T, nullable=%v), want %s (%T, nullable=%v): "+
+			"the fallback is supposed to carry the snapshotted flowed type unchanged, which is "+
+			"what makes leg 0's type the flowed type on this route too",
+			got, got, got.IsNullable(), erased, erased, erased.IsNullable())
 	}
 	if base.ordinalPhysicalProperties != nil {
 		t.Fatal("the erased exit published ordinal properties — it is defined by having none, " +

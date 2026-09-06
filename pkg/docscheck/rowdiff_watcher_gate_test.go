@@ -59,41 +59,62 @@ func TestRowdiffWatcherStopIsGatedOnTheStartStep(t *testing.T) {
 		t.Fatalf("parse %s: %v", path, err)
 	}
 
-	var startID, stopIf string
-	var sawStart, sawStop bool
+	// Classify on markers UNIQUE to each step, not on a first-match-wins switch.
+	// The start step's body also contains `fdb-watch.pid` and `kill` — it writes
+	// the pid file and its heredoc signals its own group on the way out — so a
+	// looser stop-step marker made the ordering of the cases load-bearing and
+	// undocumented. `kill -TERM -"$pid"` appears once in the file.
+	var startID, stopIf, stopRun string
+	var startN, stopN int
 	for _, job := range wf.Jobs {
 		for _, step := range job.Steps {
-			switch {
-			case strings.Contains(step.Run, "cat > fdb-watch.sh"):
-				sawStart = true
+			if strings.Contains(step.Run, "cat > fdb-watch.sh") {
+				startN++
 				startID = step.ID
-			case strings.Contains(step.Run, "fdb-watch.pid") && strings.Contains(step.Run, "kill"):
-				sawStop = true
+			}
+			if strings.Contains(step.Run, `kill -TERM -"$pid"`) {
+				stopN++
 				stopIf = step.If
+				stopRun = step.Run
 			}
 		}
 	}
 
-	// The population guard. Both steps must be FOUND before any verdict about
-	// them means anything: a rename would otherwise leave this test passing
-	// over an empty set, which is the failure it exists to prevent wearing a
-	// different hat.
-	if !sawStart || !sawStop {
-		t.Fatalf("nightly-rowdiff.yml no longer has both a watcher start step (found=%v) and a "+
-			"stop step that kills by pid (found=%v) — this gate is measuring nothing, so either "+
-			"restore them or delete this test deliberately", sawStart, sawStop)
+	// The population guard, and it is EXACTLY one of each rather than at least
+	// one: a rename leaves this test passing over an empty set, and a second
+	// match means the markers stopped identifying what they name. Either way
+	// every verdict below would be about the wrong thing.
+	if startN != 1 || stopN != 1 {
+		t.Fatalf("nightly-rowdiff.yml has %d watcher start steps (marker: `cat > fdb-watch.sh`) "+
+			"and %d stop steps (marker: `kill -TERM -\"$pid\"`), want exactly 1 of each — this "+
+			"gate is measuring nothing or measuring the wrong step, so either restore the "+
+			"markers or delete this test deliberately", startN, stopN)
 	}
 	if startID == "" {
 		t.Fatal("the watcher start step has no `id:`, so the stop step cannot gate on its outcome " +
 			"and must be gating on something weaker")
 	}
-	want := "steps." + startID + ".outcome == 'success'"
+	// `!= 'skipped'`, NOT `== 'success'`. `skipped` is the only outcome meaning
+	// no line of the start step ran; every other one — success, failure,
+	// cancelled — is reachable with the watcher already detached by `setsid`,
+	// because the launch precedes the pid handshake that can fail.
+	want := "steps." + startID + ".outcome != 'skipped'"
 	if !strings.Contains(stopIf, want) {
 		t.Fatalf("the watcher stop step's condition is %q, which does not gate on %q.\n"+
-			"It must stop only what this job started. `always()` alone signals last night's pid "+
-			"on a closed-window night; `always() && window.ok` still signals it when Checkout "+
-			"fails with the window open, because a plain `if:` implies success() and skips the "+
-			"start step while this one runs.", stopIf, want)
+			"Three narrower conditions have each left a hole: `always()` alone signals last "+
+			"night's pid on a closed-window night; `always() && window.ok` still signals it when "+
+			"Checkout fails with the window open, because a plain `if:` implies success() and "+
+			"skips the start step while this one runs; and `== 'success'` skips cleanup for a "+
+			"watcher that was launched and then failed its pid handshake or was cancelled.",
+			stopIf, want)
+	}
+	// The ownership check. Signalling a process GROUP as root off a number read
+	// from a file wants a second opinion, and this one is cheap: ask whether that
+	// specific pid is a watcher before killing its group.
+	if !strings.Contains(stopRun, "/proc/$pid/cmdline") {
+		t.Fatal("the watcher stop step no longer reads /proc/$pid/cmdline before signalling. " +
+			"It kills a process GROUP as root off a pid read from a file; without the check a " +
+			"recycled or non-numeric pid is signalled blind")
 	}
 	if !strings.Contains(stopIf, "always()") {
 		t.Fatalf("the watcher stop step's condition is %q and does not include always(): a "+

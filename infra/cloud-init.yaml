@@ -271,10 +271,10 @@ write_files:
       # whole sweep a silent exit-0 no-op for weeks.
       set -uo pipefail
       now=$(date -u +%s)
-      # Job in flight? LOAD-BEARING; without it the age arm below removed LIVE test
-      # containers. -x on the apphost this tarball ships, never -f: see README.
-      job_running=0
-      pgrep -x Runner.Worker >/dev/null 2>&1 && job_running=1
+      # Job start time, 0 when idle. LOAD-BEARING; -x not -f: see README.
+      wstart=0
+      wpid=$(pgrep -x Runner.Worker | head -1)
+      [ -n "$wpid" ] && wstart=$(stat -c %Y "/proc/$wpid" 2>/dev/null || echo 0)
       docker ps --format '{{.ID}} {{.Image}}' 2>/dev/null | while read -r id image; do
         case "$image" in
           testcontainers/ryuk*)
@@ -285,12 +285,12 @@ write_files:
             fi
             ;;
           foundationdb/foundationdb*)
-            # Age means nothing while a job runs; the box idles and this refires.
-            [ "$job_running" = 1 ] && continue
-            # >30 min old on an IDLE box: no container outlives its job, so orphan.
             started=$(docker inspect -f '{{.State.StartedAt}}' "$id" 2>/dev/null || true)
             [ -z "$${started:-}" ] && continue
-            age=$(( now - $(date -u -d "$started" +%s 2>/dev/null || echo "$now") ))
+            sepoch=$(date -u -d "$started" +%s 2>/dev/null || echo "$now")
+            # Newer than the worker: the live job owns it. Older: a real orphan.
+            [ "$wstart" -gt 0 ] && [ "$sepoch" -ge "$wstart" ] && continue
+            age=$(( now - sepoch ))
             if [ "$age" -gt 1800 ]; then
               echo "killing orphan FDB container $id ($image, running $${age}s)"
               # -v: remove the container's anonymous volumes too. Without it every

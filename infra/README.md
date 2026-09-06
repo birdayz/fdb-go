@@ -129,8 +129,10 @@ FDB the tests run against).
   a binary that was never installed). It skips a **masked** unit, because a mask is a
   deliberate "never run this here" and a watchdog that restarts through one defeats the
   enforcement.
-- **`orphan-fdb-sweep`** (every 5 min): kills FDB testcontainers running > 30 min (orphans
-  whose parent test died) and pins Ryuk's OOM score so the kernel reaps it last.
+- **`orphan-fdb-sweep`** (every 5 min): kills FDB testcontainers running > 30 min that were
+  started BEFORE the running job's `Runner.Worker` (orphans whose parent test died), and pins
+  Ryuk's OOM score so the kernel reaps it last. The start-time comparison is load-bearing and
+  its own section below: without it this swept the LIVE container of every long-running test.
 - **`bazel-cache-prune`** (hourly): trims `/mnt/ci-data/bazel-disk-cache` to a 60%
   volume-usage target, oldest-mtime-first (Bazel ≥ 7 touches entries on cache hit, so
   mtime order is LRU order). Runs the stale-output-base sweep *first*, because those
@@ -316,13 +318,19 @@ the sweep's match-by-image-name fix (`6819cfbcb`, 2026-06-01) kept writing the v
 matched nothing and swept nothing; the working version only reached boxes provisioned after
 it.
 
-**The fix** is a `pgrep -x Runner.Worker` guard: while a job is in flight, a long-lived FDB
-container is that job's, so age says nothing about whether it is abandoned. Orphans are still
-swept — the timer fires every five minutes and the box is idle between jobs. This is the rule
-the retired scaler's own sweeper already had (*"runs only when no runner is active on that
-box, so a dead test's leaked FDB container is an orphan and removing it cannot disturb a
-concurrent job"*); the cloud-init copy was written without it. Two sweepers with one job, one
-guarded and one not — and the guarded one is the one that does not run.
+**The fix** compares each container's start time against the running `Runner.Worker`'s. A
+container newer than the worker belongs to the job in flight, so its age says nothing about
+whether it is abandoned; one OLDER than the worker is an orphan from a previous job and stays
+eligible.
+
+The first version of this fix was a blanket "skip everything while a job runs", which is the
+rule the retired scaler's own sweeper had (*"runs only when no runner is active on that box, so
+a dead test's leaked FDB container is an orphan and removing it cannot disturb a concurrent
+job"*) — two sweepers with one job, one guarded and one not, and the guarded one is the one that
+does not run. A review lap pointed out that a blanket skip trades one leak for another: a
+cancelled job's ~700 MB orphan survives the whole of the next job, and back-to-back work need
+never expose the idle tick that would sweep it. The timer samples every five minutes; a nightly
+lane runs for four hours. Comparing start times keeps both properties.
 
 `pgrep -x`, matching the process NAME, and **never** `-f`, which matches any command line
 *containing* the string. That is not a stylistic preference and the hazard is not theoretical:
@@ -340,26 +348,33 @@ carries that shape as a defensive case, and an intermediate version of this guar
 the strength of it. That was reading a test table as a description of the fleet. If the runner
 packaging ever changes, this guard goes silent in the direction that returns the bug.
 
-All three arms were driven before shipping: worker present + old container → survives; no
-worker + old container → removed; the same container once the worker exits → removed. Note
-what that does and does not establish: the arms prove the guard's LOGIC with a stand-in
-process. That a real worker's `comm` is `Runner.Worker` rests on the tarball's packaging, not
-on an observation from one of these boxes, and neither has the timer been caught firing —
-`journalctl -u orphan-fdb-sweep.service` around one of the recorded death timestamps would
-turn the inference into an observation.
+All four arms were driven before shipping, including the mixed case that motivated the change —
+a live container and a stale orphan on the box at the same time:
+
+| arm | container | worker | outcome |
+|---|---|---|---|
+| A | started AFTER the worker | running | survives |
+| B | started BEFORE the worker | running | **removed** |
+| C | old | none | removed |
+| D | young | none | survives |
+
+Note what that does and does not establish: the arms prove the guard's LOGIC with a stand-in
+process. That a real worker's `comm` is `Runner.Worker` rests on the tarball's packaging, not on
+an observation from one of these boxes, and neither has the timer been caught firing —
+`journalctl -u orphan-fdb-sweep.service` around one of the recorded death timestamps would turn
+the inference into an observation.
 
 **Deployment, and it is the remaining owner action:** `cloud-init` is `PER_INSTANCE`, so this
 fixes boxes provisioned from here on. The live fleet keeps the old script until re-provisioned
 or until the file is edited in place.
 
-**Budget note:** landing this guard left **30 bytes** of `user_data` headroom, measured at
-`405ef67a6` — `//infra:infra_test` computes the figure on every run and prints it with
-`--test_output=all` (a passing Go test's `t.Logf` is otherwise hidden), so take it from there
-rather than from here. It read 13 bytes one commit earlier and this paragraph said so for a round after
-a trim had moved it, which is the same failure as any other number written into prose without
-its head: it is a fact about a file, and the file changes. What does not change is the shape of
-the constraint — anything you add to `cloud-init.yaml` has to come out of a budget with roughly
-one line left in it, so the next person to touch that file is trimming, not adding.
+**Budget note:** this guard fits with about one line of `user_data` budget to spare. No figure
+is given here on purpose: it has been wrong twice, once because a later trim in the same round
+moved it and once because the guard itself grew. `//infra:infra_test` computes it on every run
+and prints it under `--test_output=all` (a passing Go test's `t.Logf` is otherwise hidden);
+read it there. What does not change is the shape of the constraint — anything you add to
+`cloud-init.yaml` has to come out of a budget with roughly one line left in it, so the next
+person to touch that file is trimming, not adding.
 
 ## Ephemeral runner (opt-in)
 
