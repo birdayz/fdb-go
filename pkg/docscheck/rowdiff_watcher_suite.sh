@@ -26,6 +26,19 @@
 # here because a measurement that lives only in a scratch directory is a
 # measurement nobody can re-run.
 #
+# WHAT THIS DOES NOT COVER, written first and from what was actually run rather
+# than from what the cases happen to touch:
+#
+#   - the dump's loop over LIVE containers. The stub answers `phase=gone` by the
+#     time the dump runs, so that loop iterates an empty set here. Its arms are
+#     unexercised; only the trace-directory and last-inspect arms are driven.
+#   - `docker exec` entirely — the stub refuses it, so the `df` sampler and the
+#     in-container reads are unpinned.
+#   - the watcher's deadline and its process-group teardown, which the workflow
+#     comments describe and which were driven by hand against real processes.
+#   - anything about a REAL fdbserver: every trace here is a fixture, so this
+#     pins the plumbing and not the format it carries.
+#
 # Run: bash pkg/docscheck/rowdiff_watcher_suite.sh
 set -uo pipefail
 cd "$(dirname "$0")/../.."
@@ -182,13 +195,23 @@ fi
 # fixture holding what the watcher would have written.
 DUMP=$(mktemp); DWORK=$(mktemp -d)
 trap 'rm -rf "$SCRIPT" "$BIN" "$WORK" "$STATE" "$DUMP" "$DWORK"' EXIT
+# Anchor on the STEP, not on the first ten-space brace in the file. There are
+# three such braces; taking the first works only while this block stays first,
+# and a new block above it would silently reroute the extraction while both
+# guards below still passed — an instrument measuring the wrong thing, which is
+# the failure this suite exists to catch.
 awk '
-  /^          \{$/ { inb = 1 }
+  /^      - name: Capture FDB container forensics$/ { armed = 1 }
+  armed && /^          \{$/ { inb = 1 }
   inb { print substr($0, 11) }
   inb && /^          \} > fdb-forensics\.txt/ { exit }
 ' .github/workflows/nightly-rowdiff.yml > "$DUMP"
 [ -s "$DUMP" ] || { echo "FATAL: extracted an empty dump block"; exit 1; }
 grep -q 'fdb-logs-' "$DUMP" || { echo "FATAL: dump extraction has no trace-directory arm"; exit 1; }
+# And that it is THIS block: `=== host ===` opens the forensics dump and nothing
+# else in the file. Without it a wrong-block extraction that happened to mention
+# fdb-logs- would pass the guard above.
+grep -q '=== host ===' "$DUMP" || { echo "FATAL: dump extraction picked the wrong block"; exit 1; }
 
 mkdir -p "$DWORK/fdb-logs-c1-exit"
 echo '<Event Severity="40" Type="SharedTLogFailed"/>' > "$DWORK/fdb-logs-c1-exit/trace.001.xml"
@@ -207,6 +230,42 @@ if grep -q 'fdb-last-inspect-c1.txt' "$DWORK/fdb-forensics.txt" 2>/dev/null; the
 else
   bad "the dump reads the per-container last inspect"
 fi
+
+# The empty-capture ALARM, which sits below the dump and decides whether a night
+# that captured nothing is reported as a defect or as a quiet night. It is pinned
+# here because it has already been wrong once in a way nothing noticed: it wrote
+# an `::error::` annotation and did not exit non-zero, so the step stayed GREEN
+# while announcing it had captured nothing.
+ALARM=$(mktemp); AWORK=$(mktemp -d)
+trap 'rm -rf "$SCRIPT" "$BIN" "$WORK" "$STATE" "$DUMP" "$DWORK" "$ALARM" "$AWORK"' EXIT
+awk '
+  /^          have_inspect=0$/ { inb = 1 }
+  inb { print substr($0, 11) }
+  inb && /^          fi$/ { exit }
+' .github/workflows/nightly-rowdiff.yml > "$ALARM"
+[ -s "$ALARM" ] || { echo "FATAL: extracted an empty alarm block"; exit 1; }
+grep -q 'captured NOTHING' "$ALARM" || { echo "FATAL: alarm extraction has no error arm"; exit 1; }
+
+alarm_case() { # $1 name  $2 forensics content  $3 inspect content ("" = none)  $4 sweep  $5 paging  $6 want-rc
+  rm -rf "$AWORK"; mkdir -p "$AWORK"
+  printf '%s\n' "$2" > "$AWORK/fdb-forensics.txt"
+  [ -n "$3" ] && printf '%s\n' "$3" > "$AWORK/fdb-last-inspect-c1.txt"
+  ( cd "$AWORK" && SWEEP_OUTCOME="$4" PAGING_OUTCOME="$5" bash "$ALARM" > out 2>&1 )
+  rc=$?
+  if [ "$rc" = "$6" ]; then ok "$1 (rc=$rc)"; else bad "$1: rc=$rc, want $6"; fi
+}
+
+# The arm that was broken: nothing captured on a night a sweep FAILED must fail
+# the step, not merely annotate it.
+alarm_case "empty capture + deep sweep failed exits non-zero" '=== host ===' '' failure success 1
+# The PAGING lane counts too — reading only the un-paged one printed "nothing to
+# explain tonight" on a night with a death, one lane over.
+alarm_case "empty capture + PAGING sweep failed exits non-zero" '=== host ===' '' success failure 1
+# And a genuinely quiet night must stay quiet.
+alarm_case "empty capture + both sweeps green stays green" '=== host ===' '' success success 0
+# Evidence present, from either source, is not an empty capture.
+alarm_case "a live container in the dump is evidence" '=== inspect c1 ===' '' failure success 0
+alarm_case "a watcher inspect is evidence" '=== host ===' 'ts c1 exit=1' failure success 0
 
 if [ "$fail" -ne 0 ]; then
   echo "FAILURES"

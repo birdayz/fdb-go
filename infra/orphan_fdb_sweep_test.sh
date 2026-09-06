@@ -99,7 +99,13 @@ STUB
 chmod +x "$BIN/pgrep"
 
 # One case. $1 name, $2 container age in seconds, $3 worker elapsed seconds
-# ("" = no worker, "unreadable" = a worker whose age cannot be read), $4 expectation.
+# ("" = no worker, "unreadable" = a worker whose age cannot be read), $4
+# expectation, $5 optional string the case's OWN output must contain.
+#
+# $5 exists so a message assertion belongs to its case rather than to whichever
+# case happens to have run last: an assertion reading the shared output file
+# after the loop is retargeted by appending a case, which is the positional
+# hazard this branch has spent several rounds on in prose.
 run_case() {
   rm -f "$STATE/removed" "$STATE/worker" "$STATE/etimes"
   date -u -d "@$(( $(date -u +%s) - $2 ))" +%Y-%m-%dT%H:%M:%S.000000000Z > "$STATE/started"
@@ -112,6 +118,11 @@ run_case() {
   got=removed
   [ -s "$STATE/removed" ] || got=survived
   if [ "$got" = "$4" ]; then ok "$1 ($got)"; else bad "$1: got $got, want $4"; fi
+  if [ -n "${5:-}" ]; then
+    grep -q "$5" "$STATE/out" \
+      && ok "$1: says \"$5\"" \
+      || bad "$1: output does not contain \"$5\""
+  fi
 }
 
 echo "orphan-fdb-sweep:"
@@ -127,16 +138,11 @@ run_case "orphan, started before the worker"        3600  600 removed
 # C/D: the idle box, where age is the whole test.
 run_case "old container, no worker"                 3600   "" removed
 run_case "young container, no worker"                600   "" survived
-# E: fail CLOSED. A worker exists but its age is unreadable, so nothing is swept
-#    rather than everything.
-run_case "worker present, age unreadable"           3600 unreadable survived
-# Failing closed is only half of it. A permanently disarmed sweep that says
-# nothing looks exactly like a healthy one, which is the shape this whole change
-# is a record of — so the disarm has to be visible, and visible is an assertion
-# rather than an intention.
-grep -q "sweep disarmed" "$STATE/out" \
-  && ok "the disarm says so, into the unit journal" \
-  || bad "the disarm says so, into the unit journal"
+# E: fail CLOSED, and SAY so. A worker exists but its age is unreadable, so
+#    nothing is swept rather than everything. Failing closed is only half of it — a permanently
+#    disarmed sweep that says nothing looks exactly like a healthy one, which is
+#    the shape this whole change is a record of.
+run_case "worker present, age unreadable"           3600 unreadable survived "sweep disarmed"
 
 if [ "$fail" -ne 0 ]; then
   echo "FAILURES"
