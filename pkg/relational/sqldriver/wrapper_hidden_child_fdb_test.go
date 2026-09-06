@@ -29,9 +29,21 @@ import (
 // The row prose below does still cross-reference by position ("the row above",
 // "read the next two rows"), and that is a real hazard an insertion can silently
 // retarget. It is left because a reader walking the rows in order is served by
-// it, and it is written down because three successive attempts to state this
-// paragraph's scope claimed more than the file does. The scope is this comment,
-// not the table.
+// it, and it is written down because every earlier attempt to state this
+// paragraph's scope claimed more than the file does — unnumbered for the same
+// reason as the list above, and true of a further attempt rather than stale
+// after one. The scope is this comment, not the table.
+//
+// Not every one of those pointers fails the same way, and the difference decides
+// where to look first after an insertion. Most POINT AT evidence ("the bad-name
+// CASE row above"), so a retarget makes them unhelpful, and several would read as
+// self-contradictory to anyone who followed them. Two kinds do worse, because
+// they ASSERT something about the row they point at rather than directing you to
+// it: the comparative "worse than the failure above", whose truth depends on
+// which row that is, and the forward "the two-field row below shows one is",
+// which attributes a specific finding to a row not yet read. Those flip from true
+// to false with nothing inconsistent left on the page. Insert a row next to one
+// of them and re-read it, not just the row you added.
 //
 // A control is built by removing what you BELIEVE is the cause, so it inherits
 // whatever the belief got wrong and passes either way; a table has no belief in
