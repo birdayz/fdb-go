@@ -12,20 +12,23 @@ import (
 )
 
 // TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes pins, as a TABLE, what an
-// array literal of record constructors does today — including two shapes that
-// FAIL outright.
+// array literal of record constructors does today, and what the same literals do
+// at the other sites that unify record shapes. Some of those shapes FAIL
+// outright, under several distinct refusals.
 //
-// It is a table rather than a witness-and-control pair on purpose. THREE
+// It is a table rather than a witness-and-control pair on purpose. FOUR
 // successive rounds each named a mechanism, built a control around it, and had
 // the mechanism refuted by a row nobody had run — "a type-changing wrapper is
 // enough", then "a wrapper over an unsynthesisable child is enough", then a
-// three-condition account the site rows break, and a fourth that titled the union defect by
-// its target until the both-anonymous row refuted that too. (No row count here: this table has
-// grown every round, and a positional pointer into it goes stale the next time it does.) A control is
-// built by removing what you BELIEVE is the cause, so it inherits whatever the
-// belief got wrong and passes either way; a table has no belief in it. The rows
-// are the measurement and the prose is downstream of them, which is why this
-// comment stops at what the rows show and does not generalise past it.
+// three-condition account the site rows break, then a fourth that titled the
+// union defect by its TARGET until the both-anonymous pair refuted that too.
+// (No counts here, of rows or of anything else, and no pointers by position:
+// this table has grown every round, and both go stale the next time it does.)
+//
+// A control is built by removing what you BELIEVE is the cause, so it inherits
+// whatever the belief got wrong and passes either way; a table has no belief in
+// it. The rows are the measurement and the prose is downstream of them, which is
+// why this comment stops at what the rows show and does not generalise past it.
 //
 // What the rows show. Unifying two record shapes ANONYMISES the fields whose
 // names disagree, and three sites then treat that anonymised target differently.
@@ -255,7 +258,7 @@ func TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes(t *testing.T) {
 			andFailsWith: unionSlotRefusal,
 		},
 		{
-			why: "the row that kills 'refused whenever the TARGET is anonymous': both legs are ALREADY anonymous, built by the two-field CASE above, so the common type carries an anonymous field and the union ANSWERS. No leg names what the target anonymised, so nothing is refused",
+			why: "half of the PAIR that kills \"refused whenever the TARGET is anonymous\" — this half shows the target CAN carry an anonymous field and the union still answers, and the promote row below shows the gate is genuinely reached. Equal leg types here skip leg normalisation, so this row alone does not exercise the gate: both legs are ALREADY anonymous, built by the two-field CASE above, so the common type carries an anonymous field and the union ANSWERS. No leg names what the target anonymised, so nothing is refused",
 			query: `SELECT (CASE WHEN id=1 THEN (1 AS A, 3 AS Z) ELSE (2 AS A, 4 AS Y) END) AS C FROM t ` +
 				`UNION ALL SELECT (CASE WHEN id=1 THEN (1 AS A, 3 AS Z) ELSE (2 AS A, 4 AS Y) END) AS C FROM t`,
 			wantStruct: true,

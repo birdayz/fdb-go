@@ -9394,15 +9394,16 @@ covered by the correctness suite and the golden plan diff, not by this table.
   synthesisable names, the agreeing-name union that answers, the agreeing-name union that WIDENS
   and answers on both legs, the partially-anonymised two-field union that is still refused, the
   BOTH-ANONYMOUS union that ANSWERS, the same pair again with a real PROMOTE through the
-  anonymous slot (the row that refutes titling this by the target), anonymisation NESTED one
-  level down, a THREE-leg union where two legs agree, and the same gate reached through a
-  RECURSIVE CTE. The failing rows assert the anonymous TARGET by name, not just the error
-  family, so a run where alignment picked a NAMED common type would redden. SECOND CALL SITE,
-  and the closure must cover it: `exactUnionSlotValue` is also called from the recursive-CTE
-  output alignment, which wraps the identical refusal in `0AF00` instead of `42F65`. That row
-  guards against a CALL-SITE-LOCAL patch. It is not an argument that the closure needs two
-  fixes: the direction this booking prescribes, positional promotability at the gate, covers
-  both callers by construction, since `recursiveCTECommonResultRow` derives its target with the
-  same per-ordinal maximum. Pinned as its own row. Booked from RFC-242 r41, cause and direction
-  corrected at r43, rows actually committed and the CTE call site added at r44, counts corrected
-  at r45.
+  anonymous slot — the two of them TOGETHER refute titling this by the target, the first
+  showing an anonymous target can answer and the second that the gate is genuinely reached,
+  since equal leg types skip leg normalisation — anonymisation NESTED one level down, a
+  THREE-leg union where two legs agree, and the same gate reached through a RECURSIVE CTE. The
+  failing rows assert the anonymous TARGET by name, not just the error family, so a run where
+  alignment picked a NAMED common type would redden. SECOND CALL SITE, and the closure must
+  cover it: `exactUnionSlotValue` is also called from the recursive-CTE output alignment, which
+  wraps the identical refusal in `0AF00` instead of `42F65`. That row guards against a
+  CALL-SITE-LOCAL patch. It is not an argument that the closure needs two fixes: the direction
+  this booking prescribes, positional promotability at the gate, covers both callers by
+  construction, since `recursiveCTECommonResultRow` derives its target with the same per-ordinal
+  maximum. Pinned as its own row. Booked from RFC-242 r41, cause and direction corrected at r43,
+  rows actually committed and the CTE call site added at r44, counts corrected at r45.
