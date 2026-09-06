@@ -846,7 +846,10 @@ chmod +x "$DBIN/docker"
 
 dec_case() {  # $1 name, $2 answer sequence, $3 want-rc, $4 want-reason, $5 want-clock
   printf '%s' "$2" > "$DST/seq"; echo 0 > "$DST/n"
-  got=$(DECST="$DST" PATH="$DBIN:$PATH" bash -c '
+  # Run in the scratch dir: `still_there` appends to `fdb-watch.log` in its CWD,
+  # and without this the arms write that file into the REPO ROOT — measured, it
+  # showed up as an untracked file after a run.
+  got=$(cd "$DST" && DECST="$DST" PATH="$DBIN:$PATH" bash -c '
     maxOutageSeconds=600; outage_start=0; misses=0; gone_reason=
     . "$1"
     still_there c1 "periodic copy" copier; rc=$?
