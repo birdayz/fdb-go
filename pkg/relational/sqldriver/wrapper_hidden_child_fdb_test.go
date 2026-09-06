@@ -90,7 +90,14 @@ func TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes(t *testing.T) {
 		anonTarget       = "is not promotable to RECORD<INT NOT NULL> NOT NULL"
 		partlyAnonTarget = "is not promotable to RECORD<A INT NOT NULL, INT NOT NULL> NOT NULL"
 		nestedAnonTarget = "is not promotable to RECORD<N RECORD<INT NOT NULL> NOT NULL> NOT NULL"
+		// Slot 0 is hardcoded because every row here projects ONE column, so it
+		// is the only slot there is. That means these rows cannot tell a correct
+		// index from the constant 0 — say so rather than imply otherwise.
 		unionSlotRefusal = "42F65: UNION output slot 0 cannot adopt the common type"
+		// The SAME gate, reached through the recursive-CTE path, which wraps it in
+		// a different error CODE. A closure that fixes only the UNION spelling
+		// leaves this one, and nothing else pins it.
+		cteSlotRefusal = "0AF00: recursive CTE output slot 0 cannot adopt the common type"
 	)
 
 	for _, tc := range []struct {
@@ -231,7 +238,7 @@ func TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes(t *testing.T) {
 			wantLeaves: []leafRow{{names: []string{"A", "_1"}, vals: []float64{1, 3}}},
 		},
 		{
-			why:        "a UNION whose names AGREE but whose widths differ: it ANSWERS, both legs. So record promotion in a union is not refused in general — only a target carrying an ANONYMOUS field is",
+			why:        "a UNION whose names AGREE but whose widths differ: it ANSWERS, both legs. So record promotion in a union is not refused in general, and widening is not what is refused either",
 			query:      `SELECT (1 AS A) AS C FROM t UNION ALL SELECT (2.5 AS A) AS C FROM t`,
 			wantStruct: true,
 			wantLeaves: []leafRow{
@@ -240,10 +247,48 @@ func TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes(t *testing.T) {
 			},
 		},
 		{
-			why:          "PARTIAL anonymisation in a union: `A` agrees and `Z`/`Y` do not, so the target is `RECORD<A INT, INT>` and it is still refused. One anonymous field is enough, which is what makes the refusal about the anonymous field rather than about the record",
+			why:          "PARTIAL anonymisation: `A` agrees and `Z`/`Y` do not, so the target is `RECORD<A INT, INT>` and the leg still NAMES `Z`, which the target anonymised. Refused. One such field is enough, because record equality is all-or-nothing",
 			query:        `SELECT (1 AS A, 3 AS Z) AS C FROM t UNION ALL SELECT (2 AS A, 4 AS Y) AS C FROM t`,
 			failsWith:    partlyAnonTarget,
 			andFailsWith: unionSlotRefusal,
+		},
+		{
+			why: "the row that kills 'refused whenever the TARGET is anonymous': both legs are ALREADY anonymous, built by the two-field CASE above, so the common type carries an anonymous field and the union ANSWERS. No leg names what the target anonymised, so nothing is refused",
+			query: `SELECT (CASE WHEN id=1 THEN (1 AS A, 3 AS Z) ELSE (2 AS A, 4 AS Y) END) AS C FROM t ` +
+				`UNION ALL SELECT (CASE WHEN id=1 THEN (1 AS A, 3 AS Z) ELSE (2 AS A, 4 AS Y) END) AS C FROM t`,
+			wantStruct: true,
+			wantLeaves: []leafRow{
+				{names: []string{"A", "_1"}, vals: []float64{1, 3}},
+				{names: []string{"A", "_1"}, vals: []float64{1, 3}},
+			},
+		},
+		{
+			why: "the same pair with a real PROMOTE through the anonymous slot, INT against DOUBLE: still answers. So an anonymous field in the common type is not merely tolerated, it is promoted through",
+			query: `SELECT (CASE WHEN id=1 THEN (1 AS A, 3 AS Z) ELSE (2 AS A, 4 AS Y) END) AS C FROM t ` +
+				`UNION ALL SELECT (CASE WHEN id=1 THEN (1 AS A, 3.5 AS Z) ELSE (2 AS A, 4.5 AS Y) END) AS C FROM t`,
+			wantStruct: true,
+			wantLeaves: []leafRow{
+				{names: []string{"A", "_1"}, vals: []float64{1, 3}},
+				{names: []string{"A", "_1"}, vals: []float64{1, 3.5}},
+			},
+		},
+		{
+			why:          "anonymisation NESTED one level down refuses the same way, so the rule is about a leg naming what the target anonymised at ANY depth, not about the top-level row",
+			query:        `SELECT ((1 AS A) AS N) AS C FROM t UNION ALL SELECT ((2 AS B) AS N) AS C FROM t`,
+			failsWith:    nestedAnonTarget,
+			andFailsWith: unionSlotRefusal,
+		},
+		{
+			why:          "THREE legs, two of which agree: still refused. Adding an agreeing leg does not rescue a disagreeing one",
+			query:        `SELECT (1 AS A) AS C FROM t UNION ALL SELECT (2 AS A) AS C FROM t UNION ALL SELECT (3 AS B) AS C FROM t`,
+			failsWith:    anonTarget,
+			andFailsWith: unionSlotRefusal,
+		},
+		{
+			why:          "the SAME gate reached through a RECURSIVE CTE, which wraps it in a different error code. A closure written against the UNION spelling alone would leave this one, and nothing else in the tree pins it",
+			query:        `WITH RECURSIVE r AS (SELECT (1 AS A) AS C FROM t UNION ALL SELECT (2 AS B) AS C FROM r) SELECT * FROM r`,
+			failsWith:    anonTarget,
+			andFailsWith: cteSlotRefusal,
 		},
 	} {
 		query := tc.query
@@ -480,13 +525,16 @@ func leafValsEqual(a, b []float64) bool {
 	return true
 }
 
-// sortLeavesByValue orders the collected leaves by value, keeping each name with
-// its number.
+// sortLeavesByValue orders one row's leaves by value, keeping each name with its
+// number.
 //
-// Multi-row rows in this table are UNION ALL, whose leg order is not pinned
-// anywhere. Asserting the order here would quietly make those rows a test of leg
-// ordering, and they would then redden for a reason that has nothing to do with
-// what they measure.
+// This sorts WITHIN a row, not across rows, so it says nothing about UNION ALL
+// leg order. The multi-row expectations DO depend on that order: they are
+// written leg by leg and compared row by row. That dependency is real and is
+// stated here rather than hidden, because an earlier version of this comment
+// claimed the opposite while the code had just started relying on it. If leg
+// order ever stops being stable those rows redden, and the fix is to sort the
+// ROWS into a canonical order, not to weaken the per-row comparison.
 func sortLeavesByValue(names []string, vals []float64) {
 	// Sorted as PAIRS. Sorting the two slices independently would reorder names
 	// and values against each other, and every assertion built on them would
