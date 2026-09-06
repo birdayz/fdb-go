@@ -12,15 +12,18 @@ import (
 // That combination is REACHABLE, and how was measured rather than argued. It is
 // not the "poisoning in between a parent and its child" this comment once
 // claimed: within one value tree the walk visits a parent immediately before a
-// FIRST-field child, so there is no gap there to poison. What reaches it is a
-// type-changing WRAPPER over a child whose own type cannot be synthesised — the
-// wrapper keeps the child's shape out of the parent's type, so the parent
-// stamps while the child cannot. TODO.md, "A stamped record constructor over a
-// wrapper-hidden child fails the query", carries the closure, and
-// TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes measures the outcomes over
-// real SQL as a table, and TestWhichRecordTypesCanBeGivenADescriptor the
-// stamping predicate under them. Read that table rather than any summary of it:
-// two rounds each summarised it wrongly, and the rows are what survived.
+// FIRST-field child, so there is no gap there to poison. What reaches it is an
+// ARRAY-ELEMENT promotion over a child whose own type cannot be synthesised,
+// AND a promotion target that is itself synthesisable because unification erased
+// the offending name. Both are needed: leave the same bad name on both elements
+// and the target keeps it, the parent cannot stamp either, and the query answers
+// as a uniform raw map instead. TODO.md, "A record literal protobuf cannot name
+// is handled four different ways", carries the closure, and
+// TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes measures all four sites — the
+// same literals also answer with a RAGGED array where nothing above them is
+// stamped, coerce through a CASE, and draw a loud refusal through a UNION. Read
+// that table rather than any summary of it, this one included: three rounds
+// each summarised it wrongly, and the rows are what survived.
 //
 // The cost here is NOT the one the booking describes. Everywhere else an
 // unstamped constructor degrades a struct to a raw map and keeps its values —

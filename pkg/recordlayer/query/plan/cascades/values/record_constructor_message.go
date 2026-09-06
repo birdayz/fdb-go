@@ -193,16 +193,23 @@ func rowScalarToProtoValue(fd protoreflect.FieldDescriptor, v any) (protoreflect
 // The bake DOES produce that pair, and a plain SQL query reaches it. It takes
 // THREE things lining up, which is one more than two earlier write-ups claimed:
 // the child constructor's own type is unsynthesisable (a field name protobuf
-// will not carry); a promotion sits between it and the parent; and that
-// promotion's TARGET is itself synthesisable, because unifying disagreeing
-// elements ANONYMISES their fields and so erases the offending name. Only then
-// does the parent's type carry a stampable shape while the child underneath
-// does not. Leave the same bad name on BOTH elements and the target keeps it,
-// the parent cannot stamp either, and the whole value degrades to maps and
-// ANSWERS. TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes measures the outcomes
-// and TestWhichRecordTypesCanBeGivenADescriptor the stamping predicate under
-// them. TODO.md, "A stamped record constructor over a wrapper-hidden child fails
-// the query", carries the closure.
+// will not carry, so it never stamps and evaluates to a map) and a promotion
+// whose TARGET is synthesisable, because unification ANONYMISES disagreeing
+// field names and so erases the offending one. Only then does the parent's type
+// carry a stampable shape while the child underneath does not. Leave the same
+// bad name on BOTH elements and the target keeps it, the parent cannot stamp
+// either, and the whole value degrades to maps and ANSWERS.
+//
+// That describes THIS site. It does not describe the defect, which is wider:
+// the same two literals answer with a RAGGED array where nothing above them is
+// stamped, coerce cleanly through a CASE, and draw a loud refusal through a
+// UNION. Four sites, four outcomes.
+// TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes measures all four,
+// TestUnificationErasesAFieldNameOnlyWhenTheNamesDisagree the erasure, and
+// TestWhichRecordTypesCanBeGivenADescriptor the stamping predicate. TODO.md,
+// "A record literal protobuf cannot name is handled four different ways",
+// carries the closure. Read the table rather than this summary: three rounds
+// summarised it wrongly before this one.
 //
 // A DIRECT field child is a different case and stays in step with its parent,
 // for two reasons TestTheBakeStampsAParentAndItsChildTogetherOrNeither asserts

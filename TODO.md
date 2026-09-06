@@ -9290,75 +9290,72 @@ covered by the correctness suite and the golden plan diff, not by this table.
   struct with both values; the pin reddens then and must assert both survive.
   Booked from RFC-242 r21 with the reproducer.
 
-- [ ] **A stamped record constructor over a wrapper-hidden child fails the query.**
-  `SELECT ([(1 AS "$lead"), (2 AS A)] AS CH) FROM t` over a NON-EMPTY table fails with `cannot
-  synthesise a protobuf descriptor for __0type__2.CH: cannot store map[string]interface {} in
-  message field`. Not a wrong answer and not a weaker type — the query does not answer at all.
-  MECHANISM, stated only as far as the measurements support. `FinalizePlan` stamps each record
-  constructor with a descriptor synthesised from its OWN type. A stamped constructor builds a
-  protobuf message and expects every record-typed field to hand it a message; an unstamped one
-  evaluates to a name-keyed map, which cannot be stored in a message field. THREE things have to
-  line up, and the third is the one two earlier characterisations missed: (1) the element
-  constructor's own type is UNSYNTHESISABLE — a field name protobuf will not carry, `$lead` or
-  `1x` alike (Java's `ProtoUtils` rule, correctly ported), so it never stamps; (2) a promotion
-  sits between it and the parent, because array unification inserts one when the elements
-  disagree; and (3) that promotion's TARGET is itself synthesisable, which happens because
-  unification ANONYMISES disagreeing fields and so ERASES the offending name. Only then does the
-  parent's type carry a stampable shape while the constructor underneath is not — and the
-  parent, stamped, refuses the map its child hands back. MEASURED, and the table is the pin
-  rather than an illustration of it. Nine rows over real SQL on a non-empty table, in
-  `TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes`: one bad name beside a good one FAILS; the
-  bad name second FAILS (not positional); two DIFFERENT bad names FAIL (both erased); `"1x"`
-  FAILS (not `$`-specific); the SAME bad name twice with differing value types ANSWERS as a raw
-  map, because the target keeps that name and the parent cannot stamp either; the same bad name
-  twice with equal types ANSWERS as a raw map; a promotion with good names and equal field types
-  ANSWERS as a struct; neither factor ANSWERS as a struct. The stamping predicate under those
-  outcomes is pinned Docker-free by `TestWhichRecordTypesCanBeGivenADescriptor`: the bad-named
-  record is refused a descriptor, a record CONTAINING it is refused too, and a record containing
-  an ARRAY of an ANONYMOUS record is granted one — which is the erasure that makes the failing
-  case possible. PRE-EXISTING, measured: the same queries behave identically at the merge-base
-  `36b97f1e9` (only the synthetic-name prefix differs, `__type__` there against `__0type__`
-  now), so this is not a regression of the work it was found beside. Found by a reviewer
-  refuting an unreachability claim, and re-characterised twice more after reviewers refuted each
-  account. CLOSURE, and Java already answers the fork. `PromoteValue.java:254-274`: when the
-  target is a record, Java fetches
-  `context.getTypeRepository().getMessageDescriptor(promoteToType)` and calls
-  `MessageHelpers.coerceObject(promotionTrie, …)`, so the target's message is built AT
-  EVALUATION from a coercion trie (`computePromotionsTrie`, record arm at :408-429) carried on
-  the PromoteValue itself (`:207`, `:220`). It never stamps the wrapped child with the target's
-  descriptor — wrong by construction, since the two shapes differ, which is why the promotion
-  exists. Go's cascades PromoteValue carries no such trie: `git grep -lnE
-  'CoercionTrie|coercionTrie' -- '*.go'` returns only the two generated protobuf files and
-  `pkg/recordlayer/query/plan/plans/update.go`, nothing on the value path, and Go's
-  `PromoteValue.Evaluate` coerces numerics and otherwise passes a record child through UNCHANGED
-  — which is how the name-keyed map reaches a stamped parent's message field. Two details
-  decide where the port lands. The promote is injected PER ELEMENT
-  (`AbstractArrayConstructorValue:172-176`), so `promoteToType` is the element RECORD, which is
-  what makes `Verify.verify(promoteToType.isRecord())` at `:265` hold; read as "the array is
-  promoted", that assert fails and the port aims at the wrong node. And `MessageHelpers:466`
-  casts `current` to `Message`, so Java's coercion CONSUMES a message the child already built
-  from the plan-wide repository. The port unit is therefore two things, not one — the trie AND
-  the registration model — and a trie alone would hand Go's coercion the same map at a new
-  line number. It is a subsystem port rather than a patch. Do NOT paper it over by making
-  message fields accept a map: Java coerces with a known target descriptor and a per-field plan,
-  not by copying a map by name. Booked from RFC-242 r36, where the reachability claim it refutes
-  was written.
+- [ ] **A record literal protobuf cannot name is handled four different ways, and only one of
+  them is a clean refusal.** `(1 AS "$lead")` builds a record whose field name protobuf will not
+  carry (Java's `ProtoUtils` rule, correctly ported), so `FinalizePlan` cannot stamp that
+  constructor and it evaluates to a name-keyed map instead of a message. What happens to that
+  map depends entirely on WHERE the literal lands, and the four sites disagree. Measured over
+  real SQL on a non-empty table, same two literals throughout: (a) as an ARRAY element under a
+  record — `SELECT ([(1 AS "$lead"), (2 AS A)] AS CH) FROM t` — the parent stamps, is handed
+  the map, and REFUSES it: `cannot store map[string]interface {} in message field`. The query
+  does not answer. (b) as an array element with nothing stamped above it — `SELECT [(1 AS
+  "$lead"), (2 AS A)] FROM t` — the array comes back RAGGED, one element a `MessageStruct` and
+  one a raw map, and the query ANSWERS. This is the worst of the four: no error, a shape no
+  caller can expect, and nothing reports it. (c) through a CASE — `SELECT (CASE WHEN id=1 THEN
+  (1 AS "$lead") ELSE (2 AS A) END AS CH)` — it COERCES and answers cleanly as a struct. So
+  none of this is inherent to unifying two record shapes, and it means something on that path
+  already does what the array path does not. Find out what before porting anything. (d) through
+  a UNION, this RFC's own subject — a loud `42F65 ... source type RECORD<$lead INT NOT NULL>
+  is not promotable to RECORD<INT NOT NULL>`. The only site that neither fails obscurely nor
+  answers wrongly. WITHIN site (a), whether it fails or degrades turns on the promotion TARGET,
+  not on the bad name alone: unification ERASES a field name when the two names disagree and
+  KEEPS it when they agree. So `$lead` beside `A` fails (target anonymised, parent stampable,
+  child not), while `$lead` beside `$lead` ANSWERS as a uniform raw map (target keeps the name,
+  parent cannot stamp either, everything degrades together). Two independent conditions, not
+  three: a promotion being inserted is ENTAILED by an unsynthesisable child plus a synthesisable
+  target, since those two make child and target differ. PINNED by
+  `TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes` (twelve rows, each asserted with its value,
+  covering all four sites and both the erased and kept targets),
+  `TestUnificationErasesAFieldNameOnlyWhenTheNamesDisagree` (the erasure itself, Docker-free)
+  and `TestWhichRecordTypesCanBeGivenADescriptor` (the stamping predicate under it,
+  Docker-free). Read the table rather than any summary of it: three successive rounds each
+  summarised it wrongly and were refuted by a row nobody had run. PRE-EXISTING, measured: all
+  four sites behave identically at the merge-base `36b97f1e9` (only the synthetic-name prefix
+  differs, `__type__` there against `__0type__` now). Found by reviewers refuting a claim that
+  the failing shape was unreachable. CLOSURE. Java does not rely on the wrapped constructor
+  being stamped. `PromoteValue.java` carries a `promotionTrie` (`CoercionTrieNode`, `:207`,
+  `:220`) built by `computePromotionsTrie` (`:354`, record arm `:408-429`), and evaluation calls
+  `MessageHelpers.coerceObject` (`:269`) after fetching the target's descriptor from the type
+  repository — the target's message is built AT EVALUATION, per field. The promote is injected
+  PER ELEMENT (`AbstractArrayConstructorValue:172-176`), so `promoteToType` is the element
+  RECORD, which is what makes `Verify.verify(promoteToType.isRecord())` at `:265` hold; read as
+  "the array is promoted", that assert fails and the port aims at the wrong node. And
+  `MessageHelpers:466` casts `current` to `Message`, so Java's coercion CONSUMES a message the
+  child already built: the port unit is the trie AND the registration model, not the trie alone.
+  Go's cascades PromoteValue carries no trie — `git grep -lnE 'CoercionTrie|coercionTrie' --
+  '*.go'` returns only the two generated protobuf files and
+  `pkg/recordlayer/query/plan/plans/update.go`. Do NOT paper it over by making message fields
+  accept a map: Java coerces with a known target descriptor and a per-field plan, not by copying
+  a map by name. Site (b) needs its own answer even after the trie lands, because there is no
+  stamped parent there to refuse anything — decide whether a ragged array is representable at
+  all, or whether the element promote must produce a uniform representation. Booked from RFC-242
+  r36 and re-characterised at r38, r39 and r40 as reviewers refuted each account. The
+  measurements survived; the explanations did not.
 
-- [ ] **Unifying two record literals of differing numeric width fails to synthesise.**
+- [ ] **Unifying two record literals of differing numeric width is refused at evaluation.**
   `SELECT ([(1 AS A), (2.5 AS A)] AS CH) FROM t` over a NON-EMPTY table fails with `cannot
   synthesise a protobuf descriptor for __0type__4: field number 1 is int32 in the source
   (__0type__5.A) but double in the target (__0type__4.A)`. Every field name here is one protobuf
-  will carry, so this is NOT the wrapper-hidden-child defect above: different error, no map
-  anywhere in it, and it reproduces with differing field NAMES too (`[(1 AS A), (2.5 AS B)]`,
-  same error against `__0type__4._0`). What it says is that array unification produces a target
-  whose field type disagrees with the element's, and descriptor synthesis then refuses to
-  reconcile INT with DOUBLE — the ordinary numeric widening a SQL array literal of mixed
-  integer and floating-point elements asks for. PRE-EXISTING, measured: identical at the
-  merge-base `36b97f1e9`. PINNED as the last row of
-  `TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes`, which asserts the width-mismatch error
-  specifically so it cannot be satisfied by the other defect's failure. Read Java's promotion
-  trie first here too: `computePromotionsTrie`'s primitive arm (`PromoteValue.java:372-380`)
-  builds a coercion per field rather than requiring the source and target field types to agree,
-  which is the same missing machinery the booking above names. Whether the two close together is
-  a design call for whoever ports the trie. Booked from RFC-242 r39, found by a reviewer varying
-  the dimension the pin held fixed.
+  will carry, and it reproduces with differing names too (`[(1 AS A), (2.5 AS B)]`). WHERE IT
+  HAPPENS, corrected: NOT at descriptor synthesis. Both descriptors synthesise — the error
+  text names them both, which it could not otherwise — and the refusal comes from
+  `copyFieldsByNumber`'s kind-mismatch guard in `record_constructor_message.go` at EVALUATION.
+  The `cannot synthesise a protobuf descriptor for` prefix is `ProtoTypeError`'s stock wording
+  (`proto_type.go`), and it misled an earlier draft of this entry. SAME SITE AND CAUSE as the
+  booking above, which is why they are listed together: a stamped parent is handed a child the
+  promote never coerced — a raw map there, a wrong-KIND message here. Two work items because
+  the fixes may land separately; one cause, and the coercion trie closes both arms rather than
+  one. PRE-EXISTING, measured: identical at the merge-base `36b97f1e9`. PINNED as a row of
+  `TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes`, asserting the width-mismatch text
+  specifically so it cannot be satisfied by the other arm's failure. Booked from RFC-242 r39,
+  found by a reviewer varying the dimension the pin held fixed.
