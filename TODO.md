@@ -8830,8 +8830,7 @@ Whoever rules should also note that (b) narrows MORE than the defect: the simple
 parenthesized condition was never wrong, so rejecting it is a behaviour change
 unrelated to the bug that prompted the measurement.
 
-- [ ] **CQ-77 (OWNER ACTION, not code) — `frl-pin-bump` has failed 27/27 because
-  Actions cannot create PRs.** · XS
+- [x] **CQ-77 (OWNER ACTION, not code) — `frl-pin-bump` could not create PRs.** · XS
   Flip **Settings → Actions → General → Workflow permissions → "Allow GitHub
   Actions to create and approve pull requests"**. Until then the Java-pin bump
   workflow cannot open its PR and every run fails.
@@ -8840,6 +8839,28 @@ unrelated to the bug that prompted the measurement.
   that was false: it appeared in no TODO file at all. A status page asserting an
   item is booked is how an item stays unbooked.
   DONE = the setting is flipped and one `frl-pin-bump` run opens a PR.
+
+  **Done — and it was done on 2026-08-01, the day it was booked; the item stayed
+  open for 36 days after its own DONE criterion was met.** The setting is flipped
+  and the workflow has opened thirteen PRs, twelve of them merged
+  (`gh pr list --state all --head bot/frl-pin-bump --limit 20`), the earliest on
+  2026-08-01 (#562) and the latest still open (#769).
+
+  The booked figure was also wrong by the time it was read, in the way this file
+  keeps warning about: "failed 27/27" was a count over a window that had closed.
+  Measured 2026-09-06 with `gh run list --workflow=frl-pin-bump.yml --limit 200
+  --json createdAt,conclusion`, sorted by date, over all 65 runs the API returns:
+  **29 consecutive failures from 2026-07-03 to 2026-07-31, then success from
+  2026-08-01 onward — 35 successes and one failure, on 2026-08-31.** A ratio with
+  no window is a fact about a tree nobody can identify, and this one decayed into
+  an escalation that was going to be raised to the owner as still-blocked.
+
+  That single 2026-08-31 red is a DIFFERENT and still-live cause, so it is fixed
+  at the site rather than recorded here: `go get fdb.dev@master` fell through the
+  proxy to the direct VCS path and git refused the `--unshallow`
+  (`fatal: shallow file has changed since we read it`). The mechanism, the run id,
+  and the remedy are in `.github/workflows/frl-pin-bump.yml` at the step that
+  takes it.
 
 - [ ] **No *general-purpose* window functions — and Java has none either.** Investigation (RFC-045): Java's relational layer has **no** general streaming window operator. The general `windowClause` is commented out in Java's grammar ("don't want to deal with them now"); `LAG`/`LEAD` are grammar tokens with **no** value class; `RankValue implements Value.IndexOnlyValue` (computable only from a rank/leaderboard index, never over a result set). The **only** working window function in Java is `ROW_NUMBER() OVER (... ORDER BY <distance>) <= K` via `QUALIFY`, used exclusively for **vector/HNSW K-NN search**. So "match Java's window functions" ≡ "finish the vector/HNSW relational parity" — tracked as **Phase 9** below. General windowing over plain tables would be a *Go-only extension Java lacks entirely* (allowed if wire-compat holds + deep tests), not parity — deferred, not in Phase 9.
 

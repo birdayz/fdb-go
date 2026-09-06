@@ -101,7 +101,28 @@ jobs:
         run: |
           set -euo pipefail
           before="$(go list -m -f '{{.Version}}' fdb.dev)"
-          go get "fdb.dev@master"
+          # `go get fdb.dev@master` normally resolves the branch through GOPROXY and
+          # runs no git at all — measured locally with a throwaway module and a private
+          # GOMODCACHE: 13.7s, and no `cache/vcs` directory is created. When the proxy
+          # cannot answer the branch query cmd/go falls through to `direct`, and THAT
+          # path fetches the module's VCS clone at --depth=1 and then runs
+          # `git fetch --unshallow` to find the pseudo-version's base tag. Git re-stats
+          # .git/shallow between those two steps and aborts when it reads as changed:
+          #
+          #     go: fdb.dev@master: git fetch --unshallow -f --end-of-options origin
+          #     in .../pkg/mod/cache/vcs/7262b5d3…: exit status 128:
+          #     fatal: shallow file has changed since we read it
+          #
+          # which reddened this job once (run 33384597036). The clone it leaves behind
+          # is still shallow, so a bare retry repeats the same failure — the poisoned
+          # entry has to be discarded first. Loud on the second failure rather than
+          # retried again: a bump that cannot resolve master is a real problem, and the
+          # schedule already retries tomorrow.
+          if ! go get "fdb.dev@master"; then
+            echo "::warning::go get fell through to the direct VCS path and failed; discarding the shallow module clone and retrying once"
+            rm -rf "$(go env GOMODCACHE)/cache/vcs"
+            go get "fdb.dev@master"
+          fi
           go mod tidy
           after="$(go list -m -f '{{.Version}}' fdb.dev)"
           echo "pin: $before -> $after"
