@@ -62,6 +62,7 @@ go_test(
         "result_type_stub_census_test.go",
         "rfc_cite_resolution_test.go",
         "rowdiff_sweep_budget_test.go",
+        "rowdiff_watcher_gate_test.go",
         "rowvalue_map_expectation_test.go",
         "slot_order_derivation_test.go",
         "source_hygiene_test.go",

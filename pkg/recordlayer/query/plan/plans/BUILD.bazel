@@ -89,6 +89,7 @@ go_test(
         "default_on_empty_result_contract_test.go",
         "distinct_streaming_refuses_narrowing_test.go",
         "equality_prefix_test.go",
+        "erased_record_result_base_test.go",
         "exact_result_value_test.go",
         "explode_test.go",
         "f21_comparand_identity_test.go",
@@ -265,6 +266,7 @@ go_test(
         "aggregate_index_identity_test.go",
         "plan_comparison_identity_drift_test.go",
         "unordered_union_leg_types_test.go",
+        "erased_record_result_base_test.go",
     ],
     deps = [
         "//pkg/fdbgo/fdb/tuple",

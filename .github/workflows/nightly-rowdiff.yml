@@ -170,6 +170,7 @@ jobs:
         # error is a watcher that reports nothing, which is the failure it exists to
         # fix.
         if: steps.window.outputs.ok == 'true'
+        id: watcher
         run: |
           set -euo pipefail
           # One copy of the image tag, not a third: `.bazelrc` is where the tests get
@@ -378,22 +379,36 @@ jobs:
         # command line — two earlier readings of this same test said the watcher had
         # SURVIVED, and both were the harness matching itself.
         #
-        # `always()` AND the window gate, and the gate is the whole fix for the
-        # stale-pid hazard. On a closed-window night `Checkout` is skipped, so the
-        # workspace still holds LAST night's pid file, and no step has run that could
-        # have cleared it — an ungated `always()` would then signal a process group
-        # that has since been recycled on this persistent box. Gated, there is nothing
-        # to stop on a night nothing was started. An earlier attempt put an `rm` in the
-        # START step instead, which is gated the same way and so misses exactly this
-        # path, while being redundant on the path it does run (checkout's default
-        # `clean: true` has already removed the untracked file).
-        if: ${{ always() && steps.window.outputs.ok == 'true' }}
+        # The condition is "stop what THIS JOB started", and it took three tries to
+        # say that. `always()` alone signalled last night's pid on a closed-window
+        # night, when `Checkout` is skipped and the workspace still holds it.
+        # `always() && window.ok` fixed that one and left a second: a plain `if:` is
+        # implicitly `success() && …`, so on a Checkout FAILURE with the window open
+        # the start step is skipped while this one still runs — and `git clean` never
+        # ran either, so the stale file is right there. Gating on the start step's own
+        # outcome is the predicate both of those were approximating.
+        #
+        # An `rm` in the start step is NOT the fix and was tried: it is gated the same
+        # way, so it misses the same paths, and on the path it does run checkout's
+        # default `clean: true` has already removed the file.
+        if: ${{ always() && steps.watcher.outcome == 'success' }}
         run: |
           if [ ! -s fdb-watch.pid ]; then
             echo "no fdb-watch.pid — the watcher either never started or never recorded itself"
             exit 0
           fi
           pid="$(cat fdb-watch.pid)"
+          # Belt to the gate's braces: check the pid IS the watcher before signalling
+          # its group. The gate already means this job started one, but a pid is a
+          # recyclable number and the cost of being wrong is signalling a stranger's
+          # process group as root on a persistent box. Reading one specific
+          # `/proc/<pid>/cmdline` is not the `pkill -f` self-match trap: it asks about
+          # a process we named, not about every process whose argv mentions a string.
+          if ! [ -r "/proc/$pid/cmdline" ] || ! tr '\0' ' ' < "/proc/$pid/cmdline" | grep -q 'fdb-watch[.]sh'; then
+            echo "::warning::pid $pid is not the watcher (gone already, or recycled) — not signalling it"
+            rm -f fdb-watch.pid
+            exit 0
+          fi
           kill -TERM -"$pid" 2>/dev/null || true
           sleep 2
           if kill -0 "$pid" 2>/dev/null; then
