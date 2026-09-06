@@ -102,6 +102,7 @@ go_test(
         # --test_timeout). Without these staged the tests read an absent directory
         # and fail loudly rather than scanning an empty set.
         "//:github_workflows",
+        "rowdiff_watcher_suite.sh",
         "//:go.mod",
         # keep: the yamsql corpus and the corpus-wide plan rendering, staged so
         # TestYamsqlPlanClaimsAreAsserted can read the scenarios it gates and

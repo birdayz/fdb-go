@@ -275,7 +275,7 @@ write_files:
       wstart=0; wpid=$(pgrep -x Runner.Worker | head -1)
       if [ -n "$wpid" ]; then
         et=$(ps -o etimes= -p "$wpid" 2>/dev/null | tr -d ' ')
-        case "$et" in ''|*[!0-9]*) wstart=1 ;; *) wstart=$(( now - et )) ;; esac
+        case "$et" in ''|*[!0-9]*) wstart=1; echo "worker $wpid age unreadable: FDB sweep disarmed" ;; *) wstart=$(( now - et )) ;; esac
       fi
       docker ps --format '{{.ID}} {{.Image}}' 2>/dev/null | while read -r id image; do
         case "$image" in
@@ -295,11 +295,8 @@ write_files:
             age=$(( now - sepoch ))
             if [ "$age" -gt 1800 ]; then
               echo "killing orphan FDB container $id ($image, running $${age}s)"
-              # -v: remove the container's anonymous volumes too. Without it every
-              # orphan kill strands its volume — testcontainers' Ryuk only reaps
-              # volumes for containers it removes itself, so force-removed orphans
-              # leaked ~1 GB/day until the root disk filled (observed: 289 dangling
-              # volumes / 29.7 GB).
+              # -v is load-bearing: without it every orphan kill strands a volume.
+              # See infra/README.md.
               docker rm -fv "$id" 2>/dev/null || true
             fi
             ;;

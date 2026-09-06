@@ -1,0 +1,177 @@
+#!/bin/bash
+# Tests the FDB container watcher as it is actually shipped: the script is
+# EXTRACTED from .github/workflows/nightly-rowdiff.yml and executed against a
+# stubbed `docker`, so this cannot drift from what the nightly runs and needs no
+# daemon.
+#
+# The watcher exists because the forensics dump it feeds was measured capturing
+# NOTHING on a night with a real cluster death: by the time any later step runs,
+# the container has been removed, so evidence has to be taken while it is alive.
+# Getting that right took several attempts, and each of the cases below is one of
+# them:
+#
+#   - a 30-second `docker exec grep` cannot run after the container stops, and
+#     fdbserver's death IS the container stopping, so the promoted snapshot was
+#     always the pre-crash one.
+#   - `tail -F` over a glob replaced it and was worse in two ways that only show
+#     up when you run it: the glob expands ONCE at exec time, so a trace file
+#     that does not exist yet is never captured at all, and a file created after
+#     the attach — which is what rotation does — is never followed. It lost the
+#     terminal line anyway, because `docker exec`'s pipe is torn down with the
+#     container.
+#   - copying the directory has none of those, because it re-globs every cycle.
+#
+# So the cases are: a late first file, a rotated second file, and the terminal
+# line written as the container dies. Each was measured by hand first and each is
+# here because a measurement that lives only in a scratch directory is a
+# measurement nobody can re-run.
+#
+# Run: bash pkg/docscheck/rowdiff_watcher_suite.sh
+set -uo pipefail
+cd "$(dirname "$0")/../.."
+
+SCRIPT=$(mktemp); BIN=$(mktemp -d); WORK=$(mktemp -d); STATE=$(mktemp -d)
+trap 'rm -rf "$SCRIPT" "$BIN" "$WORK" "$STATE"' EXIT
+
+# Extract the heredoc body the workflow writes as fdb-watch.sh.
+awk '
+  /^          cat > fdb-watch\.sh <<.SH.$/ { inb = 1; next }
+  inb && /^          SH$/ { exit }
+  inb { print substr($0, 11) }
+' .github/workflows/nightly-rowdiff.yml > "$SCRIPT"
+[ -s "$SCRIPT" ] || { echo "FATAL: extracted an empty watcher"; exit 1; }
+# Sanity-check the EXTRACTION only. Asserting the behaviour's own text here would
+# make a removed behaviour look like a broken test rather than a failing case.
+grep -q 'fdb-watch.pid' "$SCRIPT" || { echo "FATAL: extraction has no pid handshake"; exit 1; }
+
+fail=0
+ok() { printf '  ok   %s\n' "$1"; }
+bad() { printf '  FAIL %s\n' "$1"; fail=1; }
+
+# A `docker` stub with a container whose lifecycle the fixture drives through
+# files in $STATE: `phase` is running|stopped|gone, and `logs/` is the trace
+# directory `cp` copies out.
+cat > "$BIN/docker" <<'STUB'
+#!/bin/bash
+phase=$(cat "$WATCHTEST_STATE/phase" 2>/dev/null || echo gone)
+case "$1" in
+  ps)
+    [ "$phase" = gone ] || echo c1
+    ;;
+  inspect)
+    [ "$phase" = gone ] && exit 1
+    if [ "$phase" = running ]; then
+      echo 'exit=0 oom=false running=true err= started=x finished=y'
+    else
+      echo 'exit=1 oom=false running=false err= started=x finished=y'
+    fi
+    ;;
+  logs) sleep 3600 ;;
+  exec) exit 1 ;;   # df sampling is not what these cases are about
+  cp)
+    # `docker cp c1:/var/fdb/logs/. dest/`
+    [ "$phase" = gone ] && exit 1
+    dest=$3
+    mkdir -p "$dest"
+    cp -r "$WATCHTEST_STATE/logs/." "$dest/" 2>/dev/null
+    ;;
+esac
+exit 0
+STUB
+chmod +x "$BIN/docker"
+
+# $1 = the periodic copy interval in seconds. Cases that want the periodic path
+# pass 1; the case that isolates the EXIT-TRANSITION copy passes a number larger
+# than the case's own lifetime, so the periodic loop cannot be what captured
+# anything. Without that knob the two paths are indistinguishable, which is
+# exactly what a first mutation run showed: deleting the exit copy changed
+# nothing, because at a 1s interval the periodic loop reached the same file.
+start_watcher() {
+  rm -rf "$WORK"; mkdir -p "$WORK"
+  cp "$SCRIPT" "$WORK/fdb-watch.sh"; chmod +x "$WORK/fdb-watch.sh"
+  # A short deadline so a case cannot hang the suite.
+  sed -i -e 's/^deadline=.*/deadline=$(( $(date +%s) + 30 ))/' -e "s/^\\( *\\)sleep 60\$/\\1sleep ${1:-1}/" "$WORK/fdb-watch.sh"
+  ( cd "$WORK" && WATCHTEST_STATE="$STATE" FDB_IMAGE_TAG=x PATH="$BIN:$PATH" \
+      setsid nohup ./fdb-watch.sh >/dev/null 2>&1 & )
+  for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$WORK/fdb-watch.pid" ] && return 0; sleep 1; done
+  return 1
+}
+stop_watcher() {
+  [ -s "$WORK/fdb-watch.pid" ] && kill -TERM -"$(cat "$WORK/fdb-watch.pid")" 2>/dev/null
+  sleep 1
+}
+
+echo "rowdiff fdb-watch:"
+
+# The container appears with an EMPTY logs directory and the first trace file
+# arrives later — the startup race that made `tail -F` capture nothing forever.
+rm -rf "$STATE/logs"; mkdir -p "$STATE/logs"; echo running > "$STATE/phase"
+if start_watcher 1; then
+  sleep 3
+  echo '<Event Severity="10" file="one"/>' > "$STATE/logs/trace.001.xml"
+  sleep 3
+  # ROTATION: a second file, created after the watcher attached.
+  echo '<Event Severity="10" file="two"/>' > "$STATE/logs/trace.002.xml"
+  sleep 3
+  grep -rq 'file="one"' "$WORK"/fdb-logs-*/ 2>/dev/null \
+    && ok "a trace file created after the watcher attached is captured" \
+    || bad "a trace file created after the watcher attached is captured"
+  grep -rq 'file="two"' "$WORK"/fdb-logs-*/ 2>/dev/null \
+    && ok "a ROTATED second trace file is captured" \
+    || bad "a ROTATED second trace file is captured"
+
+  # The terminal line, written as the container dies: appended and the phase
+  # flipped to stopped in the same breath, so only a read of a STOPPED container
+  # can see it.
+  echo '<Event Severity="40" Type="SharedTLogFailed"/>' >> "$STATE/logs/trace.002.xml"
+  echo stopped > "$STATE/phase"
+  sleep 3
+  grep -rq 'Severity="40"' "$WORK"/fdb-logs-*/ 2>/dev/null \
+    && ok "the terminal Severity=40 line is captured after the container stops" \
+    || bad "the terminal Severity=40 line is captured after the container stops"
+  [ "$(grep -c 'EXITED' "$WORK/fdb-watch.log" 2>/dev/null)" = 1 ] \
+    && ok "the exit transition is logged exactly once" \
+    || bad "the exit transition is logged exactly once (got $(grep -c 'EXITED' "$WORK/fdb-watch.log" 2>/dev/null))"
+
+  # Removal: the last inspect must SURVIVE it, per container.
+  echo gone > "$STATE/phase"
+  sleep 3
+  ls "$WORK"/fdb-last-inspect-*.txt >/dev/null 2>&1 \
+    && ok "the last inspect survives removal" \
+    || bad "the last inspect survives removal"
+  grep -q 'GONE' "$WORK/fdb-watch.log" 2>/dev/null \
+    && ok "removal is logged" || bad "removal is logged"
+  stop_watcher
+else
+  bad "the watcher never recorded a pid"
+fi
+
+# The EXIT-TRANSITION copy, isolated. The periodic interval is longer than this
+# case lives, so the periodic loop cannot be what captured anything — and the
+# container is REMOVED immediately after stopping, which is the shape that makes
+# the exit copy the only reader that ever gets there. Without this case the exit
+# copy is unpinned: deleting it changes nothing at a 1s interval, because the
+# periodic loop reaches the same file within a cycle.
+rm -rf "$STATE/logs"; mkdir -p "$STATE/logs"; echo running > "$STATE/phase"
+echo '<Event Severity="10" file="pre"/>' > "$STATE/logs/trace.001.xml"
+if start_watcher 3600; then
+  sleep 2
+  # The fatal line and the stop, in the same breath.
+  echo '<Event Severity="40" Type="SharedTLogFailed"/>' >> "$STATE/logs/trace.001.xml"
+  echo stopped > "$STATE/phase"
+  sleep 4
+  echo gone > "$STATE/phase"
+  sleep 2
+  grep -rq 'Severity="40"' "$WORK"/fdb-logs-*-exit/ 2>/dev/null \
+    && ok "the exit-transition copy alone captures the terminal line" \
+    || bad "the exit-transition copy alone captures the terminal line"
+  stop_watcher
+else
+  bad "the watcher never recorded a pid (exit-copy case)"
+fi
+
+if [ "$fail" -ne 0 ]; then
+  echo "FAILURES"
+  exit 1
+fi
+echo "ALL OK"

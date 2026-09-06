@@ -357,7 +357,22 @@ than it is and the job's own container becomes "older than the worker". And a de
 under memory pressure and re-looked-up at hour 3 of a four-hour lane moves the worker's
 apparent start to hour 3, at which point the live container is swept.
 
-An unreadable age fails **closed** — every container is protected rather than none.
+An unreadable age fails **closed** — every container is protected rather than none — and says
+so on stdout, which the unit's journal keeps. Failing closed silently would leave a permanently
+disarmed sweep looking exactly like a healthy one.
+
+`docker rm -fv`'s `-v` is load-bearing for a reason worth keeping out of the script: without it
+every orphan kill strands the container's anonymous volume, because testcontainers' Ryuk only
+reaps volumes for containers it removes ITSELF. Force-removed orphans leaked ~1 GB/day until the
+root disk filled — observed at 289 dangling volumes, 29.7 GB.
+
+One seam in the start-time comparison, accepted rather than papered over: `now` is
+CLOCK_REALTIME while `ps -o etimes=` is boottime-derived, so a suspend is safe (both advance
+together) but an NTP **step** skews `wstart` by the step. Sweeping a live container needs
+`age > 1800` *and* `sepoch < wstart` at once, i.e. a forward step of roughly 26 minutes in the
+middle of a job; post-boot chrony slews rather than steps. And `docker inspect` reports
+`StartedAt` in realtime regardless, so no formulation of this comparison avoids mixing the two
+clocks.
 
 All five arms are driven, and committed rather than driven by hand:
 `infra/orphan_fdb_sweep_test.sh` extracts the shipped script out of `cloud-init.yaml` (so it

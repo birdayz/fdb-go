@@ -2,6 +2,7 @@ package docscheck
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -125,5 +126,30 @@ func TestRowdiffWatcherStopIsGatedOnTheStartStep(t *testing.T) {
 		t.Fatalf("the watcher stop step's condition is %q and does not include always(): a "+
 			"cancelled or failed job is exactly when a background poller is left behind, so the "+
 			"stop step has to run there too", stopIf)
+	}
+}
+
+// TestRowdiffWatcherBehaviour runs the shell suite beside this file, which
+// extracts the watcher out of the workflow and drives it against a stubbed
+// docker. The gate above pins how the STOP step is conditioned; this pins what
+// the watcher actually captures, which is the part that was measured wrong
+// twice — a 30-second sampler that could not run after the container stopped,
+// then a `tail -F` that captured nothing when its glob matched nothing at exec
+// time and never followed a rotated file.
+//
+// Those measurements were taken by hand in a scratch directory and would have
+// evaporated with it. A measurement that cannot be re-run is not evidence.
+func TestRowdiffWatcherBehaviour(t *testing.T) {
+	t.Parallel()
+
+	cmd := exec.Command("bash", filepath.Join(repoRoot(t), "pkg", "docscheck", "rowdiff_watcher_suite.sh"))
+	out, err := cmd.CombinedOutput()
+	t.Logf("rowdiff_watcher_suite.sh output:\n%s", out)
+	if err != nil {
+		t.Fatalf("rowdiff_watcher_suite.sh failed: %v", err)
+	}
+	if !strings.Contains(string(out), "ALL OK") {
+		t.Fatal("rowdiff_watcher_suite.sh did not report ALL OK — a suite that exits 0 without " +
+			"reporting is the empty-set green this repository keeps finding")
 	}
 }

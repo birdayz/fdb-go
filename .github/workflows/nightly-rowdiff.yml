@@ -228,8 +228,8 @@ jobs:
               # Copying the whole directory has none of those: it re-globs every
               # cycle, so rotation and a late first file are handled by
               # construction. Its one weakness is staleness — up to one cycle — and
-              # the exit-transition copy below closes that on every path where the
-              # container STOPS rather than being removed outright.
+              # the exit-transition copy below cuts it to nothing on every path
+              # where the container STOPS rather than being removed outright.
               ( while docker inspect "$c" >/dev/null 2>&1; do
                   mkdir -p "fdb-logs-$c"
                   docker cp "$c:/var/fdb/logs/." "fdb-logs-$c/" >/dev/null 2>&1 || true
@@ -262,17 +262,22 @@ jobs:
                     if [ -z "$exited" ]; then
                       exited=1
                       echo "$(date -u +%FT%TZ) $seen EXITED: $inspect" >> fdb-watch.log
-                      # THE COMPLETE trace, taken in the window a live-container read
-                      # cannot reach: a STOPPED container still exists until
-                      # something removes it, and `docker cp` reads a stopped one
-                      # fine. Measured on a fixture that appends `Severity="40"` and
+                      # The complete trace, PROMPTLY. A stopped container still
+                      # exists until something removes it, so the periodic loop
+                      # above would reach this too within a cycle — this makes it
+                      # immediate, which is what matters when the next thing to
+                      # happen may be a removal. Measured on a fixture that appends `Severity="40"` and
                       # exits in the same breath — a `tail -F` stream got 6 lines and
                       # no fatal event, this got 7 including it. Runs once, on the
                       # TRANSITION, and is best-effort: where something `docker rm -f`s
                       # the container outright there is no stopped state to copy from,
                       # and the periodic copy above is then the only record.
-                      mkdir -p "fdb-logs-$seen"
-                      docker cp "$seen:/var/fdb/logs/." "fdb-logs-$seen/" >/dev/null 2>&1 \
+                      # Its OWN directory, not the periodic one: `docker inspect`
+                      # succeeds on a stopped container, so the periodic loop is
+                      # still running and still copying when this fires, and two
+                      # `docker cp` calls writing the same paths can interleave.
+                      mkdir -p "fdb-logs-$seen-exit"
+                      docker cp "$seen:/var/fdb/logs/." "fdb-logs-$seen-exit/" >/dev/null 2>&1 \
                         && echo "$(date -u +%FT%TZ) $seen logs copied complete at exit" >> fdb-watch.log \
                         || echo "$(date -u +%FT%TZ) $seen logs NOT copied at exit (already removed?); only the periodic copy remains" >> fdb-watch.log
                     fi
@@ -582,7 +587,7 @@ jobs:
             # than only on a match, and print the file list so an EMPTY directory is
             # distinguishable from a directory of traces with nothing fatal in them.
             for d in fdb-logs-*; do
-              [ -d "$d" ] || continue
+              [ -d "" ] || continue
               echo "--- $d (files)"; ls -la "$d" | tail -n +2
               echo "--- $d (Severity=40)"; grep -rho 'Severity="40"[^>]*' "$d" | tail -40
             done 2>/dev/null || echo "(no fdb-logs-* directories)"
@@ -628,6 +633,7 @@ jobs:
             fdb-watch.log
             fdb-last-inspect-*.txt
             fdb-logs-*/**
+            fdb-logs-*-exit/**
             fdb-df-*.txt
             fdb-container-*.log
           if-no-files-found: warn
