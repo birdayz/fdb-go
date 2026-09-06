@@ -19,8 +19,8 @@ import (
 // `docker logs -f` to the next night's container.
 //
 // The stop step therefore signals a process GROUP, as root, from a pid read out
-// of the workspace. Getting its condition wrong has a blast radius, and three
-// successive attempts got it wrong in three different ways:
+// of the workspace. Getting its condition wrong has a blast radius, and every
+// attempt so far got it wrong in a different way:
 //
 //   - `always()` alone: on a closed-window night `Checkout` is skipped, so the
 //     workspace still holds LAST night's pid file and nothing has cleared it.
@@ -31,11 +31,16 @@ import (
 //   - an `rm` in the START step: gated identically, so it misses exactly those
 //     paths, and redundant on the path it does run because checkout's default
 //     `clean: true` has already removed the untracked file.
+//   - `outcome == 'success'`: closes those and opens the opposite one. The start
+//     step `setsid`s the watcher and only THEN can fail its pid handshake or be
+//     cancelled, so requiring success skips cleanup for a process that is
+//     demonstrably running.
 //
-// The predicate all three were approximating is "stop what THIS JOB started",
-// which is the start step's own outcome. This test pins that, because the
-// failure mode has no visible symptom in the run that causes it: the damage
-// lands on a DIFFERENT job, on a different night, on the same box.
+// The predicate they were all approximating is "the start step may have launched
+// something", which is that step's outcome being anything but SKIPPED — the only
+// outcome meaning no line of it ran. This test pins that, because the failure
+// mode has no visible symptom in the run that causes it: the damage lands on a
+// DIFFERENT job, on a different night, on the same box.
 func TestRowdiffWatcherStopIsGatedOnTheStartStep(t *testing.T) {
 	t.Parallel()
 

@@ -271,10 +271,12 @@ write_files:
       # whole sweep a silent exit-0 no-op for weeks.
       set -uo pipefail
       now=$(date -u +%s)
-      # Job start time, 0 when idle. LOAD-BEARING; -x not -f: see README.
-      wstart=0
-      wpid=$(pgrep -x Runner.Worker | head -1)
-      [ -n "$wpid" ] && wstart=$(stat -c %Y "/proc/$wpid" 2>/dev/null || echo 0)
+      # Job start, 0 idle. LOAD-BEARING: -x, etimes, fail-closed. See README.
+      wstart=0; wpid=$(pgrep -x Runner.Worker | head -1)
+      if [ -n "$wpid" ]; then
+        et=$(ps -o etimes= -p "$wpid" 2>/dev/null | tr -d ' ')
+        case "$et" in ''|*[!0-9]*) wstart=1 ;; *) wstart=$(( now - et )) ;; esac
+      fi
       docker ps --format '{{.ID}} {{.Image}}' 2>/dev/null | while read -r id image; do
         case "$image" in
           testcontainers/ryuk*)
@@ -288,7 +290,7 @@ write_files:
             started=$(docker inspect -f '{{.State.StartedAt}}' "$id" 2>/dev/null || true)
             [ -z "$${started:-}" ] && continue
             sepoch=$(date -u -d "$started" +%s 2>/dev/null || echo "$now")
-            # Newer than the worker: the live job owns it. Older: a real orphan.
+            # Newer than the worker: live. Older: orphan.
             [ "$wstart" -gt 0 ] && [ "$sepoch" -ge "$wstart" ] && continue
             age=$(( now - sepoch ))
             if [ "$age" -gt 1800 ]; then

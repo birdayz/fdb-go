@@ -208,15 +208,33 @@ jobs:
               # there was one. It cannot be read after removal, so take it now and
               # keep taking it — the last copy before the container goes is the one
               # that matters.
-              # STREAM the trace, do not sample it. A sampler cannot capture the event
-              # it exists for: when fdbserver dies on the fatal I/O failure, the
-              # image's foreground process exits and the container stops at
-              # essentially the same instant, so every `docker exec` after that
-              # boundary fails and the last promoted snapshot is the PRE-crash one —
-              # no `Severity="40"`, and ENOSPC still indistinguishable from any other
-              # I/O error, which is the whole question. An open `tail -F` is already
-              # inside the container when the line is written.
-              docker exec "$c" sh -c 'tail -F -n +1 /var/fdb/logs/*.xml 2>/dev/null' >> "fdb-trace-$c.xml" 2>/dev/null &
+              # COPY the trace directory periodically; do not grep it and do not
+              # stream it. Both of those were tried and both were measured to lose
+              # the event this exists for:
+              #
+              #   - a 30s `docker exec grep` cannot run after the container stops,
+              #     and fdbserver's death IS the container stopping, so the last
+              #     snapshot promoted is the PRE-crash one.
+              #   - `tail -F` on a glob is worse in two further ways that only show
+              #     up when you run it: the glob expands ONCE at exec time, so if no
+              #     `.xml` exists yet the capture is empty PERMANENTLY (the exec
+              #     fires once, under the new-container branch), and a file created
+              #     after the attach — which is what trace ROTATION does — is never
+              #     followed. Measured: 0 bytes for a file created 1s after attach;
+              #     a second file created after attach not followed; and the fatal
+              #     line lost anyway, 8 of 9 captured, because the exec's pipe is
+              #     torn down with the container.
+              #
+              # Copying the whole directory has none of those: it re-globs every
+              # cycle, so rotation and a late first file are handled by
+              # construction. Its one weakness is staleness — up to one cycle — and
+              # the exit-transition copy below closes that on every path where the
+              # container STOPS rather than being removed outright.
+              ( while docker inspect "$c" >/dev/null 2>&1; do
+                  mkdir -p "fdb-logs-$c"
+                  docker cp "$c:/var/fdb/logs/." "fdb-logs-$c/" >/dev/null 2>&1 || true
+                  sleep 60
+                done ) &
               # The data filesystem still has to be sampled — there is no stream for a
               # `df` — so it keeps the promote-only-on-success shape. A plain `>`
               # creates the file even when the exec fails, so the failure branch has to
@@ -244,6 +262,19 @@ jobs:
                     if [ -z "$exited" ]; then
                       exited=1
                       echo "$(date -u +%FT%TZ) $seen EXITED: $inspect" >> fdb-watch.log
+                      # THE COMPLETE trace, taken in the window a live-container read
+                      # cannot reach: a STOPPED container still exists until
+                      # something removes it, and `docker cp` reads a stopped one
+                      # fine. Measured on a fixture that appends `Severity="40"` and
+                      # exits in the same breath — a `tail -F` stream got 6 lines and
+                      # no fatal event, this got 7 including it. Runs once, on the
+                      # TRANSITION, and is best-effort: where something `docker rm -f`s
+                      # the container outright there is no stopped state to copy from,
+                      # and the periodic copy above is then the only record.
+                      mkdir -p "fdb-logs-$seen"
+                      docker cp "$seen:/var/fdb/logs/." "fdb-logs-$seen/" >/dev/null 2>&1 \
+                        && echo "$(date -u +%FT%TZ) $seen logs copied complete at exit" >> fdb-watch.log \
+                        || echo "$(date -u +%FT%TZ) $seen logs NOT copied at exit (already removed?); only the periodic copy remains" >> fdb-watch.log
                     fi
                     ;;
                 esac
@@ -544,16 +575,17 @@ jobs:
             cat fdb-watch.log 2>/dev/null || echo "(no fdb-watch.log — the watcher never wrote one)"
             echo "=== watcher: last inspect per container, before removal ==="
             for i in fdb-last-inspect-*.txt; do [ -e "$i" ] && { echo "--- $i"; cat "$i"; }; done 2>/dev/null || echo "(no fdb-last-inspect-*.txt)"
-            echo "=== watcher: fdbserver Severity=40 events, from the streamed trace ==="
-            # The stream carries the whole trace; the dump wants the fatal lines and
-            # the tail. A trace file that EXISTS and contains no Severity=40 is a
+            echo "=== watcher: fdbserver Severity=40 events, from the copied trace dir ==="
+            # A trace directory that exists and carries no Severity=40 is itself a
             # finding — "stopped externally, no fatal trace" is one of the three
-            # outcomes — so print the header either way rather than only on a match.
-            for t in fdb-trace-*.xml; do
-              [ -e "$t" ] || continue
-              echo "--- $t (Severity=40)"; grep -ho 'Severity="40"[^>]*' "$t" | tail -40
-              echo "--- $t (tail)"; tail -20 "$t"
-            done 2>/dev/null || echo "(no fdb-trace-*.xml)"
+            # outcomes this dump separates — so print the header either way rather
+            # than only on a match, and print the file list so an EMPTY directory is
+            # distinguishable from a directory of traces with nothing fatal in them.
+            for d in fdb-logs-*; do
+              [ -d "$d" ] || continue
+              echo "--- $d (files)"; ls -la "$d" | tail -n +2
+              echo "--- $d (Severity=40)"; grep -rho 'Severity="40"[^>]*' "$d" | tail -40
+            done 2>/dev/null || echo "(no fdb-logs-* directories)"
             echo "=== watcher: /var/fdb/data usage, taken while alive ==="
             for d in fdb-df-*.txt; do [ -e "$d" ] && { echo "--- $d"; cat "$d"; }; done 2>/dev/null || echo "(no fdb-df-*.txt)"
             echo "=== watcher: container stdout (tail) ==="
@@ -595,7 +627,7 @@ jobs:
             fdb-forensics.txt
             fdb-watch.log
             fdb-last-inspect-*.txt
-            fdb-trace-*.xml
+            fdb-logs-*/**
             fdb-df-*.txt
             fdb-container-*.log
           if-no-files-found: warn

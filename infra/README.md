@@ -348,18 +348,36 @@ carries that shape as a defensive case, and an intermediate version of this guar
 the strength of it. That was reading a test table as a description of the fleet. If the runner
 packaging ever changes, this guard goes silent in the direction that returns the bug.
 
-All four arms were driven before shipping, including the mixed case that motivated the change —
-a live container and a stale orphan on the box at the same time:
+The worker's start time comes from `ps -o etimes=`, **not** `stat -c %Y /proc/<pid>`. That
+looks like a process start time and is not: it is when the procfs inode was allocated — the
+first lookup after a cache miss — so it is biased late and unboundedly so. Measured on a dev
+box: `/proc/1` read 3 seconds late, a fresh process 1–2. Two ways that restores the original
+incident. If the first lookup is the sweep's own tick, the worker reads as minutes younger
+than it is and the job's own container becomes "older than the worker". And a dentry evicted
+under memory pressure and re-looked-up at hour 3 of a four-hour lane moves the worker's
+apparent start to hour 3, at which point the live container is swept.
+
+An unreadable age fails **closed** — every container is protected rather than none.
+
+All five arms are driven, and committed rather than driven by hand:
+`infra/orphan_fdb_sweep_test.sh` extracts the shipped script out of `cloud-init.yaml` (so it
+cannot drift from what the boxes run) and executes it against stubbed `docker`, `ps` and
+`pgrep`, needing neither a daemon nor a runner. `//infra:infra_test` runs it.
 
 | arm | container | worker | outcome |
 |---|---|---|---|
-| A | started AFTER the worker | running | survives |
+| A | older than the 1800s threshold, started AFTER the worker | running | survives |
 | B | started BEFORE the worker | running | **removed** |
 | C | old | none | removed |
 | D | young | none | survives |
+| E | old | running, age unreadable | survives (fail closed) |
 
-Note what that does and does not establish: the arms prove the guard's LOGIC with a stand-in
-process. That a real worker's `comm` is `Runner.Worker` rests on the tarball's packaging, not on
+Arm A carries the detail that makes it worth having: the container is over the age threshold,
+so the sweep WOULD remove it without the guard. A fixture under the threshold passes either
+way and proves nothing — which is what the first draft of that case did, and it failed.
+
+Note what that does and does not establish: the arms prove the guard's LOGIC with stubs. That a
+real worker's `comm` is `Runner.Worker` rests on the tarball's packaging, not on
 an observation from one of these boxes, and neither has the timer been caught firing —
 `journalctl -u orphan-fdb-sweep.service` around one of the recorded death timestamps would turn
 the inference into an observation.
