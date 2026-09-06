@@ -8,32 +8,36 @@ import (
 	"testing"
 )
 
-// TestFDB_AWrapperHiddenRecordConstructorFailsTheQuery pins a query that FAILS
-// today, and the mechanism that makes it fail.
+// TestFDB_AWrapperOverAnUnsynthesisableRecordFailsTheQuery pins a query that
+// FAILS today, and — by measuring the whole 2x2 — which two things have to be
+// true at once for it to fail.
 //
-// The plan-time bake stamps each record constructor with a protobuf descriptor
-// synthesised from its own inferred type. A stamped parent then builds a
-// MESSAGE, and expects each record-typed field to hand it a message too. An
-// unstamped constructor hands back a name-keyed map instead, which cannot be
-// stored in a message field — so where the ordinary cost of an unstamped
-// constructor is a weaker TYPE, the cost of a stamped parent over an unstamped
-// child is a query that does not answer at all.
+// The bake stamps each record constructor with a descriptor synthesised from its
+// own type. A stamped constructor builds a protobuf MESSAGE and expects every
+// record-typed field to hand it a message too; an unstamped one evaluates to a
+// name-keyed map, which cannot be stored in a message field.
 //
-// That pair was believed unreachable, on the argument that a parent's type
-// CONTAINS its children's, so synthesising the parent registers the child's
-// message and the child's own lookup then succeeds. The argument has a hole: a
-// type-changing WRAPPER between the two. Array unification inserts a promotion
-// with an anonymous target type, and the parent's type then contains the
-// TARGET's shape rather than the wrapped constructor's, so the child is not
-// registered by its parent's synthesis and is left unstamped beside a stamped
-// parent.
+// So the failure is a CONJUNCTION, and each half alone is harmless:
+//
+//   - A field name protobuf cannot carry. `$lead` cannot start a protobuf field
+//     name, so that constructor's own descriptor never synthesises and it stays
+//     unstamped. ALONE this is the ordinary documented cost: the parent's type
+//     contains the child's, so the parent fails to synthesise too, everything
+//     degrades to maps together, and the query ANSWERS in a weaker type.
+//   - A type-changing WRAPPER between parent and child. Array unification
+//     promotes elements of differing record shape to a common anonymous target,
+//     so the parent's type carries the TARGET's shape rather than the
+//     constructor underneath. ALONE this is also harmless: with synthesisable
+//     names everything stamps and the answer is a struct.
+//
+// Together the wrapper hides the unsynthesisable child from the parent's type,
+// the parent stamps, the child does not, and the query does not answer at all.
 //
 // Measured at the merge-base too, with the same error, so this is not a
-// regression of the work this test ships with — it is a pre-existing defect
-// that the reachability argument above was wrong about. TODO.md, "A stamped
-// record constructor over a wrapper-hidden child fails the query", carries the
-// closure. When it lands this test reddens: assert the ROWS then, not the error.
-func TestFDB_AWrapperHiddenRecordConstructorFailsTheQuery(t *testing.T) {
+// regression of the work it ships with. TODO.md, "A stamped record constructor
+// over a wrapper-hidden child fails the query", carries the closure. When it
+// lands the failing arm reddens: assert its ROWS then.
+func TestFDB_AWrapperOverAnUnsynthesisableRecordFailsTheQuery(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
@@ -50,49 +54,86 @@ func TestFDB_AWrapperHiddenRecordConstructorFailsTheQuery(t *testing.T) {
 	}
 	t.Cleanup(func() { db.Close() })
 	// A row must exist: with an empty table the projection is never evaluated
-	// and the query succeeds, which would make this test pass for the wrong
-	// reason.
+	// and every arm below succeeds vacuously.
 	mwjoMustExec(t, db, ctx, "INSERT INTO t VALUES (1)")
 
-	// The two array elements have DIFFERENT record shapes, which is what makes
-	// unification insert a promotion over each. With one element, or two of the
-	// same shape, no wrapper appears and the query answers.
-	const wrapperHidden = `SELECT ([(1 AS "$lead"), (2 AS A)] AS CH) FROM t`
-	rows, err := db.QueryContext(ctx, wrapperHidden)
-	if err == nil {
+	// answerOneRow requires exactly one row, scans it, and checks the terminal
+	// error — because "Next() returned true once" also holds for a query that
+	// then fails mid-stream or returns the wrong value.
+	answerOneRow := func(t *testing.T, query string) any {
+		t.Helper()
+		rows, qErr := db.QueryContext(ctx, query)
+		if qErr != nil {
+			t.Fatalf("%s: %v", query, qErr)
+		}
 		defer rows.Close()
 		var got []any
 		for rows.Next() {
 			var col any
 			if scanErr := rows.Scan(&col); scanErr != nil {
-				t.Fatalf("%s: scan: %v", wrapperHidden, scanErr)
+				t.Fatalf("%s: scan: %v", query, scanErr)
 			}
 			got = append(got, col)
 		}
-		t.Fatalf("%s answered with %#v (rows.Err=%v) — the wrapper-hidden constructor is stamped "+
-			"now, so TODO.md's booking has closed: assert the ROWS here instead of the failure",
-			wrapperHidden, got, rows.Err())
+		if rErr := rows.Err(); rErr != nil {
+			t.Fatalf("%s: rows.Err after %d row(s): %v", query, len(got), rErr)
+		}
+		if len(got) != 1 {
+			t.Fatalf("%s returned %d rows, want exactly 1", query, len(got))
+		}
+		return got[0]
+	}
+
+	// BOTH halves: the failing shape.
+	const bothHalves = `SELECT ([(1 AS "$lead"), (2 AS A)] AS CH) FROM t`
+	rows, err := db.QueryContext(ctx, bothHalves)
+	if err == nil {
+		rows.Close()
+		t.Fatalf("%s answered — the wrapper-hidden constructor is stamped now, so TODO.md's "+
+			"booking has closed: assert the ROWS here instead of the failure", bothHalves)
 	}
 	if !strings.Contains(err.Error(), "cannot store") || !strings.Contains(err.Error(), "in message field") {
 		t.Fatalf("%s failed with %v, want the cannot-store-in-message-field refusal: a different "+
-			"error means the query is being rejected somewhere else now and this pin no longer "+
-			"describes the defect it names", wrapperHidden, err)
+			"error means the query is rejected somewhere else now and this pin no longer describes "+
+			"the defect it names", bothHalves, err)
 	}
 
-	// The counterweight, varying ONE thing: two elements again, so the array's
-	// arity and its record-ness are held fixed, and only the SHAPE difference that
-	// forces the promotion is removed. A single-element control would have varied
-	// element count too, and would leave "two-element record arrays fail" as an
-	// unexcluded explanation for the failure above.
-	const noWrapper = `SELECT ([(1 AS A), (2 AS A)] AS CH) FROM t`
-	control, err := db.QueryContext(ctx, noWrapper)
-	if err != nil {
-		t.Fatalf("%s: %v — two records of the SAME shape need no promotion and must still "+
-			"answer, or the failure above is not attributable to the shape difference and could "+
-			"just as well be about arrays of records", noWrapper, err)
+	// WRAPPER ONLY. Two DIFFERENT record shapes, so the promotion is still
+	// inserted, with names protobuf can carry. If this ever fails, the wrapper
+	// alone became sufficient and the conjunction above is not the mechanism.
+	const wrapperOnly = `SELECT ([(1 AS B), (2 AS A)] AS CH) FROM t`
+	if got := answerOneRow(t, wrapperOnly); got == nil {
+		t.Fatalf("%s returned a nil value, want a struct: the wrapper alone must stay harmless "+
+			"or the failure above is not attributable to the unsynthesisable name", wrapperOnly)
+	} else if _, isMap := got.(map[string]any); isMap {
+		t.Fatalf("%s = %#v, want a struct: with synthesisable names the promotion still stamps, "+
+			"and a raw map here would mean the wrapper alone defeats the bake", wrapperOnly, got)
 	}
-	defer control.Close()
-	if !control.Next() {
-		t.Fatalf("%s returned no row (err=%v), want one", noWrapper, control.Err())
+
+	// NAME ONLY. The same unsynthesisable name in BOTH elements, so the shapes
+	// agree and no promotion is inserted. This is the ordinary documented cost —
+	// a raw map, values intact, query answers — and it is what makes the failure
+	// above attributable to the CONJUNCTION rather than to the name.
+	const nameOnly = `SELECT ([(1 AS "$lead"), (2 AS "$lead")] AS CH) FROM t`
+	got := answerOneRow(t, nameOnly)
+	asMap, isMap := got.(map[string]any)
+	if !isMap {
+		t.Fatalf("%s = %#v, want the raw map an unstamped constructor forces: if this is a struct "+
+			"now, `$lead` has become synthesisable and neither half of the conjunction holds",
+			nameOnly, got)
+	}
+	elems, isSlice := asMap["CH"].([]any)
+	if !isSlice || len(elems) != 2 {
+		t.Fatalf("%s CH = %#v, want a two-element array: the values must survive the lost type, "+
+			"which is the whole difference between this arm and the failing one", nameOnly, asMap["CH"])
+	}
+	for i, want := range []string{"1", "2"} {
+		elem, elemIsMap := elems[i].(map[string]any)
+		// Compared as text: the driver's integer width is not what this arm is
+		// about, and pinning it here would redden on an unrelated widening.
+		if !elemIsMap || fmt.Sprint(elem["$lead"]) != want {
+			t.Fatalf("%s CH[%d] = %#v, want {$lead:%s}: the type is lost, the VALUES are not",
+				nameOnly, i, elems[i], want)
+		}
 	}
 }

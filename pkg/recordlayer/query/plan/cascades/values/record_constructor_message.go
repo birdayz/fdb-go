@@ -190,15 +190,17 @@ func rowScalarToProtoValue(fd protoreflect.FieldDescriptor, v any) (protoreflect
 // refused, so the query FAILS rather than answering in a weaker type.
 // TestAStampedParentWithAnUnstampedChildFailsTheQuery pins that consequence.
 //
-// The bake DOES produce that pair, and a plain SQL query reaches it:
-// TestFDB_AWrapperHiddenRecordConstructorFailsTheQuery. Two facts keep a parent
-// and its DIRECT field child in step — WalkValue visits a parent immediately
-// before its children, so nothing touches the repository in between, and the
-// parent's type CONTAINS the child's, so a parent that stamped means the child's
-// message was already compiled — but a type-changing WRAPPER between the two
-// defeats the second: the parent's type then contains the wrapper's target
-// shape, not the constructor underneath it, so that constructor is never
-// registered by its parent's synthesis. TODO.md carries the closure.
+// The bake DOES produce that pair, and a plain SQL query reaches it. It takes
+// TWO things at once, measured as a 2x2 by
+// TestFDB_AWrapperOverAnUnsynthesisableRecordFailsTheQuery: a child whose own
+// type cannot be synthesised at all (a field name protobuf will not carry), AND
+// a type-changing WRAPPER between parent and child, which leaves the parent's
+// type carrying the wrapper's target shape rather than the constructor
+// underneath — so the parent stamps while the child cannot. Either alone is
+// harmless: the bad name alone fails the parent's synthesis too and everything
+// degrades to maps together, and the wrapper alone stamps everything. TODO.md,
+// "A stamped record constructor over a wrapper-hidden child fails the query",
+// carries the closure.
 // TestTheBakeStampsAParentAndItsChildTogetherOrNeither asserts each of those
 // two facts directly — the child's type resolving to the parent's own field
 // message, and the visit ORDER putting the child immediately after the parent —

@@ -1142,7 +1142,7 @@ func TestTheCensusWalkPrunesWriteFedSubtreesAsTheBakeDoes(t *testing.T) {
 // degrading to a raw map. A type-changing WRAPPER between the two breaks the
 // containment fact below, because the parent's type then contains the wrapper's
 // TARGET shape rather than the constructor underneath it.
-// TestFDB_AWrapperHiddenRecordConstructorFailsTheQuery reproduces that from
+// TestFDB_AWrapperOverAnUnsynthesisableRecordFailsTheQuery reproduces that from
 // plain SQL, and TODO.md carries its closure. An earlier round asserted the
 // general unreachability from these two facts alone; that was wrong, and this
 // comment is deliberately narrower than the reasoning it replaces.
@@ -1158,9 +1158,14 @@ func TestTheCensusWalkPrunesWriteFedSubtreesAsTheBakeDoes(t *testing.T) {
 //     same repository. The child's own lookup then resolves what is already
 //     there. Asserted by looking the child's type up in the parent's repository
 //     and requiring the parent's own field descriptor back.
-//   - ADJACENCY. WalkValue visits a parent IMMEDIATELY before its children, so
-//     within one walk nothing touches the repository between them and a
-//     poisoning cannot land in the gap. Asserted on the visit ORDER itself.
+//   - ADJACENCY, for a FIRST-field child. WalkValue visits a parent
+//     immediately before its first child, so nothing touches the repository
+//     between those two lookups. Asserted on the visit ORDER itself. Read the
+//     scope: a child in a LATER field has the preceding fields' subtrees
+//     between it and its parent, so this says nothing about it, and a poisoning
+//     in one of those subtrees can leave that child unstamped under a stamped
+//     parent. The fixture here has one field, deliberately, because that is the
+//     case the assertion can decide.
 //
 // The two arms below are the states this FIXTURE reaches, and both are asserted
 // positively — both stamped, or both unstamped — so neither can pass by being
@@ -1265,7 +1270,7 @@ func TestTheBakeStampsAParentAndItsChildTogetherOrNeither(t *testing.T) {
 		t.Fatalf("over a poisoned repository parent stamped=%v child stamped=%v, want NEITHER. A "+
 			"stamped parent beside an unstamped child is the pair that makes a query FAIL rather "+
 			"than degrade to a raw map. A wrapper between parent and child already reaches it "+
-			"(TestFDB_AWrapperHiddenRecordConstructorFailsTheQuery); this arm is about the DIRECT "+
+			"(TestFDB_AWrapperOverAnUnsynthesisableRecordFailsTheQuery); this arm is about the DIRECT "+
 			"child, and if it goes red that route is open too",
 			poisonedParent.MessageDescriptor() != nil, poisonedChild.MessageDescriptor() != nil)
 	}

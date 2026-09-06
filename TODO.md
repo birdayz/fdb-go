@@ -9295,23 +9295,32 @@ covered by the correctness suite and the golden plan diff, not by this table.
   `cannot synthesise a protobuf descriptor for __0type__2.CH: cannot store
   map[string]interface {} in message field`. Not a wrong answer and not a weaker type — the
   query does not answer at all.
-  MECHANISM. `FinalizePlan` stamps each record constructor with a descriptor synthesised from
-  its OWN inferred type, and a stamped constructor then builds a protobuf message, expecting
-  every record-typed field to hand it a message too. An unstamped constructor hands back a
-  name-keyed map, which cannot be stored in a message field. A parent and its DIRECT field
-  child cannot disagree, because the parent's type contains the child's, so synthesising the
-  parent registers the child's message. A type-changing WRAPPER between them breaks exactly
-  that: array unification promotes the two differently-shaped elements to a common anonymous
-  target, so the parent's type carries the TARGET's shape and the constructor underneath is
-  never registered — stamped parent, unstamped child. Measured on the planner side: seven
-  constructors, three unstamped, two stamped-over-unstamped pairs.
+  MECHANISM, and it is a CONJUNCTION — an earlier draft named only the second half and called
+  it sufficient, which the 2x2 below refutes. `FinalizePlan` stamps each record constructor with
+  a descriptor synthesised from its OWN type; a stamped constructor builds a protobuf message
+  and expects every record-typed field to hand it a message too, while an unstamped one hands
+  back a name-keyed map that cannot be stored in a message field. Both of these must hold:
+  (1) the child's own type is UNSYNTHESISABLE — `$lead` cannot start a protobuf field name
+  (Java's own `ProtoUtils` rule, correctly ported), so that constructor never stamps; and
+  (2) a type-changing WRAPPER sits between parent and child — array unification promotes
+  elements of differing record shape to a common anonymous target, so the parent's type carries
+  the TARGET's shape and the child's is not reached by the parent's synthesis, letting the
+  parent stamp alone.
+  MEASURED, one row per cell, over real SQL on a non-empty table:
+  `[(1 AS "$lead"), (2 AS A)]` FAILS; `[(1 AS B), (2 AS A)]` (wrapper, synthesisable names)
+  ANSWERS as a struct; `[(1 AS "$lead"), (2 AS "$lead")]` (unsynthesisable name, shapes agree
+  so no wrapper) ANSWERS as a raw map with both values intact; `[(1 AS A), (2 AS A)]` answers
+  as a struct. Each half alone is harmless — half (1) alone is the ordinary documented cost,
+  a weaker type — and only together do they fail. On the planner side the failing text gives
+  seven constructors, three unstamped, two stamped-over-unstamped pairs.
   PRE-EXISTING, measured: the same query fails identically at the merge-base `36b97f1e9`
   (only the synthetic-name prefix differs, `__type__2` there against `__0type__2` now), so it
   is not a regression of the work it was found beside. Found by a reviewer refuting an
   unreachability claim, not by the suite.
-  PINNED by `TestFDB_AWrapperHiddenRecordConstructorFailsTheQuery`, which asserts the failure
-  AND a one-element control that needs no promotion and answers, so the wrapper is the
-  variable. It reddens when this closes: assert the ROWS then.
+  PINNED by `TestFDB_AWrapperOverAnUnsynthesisableRecordFailsTheQuery`, which asserts the
+  failure and BOTH single-factor arms, each varying one thing against the failing text: the
+  wrapper-only arm must stay a struct, and the name-only arm must stay a raw map carrying both
+  values. It reddens when this closes: assert the failing arm's ROWS then.
   CLOSURE, and Java already answers the fork. `PromoteValue.java:254-274`: when the target is a
   record, Java fetches `context.getTypeRepository().getMessageDescriptor(promoteToType)` and
   calls `MessageHelpers.coerceObject(promotionTrie, …)`, so the target's message is built AT
@@ -9319,12 +9328,18 @@ covered by the correctness suite and the golden plan diff, not by this table.
   the PromoteValue itself (`:207`, `:220`). It never stamps the wrapped child with the target's
   descriptor — that option is wrong by construction, since the two shapes differ, which is the
   whole reason the promotion exists. Go's cascades PromoteValue carries no such trie:
-  `git grep -ln 'CoercionTrie|coercionTrie' -- '*.go'` returns only generated protobuf files and
-  `pkg/recordlayer/query/plan/plans/update.go`, nothing on the value path, and Go's
+  `git grep -lnE 'CoercionTrie|coercionTrie' -- '*.go'` returns only generated protobuf
+  files and `pkg/recordlayer/query/plan/plans/update.go`, nothing on the value path, and Go's
   `PromoteValue.Evaluate` coerces numerics and otherwise passes a record child through
   UNCHANGED — which is exactly how the name-keyed map reaches a stamped parent's message field.
-  So the port unit is `CoercionTrieNode` plus `MessageHelpers.coerceObject`, and it is a
-  subsystem port rather than a patch. Do NOT paper it over by making message fields accept a
-  map: Java coerces with a known target descriptor and a per-field plan, not by copying a map
-  by name.
+  Two details decide where the port lands. The promote is injected PER ELEMENT
+  (`AbstractArrayConstructorValue:172-176`), so `promoteToType` is the element RECORD — which
+  is what makes `Verify.verify(promoteToType.isRecord())` at `:265` hold; read as "the array is
+  promoted", that assert fails and the port aims at the wrong node. And `MessageHelpers:466`
+  casts `current` to `Message`, so Java's coercion CONSUMES a message the child already built
+  from the plan-wide repository. The port unit is therefore two things, not one — the trie AND
+  the registration model — and a trie alone would hand Go's coercion the same map at a new
+  line number. It is a subsystem port rather than a patch. Do NOT paper it over by making
+  message fields accept a map: Java coerces with a known target descriptor and a per-field
+  plan, not by copying a map by name.
   Booked from RFC-242 r36, where the reachability claim it refutes was written.

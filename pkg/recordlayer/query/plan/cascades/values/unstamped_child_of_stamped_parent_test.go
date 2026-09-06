@@ -9,13 +9,17 @@ import (
 // the plan-time bake reaches a parent record constructor and NOT its record
 // typed child.
 //
-// That combination is constructible because the two facts are independent. A
-// parent's descriptor is synthesised from its own inferred type, which already
-// carries the child's shape, so the parent can be stamped without the child's
-// own constructor having been stamped. The plan walk is pre-order, so a parent
-// is stamped before the subtrees under it are visited, and a duplicate-name row
-// anywhere in between poisons the repository for everything after it (TODO.md,
-// "A join row that names one field twice leaves its plan's rows unstamped").
+// That combination is REACHABLE, and how was measured rather than argued. It is
+// not the "poisoning in between a parent and its child" this comment once
+// claimed: within one value tree the walk visits a parent immediately before a
+// FIRST-field child, so there is no gap there to poison. What reaches it is a
+// type-changing WRAPPER over a child whose own type cannot be synthesised — the
+// wrapper keeps the child's shape out of the parent's type, so the parent
+// stamps while the child cannot. TODO.md, "A stamped record constructor over a
+// wrapper-hidden child fails the query", carries the closure, and
+// TestFDB_AWrapperOverAnUnsynthesisableRecordFailsTheQuery measures the whole
+// 2x2 over real SQL: each half alone is harmless, and only together do they
+// fail.
 //
 // The cost here is NOT the one the booking describes. Everywhere else an
 // unstamped constructor degrades a struct to a raw map and keeps its values —
