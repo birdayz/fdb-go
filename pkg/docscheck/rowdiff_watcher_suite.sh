@@ -184,7 +184,16 @@ suite_artifacts() {
   # a wrong-CWD fragment creating only that left the digest unchanged and this
   # gate green. `du -ab` walks into directories and reports bytes, so a content
   # change moves the hash and not just the file list.
-  find . -maxdepth 1 -name 'fdb-*' -o -maxdepth 1 -name '.fdb-*' 2>/dev/null \
+  # NAMED, not `fdb-*`. Broadening the glob to catch `fdb-watch.pid` also caught
+  # `./fdb-record-layer/` — the gitignored Java reference checkout, 11,443
+  # entries — so `du -ab` walked it and ANY concurrent agent touching that tree
+  # moved the digest. That is the exact failure the `find` form was chosen over
+  # `git status` to avoid, reintroduced by the fix for a different blind spot,
+  # three lines under a comment still claiming the scoping. `fdb-watch.*` covers
+  # both `.log` and `.pid`, which is all the broadening was for.
+  find . -maxdepth 1 \( -name 'fdb-watch.*' -o -name 'fdb-logs-*' \
+    -o -name '.fdb-logs-*' -o -name 'fdb-df-*' -o -name 'fdb-container-*' \
+    -o -name 'fdb-last-inspect-*' -o -name 'fdb-forensics.txt' \) 2>/dev/null \
     | sort | xargs -r du -ab 2>/dev/null | sort
 }
 CWD_BEFORE=$(suite_artifacts | md5sum)
