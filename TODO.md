@@ -9371,17 +9371,17 @@ covered by the correctness suite and the golden plan diff, not by this table.
   slot. What is refused is a LEG that still NAMES a field the common type anonymised, at any
   depth: the same refusal appears one level down for `((1 AS A) AS N)` UNION `((2 AS B) AS N)`.
   An earlier draft titled this by the target rather than the leg, which the both-anonymous row
-  refutes. CAUSE, read from the source rather than inferred. `exactUnionResultRow` computes the
-  common row with `MaximumType`, and `exactUnionSlotValue` then gates each leg on
-  `MaximumType(leg, target).Equals(target)`. That predicate cannot accept its own common row:
-  `MaximumType`'s record arm resolves a disagreeing name pair by KEEPING the named side
-  (`values/type.go`, the `f2.Name == ""` arm), so `MaximumType(RECORD<A INT>, RECORD<INT>)` is
-  `RECORD<A INT>`, not the target. The gate is built from a function that is not idempotent
-  under name erasure — `max(a, max(a,b)) != max(a,b)` once a name has been dropped. One
-  anonymous field suffices because `RecordType.Equals` is all-or-nothing, which is also why the
-  title's "whenever" is safe rather than a guess. JAVA ACCEPTS IT, so this is a CONFORMANCE
-  DIVERGENCE and not only a gap. `PromoteValue.isPromotionNeeded` recurses records POSITIONALLY
-  over `getElementTypes()` and never reads a field name (`PromoteValue.java`, the
+  and its promote counterpart refute together. CAUSE, read from the source rather than inferred.
+  `exactUnionResultRow` computes the common row with `MaximumType`, and `exactUnionSlotValue`
+  then gates each leg on `MaximumType(leg, target).Equals(target)`. That predicate cannot accept
+  its own common row: `MaximumType`'s record arm resolves a disagreeing name pair by KEEPING the
+  named side (`values/type.go`, the `f2.Name == ""` arm), so `MaximumType(RECORD<A INT>,
+  RECORD<INT>)` is `RECORD<A INT>`, not the target. The gate is built from a function that is
+  not idempotent under name erasure — `max(a, max(a,b)) != max(a,b)` once a name has been
+  dropped. One anonymous field suffices because `RecordType.Equals` is all-or-nothing, which is
+  also why the title's "whenever" is safe rather than a guess. JAVA ACCEPTS IT, so this is a
+  CONFORMANCE DIVERGENCE and not only a gap. `PromoteValue.isPromotionNeeded` recurses records
+  POSITIONALLY over `getElementTypes()` and never reads a field name (`PromoteValue.java`, the
   `inType.isRecord() && promoteToType .isRecord()` arm: it checks the element COUNT, then
   recurses per ordinal). `inject` never consults a maximum type at all. DIRECTION. Not the
   coercion trie — that is the other two bookings' unit and it does not apply here. Replace the

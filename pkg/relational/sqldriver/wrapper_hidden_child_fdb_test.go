@@ -16,14 +16,15 @@ import (
 // at the other sites that unify record shapes. Some of those shapes FAIL
 // outright, under several distinct refusals.
 //
-// It is a table rather than a witness-and-control pair on purpose. FOUR
-// successive rounds each named a mechanism, built a control around it, and had
-// the mechanism refuted by a row nobody had run — "a type-changing wrapper is
-// enough", then "a wrapper over an unsynthesisable child is enough", then a
-// three-condition account the site rows break, then a fourth that titled the
-// union defect by its TARGET until the both-anonymous pair refuted that too.
-// (No counts here, of rows or of anything else, and no pointers by position:
-// this table has grown every round, and both go stale the next time it does.)
+// It is a table rather than a witness-and-control pair on purpose. Round after
+// round, an account was named, a control was built around it, and a row nobody
+// had run refuted it — "a type-changing wrapper is enough"; "a wrapper over an
+// unsynthesisable child is enough"; a conjunction the site rows break; and a
+// title that named the union defect by its TARGET until the both-anonymous pair
+// refuted that too. No count of them is given, deliberately: the list has grown
+// every round and a number in front of it is one more thing to update. For the
+// same reason nothing here counts the table's ROWS or points into it by
+// position — both go stale the next time it grows, and both already have.
 //
 // A control is built by removing what you BELIEVE is the cause, so it inherits
 // whatever the belief got wrong and passes either way; a table has no belief in
@@ -258,7 +259,7 @@ func TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes(t *testing.T) {
 			andFailsWith: unionSlotRefusal,
 		},
 		{
-			why: "half of the PAIR that kills \"refused whenever the TARGET is anonymous\" — this half shows the target CAN carry an anonymous field and the union still answers, and the promote row below shows the gate is genuinely reached. Equal leg types here skip leg normalisation, so this row alone does not exercise the gate: both legs are ALREADY anonymous, built by the two-field CASE above, so the common type carries an anonymous field and the union ANSWERS. No leg names what the target anonymised, so nothing is refused",
+			why: "half of the PAIR that kills \"refused whenever the TARGET is anonymous\" — this half shows the target CAN carry an anonymous field and the union still answers, and its PROMOTE counterpart shows the gate is genuinely reached. Equal leg types here skip leg normalisation, so this row alone does not exercise the gate: both legs are ALREADY anonymous, built by the two-field CASE above, so the common type carries an anonymous field and the union ANSWERS. No leg names what the target anonymised, so nothing is refused",
 			query: `SELECT (CASE WHEN id=1 THEN (1 AS A, 3 AS Z) ELSE (2 AS A, 4 AS Y) END) AS C FROM t ` +
 				`UNION ALL SELECT (CASE WHEN id=1 THEN (1 AS A, 3 AS Z) ELSE (2 AS A, 4 AS Y) END) AS C FROM t`,
 			wantStruct: true,
@@ -268,7 +269,7 @@ func TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes(t *testing.T) {
 			},
 		},
 		{
-			why: "the same pair with a real PROMOTE through the anonymous slot, INT against DOUBLE: still answers. So an anonymous field in the common type is not merely tolerated, it is promoted through",
+			why: "the PROMOTE half of that pair: INT against DOUBLE through the anonymous slot, so leg normalisation runs and the gate is genuinely reached — which its both-anonymous counterpart cannot show, because equal leg types skip normalisation entirely. Together they refute titling this defect by its target",
 			query: `SELECT (CASE WHEN id=1 THEN (1 AS A, 3 AS Z) ELSE (2 AS A, 4 AS Y) END) AS C FROM t ` +
 				`UNION ALL SELECT (CASE WHEN id=1 THEN (1 AS A, 3.5 AS Z) ELSE (2 AS A, 4.5 AS Y) END) AS C FROM t`,
 			wantStruct: true,
