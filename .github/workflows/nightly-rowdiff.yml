@@ -211,12 +211,40 @@ jobs:
           # untrapped SIGTERM kills the shell without running EXIT at all, which is
           # documented behaviour that was never run here and is false where it
           # matters: with an EXIT trap set and no TERM trap, a group SIGTERM ran
-          # it 5 times out of 5 on bash 5.2.21 in `ubuntu:24.04` — the image
-          # `infra/main.tf` pins for this fleet — and 5 of 5 on the dev box's
-          # 5.3.15. Keep the arm; do not justify it from a manual page instead of
+          # it 5 times out of 5 on bash 5.2.21, and 5 of 5 on 5.3.15. The VERSIONS
+          # are the claim — two of them make it a bash property rather than a
+          # platform accident. Provenance, stated exactly: 5.2.21 was measured in
+          # the `ubuntu:24.04` CONTAINER; the fleet boots Hetzner's `ubuntu-24.04`
+          # rolling label (`infra/main.tf`), which is the same release but not the
+          # same artifact, and Hetzner refreshes it. Keep the arm; do not justify it from a manual page instead of
           # a measurement, and measure on the PLATFORM, not on the laptop.
           trap 'rm -rf .fdb-logs-*' EXIT
           trap 'exit' TERM INT
+
+          # SHARED BY BOTH POLLERS. A failed `docker inspect` is not a removed
+          # container — a daemon reload or an overloaded box produces one — and
+          # both loops used their CONDITION as the liveness test, so a single
+          # blip ended them permanently and silently. Measured on the shipped
+          # shape: the last generation stopped advancing while the control went
+          # on, with nothing logged anywhere.
+          #
+          # Returns 0 while the container should still be polled, including
+          # while tolerating a blip; the caller checks `$misses` to decide
+          # whether to skip its body this cycle. Returns 1 only once the
+          # container is really gone, and says so — a poller that stops has to
+          # announce it, because the defect this replaces was a stop nobody
+          # could see. `misses` is the CALLER's variable: each poller runs in
+          # its own subshell, so each has its own copy.
+          still_there() {
+            if docker inspect "$1" >/dev/null 2>&1; then
+              misses=0
+              return 0
+            fi
+            misses=$((misses + 1))
+            [ "$misses" -lt 3 ] && return 0
+            echo "$(date -u +%FT%TZ) $1 inspect failed $misses times running; ending $2" >> fdb-watch.log
+            return 1
+          }
           img="foundationdb/foundationdb:$FDB_IMAGE_TAG"
           # The script records its OWN pid. Under `setsid` it is a session leader, so
           # its pid IS its process-group id and killing that group takes the
@@ -232,7 +260,15 @@ jobs:
           # lands before the cap. An earlier value of 18600 was 310 minutes and
           # outlived the job it claimed to be bounded by.
           deadline=$(( $(date +%s) + 17400 ))
-          seen=""; exited=""
+          seen=""
+          # PER CONTAINER, not per selection. `exited` was a single flag reset on
+          # every re-selection, so a container re-selected after it had already
+          # exited had its transition logged a SECOND time — and the second pass
+          # finds the exit destination occupied, so the log then says the trace
+          # was NOT copied for a container whose trace is sitting right there.
+          # Both halves false, on the line a triaging reader trusts most. Same
+          # shape as `launched`, and for the same reason.
+          exitlogged=""
           # Every copier launch gets a number the NEXT launch cannot reuse. See the
           # generation-name comment in the copy loop for why a per-loop counter
           # alone is not enough.
@@ -240,7 +276,7 @@ jobs:
           while [ "$(date +%s)" -lt "$deadline" ]; do
             c="$(docker ps -aq --filter "ancestor=$img" 2>/dev/null | head -1)"
             if [ -n "$c" ] && [ "$c" != "$seen" ]; then
-              seen="$c"; exited=""
+              seen="$c"
               echo "$(date -u +%FT%TZ) watching $c" >> fdb-watch.log
               # LAUNCH THE BACKGROUND JOBS AT MOST ONCE PER CONTAINER.
               #
@@ -261,6 +297,17 @@ jobs:
               # Scoping the generation NAME by launch addresses only the first, and
               # only its naming half. An id list at the launch site closes all three
               # at the cause and leaves `$launch` as defence in depth.
+              # `*" $c "*` is literal, not a glob: the `" $c "` segment is
+              # double-quoted, and bash matches quoted pattern text as text — so a
+              # container id containing pattern characters cannot widen the match.
+              # Load-bearing, and it reads like a bug, which is why it is written
+              # down. The space delimiters are what stop a prefix or a superstring
+              # matching (probed: neither does).
+              #
+              # An EMPTY `$c` WOULD match, and would then skip every launch
+              # forever while still logging "watching" — silent and total. That is
+              # unreachable only because the enclosing branch is `[ -n "$c" ]`,
+              # written on another line for another reason. Do not relax it.
               case " $launched " in
                 *" $c "*) : ;;
                 *)
@@ -293,8 +340,32 @@ jobs:
                   # the exit-transition copy below cuts it to nothing on every path
                   # where the container STOPS rather than being removed outright.
                   launches=$((launches + 1))
-                  ( launch=$launches; gen=0; prevgen=""; copyfail=""
-                    while docker inspect "$c" >/dev/null 2>&1; do
+                  # A FAILED `docker inspect` IS NOT A REMOVED CONTAINER, and using
+                  # the loop CONDITION as the liveness test made one transient failure
+                  # end trace capture permanently and silently. Measured against an
+                  # injected single blip with the container alive and `cp` still
+                  # working: the last generation stayed `1-5` over the following 8s
+                  # where the control went `1-5 -> 1-13`, and nothing was logged
+                  # anywhere. A daemon reload or an overloaded box produces exactly
+                  # that blip — on the box this watcher exists to explain.
+                  #
+                  # So: tolerate consecutive misses, and END LOUDLY rather than by
+                  # falling out of a condition. Three misses is the container being
+                  # gone; one is the daemon being busy. The break is logged because a
+                  # capture that stops has to say it stopped — the whole failure this
+                  # replaces was a stop nobody could see.
+                  ( launch=$launches; gen=0; prevgen=""; copyfail=""; misses=0
+                    while still_there "$c" "periodic copy"; do
+                      # Tolerating a blip means skipping this cycle, not ending.
+                      # The sleep is on its own line deliberately: the suite's
+                      # interval override rewrites a line that is exactly
+                      # `sleep 60`, so folding it into the `if` puts a real
+                      # 60-second wait inside a test — which is how this was
+                      # found, by the arms timing out.
+                      if [ "$misses" -gt 0 ]; then
+                        sleep 60
+                        continue
+                      fi
                       # PUBLISH BY ATOMIC RENAME ONTO A NAME THAT DOES NOT EXIST.
                       #
                       # Three shapes were tried here and the first two each traded the
@@ -409,7 +480,12 @@ jobs:
                   # creates the file even when the exec fails, so the failure branch has to
                   # remove it or every poll leaves litter (measured: `.new` files left
                   # behind when the exec could not run).
-                  ( while docker inspect "$c" >/dev/null 2>&1; do
+                  ( misses=0
+                    while still_there "$c" "df sampling"; do
+                      if [ "$misses" -gt 0 ]; then
+                        sleep 30
+                        continue
+                      fi
                       if docker exec "$c" df -h /var/fdb/data > "fdb-df-$c.txt.new" 2>/dev/null; then
                         mv -f "fdb-df-$c.txt.new" "fdb-df-$c.txt"
                       else
@@ -430,8 +506,10 @@ jobs:
                 # one-line finding into hundreds and buries the line that matters.
                 case "$inspect" in
                   *"running=false"*)
-                    if [ -z "$exited" ]; then
-                      exited=1
+                    case " $exitlogged " in
+                      *" $seen "*) : ;;
+                      *)
+                      exitlogged="$exitlogged $seen"
                       echo "$(date -u +%FT%TZ) $seen EXITED: $inspect" >> fdb-watch.log
                       # The complete trace, PROMPTLY. A stopped container still
                       # exists until something removes it, so the periodic loop
@@ -470,12 +548,15 @@ jobs:
                         rm -rf ".fdb-logs-$seen-exit.new"
                         echo "$(date -u +%FT%TZ) $seen logs NOT copied at exit (already removed?); only the periodic copy remains" >> fdb-watch.log
                       fi
-                    fi
+                      ;;
+                    esac
                     ;;
                 esac
               else
                 echo "$(date -u +%FT%TZ) $seen GONE (removed; its last inspect is fdb-last-inspect-$seen.txt)" >> fdb-watch.log
-                seen=""; exited=""
+                # NOT exitlogged: a container that has been REMOVED must not have its
+                # transition re-armed if `head -1` hands it back later.
+                seen=""
               fi
             fi
             sleep 2
