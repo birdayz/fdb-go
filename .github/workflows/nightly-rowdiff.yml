@@ -245,7 +245,7 @@ jobs:
           # threshold was a guess in the wrong unit: a blip has a DURATION, a
           # count is that duration divided by a poll interval, and the pollers
           # poll at different rates, so one number meant three different
-          # tolerances. `maxOutagePolls` below is only a BACKSTOP against a daemon
+          # tolerances. `maxOutageSeconds` below is only a BACKSTOP against a daemon
           # that never comes back, and it can be generous precisely because no
           # genuine removal depends on it.
           #
@@ -259,19 +259,47 @@ jobs:
           # announce it, because the defect this replaces was a stop nobody could
           # see. `misses` is the CALLER's variable: each poller runs in its own
           # subshell, so each has its own.
-          maxOutagePolls=20
-          still_there() {
+          # THE BUDGET IS A DURATION, AND THE CALLER IS TOLD WHY IT STOPPED.
+          #
+          # An earlier version counted POLLS, and the sentence condemning the
+          # count it replaced applies to a count just as well: the three callers
+          # poll at 60s, 30s and 2s, so one number is three budgets — 20 polls
+          # would have been 20 minutes for the copier, 10 for the sampler and 40
+          # SECONDS for the main loop. Backwards, since the main loop is where a
+          # false removal costs the most and 40s is inside an ordinary
+          # `systemctl restart docker`. Seconds are the unit the phenomenon has.
+          #
+          # `gone_reason` exists because the two ways of returning 1 are not
+          # interchangeable to every caller. The main loop writes a `GONE
+          # (removed…)` line that a reader uses to DATE the cluster's death, and
+          # writing it for an OUTAGE would reinstate exactly the defect this
+          # design removed — one line below a message correctly reporting the
+          # outage. So the reason is returned, not inferred.
+          maxOutageSeconds=600
+          still_there() {   # $1 container, $2 what is ending, $3 poller name
             if out=$(POLLER="$3" docker ps -aq --filter "id=$1" 2>/dev/null); then
               if [ -n "$out" ]; then
-                misses=0
+                outage_start=0
                 return 0
               fi
+              # rc 0 with EMPTY output is the only reading that means REMOVED,
+              # and it is the one place this design decides on a single sample.
+              # A daemon answering mid-reload is the shape that would otherwise
+              # be read as a removal, so re-issue once before acting on it.
+              sleep 1
+              if out=$(POLLER="$3" docker ps -aq --filter "id=$1" 2>/dev/null) && [ -n "$out" ]; then
+                outage_start=0
+                return 0
+              fi
+              gone_reason=removed
               echo "$(date -u +%FT%TZ) $1 is gone; ending $2" >> fdb-watch.log
               return 1
             fi
-            misses=$((misses + 1))
-            [ "$misses" -lt "$maxOutagePolls" ] && return 0
-            echo "$(date -u +%FT%TZ) docker unreachable for $misses polls; ending $2 for $1" >> fdb-watch.log
+            now=$(date +%s)
+            [ "${outage_start:-0}" = 0 ] && outage_start=$now
+            [ $(( now - outage_start )) -lt "$maxOutageSeconds" ] && return 0
+            gone_reason=outage
+            echo "$(date -u +%FT%TZ) docker unreachable ${maxOutageSeconds}s; ending $2 for $1 (NOT a removal)" >> fdb-watch.log
             return 1
           }
           img="foundationdb/foundationdb:$FDB_IMAGE_TAG"
@@ -530,6 +558,11 @@ jobs:
                 # PER CONTAINER. A single file is overwritten by the paging lane's
                 # healthy container, replacing the dead one's inspect with a live one
                 # — and a non-empty file then silences the alarm about the death.
+                # A successful inspect means the daemon answered, so the outage
+                # window closes here too. Resetting only on SELECTION let
+                # isolated one-poll outages accumulate across a lane until the
+                # backstop tripped and reported a live container removed.
+                outage_start=0
                 printf '%s %s %s\n' "$(date -u +%FT%TZ)" "$seen" "$inspect" > "fdb-last-inspect-$seen.txt"
                 # Log the TRANSITION once. Logging every poll after the exit turns a
                 # one-line finding into hundreds and buries the line that matters.
@@ -582,17 +615,17 @@ jobs:
                     ;;
                 esac
               else
-                # A FAILED `docker inspect` IS NOT A REMOVAL HERE EITHER. This
-                # arm used to write GONE on a single failure — the line a
-                # triaging reader uses to DATE the cluster's death — so a daemon
-                # blip produced a false removal at a false time and cleared
-                # `seen`, so the container was "re-selected" moments later.
-                # Measured with the container running throughout: `watching c1`,
-                # `c1 GONE`, `watching c1`. The same defect as the two pollers,
-                # in the third caller, and this is the one whose output is read
-                # as EVIDENCE rather than as a poller's own bookkeeping.
+                # A FAILED LIVENESS CHECK IS NOT ALWAYS A REMOVAL, and only one
+                # of the two reasons may write this line. `GONE (removed…)` is
+                # what a triaging reader uses to DATE the cluster's death, so
+                # writing it for a daemon OUTAGE asserts a removal that did not
+                # happen, at a time nothing happened — the defect this whole
+                # design removed, reappearing at the backstop if the caller
+                # cannot tell the two apart. `still_there` reports which.
                 if ! still_there "$seen" "watching $seen" main; then
-                  echo "$(date -u +%FT%TZ) $seen GONE (removed; its last inspect is fdb-last-inspect-$seen.txt)" >> fdb-watch.log
+                  if [ "$gone_reason" = removed ]; then
+                    echo "$(date -u +%FT%TZ) $seen GONE (removed; its last inspect is fdb-last-inspect-$seen.txt)" >> fdb-watch.log
+                  fi
                   # NOT exitlogged: a container that has been REMOVED must not
                   # have its transition re-armed if `head -1` hands it back.
                   seen=""
@@ -960,7 +993,7 @@ jobs:
             echo "::notice::no FDB container evidence captured, and neither sweep failed — nothing to explain tonight"
           elif ! grep -q '^=== inspect ' fdb-forensics.txt && [ "$have_traces" = 0 ] &&
                { [ "${SWEEP_OUTCOME:-}" = "failure" ] || [ "${PAGING_OUTCOME:-}" = "failure" ]; }; then
-            echo "::error::FDB forensics has an inspect but NO trace directory on a night a sweep failed — the copier stopped before the cluster did, so this artifact cannot say why. Check fdb-watch.log for an 'ending periodic copy' line."
+            echo "::error::FDB forensics has an inspect but NO trace directory on a night a sweep failed — nothing captured here can say why the cluster died. THREE states produce this and fdb-watch.log separates them: the copier stopped early (an 'ending periodic copy' line), every copy failed while the container lived (a 'periodic copy FAILING' line and no 'ending'), or the container never survived its first copy cycle (neither line, and 'watching' and 'EXITED' less than a cycle apart)."
             exit 1
           fi
 

@@ -9605,23 +9605,37 @@ covered by the correctness suite and the golden plan diff, not by this table.
 
 - [ ] **`TestSourceCommentHygiene` scans only `*.go`, and its subject is not Go-specific.**
   The rule it enforces — no reviewer or shift attribution in source comments — is about SOURCE
-  COMMENTS, and this repo now carries load-bearing comments in shell and YAML: `infra/cloud-init.yaml`,
-  `infra/orphan_fdb_sweep_test.sh`, `pkg/docscheck/rowdiff_watcher_suite.sh`, and the nightly
-  workflows all reason in comments at length. The gate's file set is `gitDeliverableFiles(root, "*.go")`
+  COMMENTS, and this repo reasons at length in shell and YAML comments: `infra/cloud-init.yaml`,
+  `infra/orphan_fdb_sweep_test.sh`, `pkg/docscheck/rowdiff_watcher_suite.sh`, the nightly
+  workflows. The gate's file set is `gitDeliverableFiles(root, "*.go")`
   (`pkg/docscheck/source_hygiene_test.go`), so none of them are scanned.
 
   Found by violating it twice in one change and having a reviewer catch what the gate could not:
   "Three reviewers reached this independently" and "a review pointed out what that hides" both
-  shipped through a green `just test`. That is the gate's own scope sentence exceeding its
-  coverage — the failure this repo documents at length — in the gate written to catch that class.
+  shipped through a green `just test`.
 
-  It is a FREE ratchet today, which is the argument for doing it now rather than when it is not:
-  `git ls-files '*.sh' '*.yml'` is 29 files, and a sweep for attribution-shaped text
-  (`per <name>`, reviewer names, `review round`, `nightshift-`, `swingshift-`) across them matches
-  **0**. So the extension adds a gate arm and changes no existing file.
+  **Measured 2026-09-06, and the first version of this entry got the measurement wrong in three
+  ways — kept here because the errors are the useful part.** It claimed 29 files and ZERO
+  violations, i.e. a free ratchet touching nothing. All three claims were false:
 
-  Not done here deliberately, and this is the honest reason rather than a scheduling one: the Go
-  path parses an AST and reports per comment GROUP, and a shell/YAML path is a different mechanism
-  (line-based `#` scanning, with its own quoting and heredoc hazards) that needs its own arms and
-  its own review lap. Bolting it onto a branch already in its ninth review round would put an
-  unreviewed gate mechanism inside a change about something else.
+  - the glob was `'*.sh' '*.yml'`, which does not match `*.yaml` — so it EXCLUDED
+    `infra/cloud-init.yaml`, a file the same sentence named as an example;
+  - the search pattern listed `graefe|torvalds` but not `codex`, which is the most common of the
+    three in this tree;
+  - so "0 matches" was a fact about a malformed search, reported as a fact about the repo.
+
+  Correct figures, `git ls-files '*.sh' '*.yml' '*.yaml'` → **429 files**, of which
+  `git grep -lniE 'codex|graefe|torvalds|review round|nightshift-|swingshift-'` matches **48
+  files / 86 lines**. Seven are source-like (six workflows plus `infra/cloud-init.yaml`); the
+  other 41 are `yamsql/testdata/*.yaml`, and they are genuine attribution rather than false
+  positives — "Subquery false-positive guard (Torvalds review)", "Codex-caught: CAST of a
+  NON-string source to UUID".
+
+  So this is NOT a free ratchet. It is a gate extension plus a 48-file cleanup, and the cleanup
+  is the larger half. That is worth knowing before starting, which is the whole reason the
+  corrected number is here rather than the comfortable one.
+
+  Not done on the RFC-242 branch deliberately: the Go path parses an AST and reports per comment
+  GROUP; a shell/YAML path is a different mechanism (line-based `#` scanning, with its own
+  quoting and heredoc hazards) needing its own arms and its own review lap, and 48 files of
+  comment edits do not belong inside a change about union leg alignment.

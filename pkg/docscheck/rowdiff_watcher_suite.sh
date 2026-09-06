@@ -82,6 +82,15 @@
 #
 # A QUEUE — each is a small fixture change away, and is a NEXT ARM, not a
 # permanent exemption. Everything moved out of this half so far took one attempt:
+#   - the outage window RESETTING after a successful inspect. The main loop's
+#     `docker inspect --format` bypasses `still_there`, so without an explicit
+#     reset there, isolated one-poll outages accumulate across a lane until the
+#     backstop trips and reports a live container removed. The reset is in place;
+#     mutating it out reddens nothing, because every case here produces one
+#     CONTINUOUS outage rather than many separated by successes. The arm needs a
+#     flapping knob — fail every Nth call rather than for a window — and then a
+#     case whose outages span more than the backstop while never being
+#     continuous for it.
 #
 #   - the dump's loop over LIVE containers. The stub answers `phase=gone` by the
 #     time the dump runs, so that loop iterates an empty set here. Its arms are
@@ -268,6 +277,11 @@ chmod +x "$BIN/docker"
 # retry branch untested at speed: reverting its wiring reddened no arm, because
 # in a few seconds it never polled twice.
 #
+# $2 = the daemon-outage BACKSTOP in seconds, default 600 — overridable for the
+# same reason the interval is: the backstop is 10 minutes in production, so the
+# branch that decides "outage, not removal" is unreachable in a test without it,
+# and that branch is the one that must not write a GONE line.
+#
 # $1 = the poller interval in seconds. Cases that want the periodic path
 # pass 1; the case that isolates the EXIT-TRANSITION copy passes a number larger
 # than the case's own lifetime, so the periodic loop cannot be what captured
@@ -278,7 +292,8 @@ start_watcher() {
   rm -rf "$WORK"; mkdir -p "$WORK"
   cp "$SCRIPT" "$WORK/fdb-watch.sh"; chmod +x "$WORK/fdb-watch.sh"
   # A short deadline so a case cannot hang the suite.
-  sed -i -e 's/^deadline=.*/deadline=$(( $(date +%s) + 30 ))/' -e "s/^\\( *\\)sleep 60$/\\1sleep ${1:-1}/" -e "s/^\\( *\\)sleep 30$/\\1sleep ${1:-1}/" "$WORK/fdb-watch.sh"
+  sed -i -e 's/^deadline=.*/deadline=$(( $(date +%s) + 30 ))/' \
+    -e "s/^maxOutageSeconds=.*/maxOutageSeconds=${2:-600}/" -e "s/^\\( *\\)sleep 60$/\\1sleep ${1:-1}/" -e "s/^\\( *\\)sleep 30$/\\1sleep ${1:-1}/" "$WORK/fdb-watch.sh"
   ( cd "$WORK" && WATCHTEST_STATE="$STATE" FDB_IMAGE_TAG=x PATH="$BIN:$PATH" \
       setsid nohup ./fdb-watch.sh >/dev/null 2>&1 & )
   for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$WORK/fdb-watch.pid" ] && return 0; sleep 1; done
@@ -575,6 +590,39 @@ fi
 rm -f "$STATE/outage-until" "$STATE/outage-poller"
 echo gone > "$STATE/phase"
 
+# EXHAUSTING THE BACKSTOP IS STILL NOT A REMOVAL. The two ways `still_there`
+# returns 1 are not interchangeable to the main loop: one is a proven absence,
+# the other is a daemon that never answered. Writing `GONE (removed…)` for the
+# second asserts a removal that did not happen, at a time nothing happened — the
+# defect this whole design removed, reappearing at the backstop, one line below a
+# message that correctly calls it an outage. The backstop is 600s in production,
+# so it is overridden here; without that this branch is unreachable and the
+# `gone_reason` split is untested.
+rm -rf "$STATE/logs"; mkdir -p "$STATE/logs"
+echo '<Event Severity="40" Type="SharedTLogFailed"/>' > "$STATE/logs/trace.001.xml"
+rm -f "$STATE/second" "$STATE/phase-c1" "$STATE/phase-c2"
+echo running > "$STATE/phase"
+if start_watcher 1 2; then
+  sleep 2
+  echo main > "$STATE/outage-poller"
+  echo $(( $(date +%s) + 6 )) > "$STATE/outage-until"
+  echo $(( $(date +%s) + 6 )) > "$STATE/inspect-outage-until"
+  sleep 8
+  rm -f "$STATE/outage-until" "$STATE/outage-poller" "$STATE/inspect-outage-until"
+  stop_watcher
+  nb=$(grep -c 'NOT a removal' "$WORK/fdb-watch.log" 2>/dev/null)
+  ng=$(grep -c 'GONE (removed' "$WORK/fdb-watch.log" 2>/dev/null)
+  if [ "$nb" -ge 1 ] && [ "$ng" = 0 ]; then
+    ok "an exhausted outage backstop is reported as an outage, not a removal"
+  else
+    bad "an exhausted outage backstop is reported as an outage, not a removal (outage lines=$nb, GONE lines=$ng)"
+  fi
+else
+  bad "the watcher never recorded a pid (backstop case)"
+fi
+rm -f "$STATE/outage-until" "$STATE/outage-poller" "$STATE/inspect-outage-until"
+echo gone > "$STATE/phase"
+
 # A DAEMON OUTAGE MUST NOT BE LOGGED AS A REMOVAL. The main loop's `GONE` line is
 # what a triaging reader uses to DATE the cluster's death, so a false one is
 # worse than a missing one: it asserts a removal, at a time, that did not happen,
@@ -835,10 +883,20 @@ awk '
 [ -s "$ALARM" ] || { echo "FATAL: extracted an empty alarm block"; exit 1; }
 grep -q 'captured NOTHING' "$ALARM" || { echo "FATAL: alarm extraction has no error arm"; exit 1; }
 
-alarm_case() { # $1 name  $2 forensics content  $3 inspect content ("" = none)  $4 sweep  $5 paging  $6 want-rc
+alarm_case() { # $1 name  $2 forensics  $3 inspect ("" = none)  $4 sweep  $5 paging  $6 want-rc  $7 traces? ("t" = a trace dir exists)
   rm -rf "$AWORK"; mkdir -p "$AWORK"
   printf '%s\n' "$2" > "$AWORK/fdb-forensics.txt"
   [ -n "$3" ] && printf '%s\n' "$3" > "$AWORK/fdb-last-inspect-c1.txt"
+  # $7 exists because the trace-directory conjunct was unpinned in the GREEN
+  # direction: every case wiped $AWORK and created no `fdb-logs-*`, so
+  # `have_traces` was 0 in all of them and mutating that conjunct out of the gate
+  # reddened nothing. A gate that can fail a night which used to pass needs the
+  # arm that says WHEN IT MUST NOT — otherwise only the firing direction is
+  # bounded, which is the half that cannot show the blast radius.
+  if [ "${7:-}" = t ]; then
+    mkdir -p "$AWORK/fdb-logs-c1.1-1"
+    echo '<Event Severity="10"/>' > "$AWORK/fdb-logs-c1.1-1/trace.001.xml"
+  fi
   ( cd "$AWORK" && SWEEP_OUTCOME="$4" PAGING_OUTCOME="$5" bash "$ALARM" > out 2>&1 )
   rc=$?
   if [ "$rc" = "$6" ]; then ok "$1 (rc=$rc)"; else bad "$1: rc=$rc, want $6"; fi
@@ -862,6 +920,12 @@ alarm_case "empty capture + both sweeps green stays green" '=== host ===' '' suc
 # author.
 alarm_case "a live container in the dump is evidence" '=== inspect c1 ===' '' failure success 0
 alarm_case "an inspect with no traces on a failed night is NOT evidence" '=== host ===' 'ts c1 exit=1' failure success 1
+# …and the same night WITH a trace directory stays green. This is the arm that
+# bounds the blast radius of the conjunct above: without it only the firing
+# direction is pinned, and mutating `[ "$have_traces" = 0 ]` out of the gate
+# reddens nothing — measured. A gate that can fail a night which used to pass
+# needs the arm that says when it must NOT.
+alarm_case "an inspect WITH traces on a failed night is evidence" '=== host ===' 'ts c1 exit=1' failure success 0 t
 
 # The TAG GUARD, which sits ABOVE the body each of these steps runs and so falls
 # outside every block extracted for them. It exists because the forensics step
@@ -872,7 +936,7 @@ alarm_case "an inspect with no traces on a failed night is NOT evidence" '=== ho
 #
 # There are TWO copies, one per step, and covering one is how a suite reports the
 # guard as covered while the other stays free to be deleted. Measured on this
-# file as committed, at 43 arms: deleting the forensics copy reddens exactly one
+# file as committed, at 45 arms: deleting the forensics copy reddens exactly one
 # arm, and deleting the WATCHER copy reddens exactly one — the other one — where
 # before the extraction named a step and deleting the watcher's reddened NONE.
 # (An earlier version of this sentence said "at 18 arms", which was the count of
