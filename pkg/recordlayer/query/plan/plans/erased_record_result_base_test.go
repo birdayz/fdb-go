@@ -1,6 +1,7 @@
 package plans
 
 import (
+	"errors"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -82,5 +83,99 @@ func TestResultBaseForAConcreteRecordTakesTheLayoutExit(t *testing.T) {
 	}
 	if got := base.resultValue.Type(); !got.Equals(concrete) {
 		t.Fatalf("concrete exit published type %s, want %s", got, concrete)
+	}
+}
+
+// The fourth route, and the one three enumerations missed.
+//
+// `newPlanExprBaseForQuantifier` has its own exits, and only its LAST one falls
+// through to `newPlanExprBaseForType` (the function the two tests above drive).
+// When the quantifier HAS a child whose provided layout is unavailable with
+// `OrdinalLayoutDynamicCarrier` — which is exactly what a child plan carrying an
+// erased record reports — it returns the quantifier's own flowed object value
+// directly, with no layout, no carrier substitution and no `Equals` check.
+//
+// It is production-reachable rather than hypothetical: `NewAnyRecordType` is
+// constructed at `proto_field_type.go:196`, so a leaf whose declared type is an
+// erased record can be a union leg's child, and the union's leg-0 base is
+// computed by this function.
+//
+// It satisfies RFC-242's invariant trivially — nothing is substituted, so leg 0's
+// type IS the flowed type — which is precisely why the RFC states an invariant
+// rather than a list. Three laps enumerated the routes and every one was short.
+// This pins the route so the fourth correction is not prose.
+func TestResultBaseForAQuantifierOverAnErasedChildKeepsTheFlowedValue(t *testing.T) {
+	t.Parallel()
+
+	erased := values.NewAnyRecordType(false)
+	child, err := NewRecordQueryScanPlan([]string{"T"}, erased, false)
+	if err != nil {
+		t.Fatalf("scan over an erased record: %v", err)
+	}
+	// The precondition this route is defined by. Without it the assertions below
+	// would pass for a plan whose layout is merely malformed, which is a
+	// different error and a different branch.
+	if _, layoutErr := child.ProvidedOutputLayout(); layoutErr == nil {
+		t.Fatal("the erased child published a layout, so this test no longer reaches the " +
+			"dynamic-carrier route it names")
+	} else {
+		var unavailable *OrdinalLayoutUnavailableError
+		if !errors.As(layoutErr, &unavailable) || unavailable.Code != OrdinalLayoutDynamicCarrier {
+			t.Fatalf("the erased child's layout error is %v, want OrdinalLayoutDynamicCarrier: "+
+				"this route is selected by that code specifically", layoutErr)
+		}
+	}
+
+	q := QuantifierOverPlan(child)
+	// And the other half of the precondition: a NON-nil child is what separates
+	// this exit from the `newPlanExprBaseForType` fallback, which produces a base
+	// of the same shape one function down.
+	if selectedPlanFromQuantifier(q) == nil {
+		t.Fatal("the quantifier has no selected child, so a carrierless result below would be " +
+			"the newPlanExprBaseForType fallback rather than this route")
+	}
+
+	base, err := newPlanExprBaseForQuantifier("erased-child-test", q)
+	if err != nil {
+		t.Fatalf("newPlanExprBaseForQuantifier over an erased child: %v", err)
+	}
+	if base.resultValue == nil {
+		t.Fatal("the dynamic-carrier route published no result value")
+	}
+	if got := base.resultValue.Type(); !got.Equals(erased) {
+		t.Fatalf("dynamic-carrier route published type %s (%T), want %s (%T): this route is "+
+			"supposed to hand back the quantifier's own flowed value untouched, which is what "+
+			"makes it satisfy the invariant trivially", got, got, erased, erased)
+	}
+	if base.ordinalPhysicalProperties != nil {
+		t.Fatal("the dynamic-carrier route published ordinal properties — it is defined by " +
+			"returning before any layout is built")
+	}
+}
+
+// The control for the route above: the same construction over a CONCRETE record
+// takes the pass-through exit and DOES publish a layout. Without it, "no
+// properties" says nothing about which of the two exits ran.
+func TestResultBaseForAQuantifierOverAConcreteChildTakesThePassThrough(t *testing.T) {
+	t.Parallel()
+
+	concrete := values.NewRecordType("R", false, []values.Field{
+		{Name: "A", Ordinal: 0, FieldType: values.NullableLong},
+	})
+	child, err := NewRecordQueryScanPlan([]string{"T"}, concrete, false)
+	if err != nil {
+		t.Fatalf("scan over a concrete record: %v", err)
+	}
+	if _, layoutErr := child.ProvidedOutputLayout(); layoutErr != nil {
+		t.Fatalf("the concrete child published no layout (%v), so this control no longer "+
+			"separates the two exits", layoutErr)
+	}
+	base, err := newPlanExprBaseForQuantifier("concrete-child-test", QuantifierOverPlan(child))
+	if err != nil {
+		t.Fatalf("newPlanExprBaseForQuantifier over a concrete child: %v", err)
+	}
+	if base.ordinalPhysicalProperties == nil {
+		t.Fatal("the concrete child's quantifier published no ordinal properties, so the " +
+			"dynamic-carrier assertion beside it is vacuous")
 	}
 }
