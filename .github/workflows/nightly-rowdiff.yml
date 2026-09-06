@@ -209,7 +209,7 @@ jobs:
           # The TERM arm is what makes the EXIT arm reachable: an untrapped SIGTERM
           # kills the shell without running EXIT at all, so `exit` here is what
           # turns the signal into an ordinary exit that the EXIT trap sees.
-          trap 'rm -rf .fdb-logs-*.new' EXIT
+          trap 'rm -rf .fdb-logs-*' EXIT
           trap 'exit' TERM INT
           img="foundationdb/foundationdb:$FDB_IMAGE_TAG"
           # The script records its OWN pid. Under `setsid` it is a session leader, so
@@ -313,9 +313,24 @@ jobs:
                   if mkdir -p ".fdb-logs-$c.new" &&
                      docker cp "$c:/var/fdb/logs/." ".fdb-logs-$c.new/" >/dev/null 2>&1 &&
                      mv -T ".fdb-logs-$c.new" "fdb-logs-$c.$gen"; then
-                    # Only AFTER the new generation is in place, so the glob never
-                    # sees zero of them.
-                    [ -n "$prevgen" ] && rm -rf "$prevgen"
+                    # RETIRE BY RENAME, THEN DELETE. `rm -rf` is interruptible,
+                    # and the stop signal reaches this group at an arbitrary
+                    # point: a deletion cut in half leaves a partially dismantled
+                    # `fdb-logs-*` directory, which the dump lists and the upload
+                    # ships as though it were a published snapshot. Measured on a
+                    # deep tree — an interrupted `rm -rf` left 6170 of 8000 files
+                    # and the directory still matching the glob. The rename is
+                    # atomic, so the moment it returns the old generation is
+                    # invisible to that glob no matter when the signal lands, and
+                    # what an interrupted delete leaves behind is dot-prefixed
+                    # litter the trap at the top of this script removes.
+                    #
+                    # Order matters: this runs only AFTER the new generation is in
+                    # place, so the glob never sees zero.
+                    if [ -n "$prevgen" ]; then
+                      mv -T "$prevgen" ".$prevgen.trash" 2>/dev/null &&
+                        rm -rf ".$prevgen.trash"
+                    fi
                     prevgen="fdb-logs-$c.$gen"
                   else
                     rm -rf ".fdb-logs-$c.new"

@@ -65,6 +65,17 @@
 #     bug silently nests and returns 0, and that is what `-T` refuses — but no
 #     arm here shows it doing so. What the arms DO catch is the counter breaking:
 #     pinning `gen` at a constant reddens two trace-capture arms.
+#   - the RETIRE-BEFORE-DELETE rename, as such. An old generation is renamed to a
+#     dot-prefixed trash name before `rm -rf` runs on it, because `rm -rf` is
+#     interruptible and a deletion cut in half leaves a directory that still
+#     matches `fdb-logs-*` and is then listed and uploaded as evidence (measured
+#     on a deep tree: an interrupted delete left 6170 of 8000 files, still
+#     matching). Dropping the RENAME reddens the generation-count arm; dropping
+#     the trash DELETION reddens nothing, because the trap at the top of the
+#     watcher removes every dot-prefixed leftover on the way out. So the arms
+#     drive the retire and the sweep, and the trash deletion is the redundant
+#     middle — kept because the trap only runs when the script exits, and a lane
+#     running for four hours should not accumulate trash until then.
 #   - anything about a REAL fdbserver: every trace here is a fixture, so this
 #     pins the plumbing and not the format it carries.
 #
@@ -335,6 +346,15 @@ if start_watcher 1; then
   else
     bad "exactly one published generation survives the prune (found $gens)"
   fi
+  # The surviving generation must hold the traces, not be an empty husk. The
+  # count arm above passes for a directory that exists and holds nothing, which
+  # is the exact reading — "present, therefore captured" — the whole dump exists
+  # to make impossible.
+  if grep -rq 'SharedTLogFailed' "$WORK"/fdb-logs-c1.*/ 2>/dev/null; then
+    ok "the surviving generation still holds its traces"
+  else
+    bad "the surviving generation still holds its traces"
+  fi
   # The published generation must hold the traces DIRECTLY. A publish that nested
   # instead of replacing leaves them one level down, where the dump's `grep -r`
   # still finds them but the file list the dump prints does not — and the
@@ -348,7 +368,7 @@ if start_watcher 1; then
   # periodic staging specifically: both loops stage under `.fdb-logs-*`, so a
   # shared glob makes a leak in either fire whichever arm happens to run, which
   # is how a periodic leak was once reported as an exit one.
-  if ls -d "$WORK"/.fdb-logs-c1.new >/dev/null 2>&1; then
+  if ls -d "$WORK"/.fdb-logs-c1.* >/dev/null 2>&1; then
     bad "the PERIODIC copier leaves no staging directory"
   else
     ok "the PERIODIC copier leaves no staging directory"
@@ -473,7 +493,7 @@ alarm_case "a watcher inspect is evidence" '=== host ===' 'ts c1 exit=1' failure
 #
 # There are TWO copies, one per step, and covering one is how a suite reports the
 # guard as covered while the other stays free to be deleted. Measured on this
-# file as committed, at 29 arms: deleting the forensics copy reddens exactly one
+# file as committed, at 30 arms: deleting the forensics copy reddens exactly one
 # arm, and deleting the WATCHER copy reddens exactly one — the other one — where
 # before the extraction named a step and deleting the watcher's reddened NONE.
 # (An earlier version of this sentence said "at 18 arms", which was the count of
