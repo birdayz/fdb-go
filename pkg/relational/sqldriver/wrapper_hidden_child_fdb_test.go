@@ -39,16 +39,18 @@ import (
 //     the query ANSWERS as a uniform map with its values. And with nothing
 //     stamped above the array at all, it answers RAGGED: one element a message,
 //     one a map. That last is the worst of them, because nothing reports it.
-//   - UNION. A loud 42F65. But it fails IDENTICALLY for two perfectly
-//     synthesisable names, and answers when the names agree — so this site
-//     refuses to promote a record to the anonymised record unification produces,
-//     full stop. That is a legal SQL union Go will not run, and it has nothing
-//     to do with what protobuf can name.
-//   - CASE. Answers, with one leaf under the OUTER alias and no nested record —
-//     the same for good names and bad. Nothing here varies with the name, and
-//     nothing shows a record being coerced, because no record survives as a
-//     record to coerce. Why a record literal in a CASE branch is not
-//     record-typed there is unexplained and is not claimed to be.
+//   - UNION. A loud 42F65 — but not about the name and not about records. It
+//     fails IDENTICALLY for two synthesisable names, answers when the names
+//     agree even with differing WIDTHS, and still fails when only ONE of two
+//     fields disagrees. So what this site refuses is a target carrying an
+//     ANONYMOUS field, and refusing it makes a legal SQL union unrunnable.
+//   - CASE. With ONE field per branch it answers flattened: a bare leaf under
+//     the outer alias, no nested record, the same for good names and bad. With
+//     TWO fields a record DOES survive and IS coerced, the disagreeing field
+//     arriving as `_1`. So this site coerces records where the array site does
+//     not, which is a lead for the port rather than a curiosity — an earlier
+//     round read the one-field row alone and concluded the opposite. Why a
+//     single-field branch flattens at all is still unexplained.
 //
 // TestUnificationErasesAFieldNameOnlyWhenTheNamesDisagree pins the erasure and
 // TestWhichRecordTypesCanBeGivenADescriptor the stamping predicate, both without
@@ -177,14 +179,14 @@ func TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes(t *testing.T) {
 			wantRagged: true,
 		},
 		{
-			why:        "the same two record literals unified by a CASE rather than an array: this one COERCES and answers cleanly, so promotion outside an array element is not the pass-through the booking's closure describes",
+			why:        "the same two record literals unified by a CASE rather than an array: ONE field per branch: it answers, but the leaf is a bare number under the outer alias and no record survives as a record. Read the two-field row below before concluding anything about coercion from this one",
 			query:      `SELECT (CASE WHEN id=1 THEN (1 AS "$lead") ELSE (2 AS A) END AS CH) FROM t`,
 			wantStruct: true,
-			// One leaf, named for the OUTER alias: the branch's single-field
-			// record does not survive as a nested record here, it arrives as the
-			// value under `CH`. Recorded as measured — this row exists to show
-			// the CASE site coerces at all, and the flattening is a second thing
-			// about it that nobody has explained yet.
+			// One leaf, named for the OUTER alias: with a SINGLE field per branch
+			// the record does not survive as a nested record, it arrives as the
+			// value under `CH`. That flattening is unexplained, and it is why an
+			// earlier round read this row as evidence that no record is ever
+			// coerced here. The two-field row below shows one is.
 			wantLeafNames: []string{"CH"},
 			wantLeafVals:  []float64{1},
 		},
@@ -199,19 +201,39 @@ func TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes(t *testing.T) {
 			failsWith: notPromotable,
 		},
 		{
-			why:           "and the same union with AGREEING names answers, so the refusal is the anonymisation and not unions of records in general",
+			why:           "and the same union with AGREEING names answers, BOTH legs, so the refusal is the anonymisation and not unions of records in general",
 			query:         `SELECT (1 AS A) AS C FROM t UNION ALL SELECT (2 AS A) AS C FROM t`,
 			wantStruct:    true,
 			wantRows:      2,
-			wantLeafNames: []string{"A"},
-			wantLeafVals:  []float64{1},
+			wantLeafNames: []string{"A", "A"},
+			wantLeafVals:  []float64{1, 2},
 		},
 		{
-			why:           "the CASE control: SYNTHESISABLE disagreeing names give the same result as the bad-name CASE row above — one INT leaf under the outer alias, no nested record. Nothing about the CASE site varies with the name, and no record survives as a record to be coerced",
+			why:           "the CASE control: SYNTHESISABLE disagreeing names give the same one-field result as the bad-name CASE row above, so nothing at this site varies with the name",
 			query:         `SELECT (CASE WHEN id=1 THEN (1 AS A) ELSE (2 AS B) END AS CH) FROM t`,
 			wantStruct:    true,
 			wantLeafNames: []string{"CH"},
 			wantLeafVals:  []float64{1},
+		},
+		{
+			why:           "TWO fields per CASE branch, and now a record DOES survive as a record and IS coerced — the disagreeing field comes back `_1`, anonymised exactly as unification does. So the CASE site coerces records; the rows above are flattened only because a single-field branch is. Something on this path does what the array path does not, and finding out what is the first step of the port",
+			query:         `SELECT (CASE WHEN id=1 THEN (1 AS A, 3 AS Z) ELSE (2 AS A, 4 AS Y) END AS CH) FROM t`,
+			wantStruct:    true,
+			wantLeafNames: []string{"A", "_1"},
+			wantLeafVals:  []float64{1, 3},
+		},
+		{
+			why:           "a UNION whose names AGREE but whose widths differ: it ANSWERS, both legs. So record promotion in a union is not refused in general — only a target carrying an ANONYMOUS field is",
+			query:         `SELECT (1 AS A) AS C FROM t UNION ALL SELECT (2.5 AS A) AS C FROM t`,
+			wantStruct:    true,
+			wantRows:      2,
+			wantLeafNames: []string{"A", "A"},
+			wantLeafVals:  []float64{1, 2.5},
+		},
+		{
+			why:       "PARTIAL anonymisation in a union: `A` agrees and `Z`/`Y` do not, so the target is `RECORD<A INT, INT>` and it is still refused. One anonymous field is enough, which is what makes the refusal about the anonymous field rather than about the record",
+			query:     `SELECT (1 AS A, 3 AS Z) AS C FROM t UNION ALL SELECT (2 AS A, 4 AS Y) AS C FROM t`,
+			failsWith: notPromotable,
 		},
 	} {
 		query := tc.query
@@ -290,7 +312,19 @@ func TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes(t *testing.T) {
 					"passes on anything: declare wantLeafNames/wantLeafVals or drop the row", query)
 				continue
 			}
-			names, vals, others := leaves(t, got[0])
+			// Every row, not just the first: a multi-row expectation that
+			// examines one row leaves the rest unmeasured. Sorted by value,
+			// because UNION ALL leg order is not pinned here and asserting it
+			// would make this row about something else.
+			var names, others []string
+			var vals []float64
+			for _, row := range got {
+				rowNames, rowVals, rowOthers := leaves(t, row)
+				names = append(names, rowNames...)
+				vals = append(vals, rowVals...)
+				others = append(others, rowOthers...)
+			}
+			sortLeavesByValue(names, vals)
 			if len(others) != 0 {
 				t.Errorf("%s reached %d non-numeric leaf/leaves %q: this row asserts numbers, and a "+
 					"leaf the walker cannot read would otherwise be invisible", query, len(others), others)
@@ -432,4 +466,36 @@ func leafValsEqual(a, b []float64) bool {
 		}
 	}
 	return true
+}
+
+// sortLeavesByValue orders the collected leaves by value, keeping each name with
+// its number.
+//
+// Multi-row rows in this table are UNION ALL, whose leg order is not pinned
+// anywhere. Asserting the order here would quietly make those rows a test of leg
+// ordering, and they would then redden for a reason that has nothing to do with
+// what they measure.
+func sortLeavesByValue(names []string, vals []float64) {
+	// Sorted as PAIRS. Sorting the two slices independently would reorder names
+	// and values against each other, and every assertion built on them would
+	// then be about a pairing the query never produced.
+	sort.Stable(sortableLeaves{names: names, vals: vals})
+}
+
+type sortableLeaves struct {
+	names []string
+	vals  []float64
+}
+
+func (s sortableLeaves) Len() int { return len(s.vals) }
+func (s sortableLeaves) Swap(i, j int) {
+	s.names[i], s.names[j] = s.names[j], s.names[i]
+	s.vals[i], s.vals[j] = s.vals[j], s.vals[i]
+}
+
+func (s sortableLeaves) Less(i, j int) bool {
+	if s.vals[i] != s.vals[j] {
+		return s.vals[i] < s.vals[j]
+	}
+	return s.names[i] < s.names[j]
 }

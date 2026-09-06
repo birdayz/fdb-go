@@ -9329,10 +9329,15 @@ covered by the correctness suite and the golden plan diff, not by this table.
   '*.go'` returns only the two generated protobuf files and
   `pkg/recordlayer/query/plan/plans/update.go`. Do NOT paper it over by making message fields
   accept a map: Java coerces with a known target descriptor and a per-field plan, not by copying
-  a map by name. The RAGGED case needs its own answer even after the trie lands, because there
-  is no stamped parent there to refuse anything. Booked from RFC-242 r36 and re-characterised at
-  r38, r39, r40 and r41 as reviewers refuted each account. The measurements survived; the
-  explanations did not.
+  a map by name. The RAGGED case may need its own answer, but not for the reason an earlier
+  draft gave: the promote is per ELEMENT, so no stamped parent is required to coerce it. What it
+  lacks is a `Message` for `MessageHelpers.coerceObject` to consume, which is the registration
+  half of the port unit already named above rather than a separate mechanism. A live lead the
+  table supplies: a TWO-FIELD CASE branch already coerces a record and anonymises the
+  disagreeing field to `_1`, so something on that path does what the array path does not. Find
+  out what before writing the port. Booked from RFC-242 r36 and re-characterised at r38, r39,
+  r40 and r41 as reviewers refuted each account. The measurements survived; the explanations did
+  not.
 
 - [ ] **Unifying two record literals of differing numeric width is refused at evaluation.**
   `SELECT ([(1 AS A), (2.5 AS A)] AS CH) FROM t` over a NON-EMPTY table fails with `cannot
@@ -9352,19 +9357,22 @@ covered by the correctness suite and the golden plan diff, not by this table.
   satisfied by the other booking's failure. Booked from RFC-242 r39, found by a reviewer varying
   the dimension the pin held fixed.
 
-- [ ] **A legal UNION of two one-field records with different field names is refused.**
+- [ ] **A UNION is refused whenever the common type carries an ANONYMOUS field.**
   `SELECT (1 AS A) AS C FROM t UNION ALL SELECT (2 AS B) AS C FROM t` fails with `42F65: UNION
   output slot 0 cannot adopt the common type: source type RECORD<A INT NOT NULL> is not
   promotable to RECORD<INT NOT NULL>`. Every name is one protobuf will carry; the same union
-  with AGREEING names answers. Unification anonymises the disagreeing field, and the union path
-  then refuses to promote a record to that anonymised record at all. This was first mistaken for
-  a fourth outcome of the booking above, on the strength of a spelling that happened to use
-  `$lead`. It is not: the bad name is irrelevant here, which the two-good-names row proves. It
-  is the same MISSING MACHINERY — no record coercion on the Go promote — surfacing as a
-  plan-time refusal rather than an evaluation-time one. PRE-EXISTING, measured: identical at the
-  merge-base `36b97f1e9`. PINNED as three rows of
-  `TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes`: the refusal, the same refusal with two
-  synthesisable names, and the agreeing-name union that answers. Java's answer is the promotion
-  trie again — a record coercion built per field rather than a promotability predicate that
-  must already hold. Check whether Java accepts this union before deciding the direction: if it
-  does, this is a conformance divergence and not only a gap. Booked from RFC-242 r41.
+  with AGREEING names answers. WHAT IS REFUSED, narrowed by measurement rather than asserted:
+  not records (agreeing names promote), not widening (`(1 AS A)` UNION `(2.5 AS A)` answers,
+  both legs), and not the whole record being anonymous — `(1 AS A, 3 AS Z)` UNION `(2 AS A, 4
+  AS Y)` is refused against `RECORD<A INT NOT NULL, INT NOT NULL>`, where only the second field
+  is anonymous. ONE anonymous field in the common type is enough. Two earlier readings of this
+  were wrong: first that it was a fourth outcome of the booking above (it uses no bad name at
+  all), then that record promotion in a union is refused in general (widening agreeing names
+  answers). PRE-EXISTING, measured: identical at the merge-base `36b97f1e9`. PINNED as five rows
+  of `TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes`: the refusal, the same refusal with two
+  synthesisable names, the agreeing-name union that answers, the agreeing-name union that WIDENS
+  and answers, and the partially-anonymised two-field union that is still refused. Java's answer
+  is the promotion trie again — a record coercion built per field rather than a promotability
+  predicate that must already hold. Check whether Java accepts this union before deciding the
+  direction: if it does, this is a conformance divergence and not only a gap. Booked from
+  RFC-242 r41.

@@ -17,8 +17,8 @@ import (
 // AND a promotion target that is itself synthesisable because unification erased
 // the offending name. Both are needed: leave the same bad name on both elements
 // and the target keeps it, the parent cannot stamp either, and the query answers
-// as a uniform raw map instead. TODO.md, "A record literal protobuf cannot name
-// reaches a stamped parent", carries the closure, and
+// as a uniform raw map instead. TODO.md, "A record literal that is not
+// stamped reaches a stamped parent", carries the closure, and
 // TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes measures it with the controls
 // that make it attributable — including the same array with nothing stamped
 // above it, which answers RAGGED instead. Read that table rather than any
