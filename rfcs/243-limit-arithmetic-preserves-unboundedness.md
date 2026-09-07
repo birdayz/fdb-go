@@ -345,3 +345,77 @@ is the existing record-layer approach (`cursor.go:saturatingAdd`). Increasing
 integer width across the SQL, planner, executor and continuation APIs is
 unnecessary: the existing nested representation already expresses both skips
 exactly.
+
+## Final verification checkpoint — 2026-09-08
+
+Implementation commit: `e4c0e8ee807967a97989aa9eb5b1206f8563a9de`. Graefe, Torvalds and the independent
+Codex review ACKed the implementation and final deltas. The non-strict
+first/default NAK was withdrawn after the live-JVM value probes; the suggested
+strict child cap of two was withdrawn after the mixed-record mutation failed.
+
+An uncached full sweep passed 91/91 targets before the final mixed-record
+test/comment refinement. The complete executor and docscheck targets then
+passed uncached (2/2), including all 12 mixed/homogeneous strict-FDB cases.
+Final `just test` passed 91/91 (19 executed, 72 cached), with source checksums
+unchanged across the run; the commit hook also passed 91/91. These are distinct
+execution populations, not a claim that the final invocation ran 91 targets
+uncached. Gazelle, module tidy, feature/SQL ledgers and `git diff --check` passed.
+
+### Matched 1M stress
+
+Baseline `42a79173557936707a32a969e51489667db6ff01` (the merge-base at measurement) versus
+`e4c0e8ee807967a97989aa9eb5b1206f8563a9de`. Four runs per side, sequential **ABBA twice**.
+Both worktrees used the same `/home` XFS filesystem, 97% utilized (about 35 GiB
+free); the ext4 threshold does not establish an XFS latency bound. Recorded
+one-minute host loads ranged 0.47–3.14. No concurrent heavy build/test workload.
+Each run passed uncached with 24 `=== RUN` lines (root plus 23 query arms),
+identical row counts, and source checksums unchanged afterward.
+
+```sh
+bazelisk test //pkg/relational/sqldriver/stress:stress_test \
+  --nocache_test_results --test_output=all \
+  '--test_arg=-test.run=^TestFDB_Stress_1M$' --test_arg=-test.v \
+  --build_event_json_file=/tmp/bughunt-stress-<run>.bep.jsonl
+```
+
+Baseline total seconds: 177.53, 177.22, 177.54, 179.41.
+Changed total seconds: 177.16, 177.74, 177.76, 177.30.
+Ratio of means: **0.998x**.
+This small sample is not a statistical speedup claim. The first pair's apparent
+status-count/join slowdown did not retain that magnitude in the repeated
+matched runs; report the measured ranges, not an inferred error bound.
+
+Query timing ranges below are milliseconds across **four runs per side**;
+COUNT(*) uses the subtest timer because that arm logs no separate query timer.
+
+| Query arm | Rows | Baseline ms | Changed ms | Mean ratio |
+|---|---:|---:|---:|---:|
+| PK lookup id=0 | 1 | 8.56–17.95 | 8.41–15.61 | 0.951x |
+| PK lookup id=N/2 | 1 | 7.42–18.70 | 8.38–18.70 | 1.036x |
+| PK lookup id=N-1 | 1 | 5.42–13.30 | 6.34–14.73 | 1.096x |
+| idx_customer eq | 8 | 6.75–17.23 | 6.53–19.40 | 1.063x |
+| idx_amount range >9000 | 100017 | 191.19–259.43 | 190.24–284.59 | 1.082x |
+| idx_status count pending | 1 | 323.56–411.98 | 341.66–386.46 | 1.017x |
+| full scan filter amount>5000 | 1 | 545.55–566.70 | 549.18–592.68 | 1.014x |
+| GROUP BY status | 4 | 6.04–6.30 | 5.82–7.62 | 1.036x |
+| GROUP BY status COUNT only | 4 | 5.34–5.55 | 5.39–5.63 | 1.020x |
+| SUM by status (aggregate index) | 4 | 5.62–5.78 | 4.84–5.93 | 0.975x |
+| GROUP BY customer HAVING | 47271 | 580.87–700.56 | 578.14–705.09 | 0.993x |
+| JOIN 10 orders x customers | 10 | 20.01–33.70 | 21.66–42.58 | 1.066x |
+| ORDER BY PK (full) | 1000000 | 3833.98–3959.19 | 3879.44–3961.44 | 1.000x |
+| ORDER BY PK + index filter | 8 | 8.79–9.16 | 8.91–11.87 | 1.092x |
+| scan all rows ordered | 1000000 | 3666.78–3703.13 | 3658.44–3693.57 | 0.997x |
+| scan all rows wide | 1000000 | 3938.25–3977.20 | 3918.23–3977.97 | 0.997x |
+| IN-list 5 values | 46 | 19.02–23.97 | 18.68–24.23 | 1.040x |
+| PK needle id=999999 | 1 | 5.76–6.44 | 5.70–6.38 | 0.984x |
+| PK+filter needle id=500000 | 1 | 7.25–7.77 | 7.39–7.71 | 1.019x |
+| full scan sparse filter | 97 | 3349.70–3363.65 | 3317.70–3343.63 | 0.992x |
+| UPDATE by index | 8 | 8.92–9.93 | 8.82–9.14 | 0.974x |
+| DELETE single row | 1 | 6.33–7.32 | 6.43–6.58 | 0.979x |
+| COUNT(*) | 1000000 | 3100.00–3160.00 | 3100.00–3210.00 | 1.006x |
+
+Re-inspectable session artifacts: `/tmp/bughunt-stress-before-{5,6,7,8}` and
+`/tmp/bughunt-stress-after-{3,4,5,6}`, each with `.log`, `-tests.log`, `.meta`,
+`.bep.jsonl`, `.md5` and `.check.log`. They replace the earlier after runs that
+predated the follow-up. The committed tables retain the conclusions independently
+of those temporary logs; the regression tests retain the correctness proofs.

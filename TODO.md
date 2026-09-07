@@ -9720,9 +9720,34 @@ covered by the correctness suite and the golden plan diff, not by this table.
   FirstOrDefault retains Java's different contract, pinned by 27 live-JVM/core
   comparisons and the exact mapped-empty-record reproducer. SQL's bounded
   FlatMap caller was already protected and is pinned separately.
-- [ ] Finish and record final-source matched 1M stress measurements (two runs per
-  side, sequential, same filesystem) for this active workstream. The earlier
-  after measurements predate the follow-up and are not final-source evidence.
+- [x] Final-source 1M measurements: four runs per side, sequential ABBA twice,
+  same XFS filesystem. Baseline `42a79173557936707a32a969e51489667db6ff01`
+  versus `e4c0e8ee807967a97989aa9eb5b1206f8563a9de`; all eight fresh runs
+  passed with identical row counts across 23 query arms (24 RUN lines each).
+  Total durations: baseline 177.53/177.22/177.54/179.41s, changed
+  177.16/177.74/177.76/177.30s. Detailed timing population and conditions are
+  recorded in RFC-243. Earlier after measurements are superseded.
 
 Design, rejected alternatives and verification scope:
 `rfcs/243-limit-arithmetic-preserves-unboundedness.md`.
+
+### Stress test 1M baseline — RFC-243 (2026-09-08)
+
+Baseline `42a79173557936707a32a969e51489667db6ff01` (merge-base at measurement)
+versus `e4c0e8ee807967a97989aa9eb5b1206f8563a9de`. Sequential ABBA twice;
+four runs per side, same XFS mount at 97% utilization, recorded one-minute
+loads 0.47–3.14. All eight runs passed uncached, with 24 RUN lines each and
+identical row counts for 23 query arms. Source checksums stayed unchanged.
+
+| Measurement | Baseline | Changed |
+|---|---:|---:|
+| Total seconds, four runs | 177.53 / 177.22 / 177.54 / 179.41 | 177.16 / 177.74 / 177.76 / 177.30 |
+| COUNT(*) / 1M, seconds | 3.10–3.16 | 3.10–3.21 |
+| ORDER BY PK / 1M, seconds | 3.834–3.959 | 3.879–3.961 |
+| Wide scan / 1M, seconds | 3.938–3.977 | 3.918–3.978 |
+| Sparse filter / 97 rows, seconds | 3.350–3.364 | 3.318–3.344 |
+
+Total ratio of means 0.998x; no statistical speedup claim from four samples.
+All query timing ranges, exact command, review/test populations and artifact
+names are in RFC-243's "Final verification checkpoint". Initial apparent
+status-count/join slowdowns were remeasured, not dismissed from other rows.
