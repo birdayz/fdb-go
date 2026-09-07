@@ -1337,10 +1337,15 @@ digest_case "the forensics report registers"   moved 'echo fx > fdb-forensics.tx
 # that check the closing mechanism. It takes two coordinated changes to fail open
 # today, since the poison is `>>` and creates the file, so this is a latent
 # vacuity being closed rather than a live hole.
-[ -f "$DIGWORK/fdb-watch.log" ] \
-  && ok "the precondition probe has a file to watch" \
-  || bad "the precondition probe has a file to watch (fdb-watch.log absent, so both readings would be empty)"
 pre_before=$(cd "$DIGWORK" && md5sum fdb-watch.log 2>/dev/null)
+# The probe's own dependency, asserted on the READING rather than on the file.
+# `[ -f ]` would prove the path exists and still leave both readings empty if
+# `md5sum` could not read it — and empty-against-empty is exactly the comparison
+# the arm below would then pass on. This is the same unasserted dependency closed
+# for the digest cases above, in the arms that check the mechanism closing it.
+[ -n "$pre_before" ] \
+  && ok "the precondition probe has something to compare" \
+  || bad "the precondition probe has something to compare (no reading for fdb-watch.log, so the arm below would compare nothing to nothing)"
 pre_out=$( ( digest_case "impossible" moved 'echo POISON >> fdb-watch.log' '[ 1 = 2 ]' ) 2>&1 )
 pre_after=$(cd "$DIGWORK" && md5sum fdb-watch.log 2>/dev/null)
 if printf '%s' "$pre_out" | grep -q 'precondition .* does not hold'; then

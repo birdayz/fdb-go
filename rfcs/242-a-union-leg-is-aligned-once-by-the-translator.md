@@ -2081,6 +2081,15 @@ digit short.
   74 against 73. It is stated as N+1 against N now, which cannot go stale, and the historical
   copies in this file carry their population.
 
+- **And the probe guard pinned the wrong property.** It asserted `[ -f fdb-watch.log ]`, which
+  proves the path exists and still leaves both readings empty if `md5sum` cannot read it — and
+  empty-against-empty is exactly the comparison the arm was added to stop. It asserts the READING
+  is non-empty now, which covers both shapes: removing the file reddens it by name, and making the
+  reading unreadable reddens it AND the downstream arm, which the `[ -f ]` form would have passed.
+  Renaming that arm also made the label gate fire for real — 73 ran against 73 pinned, MISSING and
+  UNEXPECTED naming the old and the new label — which is the substitution case working in
+  production rather than only in its unit test.
+
 Two rounds running, the defect has been inside the sentence fixing its predecessor. That is the
 whole finding: a fix is a claim, and it decays exactly like the claim it replaced.
 
