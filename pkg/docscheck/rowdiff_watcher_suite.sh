@@ -1105,9 +1105,9 @@ alarm_case "an inspect WITH traces on a failed night is evidence" '=== host ==='
 # claimed they were — "deleting the forensics copy reddens exactly one arm, and
 # deleting the WATCHER copy reddens exactly one, the other one". The second half
 # is true; the first never was, at any committed revision. Re-measured on this
-# file at 74 arms, and again at the previous head to establish which:
+# file at 75 arms, and again at the previous head to establish which:
 #
-#   delete the WATCHER copy    -> 74 arms run, 1 red. `armed` is still set when
+#   delete the WATCHER copy    -> 75 arms run, 1 red. `armed` is still set when
 #                                 awk reaches the forensics `ver="`, so the
 #                                 extraction silently borrows the OTHER step's
 #                                 guard and the pinned case fails on it.
@@ -1226,7 +1226,7 @@ testing what its name says — an earlier case changed what it starts from"
   if [ "$got" = "$2" ]; then ok "digest: $1 ($got)"; else bad "digest: $1: got $got, want $2"; fi
 }
 
-# What these sixteen arms catch, measured at 74 arms by mutating the digest and
+# What these sixteen arms catch, measured at 75 arms by mutating the digest and
 # re-running. Every count below is over that population.
 #
 # The NOT-covered shape first, because that is the half a description of the code
@@ -1330,13 +1330,6 @@ digest_case "the forensics report registers"   moved 'echo fx > fdb-forensics.tx
 # equal-length setup, which is exactly when a broken guard turns that back into
 # silence. Run in a SUBSHELL so its `bad` cannot fail the suite, and assert both
 # halves: the case is named in the failure, and the mutation did NOT run.
-# The probe's own dependency, asserted rather than assumed. Both readings below
-# are `md5sum fdb-watch.log`, and with that file absent both are the empty string
-# and the second arm passes on comparing nothing to nothing — the same unasserted
-# dependency closed for the digest cases twenty lines up, still open in the arms
-# that check the closing mechanism. It takes two coordinated changes to fail open
-# today, since the poison is `>>` and creates the file, so this is a latent
-# vacuity being closed rather than a live hole.
 pre_before=$(cd "$DIGWORK" && md5sum fdb-watch.log 2>/dev/null)
 # The probe's own dependency, asserted on the READING rather than on the file,
 # and expressed as a NAMED PREDICATE so the state that distinguishes the two can
@@ -1350,22 +1343,50 @@ pre_before=$(cd "$DIGWORK" && md5sum fdb-watch.log 2>/dev/null)
 # unexercised. Manufacturing a genuinely unreadable file is not portable (a root
 # CI reads a `chmod 000` file happily), so the predicate takes the reading as an
 # argument and the arm below drives it over the distinguishing state directly.
-probe_has_reading() { [ -n "$1" ]; }
+# ONE decision point, reporting included, because an arm that drives a HELPER
+# while production calls the predicate separately is not driving production:
+# reverting the CALL to a path test left the helper untouched and every arm
+# green. Both the live check and the negative arm below go through this function,
+# so a mutation to either the predicate or its use moves both.
+probe_arm_calls=0
+probe_reading_arm() {   # $1 reading, $2 arm name
+  probe_arm_calls=$((probe_arm_calls + 1))
+  if [ -n "$1" ]; then
+    ok "$2"
+  else
+    bad "$2 (no reading for fdb-watch.log, so the arms below would compare nothing to nothing)"
+  fi
+}
 
-probe_has_reading "$pre_before" \
-  && ok "the precondition probe has something to compare" \
-  || bad "the precondition probe has something to compare (no reading for fdb-watch.log, so the arm below would compare nothing to nothing)"
+probe_reading_arm "$pre_before" "the precondition probe has something to compare"
 
-# The DISTINGUISHING state: a file that exists, with no reading for it. `[ -f ]`
-# accepts it, which is why that predicate could not catch this; the guard must
-# reject it. Reverting `probe_has_reading` to a path test reddens this arm.
+# The DISTINGUISHING state, driven through that same function: a file that
+# EXISTS, with no reading for it. A path test accepts it — which is why `[ -f ]`
+# could not catch this — and the guard must reject it. Captured in a subshell so
+# its `bad` cannot fail the suite. Reverting the guard to a path test reddens
+# this arm whenever the revert ignores the ARGUMENT — the historical spelling
+# stats `$DIGWORK/fdb-watch.log`, which is present, so the empty reading is
+# ignored and the arm goes red. A revert to `[ -f "$1" ]` would still read the
+# argument and is a different mutation; it is the argument being ignored that
+# this arm detects.
 : > "$DIGWORK/fdb-watch.present"
-if [ -f "$DIGWORK/fdb-watch.present" ] && ! probe_has_reading ""; then
+probe_neg=$( ( probe_reading_arm "" "an empty reading" ) 2>&1 )
+if [ -f "$DIGWORK/fdb-watch.present" ] && printf '%s' "$probe_neg" | grep -q '^  FAIL'; then
   ok "the probe guard rejects an empty reading of a file that exists"
 else
-  bad "the probe guard rejects an empty reading of a file that exists (a path test would accept it)"
+  bad "the probe guard rejects an empty reading of a file that exists (got: $probe_neg)"
 fi
 rm -f "$DIGWORK/fdb-watch.present"
+
+# And that production still GOES THROUGH it. One function is only one decision
+# point while both callers use it, and the negative arm above cannot notice a
+# live check that stops calling it: replacing the live line with an inline path
+# test left all arms green. The count is ONE, not two, because the negative arm
+# runs in a subshell whose increment does not escape — which is the point of the
+# subshell, and is why the expected value is written here rather than inferred.
+[ "$probe_arm_calls" = 1 ] \
+  && ok "the live probe check goes through the guarded decision" \
+  || bad "the live probe check goes through the guarded decision (called $probe_arm_calls times, want 1 — a caller bypassed it)"
 pre_out=$( ( digest_case "impossible" moved 'echo POISON >> fdb-watch.log' '[ 1 = 2 ]' ) 2>&1 )
 pre_after=$(cd "$DIGWORK" && md5sum fdb-watch.log 2>/dev/null)
 if printf '%s' "$pre_out" | grep -q 'precondition .* does not hold'; then

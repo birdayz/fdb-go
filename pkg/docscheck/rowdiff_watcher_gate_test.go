@@ -271,6 +271,7 @@ the exit-transition copy leaves no staging directory
 the exit transition is logged exactly once
 the injected outage was observed by the copier
 the last inspect survives removal
+the live probe check goes through the guarded decision
 the PERIODIC copier leaves no staging directory
 the precondition probe has something to compare
 the probe guard rejects an empty reading of a file that exists
