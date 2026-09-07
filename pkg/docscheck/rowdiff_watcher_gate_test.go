@@ -1,6 +1,7 @@
 package docscheck
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -170,8 +171,16 @@ func TestRowdiffWatcherBehaviour(t *testing.T) {
 // and the total never moves. Nor does a COUNT, even an exact one — add one arm
 // while another is skipped, or duplicate a label while deleting a different one,
 // and the cardinality is identical. That is the same cancellation one level up,
-// which is why this compares LABELS and derives the count from them, so the two
-// can never disagree.
+// which is why this compares LABELS. There is no count comparison left to get
+// wrong: a run with the full population plus a duplicate is not caught by any
+// arithmetic between "labels that ran" and "labels pinned" — those count
+// different things, lines against distinct entries — so a repeated label is
+// detected as its own state instead.
+//
+// Three states, and each section prints ONLY when it has members. Rendering all
+// three unconditionally reads as thorough and makes the message
+// undiscriminating: an assertion on the word MISSING then holds for an
+// unexpected arm too, and swapping the two lists passes every test.
 //
 // The cost is real and is the point: every arm added, renamed or removed reddens
 // this once, until the author restates the population here. That is a prompt to
@@ -283,31 +292,49 @@ func checkArms(out, want string) error {
 			expected[l] = true
 		}
 	}
-	var unexpected []string
-	seen := map[string]bool{}
+	var unexpected, duplicated []string
+	seen := map[string]int{}
 	for _, l := range got {
-		if !expected[l] {
+		seen[l]++
+		switch {
+		case seen[l] == 2:
+			duplicated = append(duplicated, l)
+		case seen[l] == 1 && !expected[l]:
 			unexpected = append(unexpected, l)
 		}
-		seen[l] = true
 	}
 	var missing []string
 	for l := range expected {
-		if !seen[l] {
+		if seen[l] == 0 {
 			missing = append(missing, l)
 		}
 	}
 	sort.Strings(missing)
-	if len(missing) == 0 && len(unexpected) == 0 && len(got) == len(expected) {
+	if len(missing) == 0 && len(unexpected) == 0 && len(duplicated) == 0 {
 		return nil
 	}
-	return fmt.Errorf("rowdiff_watcher_suite.sh arm population differs: %d arms ran, %d pinned.\n"+
-		"MISSING (ran before, not now — arms disappeared rather than failed, which reports as "+
-		"green; if they were RETIRED deliberately, remove them from wantArmLabels in the same "+
-		"commit and say why): %v\n"+
-		"UNEXPECTED (added without restating the population; add them to wantArmLabels and "+
-		"re-check every comment in the suite that quotes an arm count): %v",
-		len(got), len(expected), missing, unexpected)
+	// Each section is emitted ONLY when it has members. Rendering all three
+	// unconditionally reads as thorough and makes the message undiscriminating:
+	// an assertion on the word "MISSING" then holds for an unexpected arm too, so
+	// swapping the two lists passes every test. The section headings are the
+	// values under test, not decoration.
+	b := &strings.Builder{}
+	fmt.Fprintf(b, "rowdiff_watcher_suite.sh arm population differs: %d arms ran, %d pinned.",
+		len(got), len(expected))
+	if len(missing) > 0 {
+		fmt.Fprintf(b, "\nMISSING — pinned but did not run. Arms disappeared rather than failed, "+
+			"which reports as green. If they were RETIRED deliberately, remove them from "+
+			"wantArmLabels in the same commit and say why: %v", missing)
+	}
+	if len(unexpected) > 0 {
+		fmt.Fprintf(b, "\nUNEXPECTED — ran but is not pinned. Add to wantArmLabels and re-check "+
+			"every comment in the suite that quotes an arm count: %v", unexpected)
+	}
+	if len(duplicated) > 0 {
+		fmt.Fprintf(b, "\nDUPLICATED — the same label ran more than once, so one arm's result is "+
+			"standing in for another's. Give each case a distinct name: %v", duplicated)
+	}
+	return errors.New(b.String())
 }
 
 // The census above decides from suite OUTPUT, so a full run exercises only the
@@ -328,39 +355,70 @@ func TestRowdiffWatcherArmCensus(t *testing.T) {
 	}
 	pinned := "a\nb\nc\n"
 
+	// `want` and `notWant` are both asserted, and the second is what makes the
+	// first mean anything: every section heading used to be rendered whether or
+	// not it had members, so an assertion on "MISSING" also held for an
+	// unexpected arm and swapping the two lists passed every case here.
 	for _, tc := range []struct {
 		name    string
 		out     string
-		wantErr string
+		want    []string
+		notWant []string
 	}{
 		// The empty-set reading, and the reason this gate exists: a suite that
 		// produced nothing must not be indistinguishable from one that passed.
-		{"no output at all", "", "reported NO passing arms"},
-		{"output but no arms", "\nALL OK\n", "reported NO passing arms"},
-		{"an arm disappeared", out("a", "b"), "MISSING"},
-		{"an arm was added", out("a", "b", "c", "d"), "UNEXPECTED"},
-		// The case a COUNT cannot see, and the reason this compares identities:
-		// one arm skipped, another added, cardinality unchanged.
-		{"a same-count substitution", out("a", "b", "d"), "MISSING"},
-		// Likewise a duplicate standing in for a deletion.
-		{"a duplicate masking a deletion", out("a", "b", "b"), "MISSING"},
-		{"exactly the pinned population", out("a", "b", "c"), ""},
-		{"order does not matter", out("c", "a", "b"), ""},
+		{"no output at all", "", []string{"reported NO passing arms"}, []string{"MISSING"}},
+		{"output but no arms", "\nALL OK\n", []string{"reported NO passing arms"}, nil},
+		{"an arm disappeared", out("a", "b"), []string{"MISSING", "[c]"}, []string{"UNEXPECTED", "DUPLICATED"}},
+		{"an arm was added", out("a", "b", "c", "d"), []string{"UNEXPECTED", "[d]"}, []string{"MISSING", "DUPLICATED"}},
+		// The case a COUNT cannot see: one arm skipped, another added, cardinality
+		// unchanged. Both sections must name the right label, in the right role.
+		{
+			"a same-count substitution", out("a", "b", "d"),
+			[]string{"MISSING", "[c]", "UNEXPECTED", "[d]"},
+			[]string{"DUPLICATED"},
+		},
+		{
+			"a duplicate masking a deletion", out("a", "b", "b"),
+			[]string{"MISSING", "[c]", "DUPLICATED", "[b]"},
+			[]string{"UNEXPECTED"},
+		},
+		// A duplicate with NOTHING missing: the population is complete and one
+		// label still ran twice, so a copy-pasted case reusing a name is caught
+		// on its own, not only as a side effect of some other arm vanishing.
+		{
+			"a duplicate alongside the full population", out("a", "a", "b", "c"),
+			[]string{"DUPLICATED", "[a]"},
+			[]string{"MISSING", "UNEXPECTED"},
+		},
+		{"exactly the pinned population", out("a", "b", "c"), nil, nil},
+		{"order does not matter", out("c", "a", "b"), nil, nil},
 		// `ok` in prose is not an arm. The scan keys on the suite's own two-space
 		// prefix and three-space gap, so a line merely containing "ok" cannot
 		// inflate the census into passing.
-		{"prose mentioning ok is not an arm", out("a", "b", "c") + "looks ok to me\n  ok but not an arm\n", ""},
+		{"prose mentioning ok is not an arm", out("a", "b", "c") + "looks ok to me\n  ok but not an arm\n", nil, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			err := checkArms(tc.out, pinned)
-			switch {
-			case tc.wantErr == "" && err != nil:
-				t.Fatalf("checkArms(%v) = %v, want nil", armLabels(tc.out), err)
-			case tc.wantErr != "" && err == nil:
-				t.Fatalf("checkArms(%v) = nil, want error containing %q", armLabels(tc.out), tc.wantErr)
-			case tc.wantErr != "" && !strings.Contains(err.Error(), tc.wantErr):
-				t.Fatalf("checkArms error = %q, want it to contain %q", err, tc.wantErr)
+			if len(tc.want) == 0 {
+				if err != nil {
+					t.Fatalf("checkArms(%v) = %v, want nil", armLabels(tc.out), err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("checkArms(%v) = nil, want an error containing %v", armLabels(tc.out), tc.want)
+			}
+			for _, w := range tc.want {
+				if !strings.Contains(err.Error(), w) {
+					t.Errorf("checkArms error = %q, want it to contain %q", err, w)
+				}
+			}
+			for _, n := range tc.notWant {
+				if strings.Contains(err.Error(), n) {
+					t.Errorf("checkArms error = %q, want it NOT to contain %q", err, n)
+				}
 			}
 		})
 	}
