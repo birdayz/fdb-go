@@ -1,0 +1,64 @@
+# cte_expression_aggregate_join_leg.yaml
+#
+# A non-recursive CTE whose body carries an EXPRESSION aggregate, used as a
+# join leg. The CTE column-source builder derived a single-table aggregate body
+# from the parse tree, typing each aggregate from its argument's CATALOG
+# column — so an expression argument came out UNKNOWN and a reader binding
+# `u.s` by plan-time ordinal found a source that could not state its row:
+#
+#   column "S" resolves against source "U", which declares no column order
+#   to bind a plan-time ordinal
+#
+# while the identical body as a derived table worked, because that path
+# builds the body and publishes its exact row first. The CTE path now takes
+# the same order (RFC-242, adjacent finding). Pinned in both forms, with the
+# bare-column body as the control that always worked.
+#
+# ga groups g={100,200}: SUM(v*2) = 24, 18; SUM(v) = 12, 9. c maps 100→1, 200→2.
+name: cte_expression_aggregate_join_leg
+schema_template: |
+  CREATE TABLE ga (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))
+  CREATE TABLE c (id BIGINT, w BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO ga VALUES (1, 100, 5), (2, 100, 7), (3, 200, 9)
+  - INSERT INTO c VALUES (100, 1), (200, 2)
+tests:
+  # The failing shape: expression aggregate in a CTE body, CTE as a join leg.
+  - query: WITH u AS (SELECT g, SUM(v * 2) AS s FROM ga GROUP BY g) SELECT c.w, u.s FROM u, c WHERE u.g = c.id
+    columns: ["W", "S"]
+    unordered: true
+    rows:
+      - [1, 24]
+      - [2, 18]
+  # The same body as a derived table: always worked, and must keep agreeing.
+  - query: SELECT c.w, u.s FROM (SELECT g, SUM(v * 2) AS s FROM ga GROUP BY g) u, c WHERE u.g = c.id
+    columns: ["W", "S"]
+    unordered: true
+    rows:
+      - [1, 24]
+      - [2, 18]
+  # Control: a bare-column aggregate in the CTE, which the parse-tree
+  # derivation typed from the catalog and which therefore never failed.
+  - query: WITH u AS (SELECT g, SUM(v) AS s FROM ga GROUP BY g) SELECT c.w, u.s FROM u, c WHERE u.g = c.id
+    columns: ["W", "S"]
+    unordered: true
+    rows:
+      - [1, 12]
+      - [2, 9]
+  # The aggregate column read on its own through the CTE, no join.
+  - query: WITH u AS (SELECT g, SUM(v * 2) AS s FROM ga GROUP BY g) SELECT u.s FROM u ORDER BY u.s
+    columns: ["S"]
+    rows:
+      - [18]
+      - [24]
+  # A body whose exact row repeats an output name (`SUM(v) AS g` beside the
+  # group key g) is published as stated, and a reader that names the repeated
+  # column meets the row's own ambiguity check: 42702, Java's AMBIGUOUS_COLUMN,
+  # in the CTE form exactly as in the derived-table form. Pinned in both so the
+  # two spellings of one body cannot drift apart, and so the CTE arm's
+  # parse-tree fallback — which performs no uniqueness check — is never what
+  # answers here.
+  - query: WITH u AS (SELECT g, SUM(v) AS g FROM ga GROUP BY g) SELECT u.g FROM u, c WHERE u.g = c.id
+    error_code: "42702"
+  - query: SELECT u.g FROM (SELECT g, SUM(v) AS g FROM ga GROUP BY g) u, c WHERE u.g = c.id
+    error_code: "42702"

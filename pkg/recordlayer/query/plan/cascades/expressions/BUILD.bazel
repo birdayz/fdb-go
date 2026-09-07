@@ -93,6 +93,7 @@ go_test(
         "relational_alias_completeness_test.go",
         "select_rebind_preserves_node_info_test.go",
         "select_test.go",
+        "set_operation_leg_types_test.go",
         "table_function_fuzz_test.go",
         "table_function_test.go",
         "test_helpers_test.go",

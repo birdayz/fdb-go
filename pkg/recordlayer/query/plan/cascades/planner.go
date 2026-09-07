@@ -278,17 +278,24 @@ func (p *Planner) HasBestMember(ref *expressions.Reference) bool {
 }
 
 // OrderedChildWinner returns the cheapest physical member of childRef whose
-// derived rich ordering satisfies sortExpr's keys, or nil when none does
-// (the sort must then be materialised). Implements the sort-elision hook of
+// derived rich ordering satisfies the requested ordering, stated in
+// childRef's own current-row space, or nil when none does (the sort must
+// then be materialised). Implements the sort-elision hook of
 // ExtractBestPlanFromSelector: satisfaction runs on the full
 // Value + four-state sort-order representation (RichOrdering.Satisfies), so
 // an ASC_NULLS_LAST sort is never elided against a natural-order ASC scan.
-func (p *Planner) OrderedChildWinner(sortExpr *expressions.LogicalSortExpression, childRef *expressions.Reference) expressions.RelationalExpression {
-	ro := sortExpressionToRequestedOrdering(sortExpr)
-	if ro.IsPreserve() {
+func (p *Planner) OrderedChildWinner(requested *properties.RequestedOrdering, childRef *expressions.Reference) expressions.RelationalExpression {
+	if requested == nil || requested.IsPreserve() {
 		return nil
 	}
-	return bestSatisfyingMember(childRef, ro, p.costModel)
+	return bestSatisfyingMember(childRef, requested, p.costModel)
+}
+
+// OrderedChildWinnerForSort is OrderedChildWinner asked for a sort
+// expression's keys as spelled; a delegating member on the way down restates
+// them through its result value (requestedOrderingBelow).
+func (p *Planner) OrderedChildWinnerForSort(sortExpr *expressions.LogicalSortExpression, childRef *expressions.Reference) expressions.RelationalExpression {
+	return p.OrderedChildWinner(sortExpressionToRequestedOrdering(sortExpr), childRef)
 }
 
 // OrderingSourceRef reports whether expr is an order-PRESERVING wrapper

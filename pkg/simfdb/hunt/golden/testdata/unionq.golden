@@ -1,0 +1,61 @@
+# scenario: unionq (seed 7)
+#   CREATE TABLE t ("id" BIGINT, "k" BIGINT, PRIMARY KEY ("id"))
+
+=== SELECT * FROM t UNION ALL SELECT "id", "k" FROM t
+PLAN: UnorderedUnion(Scan(T), Project([_current.id#0, _current.k#1], Scan(T)))
+ROWS(6) cols=[id, k]:
+  [1, 10]
+  [2, 20]
+  [3, 30]
+  [1, 10]
+  [2, 20]
+  [3, 30]
+
+=== SELECT "id", "k" FROM t UNION ALL SELECT * FROM t
+PLAN: UnorderedUnion(Project([_current.id#0, _current.k#1], Scan(T)), Scan(T))
+ROWS(6) cols=[id, k]:
+  [1, 10]
+  [2, 20]
+  [3, 30]
+  [1, 10]
+  [2, 20]
+  [3, 30]
+
+=== SELECT * FROM t WHERE "k" > 10 UNION ALL SELECT "id", "k" FROM t
+PLAN: UnorderedUnion(PredicatesFilter(Scan(T), [1 preds]), Project([_current.id#0, _current.k#1], Scan(T)))
+ROWS(5) cols=[id, k]:
+  [2, 20]
+  [3, 30]
+  [1, 10]
+  [2, 20]
+  [3, 30]
+
+=== SELECT * FROM t UNION ALL SELECT "id", "k" FROM t WHERE "k" > 10
+PLAN: UnorderedUnion(Scan(T), Project([_current.id#0, _current.k#1], PredicatesFilter(Scan(T), [1 preds])))
+ROWS(5) cols=[id, k]:
+  [1, 10]
+  [2, 20]
+  [3, 30]
+  [2, 20]
+  [3, 30]
+
+=== SELECT * FROM t UNION ALL SELECT * FROM t
+PLAN: UnorderedUnion(Scan(T), Scan(T))
+ROWS(6) cols=[id, k]:
+  [1, 10]
+  [2, 20]
+  [3, 30]
+  [1, 10]
+  [2, 20]
+  [3, 30]
+
+=== SELECT "id" AS w, "k" AS x FROM t UNION ALL SELECT * FROM t
+PLAN: UnorderedUnion(Project([_current.id#0, _current.k#1], Scan(T)), Project([_current.id#0, _current.k#1], Scan(T)))
+ROWS(6) cols=[W, X]:
+  [1, 10]
+  [2, 20]
+  [3, 30]
+  [1, 10]
+  [2, 20]
+  [3, 30]
+

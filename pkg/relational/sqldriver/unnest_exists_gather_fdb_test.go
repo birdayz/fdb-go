@@ -183,6 +183,20 @@ func TestFDB_UnnestExistsGather(t *testing.T) {
 	// ≡ derived table.
 	//   CTE passthrough, GROUP BY a BARE leg column (D.AID → seed A-leg window).
 	pin("agg_cte_groupby_leg", `WITH D AS (SELECT * `+from+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")) SELECT D."AID", COUNT(*) FROM D GROUP BY D."AID"`, "1|2")
+	//   The UNIQUE-NAME twin — no K on the second leg. The CTE column-source
+	//   builder keeps every gathered multi-source unnest star body out of the
+	//   global scope by SHAPE, so the aggregate binds to the seed exactly as
+	//   above; a body of this shape whose names happened to be unique was
+	//   published as an exact row before, and its group key was refused at
+	//   execution as an undeclared binding. Every other agg_cte_* pin repeats K
+	//   on both legs, so this is the arm that tells the shape from the names.
+	pin("agg_cte_groupby_leg_unique_names", `WITH D AS (SELECT * FROM A, EE, A."ARR" AS "X" WHERE A."K" = EE."CK") SELECT D."AID", COUNT(*) FROM D GROUP BY D."AID"`, "1|2")
+	//   An AGGREGATE body over the same gathered shape is not a star body: its
+	//   items live in aggCols with projCols nil, and the shape-keyed decline
+	//   above must not catch it — the aggregate arm publishes the exact row
+	//   and the outer computed read resolves. A first cut declined it too, and
+	//   `d.n + 1` failed 0AF00 where it answered before.
+	pin("agg_cte_aggregate_body_over_gather", `WITH D AS (SELECT A."AID", COUNT(*) AS "N" FROM A, B, A."ARR" AS "X" GROUP BY A."AID") SELECT D."N" + 1 FROM D`, "3")
 	//   DISTINCT between the aggregate and the EXISTS, GROUP BY the element.
 	pin("agg_cte_distinct_groupby_element", `WITH D AS (SELECT DISTINCT * `+from+` WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")) SELECT D."X", COUNT(*) FROM D GROUP BY D."X"`, "7|1", "8|1")
 	//   DEEP DISTINCT chain (≥6): DISTINCT is non-merging, so N chained CTEs stay N wrappers

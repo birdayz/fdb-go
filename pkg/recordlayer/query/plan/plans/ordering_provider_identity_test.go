@@ -276,7 +276,7 @@ func TestAggregateProvidersStateTheirOutputLayout(t *testing.T) {
 		// the whole point. A domain derived from the group columns alone is a
 		// DIFFERENT token, and the requested side derives its own from the full
 		// output row.
-		wantDomain := values.OrdinalDomainOfColumnNames(plan.OutputColumnNames())
+		wantDomain := values.OrdinalDomainOfType(plan.GetResultType())
 		if !wantDomain.IsKnown() {
 			t.Fatal("test setup: the output row must be nameable")
 		}

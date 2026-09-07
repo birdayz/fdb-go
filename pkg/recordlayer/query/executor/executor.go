@@ -17,7 +17,6 @@ import (
 	"fmt"
 	"math"
 	"reflect"
-	"slices"
 	"sort"
 	"strings"
 
@@ -35,8 +34,6 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 	"fdb.dev/pkg/relational/api"
 )
-
-type innerPlanAccessor interface{ GetInner() plans.RecordQueryPlan }
 
 type RecursiveCTEDepthExceededError struct {
 	MaxDepth int
@@ -79,7 +76,7 @@ type SumOverflowError struct{ Int32 bool }
 // UnsupportedContinuationError reports a resume attempt on a cursor shape
 // that has no continuation support yet (RFC-180 WS-A follow-ups). The driver
 // maps it to SQLSTATE 0A000 — a typed decline, never a silent wrong start
-// (before RFC-180 the buffered union fed the PARENT's continuation to every
+// (a since-deleted buffered union once fed the PARENT's continuation to every
 // child; a raw-key scan child consumed it as a scan position).
 type UnsupportedContinuationError struct {
 	Shape string
@@ -2804,43 +2801,6 @@ func executeUnion(
 	if len(inners) == 0 {
 		return recordlayer.Empty[QueryResult](), nil
 	}
-
-	var md *recordlayer.RecordMetaData
-	if store != nil {
-		md = store.GetRecordMetaData()
-	}
-
-	firstBranchKeys := planColumnNamesWithMD(inners[0], md)
-
-	// If plan metadata gives us column names for all branches, stream
-	// directly without buffering.
-	if firstBranchKeys != nil {
-		allKnown := true
-		for i := 1; i < len(inners); i++ {
-			if planColumnNamesWithMD(inners[i], md) == nil {
-				allKnown = false
-				break
-			}
-		}
-		if allKnown {
-			return executeUnionStreaming(ctx, inners, store, evalCtx, continuation, props, md, firstBranchKeys)
-		}
-	}
-
-	// Fallback: need to peek rows to discover column names — buffer.
-	return executeUnionBuffered(ctx, inners, store, evalCtx, continuation, props, md, firstBranchKeys)
-}
-
-func executeUnionStreaming(
-	ctx context.Context,
-	inners []plans.RecordQueryPlan,
-	store *recordlayer.FDBRecordStore,
-	evalCtx *EvaluationContext,
-	continuation []byte,
-	props recordlayer.ExecuteProperties,
-	md *recordlayer.RecordMetaData,
-	targetKeys []string,
-) (recordlayer.RecordCursor[QueryResult], error) {
 	// Each branch is a lazy CursorFactory resumable from its OWN continuation,
 	// folded through recordlayer.ConcatCursors — Java's ConcatCursor with the
 	// wire-compatible branch-tagged ConcatContinuation proto (an N-way union
@@ -2850,20 +2810,20 @@ func executeUnionStreaming(
 	// an outer aggregate that correctly restores its own partial state then
 	// re-consumed the whole union per page (SUM over a grouped UNION ALL
 	// returned 3×13=39 for 13 — yamsql union_aggregate_java).
+	//
+	// Every leg flows the union's one exact row — the translator aligned the
+	// legs onto it and the plan's constructor asserted it — so a leg's rows
+	// are concatenated as they are, never re-typed to another leg's names
+	// (RFC-242). A buffered fallback used to exist here for legs whose column
+	// names could not be read off the plan; with the names stated by every
+	// plan's type there is nothing to discover, and that path (which could not
+	// resume) is gone with it.
 	branchFactory := func(i int) recordlayer.CursorFactory[QueryResult] {
 		inner := inners[i]
 		return func(cont []byte) recordlayer.RecordCursor[QueryResult] {
 			c, err := ExecutePlan(ctx, inner, store, evalCtx, cont, props.ClearSkipAndLimit())
 			if err != nil {
 				return &errResultCursor{err: fmt.Errorf("union branch %d: %w", i, err)}
-			}
-			if i > 0 {
-				srcKeys := planColumnNamesWithMD(inner, md)
-				if srcKeys != nil && !slices.Equal(srcKeys, targetKeys) {
-					c = recordlayer.MapCursor(c, func(qr QueryResult) QueryResult {
-						return remapUnionColumnsByPosition(qr, srcKeys, targetKeys)
-					})
-				}
 			}
 			return c
 		}
@@ -2873,204 +2833,6 @@ func executeUnionStreaming(
 		factories[i] = branchFactory(i)
 	}
 	return applySkipLimit(concatFactories(factories, continuation), props.Skip, props.ReturnedRowLimit), nil
-}
-
-func executeUnionBuffered(
-	ctx context.Context,
-	inners []plans.RecordQueryPlan,
-	store *recordlayer.FDBRecordStore,
-	evalCtx *EvaluationContext,
-	continuation []byte,
-	props recordlayer.ExecuteProperties,
-	md *recordlayer.RecordMetaData,
-	firstBranchKeys []string,
-) (recordlayer.RecordCursor[QueryResult], error) {
-	// This buffered fallback (branch column names not statically known)
-	// cannot resume: before RFC-180 (A2) it fed the PARENT's continuation
-	// verbatim to EVERY child — a raw-key scan child consumed it as a scan
-	// position, silently starting mid-stream. Correct-or-loud: no
-	// continuation support until per-branch states land (WS-A follow-up);
-	// the streaming path above (all names known) resumes properly.
-	if len(continuation) > 0 {
-		return nil, &UnsupportedContinuationError{Shape: "buffered union (branch column names not statically known)"}
-	}
-	var all []QueryResult
-	var allCharged int64
-	for branchIdx, inner := range inners {
-		cursor, err := ExecutePlan(ctx, inner, store, evalCtx, nil, props.ClearSkipAndLimit())
-		if err != nil {
-			props.State.ReleaseMemory(allCharged)
-			return nil, err
-		}
-		items, charged, err := CollectAllBounded(ctx, cursor, props.State, props.GetMaterializationLimit(), "buffered union branch")
-		allCharged += charged
-		cursor.Close()
-		if err != nil {
-			props.State.ReleaseMemory(allCharged)
-			return nil, err
-		}
-		branchKeys := planColumnNames(inner)
-		if branchIdx == 0 {
-			firstBranchKeys = branchKeys
-			if len(firstBranchKeys) == 0 && len(items) > 0 && items[0].Positional != nil {
-				firstBranchKeys = items[0].Positional.TypeNames()
-			}
-		}
-		if branchIdx > 0 && len(firstBranchKeys) > 0 {
-			targetKeys := firstBranchKeys
-			srcKeys := branchKeys
-			if len(srcKeys) == 0 && len(items) > 0 && items[0].Positional != nil {
-				srcKeys = items[0].Positional.TypeNames()
-			}
-			for i := range items {
-				items[i] = remapUnionColumnsByPosition(items[i], srcKeys, targetKeys)
-			}
-		}
-		// RFC-130: the cross-branch `all` slice holds exactly the rows already
-		// charged per branch by CollectAllBounded above (the per-branch `items`
-		// slices are GC'd; `all` is the surviving copy). Charging again here
-		// would double-count the same resident rows, so this append is plain —
-		// the budget is already advanced by the per-branch CollectAllBounded.
-		all = append(all, items...)
-	}
-	return newChargeReleasingCursor(
-		applySkipLimit(recordlayer.FromList(all), props.Skip, props.ReturnedRowLimit),
-		props.State, allCharged,
-	), nil
-}
-
-func planColumnNames(p plans.RecordQueryPlan) []string {
-	return planColumnNamesWithMD(p, nil)
-}
-
-func planColumnNamesWithMD(p plans.RecordQueryPlan, md *recordlayer.RecordMetaData) []string {
-	sawMap := false
-	for {
-		if proj, ok := p.(*plans.RecordQueryProjectionPlan); ok {
-			return proj.GetOutputNames()
-		}
-		// A RecordQueryMapPlan reports its OWN output column names from its result value
-		// — do NOT descend through it to the pre-rename names. Mirrors
-		// physicalPlanColumnNames (rule_implement_unordered_union.go) so a branch that
-		// ImplementUnorderedUnionRule already wrapped in a rename Map reports the SAME
-		// (post-rename) names here. Without this, the union position-remap would see the
-		// pre-rename names, differ from the first branch, and remap a SECOND time over the
-		// already-renamed row → reads missing keys → NULLs. Falls through to the
-		// descend/scan path when the Map has no RecordConstructorValue result.
-		if mp, ok := p.(*plans.RecordQueryMapPlan); ok {
-			if rcv, ok := mp.GetResultValue().(*values.RecordConstructorValue); ok && len(rcv.Fields) > 0 {
-				names := make([]string, len(rcv.Fields))
-				for i, f := range rcv.Fields {
-					// Report the EXACT field name — RecordConstructorValue.Evaluate keys the
-					// output row by f.Name verbatim (values.go), so this is the literal row
-					// key the union remap must read. Upper-casing it would mismatch a
-					// non-uppercase Map field and read a missing key → NULL. Union
-					// branch fields are upper in practice (SQL upper-cases identifiers/aliases),
-					// so this equals the prior upper-case for every real query.
-					names[i] = f.Name
-				}
-				return names
-			}
-			sawMap = true
-		}
-		// A bare STREAMING-AGGREGATE plan defines its OWN output schema (group keys +
-		// aggregate outputs) — report it, do NOT descend to the input scan. StreamingAgg
-		// implements innerPlanAccessor, so without this the loop walks past it to the Scan
-		// and returns the scan's columns, mis-naming the branch for the UNION position-remap
-		// and silently dropping a mismatched-alias aggregate branch's rows (RFC-078, TODO
-		// 7.6-union-remap). The names match the keys aggregateCursor writes (streaming_cursors.go)
-		// and the schema the translator derives (aggregateOutputColumns).
-		//
-		//
-		// INVARIANT (RFC-081): every physical realization of a bare aggregate union
-		// branch MUST report its output schema here — the gate (unionBranchNormalizable)
-		// admits a bare LogicalAggregate on the assumption that whatever it plans as is
-		// reportable. The three realizations are StreamingAgg, AggregateIndex, and
-		// MultiIntersection (all handled below). A future aggregate physical plan added
-		// without an arm here would fall through to nil and silently mis-remap a union branch
-		// → wrong rows. Add the arm with the new plan.
-		if agg, ok := p.(*plans.RecordQueryStreamingAggregationPlan); ok {
-			return streamingAggOutputNames(agg)
-		}
-		// A bare AGGREGATE-INDEX plan likewise defines its own output schema (group cols +
-		// the canonical aggregate name). Its GetResultType answered UnknownType when this
-		// branch was written, so the fallback reached nil and a grouped aggregate-index
-		// UNION branch could not be position-remapped (RFC-081). It forwards a stated type
-		// since RFC-232, and this branch stays for the reason below rather than that one:
-		// OutputColumnNames returns exactly the keys the aggregateIndexCursor writes. A bare
-		// aggregate-index branch is always UNALIASED (an aliased SELECT tops with a Project),
-		// so there is no alias to carry here.
-		if aggIdx, ok := p.(*plans.RecordQueryAggregateIndexPlan); ok {
-			return aggIdx.OutputColumnNames()
-		}
-		// A MULTI-aggregate-intersection plan's result value (a RecordConstructorValue) names
-		// its output columns; the merge cursor keys each row by those exact field names
-		// (RecordConstructorValue.Evaluate). Report them VERBATIM — the GetResultType fallback
-		// below would upper-case them, which only matches because the names are upper in
-		// practice; reading f.Name directly is byte-identical to the row keys regardless
-		// (mirrors the MapPlan arm, RFC-078). RFC-081.
-		if mi, ok := p.(*plans.RecordQueryMultiIntersectionOnValuesPlan); ok {
-			if rcv, ok := mi.GetResultValue().(*values.RecordConstructorValue); ok && len(rcv.Fields) > 0 {
-				names := make([]string, len(rcv.Fields))
-				for i, f := range rcv.Fields {
-					names[i] = f.Name
-				}
-				return names
-			}
-		}
-		if ip, ok := p.(innerPlanAccessor); ok {
-			p = ip.GetInner()
-		} else {
-			break
-		}
-	}
-	if rt, ok := p.GetResultType().(*values.RecordType); ok && len(rt.Fields) > 0 {
-		names := make([]string, len(rt.Fields))
-		for i, f := range rt.Fields {
-			names[i] = strings.ToUpper(f.Name)
-		}
-		return names
-	}
-	if md != nil && !sawMap {
-		if scan, ok := p.(*plans.RecordQueryScanPlan); ok && len(scan.GetRecordTypes()) == 1 {
-			rt := md.GetRecordType(scan.GetRecordTypes()[0])
-			if rt != nil && rt.Descriptor != nil {
-				fields := rt.Descriptor.Fields()
-				names := make([]string, fields.Len())
-				for i := 0; i < fields.Len(); i++ {
-					names[i] = strings.ToUpper(string(fields.Get(i).Name()))
-				}
-				return names
-			}
-		}
-	}
-	return nil
-}
-
-func remapUnionColumnsByPosition(qr QueryResult, srcKeys, targetKeys []string) QueryResult {
-	// A UNION aligns legs BY ORDINAL (SQL positional union) — re-type the
-	// leg's Positional to the union's output column names (leg 2's [REGION] → the
-	// output's [STATUS]); the slots stay in ordinal place, only the names change.
-	// The first leg's names already ARE the
-	// output names, so it flows through unchanged.
-	if qr.Positional == nil || len(srcKeys) != len(targetKeys) || len(qr.Positional.Slots) != len(targetKeys) {
-		return qr
-	}
-	needsRemap := false
-	for i := range srcKeys {
-		if srcKeys[i] != targetKeys[i] {
-			needsRemap = true
-			break
-		}
-	}
-	if !needsRemap {
-		return qr
-	}
-	return QueryResult{
-		Positional: &PositionalRow{Type: positionalTypeFromNames(targetKeys), Slots: qr.Positional.Slots},
-		Record:     qr.Record,
-		PrimaryKey: qr.PrimaryKey,
-	}
 }
 
 func executeIntersection(
@@ -4049,21 +3811,6 @@ func toFloat64(v any) float64 {
 // (expressions.AggregateKeyColumnName): the executor's emitted slot name and the
 // translator's baked ordinal must derive from ONE rule or they drift.
 func aggKeyName(k values.Value) string { return expressions.AggregateKeyColumnName(k) }
-
-// streamingAggOutputNames returns the OUTPUT column names a streaming-aggregate
-// plan's rows are keyed by — the single naming authority's
-// [groupingKeys..., aggregates...], alias-preferring. Exactly one name per output
-// column, matching the keys aggregateCursor.finalizeGroup writes and the schema
-// the translator bakes ordinals against. Used by planColumnNamesWithMD so the
-// UNION position-remap (remapUnionColumnsByPosition) can normalize a
-// mismatched-alias aggregate branch to the first branch's names (RFC-078).
-func streamingAggOutputNames(p *plans.RecordQueryStreamingAggregationPlan) []string {
-	names := expressions.GroupByOutputColumnNames(p.GetGroupingKeys(), p.GetAggregates())
-	if len(names) == 0 {
-		return nil
-	}
-	return names
-}
 
 func isNumeric(v any) bool {
 	switch v.(type) {

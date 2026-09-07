@@ -457,6 +457,7 @@ go_test(
         "//pkg/relational/core/query/logical",
         "//pkg/relational/core/query/semantic",
         "//pkg/relational/core/session",
+        "//pkg/relational/internal/queryfixtures",
         "//pkg/simfdb",
         "@org_golang_google_protobuf//proto",
         "@org_golang_google_protobuf//reflect/protodesc",

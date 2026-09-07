@@ -9,7 +9,8 @@ package sqldriver_test
 // display-only carrier. Two of its consumers really are display-only, and were
 // measured so: replacing every name the aggregate cursor stamps on its emitted
 // PositionalRow with a positional probe, and separately replacing every name the
-// plan reports for the UNION position-remap, each leaves the entire relational
+// plan reported for the UNION position-remap (a consumer RFC-242 has since
+// deleted outright), each leaves the entire relational
 // corpus green — this driver suite, yamsql, rowdiff, plandiff, explaindiff,
 // memoinvariant. Only tests asserting the spelling itself notice.
 //

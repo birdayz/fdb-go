@@ -194,7 +194,147 @@ func corpus() []Scenario {
 		},
 	}
 
-	return []Scenario{orders, joins, multikey, aggidx, setops, subquery}
+	// unionq: UNION ALL over a table declared with quoted lower-case column names. One leg plans as a
+	// bare scan and the other as a projection, which is the shape whose leg names the implementation
+	// rule and the union executors used to re-derive through a case fold on one path and exactly on
+	// the other (RFC-242). Every mixed shape here failed to plan before that; the baseline pins the
+	// plan (a scan leg beside a projection leg, no Map between) and the rows of each.
+	unionq := Scenario{
+		Name: "unionq",
+		Seed: 7,
+		Tables: []string{
+			`CREATE TABLE t ("id" BIGINT, "k" BIGINT, PRIMARY KEY ("id"))`,
+		},
+		Data: []string{
+			`INSERT INTO t ("id", "k") VALUES (1, 10)`,
+			`INSERT INTO t ("id", "k") VALUES (2, 20)`,
+			`INSERT INTO t ("id", "k") VALUES (3, 30)`,
+		},
+		Queries: []string{
+			`SELECT * FROM t UNION ALL SELECT "id", "k" FROM t`,
+			`SELECT "id", "k" FROM t UNION ALL SELECT * FROM t`,
+			`SELECT * FROM t WHERE "k" > 10 UNION ALL SELECT "id", "k" FROM t`,
+			`SELECT * FROM t UNION ALL SELECT "id", "k" FROM t WHERE "k" > 10`,
+			`SELECT * FROM t UNION ALL SELECT * FROM t`,
+			`SELECT "id" AS w, "k" AS x FROM t UNION ALL SELECT * FROM t`,
+		},
+	}
+
+	// unionjoinleg: a UNION of grouped-aggregate branches as a JOIN LEG, over the operand forms a
+	// since-deleted translator gate refused as "not normalizable" (qualified operand, constant
+	// operand, group-only). The gate's premise was the executor's position-remap; RFC-242 deleted
+	// both. Pinned so the rows stay correct without either.
+	unionjoinleg := Scenario{
+		Name: "unionjoinleg",
+		Seed: 8,
+		Tables: []string{
+			"CREATE TABLE ga (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))",
+			"CREATE INDEX cnt_by_g AS SELECT COUNT(*) FROM ga GROUP BY g",
+			"CREATE INDEX sum_by_g AS SELECT SUM(v) FROM ga GROUP BY g",
+			"CREATE TABLE gb (id BIGINT, h BIGINT, v BIGINT, PRIMARY KEY (id))",
+			"CREATE INDEX cnt_by_h AS SELECT COUNT(*) FROM gb GROUP BY h",
+			"CREATE INDEX sum_by_h AS SELECT SUM(v) FROM gb GROUP BY h",
+			"CREATE TABLE c (id BIGINT, w BIGINT, PRIMARY KEY (id))",
+		},
+		Data: []string{
+			"INSERT INTO ga VALUES (1, 100, 5), (2, 100, 7), (3, 200, 9)",
+			"INSERT INTO gb VALUES (10, 100, 1), (20, 300, 2)",
+			"INSERT INTO c VALUES (100, 1), (200, 2), (300, 3)",
+		},
+		Queries: []string{
+			"WITH u AS (SELECT g, SUM(ga.v) AS s FROM ga GROUP BY g UNION ALL SELECT h, SUM(gb.v) AS s2 FROM gb GROUP BY h) SELECT c.w, u.s FROM u, c WHERE u.g = c.id ORDER BY c.w, u.s",
+			"WITH u AS (SELECT g, COUNT(1) AS n FROM ga GROUP BY g UNION ALL SELECT h, COUNT(1) AS m FROM gb GROUP BY h) SELECT c.w, u.n FROM u, c WHERE u.g = c.id ORDER BY c.w, u.n",
+			"WITH u AS (SELECT g FROM ga GROUP BY g UNION ALL SELECT h FROM gb GROUP BY h) SELECT c.w FROM u, c WHERE u.g = c.id ORDER BY c.w",
+			"WITH u AS (SELECT g, SUM(v) AS s FROM ga GROUP BY g UNION ALL SELECT h, SUM(v) AS s2 FROM gb GROUP BY h) SELECT c.w, u.s FROM u, c WHERE u.g = c.id ORDER BY c.w, u.s",
+		},
+	}
+
+	// cteagg: a non-recursive CTE whose body carries an EXPRESSION aggregate, read as a join leg and
+	// on its own. The CTE column-source builder used to type the aggregate from its argument's
+	// catalog column and publish UNKNOWN for an expression argument, so the join-leg read found no
+	// column order; it now publishes the body's exact row first, as the derived-table path always
+	// did (RFC-242, adjacent finding). Baseline pins plan and rows for both forms.
+	cteagg := Scenario{
+		Name: "cteagg",
+		Seed: 9,
+		Tables: []string{
+			"CREATE TABLE ga (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))",
+			"CREATE TABLE c (id BIGINT, w BIGINT, PRIMARY KEY (id))",
+		},
+		Data: []string{
+			"INSERT INTO ga VALUES (1, 100, 5), (2, 100, 7), (3, 200, 9)",
+			"INSERT INTO c VALUES (100, 1), (200, 2)",
+		},
+		Queries: []string{
+			"WITH u AS (SELECT g, SUM(v * 2) AS s FROM ga GROUP BY g) SELECT c.w, u.s FROM u, c WHERE u.g = c.id ORDER BY c.w",
+			"SELECT c.w, u.s FROM (SELECT g, SUM(v * 2) AS s FROM ga GROUP BY g) u, c WHERE u.g = c.id ORDER BY c.w",
+			"WITH u AS (SELECT g, SUM(v) AS s FROM ga GROUP BY g) SELECT c.w, u.s FROM u, c WHERE u.g = c.id ORDER BY c.w",
+		},
+	}
+
+	// ctenames: the row a CTE publishes to its enclosing query is the row its body emits under
+	// its SQL names — the same row the derived-table spelling publishes. A grouping key spelled
+	// with its table qualifier is output under its bare name, and a join-bodied CTE reads
+	// exactly as its derived-table twin (RFC-242 § Fix F). Baseline pins plans and rows for both
+	// forms; the repeated-name reads that answer 42702 are pinned on real FDB
+	// (cte_published_row_names.yaml) — a golden query must plan.
+	ctenames := Scenario{
+		Name: "ctenames",
+		Seed: 10,
+		Tables: []string{
+			"CREATE TABLE ga (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))",
+			"CREATE TABLE c (id BIGINT, w BIGINT, PRIMARY KEY (id))",
+		},
+		Data: []string{
+			"INSERT INTO ga VALUES (1, 100, 5), (2, 100, 7), (3, 200, 9)",
+			"INSERT INTO c VALUES (100, 1), (200, 2)",
+		},
+		Queries: []string{
+			"WITH u AS (SELECT ga.g, c.w FROM ga, c WHERE ga.g = c.id) SELECT u.g, u.w FROM u ORDER BY u.g",
+			"WITH u AS (SELECT ga.g, SUM(v) AS s FROM ga GROUP BY ga.g) SELECT u.g, u.s FROM u ORDER BY u.g",
+			"SELECT u.g, u.s FROM (SELECT ga.g, SUM(v) AS s FROM ga GROUP BY ga.g) u ORDER BY u.g",
+			"WITH u AS (SELECT ga.g, c.w, SUM(v) AS s FROM ga, c WHERE ga.g = c.id GROUP BY ga.g, c.w) SELECT u.g, u.w, u.s FROM u ORDER BY u.g",
+			// Reads bound to the CTE's quantified object over a body that repeats
+			// a bare leaf: the scope states the row the plan flows as its flowed
+			// layout, so a WHERE, an aggregate key and a sort key over the unique
+			// column answer in both spellings.
+			"WITH u AS (SELECT ga.g, c.id AS g, c.w FROM ga, c) SELECT u.w FROM u WHERE u.w = 1",
+			"SELECT u.w, COUNT(*) FROM (SELECT ga.g, c.id AS g, c.w FROM ga, c) u GROUP BY u.w ORDER BY u.w",
+			"WITH u AS (SELECT ga.g, c.id AS g, c.w FROM ga, c) SELECT u.w FROM u ORDER BY u.w",
+			"WITH u AS (SELECT g, SUM(v) AS g, COUNT(*) AS n FROM ga GROUP BY g) SELECT u.n, COUNT(*) FROM u GROUP BY u.n ORDER BY u.n",
+		},
+	}
+
+	// repnames: a repeated output name is reported as spelled, once per column, and every slot
+	// carries its own value. The result-set label followed the frozen output schema's
+	// name-addressability suffix ([A A_2]), and a derived leg's ordinal layout stated its names
+	// verbatim while the emitted row carried the suffix, so `SELECT *` over such a leg beside
+	// another table read the first G twice (RFC-242, second adjacent finding). Baseline pins
+	// labels, plans and rows, the repeated-name leg first and second, both spellings.
+	repnames := Scenario{
+		Name: "repnames",
+		Seed: 11,
+		Tables: []string{
+			"CREATE TABLE ga (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))",
+			"CREATE TABLE c (id BIGINT, w BIGINT, PRIMARY KEY (id))",
+		},
+		Data: []string{
+			"INSERT INTO ga VALUES (1, 100, 5), (2, 100, 7), (3, 200, 9)",
+			"INSERT INTO c VALUES (100, 1), (200, 2)",
+		},
+		Queries: []string{
+			"SELECT g AS a, g AS a FROM ga ORDER BY id",
+			"SELECT id, g AS id FROM ga ORDER BY v",
+			"SELECT * FROM (SELECT g, SUM(v) AS g FROM ga GROUP BY g) u",
+			"SELECT * FROM (SELECT g, SUM(v) AS g FROM ga GROUP BY g) u, c WHERE c.id = 100",
+			"WITH u AS (SELECT g, SUM(v) AS g FROM ga GROUP BY g) SELECT * FROM u, c WHERE c.id = 100",
+			"SELECT * FROM c, (SELECT g, SUM(v) AS g FROM ga GROUP BY g) u WHERE c.id = 100",
+			"SELECT * FROM (SELECT g, v AS g FROM ga) u, c WHERE c.id = 100",
+			"SELECT * FROM (SELECT g, SUM(v) AS s FROM ga GROUP BY g) u, c WHERE c.id = 100",
+		},
+	}
+
+	return []Scenario{orders, joins, multikey, aggidx, setops, subquery, unionq, unionjoinleg, cteagg, ctenames, repnames}
 }
 
 // TestGolden captures each scenario over SimFDB and diffs it against the committed baseline in

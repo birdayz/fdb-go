@@ -1,6 +1,9 @@
 package values
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 // FuzzRebaseValue_NoPanic verifies that RebaseValue never panics
 // regardless of the alias map contents. Exercises all Value types
@@ -14,6 +17,19 @@ func FuzzRebaseValue_NoPanic(f *testing.F) {
 	f.Fuzz(func(t *testing.T, srcName, tgtName string, typeIdx byte) {
 		src := NamedCorrelationIdentifier(srcName)
 		tgt := NamedCorrelationIdentifier(tgtName)
+		if src.IsZero() || tgt.IsZero() {
+			// An empty name is the zero correlation, and an alias map over it is
+			// not a well-formed fixture: NewAliasMap refuses it with
+			// CorrelationZero. Pin that refusal here rather than fataling on the
+			// fixture, so the fuzzer's empty-string inputs test the guard instead
+			// of reporting the guard as a crash.
+			_, err := NewAliasMap([]AliasPair{{Source: src, Target: tgt}})
+			var resolution *ResolutionError
+			if !errors.As(err, &resolution) || resolution.Code() != CorrelationZero {
+				t.Fatalf("NewAliasMap over a zero correlation: got %v, want CorrelationZero", err)
+			}
+			return
+		}
 		aliases := mustAliasMap(t, AliasPair{Source: src, Target: tgt})
 
 		var v Value

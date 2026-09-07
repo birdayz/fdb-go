@@ -225,6 +225,7 @@ go_test(
     srcs = [
         "absorption_tiebreak_test.go",
         "abstract_data_access_rule_test.go",
+        "adjust_match_leaf_climb_test.go",
         "aggregate_column_identity_test.go",
         "aggregate_group_existence_test.go",
         "aggregate_index_shortcut_gate_test.go",
@@ -555,6 +556,7 @@ go_test(
         "simple_select_passthrough_test.go",
         "simplifier_test.go",
         "single_matched_access_test.go",
+        "sort_elision_renamed_slot_test.go",
         "sort_key_nil_value_contract_test.go",
         "sparse_candidate_expansion_test.go",
         "temp_table_test.go",
@@ -564,6 +566,7 @@ go_test(
         "translate_value_function_ordinal_test.go",
         "translation_map_test.go",
         "traversal_test.go",
+        "union_leg_names_not_refolded_test.go",
         "union_rule_fixtures_test.go",
         "unique_zero_cardinality_test.go",
         "unordered_pk_distinct_properties_test.go",
@@ -1140,6 +1143,9 @@ go_test(
         "match_info_merge_ranges_test.go",
         "compensation_monoid_test.go",
         "alias_map_compose_test.go",
+        "union_leg_names_not_refolded_test.go",
+        "sort_elision_renamed_slot_test.go",
+        "adjust_match_leaf_climb_test.go",
     ],
     deps = [
         "//gen",

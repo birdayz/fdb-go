@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"errors"
 	"reflect"
 	"sort"
 	"testing"
@@ -16,7 +17,7 @@ import (
 // hanging off a plan is reached by the walk. Two ways a tree escapes:
 //
 //	(A) a plan type grows a value-bearing FIELD with no arm in
-//	    stampNodeLocalValues; or
+//	    forEachNodeLocalValue; or
 //	(B) a plan's SUBTREE is unreachable because GetChildren() does not return
 //	    it — the shape that let RecordQueryAggregateIndexPlan's embedded index
 //	    plan go unstamped (GetChildren returns nil by design, the index plan is
@@ -135,19 +136,19 @@ type specimen struct {
 // resultValueIsMinted is the allowlist reason shared by every plan whose
 // resultValue field is minted inside its constructor (a QuantifiedObjectValue
 // standing for the rows the leaf emits, RFC-184 W2) and is therefore not
-// settable from a test. stampNodeLocalValues stamps plan.GetResultValue()
+// settable from a test. forEachNodeLocalValue emits plan.GetResultValue()
 // unconditionally as its first act, and the four plans that DO accept a
 // caller-supplied resultValue (Map, FlatMap, NestedLoopJoin,
 // MultiIntersectionOnValues) plant a real sentinel there — so the mechanism is
 // proven behaviourally where it can be, and asserted only where the field
 // cannot be reached from outside the package.
-const resultValueIsMinted = "constructor-minted QuantifiedObjectValue, returned by GetResultValue() which stampNodeLocalValues stamps first"
+const resultValueIsMinted = "constructor-minted QuantifiedObjectValue, returned by GetResultValue() which forEachNodeLocalValue emits first"
 
 // RFC-232 made PlanExprBase own the exact, constructor-minted result QOV for
 // every physical plan. Reflection therefore sees the embedded base itself as a
 // value carrier. Callers cannot plant a sentinel inside it, but its only value
-// is the same GetResultValue() contract stampNodeLocalValues visits first.
-const planExprBaseResultIsMinted = "embedded base owns the constructor-minted exact result QOV returned by GetResultValue(), which stampNodeLocalValues stamps first"
+// is the same GetResultValue() contract forEachNodeLocalValue visits first.
+const planExprBaseResultIsMinted = "embedded base owns the constructor-minted exact result QOV returned by GetResultValue(), which forEachNodeLocalValue emits first"
 
 func globallyProvenStampableField(field string) string {
 	if field == "PlanExprBase" {
@@ -725,7 +726,7 @@ var specimens = map[string]specimen{
 //
 // It went red on RecordQueryAggregateIndexPlan.indexPlan — a plan-typed field
 // that GetChildren() deliberately does not return and that had no arm in
-// stampNodeLocalValues, so the embedded index scan's comparands were never
+// forEachNodeLocalValue, so the embedded index scan's comparands were never
 // baked.
 func TestFinalizePlanCoversStructuralKey(t *testing.T) {
 	t.Parallel()
@@ -770,7 +771,7 @@ func TestFinalizePlanCoversStructuralKey(t *testing.T) {
 				if !isPlanted && reason == "" {
 					t.Errorf("%s.%s carries values FinalizePlan must stamp, and nothing "+
 						"proves the walk reaches it. Either add an arm to "+
-						"stampNodeLocalValues (or make GetChildren return the edge) and "+
+						"forEachNodeLocalValue (or make GetChildren return the edge) and "+
 						"plant a sentinel for %[2]q in this specimen, or allowlist %[2]q "+
 						"with the reason the walk already reaches it.", name, f)
 				}
@@ -789,7 +790,9 @@ func TestFinalizePlanCoversStructuralKey(t *testing.T) {
 			}
 
 			// Behaviour half.
-			FinalizePlan(plan)
+			if err := FinalizePlan(plan); err != nil {
+				t.Fatalf("%s: FinalizePlan: %v", name, err)
+			}
 			for field, s := range planted {
 				stamped := s.MessageDescriptor() != nil
 				switch {
@@ -801,7 +804,7 @@ func TestFinalizePlanCoversStructuralKey(t *testing.T) {
 				case !spec.writeFed && !stamped:
 					t.Errorf("%s.%s: sentinel RecordConstructorValue was NOT stamped — "+
 						"FinalizePlan never reached it. Add an arm for %[1]s in "+
-						"stampNodeLocalValues that walks this field (or return the edge "+
+						"forEachNodeLocalValue that walks this field (or return the edge "+
 						"from GetChildren).", name, field)
 				}
 			}
@@ -853,7 +856,9 @@ func TestFinalizePlanStampsCoveringIndexInnerScan(t *testing.T) {
 		covering, plans.UnableToTranslate, finalizeRowType("T"),
 		plans.FetchIndexRecordsPrimaryKey))
 
-	FinalizePlan(root)
+	if err := FinalizePlan(root); err != nil {
+		t.Fatalf("FinalizePlan: %v", err)
+	}
 
 	for label, s := range map[string]*values.RecordConstructorValue{
 		"scan comparand":     comparand,
@@ -863,7 +868,7 @@ func TestFinalizePlanStampsCoveringIndexInnerScan(t *testing.T) {
 			t.Errorf("covering index scan's %s RecordConstructorValue was NOT stamped: "+
 				"FinalizePlan never reached the wrapped index plan. It is a structural "+
 				"FIELD, not a child, so GetChildren does not return it and only a "+
-				"dedicated arm in stampNodeLocalValues can reach it. Unstamped, the "+
+				"dedicated arm in forEachNodeLocalValue can reach it. Unstamped, the "+
 				"constructor evaluates to its name-keyed map instead of the "+
 				"field-number-keyed message.", label)
 		}
@@ -961,5 +966,312 @@ func TestFinalizePlanCensusSeesTheCarriers(t *testing.T) {
 			t.Errorf("census classifies %s as value-bearing; that over-broadens the "+
 				"guard and will demand sentinels nothing can plant", label)
 		}
+	}
+}
+
+// TestFinalizePlanReturnsTheNameClashAndKeepsTheMapForNoMessageForm pins the
+// two error classes the walk meets, apart. Two record literals declared under
+// ONE name with TWO shapes would make two DescriptorProtos of one name, so the
+// second is refused at definition and that is a query failure FinalizePlan
+// returns (Java's TypeRepository.build throws); swallowing it let the driver
+// hand such a row back as raw maps with no error. A type with no message form
+// — an erased array, which no plan admits, so the walk is driven directly — is
+// not a failure: its constructor stays unstamped and keeps its map
+// representation, and the constructor beside it is stamped.
+func TestFinalizePlanReturnsTheNameClashAndKeepsTheMapForNoMessageForm(t *testing.T) {
+	t.Parallel()
+
+	one := values.NewRecordConstructorValue(values.RecordConstructorField{
+		Name: "P", Value: &values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
+	})
+	one.SetTypeName("FOO")
+	two := values.NewRecordConstructorValue(
+		values.RecordConstructorField{Name: "P", Value: &values.ConstantValue{Value: int64(2), Typ: values.NullableLong}},
+		values.RecordConstructorField{Name: "Q", Value: &values.ConstantValue{Value: int64(3), Typ: values.NullableLong}},
+	)
+	two.SetTypeName("FOO")
+	clash := mustFinalizeConstruct(plans.NewRecordQueryValuesPlan([]values.Value{one, two}))
+	err := FinalizePlan(clash)
+	var nameClash *values.DeclaredNameClashError
+	if !errors.As(err, &nameClash) || nameClash.Name != "FOO" {
+		t.Fatalf("FinalizePlan over one declared name with two shapes = %v, want a DeclaredNameClashError for FOO", err)
+	}
+
+	erased := values.NewRecordConstructorValue(values.RecordConstructorField{
+		Name: "A", Value: &values.ConstantValue{Value: nil, Typ: &values.ArrayType{Nullable: true}},
+	})
+	stamped := sentinel()
+	st := &planStamper{repo: values.NewTypeProtoRepository()}
+	forEachValue([]values.Value{erased, stamped}, func(v values.Value) { stampValueForTest(v, st) })
+	if st.nameClash != nil {
+		t.Fatalf("stamping beside a type with no message form = %v, want nil: that constructor keeps its map", st.nameClash)
+	}
+	if erased.MessageDescriptor() != nil {
+		t.Fatal("a constructor over an erased array was stamped; it has no message form")
+	}
+	if stamped.MessageDescriptor() == nil {
+		t.Fatal("the constructor beside a no-message-form one was not stamped")
+	}
+}
+
+// stampValueForTest bakes one value TREE, which the production path no longer
+// does: FinalizePlan hands ForEachPlanRecordConstructor's output straight to
+// stampRecordConstructor, so nothing outside a test starts from a bare Value.
+// The tests below need that entry point to drive the leaf against a repository
+// they control — a clean one and a poisoned one — without building a plan.
+func stampValueForTest(v values.Value, st *planStamper) {
+	if v == nil {
+		return
+	}
+	values.WalkValue(v, func(node values.Value) bool {
+		if rc, ok := node.(*values.RecordConstructorValue); ok {
+			stampRecordConstructor(rc, st)
+		}
+		return true
+	})
+}
+
+// TestTheCensusWalkPrunesWriteFedSubtreesAsTheBakeDoes pins that
+// ForEachPlanRecordConstructor and FinalizePlan agree about write-fed subtrees.
+//
+// They agree by construction now — FinalizePlan IS that walk — but the exported
+// function's contract is that a census taken over it counts exactly the bake's
+// population, and that contract is what a caller relies on. It was false once:
+// the walk shipped without the bake's feedsAWrite prune and descended into DML
+// subtrees, reporting constructors FinalizePlan never stamps. A census built on
+// it would have counted non-candidates as unstamped, which is the inflating
+// direction and the one that reads like a finding.
+//
+// The two directions are asserted separately because they fail differently. A
+// walk that visits too FEW hides a population change; one that visits too MANY
+// invents one.
+func TestTheCensusWalkPrunesWriteFedSubtreesAsTheBakeDoes(t *testing.T) {
+	t.Parallel()
+
+	child, inner := sentinelChild()
+	insert := mustFinalizeConstruct(plans.NewRecordQueryInsertPlan(child, "T", finalizeRowType("T")))
+
+	var visited int
+	ForEachPlanRecordConstructor(insert, func(rc *values.RecordConstructorValue) {
+		if rc == inner {
+			visited++
+		}
+	})
+	if visited != 0 {
+		t.Fatalf("the census walk visited the write-fed constructor %d time(s), want 0: it must "+
+			"prune where the bake prunes, or a DML census counts constructors FinalizePlan never "+
+			"stamps and reports them as unstamped", visited)
+	}
+
+	if err := FinalizePlan(insert); err != nil {
+		t.Fatalf("FinalizePlan over an insert plan: %v", err)
+	}
+	if inner.MessageDescriptor() != nil {
+		t.Fatal("the bake stamped a write-fed constructor, so the prune this test pins is gone " +
+			"from the bake rather than from the census: the target's declared descriptor governs " +
+			"there, not the constructor's own inferred type")
+	}
+
+	// A write node NESTED under a read root, which is the shape that actually
+	// occurs: a temp-table insert materialises a recursive CTE and sits inside a
+	// larger read plan. The root-level case above would be satisfied by a walk
+	// that merely refuses a write ROOT, and that walk would still descend into
+	// this one.
+	nestedChild, nestedInner := sentinelChild()
+	nestedWrite := mustFinalizeConstruct(plans.NewRecordQueryTempTableInsertPlan(
+		nestedChild, values.UniqueCorrelationIdentifier(), true))
+	guard := sentinel()
+	nested := mustFinalizeConstruct(plans.NewRecordQueryFilterPlan(
+		[]predicates.QueryPredicate{predicates.NewValuePredicate(guard)}, nestedWrite))
+
+	var nestedVisited, guardVisited int
+	ForEachPlanRecordConstructor(nested, func(rc *values.RecordConstructorValue) {
+		switch rc {
+		case nestedInner:
+			nestedVisited++
+		case guard:
+			guardVisited++
+		}
+	})
+	if nestedVisited != 0 {
+		t.Fatalf("the census walk visited a constructor under a NESTED write node %d time(s), "+
+			"want 0: pruning only a write ROOT is not the bake's rule, and a temp-table insert "+
+			"inside a larger read plan is the shape that actually occurs", nestedVisited)
+	}
+	if guardVisited == 0 {
+		t.Fatal("the census walk visited nothing on the read node ABOVE the nested write, so the " +
+			"assertion beside this one cannot tell pruning the write subtree from abandoning the " +
+			"whole plan at the first write it meets")
+	}
+	if err := FinalizePlan(nested); err != nil {
+		t.Fatalf("FinalizePlan over a read plan with a nested write: %v", err)
+	}
+	if nestedInner.MessageDescriptor() != nil {
+		t.Fatal("the bake stamped a constructor under a nested write node, so the two agree by " +
+			"having both stopped pruning rather than by both pruning")
+	}
+	if guard.MessageDescriptor() == nil {
+		t.Fatal("the bake stamped nothing above the nested write, so it abandons a plan at the " +
+			"first write it meets rather than pruning that subtree — and the census now matches a " +
+			"bake that is itself wrong")
+	}
+
+	// The counterweight: on a plan with no write, the walk must actually reach
+	// the constructor. Without this the assertion above is satisfied by a walk
+	// that visits nothing at all.
+	readOnly, readInner := sentinelChild()
+	var readVisited int
+	ForEachPlanRecordConstructor(readOnly, func(rc *values.RecordConstructorValue) {
+		if rc == readInner {
+			readVisited++
+		}
+	})
+	if readVisited == 0 {
+		t.Fatal("the census walk visited no constructor on a read-only plan, so the write-fed " +
+			"assertion above is vacuous: it would hold for a walk that visits nothing")
+	}
+}
+
+// TestTheBakeStampsAParentAndItsChildTogetherOrNeither pins the two facts that
+// keep a stamped parent and its DIRECT record-typed child in step, so neither
+// can be changed silently.
+//
+// Read the scope exactly: this is about a child that is a constructor's own
+// field VALUE. It is NOT a claim that the bake never produces a stamped parent
+// over an unstamped child — it does, and the query then FAILS rather than
+// degrading to a raw map. A type-changing WRAPPER between the two breaks the
+// containment fact below, because the parent's type then contains the wrapper's
+// TARGET shape rather than the constructor underneath it.
+// TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes reproduces that from
+// plain SQL, and TODO.md carries its closure. An earlier round asserted the
+// general unreachability from these two facts alone; that was wrong, and this
+// comment is deliberately narrower than the reasoning it replaces.
+//
+// Each fact is asserted HERE rather than reasoned about, because an earlier
+// version stated both and drove neither: it asserted only that the mixed pair
+// does not appear, which a poisoned repository satisfies by stamping NOTHING.
+// Making WalkValue post-order — a direct violation of the first fact — left it
+// green.
+//
+//   - CONTAINMENT. A record constructor's type contains its children's, so
+//     synthesising the parent's descriptor registers the child's message in the
+//     same repository. The child's own lookup then resolves what is already
+//     there. Asserted by looking the child's type up in the parent's repository
+//     and requiring the parent's own field descriptor back.
+//   - ADJACENCY, for a FIRST-field child. WalkValue visits a parent
+//     immediately before its first child, so nothing touches the repository
+//     between those two lookups. Asserted on the visit ORDER itself. Read the
+//     scope: a child in a LATER field has the preceding fields' subtrees
+//     between it and its parent, so this says nothing about it, and a poisoning
+//     in one of those subtrees can leave that child unstamped under a stamped
+//     parent. The fixture here has one field, deliberately, because that is the
+//     case the assertion can decide.
+//
+// The two arms below are the states this FIXTURE reaches, and both are asserted
+// positively — both stamped, or both unstamped — so neither can pass by being
+// empty. They are not an enumeration of everything the bake can do: what they
+// exclude is the HARMFUL ordering, a stamped parent over an unstamped child.
+// The reverse pairing is out of reach here only because the repository's
+// poisoning is sticky, which nothing below asserts.
+func TestTheBakeStampsAParentAndItsChildTogetherOrNeither(t *testing.T) {
+	t.Parallel()
+
+	build := func() (parent, child *values.RecordConstructorValue) {
+		child = values.NewRecordConstructorValue(values.RecordConstructorField{
+			Name: "X", Value: &values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
+		})
+		parent = values.NewRecordConstructorValue(values.RecordConstructorField{
+			Name: "CH", Value: child,
+		})
+		return parent, child
+	}
+
+	// CONTAINMENT, asserted directly and independently of any walk: stamping the
+	// parent alone is enough to make the child's own lookup succeed, and to make
+	// it resolve the very message the parent's descriptor references.
+	containment := values.NewTypeProtoRepository()
+	cParent, cChild := build()
+	parentDesc, err := containment.MessageDescriptorFor(cParent.Type())
+	if err != nil {
+		t.Fatalf("the parent's descriptor could not be synthesised over a clean repository: %v", err)
+	}
+	childDesc, err := containment.MessageDescriptorFor(cChild.Type())
+	if err != nil {
+		t.Fatalf("the child's type failed to resolve in the repository that had just synthesised "+
+			"its PARENT: %v. Containment is what makes a stamped parent imply a stamped child; "+
+			"without it the bake can leave the pair that fails a query", err)
+	}
+	field := parentDesc.Fields().ByName("CH")
+	if field == nil || field.Message() == nil {
+		t.Fatalf("the parent's descriptor has no message-typed CH field (%v), so this arm is not "+
+			"measuring containment at all", field)
+	}
+	if field.Message() != childDesc {
+		t.Fatalf("the child's own lookup returned %v (%p) where the parent's CH field references "+
+			"%v (%p): the child is being given a SECOND message rather than the one already "+
+			"registered, so containment does not hold and the two lookups can fail independently. "+
+			"The two names can READ the same — identity is the claim, not the name",
+			childDesc.FullName(), childDesc, field.Message().FullName(), field.Message())
+	}
+
+	// ADJACENCY, asserted on the walk order itself. Post-order, or any order that
+	// puts another node between a parent and its child, breaks the argument that
+	// nothing can poison the repository in between.
+	aParent, aChild := build()
+	var order []values.Value
+	values.WalkValue(aParent, func(node values.Value) bool {
+		order = append(order, node)
+		return true
+	})
+	parentAt, childAt := -1, -1
+	for i, node := range order {
+		switch node {
+		case values.Value(aParent):
+			parentAt = i
+		case values.Value(aChild):
+			childAt = i
+		}
+	}
+	if parentAt < 0 || childAt < 0 {
+		t.Fatalf("the walk visited parent at %d and child at %d over %d node(s): it no longer "+
+			"reaches both, so the adjacency claim cannot be checked", parentAt, childAt, len(order))
+	}
+	if childAt != parentAt+1 {
+		t.Fatalf("the walk visited the parent at %d and its child at %d, want the child "+
+			"IMMEDIATELY after: with anything in between, a poisoning can land between the two "+
+			"lookups and leave a stamped parent over an unstamped child — the pair that makes a "+
+			"query fail rather than degrade", parentAt, childAt)
+	}
+
+	// State one: a clean repository stamps BOTH.
+	cleanParent, cleanChild := build()
+	stampValueForTest(cleanParent, &planStamper{repo: values.NewTypeProtoRepository()})
+	if cleanParent.MessageDescriptor() == nil || cleanChild.MessageDescriptor() == nil {
+		t.Fatalf("over a clean repository parent stamped=%v child stamped=%v, want BOTH",
+			cleanParent.MessageDescriptor() != nil, cleanChild.MessageDescriptor() != nil)
+	}
+
+	// State two: a repository already poisoned by a row that names one field
+	// twice stamps NEITHER. Asserted as "neither", not as "not the mixed pair" —
+	// the mixed pair is absent from an empty result too, and that is how the
+	// first version of this test passed while proving nothing.
+	poisoned := values.NewTypeProtoRepository()
+	duplicate := values.NewRawRecordConstructorValue(
+		values.RecordConstructorField{Name: "ID", Value: &values.ConstantValue{Value: int64(1), Typ: values.NullableLong}},
+		values.RecordConstructorField{Name: "ID", Value: &values.ConstantValue{Value: int64(2), Typ: values.NullableLong}},
+	)
+	if _, err := poisoned.MessageDescriptorFor(duplicate.Type()); err == nil {
+		t.Fatal("a row naming one field twice was given a descriptor, so this repository is not " +
+			"poisoned and the arm below proves nothing — the booking has closed, assert that instead")
+	}
+	poisonedParent, poisonedChild := build()
+	stampValueForTest(poisonedParent, &planStamper{repo: poisoned})
+	if poisonedParent.MessageDescriptor() != nil || poisonedChild.MessageDescriptor() != nil {
+		t.Fatalf("over a poisoned repository parent stamped=%v child stamped=%v, want NEITHER. A "+
+			"stamped parent beside an unstamped child is the pair that makes a query FAIL rather "+
+			"than degrade to a raw map. A wrapper between parent and child already reaches it "+
+			"(TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes); this arm is about the DIRECT "+
+			"child, and if it goes red that route is open too",
+			poisonedParent.MessageDescriptor() != nil, poisonedChild.MessageDescriptor() != nil)
 	}
 }

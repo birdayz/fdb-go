@@ -85,6 +85,14 @@ func FuzzPlanner_WithBatchA_NoPanic(f *testing.F) {
 	// THIS target (seed 9bd9b3661b501312, 2026-07-19). Fixed by
 	// Reference.AdvanceStagePreservingMembers.
 	f.Add([]byte{35, 4, 4, 1})
+	// Regression: Union(TypeFilter(TypeFilter(Scan)), TypeFilter(Projection(Scan)))
+	// over a row whose field names are not upper-case. The implementation rule
+	// read the scan leg's names through a case fold and the projection leg's
+	// exactly, decided the legs differed, and wrapped one in a rename Map the
+	// physical union then rejected for disagreeing with the other leg's type
+	// (RFC-242; corpus entry 4a35dedaab03e663; nightly crashers 455b6e6975d288bc,
+	// 9027cb5e7737c749, d98799d80e18558c).
+	f.Add([]byte{35, 4, 4, 33})
 
 	f.Fuzz(func(t *testing.T, b []byte) {
 		if len(b) < 4 {

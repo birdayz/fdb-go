@@ -121,26 +121,21 @@ func exactLogicalResultType(op logical.LogicalOperator, md *recordlayer.RecordMe
 			if fieldType == nil {
 				return nil, fmt.Errorf("projection result slot %d has no resolved typed value", i)
 			}
-			name := typed.Projections[i]
-			if i < len(typed.Aliases) && typed.Aliases[i] != "" {
-				name = typed.Aliases[i]
-			} else if i < len(typed.ProjectionRefs) && typed.ProjectionRefs[i].Present {
-				// Qualification is parse-tree segment count, never punctuation
-				// recovered from a rendering. A quoted one-segment column named
-				// "A.B" has Bare="A.B" and must keep that literal dot.
-				name = typed.ProjectionRefs[i].Bare
-			} else if dot := strings.LastIndexByte(name, '.'); dot >= 0 {
-				name = name[dot+1:]
-			}
-			// VERBATIM. Every branch above produced a name that was already
-			// normalized at the parse boundary — an alias, a reference's bare
-			// segment, or a rendering built from those — so re-folding here
-			// only destroys the one spelling that carries information: a
-			// QUOTED identifier's case. `AS "x"` emitted a column named X,
-			// which is a name no reference to it can spell, and the row this
-			// projection flows then disagreed by case with the scope that
-			// resolves against it.
-			fields[i] = values.Field{Name: name, Ordinal: i, FieldType: fieldType}
+			fields[i] = values.Field{Name: projectionSlotSQLName(typed, i), Ordinal: i, FieldType: fieldType}
+		}
+		// The row the projection FLOWS is its record constructor's, which names a
+		// repeated output by the name-addressability suffix (values.DedupFieldNames:
+		// G, G_2). Stating the names verbatim here made this type — the scope's
+		// flowed layout and every consumer of the exact row — disagree with the
+		// plan about one row: `WITH u AS (SELECT g, SUM(v) AS g, COUNT(*) AS n …)
+		// SELECT u.n … GROUP BY u.n` was refused at execution as `edge lookup:
+		// read as RECORD(G,G,N), declared RECORD(G,G_2,N)`.
+		names := make([]string, len(fields))
+		for i := range fields {
+			names[i] = fields[i].Name
+		}
+		for i, name := range values.DedupFieldNames(names) {
+			fields[i].Name = name
 		}
 		return &values.RecordType{Fields: fields}, nil
 	case *logical.LogicalAggregate:
@@ -316,6 +311,17 @@ func exactLogicalOutputLabels(
 		return nil, fmt.Errorf("cannot label a nil logical operator")
 	}
 	switch typed := op.(type) {
+	case *logical.LogicalProject:
+		// The SQL names, one per slot and NOT deduplicated: these labels are
+		// what a derived source publishes for resolution, where a repeated
+		// name must stay repeated so a reference that spells it is ambiguous.
+		// The exact result type applies the constructor's suffix to the same
+		// names, because it states the row the plan flows.
+		labels := make([]string, len(typed.Projections))
+		for i := range typed.Projections {
+			labels[i] = projectionSlotSQLName(typed, i)
+		}
+		return labels, nil
 	case *logical.LogicalFilter:
 		return exactLogicalOutputLabels(typed.Input, md, env)
 	case *logical.LogicalSort:
@@ -663,4 +669,29 @@ func unionBranchTypesAgree(first, branch values.Type) bool {
 		}
 	}
 	return true
+}
+
+// projectionSlotSQLName is the SQL name of one projected slot: the alias when
+// the item carries one, the reference's own bare segment when the parse tree
+// captured one, else the rendering with a leading qualifier stripped.
+// Qualification is parse-tree segment count, never punctuation recovered from
+// a rendering — a quoted one-segment column named "A.B" has Bare="A.B" and
+// keeps that literal dot. VERBATIM: every branch produces a name already
+// normalized at the parse boundary, so re-folding here would only destroy the
+// one spelling that carries information, a quoted identifier's case (`AS "x"`
+// once emitted a column named X, which no reference to it could spell). Shared
+// by the exact result type, which then applies the constructor's dedup, and by
+// the label derivation, which must not.
+func projectionSlotSQLName(typed *logical.LogicalProject, i int) string {
+	name := typed.Projections[i]
+	if i < len(typed.Aliases) && typed.Aliases[i] != "" {
+		return typed.Aliases[i]
+	}
+	if i < len(typed.ProjectionRefs) && typed.ProjectionRefs[i].Present {
+		return typed.ProjectionRefs[i].Bare
+	}
+	if dot := strings.LastIndexByte(name, '.'); dot >= 0 {
+		return name[dot+1:]
+	}
+	return name
 }

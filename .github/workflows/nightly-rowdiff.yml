@@ -146,6 +146,548 @@ jobs:
           echo "start=$START" >> "$GITHUB_OUTPUT"
           echo "Sweeping seeds $START..$(( START + SEEDS - 1 )) ($SEEDS seeds)"
 
+      - name: Watch the FDB container while it is alive
+        # WHY THIS EXISTS. The forensics step below used to claim it ran "before any
+        # cleanup, so the exited container is still inspectable". It does not: on run
+        # 34011921618 it ran, exited 0, and uploaded an artifact with NO container
+        # evidence at all — its own unfiltered `docker ps -a`, the positive control
+        # for the filtered loop beside it, listed one container, the testcontainers
+        # reaper. Evidence has to be taken while the container is ALIVE, which is what
+        # this step does.
+        #
+        # WHAT REMOVED THE CONTAINER is now known, and it is not testcontainers
+        # cleanup as an earlier version of this comment guessed: `orphan-fdb-sweep.sh`
+        # (infra/cloud-init.yaml, enabled on every provisioned box) ran every five
+        # minutes and `docker rm -fv`'d any FoundationDB container older than 1800s,
+        # on the premise that "no per-test container lives that long". Three nightly
+        # lanes do. That is fixed at the source, and NOT by the blanket "skip while
+        # any job runs" that first repair used — that one exempted an orphan left by
+        # a previous cancelled job for the whole lane, and with a five-minute timer
+        # against a four-hour lane the box need never be idle for a tick. The sweep
+        # compares START TIMES instead: a container younger than the running
+        # `Runner.Worker` is that job's own and survives, an older one is an orphan
+        # and is removed even mid-job. `infra/orphan_fdb_sweep_test.sh` drives the
+        # arms. This watcher is what will show whether the fix took: with
+        # the sweeper gone the container should live to the end of the sweep, and if
+        # something still kills it, `exit`, `oom` and the container's own stdout say
+        # which of the three outcomes it was.
+        #
+        # No `set -e` in the script: a watcher that dies on the first transient docker
+        # error is a watcher that reports nothing, which is the failure it exists to
+        # fix.
+        if: steps.window.outputs.ok == 'true'
+        id: watcher
+        run: |
+          set -euo pipefail
+          # One copy of the image tag, not a third: `.bazelrc` is where the tests get
+          # it (as a --test_env, which is why it is NOT in this step's environment and
+          # a `${FDB_VERSION:-…}` default inside the script would silently be the only
+          # value that ever applied).
+          ver="$(sed -n 's/^test --test_env=FDB_VERSION=//p' .bazelrc | head -1)"
+          [ -n "$ver" ] || { echo "::error::no FDB_VERSION in .bazelrc — the watcher cannot name the image it is meant to watch"; exit 1; }
+          echo "watching image foundationdb/foundationdb:$ver"
+          cat > fdb-watch.sh <<'SH'
+          #!/usr/bin/env bash
+          # STAGING BELONGS TO NOBODY ONCE THIS SCRIPT IS SIGNALLED.
+          #
+          # The stop step signals this whole process group at an arbitrary point,
+          # and the likeliest instant to be inside is a COPY — the only slow thing
+          # here. A signal there leaves a `.fdb-logs-*.new` directory on the
+          # runner. Harmless to the dump and to the upload, which both skip a
+          # dot-prefixed name, but litter — and it made "no staging outlives the
+          # copier" a claim that held only because the window is narrow. Measured
+          # by widening the copy until the stop was guaranteed to land inside it:
+          # the assertion failed. The suite drives that window deterministically
+          # rather than hoping to hit it.
+          #
+          # ONE trap, at the top, not one per loop. Both stagings live in this
+          # working directory, so a single glob covers the periodic copier's and
+          # the exit copy's alike; a per-subshell trap as well was measured to be
+          # redundant — removing either alone changed nothing, and only removing
+          # both reddened the arm, which is two mechanisms for one job.
+          #
+          # The TERM arm makes the exit PROMPT and explicit. It does not make the
+          # EXIT trap reachable — an earlier version of this comment said an
+          # untrapped SIGTERM kills the shell without running EXIT at all, which is
+          # documented behaviour that was never run here and is false where it
+          # matters: with an EXIT trap set and no TERM trap, a group SIGTERM ran
+          # it 5 times out of 5 on bash 5.2.21, and 5 of 5 on 5.3.15. The VERSIONS
+          # are the claim — two of them make it a bash property rather than a
+          # platform accident. Provenance, stated exactly: 5.2.21 was measured in
+          # the `ubuntu:24.04` CONTAINER; the fleet boots Hetzner's `ubuntu-24.04`
+          # rolling label (`infra/main.tf`), which is the same release but not the
+          # same artifact, and Hetzner refreshes it. Keep the arm; do not justify it from a manual page instead of
+          # a measurement, and measure on the PLATFORM, not on the laptop.
+          trap 'rm -rf .fdb-logs-*' EXIT
+          trap 'exit' TERM INT
+
+          # SHARED BY ALL THREE POLLERS: is this container GONE, or is the daemon
+          # merely not answering?
+          #
+          # `docker inspect` cannot tell those apart — it returns 1 for both — and
+          # every loop here used its exit status as a liveness test, so one blip
+          # ended trace capture permanently and silently, and the main loop wrote
+          # a false GONE line dating a death that had not happened.
+          #
+          # `docker ps -aq --filter id=<id>` separates them, measured:
+          #
+          #     present             rc 0, prints the id
+          #     removed             rc 0, EMPTY
+          #     daemon unreachable  rc 1, empty
+          #
+          # So the removal is decided by the OUTPUT and the outage by the STATUS.
+          # A genuine removal ends the poller IMMEDIATELY — no waiting out a miss
+          # budget, which is what a count-based test had to do because it could
+          # not see the difference — and only an unreachable daemon is tolerated.
+          #
+          # That is why there is no tuned constant here any more. An earlier
+          # version tolerated three consecutive `inspect` failures, and the
+          # threshold was a guess in the wrong unit: a blip has a DURATION, a
+          # count is that duration divided by a poll interval, and the pollers
+          # poll at different rates, so one number meant three different
+          # tolerances. `maxOutageSeconds` below is only a BACKSTOP against a daemon
+          # that never comes back, and it can be generous precisely because no
+          # genuine removal depends on it.
+          #
+          # $1 container, $2 what is ending, $3 a name for THIS poller (the suite aims
+          # its daemon-outage knob by it; the shipped code only passes it through).
+          # Returns 0 while the container should
+          # still be polled, including while riding out an outage; the caller
+          # checks `$misses` to decide whether to skip its body this cycle.
+          # Returns 1 once the container is gone or the daemon has been
+          # unreachable too long, and says WHICH — a poller that stops has to
+          # announce it, because the defect this replaces was a stop nobody could
+          # see. `misses` is the CALLER's variable: each poller runs in its own
+          # subshell, so each has its own.
+          # THE BUDGET IS A DURATION, AND THE CALLER IS TOLD WHY IT STOPPED.
+          #
+          # An earlier version counted POLLS, and the sentence condemning the
+          # count it replaced applies to a count just as well: the three callers
+          # poll at 60s, 30s and 2s, so one number is three budgets — 20 polls
+          # would have been 20 minutes for the copier, 10 for the sampler and 40
+          # SECONDS for the main loop. Backwards, since the main loop is where a
+          # false removal costs the most and 40s is inside an ordinary
+          # `systemctl restart docker`. Seconds are the unit the phenomenon has.
+          #
+          # `gone_reason` exists because the two ways of returning 1 are not
+          # interchangeable to every caller. The main loop writes a `GONE
+          # (removed…)` line that a reader uses to DATE the cluster's death, and
+          # writing it for an OUTAGE would reinstate exactly the defect this
+          # design removed — one line below a message correctly reporting the
+          # outage. So the reason is returned, not inferred.
+          maxOutageSeconds=600
+          still_there() {   # $1 container, $2 what is ending, $3 poller name
+            if out=$(POLLER="$3" docker ps -aq --filter "id=$1" 2>/dev/null); then
+              if [ -n "$out" ]; then
+                outage_start=0; misses=0
+                return 0
+              fi
+              # rc 0 with EMPTY output is the only reading that means REMOVED,
+              # and it is the one place this design decides on a single sample.
+              # A daemon answering mid-reload produces it, so re-issue once.
+              sleep 1
+              if out=$(POLLER="$3" docker ps -aq --filter "id=$1" 2>/dev/null); then
+                if [ -n "$out" ]; then
+                  # BOTH "present" exits must clear BOTH pieces of state. Clearing
+                  # only the clock here left `misses` set, so a copier that rode
+                  # out an outage and recovered THROUGH THE RE-ISSUE — the exact
+                  # shape the re-issue exists for — skipped one more cycle than it
+                  # needed to. Measured: `down,id` leaves misses=0 and the body
+                  # runs; `down,empty,id` left misses=1 and the body was skipped
+                  # with the container present and the daemon answering.
+                  outage_start=0; misses=0
+                  return 0
+                fi
+                gone_reason=removed
+                echo "$(date -u +%FT%TZ) $1 is gone; ending $2" >> fdb-watch.log
+                return 1
+              fi
+              # THE RE-ISSUE ITSELF COULD NOT REACH THE DAEMON. That is an
+              # outage, not a removal, and it must fall through to the outage
+              # path below rather than inheriting the empty first answer.
+              # Collapsing it into "not present" is exactly the defect
+              # `gone_reason` exists to prevent — reached, when this was first
+              # written, through the re-issue added to prevent a different one.
+              # Measured on the shipped function: rc0-empty then rc1 returned
+              # `gone_reason=removed` with the outage clock never started.
+            fi
+            now=$(date +%s)
+            [ "${outage_start:-0}" = 0 ] && outage_start=$now
+            # THE SKIP SIGNAL. The pollers read `$misses` to skip their body
+            # while the daemon is unreachable, and it must be set HERE or those
+            # branches are dead — a `docker cp` issued during an outage fails and
+            # logs `periodic copy FAILING (inspect still succeeds)`, which is
+            # false in exactly the state it prints in.
+            misses=$((misses + 1))
+            [ $(( now - outage_start )) -lt "$maxOutageSeconds" ] && return 0
+            gone_reason=outage
+            echo "$(date -u +%FT%TZ) docker unreachable ${maxOutageSeconds}s; ending $2 for $1 (NOT a removal)" >> fdb-watch.log
+            return 1
+          }
+          img="foundationdb/foundationdb:$FDB_IMAGE_TAG"
+          # The script records its OWN pid. Under `setsid` it is a session leader, so
+          # its pid IS its process-group id and killing that group takes the
+          # `docker logs -f` children with it. The launching shell's `$!` names the
+          # setsid wrapper's group instead — measured: signalling that left the
+          # watcher running.
+          echo $$ > fdb-watch.pid
+          # A deadline, so this cannot outlive the job even if the cleanup step never
+          # runs. `while true` plus `nohup` on a PERSISTENT box is how a nightly
+          # leaves a poller behind that then attaches `docker logs -f` to tomorrow's
+          # containers. 17400s = 290 min, INSIDE the job's own 300-minute cap rather
+          # than past it: this starts a couple of minutes in, so 290 from here still
+          # lands before the cap. An earlier value of 18600 was 310 minutes and
+          # outlived the job it claimed to be bounded by.
+          deadline=$(( $(date +%s) + 17400 ))
+          seen=""
+          # PER CONTAINER, not per selection. `exited` was a single flag reset on
+          # every re-selection, so a container re-selected after it had already
+          # exited had its transition logged a SECOND time — and the second pass
+          # finds the exit destination occupied, so the log then says the trace
+          # was NOT copied for a container whose trace is sitting right there.
+          # Both halves false, on the line a triaging reader trusts most. Same
+          # shape as `launched`, and for the same reason.
+          exitlogged=""
+          # Every copier launch gets a number the NEXT launch cannot reuse. See the
+          # generation-name comment in the copy loop for why a per-loop counter
+          # alone is not enough.
+          launches=0; launched=""
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            c="$(docker ps -aq --filter "ancestor=$img" 2>/dev/null | head -1)"
+            if [ -n "$c" ] && [ "$c" != "$seen" ]; then
+              seen="$c"; misses=0
+              echo "$(date -u +%FT%TZ) watching $c" >> fdb-watch.log
+              # LAUNCH THE BACKGROUND JOBS AT MOST ONCE PER CONTAINER.
+              #
+              # This branch fires whenever `$c` differs from `$seen`, and `$c` is
+              # `docker ps -aq … | head -1`. With two containers in a lane the
+              # older is re-selected once the newer disappears — while still alive,
+              # and while its own jobs are still running — so without this guard it
+              # gets a SECOND set. THREE things double, not one:
+              #
+              #   - two copiers sharing a staging path, each `rm -rf`ing and
+              #     filling it, so one can publish what the other half-wrote;
+              #   - two `docker logs -f` followers appending one stream to one file
+              #     with no `--since`, replaying the log on top of itself;
+              #   - two `df` samplers doing `> "fdb-df-$c.txt.new"` on one path —
+              #     two O_TRUNC writers, and each failure branch `rm -f`s the
+              #     other's file between its write and its rename.
+              #
+              # Scoping the generation NAME by launch addresses only the first, and
+              # only its naming half. An id list at the launch site closes all three
+              # at the cause and leaves `$launch` as defence in depth.
+              # `*" $c "*` is literal, not a glob: the `" $c "` segment is
+              # double-quoted, and bash matches quoted pattern text as text — so a
+              # container id containing pattern characters cannot widen the match.
+              # Load-bearing, and it reads like a bug, which is why it is written
+              # down. The space delimiters are what stop a prefix or a superstring
+              # matching (probed: neither does).
+              #
+              # An EMPTY `$c` WOULD match, and would then skip every launch
+              # forever while still logging "watching" — silent and total. That is
+              # unreachable only because the enclosing branch is `[ -n "$c" ]`,
+              # written on another line for another reason. Do not relax it.
+              case " $launched " in
+                *" $c "*) : ;;
+                *)
+                  launched="$launched $c"
+                  docker logs -f "$c" >> "fdb-container-$c.log" 2>&1 &
+                  # The fdbserver trace XML says WHICH i/o failure; stdout only says that
+                  # there was one. It cannot be read after removal, so take it now and
+                  # keep taking it — the last copy before the container goes is the one
+                  # that matters.
+                  # COPY the trace directory periodically; do not grep it and do not
+                  # stream it. Both of those were tried and both were measured to lose
+                  # the event this exists for:
+                  #
+                  #   - a 30s `docker exec grep` cannot run after the container stops,
+                  #     and fdbserver's death IS the container stopping, so the last
+                  #     snapshot promoted is the PRE-crash one.
+                  #   - `tail -F` on a glob is worse in two further ways that only show
+                  #     up when you run it: the glob expands ONCE at exec time, so if no
+                  #     `.xml` exists yet the capture is empty PERMANENTLY (the exec
+                  #     fires once, under the new-container branch), and a file created
+                  #     after the attach — which is what trace ROTATION does — is never
+                  #     followed. Measured: 0 bytes for a file created 1s after attach;
+                  #     a second file created after attach not followed; and the fatal
+                  #     line lost anyway, 8 of 9 captured, because the exec's pipe is
+                  #     torn down with the container.
+                  #
+                  # Copying the whole directory has none of those: it re-globs every
+                  # cycle, so rotation and a late first file are handled by
+                  # construction. Its one weakness is staleness — up to one cycle — and
+                  # the exit-transition copy below cuts it to nothing on every path
+                  # where the container STOPS rather than being removed outright.
+                  launches=$((launches + 1))
+                  # A FAILED `docker inspect` IS NOT A REMOVED CONTAINER, and using
+                  # the loop CONDITION as the liveness test made one transient failure
+                  # end trace capture permanently and silently. Measured against an
+                  # injected single blip with the container alive and `cp` still
+                  # working: the last generation stayed `1-5` over the following 8s
+                  # where the control went `1-5 -> 1-13`, and nothing was logged
+                  # anywhere. A daemon reload or an overloaded box produces exactly
+                  # that blip — on the box this watcher exists to explain.
+                  #
+                    # So: ask a question that separates them, and END LOUDLY rather
+                    # than by falling out of a condition. `still_there` decides GONE
+                    # from two consecutive rc-0-with-empty answers and OUTAGE from a
+                    # daemon that will not answer; `$misses` counts only the second
+                    # kind and decides nothing but whether to skip a cycle. An earlier
+                    # design counted misses toward a REMOVAL — "three misses is the
+                    # container being gone" — and that sentence outlived the design by
+                    # a round, sitting directly above the loop a reader is trying to
+                    # understand. The break is logged because a capture that stops has
+                    # to say it stopped: the failure this replaces was a stop nobody
+                    # could see.
+                  ( launch=$launches; gen=0; prevgen=""; copyfail=""; misses=0
+                    while still_there "$c" "periodic copy" copier; do
+                      # Tolerating a blip means skipping this cycle, not ending.
+                      # The sleep is on its own line deliberately: the suite's
+                      # interval override rewrites a line that is exactly
+                      # `sleep 60`, so folding it into the `if` puts a real
+                      # 60-second wait inside a test — which is how this was
+                      # found, by the arms timing out.
+                      if [ "$misses" -gt 0 ]; then
+                        sleep 60
+                        continue
+                      fi
+                      # PUBLISH BY ATOMIC RENAME ONTO A NAME THAT DOES NOT EXIST.
+                      #
+                      # Three shapes were tried here and the first two each traded the
+                      # defect for the same defect one step over, which is why this one
+                      # is written out at length.
+                      #
+                      # `mkdir -p "fdb-logs-$c"` then `docker cp … || true` publishes the
+                      # directory whether or not the copy worked, so a container removed
+                      # between the loop's inspect and its cp leaves an EMPTY directory
+                      # the dump cannot tell from a healthy cluster that wrote no fatal
+                      # trace.
+                      #
+                      # Staging plus `rm -rf` + `mv` fixes that and opens an instant in
+                      # which NEITHER directory exists; the stop step signals this loop's
+                      # process group at an arbitrary point, so landing there destroys the
+                      # last good snapshot.
+                      #
+                      # Staging plus `cp -a` into the published directory closes that and
+                      # opens a third: a host copy interrupted mid-file — SIGTERM, or the
+                      # runner's disk filling — leaves a TRUNCATED file published, and the
+                      # complete staging copy is then removed. Every published byte would
+                      # be a byte no reader can trust.
+                      #
+                      # A rename onto a fresh name has none of them. `rename(2)` on one
+                      # THE GENERATION NAME IS `$launch-$gen`, AND BOTH HALVES ARE
+                      # LOAD-BEARING. This is the fourth naming scheme here; the first
+                      # three each fixed the previous one's collision and introduced
+                      # their own, so the reasoning is written out.
+                      #
+                      # `$(date +%s)` alone is not unique. Two cycles inside one second
+                      # hand `mv` a target that already EXISTS, and `mv` of a directory
+                      # onto an existing directory does not fail — it moves the source
+                      # INSIDE it and returns 0. The copy then sits one level below
+                      # where the dump reads while the exit status says success and a
+                      # "how many generations" check still sees exactly one. Silent,
+                      # and green.
+                      #
+                      # A per-loop COUNTER alone is not unique either, and that is
+                      # subtler: it is unique within one copier and this script can run
+                      # TWO for the same container. `$c` is `docker ps -aq … | head -1`,
+                      # and a copier is launched whenever `$c` differs from `$seen`. With
+                      # two containers in a lane, `head -1` names the newer; when that
+                      # one goes, `head -1` reverts to the older, which is still alive
+                      # and still has its first copier looping — and a second one starts
+                      # with `gen=0`. Both then mint the same names. `$launch` is a
+                      # counter in the PARENT shell, so a relaunch cannot reuse it, and
+                      # `$gen` is per loop, so a cycle cannot. Composed, not traded.
+                      #
+                      # `mv -T` is the third guard and the only structural one: whatever
+                      # a naming bug does, `-T` refuses to nest rather than returning 0.
+                      #
+                      # The predecessor is REMEMBERED, not re-derived by listing:
+                      # `ls | sort | head -n -1` orders lexicographically, so it is
+                      # correct only while every name has the same width — `.9` sorts
+                      # after `.10`. Remembering removes the ordering question instead of
+                      # answering it, and removes parsing `ls` with it.
+                      gen=$((gen + 1))
+                      rm -rf ".fdb-logs-$c.$launch.new"
+                      if mkdir -p ".fdb-logs-$c.$launch.new" &&
+                         docker cp "$c:/var/fdb/logs/." ".fdb-logs-$c.$launch.new/" >/dev/null 2>&1 &&
+                         mv -T ".fdb-logs-$c.$launch.new" "fdb-logs-$c.$launch-$gen"; then
+                        # RETIRE BY RENAME, THEN DELETE. `rm -rf` is interruptible,
+                        # and the stop signal reaches this group at an arbitrary
+                        # point: a deletion cut in half leaves a partially dismantled
+                        # `fdb-logs-*` directory, which the dump lists and the upload
+                        # ships as though it were a published snapshot. Measured on a
+                        # deep tree — an interrupted `rm -rf` left 6170 of 8000 files
+                        # and the directory still matching the glob. The rename is
+                        # atomic, so the moment it returns the old generation is
+                        # invisible to that glob no matter when the signal lands, and
+                        # what an interrupted delete leaves behind is dot-prefixed
+                        # litter the trap at the top of this script removes.
+                        #
+                        # Order matters: this runs only AFTER the new generation is in
+                        # place, so the glob never sees zero.
+                        if [ -n "$prevgen" ]; then
+                          # A FAILED retire must be loud. `&&` correctly skips the
+                          # delete, and the old generation then stays published while
+                          # `prevgen` is reassigned below — so nothing ever points at it
+                          # again and it is orphaned PERMANENTLY, silently, with the
+                          # error swallowed by `2>/dev/null`. Once is harmless; a
+                          # persistent failure leaks one generation per cycle, about 290
+                          # over a lane, on the box whose disk pressure is what this
+                          # whole watcher exists to explain.
+                          if mv -T "$prevgen" ".$prevgen.trash" 2>/dev/null; then
+                            rm -rf ".$prevgen.trash"
+                          else
+                            echo "$(date -u +%FT%TZ) could not retire $prevgen; it is orphaned and will not be swept" >> fdb-watch.log
+                          fi
+                        fi
+                        prevgen="fdb-logs-$c.$launch-$gen"
+                        [ -n "$copyfail" ] &&
+                          echo "$(date -u +%FT%TZ) $c periodic copy recovered" >> fdb-watch.log
+                        copyfail=""
+                      else
+                        # SAY SO, once per run of failures. The exit branch logs its
+                        # failure and this one did not, so a copier that could inspect
+                        # but never copy produced a lane with no traces and nothing
+                        # saying why. Logging every cycle would bury the line that
+                        # matters under hundreds, which is the trap the exit-transition
+                        # log one section down is written around, so this logs the
+                        # TRANSITION into failing and the transition back out.
+                        [ -z "$copyfail" ] &&
+                          echo "$(date -u +%FT%TZ) $c periodic copy FAILING (inspect still succeeds)" >> fdb-watch.log
+                        copyfail=1
+                        rm -rf ".fdb-logs-$c.$launch.new"
+                      fi
+                      sleep 60
+                    done ) &
+                  # The data filesystem still has to be sampled — there is no stream for a
+                  # `df` — so it keeps the promote-only-on-success shape. A plain `>`
+                  # creates the file even when the exec fails, so the failure branch has to
+                  # remove it or every poll leaves litter (measured: `.new` files left
+                  # behind when the exec could not run).
+                  ( misses=0
+                    while still_there "$c" "df sampling" df; do
+                      if [ "$misses" -gt 0 ]; then
+                        sleep 30
+                        continue
+                      fi
+                      if docker exec "$c" df -h /var/fdb/data > "fdb-df-$c.txt.new" 2>/dev/null; then
+                        mv -f "fdb-df-$c.txt.new" "fdb-df-$c.txt"
+                      else
+                        rm -f "fdb-df-$c.txt.new"
+                      fi
+                      sleep 30
+                    done ) &
+                  ;;
+              esac
+            fi
+            if [ -n "$seen" ]; then
+              if inspect="$(docker inspect "$seen" --format 'exit={{.State.ExitCode}} oom={{.State.OOMKilled}} running={{.State.Running}} err={{.State.Error}} started={{.State.StartedAt}} finished={{.State.FinishedAt}}' 2>/dev/null)"; then
+                # PER CONTAINER. A single file is overwritten by the paging lane's
+                # healthy container, replacing the dead one's inspect with a live one
+                # — and a non-empty file then silences the alarm about the death.
+                # A successful inspect means the daemon answered, so the outage
+                # window closes here too. Resetting only on SELECTION let
+                # isolated one-poll outages accumulate across a lane until the
+                # backstop tripped and reported a live container removed.
+                outage_start=0
+                printf '%s %s %s\n' "$(date -u +%FT%TZ)" "$seen" "$inspect" > "fdb-last-inspect-$seen.txt"
+                # Log the TRANSITION once. Logging every poll after the exit turns a
+                # one-line finding into hundreds and buries the line that matters.
+                case "$inspect" in
+                  *"running=false"*)
+                    case " $exitlogged " in
+                      *" $seen "*) : ;;
+                      *)
+                      exitlogged="$exitlogged $seen"
+                      echo "$(date -u +%FT%TZ) $seen EXITED: $inspect" >> fdb-watch.log
+                      # The complete trace, PROMPTLY. A stopped container still
+                      # exists until something removes it, so the periodic loop
+                      # above would reach this too within a cycle — this makes it
+                      # immediate, which is what matters when the next thing to
+                      # happen may be a removal. Measured on a fixture that appends `Severity="40"` and
+                      # exits in the same breath — a `tail -F` stream got 6 lines and
+                      # no fatal event, this got 7 including it. Runs once, on the
+                      # TRANSITION, and is best-effort: where something `docker rm -f`s
+                      # the container outright there is no stopped state to copy from,
+                      # and the periodic copy above is then the only record.
+                      # Its OWN directory, not the periodic one: `docker inspect`
+                      # succeeds on a stopped container, so the periodic loop is
+                      # still running and still copying when this fires, and two
+                      # `docker cp` calls writing the same paths can interleave.
+                      # Promoted on success too, so an EXISTING directory always
+                      # means a copy that worked and an empty one always means a
+                      # cluster that wrote nothing.
+                      # Same publish as the periodic copy, and here the destination is
+                      # unique per container so no prune is needed. `mv -T` is what
+                      # makes it safe rather than the name being fresh: plain `mv` onto
+                      # an EXISTING directory does not replace it, it moves the source
+                      # INSIDE and returns 0, so the success line below would be written
+                      # for a copy that landed one level too deep. An earlier version
+                      # here `rm -rf`d the destination first to prevent that, which is
+                      # the window shape this file spent a round removing — a defect
+                      # traded one step over, again, one line under the comment saying
+                      # not to. `-T` refuses the nest structurally (measured: rc=1,
+                      # "Directory not empty") and needs no window to do it.
+                      rm -rf ".fdb-logs-$seen-exit.new"
+                      if mkdir -p ".fdb-logs-$seen-exit.new" &&
+                         docker cp "$seen:/var/fdb/logs/." ".fdb-logs-$seen-exit.new/" >/dev/null 2>&1 &&
+                         mv -T ".fdb-logs-$seen-exit.new" "fdb-logs-$seen-exit"; then
+                        echo "$(date -u +%FT%TZ) $seen logs copied complete at exit" >> fdb-watch.log
+                      else
+                        rm -rf ".fdb-logs-$seen-exit.new"
+                        echo "$(date -u +%FT%TZ) $seen logs NOT copied at exit (already removed?); only the periodic copy remains" >> fdb-watch.log
+                      fi
+                      ;;
+                    esac
+                    ;;
+                esac
+              else
+                # A FAILED LIVENESS CHECK IS NOT ALWAYS A REMOVAL, and only one
+                # of the two reasons may write this line. `GONE (removed…)` is
+                # what a triaging reader uses to DATE the cluster's death, so
+                # writing it for a daemon OUTAGE asserts a removal that did not
+                # happen, at a time nothing happened — the defect this whole
+                # design removed, reappearing at the backstop if the caller
+                # cannot tell the two apart. `still_there` reports which.
+                if ! still_there "$seen" "watching $seen" main; then
+                  if [ "$gone_reason" = removed ]; then
+                    echo "$(date -u +%FT%TZ) $seen GONE (removed; its last inspect is fdb-last-inspect-$seen.txt)" >> fdb-watch.log
+                  fi
+                  # NOT exitlogged: a container that has been REMOVED must not
+                  # have its transition re-armed if `head -1` hands it back.
+                  seen=""
+                fi
+              fi
+            fi
+            sleep 2
+          done
+          echo "$(date -u +%FT%TZ) watcher deadline reached, exiting" >> fdb-watch.log
+          # The deadline bounds THIS process; the `docker logs -f` and trace-poller
+          # children have no deadline of their own and would outlive it, which is the
+          # same leak one level down. Signal the whole group — this process is its
+          # leader — and let the exit follow.
+          kill -- -$$ 2>/dev/null || true
+          SH
+          chmod +x fdb-watch.sh
+          # No `rm -f fdb-watch.pid` here, deliberately, and the reason is worth a line
+          # because an earlier version of this step had one: it would be a no-op on
+          # every path it can execute. This step runs only when the window is open,
+          # which means `actions/checkout@v5` ran, and its default `clean: true` is a
+          # `git clean -ffdx` that has already removed the untracked pid file. The
+          # stale-pid hazard is real but lives on the CLOSED-window path, where this
+          # step does not run at all — it is handled by gating the stop step, not here.
+          FDB_IMAGE_TAG="$ver" setsid nohup ./fdb-watch.sh >/dev/null 2>&1 &
+          # Wait for the script to record its own pid rather than assuming it has.
+          for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s fdb-watch.pid ] && break; sleep 1; done
+          # Loud, and honest about what happens next: the watcher is already detached
+          # by this point, so failing here does not stop it. What bounds it is its own
+          # deadline, and what still gets a chance to stop it is the cleanup step —
+          # which is why that step gates on this one not being SKIPPED rather than on
+          # it succeeding.
+          [ -s fdb-watch.pid ] || { echo "::error::the watcher recorded no pid within 10s; it is detached and unnameable, so nothing can signal it and only its own deadline bounds it"; exit 1; }
+          echo "fdb watcher started, pid $(cat fdb-watch.pid); the cleanup step stops it and a deadline bounds it either way"
+
       - name: Run rowdiff deep sweep
         if: steps.window.outputs.ok == 'true'
         id: sweep
@@ -237,17 +779,106 @@ jobs:
             --test_env=ROWDIFF_SEED_START=$PSTART \
             2>&1 | tee rowdiff-paging-output.txt
 
+      - name: Stop the FDB watcher
+        # `always()`, not `!cancelled()`: a leaked poller is exactly what a cancelled
+        # job leaves behind, and these boxes are PERSISTENT — the runner is a durable
+        # registration, not an ephemeral VM — so a survivor spins for the life of the
+        # host and then attaches `docker logs -f` to the NEXT night's container, on the
+        # box whose resource pressure this whole investigation is about.
+        #
+        # Kill the process GROUP by the pid the script recorded for itself, which is
+        # its own pgid because it is a session leader under `setsid`. Not `pkill -f`:
+        # that matches any command line containing the pattern, including this step's
+        # own, and CLAUDE.md records the session where that self-match killed the wrong
+        # thing. Verified with `kill -0` on the recorded pid rather than by grepping a
+        # command line — two earlier readings of this same test said the watcher had
+        # SURVIVED, and both were the harness matching itself.
+        #
+        # The condition is "the start step may have launched something", and it took
+        # four tries to say it. `always()` alone signalled last night's pid on a
+        # closed-window night, when `Checkout` is skipped and the workspace still
+        # holds it. `always() && window.ok` fixed that and left a second path: a plain
+        # `if:` is implicitly `success() && …`, so on a Checkout FAILURE with the
+        # window open the start step is skipped while this one still runs, over a file
+        # `git clean` never removed. `outcome == 'success'` fixed THAT and opened a
+        # third in the other direction — the start step launches the watcher with
+        # `setsid` and only THEN can fail its pid handshake or be cancelled, so
+        # requiring success skips cleanup for a process that is demonstrably running.
+        #
+        # `!= 'skipped'` is the predicate all three were approximating, and it is
+        # exact rather than lucky: `skipped` is the ONLY outcome that means no line of
+        # that step ran, and every other outcome — success, failure, cancelled — is
+        # reachable with the watcher already detached. Walked: window closed
+        # (skipped), Checkout failed (skipped), watcher fine (success), watcher failed
+        # after launch (failure), job cancelled (success), start step cancelled
+        # (cancelled). Only the first two must not signal, and only those two skip.
+        #
+        # An `rm` in the start step is NOT the fix and was tried: it is gated the same
+        # way, so it misses the same paths, and on the path it does run checkout's
+        # default `clean: true` has already removed the file.
+        if: ${{ always() && steps.watcher.outcome != 'skipped' }}
+        run: |
+          if [ ! -s fdb-watch.pid ]; then
+            echo "no fdb-watch.pid — the watcher either never started or never recorded itself"
+            exit 0
+          fi
+          pid="$(cat fdb-watch.pid)"
+          # Belt to the gate's braces: check the pid is A watcher — not THE watcher,
+          # which this cannot tell and does not need to; a sibling lane's would match
+          # the same cmdline, and the point is only to refuse a pid that is a stranger
+          # or no longer a process at all. The gate already means this job started
+          # one, but a pid is a recyclable number and a non-numeric one would have
+          # been passed straight to `kill -TERM -notanumber`. Reading one specific
+          # `/proc/<pid>/cmdline` is not the `pkill -f` self-match trap: it asks about
+          # a process we named, not about every process whose argv mentions a string.
+          if ! [ -r "/proc/$pid/cmdline" ] || ! tr '\0' ' ' < "/proc/$pid/cmdline" | grep -q 'fdb-watch[.]sh'; then
+            echo "::warning::pid $pid is not the watcher (gone already, or recycled) — not signalling it"
+            rm -f fdb-watch.pid
+            exit 0
+          fi
+          kill -TERM -"$pid" 2>/dev/null || true
+          sleep 2
+          if kill -0 "$pid" 2>/dev/null; then
+            echo "::warning::watcher $pid survived SIGTERM; escalating"
+            kill -KILL -"$pid" 2>/dev/null || true
+            sleep 1
+          fi
+          if kill -0 "$pid" 2>/dev/null; then
+            echo "::error::watcher $pid is still alive after SIGKILL — it will outlive this job on a persistent box"
+          else
+            echo "watcher $pid stopped"
+          fi
+          # Leave no pid behind. Belt to checkout's braces: the next open-window run
+          # would `git clean` it anyway, but that depends on checkout's `clean` default
+          # staying true, and this does not.
+          rm -f fdb-watch.pid
+
       - name: Capture FDB container forensics
         # The sweep's FDB testcontainer dies partway through EVERY night this job
         # has run, and this step exists to name the mechanism the next time it
         # does. Runs on success or failure — a healthy night's output is the
-        # control the failing night is read against — and before any cleanup, so
-        # the exited container is still inspectable.
+        # control the failing night is read against.
+        #
+        # It used to claim it also ran "before any cleanup, so the exited container
+        # is still inspectable". It does not: by the time it runs, the sweep binary
+        # has exited and testcontainers has removed the container, so this dump's
+        # own loop finds nothing (measured on run 34011921618, which had a real
+        # death to describe). That is why the watcher step above exists, why its
+        # files are folded in here, and why an empty capture on a FAILING night is
+        # now an error annotation instead of a green step and an artifact that
+        # reads like evidence.
         #
         # MEASURED across eight nights on FIVE distinct runners, elapsed from the
         # `random_seeds` RUN line to the first `WARN fdbgo: connection to server
         # failed`: 31m39s, 32m46s, 31m31s, 32m27s, 33m47s, 33m17s, ~34m00s,
-        # 31m45s — mean 1959s, sigma ~55s (2.8%). Five hosts holding 2.8% is a
+        # 31m45s — mean 1959s, sigma ~55s (2.8%) OVER THOSE EIGHT. Run 34011921618
+        # is a ninth point at 30m48s, taken later and left out of the statistics
+        # rather than folded silently into them; it sits just below the eight. The
+        # same nights' Stress (33m13s, run 33955095551) and Factory growth lane
+        # (33m47s) sit inside them but are NOT the same measurement: neither lane
+        # has a `random_seeds` RUN line, so those two are timed from JOB START and
+        # therefore include build time — upper bounds on the same quantity, not
+        # more samples of it. Five hosts holding 2.8% is a
         # software-deterministic failure, not a wedged box; and it tracks ELAPSED
         # TIME rather than seeds walked (which vary 20% across the same nights).
         #
@@ -284,13 +915,30 @@ jobs:
         #   exit 143 + no fatal trace              -> stopped externally
         # `|| true` throughout: forensics must never turn a green sweep red.
         if: ${{ !cancelled() && steps.window.outputs.ok == 'true' }}
+        env:
+          # BOTH lanes, not one. The alarm below is gated on a sweep having failed,
+          # so that a healthy night cannot be reddened by having nothing to explain
+          # — and the paging sweep is a SECOND bazelisk run with a SECOND container
+          # that runs even when the first failed. Reading only `steps.sweep` meant a
+          # death in the paging lane with the un-paged lane green printed "nothing to
+          # explain tonight": the empty-reads-as-absent failure this step exists to
+          # kill, one lane over.
+          SWEEP_OUTCOME: ${{ steps.sweep.outcome }}
+          PAGING_OUTCOME: ${{ steps.paging.outcome }}
         run: |
+          # The SAME one copy of the tag the watcher uses. This loop used to hardcode
+          # `:7.3.77`, twenty lines under a comment claiming there was no third copy —
+          # and a stale ancestor filter emptying a loop is the exact failure this whole
+          # step exists to report. A missing pin is loud rather than silently matching
+          # nothing.
+          ver="$(sed -n 's/^test --test_env=FDB_VERSION=//p' .bazelrc | head -1)"
+          [ -n "$ver" ] || { echo "::error::no FDB_VERSION in .bazelrc — this dump's container filter would match nothing and report it as 'no container'"; exit 1; }
           {
             echo "=== host ==="; free -m || true; df -h || true
             journalctl -k --since "-6h" 2>/dev/null | grep -iE "oom|killed process" | tail -40 || true
             echo "=== containers (including exited) ==="
             docker ps -a --format '{{.ID}} {{.Image}} {{.Status}} {{.Names}}' || true
-            for c in $(docker ps -aq --filter ancestor=foundationdb/foundationdb:7.3.77); do
+            for c in $(docker ps -aq --filter "ancestor=foundationdb/foundationdb:$ver"); do
               echo "=== inspect $c ==="
               docker inspect "$c" --format 'exit={{.State.ExitCode}} oom={{.State.OOMKilled}} err={{.State.Error}} restarts={{.RestartCount}} started={{.State.StartedAt}} finished={{.State.FinishedAt}}' || true
               echo "=== docker logs $c (tail) ==="
@@ -300,15 +948,98 @@ jobs:
               echo "=== container disk $c ==="
               docker exec "$c" df -h /var/fdb/data 2>/dev/null || true
             done
+            echo "=== watcher: transitions seen while the container was alive ==="
+            cat fdb-watch.log 2>/dev/null || echo "(no fdb-watch.log — the watcher never wrote one)"
+            echo "=== watcher: last inspect per container, before removal ==="
+            for i in fdb-last-inspect-*.txt; do [ -e "$i" ] && { echo "--- $i"; cat "$i"; }; done 2>/dev/null || echo "(no fdb-last-inspect-*.txt)"
+            echo "=== watcher: fdbserver Severity=40 events, from the copied trace dir ==="
+            # A trace directory that exists and carries no Severity=40 is itself a
+            # finding — "stopped externally, no fatal trace" is one of the three
+            # outcomes this dump separates — so print the header either way rather
+            # than only on a match, and print the file list so an EMPTY directory is
+            # distinguishable from a directory of traces with nothing fatal in them.
+            # `|| echo` attached to the `for` does NOT reach a no-match run: the glob
+            # stays literal, `[ -d ]` is false, `continue` is the last command and the
+            # loop exits 0. Measured in a bare directory — the section then prints
+            # NOTHING, neither a directory nor the fallback, which is blank-reads-as-
+            # clean inside the block whose whole job is telling those apart. The
+            # sibling loop below DID fire its fallback, but only because `[ -e ] &&`
+            # leaves a non-zero status: correct by accident of the last command rather
+            # than by design, and one edit away from going quiet the same way. Both
+            # count what they visited.
+            seen_logs=0
+            for d in fdb-logs-*; do
+              [ -d "$d" ] || continue
+              seen_logs=1
+              echo "--- $d (files)"; ls -la "$d" | tail -n +2
+              echo "--- $d (Severity=40)"; grep -rho 'Severity="40"[^>]*' "$d" | tail -40
+            done 2>/dev/null
+            [ "$seen_logs" = 1 ] || echo "(no fdb-logs-* directories)"
+            echo "=== watcher: /var/fdb/data usage, taken while alive ==="
+            seen_df=0
+            for d in fdb-df-*.txt; do [ -e "$d" ] || continue; seen_df=1; echo "--- $d"; cat "$d"; done 2>/dev/null
+            [ "$seen_df" = 1 ] || echo "(no fdb-df-*.txt)"
+            echo "=== watcher: container stdout (tail) ==="
+            tail -n 120 fdb-container-*.log 2>/dev/null || echo "(no fdb-container-*.log)"
           } > fdb-forensics.txt 2>&1 || true
           tail -200 fdb-forensics.txt || true
+          # A capture that cannot tell "nothing happened" from "the corpse was
+          # removed before we looked" settles nothing, and the previous version of
+          # this step reported the second as success. On a night where EITHER sweep
+          # FAILED there was something to capture, so an empty capture is a defect
+          # in the instrument. A healthy night stays quiet: forensics must never
+          # redden a green sweep, which is why this is gated on the sweeps' own
+          # outcomes rather than on the capture alone.
+          #
+          # `exit 1`, not just the annotation. An `::error::` workflow command writes
+          # an annotation and changes nothing about the exit status, so on its own
+          # this step stayed GREEN while announcing it had captured nothing — the
+          # very state the comments above say was eliminated. The artifact upload
+          # carries `!cancelled()` and still runs.
+          have_inspect=0
+          for i in fdb-last-inspect-*.txt; do [ -s "$i" ] && have_inspect=1; done
+          # THE TWO KINDS OF EVIDENCE HAVE DIFFERENT AUTHORS, and this alarm used
+          # to accept either as proof of a capture. `fdb-last-inspect-*.txt` is
+          # written by the MAIN loop; `fdb-logs-*` by the COPIER. So a copier that
+          # died left an inspect behind, the alarm went green, and the trace
+          # directory — the primary evidence, the only thing that says WHY the
+          # cluster died — was stale or absent with nothing saying so. "Present,
+          # therefore captured", one level up, at the gate rather than in an arm.
+          #
+          # Scoped to the case where the copier's snapshot is the ONLY possible
+          # evidence: a LIVE container in the dump was read directly — inspect,
+          # logs and `Severity=40` events — so its absence of `fdb-logs-*` is not
+          # a blind night. It is an inspect ALONE, with no live container and no
+          # traces, that means the copier stopped before the cluster did.
+          have_traces=0
+          for d in fdb-logs-*; do [ -d "$d" ] && have_traces=1; done
+          if ! grep -q '^=== inspect ' fdb-forensics.txt && [ "$have_inspect" = 0 ]; then
+            if [ "${SWEEP_OUTCOME:-}" = "failure" ] || [ "${PAGING_OUTCOME:-}" = "failure" ]; then
+              echo "::error::FDB container forensics captured NOTHING — no live container at dump time and the watcher recorded no inspect — on a night a sweep failed. Fix the watcher before reading this artifact as evidence about the cluster's death."
+              exit 1
+            fi
+            echo "::notice::no FDB container evidence captured, and neither sweep failed — nothing to explain tonight"
+          elif ! grep -q '^=== inspect ' fdb-forensics.txt && [ "$have_traces" = 0 ] &&
+               { [ "${SWEEP_OUTCOME:-}" = "failure" ] || [ "${PAGING_OUTCOME:-}" = "failure" ]; }; then
+            echo "::error::FDB forensics has an inspect but NO trace directory on a night a sweep failed — nothing captured here can say why the cluster died. THREE states produce this and fdb-watch.log separates them: the copier stopped early (an 'ending periodic copy' line), every copy failed while the container lived (a 'periodic copy FAILING' line and no 'ending'), or the container never survived its first copy cycle (neither line, and 'watching' and 'EXITED' less than a cycle apart)."
+            exit 1
+          fi
 
       - name: Upload FDB container forensics
         if: ${{ !cancelled() && steps.window.outputs.ok == 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: rowdiff-fdb-forensics
-          path: fdb-forensics.txt
+          # The watcher's raw files ride along beside the dump: `fdb-forensics.txt`
+          # folds them in, but the streamed container log can be long and the dump
+          # only tails it.
+          path: |
+            fdb-forensics.txt
+            fdb-watch.log
+            fdb-last-inspect-*.txt
+            fdb-logs-*/**
+            fdb-df-*.txt
+            fdb-container-*.log
           if-no-files-found: warn
 
       - name: Report sweep summary

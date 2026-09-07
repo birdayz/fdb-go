@@ -48,9 +48,9 @@ func TestFDB_UnionScalarAggregateAlias(t *testing.T) {
 		[]int64{2, 1})
 
 	// (2) MULTI-aggregate bare-scalar branches, mismatched aliases, read the first
-	// column by name → both sums. Both plan as StreamingAgg (no ungrouped candidate),
-	// which dual-keys every aggregate under its alias, so the position-remap normalizes
-	// the second branch. sum(a)=30, sum(b)=30.
+	// column by name → both sums. Both plan as StreamingAgg (no ungrouped candidate);
+	// the translator re-emits the second branch onto the first branch's row by
+	// ordinal. sum(a)=30, sum(b)=30.
 	assertInt64Set(t, db, ctx,
 		"SELECT u.s FROM (SELECT SUM(v) AS s, COUNT(*) AS c FROM a UNION ALL SELECT SUM(v) AS s2, COUNT(*) AS c2 FROM b) u",
 		[]int64{30, 30})
@@ -73,15 +73,14 @@ func TestFDB_UnionScalarAggregateAlias(t *testing.T) {
 }
 
 // TestFDB_UnionGroupedAggregate is the RFC-081 regression: a UNION of bare GROUPED
-// aggregate branches with mismatched group-key names, used as a JOIN LEG, now returns
-// CORRECT rows (RFC-080 left this gated as a clean error; RFC-081 opens it). The gate
-// (unionBranchNormalizable, exercised by the join-leg column-anchoring path) now allows
-// grouped aggregate branches because planColumnNamesWithMD reports the AggregateIndex /
-// MultiIntersection output schema, so the executor's position-remap normalizes the
-// mismatched-name second branch.
+// aggregate branches with mismatched group-key names, used as a JOIN LEG, returns
+// CORRECT rows (RFC-080 left this gated as a clean error; RFC-081 opened it). The
+// join-leg anchoring path once gated on which physical aggregate a branch would
+// plan as; the translator now re-emits every differing branch onto the union's
+// row by ordinal whatever the branch plans as, and the gate is gone (RFC-242).
 //
-// NB: the gate is hit by the union-as-JOIN-LEG / CTE-body-in-join path, NOT a standalone
-// derived table in FROM (which the executor handles directly). So this uses the join form.
+// NB: the union-as-JOIN-LEG / CTE-body-in-join path is the one that anchors the
+// union's columns, NOT a standalone derived table in FROM. So this uses the join form.
 func TestFDB_UnionGroupedAggregate(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -101,8 +100,9 @@ func TestFDB_UnionGroupedAggregate(t *testing.T) {
 	mwjoMustExec(t, db, ctx, "INSERT INTO gb VALUES (10, 100, 1), (20, 300, 2)")
 	mwjoMustExec(t, db, ctx, "INSERT INTO c VALUES (100, 1), (200, 2), (300, 3)")
 
-	// The single-aggregate grouped branch DOES plan as AggregateIndex — the realization
-	// RFC-081 teaches planColumnNamesWithMD to report (the gate-open premise).
+	// The single-aggregate grouped branch DOES plan as AggregateIndex — the
+	// realization whose row the translator's normalization projection reads by
+	// ordinal; pinned so the case below exercises that plan and not StreamingAgg.
 	if plan := planExplainVia(t, ctx, db, "SELECT g, COUNT(*) FROM ga GROUP BY g"); !strings.Contains(plan, "AggregateIndex") {
 		t.Fatalf("grouped aggregate must plan as AggregateIndex (RFC-081 premise), got: %s", plan)
 	}

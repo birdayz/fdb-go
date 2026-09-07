@@ -17,8 +17,13 @@ sequence anticipated:
 - The unconditional plan-level `UnknownType` stub inventory is **zero**.
 - Aggregate-index construction passes an exact candidate-derived result type;
   the former call-site `UnknownType` stub inventory is **zero**.
-- The result-type consumer classifier measures **FORWARD 1 / GUARDED 14 /
-  PROPAGATED 29 / RAW 0**. `RAW == 0` remains the correctness ratchet. The
+- The result-type consumer classifier measures **FORWARD 1 / GUARDED 10 /
+  PROPAGATED 27 / RAW 0** (the pinned test's comment carries every movement
+  since this sentence was first written: 14/29 at that time; RFC-235 retired
+  three reads; RFC-242 retired three more — `planColumnNamesWithMD` and
+  `physicalPlanColumnNames`, both GUARDED tail reads of a union leg's row, and
+  `columnRenameValue`'s PROPAGATED read — by deleting the union re-alignment
+  they served). `RAW == 0` remains the correctness ratchet. The
   post-implementation growth is executor exact-layout admission (projection,
   UPDATE, aggregate index, multi-intersection, and DefaultOnEmpty) plus VALUES
   passing its declared type to the runtime validator. The descendant producer
@@ -228,8 +233,9 @@ type varies independently. Rev 1's static-unreachability argument stands as writ
    `GetResultType()` "cannot be used for a join leg", which is why `planBuriedLegConcat`
    walks to the scan leaves instead. *(Rev 1 placed this comment inside
    `planBuriedLegConcat`; it is one function up.)*
-2. **`planColumnNamesWithMD`** (`executor.go:3045`) descends through `innerPlanAccessor` to
-   the innermost plan and falls back to the metadata descriptor.
+2. **`planColumnNamesWithMD`** (`executor.go:3045` at the time) descended through
+   `innerPlanAccessor` to the innermost plan and fell back to the metadata descriptor.
+   Deleted by RFC-242 together with the union position-remap it served.
 
 **Withdrawn:** rev 1 called `distinctKeyColumns`' `*RecordQueryProjectionPlan` branch "a
 route around a tier-2 stub". It is not. Its own comment (`rule_implement_distinct_final.go:896-898`)
@@ -346,7 +352,8 @@ by §4's corrected sequence anyway, the census was run now. One uncached real-FD
   finding real types, because it descends to scan leaves that have them. Its cost is the walk
   itself, not lost information. Retiring it is a simplification, not a correctness win.
 - **`physicalPlanColumnNames` does not appear: zero reads.** The consumer is never reached by
-  any corpus query. Stated because a silent absence and a zero are different facts.
+  any corpus query. Stated because a silent absence and a zero are different facts. (RFC-242
+  later deleted the function outright, with the union rename it fed.)
 
 So the honest payoff claim is narrow and specific: **DISTINCT key derivation is the one place
 where the stub demonstrably and repeatedly costs a plan.** Everything else is coherence.

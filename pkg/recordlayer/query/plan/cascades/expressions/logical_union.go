@@ -57,7 +57,7 @@ func NewLogicalUnionExpression(quantifiers []Quantifier) (*LogicalUnionExpressio
 // node, and it is a real difference — but it is a difference in what the value
 // REFERS to, not in the row it claims, and the typing sweep is about the claim.
 //
-// Pinned by TestSetOperationResultValueStatesChildZerosRow.
+// Pinned by TestSetOperationsStoreFirstNonExistentialExactQOV.
 func (e *LogicalUnionExpression) GetResultValue() values.Value {
 	return e.resultValue
 }

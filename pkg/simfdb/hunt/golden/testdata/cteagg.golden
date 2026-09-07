@@ -1,0 +1,22 @@
+# scenario: cteagg (seed 9)
+#   CREATE TABLE ga (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))
+#   CREATE TABLE c (id BIGINT, w BIGINT, PRIMARY KEY (id))
+
+=== WITH u AS (SELECT g, SUM(v * 2) AS s FROM ga GROUP BY g) SELECT c.w, u.s FROM u, c WHERE u.g = c.id ORDER BY c.w
+PLAN: Project([_current.W#3, _current.S#1], InMemorySort([_current.W#3 ASC], FlatMap(outer=Project([_current.G#0, _current.SUM(V*2)#1], StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(GA)))), inner=Scan(C, [=]))))
+ROWS(2) cols=[W, S]:
+  [1, 24]
+  [2, 18]
+
+=== SELECT c.w, u.s FROM (SELECT g, SUM(v * 2) AS s FROM ga GROUP BY g) u, c WHERE u.g = c.id ORDER BY c.w
+PLAN: Project([_current.W#3, _current.S#1], InMemorySort([_current.W#3 ASC], FlatMap(outer=Project([_current.G#0, _current.SUM(V*2)#1], StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(GA)))), inner=Scan(C, [=]))))
+ROWS(2) cols=[W, S]:
+  [1, 24]
+  [2, 18]
+
+=== WITH u AS (SELECT g, SUM(v) AS s FROM ga GROUP BY g) SELECT c.w, u.s FROM u, c WHERE u.g = c.id ORDER BY c.w
+PLAN: Project([_current.W#3, _current.S#1], InMemorySort([_current.W#3 ASC], FlatMap(outer=Project([_current.G#0, _current.SUM(V)#1], StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(GA)))), inner=Scan(C, [=]))))
+ROWS(2) cols=[W, S]:
+  [1, 12]
+  [2, 9]
+

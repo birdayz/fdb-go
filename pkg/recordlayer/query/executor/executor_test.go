@@ -6272,7 +6272,7 @@ func TestCollectAllBounded_OneBelowLimit(t *testing.T) {
 
 func TestMaterializationLimitExceededError_ErrorsAs(t *testing.T) {
 	t.Parallel()
-	orig := &MaterializationLimitExceededError{Limit: 42, Context: "buffered union branch"}
+	orig := &MaterializationLimitExceededError{Limit: 42, Context: "recursive DFS children"}
 	wrapped := fmt.Errorf("executor: %w", orig)
 
 	var mlErr *MaterializationLimitExceededError
@@ -6282,8 +6282,8 @@ func TestMaterializationLimitExceededError_ErrorsAs(t *testing.T) {
 	if mlErr.Limit != 42 {
 		t.Errorf("limit = %d, want 42", mlErr.Limit)
 	}
-	if mlErr.Context != "buffered union branch" {
-		t.Errorf("context = %q, want %q", mlErr.Context, "buffered union branch")
+	if mlErr.Context != "recursive DFS children" {
+		t.Errorf("context = %q, want %q", mlErr.Context, "recursive DFS children")
 	}
 }
 

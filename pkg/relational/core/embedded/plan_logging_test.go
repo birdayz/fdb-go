@@ -5,9 +5,11 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 	cascadesvalues "fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 
 	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/internal/queryfixtures"
 
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 
@@ -631,5 +633,140 @@ func TestLegWalk_DuplicateAliasDeclines(t *testing.T) {
 	}
 	if leg, ns, found := legPlanFor(top, "Y"); !found || leg == nil || !ns {
 		t.Fatalf("Y is unique and inside a FULL join's inner — found=%v ns=%v", found, ns)
+	}
+}
+
+// TestFinalizePlanLeavesTheDuplicateNameJoinRowUnstamped pins the third
+// failure the swallow arm covers, with the query that produces it and the
+// blast radius it leaves behind. It costs descriptor identity, not data, and
+// that cost is user-visible: TestFDB_ADuplicateNameJoinRowLosesItsStructTypeNotItsValues
+// shows a computed STRUCT coming back as a raw map through this shape and as an
+// api.Struct once the repeated name is removed — removed through a derived-table
+// rename, because the dialect cannot rename a base column in place, with a third
+// read there that keeps the wrapper AND the repeat to show the wrapper inert.
+//
+// The invariant this test carries for that one is narrower than the whole
+// test, and saying which half matters: the census asserted here is a statement
+// about the query that produced the plan, so it is the ID-half's precondition
+// and worth nothing if the two texts drift. They cannot: both read the same
+// queryfixtures.DuplicateNameJoinQuery, so the compiler holds them together
+// where this comment used to ask the next editor to. The struct assertions run
+// their own texts —
+// one reading a computed and a stored struct out of the same poisoned row,
+// one the control with the repeat removed through a derived-table rename, and
+// one keeping that wrapper with the repeat to show it inert — and carry their
+// own witnesses, so this census says nothing about them.
+//
+// A FULL OUTER JOIN over legs that both carry `ID` builds its ordinal row with
+// NewRawRecordConstructorValue, which keeps field names VERBATIM by design —
+// positional access makes the duplicate unambiguous, and the ordinal-identity
+// pins are unconstructible without it. The synthesised descriptor for that row
+// cannot validate (`descriptor "…​.ID" already declared`). The damage reaches
+// past that row: the repository keeps the bad message, so every type asked for
+// after it fails the same way, while one resolved BEFORE it keeps its
+// descriptor — on this query three of the four constructors end up with no
+// descriptor and the fourth is stamped.
+//
+// What that costs is descriptor IDENTITY, not data: the plan paths emit dense
+// positional rows and the result set reads them by ordinal, so
+// `SELECT a.id, c.id, d.foo` over this shape still returns both `ID` values
+// (measured). This pin is therefore about the repository, not about a wrong
+// answer — there is no wrong answer here to pin.
+//
+// Turning the failure loud refuses this working query, so it stays swallowed
+// and pinned here; TODO.md's "A join row that names one field twice leaves its
+// plan's rows unstamped" carries the closure. When that lands, the rows get
+// their descriptors and this test reddens: assert that they are stamped then.
+func TestFinalizePlanLeavesTheDuplicateNameJoinRowUnstamped(t *testing.T) {
+	t.Parallel()
+	_, md := newLoggingGenerator(t,
+		"CREATE TABLE a_md (id BIGINT, s STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE b_md (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE c_md (id BIGINT, PRIMARY KEY (id))",
+		&captureLogger{})
+	const duplicateNameJoinQuery = queryfixtures.DuplicateNameJoinQuery
+	plan, _, err := PlanRecordQueryWithSubqueries(duplicateNameJoinQuery, md, nil)
+	if err != nil || plan == nil {
+		t.Fatalf("plan the FULL OUTER JOIN: %v", err)
+	}
+	// The harness returns the plan UNBAKED — only the generator's own paths call
+	// FinalizePlan — so without this every constructor is trivially unstamped
+	// and the assertions below would hold for any plan at all. The survivor
+	// asserted at the end is what proves the bake actually ran.
+	if bakeErr := cascades.FinalizePlan(plan); bakeErr != nil {
+		t.Fatalf("FinalizePlan over the FULL OUTER JOIN: %v", bakeErr)
+	}
+
+	// Counted over the STAMPER's own traversal, not a second one written here. A
+	// census that walks only result values and child edges misses every
+	// constructor FinalizePlan reaches through a projection list, a predicate, a
+	// grouping key, a scan comparand or a default value — silently, reporting a
+	// smaller population that still reads like a measurement. That is how the
+	// exact-shape guard at the end of this function would fail OPEN.
+	var constructors, duplicates, unstamped int
+	cascades.ForEachPlanRecordConstructor(plan, func(rc *cascadesvalues.RecordConstructorValue) {
+		row, isRow := rc.Type().(*cascadesvalues.RecordType)
+		if !isRow {
+			return
+		}
+		names := map[string]int{}
+		for _, f := range row.Fields {
+			names[f.Name]++
+		}
+		constructors++
+		for _, n := range names {
+			if n > 1 {
+				duplicates++
+				break
+			}
+		}
+		if rc.MessageDescriptor() == nil {
+			unstamped++
+		}
+	})
+
+	if duplicates == 0 {
+		t.Fatal("no row in this plan names a field twice any more — the ordinal join row is " +
+			"disambiguated now, so TODO.md's booking has closed: assert both ID values survive instead")
+	}
+	// The blast radius is the whole repository, not the repeating row: the bad
+	// message stays in the file, so every type asked for AFTER it fails too,
+	// while one resolved BEFORE keeps its descriptor. Asserting only "duplicate
+	// rows are unstamped" would be a tautology — such a row can never be
+	// stamped — so what is asserted is the COLLATERAL (a row that repeats no
+	// name and lost its descriptor anyway) and the survivor beside it, which is
+	// also what proves the bake ran at all.
+	if constructors < 4 {
+		t.Fatalf("%d record constructors in this plan, want at least 4 — the specimen has moved "+
+			"and this test no longer measures the shape it names", constructors)
+	}
+	if unstamped <= duplicates {
+		t.Fatalf("%d unstamped of %d constructors, %d of which repeat a name: no COLLATERAL row "+
+			"lost its descriptor, so the failure is contained to the repeating row now and "+
+			"TODO.md's blast radius has narrowed — say so there", unstamped, constructors, duplicates)
+	}
+	if stamped := constructors - unstamped; stamped == 0 {
+		t.Fatal("no constructor in this plan is stamped, so the assertions above are vacuous: " +
+			"either FinalizePlan is not baking, or the damage is no longer order-dependent")
+	}
+	// The assertions above are floors, deliberately: they state the INVARIANT and
+	// survive a planner change that moves the specimen. "Three of the four" is a
+	// different kind of claim — a MEASUREMENT, quoted in SIX files as a fact
+	// about this plan, one of them this one — and a floor cannot keep a
+	// measurement true. A fifth constructor, or a fourth unstamped one, leaves
+	// every check above green while all six sentences go stale, which is exactly
+	// how a number with no expiry condition rots. This is that expiry condition,
+	// and the fatal below names the six so the count and the list cannot drift
+	// apart the way this comment's own count once did.
+	if constructors != 4 || unstamped != 3 {
+		t.Fatalf("this plan has %d record constructors, %d of them unstamped — the measurement "+
+			"written as `three of four` no longer describes this specimen. Six files state it: "+
+			"this one, queryfixtures.go, plan_finalize.go, values.go (RecordConstructorValue's "+
+			"Evaluate doc), TODO.md's booking and RFC-242. Re-measure and restate it in all six; "+
+			"do not relax this guard, or the number goes on being quoted at a plan nobody has "+
+			"looked at. The six are the files quoting the NUMBER; others describe the walk-order"+
+			" half without one and cannot go stale with it, so they are deliberately not counted "+
+			"here — a second population tracked in a message about the first is how the last two "+
+			"of these counts went wrong.", constructors, unstamped)
 	}
 }

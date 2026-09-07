@@ -1719,6 +1719,27 @@ func OutputColumnName(v Value, alias string) string {
 	return ProjectionColumnName(v)
 }
 
+// ProjectionSlotName is the name a projection's frozen output schema gives a
+// slot BEFORE deduplication — the alias when the item carries one, the display
+// name (qualifier stripped) for a column reference, and OutputColumnName's
+// rendering for everything else. It is the rule exactProjectionForLogicalProject
+// freezes with, and the rule a consumer must re-derive the natural schema by
+// when it asks whether a frozen name is that schema's own deduplication
+// suffix or an external rename (deriveColumnsFromProjection). Two copies of
+// the rule have disagreed before: the natural schema was once re-derived by
+// OutputColumnName alone, which names a nested reference by its dotted path
+// (`N.SK`) where the freeze names it `SK`, so `SELECT sk, n.sk` read the
+// frozen `SK_2` as a rename and published the suffix as a label.
+func ProjectionSlotName(v Value, alias string) string {
+	name := OutputColumnName(v, alias)
+	if alias == "" {
+		if _, isReference := AsFieldValue(v); isReference {
+			name = DisplayColumnName(v, "")
+		}
+	}
+	return name
+}
+
 // DisplayColumnName is the USER-VISIBLE label for a projected column: the
 // alias when the column carries one, else its own name with the QUALIFIER
 // removed — Java's Identifier.withoutQualifier, applied by the top-level
@@ -4691,24 +4712,64 @@ func (r *RecordConstructorValue) MessageDescriptor() protoreflect.MessageDescrip
 	return r.desc
 }
 
-// NewRecordConstructorValue constructs a RecordConstructorValue.
-// Duplicate field names are deduplicated by appending a numeric
-// suffix (_2, _3, ...) to later occurrences, matching SQL semantics
-// where `SELECT a, a FROM T` produces columns a, a_2.
+// DedupFieldNames is THE rule that keeps a name-addressed record type
+// name-addressable when a projection repeats an output name: a later
+// occurrence takes a numeric suffix (`A`, `A_2`, `A_3`). It is a property of the
+// TYPE, never of the SQL: Java has no such suffix — Type.Record keeps repeated
+// field names and every read is bound by ordinal — so nothing user-visible may
+// carry it. The result-set label of `SELECT a, a FROM T` is [A A].
+//
+// Exported so that every layout that must equal a projection's runtime row
+// (the ordinal seed's leg type, derived from the logical projection) applies
+// the same rule instead of restating the names verbatim: a leg type that said
+// [G G] over a row the projection emits as [G G_2] is a different ordinal
+// domain, and the baked positional read of the second slot then declined and
+// fell back to a by-name read that answered the FIRST G.
+func DedupFieldNames(names []string) []string {
+	// Every AUTHORED name is reserved before a suffix is minted, and a minted
+	// name is reserved once minted, so the result never holds one name twice:
+	// [X X X_2] is [X X_3 X_2], never [X X_2 X_2]. Counting occurrences alone
+	// collided with an authored `X_2`, and a derived outer's ordinal type then
+	// held a genuinely repeated name the lateral unnest over it could not
+	// address.
+	reserved := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		reserved[name] = struct{}{}
+	}
+	seen := make(map[string]int, len(names))
+	out := make([]string, len(names))
+	for i, name := range names {
+		count := seen[name]
+		seen[name] = count + 1
+		if count == 0 {
+			out[i] = name
+			continue
+		}
+		for k := count + 1; ; k++ {
+			candidate := fmt.Sprintf("%s_%d", name, k)
+			if _, taken := reserved[candidate]; taken {
+				continue
+			}
+			reserved[candidate] = struct{}{}
+			out[i] = candidate
+			break
+		}
+	}
+	return out
+}
+
+// NewRecordConstructorValue constructs a RecordConstructorValue. Duplicate
+// field names are deduplicated by DedupFieldNames so the record type stays
+// name-addressable; see there for why the suffix is internal.
 func NewRecordConstructorValue(fields ...RecordConstructorField) *RecordConstructorValue {
-	seen := make(map[string]int, len(fields))
+	names := make([]string, len(fields))
+	for i, f := range fields {
+		names[i] = f.Name
+	}
+	names = DedupFieldNames(names)
 	out := make([]RecordConstructorField, len(fields))
 	for i, f := range fields {
-		count := seen[f.Name]
-		seen[f.Name] = count + 1
-		if count > 0 {
-			out[i] = RecordConstructorField{
-				Name:  fmt.Sprintf("%s_%d", f.Name, count+1),
-				Value: f.Value,
-			}
-		} else {
-			out[i] = f
-		}
+		out[i] = RecordConstructorField{Name: names[i], Value: f.Value}
 	}
 	return &RecordConstructorValue{Fields: out}
 }
@@ -4973,14 +5034,26 @@ func (*RecordConstructorValue) Name() string { return "record" }
 // can reach the driver as an api.Struct, because a bare map carries no
 // declared field ORDER and no type identity.
 //
-// UNSTAMPED: the name-keyed map. This is not a fallback for plan values — every
-// constructor in a plan is stamped by FinalizePlan before the plan is cached.
-// It is the representation for constructors that never went through a plan
-// walk at all: constant folding evaluates a constructor at build time (before
-// any plan exists to walk), and unit tests hand-build constructors directly.
-// Neither has a repository to bake against, and neither reaches the driver.
-// A type with no message form (MessageDescriptorFor returns *ProtoTypeError)
-// also stays here rather than failing the query.
+// UNSTAMPED: the name-keyed map. It is the representation for constructors
+// that never went through a plan walk at all — constant folding evaluates a
+// constructor at build time (before any plan exists to walk), and unit tests
+// hand-build constructors directly; neither has a repository to bake against,
+// and neither reaches the driver.
+//
+// A constructor IN a plan is usually stamped, but NOT always. FinalizePlan's
+// doc owns the enumeration of when it is not: a type with no message form; a
+// record or field name protoname cannot escape; and a row whose descriptor
+// cannot VALIDATE for a reason other than a declared-name clash. None of the
+// three fails the query.
+//
+// An unstamped constructor does not imply this branch runs for it. The plan
+// paths that emit a row — executeProjection, the record-constructor arm of the
+// flat-map cursor, evaluateOrdinalJoinRow — build a dense PositionalRow field
+// by field, and the result set reads those slots by ORDINAL, so an unstamped
+// row still delivers every field. Measured on the FULL OUTER JOIN of TODO.md's
+// "A join row that names one field twice leaves its plan's rows unstamped":
+// three of that plan's four constructors have no descriptor, and
+// `SELECT a.id, c.id, d.foo` still returns both `ID` values.
 func (r *RecordConstructorValue) Evaluate(evalCtx any) (any, error) {
 	if r.desc != nil {
 		return buildRecordMessage(r.desc, r.Fields, evalCtx)

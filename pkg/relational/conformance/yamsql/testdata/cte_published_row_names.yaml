@@ -1,0 +1,470 @@
+# cte_published_row_names.yaml
+#
+# The row a CTE body publishes to its enclosing query is the row the body
+# emits, under the names SQL gives its columns — the same row and the same
+# names the derived-table spelling of that body publishes. Two ways that was
+# not so, both pinned in both spellings so they cannot drift apart again:
+#
+# 1. A join-bodied CTE whose select list repeats an output name (`ga.g`
+#    beside `c.id AS g`). Registration declined the body, the CTE fell to the
+#    ON-only class, and a reader of the repeated name bound SILENTLY — `u.g`
+#    took one duplicate in SELECT and the other in ORDER BY — while the
+#    derived-table spelling reported 42702. Then, with the decline gone, the
+#    exact derivation still labelled `ga.g` by its datum key GA.G, so the row
+#    carried two distinct names for what SQL calls G twice and the ambiguity
+#    check never ran. The parsed projection is now the name authority in the
+#    CTE arm exactly as in the derived-table arm, and every read path answers
+#    42702 (Java's AMBIGUOUS_COLUMN) in both spellings.
+#
+# 2. A grouping key spelled with its table qualifier (`GROUP BY ga.g`). The
+#    aggregate name authority published it as GA.G, a name no reader can
+#    write: `u.g` was 42703 in both spellings. It is output under its bare
+#    name, G, the label the body's own projection gives it.
+#
+# ga groups g={100,200}: SUM(v) = 12, 9. c maps 100→1, 200→2.
+name: cte_published_row_names
+schema_template: |
+  CREATE TYPE AS STRUCT nst (sk BIGINT, co BIGINT)
+  CREATE TABLE ga (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))
+  CREATE TABLE c (id BIGINT, w BIGINT, PRIMARY KEY (id))
+  CREATE TABLE st (id BIGINT, p nst, PRIMARY KEY (id))
+  CREATE TABLE st2 (id BIGINT, sk STRING, p nst, PRIMARY KEY (id))
+  CREATE TYPE AS STRUCT child_s (v BIGINT)
+  CREATE TYPE AS STRUCT par (child child_s)
+  CREATE TABLE tn2 (id BIGINT, p par, PRIMARY KEY (id))
+  CREATE TABLE tn3 (id BIGINT, child STRING, p par, PRIMARY KEY (id))
+  CREATE TABLE tn4 (id BIGINT, child child_s, p par, PRIMARY KEY (id))
+setup:
+  - INSERT INTO ga VALUES (1, 100, 5), (2, 100, 7), (3, 200, 9)
+  - INSERT INTO c VALUES (100, 1), (200, 2)
+  - INSERT INTO st VALUES (1, (5, 6))
+  - INSERT INTO st2 VALUES (1, 'seven', (5, 6))
+  - INSERT INTO tn2 VALUES (1, ((2)))
+  - INSERT INTO tn3 VALUES (1, 'x', ((2)))
+  - INSERT INTO tn4 VALUES (1, (9), ((2)))
+tests:
+  # (1) The repeated name, read through every path that once bound silently.
+  - query: WITH u AS (SELECT ga.g, c.id AS g FROM ga, c) SELECT u.g FROM u, c AS c2 WHERE u.g = c2.id
+    error_code: "42702"
+  - query: SELECT u.g FROM (SELECT ga.g, c.id AS g FROM ga, c) u, c AS c2 WHERE u.g = c2.id
+    error_code: "42702"
+  - query: WITH u AS (SELECT ga.g, c.id AS g FROM ga, c) SELECT g FROM u
+    error_code: "42702"
+  - query: SELECT g FROM (SELECT ga.g, c.id AS g FROM ga, c) u
+    error_code: "42702"
+  - query: WITH u AS (SELECT ga.g, c.id AS g FROM ga, c) SELECT u.g FROM u
+    error_code: "42702"
+  - query: WITH u AS (SELECT ga.g, c.id AS g FROM ga, c) SELECT * FROM u ORDER BY u.g
+    error_code: "42702"
+  - query: SELECT * FROM (SELECT ga.g, c.id AS g FROM ga, c) u ORDER BY u.g
+    error_code: "42702"
+  - query: WITH u AS (SELECT ga.g, c.id AS g FROM ga, c) SELECT * FROM u WHERE u.g = 100
+    error_code: "42702"
+  - query: SELECT * FROM (SELECT ga.g, c.id AS g FROM ga, c) u WHERE u.g = 100
+    error_code: "42702"
+  - query: WITH u AS (SELECT ga.g, c.id AS g FROM ga, c) SELECT c2.w FROM u, c AS c2 WHERE u.g = c2.id
+    error_code: "42702"
+  # The unique-name control: the same join body, no repeated name, reads
+  # through the CTE exactly as through the derived table.
+  - query: WITH u AS (SELECT ga.g, c.w FROM ga, c WHERE ga.g = c.id) SELECT u.g, u.w FROM u ORDER BY u.g
+    columns: ["G", "W"]
+    rows:
+      - [100, 1]
+      - [100, 1]
+      - [200, 2]
+  - query: SELECT u.g, u.w FROM (SELECT ga.g, c.w FROM ga, c WHERE ga.g = c.id) u ORDER BY u.g
+    columns: ["G", "W"]
+    rows:
+      - [100, 1]
+      - [100, 1]
+      - [200, 2]
+  # (2) The qualified grouping key, single-table and joined bodies.
+  - query: WITH u AS (SELECT ga.g, SUM(v) AS s FROM ga GROUP BY ga.g) SELECT u.g, u.s FROM u ORDER BY u.g
+    columns: ["G", "S"]
+    rows:
+      - [100, 12]
+      - [200, 9]
+  - query: SELECT u.g, u.s FROM (SELECT ga.g, SUM(v) AS s FROM ga GROUP BY ga.g) u ORDER BY u.g
+    columns: ["G", "S"]
+    rows:
+      - [100, 12]
+      - [200, 9]
+  - query: WITH u AS (SELECT ga.g, c.w, SUM(v) AS s FROM ga, c WHERE ga.g = c.id GROUP BY ga.g, c.w) SELECT u.g, u.w, u.s FROM u ORDER BY u.g
+    columns: ["G", "W", "S"]
+    rows:
+      - [100, 1, 12]
+      - [200, 2, 9]
+  - query: SELECT u.g, u.w, u.s FROM (SELECT ga.g, c.w, SUM(v) AS s FROM ga, c WHERE ga.g = c.id GROUP BY ga.g, c.w) u ORDER BY u.g
+    columns: ["G", "W", "S"]
+    rows:
+      - [100, 1, 12]
+      - [200, 2, 9]
+  # (3) A read bound to the CTE's quantified object over a join body that
+  # repeats a BARE leaf (`ga.g` beside `c.id AS g`): a WHERE, an aggregate
+  # key, a sort key, an operand, over the UNIQUE column w. The projection
+  # declares the repeated leaf under its qualified datum key (GA.G) while the
+  # SQL names are G, G; the scope states the SQL names for resolution and the
+  # plan's row as its flowed layout, and a CTE source is carried whole into
+  # every reading scope, so the object the read binds is the row the plan
+  # flows. Before that every one of these was refused at execution — the
+  # derived spelling since before RFC-242, the CTE spelling once its body was
+  # published — while the projection over the same body was rebased and
+  # answered. ga × c is six rows: w=1 three times, w=2 three times.
+  - query: WITH u AS (SELECT ga.g, c.id AS g, c.w FROM ga, c) SELECT u.w FROM u WHERE u.w = 1
+    columns: ["W"]
+    rows:
+      - [1]
+      - [1]
+      - [1]
+  - query: SELECT u.w FROM (SELECT ga.g, c.id AS g, c.w FROM ga, c) u WHERE u.w = 1
+    columns: ["W"]
+    rows:
+      - [1]
+      - [1]
+      - [1]
+  - query: WITH u AS (SELECT ga.g, c.id AS g, c.w FROM ga, c) SELECT u.w, COUNT(*) FROM u GROUP BY u.w ORDER BY u.w
+    columns: ["W", "COUNT(*)"]
+    rows:
+      - [1, 3]
+      - [2, 3]
+  - query: SELECT u.w, COUNT(*) FROM (SELECT ga.g, c.id AS g, c.w FROM ga, c) u GROUP BY u.w ORDER BY u.w
+    columns: ["W", "COUNT(*)"]
+    rows:
+      - [1, 3]
+      - [2, 3]
+  - query: WITH u AS (SELECT ga.g, c.id AS g, c.w FROM ga, c) SELECT u.w FROM u ORDER BY u.w
+    columns: ["W"]
+    rows:
+      - [1]
+      - [1]
+      - [1]
+      - [2]
+      - [2]
+      - [2]
+  - query: WITH u AS (SELECT ga.g, c.id AS g, c.w FROM ga, c) SELECT SUM(u.w) FROM u
+    rows:
+      - [9]
+  - query: WITH u AS (SELECT ga.id, c.id, c.w FROM ga, c) SELECT u.w, COUNT(*) FROM u GROUP BY u.w ORDER BY u.w
+    columns: ["W", "COUNT(*)"]
+    rows:
+      - [1, 3]
+      - [2, 3]
+  # The aliased twin, which never failed: the control that the shapes above
+  # are about the repeated leaf and nothing else.
+  - query: WITH u AS (SELECT ga.g AS g1, c.id AS g, c.w FROM ga, c) SELECT u.w, COUNT(*) FROM u GROUP BY u.w ORDER BY u.w
+    columns: ["W", "COUNT(*)"]
+    rows:
+      - [1, 3]
+      - [2, 3]
+  # (4) Two shapes a first cut of this round broke, both of which answered
+  # before it. A mixed qualified star (`ga.*, c.w`) is one sentinel slot in
+  # the parsed select list and every column of ga in the built body, so a
+  # name list drawn from the parsed slots has the wrong width; the body's own
+  # labels are the authority for such a list. A grouping key spelled with an
+  # explicit alias that equals its own qualified spelling (`ga.g AS "GA.G"`)
+  # is aliased — the parser records that, and no string comparison infers it.
+  - query: WITH u AS (SELECT ga.*, c.w FROM ga, c WHERE ga.g = c.id) SELECT u.v + u.w AS t FROM u ORDER BY u.v
+    columns: ["T"]
+    rows:
+      - [6]
+      - [8]
+      - [11]
+  - query: WITH u AS (SELECT ga.g AS "GA.G", SUM(v) AS s FROM ga GROUP BY ga.g) SELECT u."GA.G" AS z FROM u ORDER BY z
+    columns: ["Z"]
+    rows:
+      - [100]
+      - [200]
+  # The aliased grouping key keeps its alias as the body's COLUMN LABEL too:
+  # both consumers of a grouping key's alias (the body's projection and the
+  # published schema) read the parser's fact, never an inference from the
+  # spelling. Inferring it labelled this column G. The star reads the body's
+  # own labels; an outer `SELECT u."GA.G"` is labelled by the reader's
+  # qualifier-stripping rule (`qualifierStrippedLabel`), which cannot tell a
+  # quoted dotted column whose halves name a table and its column from a
+  # qualified reference — the residual RFC-238 §2 leaves open, not this row's.
+  - query: WITH u AS (SELECT ga.g AS "GA.G", SUM(v) AS s FROM ga GROUP BY ga.g) SELECT * FROM u
+    columns: ["GA.G", "S"]
+    unordered: true
+    rows:
+      - [100, 12]
+      - [200, 9]
+  # (5) The UNION-bodied derived table publishes its exact row first, under
+  # the structural fold's SQL names, so it carries the flowed layout of the
+  # row the union emits — its first leg's constructor row. A read bound to its
+  # quantified object over the unique column of a leg that repeats a bare leaf
+  # was refused at execution as `edge lookup U: read as RECORD(G,G,W),
+  # declared RECORD(GA.G,G,W)` while the CTE spelling of the same body, which
+  # derives its row from the seed branch, answered. Both spellings, a WHERE
+  # and an aggregate key; ga × c is six rows per leg, so w=1 twelve times.
+  - query: SELECT u.w FROM (SELECT ga.g, c.id AS g, c.w FROM ga, c UNION ALL SELECT ga.g, c.id AS g, c.w FROM ga, c) u WHERE u.w = 1
+    columns: ["W"]
+    rows:
+      - [1]
+      - [1]
+      - [1]
+      - [1]
+      - [1]
+      - [1]
+  - query: WITH u AS (SELECT ga.g, c.id AS g, c.w FROM ga, c UNION ALL SELECT ga.g, c.id AS g, c.w FROM ga, c) SELECT u.w FROM u WHERE u.w = 1
+    columns: ["W"]
+    rows:
+      - [1]
+      - [1]
+      - [1]
+      - [1]
+      - [1]
+      - [1]
+  - query: SELECT u.w, COUNT(*) FROM (SELECT ga.g, c.id AS g, c.w FROM ga, c UNION ALL SELECT ga.g, c.id AS g, c.w FROM ga, c) u GROUP BY u.w ORDER BY u.w
+    columns: ["W", "COUNT(*)"]
+    rows:
+      - [1, 6]
+      - [2, 6]
+  - query: WITH u AS (SELECT ga.g, c.id AS g, c.w FROM ga, c UNION ALL SELECT ga.g, c.id AS g, c.w FROM ga, c) SELECT u.w, COUNT(*) FROM u GROUP BY u.w ORDER BY u.w
+    columns: ["W", "COUNT(*)"]
+    rows:
+      - [1, 6]
+      - [2, 6]
+  # A read that spells the repeated name is ambiguous through the union
+  # spelling exactly as through the plain one.
+  - query: SELECT u.g FROM (SELECT ga.g, c.id AS g, c.w FROM ga, c UNION ALL SELECT ga.g, c.id AS g, c.w FROM ga, c) u WHERE u.w = 1
+    error_code: "42702"
+  # (6) A sort over a CTE's or derived table's RENAMED column is satisfied by
+  # a source already in that order. The request crosses the projection by
+  # its result value (`u.h` is ID below it), so no in-memory sort is added
+  # over a primary-key scan; the DESC twins pin that the order is real and
+  # not the insertion order.
+  - query: SELECT u.h FROM (SELECT id AS h FROM ga) u ORDER BY u.h
+    columns: ["H"]
+    plan_not_contains: InMemorySort
+    rows:
+      - [1]
+      - [2]
+      - [3]
+  - query: WITH u AS (SELECT id AS h FROM ga) SELECT u.h FROM u ORDER BY u.h
+    columns: ["H"]
+    plan_not_contains: InMemorySort
+    rows:
+      - [1]
+      - [2]
+      - [3]
+  - query: SELECT u.h FROM (SELECT id AS h FROM ga) u ORDER BY u.h DESC
+    columns: ["H"]
+    rows:
+      - [3]
+      - [2]
+      - [1]
+  - query: WITH u AS (SELECT ga.g AS "GA.G", SUM(v) AS s FROM ga GROUP BY ga.g) SELECT u."GA.G" AS z FROM u ORDER BY z DESC
+    columns: ["Z"]
+    rows:
+      - [200]
+      - [100]
+  - query: WITH u AS (SELECT g AS h, SUM(v) AS s FROM ga GROUP BY g) SELECT u.h FROM u ORDER BY u.h DESC
+    columns: ["H"]
+    rows:
+      - [200]
+      - [100]
+  # (7) A star body over a join is published by the builders that know the
+  # star-expansion rules (derived_star_visibility.yaml has the rules); a WHERE
+  # and an aggregate over it answer in both spellings, and through a UNION
+  # of two such bodies. ga × c is six rows per leg, w=1 three times per leg.
+  - query: SELECT d.w FROM (SELECT * FROM ga, c) d WHERE d.w = 1
+    columns: ["W"]
+    rows:
+      - [1]
+      - [1]
+      - [1]
+  - query: WITH d AS (SELECT * FROM ga, c) SELECT d.w FROM d WHERE d.w = 1
+    columns: ["W"]
+    rows:
+      - [1]
+      - [1]
+      - [1]
+  - query: SELECT d.w, COUNT(*) FROM (SELECT * FROM ga, c UNION ALL SELECT * FROM ga, c) d GROUP BY d.w ORDER BY d.w
+    columns: ["W", "COUNT(*)"]
+    rows:
+      - [1, 6]
+      - [2, 6]
+  - query: SELECT d.g FROM (SELECT * FROM ga, c UNION ALL SELECT * FROM ga, c) d WHERE d.w = 1 ORDER BY d.g
+    columns: ["G"]
+    rows:
+      - [100]
+      - [100]
+      - [100]
+      - [100]
+      - [200]
+      - [200]
+  - query: WITH d AS (SELECT * FROM ga, c UNION ALL SELECT * FROM ga, c) SELECT d.g FROM d WHERE d.w = 1 ORDER BY d.g
+    columns: ["G"]
+    rows:
+      - [100]
+      - [100]
+      - [100]
+      - [100]
+      - [200]
+      - [200]
+  # (8) A join body with a named-STRUCT column is the one class the exact
+  # derivation declines (its shape has no lossless semantic column), so the
+  # catalog walk still serves it: a read of the plain column beside the
+  # struct answers in both spellings.
+  - query: SELECT d.w FROM (SELECT st.p, c.w FROM st, c) d ORDER BY d.w
+    columns: ["W"]
+    rows:
+      - [1]
+      - [2]
+  - query: WITH d AS (SELECT st.p, c.w FROM st, c) SELECT d.w FROM d ORDER BY d.w
+    columns: ["W"]
+    rows:
+      - [1]
+      - [2]
+  - query: SELECT d.w FROM (SELECT st.p, c.w FROM st, c) d WHERE d.w = 2
+    columns: ["W"]
+    rows:
+      - [2]
+  # (9) A derived table over a derived table whose inner body projects an
+  # unaliased QUALIFIED reference (`u.w`) publishes that column under its
+  # bare name, as every projection labels it. Named by its display spelling
+  # it was published as U.W, and `x.w` over it was 42703 — with a join body
+  # and with a single-table body alike; the aliased control beside them.
+  - query: SELECT x.w FROM (SELECT u.w FROM (SELECT ga.g, c.w FROM ga, c WHERE ga.g = c.id) u) x ORDER BY x.w
+    columns: ["W"]
+    rows:
+      - [1]
+      - [1]
+      - [2]
+  - query: SELECT x.w FROM (SELECT u.w FROM (SELECT c.w FROM c) u) x ORDER BY x.w
+    columns: ["W"]
+    rows:
+      - [1]
+      - [2]
+  - query: WITH x AS (SELECT u.w FROM (SELECT c.w FROM c) u) SELECT x.w FROM x ORDER BY x.w
+    columns: ["W"]
+    rows:
+      - [1]
+      - [2]
+  - query: SELECT x.q FROM (SELECT u.w AS q FROM (SELECT c.w FROM c) u) x ORDER BY x.q
+    columns: ["Q"]
+    rows:
+      - [1]
+      - [2]
+  # (10) A NESTED-FIELD projection in a derived body (`st.p.sk`, the struct
+  # column p's field sk) is typed by the exact derivation: the catalog walk
+  # looked the bare leaf SK up as a column of the table, failed, and declined
+  # the whole resolver, so `x.sk` over it was refused as a projection slot
+  # with no resolved Value — through a derived table over a derived table
+  # too. The aliased control and the CTE spelling beside them.
+  - query: SELECT x.sk FROM (SELECT st.p.sk FROM st) x
+    columns: ["SK"]
+    rows:
+      - [5]
+  - query: SELECT x.sk FROM (SELECT u.p.sk FROM (SELECT st.p FROM st) u) x
+    columns: ["SK"]
+    rows:
+      - [5]
+  - query: SELECT x.q FROM (SELECT u.p.sk AS q FROM (SELECT st.p FROM st) u) x
+    columns: ["Q"]
+    rows:
+      - [5]
+  - query: WITH x AS (SELECT st.p.sk FROM st) SELECT x.sk FROM x
+    columns: ["SK"]
+    rows:
+      - [5]
+  # (11) The nested path is decided STRUCTURALLY, before any lookup: the body
+  # source's qualifier stripped, two or more segments remain. Deciding after a
+  # lookup by the leaf name typed `st2.p.sk` as the top-level STRING column
+  # sk that happens to share the leaf's name, and a read of the derived column
+  # was refused (0AF00 "declared RECORD(SK:STRING?)", 42804 under a WHERE). The
+  # BIGINT field answers in four spellings beside the top-level homonym.
+  - query: SELECT x.sk FROM (SELECT st2.p.sk FROM st2) x
+    columns: ["SK"]
+    rows:
+      - [5]
+  - query: SELECT x.sk FROM (SELECT st2.p.sk FROM st2) x WHERE x.sk = 5
+    columns: ["SK"]
+    rows:
+      - [5]
+  - query: SELECT x.sk FROM (SELECT u.p.sk FROM (SELECT st2.p FROM st2) u) x WHERE x.sk = 5
+    columns: ["SK"]
+    rows:
+      - [5]
+  - query: WITH x AS (SELECT st2.p.sk FROM st2) SELECT x.sk FROM x WHERE x.sk = 5
+    columns: ["SK"]
+    rows:
+      - [5]
+  - query: SELECT x.sk FROM (SELECT st2.sk FROM st2) x
+    columns: ["SK"]
+    rows:
+      - [seven]
+  # (12) The body source's alias equals a struct column's name (`st2 AS p`,
+  # column p): `p.co` is the STRUCT column's field co (Java's lookupNestedField
+  # resolves P.CO through the attribute P when the qualified form P.P fails),
+  # and the shape rule reads P as the source's qualifier and strips it, so the
+  # leaf lookup finds no top-level co. The post-lookup net catches it: a
+  # reference of two or more segments whose leaf is not a column goes to the
+  # exact derivation, in all three arms. The derived spellings were 0AF00 with
+  # the net deleted; the CTE arm never had it — its bare projection answered
+  # through a later fallback, and a WHERE on the published column failed to
+  # translate (0AF00) because that fallback publishes no typed row. Five
+  # spellings beside the top-level control.
+  - query: SELECT p.co FROM st2 AS p
+    columns: ["CO"]
+    rows:
+      - [6]
+  - query: SELECT x.co FROM (SELECT p.co FROM st2 AS p) x
+    columns: ["CO"]
+    rows:
+      - [6]
+  - query: SELECT x.co FROM (SELECT p.co FROM st2 AS p) x WHERE x.co = 6
+    columns: ["CO"]
+    rows:
+      - [6]
+  - query: SELECT x.co FROM (SELECT u.co FROM (SELECT p.co FROM st2 AS p) u) x
+    columns: ["CO"]
+    rows:
+      - [6]
+  - query: WITH x AS (SELECT p.co FROM st2 AS p) SELECT x.co FROM x
+    columns: ["CO"]
+    rows:
+      - [6]
+  - query: WITH x AS (SELECT p.co FROM st2 AS p) SELECT x.co FROM x WHERE x.co = 6
+    columns: ["CO"]
+    rows:
+      - [6]
+  # (13) A projected nested field whose type is a DECLARED STRUCT (`tn2.p.child`,
+  # child a child_s): the exact derivation declined every nominal record — its
+  # semantic column has a carrier for the record's name (StructTypeName), and
+  # the bridge back reads it — so the derived source had no exact row to
+  # publish and the read was refused as a projection slot with no resolved
+  # Value (0AF00, identical at the merge-base). With a top-level homonym of a
+  # DIFFERENT type (tn3: child STRING) the leaf lookup typed the slot as that
+  # STRING and `x.child.v` was refused as a column that does not exist (42703);
+  # with a homonym of the SAME type (tn4) the answer was right by coincidence,
+  # and deciding the path by its shape alone made that spelling 0AF00 too.
+  # Every spelling reads the field; the top-level control beside them.
+  - query: SELECT x.child.v FROM (SELECT tn2.p.child FROM tn2) x
+    columns: ["V"]
+    rows:
+      - [2]
+  - query: SELECT x.child.v FROM (SELECT tn2.p.child FROM tn2) x WHERE x.child.v = 2
+    columns: ["V"]
+    rows:
+      - [2]
+  - query: WITH x AS (SELECT tn2.p.child FROM tn2) SELECT x.child.v FROM x WHERE x.child.v = 2
+    columns: ["V"]
+    rows:
+      - [2]
+  - query: SELECT x.child.v FROM (SELECT u.p.child FROM (SELECT tn2.p FROM tn2) u) x
+    columns: ["V"]
+    rows:
+      - [2]
+  - query: SELECT x.child.v FROM (SELECT tn3.p.child FROM tn3) x
+    columns: ["V"]
+    rows:
+      - [2]
+  - query: SELECT x.child.v FROM (SELECT tn4.p.child FROM tn4) x WHERE x.child.v = 2
+    columns: ["V"]
+    rows:
+      - [2]
+  - query: SELECT x.child.v FROM (SELECT tn4.child FROM tn4) x WHERE x.child.v = 9
+    columns: ["V"]
+    rows:
+      - [9]

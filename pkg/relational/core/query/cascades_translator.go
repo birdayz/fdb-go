@@ -386,7 +386,10 @@ func exactLogicalProjectionOutputNames(p *logical.LogicalProject, projected []va
 		if i < len(p.Aliases) {
 			alias = p.Aliases[i]
 		}
-		name := values.OutputColumnName(projectedValue, alias)
+		// values.ProjectionSlotName is this rule; it is named there so the
+		// consumer that re-derives the natural schema (deriveColumnsFromProjection)
+		// cannot drift from it.
+		name := values.ProjectionSlotName(projectedValue, alias)
 		if alias == "" {
 			// A COLUMN REFERENCE takes the DISPLAY name. The dotted rendering
 			// (`A.W.X`) is an internal slot key that disambiguates two members of
@@ -409,9 +412,6 @@ func exactLogicalProjectionOutputNames(p *logical.LogicalProject, projected []va
 			// This is the same rule extractOutputProjectionNames applies to a
 			// recursive CTE's output columns, for the same reason and after the
 			// same symptom.
-			if _, isReference := values.AsFieldValue(projectedValue); isReference {
-				name = values.DisplayColumnName(projectedValue, "")
-			}
 			// An exact scalar leg is represented by its whole QOV. Its Value
 			// display name identifies the leg (VAL/ARR1), not necessarily the
 			// SQL item projected from it (UNNEST AT "AT"). Only the captured
@@ -920,7 +920,14 @@ func (t *cascadesTranslator) derivedOutputColumns(op logical.LogicalOperator) []
 		fields := make([]values.Field, len(o.Projections))
 		for i := range o.Projections {
 			name := o.Projections[i]
-			if i < len(o.Aliases) && o.Aliases[i] != "" {
+			if len(exactFields) == len(o.Projections) {
+				// The exact type's names ARE the runtime row: the record
+				// constructor's name for every slot, qualified datum key and
+				// name-addressability suffix included. The rules below derive
+				// a name only for a projection the exact derivation could not
+				// type.
+				name = exactFields[i].Name
+			} else if i < len(o.Aliases) && o.Aliases[i] != "" {
 				name = o.Aliases[i]
 			} else if dot := strings.LastIndexByte(name, '.'); dot >= 0 {
 				// A qualified-but-unaliased passthrough (`SELECT t.arr FROM t`)
@@ -943,6 +950,20 @@ func (t *cascadesTranslator) derivedOutputColumns(op logical.LogicalOperator) []
 				fieldType = o.ProjectedValues[i].Type()
 			}
 			fields[i] = values.Field{Name: name, FieldType: fieldType, Ordinal: i}
+		}
+		// The runtime row this layout describes is the projection's own
+		// RecordConstructorValue, whose repeated names carry the
+		// name-addressability suffix (values.DedupFieldNames). A layout stated
+		// verbatim — [G G] for `SELECT g, SUM(v) AS g` — is a different ordinal
+		// domain from the row the executor binds ([G G_2]); the seed's baked
+		// read of slot 1 then declined the ordinal and fell back to a by-name
+		// read, which answered the FIRST G. Same rule, same names, one domain.
+		names := make([]string, len(fields))
+		for i := range fields {
+			names[i] = fields[i].Name
+		}
+		for i, name := range values.DedupFieldNames(names) {
+			fields[i].Name = name
 		}
 		return fields
 	case *logical.LogicalAggregate:
@@ -1002,22 +1023,18 @@ func (t *cascadesTranslator) derivedOutputColumns(op logical.LogicalOperator) []
 }
 
 // unionOutputColumns returns a UNION's output column schema for anchoring it as a
-// join leg. SQL exposes the FIRST branch's names; the executor unions later
-// branches by POSITION (remapUnionColumnsByPosition, keyed on planColumnNamesWithMD).
-// That position-remap is reliable for PROJECTION/scan-schema'd branches — verified
-// e2e: `(SELECT id AS x … UNION ALL SELECT v AS y …)` joins correctly — so anchoring
-// a leg with mismatched branch aliases to the first branch's names is sound there.
+// join leg or derived table: SQL exposes the FIRST branch's names, and every
+// branch is re-emitted onto that row by the translator itself (exactUnionResultRow
+// / normalizeUnionLeg), by ordinal, whatever the branch's shape — projection, scan
+// or aggregate. Nothing downstream re-derives a branch's names, so there is no
+// branch shape this anchoring has to refuse (RFC-242). A gate used to sit here
+// refusing mismatched-name aggregate branches because the executor's since-deleted
+// position-remap could not re-key them; the translator's projection reads the
+// branch's row by position and needs no key.
 //
-// It is NOT reliable for an AGGREGATE-schema'd branch: planColumnNamesWithMD unwraps
-// the aggregate to its input scan's column names, so a differently-aliased aggregate
-// branch is not remapped to the first branch's name and its rows read as NULL —
-// silently dropping join matches (a pre-existing executor gap, verified wrong on
-// master too; tracked as TODO 7.6-union-remap). So when branch names DIFFER, anchor
-// only if every branch's schema-defining node is normalizable (projection/scan); an
-// aggregate-schema'd mismatched-alias union leg returns nil → untranslatable, a clean
-// "unsupported" error rather than silently-wrong rows. When branch names
-// AGREE the remap is a no-op, so any shape is safe. Returns nil for no branches / an
-// underivable first branch.
+// Returns nil for no branches, an underivable first branch, or branches of
+// differing width (the width check is the translator's, reported there as
+// ErrCodeUnionIncorrectColumnCount; here it only declines the anchoring).
 func (t *cascadesTranslator) unionOutputColumns(u *logical.LogicalUnion) []values.Field {
 	if len(u.Inputs) == 0 {
 		return nil
@@ -1026,157 +1043,12 @@ func (t *cascadesTranslator) unionOutputColumns(u *logical.LogicalUnion) []value
 	if first == nil {
 		return nil
 	}
-	allAgree := true
-	allNormalizable := true
-	for _, br := range u.Inputs {
-		bc := t.derivedOutputColumns(br)
-		if len(bc) != len(first) {
+	for _, br := range u.Inputs[1:] {
+		if bc := t.derivedOutputColumns(br); len(bc) != len(first) {
 			return nil
 		}
-		for i := range bc {
-			if bc[i].Name != first[i].Name {
-				allAgree = false
-			}
-		}
-		if !t.unionBranchNormalizable(br) {
-			allNormalizable = false
-		}
 	}
-	if allAgree || allNormalizable {
-		return first
-	}
-	return nil
-}
-
-// unionBranchNormalizable reports whether the executor's union position-remap can
-// remap this branch's columns to the first branch's names — i.e. whether the
-// branch's SCHEMA-defining node is a projection or scan (planColumnNamesWithMD
-// reports those branches' true output names). Every SQL-built aggregate now has
-// an exact final Project, so it reaches the first arm regardless of qualified or
-// constant aggregate labels. The LogicalAggregate arm remains defense for
-// directly constructed/legacy trees that do not carry that public contract.
-// Mirrors derivedOutputColumns's recursion through row-shape-preserving
-// wrappers; an unknown shape is conservatively not normalizable.
-func (t *cascadesTranslator) unionBranchNormalizable(op logical.LogicalOperator) bool {
-	switch o := op.(type) {
-	case *logical.LogicalProject, *logical.LogicalJoin:
-		return true
-	case *logical.LogicalInlineValues:
-		return true
-	case *logical.LogicalScan:
-		// A scan may be a CTE/derived-table reference (translateScan resolves it from
-		// the CTE body, not a real table). A real-table scan is remappable, but a
-		// CTE-reference scan is only remappable if its BODY is. SQL aggregate
-		// bodies are Projects; a directly constructed bare aggregate is checked
-		// by the defensive arm below. Resolve cteScope and recurse, mirroring legColumns (remove-while-
-		// recursing so a same-named scan inside the body resolves to the real table,
-		// not back to the CTE). A pre-translated (recursive) CTE ref is unverifiable →
-		// conservatively not normalizable.
-		key := strings.ToUpper(o.Table)
-		if _, ok := t.cteExprScope[key]; ok {
-			return false
-		}
-		if body, ok := t.cteScope[key]; ok {
-			var n bool
-			t.inCTEDefiningScope(key, body, func() {
-				n = t.unionBranchNormalizable(body)
-			})
-			return n
-		}
-		return true
-	case *logical.LogicalAggregate:
-		// Direct-tree bare aggregate branch (SQL builders always add Project).
-		if len(o.Calls) < 1 {
-			return false // 0-aggregate (group-only) shape — distinct concern, gated.
-		}
-		// UNGROUPED: unchanged from RFC-080. An ungrouped aggregate has no aggregate-index
-		// candidate (groupingCount==0) so it always plans as StreamingAgg; RFC-080 allowed these
-		// union join legs and they work — do NOT re-gate them here (regressing previously-working
-		// ungrouped legs). Any residual ungrouped logical-vs-physical name divergence is a
-		// pre-existing RFC-080 matter for the naming-unification follow-up, not RFC-081's scope.
-		if len(o.GroupKeys) == 0 {
-			return true
-		}
-		// GROUPED direct tree: a bare grouped aggregate can plan as AggregateIndex / MultiIntersection,
-		// whose canonical row key can DIVERGE from the logical leg-schema name (aggregateOutputColumns,
-		// the raw aggregate text) — so the executor's position-remap reads a missing key → NULL. The
-		// names agree only for COUNT(*) and FUNC(<bare column>); a qualified operand (SUM(t.c) →
-		// physical SUM(C)), a constant (COUNT(1)/COUNT(NULL) → grouped count-star index COUNT(*)), an
-		// expression, or DISTINCT diverge → gate (clean error, never wrong rows). Unifying logical and
-		// physical aggregate naming so the divergent forms work is a follow-up.
-		return aggregateNamesStableForUnion(o)
-	case *logical.LogicalDistinct:
-		return t.unionBranchNormalizable(o.Input)
-	case *logical.LogicalSort:
-		return t.unionBranchNormalizable(o.Input)
-	case *logical.LogicalLimit:
-		return t.unionBranchNormalizable(o.Input)
-	case *logical.LogicalFilter:
-		return t.unionBranchNormalizable(o.Input)
-	case *logical.LogicalUnion:
-		if len(o.Inputs) == 0 {
-			return false
-		}
-		for _, br := range o.Inputs {
-			if !t.unionBranchNormalizable(br) {
-				return false
-			}
-		}
-		return true
-	case *logical.LogicalCTE:
-		return t.unionBranchNormalizable(o.Body)
-	}
-	return false
-}
-
-// aggregateNamesStableForUnion reports whether every aggregate in a bare aggregate union
-// branch has a STABLE output name — i.e. the logical leg-schema name (aggregateOutputColumns,
-// the raw aggregate text) equals the physical row key the executor writes (StreamingAgg
-// aggResultName / AggregateIndex canonical). Stable iff each aggregate is COUNT(*) or
-// FUNC(<bare column identifier>); a qualified operand (SUM(t.c)), a constant (COUNT(1)), an
-// expression (SUM(a*b)), or DISTINCT canonicalizes differently between the two, so the union
-// position-remap would read a missing key → NULL (RFC-081). False for a 0-aggregate branch.
-//
-// The parse-tree-derived Calls are the signal (RFC-180 F-2): AggregateOperands is nil for
-// many shapes (e.g. SUM(col)) depending on the build path, and text scanning of the
-// canonical rendering is retired.
-func aggregateNamesStableForUnion(a *logical.LogicalAggregate) bool {
-	if len(a.Calls) == 0 || a.HasDistinctAggregate {
-		return false
-	}
-	for i := range a.Calls {
-		// A constant operand — COUNT(1), COUNT(NULL), COUNT(TRUE) — folds into count-star,
-		// so a grouped aggregate index reports COUNT(*) ≠ the logical text. The resolved
-		// operand reliably distinguishes a literal (ConstantValue) from a column, which the
-		// text cannot (COUNT(NULL)'s arg "NULL" looks like an identifier). Literals resolve
-		// even where a column operand is left nil, so this catch is sound.
-		//
-		// This deliberately does NOT reuse expressions.IsCountStar (RFC-164 WS-3): that
-		// classifier answers "is this COUNT count-star?" for a SINGLE COUNT aggregate; here
-		// the question is union-branch NAME stability for ANY aggregate function, and the
-		// gate is a conservative any-constant-operand reject (SUM(1), MIN(NULL) too) — a
-		// different question at a different scope, not a fourth copy of the count-star rule.
-		if i < len(a.AggregateOperands) {
-			if _, isConst := a.AggregateOperands[i].(*values.ConstantValue); isConst {
-				return false
-			}
-		}
-		// Structured classification (RFC-180 F-2): the parse-tree-derived
-		// call info replaces text scanning of the canonical rendering. A
-		// dotted operand text is conservatively rejected (qualified
-		// rendering; a delimited identifier containing a dot only costs
-		// the optimization, never correctness).
-		call := a.Calls[i]
-		if call.Star {
-			continue // COUNT(*)
-		}
-		if call.Distinct || !call.BareColumn || call.Qualified {
-			// Qualified is parse-tree truth for a bare column — a delimited
-			// identifier with a literal dot stays normalizable.
-			return false // qualified / expression / distinct operand → name diverges
-		}
-	}
-	return true
+	return first
 }
 
 // aggregateOutputColumns returns a LogicalAggregate's output column schema:

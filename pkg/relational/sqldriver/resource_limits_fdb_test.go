@@ -576,7 +576,7 @@ func TestFDB_RFC106a_DMLDeadlineAbortsCleanly(t *testing.T) {
 // Historically this asserted a loud 54F01 instead: the correct-or-loud
 // stopgap for the era when the union DISCARDED its continuation and a resume
 // silently replayed branch A from row 0. Revert-proof: restore the
-// continuation-discarding executeUnionStreaming → duplicated branch-A pages
+// continuation-discarding streaming union (executeUnion) → duplicated branch-A pages
 // (row count > 51) or a loud out-of-band error — either fails this pin.
 func TestFDB_UnionAllResumesAcrossScanLimitPages(t *testing.T) {
 	t.Parallel()

@@ -69,17 +69,17 @@ func newRecursiveUnionExpression(
 	strategy TraversalStrategy,
 	distinct bool,
 ) (*RecursiveUnionExpression, error) {
-	initialResult, err := requireFlowedResult("RecursiveUnionExpression initial state", initialState)
+	// Both states flow a row and must flow the SAME row — Java's
+	// mergeValues(initial, recursive) contract, asserted through the one
+	// set-operation helper union and intersection use (RFC-242).
+	results, err := requireSetOperationResults("RecursiveUnionExpression", []Quantifier{initialState, recursiveState})
 	if err != nil {
 		return nil, err
 	}
-	recursiveResult, err := requireFlowedResult("RecursiveUnionExpression recursive state", recursiveState)
-	if err != nil {
-		return nil, err
+	if len(results) != 2 {
+		return nil, fmt.Errorf("RecursiveUnionExpression result: both states must flow a row, %d do", len(results))
 	}
-	if !values.FlowedTypesEqual(initialResult, recursiveResult) {
-		return nil, fmt.Errorf("RecursiveUnionExpression result: initial type %v disagrees with recursive type %v", initialResult.FlowedType(), recursiveResult.FlowedType())
-	}
+	initialResult, recursiveResult := results[0], results[1]
 	resultType, err := snapshotExpressionResultType("RecursiveUnionExpression", initialResult.FlowedType())
 	if err != nil {
 		return nil, err

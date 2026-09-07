@@ -15,7 +15,9 @@ import (
 
 func executeInlineValuesPlan(t testing.TB, plan plans.RecordQueryPlan) []executor.QueryResult {
 	t.Helper()
-	cascades.FinalizePlan(plan)
+	if err := cascades.FinalizePlan(plan); err != nil {
+		t.Fatalf("FinalizePlan: %v", err)
+	}
 	cursor, err := executor.ExecutePlan(context.Background(), plan, nil,
 		executor.EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
@@ -67,7 +69,9 @@ func TestInlineValuesPhysicalLeafEmitsItsExactPublishedRow(t *testing.T) {
 	// particular this stamps the inline row constructors with the plan's
 	// synthetic protobuf descriptors; the direct harness otherwise leaves them
 	// as name-keyed maps and would miss representation-only type drift.
-	cascades.FinalizePlan(plan)
+	if err := cascades.FinalizePlan(plan); err != nil {
+		t.Fatalf("FinalizePlan: %v", err)
+	}
 	cursor, err := executor.ExecutePlan(context.Background(), explode, nil,
 		executor.EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
@@ -123,8 +127,8 @@ func TestInlineValuesNestedDefinitionsFinalizeAndExecute(t *testing.T) {
 		t.Fatalf("Explode element = %T %v, want exact B/C/W record", explode.GetElementType(), explode.GetElementType())
 	}
 	nested, ok := element.Fields[2].FieldType.(*values.RecordType)
-	if !ok || nested.RecordName != "RECORD" || len(nested.Fields) != 3 {
-		t.Fatalf("Explode W = %T %v, want RECORD<X,Y,Z>", element.Fields[2].FieldType, element.Fields[2].FieldType)
+	if !ok || nested.RecordName != "" || len(nested.Fields) != 3 {
+		t.Fatalf("Explode W = %T %v, want anonymous RECORD<X,Y,Z>", element.Fields[2].FieldType, element.Fields[2].FieldType)
 	}
 	if nested.Fields[1].FieldType.Code() != values.TypeCodeDouble {
 		t.Fatalf("Explode W.Y = %v, want promoted DOUBLE", nested.Fields[1].FieldType)

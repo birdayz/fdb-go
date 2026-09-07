@@ -110,6 +110,15 @@ func TestMigrateCIVolumeScript(t *testing.T) {
 	runShellSuite(t, "migrate_ci_volume_test.sh")
 }
 
+// TestOrphanFDBSweepScript drives the sweep that removed the LIVE container of
+// every long-running test on this fleet for five weeks. Its five cases are the
+// ones the incident and its two failed repairs produced, and the suite stubs
+// docker, ps and pgrep so it needs no daemon and no runner.
+func TestOrphanFDBSweepScript(t *testing.T) {
+	t.Parallel()
+	runShellSuite(t, "orphan_fdb_sweep_test.sh")
+}
+
 func runShellSuite(t *testing.T, script string) {
 	t.Helper()
 	// The suites resolve the repo from their own path (dirname $0/..), which holds both in

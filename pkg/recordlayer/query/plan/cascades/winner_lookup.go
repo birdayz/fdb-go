@@ -3,6 +3,7 @@ package cascades
 import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
@@ -133,6 +134,10 @@ func pinOrderedSpineDepth(expr expressions.RelationalExpression, ordering *prope
 	}
 	srcRef := d.OrderingSourceRef()
 	if srcRef == nil {
+		return nil
+	}
+	ordering, ok = requestedOrderingBelow(expr, ordering)
+	if !ok {
 		return nil
 	}
 	m := bestSatisfyingMember(srcRef, ordering, less)
@@ -299,8 +304,12 @@ func memberSatisfiesOrderingDepth(m expressions.RelationalExpression, requested 
 		if srcRef == nil {
 			return false
 		}
+		below, ok := requestedOrderingBelow(m, requested)
+		if !ok {
+			return false
+		}
 		for _, sm := range srcRef.AllMembers() {
-			if memberSatisfiesOrderingDepth(sm, requested, depth+1) {
+			if memberSatisfiesOrderingDepth(sm, below, depth+1) {
 				return true
 			}
 		}
@@ -328,3 +337,93 @@ var (
 	_ orderingDelegator = (*plans.RecordQueryDefaultOnEmptyPlan)(nil)
 	_ orderingDelegator = (*plans.RecordQueryFetchFromPartialRecordPlan)(nil)
 )
+
+// requestedOrderingBelow translates a requested ordering through an
+// order-preserving wrapper into the row space of the source group it
+// delegates to. A filter, a limit, a distinct or a fetch flows its input row
+// unchanged, so the request crosses as it is. A projection or a map RESHAPES
+// the row: its output slot H may be the input's ID under another name, and a
+// request stated over the output — `_current.H#0` — names nothing in the
+// source's row until it is pushed through the wrapper's result value, exactly
+// as PushRequestedOrderingThroughProjectionRule pushes the constraint and as
+// Java's OrderingProperty.visitMapPlan pulls the child's ordering up through
+// the map's result value (the dual of the same translation). Walking the
+// delegator chain with the untranslated request matched the output name
+// against the source's keys and so satisfied `ORDER BY u.h` over
+// `(SELECT id AS h FROM t) u` only when the two names happened to coincide:
+// every renamed column kept an in-memory sort over an input that was already
+// in that order.
+//
+// The request reaching this walk is stated over the wrapper's output row —
+// rooted at the group's current carrier when it is the constraint the sort
+// rule pushed, or at the sort's own inner quantifier when it is the sort's
+// keys as spelled — so the push-down's upper alias is the root the parts
+// name, and the pushed parts, now rooted at the wrapper's child EDGE, are
+// rebased into the source group's current-row space
+// (requestedOrderingAtInnerCurrent). A part the result value cannot express
+// (a computed slot) drops, a request whose parts name two roots is not one
+// request, and a request that lost a part is not satisfiable below the
+// wrapper: the sort stays.
+func requestedOrderingBelow(
+	m expressions.RelationalExpression,
+	requested *properties.RequestedOrdering,
+) (*properties.RequestedOrdering, bool) {
+	if requested == nil || requested.IsPreserve() {
+		return requested, true
+	}
+	var (
+		resultValue values.Value
+		innerQ      expressions.Quantifier
+	)
+	switch p := m.(type) {
+	case *plans.RecordQueryProjectionPlan:
+		resultValue, innerQ = p.GetResultValue(), p.GetInnerQuantifier()
+	case *plans.RecordQueryMapPlan:
+		resultValue, innerQ = p.GetResultValue(), p.GetInnerQuantifier()
+	case *expressions.LogicalProjectionExpression:
+		// The logical projection takes the same crossing when its
+		// requested-ordering CONSTRAINT is pushed to its child group
+		// (PushRequestedOrderingThroughProjectionRule): one translation for
+		// the constraint going down and for the satisfaction walk.
+		resultValue, innerQ = p.GetResultValue(), p.GetInner()
+	default:
+		return requested, true
+	}
+	if resultValue == nil || innerQ.GetRangesOver() == nil {
+		return nil, false
+	}
+	upper, ok := requestedOrderingRoot(requested)
+	if !ok {
+		return nil, false
+	}
+	pushed := requested.PushDownThroughValue(resultValue, upper)
+	if pushed.IsPreserve() || pushed.Size() != requested.Size() {
+		return nil, false
+	}
+	below, err := requestedOrderingAtInnerCurrent(pushed, innerQ)
+	if err != nil {
+		return nil, false
+	}
+	return below, true
+}
+
+// requestedOrderingRoot reports the one quantifier every part of a requested
+// ordering reads from. A part with no correlation (a constant, a parameter) or
+// two parts rooted at different quantifiers make no single row to push the
+// request through.
+func requestedOrderingRoot(requested *properties.RequestedOrdering) (values.CorrelationIdentifier, bool) {
+	var root values.CorrelationIdentifier
+	for _, part := range requested.GetParts() {
+		correlated := values.GetCorrelatedToOfValue(part.Value)
+		if len(correlated) != 1 {
+			return values.CorrelationIdentifier{}, false
+		}
+		for alias := range correlated {
+			if !root.IsZero() && alias != root {
+				return values.CorrelationIdentifier{}, false
+			}
+			root = alias
+		}
+	}
+	return root, !root.IsZero()
+}

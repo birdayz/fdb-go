@@ -141,7 +141,7 @@ func TestRFC238WeakCitesAreTheOnesSection7dNames(t *testing.T) {
 	index := goFileSuffixIndex(t, root)
 
 	want := []string{
-		"cascades_generator.go:2826",
+		"cascades_generator.go:2830",
 		"colref.go:95",
 		"derived_unnest.go:250",
 		"full_unordered_scan.go:110-118",

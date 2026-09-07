@@ -15,7 +15,8 @@ import (
 // whose consumers must become ordinal before the authority can return a
 // display-only carrier type. Two of its consumers are ordinal at runtime and were
 // measured so: every name the aggregate cursor writes onto its emitted
-// PositionalRow, and every name the plan reports for the UNION position-remap, can
+// PositionalRow, and every name the plan reported for the UNION position-remap
+// (a consumer RFC-242 has since deleted outright), can
 // be replaced wholesale by a positional probe string with the entire relational
 // corpus — FDB driver suite, yamsql, rowdiff, plandiff, explaindiff, memoinvariant
 // — staying green. Only tests that assert the emitted spelling itself notice.

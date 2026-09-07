@@ -1,0 +1,41 @@
+# scenario: unionjoinleg (seed 8)
+#   CREATE TABLE ga (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))
+#   CREATE INDEX cnt_by_g AS SELECT COUNT(*) FROM ga GROUP BY g
+#   CREATE INDEX sum_by_g AS SELECT SUM(v) FROM ga GROUP BY g
+#   CREATE TABLE gb (id BIGINT, h BIGINT, v BIGINT, PRIMARY KEY (id))
+#   CREATE INDEX cnt_by_h AS SELECT COUNT(*) FROM gb GROUP BY h
+#   CREATE INDEX sum_by_h AS SELECT SUM(v) FROM gb GROUP BY h
+#   CREATE TABLE c (id BIGINT, w BIGINT, PRIMARY KEY (id))
+
+=== WITH u AS (SELECT g, SUM(ga.v) AS s FROM ga GROUP BY g UNION ALL SELECT h, SUM(gb.v) AS s2 FROM gb GROUP BY h) SELECT c.w, u.s FROM u, c WHERE u.g = c.id ORDER BY c.w, u.s
+PLAN: Project([_current.W#3, _current.S#1], InMemorySort([_current.W#3 ASC, _current.S#1 ASC], FlatMap(outer=UnorderedUnion(Project([_current.G#0, _current.S#1], Project([_current.G#0, _current.SUM(GA.V)#1], Project([_current.G#0, _current.SUM(V)#1], GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_G, [G], GA, live_groups_only), AggregateIndex(SUM, SUM_BY_G, [G], GA); keys=[G#0], driving=0)))), Project([_current.H#0, _current.S2#1], Project([_current.H#0, _current.SUM(GB.V)#1], Project([_current.H#0, _current.SUM(V)#1], GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_H, [H], GB, live_groups_only), AggregateIndex(SUM, SUM_BY_H, [H], GB); keys=[H#0], driving=0))))), inner=Scan(C, [=]))))
+ROWS(4) cols=[W, S]:
+  [1, 1]
+  [1, 12]
+  [2, 9]
+  [3, 2]
+
+=== WITH u AS (SELECT g, COUNT(1) AS n FROM ga GROUP BY g UNION ALL SELECT h, COUNT(1) AS m FROM gb GROUP BY h) SELECT c.w, u.n FROM u, c WHERE u.g = c.id ORDER BY c.w, u.n
+PLAN: Project([_current.W#3, _current.N#1], InMemorySort([_current.W#3 ASC, _current.N#1 ASC], FlatMap(outer=UnorderedUnion(Project([_current.G#0, _current.COUNT(1)#1], Project([_current.G#0, _current.COUNT(*)#1], AggregateIndex(COUNT, CNT_BY_G, [G], GA, live_groups_only))), Project([_current.H#0, _current.COUNT(1)#1], Project([_current.H#0, _current.COUNT(*)#1], AggregateIndex(COUNT, CNT_BY_H, [H], GB, live_groups_only)))), inner=Scan(C, [=]))))
+ROWS(4) cols=[W, N]:
+  [1, 1]
+  [1, 2]
+  [2, 1]
+  [3, 1]
+
+=== WITH u AS (SELECT g FROM ga GROUP BY g UNION ALL SELECT h FROM gb GROUP BY h) SELECT c.w FROM u, c WHERE u.g = c.id ORDER BY c.w
+PLAN: Project([_current.W#2], InMemorySort([_current.W#2 ASC], FlatMap(outer=UnorderedUnion(Project([_current.G#0], StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(GA)))), Project([_current.H#0], Project([_current.H#0], StreamingAgg(keys=[_current.H#1], InMemorySort([_current.H#1 ASC], Scan(GB)))))), inner=Scan(C, [=]))))
+ROWS(4) cols=[W]:
+  [1]
+  [1]
+  [2]
+  [3]
+
+=== WITH u AS (SELECT g, SUM(v) AS s FROM ga GROUP BY g UNION ALL SELECT h, SUM(v) AS s2 FROM gb GROUP BY h) SELECT c.w, u.s FROM u, c WHERE u.g = c.id ORDER BY c.w, u.s
+PLAN: Project([_current.W#3, _current.S#1], InMemorySort([_current.W#3 ASC, _current.S#1 ASC], FlatMap(outer=UnorderedUnion(Project([_current.G#0, _current.S#1], Project([_current.G#0, _current.SUM(V)#1], GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_G, [G], GA, live_groups_only), AggregateIndex(SUM, SUM_BY_G, [G], GA); keys=[G#0], driving=0))), Project([_current.H#0, _current.S2#1], Project([_current.H#0, _current.SUM(V)#1], GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_H, [H], GB, live_groups_only), AggregateIndex(SUM, SUM_BY_H, [H], GB); keys=[H#0], driving=0)))), inner=Scan(C, [=]))))
+ROWS(4) cols=[W, S]:
+  [1, 1]
+  [1, 12]
+  [2, 9]
+  [3, 2]
+
