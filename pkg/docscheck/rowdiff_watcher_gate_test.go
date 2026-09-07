@@ -171,11 +171,16 @@ func TestRowdiffWatcherBehaviour(t *testing.T) {
 // and the total never moves. Nor does a COUNT, even an exact one — add one arm
 // while another is skipped, or duplicate a label while deleting a different one,
 // and the cardinality is identical. That is the same cancellation one level up,
-// which is why this compares LABELS. There is no count comparison left to get
-// wrong: a run with the full population plus a duplicate is not caught by any
-// arithmetic between "labels that ran" and "labels pinned" — those count
-// different things, lines against distinct entries — so a repeated label is
-// detected as its own state instead.
+// which is why this compares LABELS. The count comparison it replaced was not
+// blind — `len(got) == len(expected)` compares lines against distinct entries,
+// so a full population plus one duplicate is 73 against 72 and it did return an
+// error. What it could not do is SAY anything: both lists came back empty and
+// the message named no label, so the one state it detected was the one state it
+// could not describe. And nothing drove it, so that was never visible. A
+// repeated label is its own state now, with its own message and its own case —
+// the gain is diagnosis and coverage, not detection, and the first draft of this
+// comment claimed detection because "the arithmetic is gone" felt like it needed
+// a stronger justification than it did.
 //
 // Three states, and each section prints ONLY when it has members. Rendering all
 // three unconditionally reads as thorough and makes the message
@@ -188,9 +193,14 @@ func TestRowdiffWatcherBehaviour(t *testing.T) {
 // three times — twice inside the very commit that was fixing the previous
 // staleness.
 //
-// Three states, three messages. NONE: the suite did not run, which is not the
-// same as passing. MISSING: arms disappeared rather than failed, which reports as
-// green. UNEXPECTED: arms were added without restating the population.
+// FOUR states, four messages, each naming what it means and what to do. NONE: the
+// suite did not run, which is not the same as passing. MISSING: arms disappeared
+// rather than failed, which reports as green. UNEXPECTED: arms ran that are not
+// pinned. DUPLICATED: one label ran twice, so an arm's result is standing in for
+// another's — the state a count cannot see at all, since the totals still agree.
+// This enumeration was "three states, three messages" for a round after the
+// fourth was added, which is the same class of defect as everything it guards:
+// a description of the code that the code has outgrown.
 const wantArmLabels = `
 a daemon outage is not logged as a removal
 a deletion cut short leaves no published generation behind
@@ -355,69 +365,93 @@ func TestRowdiffWatcherArmCensus(t *testing.T) {
 	}
 	pinned := "a\nb\nc\n"
 
-	// `want` and `notWant` are both asserted, and the second is what makes the
-	// first mean anything: every section heading used to be rendered whether or
-	// not it had members, so an assertion on "MISSING" also held for an
-	// unexpected arm and swapping the two lists passed every case here.
+	// Assertions bind a label to its SECTION, and that binding is the whole point.
+	// Matching substrings against the WHOLE message cannot distinguish a report
+	// from its inverse: for a same-count substitution the message contains
+	// MISSING, [c], UNEXPECTED and [d], and so does the message that files each
+	// label under the other heading. Every case that populates two sections was
+	// therefore green against a payload swap — the same undiscriminating-verdict
+	// defect one level up, in the fix for it.
+	section := func(msg, name string) (string, bool) {
+		for _, line := range strings.Split(msg, "\n") {
+			if strings.HasPrefix(line, name+" — ") {
+				return line, true
+			}
+		}
+		return "", false
+	}
+
 	for _, tc := range []struct {
-		name    string
-		out     string
-		want    []string
-		notWant []string
+		name string
+		out  string
+		// want maps a section heading to the labels that section must list.
+		want map[string]string
+		// absent names sections that must not appear at all.
+		absent []string
+		// plain is asserted against the whole message, for the states that have
+		// no sections.
+		plain string
 	}{
 		// The empty-set reading, and the reason this gate exists: a suite that
 		// produced nothing must not be indistinguishable from one that passed.
-		{"no output at all", "", []string{"reported NO passing arms"}, []string{"MISSING"}},
-		{"output but no arms", "\nALL OK\n", []string{"reported NO passing arms"}, nil},
-		{"an arm disappeared", out("a", "b"), []string{"MISSING", "[c]"}, []string{"UNEXPECTED", "DUPLICATED"}},
-		{"an arm was added", out("a", "b", "c", "d"), []string{"UNEXPECTED", "[d]"}, []string{"MISSING", "DUPLICATED"}},
-		// The case a COUNT cannot see: one arm skipped, another added, cardinality
-		// unchanged. Both sections must name the right label, in the right role.
+		{name: "no output at all", out: "", plain: "reported NO passing arms", absent: []string{"MISSING", "UNEXPECTED", "DUPLICATED"}},
+		{name: "output but no arms", out: "\nALL OK\n", plain: "reported NO passing arms"},
+		{name: "an arm disappeared", out: out("a", "b"), want: map[string]string{"MISSING": "[c]"}, absent: []string{"UNEXPECTED", "DUPLICATED"}},
+		{name: "an arm was added", out: out("a", "b", "c", "d"), want: map[string]string{"UNEXPECTED": "[d]"}, absent: []string{"MISSING", "DUPLICATED"}},
+		// The case a COUNT cannot see, and the case a whole-message match cannot
+		// see either: one arm skipped, another added, both sections populated, so
+		// only a per-section assertion rejects the inverted report.
 		{
-			"a same-count substitution", out("a", "b", "d"),
-			[]string{"MISSING", "[c]", "UNEXPECTED", "[d]"},
-			[]string{"DUPLICATED"},
+			name: "a same-count substitution", out: out("a", "b", "d"),
+			want: map[string]string{"MISSING": "[c]", "UNEXPECTED": "[d]"}, absent: []string{"DUPLICATED"},
 		},
 		{
-			"a duplicate masking a deletion", out("a", "b", "b"),
-			[]string{"MISSING", "[c]", "DUPLICATED", "[b]"},
-			[]string{"UNEXPECTED"},
+			name: "a duplicate masking a deletion", out: out("a", "b", "b"),
+			want: map[string]string{"MISSING": "[c]", "DUPLICATED": "[b]"}, absent: []string{"UNEXPECTED"},
 		},
 		// A duplicate with NOTHING missing: the population is complete and one
-		// label still ran twice, so a copy-pasted case reusing a name is caught
-		// on its own, not only as a side effect of some other arm vanishing.
+		// label still ran twice, so a copy-pasted case reusing a name is caught on
+		// its own rather than as a side effect of some other arm vanishing.
 		{
-			"a duplicate alongside the full population", out("a", "a", "b", "c"),
-			[]string{"DUPLICATED", "[a]"},
-			[]string{"MISSING", "UNEXPECTED"},
+			name: "a duplicate alongside the full population", out: out("a", "a", "b", "c"),
+			want: map[string]string{"DUPLICATED": "[a]"}, absent: []string{"MISSING", "UNEXPECTED"},
 		},
-		{"exactly the pinned population", out("a", "b", "c"), nil, nil},
-		{"order does not matter", out("c", "a", "b"), nil, nil},
+		{name: "exactly the pinned population", out: out("a", "b", "c")},
+		{name: "order does not matter", out: out("c", "a", "b")},
 		// `ok` in prose is not an arm. The scan keys on the suite's own two-space
 		// prefix and three-space gap, so a line merely containing "ok" cannot
 		// inflate the census into passing.
-		{"prose mentioning ok is not an arm", out("a", "b", "c") + "looks ok to me\n  ok but not an arm\n", nil, nil},
+		{name: "prose mentioning ok is not an arm", out: out("a", "b", "c") + "looks ok to me\n  ok but not an arm\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			err := checkArms(tc.out, pinned)
-			if len(tc.want) == 0 {
+			if len(tc.want) == 0 && tc.plain == "" {
 				if err != nil {
 					t.Fatalf("checkArms(%v) = %v, want nil", armLabels(tc.out), err)
 				}
 				return
 			}
 			if err == nil {
-				t.Fatalf("checkArms(%v) = nil, want an error containing %v", armLabels(tc.out), tc.want)
+				t.Fatalf("checkArms(%v) = nil, want an error", armLabels(tc.out))
 			}
-			for _, w := range tc.want {
-				if !strings.Contains(err.Error(), w) {
-					t.Errorf("checkArms error = %q, want it to contain %q", err, w)
+			msg := err.Error()
+			if tc.plain != "" && !strings.Contains(msg, tc.plain) {
+				t.Errorf("checkArms error = %q, want it to contain %q", msg, tc.plain)
+			}
+			for name, labels := range tc.want {
+				line, ok := section(msg, name)
+				if !ok {
+					t.Errorf("checkArms error = %q, want a %s section", msg, name)
+					continue
+				}
+				if !strings.Contains(line, labels) {
+					t.Errorf("%s section = %q, want it to list %s", name, line, labels)
 				}
 			}
-			for _, n := range tc.notWant {
-				if strings.Contains(err.Error(), n) {
-					t.Errorf("checkArms error = %q, want it NOT to contain %q", err, n)
+			for _, name := range tc.absent {
+				if line, ok := section(msg, name); ok {
+					t.Errorf("checkArms error has an unwanted %s section: %q", name, line)
 				}
 			}
 		})
