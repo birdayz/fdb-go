@@ -223,6 +223,8 @@ an empty capture says "(no fdb-logs-* directories)"
 an exhausted outage backstop is reported as an outage, not a removal
 an inspect with no traces on a failed night is NOT evidence (rc=1)
 an inspect WITH traces on a failed night is evidence (rc=0)
+an invocation count of 0 is rejected
+an invocation count of 2 is rejected
 an occupied exit destination is REFUSED, not nested into
 a refused exit publish is reported as NOT copied
 a removed container ends the copier exactly once

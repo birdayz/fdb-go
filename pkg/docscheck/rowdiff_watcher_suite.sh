@@ -1105,9 +1105,9 @@ alarm_case "an inspect WITH traces on a failed night is evidence" '=== host ==='
 # claimed they were — "deleting the forensics copy reddens exactly one arm, and
 # deleting the WATCHER copy reddens exactly one, the other one". The second half
 # is true; the first never was, at any committed revision. Re-measured on this
-# file at 75 arms, and again at the previous head to establish which:
+# file at 77 arms, and again at the previous head to establish which:
 #
-#   delete the WATCHER copy    -> 75 arms run, 1 red. `armed` is still set when
+#   delete the WATCHER copy    -> 77 arms run, 1 red. `armed` is still set when
 #                                 awk reaches the forensics `ver="`, so the
 #                                 extraction silently borrows the OTHER step's
 #                                 guard and the pinned case fails on it.
@@ -1226,7 +1226,7 @@ testing what its name says — an earlier case changed what it starts from"
   if [ "$got" = "$2" ]; then ok "digest: $1 ($got)"; else bad "digest: $1: got $got, want $2"; fi
 }
 
-# What these sixteen arms catch, measured at 75 arms by mutating the digest and
+# What these sixteen arms catch, measured at 77 arms by mutating the digest and
 # re-running. Every count below is over that population.
 #
 # The NOT-covered shape first, because that is the half a description of the code
@@ -1384,9 +1384,30 @@ rm -f "$DIGWORK/fdb-watch.present"
 # test left all arms green. The count is ONE, not two, because the negative arm
 # runs in a subshell whose increment does not escape — which is the point of the
 # subshell, and is why the expected value is written here rather than inferred.
-[ "$probe_arm_calls" = 1 ] \
-  && ok "the live probe check goes through the guarded decision" \
-  || bad "the live probe check goes through the guarded decision (called $probe_arm_calls times, want 1 — a caller bypassed it)"
+# The count decision, extracted so its own failing states can be driven. Left
+# inline it ran only on the success path: weakening `= 1` to `-le 1` kept all
+# arms green and then ACCEPTED the bypass count of zero — the guard against a
+# bypass, passing the bypass. Three states, all three driven.
+probe_calls_arm() {   # $1 observed count, $2 arm name
+  if [ "$1" = 1 ]; then
+    ok "$2"
+  else
+    bad "$2 (called $1 times, want exactly 1 — a caller bypassed the guarded decision, or called it twice)"
+  fi
+}
+
+probe_calls_arm "$probe_arm_calls" "the live probe check goes through the guarded decision"
+
+# Zero is the bypass; two means someone added a caller and the count no longer
+# says what it says. Both must be rejected, and neither occurs on a green run.
+for n in 0 2; do
+  probe_calls_out=$( ( probe_calls_arm "$n" "count $n" ) 2>&1 )
+  if printf '%s' "$probe_calls_out" | grep -q '^  FAIL'; then
+    ok "an invocation count of $n is rejected"
+  else
+    bad "an invocation count of $n is rejected (got: $probe_calls_out)"
+  fi
+done
 pre_out=$( ( digest_case "impossible" moved 'echo POISON >> fdb-watch.log' '[ 1 = 2 ]' ) 2>&1 )
 pre_after=$(cd "$DIGWORK" && md5sum fdb-watch.log 2>/dev/null)
 if printf '%s' "$pre_out" | grep -q 'precondition .* does not hold'; then
