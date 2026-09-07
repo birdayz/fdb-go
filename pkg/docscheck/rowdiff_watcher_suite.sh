@@ -1105,9 +1105,9 @@ alarm_case "an inspect WITH traces on a failed night is evidence" '=== host ==='
 # claimed they were — "deleting the forensics copy reddens exactly one arm, and
 # deleting the WATCHER copy reddens exactly one, the other one". The second half
 # is true; the first never was, at any committed revision. Re-measured on this
-# file at 63 arms, and again at the previous head to establish which:
+# file at 69 arms, and again at the previous head to establish which:
 #
-#   delete the WATCHER copy    -> 63 arms run, 1 red. `armed` is still set when
+#   delete the WATCHER copy    -> 69 arms run, 1 red. `armed` is still set when
 #                                 awk reaches the forensics `ver="`, so the
 #                                 extraction silently borrows the OTHER step's
 #                                 guard and the pinned case fails on it.
@@ -1167,7 +1167,7 @@ guard_cases "Watch the FDB container while it is alive" '          echo "watchin
 # a scratch run that would have evaporated with the shell it ran in; they are
 # cases now, which is the only form in which they keep holding.
 #
-# All NINE share ONE directory and run in ORDER, deliberately: an append has to
+# All FIFTEEN share ONE directory and run in ORDER, deliberately: an append has to
 # follow the file it appends to, and an equal-length rewrite has to follow the
 # length it is matching. They are therefore order-dependent, and inserting a case
 # between two of them can change what a later one measures. What the shared
@@ -1179,7 +1179,7 @@ DIGWORK=$(mktemp -d); keep "$DIGWORK"
 # the directory inside a case instead and they pass on the new top-level NAME
 # alone, proving nothing about recursion — which is exactly how the recursion
 # arm was missing while five content arms looked like thorough coverage.
-mkdir -p "$DIGWORK/fdb-logs-c1.1-3"
+mkdir -p "$DIGWORK/fdb-logs-c1.1-3/sub"
 
 # The control. An UNSCOPED digest of the same shape, so every case can assert
 # that its mutation LANDED before the scoped digest's answer means anything.
@@ -1192,7 +1192,22 @@ wide_digest() {
   done | md5sum
 }
 
-digest_case() {   # $1 name, $2 want moved|same, $3 mutation, evaluated in $DIGWORK
+# $1 name, $2 want moved|same, $3 mutation, $4 optional PRECONDITION — all
+# evaluated inside $DIGWORK.
+#
+# $4 exists because an equal-length rewrite is only a test while the length it
+# rewrites actually matches. These cases share a directory and run in order, so
+# inserting a plausible case before one of them changes the bytes it starts from,
+# and the arm then quietly measures an ordinary rewrite: 69 arms, all green, the
+# population pin satisfied, and the `du -ab` mutation dropping from two red to
+# one with nothing to say so. Stating the precondition turns that silent
+# degradation into a named failure.
+digest_case() {
+  if [ -n "${4:-}" ] && ! ( cd "$DIGWORK" && eval "$4" ) 2>/dev/null; then
+    bad "digest: $1: precondition [$4] does not hold, so this case is no longer \
+testing what its name says — an earlier case changed what it starts from"
+    return
+  fi
   before=$(cd "$DIGWORK" && suite_artifacts | md5sum)
   wide_before=$(cd "$DIGWORK" && wide_digest)
   ( cd "$DIGWORK" && eval "$3" ) 2>/dev/null
@@ -1206,29 +1221,36 @@ digest_case() {   # $1 name, $2 want moved|same, $3 mutation, evaluated in $DIGW
   if [ "$got" = "$2" ]; then ok "digest: $1 ($got)"; else bad "digest: $1: got $got, want $2"; fi
 }
 
-# What these nine arms catch, measured at 63 arms by mutating the digest and
+# What these fifteen arms catch, measured at 69 arms by mutating the digest and
 # re-running. Every count below is over that population.
-# The NOT-covered shape first, because that is the half a description of the
-# code cannot produce: a filename containing a literal NEWLINE splits at
-# `read -r` and both halves render as `dir`, so a content change to it is
-# invisible. Confirmed fail-open; no fragment can construct such a name, since
-# every one is built from `$$`, a timestamp or a container id.
 #
-#   inner `find {}` -> `-print`   -> 3 red: the three NESTED cases, and only
-#                                    those. This is the recursion arm; without it
-#                                    the five flat cases were all green under a
-#                                    digest that never descended.
+# The NOT-covered shape first, because that is the half a description of the code
+# cannot produce: a filename containing a literal NEWLINE splits at `read -r` and
+# both halves render as `dir`, so a content change to it is invisible. Confirmed
+# fail-open; no fragment can construct such a name, since every one is built from
+# `$$`, a timestamp or a container id.
+#
+#   inner `find {}` -> `-print`   -> 4 red: every case that writes below the top
+#                                    level. The digest stops descending at all.
+#   inner `-maxdepth 1`           -> 1 red: the depth-2 case, only. Distinct from
+#                                    the row above — this one descends ONE level,
+#                                    which is what the capture `docker cp
+#                                    "$c:/var/fdb/logs/." …` actually produces.
 #   prior `xargs -r du -ab` form  -> 2 red: both EQUAL-LENGTH rewrites, the flat
 #                                    one and the nested one.
 #   `md5sum` with no `dir` line   -> 1 red: the empty generation directory.
-#   a constant digest             -> 8 red: every `moved` case.
+#   a constant digest             -> 14 red: every `moved` case.
+#   drop any ONE of the five name -> 1 red: that pattern's own case. Measured for
+#   patterns not otherwise driven    `fdb-forensics.txt`, `fdb-df-*`,
+#                                    `fdb-container-*`, `fdb-last-inspect-*` and
+#                                    `.fdb-logs-*`, one at a time.
 #
-# The first line is the correction this round is about, and it is narrower than
-# it looks: `du -ab` DID see the new log, the append, the pid file and the empty
-# directory — it reports apparent size AND path, so an added path or a changed
-# length moves it. It was blind to exactly one shape, a rewrite of equal length.
-# The `dir` line is not recovering something `du` lacked either; it stops
-# `md5sum` alone from losing a directory with no files in it.
+# The first row is narrower than it looks: `du -ab` DID see the new log, the
+# append, the pid file and the empty directory — it reports apparent size AND
+# path, so an added path or a changed length moves it. It was blind to exactly
+# one shape, a rewrite of equal length. The `dir` line is not recovering
+# something `du` lacked either; it stops `md5sum` alone from losing a directory
+# with no files in it.
 # A new artifact, and an APPEND to it. The append is what the names-only digest
 # could not see, and the reason the digest went recursive at all.
 digest_case "a new watcher log registers"             moved 'echo one > fdb-watch.log'
@@ -1240,7 +1262,8 @@ digest_case "an append to an existing log moves it"   moved 'echo two >> fdb-wat
 # It was the only one when it was written, which is why this sentence said "the
 # one" until a nested case was added underneath it.
 digest_case "a pid file registers"                    moved 'echo 12345 > fdb-watch.pid'
-digest_case "a same-size pid rewrite moves it"        moved 'echo 67890 > fdb-watch.pid'
+digest_case "a same-size pid rewrite moves it"        moved 'echo 67890 > fdb-watch.pid' \
+  '[ "$(wc -c < fdb-watch.pid)" = 6 ]'
 # An EMPTY generation directory. Hashing files alone renders it identical to a
 # directory that is not there — the empty-set reading, inside the digest itself.
 digest_case "an empty generation directory registers" moved 'mkdir -p fdb-logs-c1.1-7'
@@ -1256,7 +1279,26 @@ digest_case "an append inside a generation directory moves it" moved \
   'echo bb >> fdb-logs-c1.1-3/trace.xml'
 # Both blind spots at once: nested AND equal length (6 bytes for 6).
 digest_case "an equal-length rewrite inside a generation directory moves it" moved \
-  'printf "xx\nyy\n" > fdb-logs-c1.1-3/trace.xml'
+  'printf "xx\nyy\n" > fdb-logs-c1.1-3/trace.xml' \
+  '[ "$(wc -c < fdb-logs-c1.1-3/trace.xml)" = 6 ]'
+# DEPTH. Every nested case above writes at depth 1, so `-maxdepth 1` on the inner
+# `find` left all of them green while the digest stopped descending. The watcher's
+# own capture is `docker cp "$c:/var/fdb/logs/." …`, which lands a TREE — the
+# thing being hashed is deeper than the thing that was being tested.
+digest_case "a file two levels down registers" moved \
+  'echo d2 > fdb-logs-c1.1-3/sub/trace.002.xml'
+# NAME CLASSES. The digest names seven patterns and only two of them were driven,
+# so five could have been deleted with every arm still green — a scope the arms
+# asserted and did not cover. Each case below is the ONLY file matching its
+# pattern, which is what makes dropping that pattern redden exactly one arm.
+digest_case "a hidden staging directory registers" moved \
+  'mkdir -p .fdb-logs-c1.9 && echo s > .fdb-logs-c1.9/trace.xml'
+digest_case "a disk-free capture registers"    moved 'echo df > fdb-df-c1.txt'
+digest_case "a container listing registers"    moved 'echo ct > fdb-container-c1.txt'
+digest_case "a last-inspect capture registers" moved 'echo li > fdb-last-inspect-c1.txt'
+# Written by a RELATIVE path in the dump fragment this suite extracts, which is
+# the class the working-directory arm at the end of the file exists for.
+digest_case "the forensics report registers"   moved 'echo fx > fdb-forensics.txt'
 # And the REACH. The gitignored Java reference checkout is not this suite's
 # artifact; a concurrent build in it must not redden a watcher arm.
 digest_case "a change in the Java reference tree does not" same \

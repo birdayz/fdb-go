@@ -172,11 +172,16 @@ func TestRowdiffWatcherBehaviour(t *testing.T) {
 // applies to every measurement recorded as prose — write the population into the
 // claim, so it cannot go stale without something failing.
 //
+// The cost is real and is the point: every addition reddens this once, until the
+// author bumps the pin. That is a prompt to re-read the arm counts quoted in
+// three places in the suite, which have gone stale three times — twice inside the
+// very commit that added arms to fix the previous staleness.
+//
 // So both directions are alarms, and they mean different things. FEWER: arms
 // disappeared rather than failed, which reports as green. MORE: arms were added
 // without updating the pin, and three comments in the suite quote arm counts as
 // measurements that are now stale. Neither is a reason to relax this to a floor.
-const wantArms = 63
+const wantArms = 69
 
 // armCount counts the arms a run reported. Split out from the process globals so
 // every branch of the decision below can be driven from a unit test rather than
@@ -190,7 +195,9 @@ func checkArms(out string, want int) error {
 			"the suite did not run, which is not the same as passing", want)
 	case got < want:
 		return fmt.Errorf("rowdiff_watcher_suite.sh reported %d passing arms, want exactly %d — "+
-			"arms disappeared rather than failed, which reports as green", got, want)
+			"arms disappeared rather than failed, which reports as green. If arms were "+
+			"RETIRED deliberately, lower wantArms in the same commit and say why; do not "+
+			"delete this check, or the silence it watches for comes back unwatched", got, want)
 	case got > want:
 		return fmt.Errorf("rowdiff_watcher_suite.sh reported %d passing arms, want exactly %d — "+
 			"arms were added without updating wantArms; bump it and re-check every comment "+
