@@ -1105,9 +1105,9 @@ alarm_case "an inspect WITH traces on a failed night is evidence" '=== host ==='
 # claimed they were — "deleting the forensics copy reddens exactly one arm, and
 # deleting the WATCHER copy reddens exactly one, the other one". The second half
 # is true; the first never was, at any committed revision. Re-measured on this
-# file at 72 arms, and again at the previous head to establish which:
+# file at 73 arms, and again at the previous head to establish which:
 #
-#   delete the WATCHER copy    -> 72 arms run, 1 red. `armed` is still set when
+#   delete the WATCHER copy    -> 73 arms run, 1 red. `armed` is still set when
 #                                 awk reaches the forensics `ver="`, so the
 #                                 extraction silently borrows the OTHER step's
 #                                 guard and the pinned case fails on it.
@@ -1226,7 +1226,7 @@ testing what its name says — an earlier case changed what it starts from"
   if [ "$got" = "$2" ]; then ok "digest: $1 ($got)"; else bad "digest: $1: got $got, want $2"; fi
 }
 
-# What these sixteen arms catch, measured at 72 arms by mutating the digest and
+# What these sixteen arms catch, measured at 73 arms by mutating the digest and
 # re-running. Every count below is over that population.
 #
 # The NOT-covered shape first, because that is the half a description of the code
@@ -1330,6 +1330,16 @@ digest_case "the forensics report registers"   moved 'echo fx > fdb-forensics.tx
 # equal-length setup, which is exactly when a broken guard turns that back into
 # silence. Run in a SUBSHELL so its `bad` cannot fail the suite, and assert both
 # halves: the case is named in the failure, and the mutation did NOT run.
+# The probe's own dependency, asserted rather than assumed. Both readings below
+# are `md5sum fdb-watch.log`, and with that file absent both are the empty string
+# and the second arm passes on comparing nothing to nothing — the same unasserted
+# dependency closed for the digest cases twenty lines up, still open in the arms
+# that check the closing mechanism. It takes two coordinated changes to fail open
+# today, since the poison is `>>` and creates the file, so this is a latent
+# vacuity being closed rather than a live hole.
+[ -f "$DIGWORK/fdb-watch.log" ] \
+  && ok "the precondition probe has a file to watch" \
+  || bad "the precondition probe has a file to watch (fdb-watch.log absent, so both readings would be empty)"
 pre_before=$(cd "$DIGWORK" && md5sum fdb-watch.log 2>/dev/null)
 pre_out=$( ( digest_case "impossible" moved 'echo POISON >> fdb-watch.log' '[ 1 = 2 ]' ) 2>&1 )
 pre_after=$(cd "$DIGWORK" && md5sum fdb-watch.log 2>/dev/null)

@@ -197,7 +197,12 @@ func TestRowdiffWatcherBehaviour(t *testing.T) {
 // suite did not run, which is not the same as passing. MISSING: arms disappeared
 // rather than failed, which reports as green. UNEXPECTED: arms ran that are not
 // pinned. DUPLICATED: one label ran twice, so an arm's result is standing in for
-// another's — the state a count cannot see at all, since the totals still agree.
+// another's. A count sees this only sometimes: a duplicate ALONGSIDE the full
+// population is 4 lines against 3 distinct entries and any arithmetic catches it,
+// while a duplicate REPLACING a missing arm is 3 against 3 and none can. That
+// second shape is the one a count is blind to, and the sentence here said "a
+// count cannot see at all" — reinstating, one line below correcting it, the
+// overclaim this whole section is about.
 // This enumeration was "three states, three messages" for a round after the
 // fourth was added, which is the same class of defect as everything it guards:
 // a description of the code that the code has outgrown.
@@ -266,6 +271,7 @@ the exit transition is logged exactly once
 the injected outage was observed by the copier
 the last inspect survives removal
 the PERIODIC copier leaves no staging directory
+the precondition probe has a file to watch
 the recovery is logged exactly once
 the suite leaves its working directory unchanged
 the surviving generation still holds its traces
@@ -391,23 +397,36 @@ func TestRowdiffWatcherArmCensus(t *testing.T) {
 		// plain is asserted against the whole message, for the states that have
 		// no sections.
 		plain string
+		// header pins the two counts the message opens with. They are the evidence
+		// for every claim made about this gate — "73 against 72" is the whole
+		// argument for one of them — and nothing asserted them: swapping the two
+		// arguments, or deleting the header outright, left all ten cases green.
+		//
+		// Deleting the header now reddens all five erroring cases. SWAPPING the two
+		// counts reddens three, not five, and the two it cannot reach are the ones
+		// where the counts are EQUAL — 3 ran against 3 pinned, where a swap is the
+		// identity. That is a property of the fixtures, not a hole to be closed by
+		// assertion, and it is written down so the three is not read as a shortfall.
+		header string
 	}{
 		// The empty-set reading, and the reason this gate exists: a suite that
 		// produced nothing must not be indistinguishable from one that passed.
 		{name: "no output at all", out: "", plain: "reported NO passing arms", absent: []string{"MISSING", "UNEXPECTED", "DUPLICATED"}},
 		{name: "output but no arms", out: "\nALL OK\n", plain: "reported NO passing arms"},
-		{name: "an arm disappeared", out: out("a", "b"), want: map[string]string{"MISSING": "[c]"}, absent: []string{"UNEXPECTED", "DUPLICATED"}},
-		{name: "an arm was added", out: out("a", "b", "c", "d"), want: map[string]string{"UNEXPECTED": "[d]"}, absent: []string{"MISSING", "DUPLICATED"}},
+		{name: "an arm disappeared", out: out("a", "b"), want: map[string]string{"MISSING": "[c]"}, absent: []string{"UNEXPECTED", "DUPLICATED"}, header: "2 arms ran, 3 pinned"},
+		{name: "an arm was added", out: out("a", "b", "c", "d"), want: map[string]string{"UNEXPECTED": "[d]"}, absent: []string{"MISSING", "DUPLICATED"}, header: "4 arms ran, 3 pinned"},
 		// The case a COUNT cannot see, and the case a whole-message match cannot
 		// see either: one arm skipped, another added, both sections populated, so
 		// only a per-section assertion rejects the inverted report.
 		{
 			name: "a same-count substitution", out: out("a", "b", "d"),
 			want: map[string]string{"MISSING": "[c]", "UNEXPECTED": "[d]"}, absent: []string{"DUPLICATED"},
+			header: "3 arms ran, 3 pinned",
 		},
 		{
 			name: "a duplicate masking a deletion", out: out("a", "b", "b"),
 			want: map[string]string{"MISSING": "[c]", "DUPLICATED": "[b]"}, absent: []string{"UNEXPECTED"},
+			header: "3 arms ran, 3 pinned",
 		},
 		// A duplicate with NOTHING missing: the population is complete and one
 		// label still ran twice, so a copy-pasted case reusing a name is caught on
@@ -415,6 +434,7 @@ func TestRowdiffWatcherArmCensus(t *testing.T) {
 		{
 			name: "a duplicate alongside the full population", out: out("a", "a", "b", "c"),
 			want: map[string]string{"DUPLICATED": "[a]"}, absent: []string{"MISSING", "UNEXPECTED"},
+			header: "4 arms ran, 3 pinned",
 		},
 		{name: "exactly the pinned population", out: out("a", "b", "c")},
 		{name: "order does not matter", out: out("c", "a", "b")},
@@ -436,6 +456,9 @@ func TestRowdiffWatcherArmCensus(t *testing.T) {
 				t.Fatalf("checkArms(%v) = nil, want an error", armLabels(tc.out))
 			}
 			msg := err.Error()
+			if tc.header != "" && !strings.Contains(msg, tc.header) {
+				t.Errorf("checkArms error = %q, want the header %q", msg, tc.header)
+			}
 			if tc.plain != "" && !strings.Contains(msg, tc.plain) {
 				t.Errorf("checkArms error = %q, want it to contain %q", msg, tc.plain)
 			}
