@@ -870,10 +870,8 @@ func spfreshScanRecordRange(
 			if inTx != nil {
 				isolation = IsolationLevelSerializable
 			}
-			props := ScanProperties{ExecuteProperties: ExecuteProperties{
-				IsolationLevel:   isolation,
-				ReturnedRowLimit: scanBatch,
-			}}
+			props := NewScanProperties(DefaultExecutePropertiesIn(rtx.Env()).
+				WithIsolationLevel(isolation).WithReturnedRowLimit(scanBatch))
 			// Hold the shard's high bound across every batch; advance only the
 			// low end via the continuation (the per-shard fence is the read
 			// conflict range over [low, high), which must not grow on resume).

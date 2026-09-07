@@ -10,6 +10,9 @@ import (
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/query/executor"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -69,6 +72,82 @@ var _ = Describe("Continuation Token Conformance", func() {
 		}
 		return params
 	}
+
+	It("pins first-or-default request properties against the live Java core API", func() {
+		// This is a direct core-plan probe, not a SQL reach claim. Java has no
+		// separate projection plan; both Go mapping forms correspond to MapPlan.
+		for _, kind := range []string{"direct", "map", "projection"} {
+			for count := 0; count <= 2; count++ {
+				for skip := 0; skip <= 2; skip++ {
+					params := buildJavaParams()
+					params["count"], params["skip"], params["mapped"] = count, skip, kind != "direct"
+					raw, err := java.Invoke(ctx, "firstOrDefaultRequest", params)
+					Expect(err).NotTo(HaveOccurred())
+					var result struct {
+						Value           int64 `json:"value"`
+						RowResumable    bool  `json:"rowResumable"`
+						SourceExhausted bool  `json:"sourceExhausted"`
+						ResumeExhausted bool  `json:"resumeExhausted"`
+					}
+					Expect(json.Unmarshal(raw, &result)).To(Succeed())
+					want := int64(99)
+					if skip < count {
+						want = int64(11 * (skip + 1))
+					}
+					if kind != "direct" {
+						want = 42
+					}
+					Expect(result.Value).To(Equal(want))
+					Expect(result.RowResumable).To(BeTrue())
+					Expect(result.SourceExhausted).To(BeTrue())
+					Expect(result.ResumeExhausted).To(BeTrue())
+					input := []any{}
+					for i := 0; i < count; i++ {
+						input = append(input, int64(11*(i+1)))
+					}
+					inner, err := plans.NewRecordQueryExplodePlan(&values.ConstantValue{
+						Value: input, Typ: values.NewArrayType(false, values.NotNullLong),
+					})
+					Expect(err).NotTo(HaveOccurred())
+					first, err := plans.NewRecordQueryFirstOrDefaultPlan(inner, &values.ConstantValue{Value: int64(99), Typ: values.NotNullLong})
+					Expect(err).NotTo(HaveOccurred())
+					var plan plans.RecordQueryPlan = first
+					constant := &values.ConstantValue{Value: int64(42), Typ: values.NotNullLong}
+					if kind == "map" {
+						plan, err = plans.NewRecordQueryMapPlan(plan, constant)
+					} else if kind == "projection" {
+						plan, err = plans.NewRecordQueryProjectionPlan([]values.Value{constant}, plan)
+					}
+					Expect(err).NotTo(HaveOccurred())
+					props := recordlayer.DefaultExecuteProperties().WithSkip(skip).WithReturnedRowLimit(1)
+					cursor, err := executor.ExecutePlan(ctx, plan, nil, executor.EmptyEvaluationContext(), nil, props)
+					Expect(err).NotTo(HaveOccurred())
+					row, err := cursor.OnNext(ctx)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(row.HasNext()).To(BeTrue())
+					got, ok := row.GetValue().Positional.Get(0)
+					Expect(ok).To(BeTrue())
+					Expect(got).To(Equal(want))
+					token, err := row.GetContinuation().ToBytes()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(token).NotTo(BeEmpty())
+					end, err := cursor.OnNext(ctx)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(end.HasNext()).To(BeFalse())
+					Expect(end.GetNoNextReason()).To(Equal(recordlayer.SourceExhausted))
+					Expect(cursor.Close()).To(Succeed())
+					resumed, err := executor.ExecutePlan(ctx, plan, nil, executor.EmptyEvaluationContext(), token, props)
+					Expect(err).NotTo(HaveOccurred())
+					end, err = resumed.OnNext(ctx)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(end.HasNext()).To(BeFalse())
+					Expect(end.GetNoNextReason()).To(Equal(recordlayer.SourceExhausted))
+					Expect(resumed.Close()).To(Succeed())
+					GinkgoWriter.Printf("FOD_REQUEST kind=%s count=%d skip=%d java=%d go=%v\n", kind, count, skip, result.Value, got)
+				}
+			}
+		}
+	})
 
 	// javaScanResult represents the response from scanOrdersWithContinuation
 	type javaScanResult struct {

@@ -1,7 +1,10 @@
 package executor
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer"
@@ -9,6 +12,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
+	"fdb.dev/pkg/relational/api"
 )
 
 // TestSingleResultCursor_EmitsResumableContinuation pins the C6
@@ -261,5 +265,136 @@ func TestFirstOrDefaultAsFlatMapOuterPreservesWholeObjectPresence(t *testing.T) 
 				t.Fatalf("FlatMap EXISTS row = %#v, want [%t]", row, test.wantExists)
 			}
 		})
+	}
+}
+
+func TestFirstOrDefault_StrictRequestBoundary(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"direct", "map", "projection"} {
+		for _, shape := range []string{"empty", "one", "two", "two_semantic_limit"} {
+			for _, skip := range []int{0, 1} {
+				for _, cap := range []int{0, 1} {
+					t.Run(fmt.Sprintf("%s/%s/skip=%d/cap=%d", kind, shape, skip, cap), func(t *testing.T) {
+						t.Parallel()
+						ctx := context.Background()
+						input := []any{}
+						if shape != "empty" {
+							input = append(input, int64(11))
+						}
+						if shape == "two" || shape == "two_semantic_limit" {
+							input = append(input, int64(22))
+						}
+						var inner plans.RecordQueryPlan = mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{
+							Value: input, Typ: values.NewArrayType(false, values.NotNullLong),
+						}))
+						if shape == "two_semantic_limit" {
+							inner = mustExecutorConstruct(plans.NewRecordQueryLimitPlan(inner, 1, 0))
+						}
+						var plan plans.RecordQueryPlan = mustExecutorConstruct(plans.NewRecordQueryFirstOrDefaultPlanStrict(inner,
+							&values.ConstantValue{Value: int64(99), Typ: values.NotNullLong}))
+						constant := &values.ConstantValue{Value: int64(42), Typ: values.NotNullLong}
+						if kind == "map" {
+							plan = mustExecutorConstruct(plans.NewRecordQueryMapPlan(plan, constant))
+						} else if kind == "projection" {
+							plan = mustExecutorConstruct(plans.NewRecordQueryProjectionPlan([]values.Value{constant}, plan))
+						}
+						props := recordlayer.DefaultExecuteProperties().WithSkip(skip).WithReturnedRowLimit(cap)
+						cursor, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), nil, props)
+						if cursor != nil {
+							defer cursor.Close()
+						}
+						if shape == "two" {
+							var cardinality *api.Error
+							if !errors.As(err, &cardinality) || cardinality.Code != api.ErrCodeCardinalityViolation {
+								t.Fatalf("request must not hide second scalar row: error = %v, want 21000", err)
+							}
+							return
+						}
+						if err != nil {
+							t.Fatal(err)
+						}
+						row, err := cursor.OnNext(ctx)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if skip > 0 {
+							if row.HasNext() || row.GetNoNextReason() != recordlayer.SourceExhausted || !row.GetContinuation().IsEnd() {
+								t.Fatalf("strict singleton must be skipped, including default: %v", row)
+							}
+							if token := continuationBytesForTest(t, row.GetContinuation()); len(token) != 0 {
+								t.Fatalf("skipped singleton is END, not a resumable page: %x", token)
+							}
+							again, err := cursor.OnNext(ctx)
+							if err != nil || again.HasNext() || !again.GetContinuation().IsEnd() {
+								t.Fatalf("skipped singleton must remain exhausted: %v, %v", again, err)
+							}
+							return
+						}
+						want := int64(11)
+						if shape == "empty" {
+							want = 99
+						}
+						if kind != "direct" {
+							want = 42
+						}
+						if !row.HasNext() {
+							t.Fatalf("missing scalar row: %v", row)
+						}
+						if got, _ := row.GetValue().Positional.Get(0); got != want {
+							t.Fatalf("scalar = %v, want %d", got, want)
+						}
+						token := continuationBytesForTest(t, row.GetContinuation())
+						if len(token) == 0 || row.GetContinuation().IsEnd() {
+							t.Fatal("scalar row must carry a consumed continuation")
+						}
+						end, err := cursor.OnNext(ctx)
+						wantReason := recordlayer.SourceExhausted
+						if cap == 1 {
+							wantReason = recordlayer.ReturnLimitReached
+						}
+						if err != nil || end.HasNext() || end.GetNoNextReason() != wantReason {
+							t.Fatalf("strict stop = %v, %v; want %v", end, err, wantReason)
+						}
+						if cap == 1 && (end.GetContinuation().IsEnd() || !bytes.Equal(token, continuationBytesForTest(t, end.GetContinuation()))) {
+							t.Fatal("capped strict stop lost consumed row token")
+						}
+						resumed, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), token, props)
+						if err != nil {
+							t.Fatal(err)
+						}
+						defer resumed.Close()
+						end, err = resumed.OnNext(ctx)
+						if err != nil || end.HasNext() || end.GetNoNextReason() != recordlayer.SourceExhausted {
+							t.Fatalf("consumed strict resume must exhaust: %v, %v", end, err)
+						}
+					})
+				}
+			}
+		}
+	}
+}
+
+func TestFirstOrDefault_EmptyRecordRequestMatchesJava(t *testing.T) {
+	t.Parallel()
+	inner := mustExecutorConstruct(plans.NewRecordQueryValuesPlan(nil))
+	first := mustExecutorConstruct(plans.NewRecordQueryFirstOrDefaultPlan(inner, nil))
+	plan := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan([]values.Value{
+		&values.ConstantValue{Value: int64(42), Typ: values.NotNullLong},
+	}, first))
+	// Java forwards skip to the child BEFORE first/default. The skipped child
+	// is empty, so the default still flows through the transparent projection.
+	ctx := context.Background()
+	cursor, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), nil,
+		recordlayer.DefaultExecuteProperties().WithSkip(1).WithReturnedRowLimit(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cursor.Close()
+	row, err := cursor.OnNext(ctx)
+	if err != nil || !row.HasNext() {
+		t.Fatalf("Java first/default must still emit: %v, %v", row, err)
+	}
+	if got, _ := row.GetValue().Positional.Get(0); got != int64(42) {
+		t.Fatalf("projected default = %v, want 42", got)
 	}
 }

@@ -32,7 +32,8 @@ type scanRangeSetSpec struct {
 
 // scanRangeLeafFactory opens one physical leaf at its optional inner
 // continuation. The properties have the logical scan's shared ScanState but
-// have Skip and ReturnedRowLimit cleared. The caller must apply skip and the
+// clear a positive Skip and preserve a skip-adjusted child read budget. The
+// caller must apply skip and the
 // returned-row limit once, outside this cursor and after covering/fetch/row
 // shaping.
 type scanRangeLeafFactory[T any] func(
@@ -57,9 +58,9 @@ func (*scanRangeSetCursorClosedError) Error() string { return "cursor is closed"
 // set of disjoint physical ranges. It validates all static state and any
 // continuation before a leaf can be materialized or opened.
 //
-// Skip and ReturnedRowLimit are intentionally not applied here. See
-// scanRangeLeafFactory: those logical result limits belong outside the
-// range-set cursor so they cannot reset per physical branch.
+// The semantic skip and returned-row limit belong outside the range-set cursor
+// so they cannot reset per physical branch. Each leaf may receive a conservative
+// skip-adjusted read budget; reaching it resumes the same physical range.
 func newScanRangeSetCursor[T any](
 	spec scanRangeSetSpec,
 	continuation []byte,
@@ -103,7 +104,7 @@ func newScanRangeSetCursor[T any](
 		executeProperties.ScanState = recordlayer.NewScanLimiterState()
 	}
 	properties.ExecuteProperties = executeProperties
-	childProperties := properties.WithExecuteProperties(executeProperties.ClearSkipAndLimit())
+	childProperties := properties.WithExecuteProperties(executeProperties.ClearSkipAndAdjustLimit())
 
 	fingerprint := bytes.Clone(spec.fingerprint)
 	compatibleFingerprints := cloneFingerprintSet(spec.compatibleFingerprints)
@@ -231,8 +232,8 @@ type scanRangeSetCursor[T any] struct {
 	open              scanRangeLeafFactory[T]
 
 	// logicalProperties retains the limits used by the whole-range branch
-	// gate. childProperties shares its ScanState but has only skip/row-limit
-	// cleared; every other scan property is preserved.
+	// gate. childProperties shares its ScanState and preserves all other
+	// properties except a positive skip, folded into the child read budget.
 	logicalProperties recordlayer.ScanProperties
 	childProperties   recordlayer.ScanProperties
 

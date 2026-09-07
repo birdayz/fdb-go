@@ -669,11 +669,7 @@ func evaluateBitmapValueAggregate(
 	scanRange TupleRange,
 	isolationLevel IsolationLevel,
 ) (tuple.Tuple, error) {
-	props := ScanProperties{
-		ExecuteProperties: ExecuteProperties{
-			IsolationLevel: isolationLevel,
-		},
-	}
+	props := NewScanProperties(DefaultExecuteProperties().WithIsolationLevel(isolationLevel))
 
 	cursor := m.ScanByGroup(scanRange, nil, props)
 	defer func() { _ = cursor.Close() }()

@@ -32,6 +32,21 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+// Each output consumes at most one row per child. Deduplication merges equal
+// heads across children, not repetitions within one child; a skip+limit child
+// budget relies on that distinction, as in Java's UnionCursor.chooseStates.
+func TestMergeSortCursor_WithinChildDuplicates(t *testing.T) {
+	t.Parallel()
+	left := recordlayer.FromList([]QueryResult{qr("id", int64(1)), qr("id", int64(1)), qr("id", int64(2))})
+	right := recordlayer.FromList([]QueryResult{qr("id", int64(1)), qr("id", int64(2))})
+	cursor := newMergeSortCursor([]recordlayer.RecordCursor[QueryResult]{left, right}, idKey(t), false, true)
+	defer cursor.Close()
+	ids, terminal := drainMergeIDs(t, cursor)
+	if fmt.Sprint(ids) != "[1 1 2]" || !terminal.GetNoNextReason().IsSourceExhausted() {
+		t.Fatalf("merged %v, stop %v; within-child dedup would invalidate the per-child row budget", ids, terminal.GetNoNextReason())
+	}
+}
+
 // idKey is the single comparison key (ordinal 0, "id") the merge pins use.
 func idKey(t testing.TB) []values.Value {
 	t.Helper()

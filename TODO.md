@@ -9695,3 +9695,34 @@ covered by the correctness suite and the golden plan diff, not by this table.
   What would close it: any status that claims a gate ACKed must have fetched that gate's BODY for
   the head in question, and a count of its verdicts must come from counting them. Mechanically:
   `gh pr view <n> --json comments` and read `.body`, never the rendered preview.
+
+### RFC-243 — LIMIT and cursor-property bug hunt
+
+- [x] Preserve unbounded UNION windows and reject unrepresentable offset merges.
+  `limit_offset_bounds.yaml` pins SQL wrong rows; the logical API UNION regression
+  pins the OFFSET-only shape SQL cannot express. Original fix: `2afdb29a3`.
+- [x] Preserve finite read budgets and requested streaming modes through unions,
+  disjoint ranges, scan constructors and transparent map/projection operators.
+  Pin bounded child stops/resume, malformed LIMIT offsets, VALUES delegation,
+  and request skip outside semantic LIMIT. The real-FDB read-conflict probe has
+  56 cases (14 plan shapes × 4 mode/budget settings); filter/distinct clearing
+  has direct single-execution assertions and discriminating mutations, not only
+  SQL pagination tests that can mask empty intermediate pages.
+- [x] Fix aggregate default-mode boundaries and stale permuted MIN/MAX replacement
+  under concurrent delete/insert. Both corruption mirrors now conflict with 1020
+  and retry to the correct extremum. Real-FDB observers pin actual streaming
+  modes, isolation, direction and effective-mode overrides during NULL repair.
+- [x] Make strict scalar-subquery cardinality independent of request skip/cap.
+  A cap of one must not hide row two (21000); even a child cap of two is unsafe
+  across mixed record types. The 48-case request matrix and 12 real-FDB cases
+  cover cardinality, default/valued outputs, semantic child LIMIT, continuation
+  consumption, and before/after-first-row OOB checkpoint/restart. Non-strict
+  FirstOrDefault retains Java's different contract, pinned by 27 live-JVM/core
+  comparisons and the exact mapped-empty-record reproducer. SQL's bounded
+  FlatMap caller was already protected and is pinned separately.
+- [ ] Finish and record final-source matched 1M stress measurements (two runs per
+  side, sequential, same filesystem) for this active workstream. The earlier
+  after measurements predate the follow-up and are not final-source evidence.
+
+Design, rejected alternatives and verification scope:
+`rfcs/243-limit-arithmetic-preserves-unboundedness.md`.

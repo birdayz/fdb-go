@@ -319,12 +319,10 @@ func (m *permutedMinMaxIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
 // Matches Java's PermutedMinMaxIndexMaintainer.getExtremum().
 func (m *permutedMinMaxIndexMaintainer) getExtremum(groupKey tuple.Tuple) (tuple.Tuple, error) {
 	scanRange := TupleRangeAllOf(groupKey)
-	props := ScanProperties{
-		ExecuteProperties: ExecuteProperties{
-			ReturnedRowLimit: 1,
-		},
-		Reverse: m.isMax,
-	}
+	// This read must be serializable: a concurrent insert can change the
+	// replacement extremum without writing the old secondary entry that the
+	// deleting transaction checked. Snapshot isolation would publish stale data.
+	props := NewScanProperties(DefaultExecuteProperties().WithReturnedRowLimit(1)).WithReverse(m.isMax)
 
 	cursor := m.standardIndexMaintainer.Scan(scanRange, nil, props)
 	defer func() { _ = cursor.Close() }()
@@ -390,11 +388,7 @@ func evaluatePermutedMinMaxAggregate(
 	valueStart := groupPrefixSize - m.permutedSize
 	valueEnd := totalSize - m.permutedSize
 
-	props := ScanProperties{
-		ExecuteProperties: ExecuteProperties{
-			IsolationLevel: isolationLevel,
-		},
-	}
+	props := NewScanProperties(DefaultExecuteProperties().WithIsolationLevel(isolationLevel))
 
 	// Trim range to unpermuted prefix (permuted columns can't be range-filtered directly).
 	unpermutedRange := trimToUnpermutedPrefix(scanRange, groupPrefixSize-m.permutedSize)

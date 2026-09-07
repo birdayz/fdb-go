@@ -112,11 +112,7 @@ func executeAggregateIndexScan(
 		return nil, fmt.Errorf("executor: building scan ranges for %q: %w", idxPlan.GetIndexName(), err)
 	}
 
-	scanProps := recordlayer.ScanProperties{
-		ExecuteProperties:   props,
-		Reverse:             idxPlan.IsReverse(),
-		CursorStreamingMode: recordlayer.StreamingModeIterator,
-	}
+	scanProps := recordlayer.NewScanProperties(props).WithReverse(idxPlan.IsReverse())
 
 	canonicalName := p.CanonicalAggColumnName()
 	// The aggregate-index row's authoritative ordinal
@@ -302,6 +298,10 @@ func newPermutedAggregateIndexCursor(
 	}
 	totalSize := gke.ColumnSize()
 	inner := store.ScanIndexByType(idx, recordlayer.IndexScanByGroup, scanRange, continuation, scanProps)
+	// The repair constructs a new scan from these execution properties. Retain
+	// the effective mode even when WithStreamingMode overrode the default.
+	repairProps := scanProps.ExecuteProperties
+	repairProps.DefaultCursorStreamingMode = scanProps.CursorStreamingMode
 	return &permutedAggregateIndexCursor{
 		inner:      inner,
 		groupCount: groupCount,
@@ -318,7 +318,7 @@ func newPermutedAggregateIndexCursor(
 		repairNullMin:     recordlayer.IsPermutedMinIndex(idx),
 		ordinaryValueFrom: gke.GetGroupingCount(),
 		ordinaryValueTo:   totalSize,
-		scanProps:         scanProps.ExecuteProperties,
+		scanProps:         repairProps,
 	}, nil
 }
 
@@ -951,7 +951,7 @@ func executeUnorderedUnion(
 		return recordlayer.Empty[QueryResult](), nil
 	}
 	if len(inners) == 1 {
-		c, err := ExecutePlan(ctx, inners[0], store, evalCtx, continuation, props.ClearSkipAndLimit())
+		c, err := ExecutePlan(ctx, inners[0], store, evalCtx, continuation, props.ClearSkipAndAdjustLimit())
 		if err != nil {
 			return nil, err
 		}
@@ -973,7 +973,7 @@ func executeUnorderedUnion(
 	// carry the names every other leg's rows carry and nothing here re-types
 	// them (RFC-242). Java's UnorderedUnionCursor likewise concatenates the
 	// children's results unchanged.
-	childProps := props.ClearSkipAndLimit()
+	childProps := props.ClearSkipAndAdjustLimit()
 	u := &unorderedUnionCursor{
 		children:  make([]recordlayer.RecordCursor[QueryResult], len(inners)),
 		states:    make([]recordlayer.RecordCursorContinuation, len(inners)),
@@ -1257,7 +1257,10 @@ func executeMap(
 	continuation []byte,
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
-	inner, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props.ClearSkipAndLimit())
+	// As in Java's RecordQueryMapPlan, the child owns the original request
+	// and continuation. Mapping only returned rows also avoids evaluating
+	// expressions on rows the child discarded for request skip.
+	inner, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props)
 	if err != nil {
 		return nil, err
 	}
@@ -1334,7 +1337,7 @@ func executeMap(
 		}
 		return QueryResult{Positional: pos, Record: qr.Record, PrimaryKey: qr.PrimaryKey}
 	})
-	return &errCheckCursor{inner: applySkipLimit(mapped, props.Skip, props.ReturnedRowLimit), err: &evalErr}, nil
+	return &errCheckCursor{inner: mapped, err: &evalErr}, nil
 }
 
 func executeFirstOrDefault(
@@ -1356,7 +1359,17 @@ func executeFirstOrDefault(
 	if resume == fodResumeConsumed {
 		return recordlayer.Empty[QueryResult](), nil
 	}
-	inner, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, innerCont, props)
+	// Java's non-strict FirstOrDefault applies the request BEFORE first/default,
+	// unlike DefaultOnEmpty. The Go-only strict scalar barrier must instead
+	// validate the complete input: request skip or cap must not hide row two.
+	// Even a child cap of two is unsafe: a raw scan can spend that budget on
+	// another record type and one matching row, then stop in-band before the
+	// second match. Keep scan/time limits (which stop out-of-band), not row caps.
+	innerProps := props
+	if p.IsStrict() {
+		innerProps = props.ClearSkipAndLimit()
+	}
+	inner, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, innerCont, innerProps)
 	if err != nil {
 		return nil, err
 	}
@@ -1398,6 +1411,9 @@ func executeFirstOrDefault(
 			}
 		}
 		_ = inner.Close()
+		if p.IsStrict() {
+			return applySkipLimit(newSingleResultCursor(first), props.Skip, props.ReturnedRowLimit), nil
+		}
 		return newSingleResultCursor(first), nil
 	}
 	_ = inner.Close()
@@ -1416,6 +1432,9 @@ func executeFirstOrDefault(
 	qr, err := firstOrDefaultResultFromValue(p, p.GetDefaultValue())
 	if err != nil {
 		return nil, err
+	}
+	if p.IsStrict() {
+		return applySkipLimit(newSingleResultCursor(qr), props.Skip, props.ReturnedRowLimit), nil
 	}
 	return newSingleResultCursor(qr), nil
 }
@@ -1801,18 +1820,7 @@ func executeInUnion(
 				source[0],
 			)
 		}
-		cursor, err := ExecutePlan(
-			ctx,
-			p.GetInner(),
-			store,
-			childContext,
-			continuation,
-			props.ClearSkipAndLimit(),
-		)
-		if err != nil {
-			return nil, err
-		}
-		return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
+		return ExecutePlan(ctx, p.GetInner(), store, childContext, continuation, props)
 	}
 
 	// Single binding dimension: execute inner once per IN value,
@@ -1840,18 +1848,12 @@ func executeInUnion(
 			return func(cont []byte) recordlayer.RecordCursor[QueryResult] {
 				boundCtx := evalCtx.WithBinding(bindingID, val)
 				childCtx := withRecursionInvocationBranch(ctx, idx)
-				cursor, err := ExecutePlan(childCtx, p.GetInner(), store, boundCtx, cont, props.ClearSkipAndLimit())
+				cursor, err := ExecutePlan(childCtx, p.GetInner(), store, boundCtx, cont, props.ClearSkipAndAdjustLimit())
 				if err != nil {
 					return &errResultCursor{err: err}
 				}
 				return cursor
 			}
-		}
-		if len(vals) == 1 {
-			// Java: size == 1 → childPlan.executePlan(store, childContext,
-			// continuation, executeProperties) — the raw child continuation IS
-			// the in-union continuation.
-			return applySkipLimit(childFactory(0, vals[0])(continuation), props.Skip, props.ReturnedRowLimit), nil
 		}
 		factories := make([]recordlayer.CursorFactory[QueryResult], len(vals))
 		for i, val := range vals {
@@ -1915,7 +1917,7 @@ func executeMergeSortUnion(
 	for i, inner := range inners {
 		inner := inner
 		factories[i] = func(cont []byte) recordlayer.RecordCursor[QueryResult] {
-			c, err := ExecutePlan(ctx, inner, store, evalCtx, cont, props.ClearSkipAndLimit())
+			c, err := ExecutePlan(ctx, inner, store, evalCtx, cont, props.ClearSkipAndAdjustLimit())
 			if err != nil {
 				return &errResultCursor{err: err}
 			}

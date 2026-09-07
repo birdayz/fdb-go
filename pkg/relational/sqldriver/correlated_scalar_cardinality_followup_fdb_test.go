@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
 
 	"fdb.dev/pkg/relational/api"
@@ -38,6 +39,22 @@ func TestFDB_CorrelatedScalarCardinality_AllConsumers(t *testing.T) {
 	mwjoMustExec(t, db, ctx, "INSERT INTO child VALUES "+
 		"(10,1,'a',10),(11,1,'b',20),(20,2,'a',30),(40,4,'a',2),(41,4,'a',3)")
 	mwjoMustExec(t, db, ctx, "INSERT INTO marker VALUES (100,1),(200,2),(300,3),(400,4)")
+
+	t.Run("outer_limit_keeps_strict_inner_cardinality", func(t *testing.T) {
+		t.Parallel()
+		query := "SELECT (SELECT c.val FROM child c WHERE c.parent_id = p.id) FROM parent p WHERE p.id = 1 LIMIT 1"
+		var plan string
+		if err := db.QueryRowContext(ctx, "EXPLAIN "+query).Scan(&plan); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(plan, "FlatMap(") || !strings.Contains(plan, "StrictFirstOrDefault(") || !strings.Contains(plan, "Limit(1,") {
+			t.Fatalf("pin requires the bounded SQL plan's strict inner leg, got %s", plan)
+		}
+		// SQL's join boundary already clears request caps before the scalar
+		// leg. Preserve that protected shape as well as the direct API guard:
+		// a one-row outer request cannot license truncating the inner scalar.
+		requireSQLSTATE(t, expectError(t, db, query), api.ErrCodeCardinalityViolation)
+	})
 
 	t.Run("projection_grouped_multiple_groups_21000", func(t *testing.T) {
 		err := expectError(t, db,

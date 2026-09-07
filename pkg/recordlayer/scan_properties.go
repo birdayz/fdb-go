@@ -102,7 +102,7 @@ const (
 	StreamingModeMedium
 	// StreamingModeLarge fetches large amounts at a time
 	StreamingModeLarge
-	// StreamingModeSerial fetches one at a time
+	// StreamingModeSerial fetches large batches (FDB SERIAL, not one record at a time)
 	StreamingModeSerial
 	// StreamingModeWantAll fetches as much as possible
 	StreamingModeWantAll
@@ -195,7 +195,7 @@ type ExecuteProperties struct {
 	// two ways — State has no Java analog at all; ScanState is the one with a
 	// direct Java counterpart. Like State, ScanState is a POINTER shared by
 	// every value-copy of ExecuteProperties, so every leg of an IN-join/
-	// IN-union (which recurses via ClearSkipAndLimit, never a fresh
+	// IN-union (which recurses via property copies, never a fresh
 	// DefaultExecuteProperties) charges the SAME counters — see
 	// ScanLimiterState's doc comment for the hang this fixes. UNLIKE State,
 	// ScanState is page/transaction-scoped, not statement-scoped: it is minted
@@ -319,6 +319,21 @@ func (e ExecuteProperties) GetMaterializationLimit() int {
 		return e.MaterializationLimit
 	}
 	return DefaultMaterializationLimit
+}
+
+// ClearSkipAndAdjustLimit removes a positive skip and expands a finite child
+// budget to include the skipped rows, like Java's clearSkipAndAdjustLimit.
+// Nonpositive skips leave properties unchanged. Unlike a semantic offset,
+// a read budget may saturate: hitting it produces a resumable page boundary.
+func (e ExecuteProperties) ClearSkipAndAdjustLimit() ExecuteProperties {
+	if e.Skip <= 0 {
+		return e
+	}
+	if e.ReturnedRowLimit > 0 {
+		e.ReturnedRowLimit = saturatingAdd(e.ReturnedRowLimit, e.Skip)
+	}
+	e.Skip = 0
+	return e
 }
 
 // ClearSkipAndLimit returns a copy with skip and row limit cleared.

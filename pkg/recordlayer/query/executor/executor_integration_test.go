@@ -131,7 +131,7 @@ func testSubspace(t *testing.T) subspace.Subspace {
 	return subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
 }
 
-func setupStore(t *testing.T) *recordlayer.FDBRecordStore {
+func setupStore(t *testing.T, extraIndexes ...*recordlayer.Index) *recordlayer.FDBRecordStore {
 	t.Helper()
 	ctx := context.Background()
 	ks := testSubspace(t)
@@ -141,6 +141,9 @@ func setupStore(t *testing.T) *recordlayer.FDBRecordStore {
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
 	builder.AddIndex("Order", recordlayer.NewIndex("order_price_idx", recordlayer.Field("price")))
+	for _, index := range extraIndexes {
+		builder.AddIndex("Order", index)
+	}
 	md, err := builder.Build()
 	if err != nil {
 		t.Fatalf("build metadata: %v", err)

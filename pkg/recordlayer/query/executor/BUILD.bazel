@@ -150,6 +150,7 @@ go_test(
         "terminal_replay_exec_test.go",
         "type_filter_user_identifier_test.go",
         "unbounded_union_limit_integration_test.go",
+        "union_read_budget_integration_test.go",
         "unordered_pk_distinct_cardinality_test.go",
         "vector_index_scan_integration_test.go",
     ],
@@ -282,6 +283,7 @@ go_test(
         "comparison_key_program_cache_test.go",
         "type_filter_user_identifier_test.go",
         "unbounded_union_limit_integration_test.go",
+        "union_read_budget_integration_test.go",
     ],
     tags = ["resources:memory:400"],
     deps = [

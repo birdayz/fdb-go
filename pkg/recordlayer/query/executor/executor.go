@@ -191,7 +191,7 @@ func executePlanUnwrapped(
 	case *plans.RecordQueryTableFunctionPlan:
 		return executeTableFunction(p, evalCtx, continuation, props)
 	case *plans.RecordQueryValuesPlan:
-		return executeValues(p, evalCtx, continuation)
+		return executeValues(p, evalCtx, continuation, props)
 	case *plans.RecordQueryRecursiveLevelUnionPlan:
 		if p.IsDistinct() {
 			// UNION DISTINCT recursion (a Go extension — Java rejects it:
@@ -306,11 +306,7 @@ func executeScanWithRowLayout(
 	props recordlayer.ExecuteProperties,
 	rowLayout values.OrdinalLayout,
 ) (recordlayer.RecordCursor[QueryResult], error) {
-	scanProps := recordlayer.ScanProperties{
-		ExecuteProperties:   props,
-		Reverse:             p.IsReverse(),
-		CursorStreamingMode: recordlayer.StreamingModeIterator,
-	}
+	scanProps := recordlayer.NewScanProperties(props).WithReverse(p.IsReverse())
 
 	// If the plan carries scan comparisons (PK predicates pushed down
 	// by the Cascades planner), convert them to an FDB tuple range and
@@ -457,11 +453,7 @@ func openIndexEntryCursor(
 		return nil, fmt.Errorf("executor: building scan ranges for %q: %w", p.GetIndexName(), err)
 	}
 
-	scanProps := recordlayer.ScanProperties{
-		ExecuteProperties:   props,
-		Reverse:             p.IsReverse(),
-		CursorStreamingMode: recordlayer.StreamingModeIterator,
-	}
+	scanProps := recordlayer.NewScanProperties(props).WithReverse(p.IsReverse())
 
 	indexCursor, err := newScanRangeSetCursor(
 		rangeSet,
@@ -781,10 +773,7 @@ func executeVectorIndexScan(
 	if err != nil {
 		return nil, fmt.Errorf("executor: building vector partition scan ranges for %q: %w", p.GetIndexName(), err)
 	}
-	scanProps := recordlayer.ScanProperties{
-		ExecuteProperties:   props,
-		CursorStreamingMode: recordlayer.StreamingModeIterator,
-	}
+	scanProps := recordlayer.NewScanProperties(props)
 	indexCursor, err := newScanRangeSetCursor(
 		partitionRangeSet,
 		continuation,
@@ -1759,7 +1748,7 @@ func executeLimit(
 	// RFC-128 §3.3: envelope the LIMIT continuation so the skip/limit state
 	// survives the per-page transaction rollover that paginatingRows does.
 	// The shared skipCursor/limitRowsCursor (cursor_combinators.go, driven by
-	// applySkipLimit from 23 sites) forward the inner continuation with no
+	// applySkipLimit) forward the inner continuation with no
 	// skip/limit bookkeeping — exactly like Java's SkipCursor/RowLimitedCursor
 	// — so resuming them re-skips `offset` and resets `limit`. We therefore
 	// keep those byte-identical and confine the envelope to THIS operator: a
@@ -1776,19 +1765,22 @@ func executeLimit(
 	// so downstream scans stop early. The child must produce remOffset rows to
 	// skip PLUS however many this LIMIT may emit. Under an existing parent
 	// returned-row cap (e.g. MAX_ROWS) the LIMIT emits at most that many
-	// post-offset, so the child budget is remOffset + min(remLimit, parentCap)
+	// post-offset. Include any request skip in that emission budget, but apply
+	// the request skip and cap OUTSIDE the semantic envelope so skipped rows
+	// consume the semantic cap too. For a finite request cap the child budget
+	// is remOffset + min(remLimit, parentSkip+parentCap)
 	// — NOT min(remOffset+remLimit, parentCap), which would stop the child
 	// before it skips the offset (`SELECT COUNT(*) FROM t LIMIT 1 OFFSET 1`
 	// under MAX_ROWS=1 erroring on resume instead of returning 0 rows).
-	innerProps := props
-	innerProps.ReturnedRowLimit = limitChildRowLimit(props.ReturnedRowLimit, remOffset, remLimit)
+	innerProps := props.ClearSkipAndAdjustLimit()
+	innerProps.ReturnedRowLimit = limitChildRowLimit(innerProps.ReturnedRowLimit, remOffset, remLimit)
 
 	innerCursor, err := ExecutePlan(ctx, children[0], store, evalCtx, innerCont, innerProps)
 	if err != nil {
 		return nil, err
 	}
 
-	return newLimitEnvelopeCursor(innerCursor, remOffset, remLimit), nil
+	return applySkipLimit(newLimitEnvelopeCursor(innerCursor, remOffset, remLimit), props.Skip, props.ReturnedRowLimit), nil
 }
 
 // limitChildRowLimit computes the read budget below a semantic LIMIT. Offsets
@@ -1816,7 +1808,7 @@ func limitChildRowLimit(parentCap, remOffset, remLimit int) int {
 // re-implements skip-then-limit inline (rather than reusing the shared
 // SkipCursor/RowLimitedCursor) so it can observe each skip and emit and record
 // the remaining counts — the shared combinators are kept byte-identical to Java
-// because they are driven generically from 23 operator sites via applySkipLimit.
+// because executor operators drive them generically via applySkipLimit.
 type limitEnvelopeCursor struct {
 	inner     recordlayer.RecordCursor[QueryResult]
 	remOffset int
@@ -1999,7 +1991,11 @@ func decodeLimitContinuation(continuation []byte, fullOffset, fullLimit int) (in
 	}
 	pos := 1
 	ro := int64(readUint64BE(continuation[pos:]))
+	if ro < 0 {
+		return nil, 0, 0, &expressions.InvalidLimitOffsetError{Offset: ro}
+	}
 	pos += 8
+	// Negative remaining limits are legitimate no-cap sentinels, unlike offsets.
 	rl := int64(readUint64BE(continuation[pos:]))
 	pos += 8
 	innerLen := readUint32BE(continuation[pos:])
@@ -2693,7 +2689,10 @@ func executeProjection(
 	continuation []byte,
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
-	innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props.ClearSkipAndLimit())
+	// Java's RecordQueryMapPlan delegates the original request to its child
+	// before mapping. This is 1:1 and wraps no continuation; a DML child may
+	// deliberately ignore the request, which mapping must not override.
+	innerCursor, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props)
 	if err != nil {
 		return nil, err
 	}
@@ -2766,7 +2765,7 @@ func executeProjection(
 			PrimaryKey: qr.PrimaryKey,
 		}
 	})
-	errCursor := &errCheckCursor{inner: applySkipLimit(mapped, props.Skip, props.ReturnedRowLimit), err: &evalErr}
+	errCursor := &errCheckCursor{inner: mapped, err: &evalErr}
 	return errCursor, nil
 }
 
@@ -2833,7 +2832,7 @@ func executeUnion(
 	branchFactory := func(i int) recordlayer.CursorFactory[QueryResult] {
 		inner := inners[i]
 		return func(cont []byte) recordlayer.RecordCursor[QueryResult] {
-			c, err := ExecutePlan(ctx, inner, store, evalCtx, cont, props.ClearSkipAndLimit())
+			c, err := ExecutePlan(ctx, inner, store, evalCtx, cont, props.ClearSkipAndAdjustLimit())
 			if err != nil {
 				return &errResultCursor{err: fmt.Errorf("union branch %d: %w", i, err)}
 			}
@@ -4895,7 +4894,12 @@ func isBareScalarRow(pos *PositionalRow) bool {
 		pos.Type.Fields[0].Name == values.OrdinalFieldName(0)
 }
 
-func executeValues(p *plans.RecordQueryValuesPlan, evalCtx *EvaluationContext, continuation []byte) (recordlayer.RecordCursor[QueryResult], error) {
+func executeValues(
+	p *plans.RecordQueryValuesPlan,
+	evalCtx *EvaluationContext,
+	continuation []byte,
+	props recordlayer.ExecuteProperties,
+) (recordlayer.RecordCursor[QueryResult], error) {
 	cols := p.GetColumns()
 	resultType, err := exactRuntimeRecordType(
 		"RecordQueryValuesPlan result", p.GetResultType(), len(cols))
@@ -4913,11 +4917,13 @@ func executeValues(p *plans.RecordQueryValuesPlan, evalCtx *EvaluationContext, c
 	// The plan's result Value is the output descriptor authority. Re-deriving
 	// names from Value.Name here used "constant" while the plan declared the
 	// projection spelling (for example "42"), and positionalTypeFromNames also
-	// erased every exact field type to Unknown. Java's ValuesPlan materializes
-	// its result rows under the Value-derived result type; keep that one shape
+	// erased every exact field type to Unknown. Keep the Value-derived shape
 	// intact here as well. This changes no continuation or storage bytes.
 	pos := &PositionalRow{Type: resultType, Slots: slots}
-	return recordlayer.FromListWithContinuation([]QueryResult{{Positional: pos}}, continuation), nil
+	// Like Java's RecordQueryExplodePlan, apply request skip/limit outside the
+	// continuation-resumed list, including when a parent delegates directly.
+	cursor := recordlayer.FromListWithContinuation([]QueryResult{{Positional: pos}}, continuation)
+	return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
 }
 
 // exactRuntimeRecordType snapshots the declared row type before a producer

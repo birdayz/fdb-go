@@ -70,6 +70,8 @@ func (r *LimitMergeRule) OnMatch(call *ExpressionRuleCall) {
 	if iLimit < 0 {
 		combinedLimit = oLimit
 	} else {
+		// Both operands are nonnegative (offsets are validated at construction),
+		// so subtraction cannot underflow int64 even when no rows remain.
 		available := iLimit - oOffset
 		if available <= 0 {
 			combinedLimit = 0

@@ -7,9 +7,14 @@ package executor
 
 import (
 	"context"
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"math"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 )
 
 // TestLimitContinuation_RoundTrip verifies encode→decode preserves the inner
@@ -31,6 +36,8 @@ func TestLimitContinuation_RoundTrip(t *testing.T) {
 		{"present-inner", recordlayer.NewBytesContinuation([]byte{0, 0, 0, 4}), 0, 9, []byte{0, 0, 0, 4}},
 		{"present-inner-offset", recordlayer.NewBytesContinuation([]byte{1, 2, 3}), 11, 0, []byte{1, 2, 3}},
 		{"big-counts", recordlayer.NewBytesContinuation([]byte{9}), 1 << 30, 1 << 29, []byte{9}},
+		{"unbounded", recordlayer.NewBytesContinuation([]byte{9}), 2, -1, []byte{9}},
+		{"minimum-limit-unbounded", nil, 0, math.MinInt, nil},
 	}
 
 	for _, tc := range cases {
@@ -104,6 +111,33 @@ func TestLimitContinuation_RejectsGarbage(t *testing.T) {
 	nilTrail = append(nilTrail, 0xFF)
 	if _, _, _, err := decodeLimitContinuation(nilTrail, 0, 0); err == nil {
 		t.Error("expected error for nil-inner continuation with trailing bytes")
+	}
+}
+
+func TestLimitContinuation_RejectsNegativeOffset(t *testing.T) {
+	t.Parallel()
+	for _, offset := range []int64{-1, math.MinInt64} {
+		for _, limit := range []int{10, -1} {
+			for _, inner := range []recordlayer.RecordCursorContinuation{
+				nil,
+				recordlayer.NewBytesContinuation([]byte{}),
+				recordlayer.NewBytesContinuation([]byte{9}),
+			} {
+				t.Run(fmt.Sprintf("offset=%d/limit=%d/inner=%v", offset, limit, inner), func(t *testing.T) {
+					t.Parallel()
+					enc, err := encodeLimitContinuation(inner, 0, limit)
+					if err != nil {
+						t.Fatal(err)
+					}
+					binary.BigEndian.PutUint64(enc[1:9], uint64(offset))
+					_, _, _, err = decodeLimitContinuation(enc, 0, limit)
+					var offsetErr *expressions.InvalidLimitOffsetError
+					if !errors.As(err, &offsetErr) || offsetErr.Offset != offset {
+						t.Fatalf("decoded negative offset %d: got %v, want structured offset error", offset, err)
+					}
+				})
+			}
+		}
 	}
 }
 

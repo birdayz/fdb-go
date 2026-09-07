@@ -111,7 +111,7 @@ func PermutedMinIgnoringNulls(
 	//	Skip              an inherited OFFSET would skip that one entry and the
 	//	                  repair would report "no non-NULL value in the group",
 	//	                  turning a paging offset into a wrong ANSWER.
-	props := ScanProperties{ExecuteProperties: callerProps}
+	props := NewScanProperties(callerProps)
 	props.ExecuteProperties.ReturnedRowLimit = 1
 	props.ExecuteProperties.Skip = 0
 	cursor := scan(scanRange, props)

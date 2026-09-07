@@ -1,6 +1,8 @@
 package recordlayer
 
 import (
+	"math"
+	"math/big"
 	"testing"
 	"time"
 
@@ -233,6 +235,74 @@ func TestExecuteProperties_ClearRowAndTimeLimits(t *testing.T) {
 // ExecuteProperties — ClearSkipAndLimit
 // ---------------------------------------------------------------------------
 
+func TestExecuteProperties_ClearSkipAndAdjustLimit(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name                           string
+		skip, cap, wantSkip, wantLimit int
+	}{
+		{"zero", 0, 0, 0, 0},
+		{"no_skip", 0, 5, 0, 5},
+		{"negative_skip", -1, 5, -1, 5},
+		{"minimum_skip", math.MinInt, 5, math.MinInt, 5},
+		{"finite", 7, 11, 0, 18},
+		{"unlimited", 7, 0, 0, 0},
+		{"negative_unlimited", 7, -1, 0, -1},
+		{"minimum_unlimited", math.MaxInt, math.MinInt, 0, math.MinInt},
+		{"exact_max", 1, math.MaxInt - 1, 0, math.MaxInt},
+		{"overflow", 1, math.MaxInt, 0, math.MaxInt},
+		{"both_max", math.MaxInt, math.MaxInt, 0, math.MaxInt},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			props := DefaultExecuteProperties().WithSkip(tc.skip).WithReturnedRowLimit(tc.cap).
+				WithScannedRecordsLimit(17).WithScannedBytesLimit(19).WithTimeLimit(time.Hour).
+				WithDryRun(true).WithMaterializationLimit(23).WithIsolationLevel(SnapshotIsolation)
+			props.DefaultCursorStreamingMode = StreamingModeSmall
+			props.FailOnScanLimitReached = true
+			props.State = &ExecuteState{}
+			before := props
+			want := props
+			want.Skip, want.ReturnedRowLimit = tc.wantSkip, tc.wantLimit
+			if got := props.ClearSkipAndAdjustLimit(); got != want {
+				t.Fatalf("adjusted properties = %+v, want %+v", got, want)
+			}
+			if props != before {
+				t.Fatal("adjustment mutated original properties")
+			}
+		})
+	}
+}
+
+func FuzzExecuteProperties_AdjustLimit(f *testing.F) {
+	f.Add(0, 0)
+	f.Add(7, 11)
+	f.Add(-1, 1)
+	f.Add(1, -1)
+	f.Add(math.MaxInt, math.MaxInt)
+	f.Fuzz(func(t *testing.T, skip, cap int) {
+		t.Parallel()
+		props := ExecuteProperties{Skip: skip, ReturnedRowLimit: cap}
+		wantSkip, wantLimit := skip, cap
+		if skip > 0 {
+			wantSkip = 0
+			if cap > 0 {
+				sum := new(big.Int).Add(big.NewInt(int64(skip)), big.NewInt(int64(cap)))
+				maximum := big.NewInt(int64(math.MaxInt))
+				if sum.Cmp(maximum) > 0 {
+					wantLimit = math.MaxInt
+				} else {
+					wantLimit = int(sum.Int64())
+				}
+			}
+		}
+		got := props.ClearSkipAndAdjustLimit()
+		if got.Skip != wantSkip || got.ReturnedRowLimit != wantLimit {
+			t.Fatalf("skip/cap %d/%d: got %d/%d, want %d/%d", skip, cap, got.Skip, got.ReturnedRowLimit, wantSkip, wantLimit)
+		}
+	})
+}
+
 func TestExecuteProperties_ClearSkipAndLimit(t *testing.T) {
 	t.Parallel()
 	p := DefaultExecuteProperties().
@@ -378,6 +448,16 @@ func TestNewScanProperties(t *testing.T) {
 	}
 	if s.GetExecuteProperties() != ep {
 		t.Fatal("execute properties mismatch")
+	}
+}
+
+func TestNewScanProperties_ZeroValueKeepsSmall(t *testing.T) {
+	t.Parallel()
+	// Zero is an explicit enum value, not an unset marker. Normalizing it to
+	// ITERATOR would make SMALL impossible to request through ExecuteProperties.
+	s := NewScanProperties(ExecuteProperties{})
+	if s.CursorStreamingMode != StreamingModeSmall {
+		t.Fatalf("zero-value streaming mode = %v, want SMALL", s.CursorStreamingMode)
 	}
 }
 
