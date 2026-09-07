@@ -273,6 +273,7 @@ the injected outage was observed by the copier
 the last inspect survives removal
 the PERIODIC copier leaves no staging directory
 the precondition probe has something to compare
+the probe guard rejects an empty reading of a file that exists
 the recovery is logged exactly once
 the suite leaves its working directory unchanged
 the surviving generation still holds its traces

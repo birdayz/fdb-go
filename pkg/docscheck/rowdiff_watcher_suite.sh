@@ -1105,9 +1105,9 @@ alarm_case "an inspect WITH traces on a failed night is evidence" '=== host ==='
 # claimed they were — "deleting the forensics copy reddens exactly one arm, and
 # deleting the WATCHER copy reddens exactly one, the other one". The second half
 # is true; the first never was, at any committed revision. Re-measured on this
-# file at 73 arms, and again at the previous head to establish which:
+# file at 74 arms, and again at the previous head to establish which:
 #
-#   delete the WATCHER copy    -> 73 arms run, 1 red. `armed` is still set when
+#   delete the WATCHER copy    -> 74 arms run, 1 red. `armed` is still set when
 #                                 awk reaches the forensics `ver="`, so the
 #                                 extraction silently borrows the OTHER step's
 #                                 guard and the pinned case fails on it.
@@ -1226,7 +1226,7 @@ testing what its name says — an earlier case changed what it starts from"
   if [ "$got" = "$2" ]; then ok "digest: $1 ($got)"; else bad "digest: $1: got $got, want $2"; fi
 }
 
-# What these sixteen arms catch, measured at 73 arms by mutating the digest and
+# What these sixteen arms catch, measured at 74 arms by mutating the digest and
 # re-running. Every count below is over that population.
 #
 # The NOT-covered shape first, because that is the half a description of the code
@@ -1338,14 +1338,34 @@ digest_case "the forensics report registers"   moved 'echo fx > fdb-forensics.tx
 # today, since the poison is `>>` and creates the file, so this is a latent
 # vacuity being closed rather than a live hole.
 pre_before=$(cd "$DIGWORK" && md5sum fdb-watch.log 2>/dev/null)
-# The probe's own dependency, asserted on the READING rather than on the file.
-# `[ -f ]` would prove the path exists and still leave both readings empty if
-# `md5sum` could not read it — and empty-against-empty is exactly the comparison
-# the arm below would then pass on. This is the same unasserted dependency closed
-# for the digest cases above, in the arms that check the mechanism closing it.
-[ -n "$pre_before" ] \
+# The probe's own dependency, asserted on the READING rather than on the file,
+# and expressed as a NAMED PREDICATE so the state that distinguishes the two can
+# be driven. `[ -f ]` proves the path is there and still admits an empty reading
+# when `md5sum` cannot produce one — and empty-against-empty is exactly the
+# comparison the arms below would then pass on.
+#
+# That difference was only ever asserted in prose. The fixture here is always
+# readable, so the failure branch never ran and reverting the predicate to `[ -f
+# ]` left every arm green — the guard against a vacuous comparison, itself
+# unexercised. Manufacturing a genuinely unreadable file is not portable (a root
+# CI reads a `chmod 000` file happily), so the predicate takes the reading as an
+# argument and the arm below drives it over the distinguishing state directly.
+probe_has_reading() { [ -n "$1" ]; }
+
+probe_has_reading "$pre_before" \
   && ok "the precondition probe has something to compare" \
   || bad "the precondition probe has something to compare (no reading for fdb-watch.log, so the arm below would compare nothing to nothing)"
+
+# The DISTINGUISHING state: a file that exists, with no reading for it. `[ -f ]`
+# accepts it, which is why that predicate could not catch this; the guard must
+# reject it. Reverting `probe_has_reading` to a path test reddens this arm.
+: > "$DIGWORK/fdb-watch.present"
+if [ -f "$DIGWORK/fdb-watch.present" ] && ! probe_has_reading ""; then
+  ok "the probe guard rejects an empty reading of a file that exists"
+else
+  bad "the probe guard rejects an empty reading of a file that exists (a path test would accept it)"
+fi
+rm -f "$DIGWORK/fdb-watch.present"
 pre_out=$( ( digest_case "impossible" moved 'echo POISON >> fdb-watch.log' '[ 1 = 2 ]' ) 2>&1 )
 pre_after=$(cd "$DIGWORK" && md5sum fdb-watch.log 2>/dev/null)
 if printf '%s' "$pre_out" | grep -q 'precondition .* does not hold'; then
