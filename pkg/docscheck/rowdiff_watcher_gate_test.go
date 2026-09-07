@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -154,56 +155,159 @@ func TestRowdiffWatcherBehaviour(t *testing.T) {
 			"reporting is the empty-set green this repository keeps finding")
 	}
 
-	if err := checkArms(string(out), wantArms); err != nil {
+	if err := checkArms(string(out), wantArmLabels); err != nil {
 		t.Fatal(err)
 	}
 }
 
-// THE ARM POPULATION IS PINNED, NOT FLOORED. `ALL OK` is also what a suite whose
+// THE ARM POPULATION IS PINNED BY IDENTITY. `ALL OK` is also what a suite whose
 // arms stopped RUNNING prints, and this file already carries that failure: an arm
 // asked `git rev-parse --git-dir`, which a Bazel runfiles tree does not have, so
 // the suite reported 53 arms locally and 52 under the runner that gates merges —
 // and the arm that vanished was the one added to catch a neighbouring silence.
 //
-// A floor (`got >= want`) does not close that. Add an arm and silently skip it
-// and the total is unchanged, which is the 53-vs-52 case exactly; add one while
-// another is deleted and the two cancel. Only equality forces the population to
-// be RESTATED whenever it moves, which is the same discipline this repository
-// applies to every measurement recorded as prose — write the population into the
-// claim, so it cannot go stale without something failing.
+// A floor (`got >= want`) does not close that: add an arm and silently skip it
+// and the total never moves. Nor does a COUNT, even an exact one — add one arm
+// while another is skipped, or duplicate a label while deleting a different one,
+// and the cardinality is identical. That is the same cancellation one level up,
+// which is why this compares LABELS and derives the count from them, so the two
+// can never disagree.
 //
-// The cost is real and is the point: every addition reddens this once, until the
-// author bumps the pin. That is a prompt to re-read the arm counts quoted in
-// three places in the suite, which have gone stale three times — twice inside the
-// very commit that added arms to fix the previous staleness.
+// The cost is real and is the point: every arm added, renamed or removed reddens
+// this once, until the author restates the population here. That is a prompt to
+// re-read the arm counts quoted elsewhere in the suite, which have gone stale
+// three times — twice inside the very commit that was fixing the previous
+// staleness.
 //
-// So both directions are alarms, and they mean different things. FEWER: arms
-// disappeared rather than failed, which reports as green. MORE: arms were added
-// without updating the pin, and three comments in the suite quote arm counts as
-// measurements that are now stale. Neither is a reason to relax this to a floor.
-const wantArms = 69
+// Three states, three messages. NONE: the suite did not run, which is not the
+// same as passing. MISSING: arms disappeared rather than failed, which reports as
+// green. UNEXPECTED: arms were added without restating the population.
+const wantArmLabels = `
+a daemon outage is not logged as a removal
+a deletion cut short leaves no published generation behind
+a failed copy publishes no trace directory
+a FAILED exit copy leaves no staging directory
+a FAILED exit copy says so in the watcher log
+a failing copy stretch is logged exactly once
+a false precondition fails its case by name
+a false precondition runs no mutation
+a live container in the dump is evidence (rc=0)
+an empty capture says "(no fdb-container-*.log)"
+an empty capture says "(no fdb-df-*.txt)"
+an empty capture says "(no fdb-logs-* directories)"
+an exhausted outage backstop is reported as an outage, not a removal
+an inspect with no traces on a failed night is NOT evidence (rc=1)
+an inspect WITH traces on a failed night is evidence (rc=0)
+an occupied exit destination is REFUSED, not nested into
+a refused exit publish is reported as NOT copied
+a removed container ends the copier exactly once
+a re-selected container gets no second copier (launch ids: 1 )
+a re-selected container's exit is logged exactly once
+a ROTATED second trace file is captured
+a single blip is not reported as the container ending
+a tolerated outage skips the copy instead of failing it
+a trace file created after the watcher attached is captured
+a transient inspect failure does not end periodic capture
+c1 was re-selected, so the guard was actually exercised (2 selections)
+Capture FDB container forensics: an unpinned .bazelrc fails the tag guard loudly
+Capture FDB container forensics: a pinned .bazelrc passes the tag guard
+digest: a change in the Java reference tree does not (same)
+digest: a container listing registers (moved)
+digest: a disk-free capture registers (moved)
+digest: a file inside an existing generation directory registers (moved)
+digest: a file in the hidden staging directory registers (moved)
+digest: a file two levels down registers (moved)
+digest: a last-inspect capture registers (moved)
+digest: an append inside a generation directory moves it (moved)
+digest: an append to an existing log moves it (moved)
+digest: an empty generation directory registers (moved)
+digest: an equal-length rewrite inside a generation directory moves it (moved)
+digest: a new watcher log registers (moved)
+digest: a pid file registers (moved)
+digest: a retired generation registers (moved)
+digest: a same-size pid rewrite moves it (moved)
+digest: the forensics report registers (moved)
+empty capture + both sweeps green stays green (rc=0)
+empty capture + deep sweep failed exits non-zero (rc=1)
+empty capture + PAGING sweep failed exits non-zero (rc=1)
+empty then present is a reload, not a removal
+empty then UNREACHABLE is an outage, not a removal
+exactly one published generation survives the prune
+no false 'NOT copied at exit' for a container whose trace was captured
+recovery on the FIRST sample clears the skip signal
+recovery through the RE-ISSUE clears it too
+removal is logged
+the copy publishes once it succeeds
+the df sampler survives an outage and keeps sampling
+the dump reads the per-container last inspect
+the dump reads the trace directory the watcher wrote
+the exit-transition copy alone captures the terminal line
+the exit-transition copy leaves no staging directory
+the exit transition is logged exactly once
+the injected outage was observed by the copier
+the last inspect survives removal
+the PERIODIC copier leaves no staging directory
+the recovery is logged exactly once
+the suite leaves its working directory unchanged
+the surviving generation still holds its traces
+the terminal Severity=40 line is captured after the container stops
+two empty answers mean REMOVED
+unreachable from the first call is an outage
+Watch the FDB container while it is alive: an unpinned .bazelrc fails the tag guard loudly
+Watch the FDB container while it is alive: a pinned .bazelrc passes the tag guard
+`
 
-// armCount counts the arms a run reported. Split out from the process globals so
-// every branch of the decision below can be driven from a unit test rather than
-// only by whatever the corpus happens to produce.
-func armCount(out string) int { return strings.Count(out, "\n  ok   ") }
-
-func checkArms(out string, want int) error {
-	switch got := armCount(out); {
-	case got == 0:
-		return fmt.Errorf("rowdiff_watcher_suite.sh reported NO passing arms (want %d) — "+
-			"the suite did not run, which is not the same as passing", want)
-	case got < want:
-		return fmt.Errorf("rowdiff_watcher_suite.sh reported %d passing arms, want exactly %d — "+
-			"arms disappeared rather than failed, which reports as green. If arms were "+
-			"RETIRED deliberately, lower wantArms in the same commit and say why; do not "+
-			"delete this check, or the silence it watches for comes back unwatched", got, want)
-	case got > want:
-		return fmt.Errorf("rowdiff_watcher_suite.sh reported %d passing arms, want exactly %d — "+
-			"arms were added without updating wantArms; bump it and re-check every comment "+
-			"in the suite that quotes an arm count as a measurement", got, want)
+// armLabels returns the labels of the arms a run reported passing. Split out from
+// the process globals so every branch of the decision below can be driven from a
+// unit test rather than only by whatever a green run happens to produce.
+func armLabels(out string) []string {
+	var got []string
+	for _, line := range strings.Split(out, "\n") {
+		if rest, ok := strings.CutPrefix(line, "  ok   "); ok {
+			got = append(got, rest)
+		}
 	}
-	return nil
+	sort.Strings(got)
+	return got
+}
+
+func checkArms(out, want string) error {
+	got := armLabels(out)
+	if len(got) == 0 {
+		return fmt.Errorf("rowdiff_watcher_suite.sh reported NO passing arms — the suite did " +
+			"not run, which is not the same as passing")
+	}
+	expected := map[string]bool{}
+	for _, l := range strings.Split(strings.TrimSpace(want), "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			expected[l] = true
+		}
+	}
+	var unexpected []string
+	seen := map[string]bool{}
+	for _, l := range got {
+		if !expected[l] {
+			unexpected = append(unexpected, l)
+		}
+		seen[l] = true
+	}
+	var missing []string
+	for l := range expected {
+		if !seen[l] {
+			missing = append(missing, l)
+		}
+	}
+	sort.Strings(missing)
+	if len(missing) == 0 && len(unexpected) == 0 && len(got) == len(expected) {
+		return nil
+	}
+	return fmt.Errorf("rowdiff_watcher_suite.sh arm population differs: %d arms ran, %d pinned.\n"+
+		"MISSING (ran before, not now — arms disappeared rather than failed, which reports as "+
+		"green; if they were RETIRED deliberately, remove them from wantArmLabels in the same "+
+		"commit and say why): %v\n"+
+		"UNEXPECTED (added without restating the population; add them to wantArmLabels and "+
+		"re-check every comment in the suite that quotes an arm count): %v",
+		len(got), len(expected), missing, unexpected)
 }
 
 // The census above decides from suite OUTPUT, so a full run exercises only the
@@ -215,41 +319,46 @@ func checkArms(out string, want int) error {
 func TestRowdiffWatcherArmCensus(t *testing.T) {
 	t.Parallel()
 
-	arm := func(n int) string {
+	out := func(labels ...string) string {
 		var b strings.Builder
-		for i := 0; i < n; i++ {
-			b.WriteString("\n  ok   some arm\n")
+		for _, l := range labels {
+			b.WriteString("  ok   " + l + "\n")
 		}
 		return b.String()
 	}
+	pinned := "a\nb\nc\n"
 
 	for _, tc := range []struct {
 		name    string
 		out     string
-		want    int
 		wantErr string
 	}{
 		// The empty-set reading, and the reason this gate exists: a suite that
 		// produced nothing must not be indistinguishable from one that passed.
-		{"no output at all", "", 3, "reported NO passing arms"},
-		{"output but no arms", "\nALL OK\n", 3, "reported NO passing arms"},
-		{"an arm disappeared", arm(2), 3, "arms disappeared rather than failed"},
-		{"an arm was added", arm(4), 3, "without updating wantArms"},
-		{"exactly the pinned population", arm(3), 3, ""},
-		// `ok` in prose is not an arm. The count keys on the suite's own two-space
+		{"no output at all", "", "reported NO passing arms"},
+		{"output but no arms", "\nALL OK\n", "reported NO passing arms"},
+		{"an arm disappeared", out("a", "b"), "MISSING"},
+		{"an arm was added", out("a", "b", "c", "d"), "UNEXPECTED"},
+		// The case a COUNT cannot see, and the reason this compares identities:
+		// one arm skipped, another added, cardinality unchanged.
+		{"a same-count substitution", out("a", "b", "d"), "MISSING"},
+		// Likewise a duplicate standing in for a deletion.
+		{"a duplicate masking a deletion", out("a", "b", "b"), "MISSING"},
+		{"exactly the pinned population", out("a", "b", "c"), ""},
+		{"order does not matter", out("c", "a", "b"), ""},
+		// `ok` in prose is not an arm. The scan keys on the suite's own two-space
 		// prefix and three-space gap, so a line merely containing "ok" cannot
 		// inflate the census into passing.
-		{"prose mentioning ok is not an arm", arm(3) + "\nlooks ok to me\n  ok but not an arm\n", 3, ""},
+		{"prose mentioning ok is not an arm", out("a", "b", "c") + "looks ok to me\n  ok but not an arm\n", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			err := checkArms(tc.out, tc.want)
+			err := checkArms(tc.out, pinned)
 			switch {
 			case tc.wantErr == "" && err != nil:
-				t.Fatalf("checkArms(%d arms, want %d) = %v, want nil", armCount(tc.out), tc.want, err)
+				t.Fatalf("checkArms(%v) = %v, want nil", armLabels(tc.out), err)
 			case tc.wantErr != "" && err == nil:
-				t.Fatalf("checkArms(%d arms, want %d) = nil, want error containing %q",
-					armCount(tc.out), tc.want, tc.wantErr)
+				t.Fatalf("checkArms(%v) = nil, want error containing %q", armLabels(tc.out), tc.wantErr)
 			case tc.wantErr != "" && !strings.Contains(err.Error(), tc.wantErr):
 				t.Fatalf("checkArms error = %q, want it to contain %q", err, tc.wantErr)
 			}
