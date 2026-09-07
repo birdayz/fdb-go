@@ -1,0 +1,24 @@
+# LIMIT/OFFSET are Go read-side extensions. Overflowing a merged OFFSET
+# must not turn two skips into a negative skip that returns the table prefix.
+name: limit_offset_bounds
+schema_template: |
+  CREATE TABLE t (id BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1), (2), (3)
+tests:
+  - query: SELECT * FROM (SELECT * FROM t LIMIT 9223372036854775807 OFFSET 9223372036854775807) u LIMIT 1 OFFSET 1
+    plan_contains: 'Limit(1, offset=1, Limit(9223372036854775807, offset=9223372036854775807,'
+    rows: []
+  - query: SELECT * FROM (SELECT * FROM t LIMIT 9223372036854775807 OFFSET 9223372036854775807) u LIMIT 1 OFFSET 9223372036854775807
+    rows: []
+  - query: SELECT * FROM t LIMIT 9223372036854775807 OFFSET 1
+    rows:
+      - [2]
+      - [3]
+  - query: SELECT * FROM (SELECT * FROM t LIMIT 3 OFFSET 1) u LIMIT 1 OFFSET 1
+    rows:
+      - [3]
+  # The logical API supports a negative no-cap sentinel, but SQL cannot
+  # express an OFFSET-only clause. Keep that reach boundary explicit.
+  - query: SELECT id FROM t UNION ALL SELECT id FROM t OFFSET 2
+    error_code: '42601'

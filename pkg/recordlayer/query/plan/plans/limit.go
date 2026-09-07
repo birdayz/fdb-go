@@ -48,6 +48,9 @@ func NewRecordQueryLimitPlanWithValue(inner RecordQueryPlan, limitValue values.V
 // when non-nil the caller passes limit=-1, the no-cap sentinel, exactly as
 // NewRecordQueryLimitPlanWithValue does.
 func NewRecordQueryLimitPlanFromQuantifier(innerQ expressions.Quantifier, limit, offset int64, limitValue values.Value) (*RecordQueryLimitPlan, error) {
+	if offset < 0 {
+		return nil, &expressions.InvalidLimitOffsetError{Offset: offset}
+	}
 	base, err := newPlanExprBaseForQuantifier("RecordQueryLimitPlan", innerQ)
 	if err != nil {
 		return nil, err

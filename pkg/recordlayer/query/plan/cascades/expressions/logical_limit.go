@@ -1,6 +1,7 @@
 package expressions
 
 import (
+	"fmt"
 	"hash/fnv"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -11,6 +12,7 @@ import (
 // (LIMIT/OFFSET in SQL).
 //
 // Negative Limit means no cap (pure offset); zero Offset means no skip.
+// Offset must be nonnegative.
 //
 // limitValue is an OPTIONAL runtime row cap (RFC-156 parameterized vector rank
 // limit): when non-nil the physical plan evaluates it at execution against the
@@ -25,7 +27,21 @@ type LogicalLimitExpression struct {
 	resultValue values.QuantifiedObjectValue
 }
 
+// InvalidLimitOffsetError rejects an invalid semantic skip before it enters
+// LIMIT rewrite arithmetic or execution. A negative limit denotes no cap; a
+// negative offset has no corresponding sentinel meaning.
+type InvalidLimitOffsetError struct {
+	Offset int64
+}
+
+func (e *InvalidLimitOffsetError) Error() string {
+	return fmt.Sprintf("LIMIT offset must be nonnegative, got %d", e.Offset)
+}
+
 func NewLogicalLimitExpression(limit, offset int64, inner Quantifier) (*LogicalLimitExpression, error) {
+	if offset < 0 {
+		return nil, &InvalidLimitOffsetError{Offset: offset}
+	}
 	resultValue, err := requireFlowedResult("LogicalLimitExpression", inner)
 	if err != nil {
 		return nil, err
@@ -41,6 +57,9 @@ func NewLogicalLimitExpression(limit, offset int64, inner Quantifier) (*LogicalL
 // NewRuntimeLogicalLimitExpression builds a LIMIT whose row cap is a runtime
 // Value (evaluated at execution). The static limit is the no-cap sentinel (-1).
 func NewRuntimeLogicalLimitExpression(limitValue values.Value, offset int64, inner Quantifier) (*LogicalLimitExpression, error) {
+	if offset < 0 {
+		return nil, &InvalidLimitOffsetError{Offset: offset}
+	}
 	resultValue, err := requireFlowedResult("LogicalLimitExpression", inner)
 	if err != nil {
 		return nil, err

@@ -5,8 +5,12 @@ package executor
 // Go supports LIMIT natively in SQL with Cascades-integrated optimization.
 
 import (
+	"errors"
+	"fmt"
+	"math"
 	"testing"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
@@ -33,6 +37,57 @@ func TestExecuteLimit_PropagatesRowLimit(t *testing.T) {
 	children := limitPlan.GetChildren()
 	if len(children) != 1 {
 		t.Fatalf("expected 1 child, got %d", len(children))
+	}
+}
+
+func TestLimitPlan_RejectsNegativeOffset(t *testing.T) {
+	t.Parallel()
+	for _, offset := range []int64{-1, math.MinInt64} {
+		t.Run(fmt.Sprint(offset), func(t *testing.T) {
+			t.Parallel()
+			rowType := exactTestRowType(values.Field{Name: "ID", FieldType: values.NotNullLong})
+			inner := mustExecutorConstruct(plans.NewRecordQueryScanPlan(nil, rowType, false))
+			var offsetErr *expressions.InvalidLimitOffsetError
+			if _, err := plans.NewRecordQueryLimitPlan(inner, 5, offset); !errors.As(err, &offsetErr) || offsetErr.Offset != offset {
+				t.Fatalf("static plan offset %d: got %v, want structured offset error", offset, err)
+			}
+			cap := &values.ConstantValue{Value: int64(5), Typ: values.NotNullLong}
+			if _, err := plans.NewRecordQueryLimitPlanWithValue(inner, cap, offset); !errors.As(err, &offsetErr) || offsetErr.Offset != offset {
+				t.Fatalf("runtime plan offset %d: got %v, want structured offset error", offset, err)
+			}
+			if _, err := plans.NewRecordQueryLimitPlanFromQuantifier(plans.QuantifierOverPlan(inner), 5, offset, nil); !errors.As(err, &offsetErr) || offsetErr.Offset != offset {
+				t.Fatalf("quantifier plan offset %d: got %v, want structured offset error", offset, err)
+			}
+		})
+	}
+}
+
+func TestLimitChildRowLimit(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name                             string
+		parent, offset, limit, wantChild int
+	}{
+		{name: "finite", offset: 2, limit: 5, wantChild: 7},
+		{name: "parent_smaller", parent: 1, offset: 2, limit: 5, wantChild: 3},
+		{name: "parent_larger", parent: 10, offset: 2, limit: 5, wantChild: 7},
+		{name: "unbounded", offset: 2, limit: -1, wantChild: 0},
+		{name: "negative_parent_unbounded", parent: -1, offset: 2, limit: -1, wantChild: -1},
+		{name: "unbounded_with_parent", parent: 3, offset: 2, limit: -1, wantChild: 5},
+		{name: "zero", limit: 0, wantChild: 0},
+		{name: "zero_with_offset", parent: 1, offset: 2, limit: 0, wantChild: 2},
+		{name: "maximum", offset: 1, limit: math.MaxInt - 1, wantChild: math.MaxInt},
+		{name: "overflow", offset: 1, limit: math.MaxInt, wantChild: math.MaxInt},
+		{name: "both_maximum", offset: math.MaxInt, limit: math.MaxInt, wantChild: math.MaxInt},
+		{name: "parent_avoids_overflow", parent: 1, offset: 2, limit: math.MaxInt, wantChild: 3},
+		{name: "parent_overflows", parent: 1, offset: math.MaxInt, limit: -1, wantChild: math.MaxInt},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := limitChildRowLimit(tc.parent, tc.offset, tc.limit); got != tc.wantChild {
+				t.Fatalf("child read budget = %d, want %d", got, tc.wantChild)
+			}
+		})
 	}
 }
 

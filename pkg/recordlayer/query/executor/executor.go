@@ -1781,13 +1781,7 @@ func executeLimit(
 	// before it skips the offset (`SELECT COUNT(*) FROM t LIMIT 1 OFFSET 1`
 	// under MAX_ROWS=1 erroring on resume instead of returning 0 rows).
 	innerProps := props
-	emit := remLimit // <0 == unbounded (OFFSET-only)
-	if pc := props.ReturnedRowLimit; pc > 0 && (emit < 0 || pc < emit) {
-		emit = pc
-	}
-	if emit >= 0 {
-		innerProps.ReturnedRowLimit = remOffset + emit
-	}
+	innerProps.ReturnedRowLimit = limitChildRowLimit(props.ReturnedRowLimit, remOffset, remLimit)
 
 	innerCursor, err := ExecutePlan(ctx, children[0], store, evalCtx, innerCont, innerProps)
 	if err != nil {
@@ -1795,6 +1789,24 @@ func executeLimit(
 	}
 
 	return newLimitEnvelopeCursor(innerCursor, remOffset, remLimit), nil
+}
+
+// limitChildRowLimit computes the read budget below a semantic LIMIT. Offsets
+// have been validated by plan construction or continuation decoding. Unlike a
+// semantic skip, this budget may saturate: reaching it yields a resumable page
+// boundary. Wrapping it negative would silently disable the finite read budget.
+func limitChildRowLimit(parentCap, remOffset, remLimit int) int {
+	emit := remLimit // <0 == unbounded (OFFSET-only)
+	if parentCap > 0 && (emit < 0 || parentCap < emit) {
+		emit = parentCap
+	}
+	if emit < 0 {
+		return parentCap
+	}
+	if remOffset > math.MaxInt-emit {
+		return math.MaxInt
+	}
+	return remOffset + emit
 }
 
 // limitEnvelopeCursor performs RFC-128's LIMIT/OFFSET (skip `remOffset`, then

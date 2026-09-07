@@ -886,7 +886,7 @@ bare basename names two files here, not one. THE UPDATE TARGET IS NOT JUST A NAM
 that constrains how it may be translated. `executeUpdate` builds the target
 quantified-object value as
 `NewQuantifiedObjectValue(NamedCorrelationIdentifier(p.GetTargetRecordType()),
-...)` (`executor.go:4110-4112`), and the SET right-hand sides are correlated to
+...)` (`executor.go:4122-4124`), and the SET right-hand sides are correlated to
 it. Re-spelling `upd.Target` alone would leave `SET name = name` bound to a
 correlation nobody publishes.
 
@@ -897,7 +897,7 @@ construction, and `UpdateExpression.java:100-105` correlates the transforms to
 the SOURCE quantifier only. Go's coupling is its own, originating at
 `logical_predicate.go:7117` where `buildSelectScope` takes the bare table name
 as the alias. "Rebase the transforms onto the new identifier" would preserve
-that divergence while working around it. INSERT has no such coupling: `executor.go:3962`
+that divergence while working around it. INSERT has no such coupling: `executor.go:3974`
 resolves ITS target through the tolerant `GetRecordType` -- an INSERT-only
 path, not the general tolerance an earlier draft read it as.
 

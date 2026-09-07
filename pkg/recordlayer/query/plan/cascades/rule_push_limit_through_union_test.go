@@ -1,6 +1,8 @@
 package cascades_test
 
 import (
+	"fmt"
+	"math"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades"
@@ -132,6 +134,93 @@ func TestPushLimitThroughUnion_NoOffset(t *testing.T) {
 		if branchLimit.GetLimit() != 10 {
 			t.Fatalf("branch %d limit = %d, want 10", i, branchLimit.GetLimit())
 		}
+	}
+}
+
+// TestPushLimitThroughUnion_Unbounded never turns a skip-only operator into a
+// finite branch cap. A negative limit is a sentinel, not a summand.
+func TestPushLimitThroughUnion_Unbounded(t *testing.T) {
+	t.Parallel()
+	for _, offset := range []int64{0, 1, 2, 5, math.MaxInt64} {
+		t.Run(fmt.Sprint(offset), func(t *testing.T) {
+			t.Parallel()
+			qA := expressions.ForEachQuantifier(expressions.InitialOf(pushLimitUnionScan(t, "A")))
+			qB := expressions.ForEachQuantifier(expressions.InitialOf(pushLimitUnionScan(t, "B")))
+			unionQ := expressions.ForEachQuantifier(expressions.InitialOf(pushLimitUnion(t, qA, qB)))
+			limit := pushLimitUnionLimit(t, -1, offset, unionQ)
+			results, err := cascades.FireExpressionRule(cascades.NewPushLimitThroughUnionRule(), expressions.InitialOf(limit))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(results) != 0 {
+				t.Fatalf("unbounded LIMIT with OFFSET %d must not cap union branches, got %d rewrites", offset, len(results))
+			}
+		})
+	}
+}
+
+func TestPushLimitThroughUnion_Boundaries(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name          string
+		limit, offset int64
+		wantBranch    int64 // negative means no rewrite
+	}{
+		{name: "maximum", limit: math.MaxInt64 - 1, offset: 1, wantBranch: math.MaxInt64},
+		{name: "overflow", limit: math.MaxInt64, offset: 1, wantBranch: -1},
+		{name: "zero", limit: 0, offset: 0, wantBranch: -1},
+		{name: "zero_with_skip", limit: 0, offset: 2, wantBranch: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			qA := expressions.ForEachQuantifier(expressions.InitialOf(pushLimitUnionScan(t, "A")))
+			qB := expressions.ForEachQuantifier(expressions.InitialOf(pushLimitUnionScan(t, "B")))
+			unionQ := expressions.ForEachQuantifier(expressions.InitialOf(pushLimitUnion(t, qA, qB)))
+			limit := pushLimitUnionLimit(t, tc.limit, tc.offset, unionQ)
+			results, err := cascades.FireExpressionRule(cascades.NewPushLimitThroughUnionRule(), expressions.InitialOf(limit))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantBranch < 0 {
+				if len(results) != 0 {
+					t.Fatalf("unrepresentable or empty branch cap yielded %d rewrites", len(results))
+				}
+				return
+			}
+			if len(results) != 1 {
+				t.Fatalf("finite branch cap should yield one rewrite, got %d", len(results))
+			}
+			outer := results[0].(*expressions.LogicalLimitExpression)
+			if outer.GetLimit() != tc.limit || outer.GetOffset() != tc.offset {
+				t.Fatalf("outer window changed to %d/%d", outer.GetLimit(), outer.GetOffset())
+			}
+			union := outer.GetInner().GetRangesOver().Get().(*expressions.LogicalUnionExpression)
+			for _, q := range union.GetQuantifiers() {
+				branch := q.GetRangesOver().Get().(*expressions.LogicalLimitExpression)
+				if branch.GetLimit() != tc.wantBranch || branch.GetOffset() != 0 {
+					t.Fatalf("branch window = %d/%d, want %d/0", branch.GetLimit(), branch.GetOffset(), tc.wantBranch)
+				}
+			}
+		})
+	}
+}
+
+func TestPushLimitThroughUnion_RuntimeCap(t *testing.T) {
+	t.Parallel()
+	qA := expressions.ForEachQuantifier(expressions.InitialOf(pushLimitUnionScan(t, "A")))
+	qB := expressions.ForEachQuantifier(expressions.InitialOf(pushLimitUnionScan(t, "B")))
+	unionQ := expressions.ForEachQuantifier(expressions.InitialOf(pushLimitUnion(t, qA, qB)))
+	cap := &values.ConstantValue{Value: int64(4), Typ: values.NotNullLong}
+	limit, err := expressions.NewRuntimeLogicalLimitExpression(cap, 2, unionQ)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := cascades.FireExpressionRule(cascades.NewPushLimitThroughUnionRule(), expressions.InitialOf(limit))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("runtime cap must not be replaced by a static branch limit: %d rewrites", len(results))
 	}
 }
 
