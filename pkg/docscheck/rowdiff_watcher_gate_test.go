@@ -173,11 +173,12 @@ func TestRowdiffWatcherBehaviour(t *testing.T) {
 // and the cardinality is identical. That is the same cancellation one level up,
 // which is why this compares LABELS. The count comparison it replaced was not
 // blind — `len(got) == len(expected)` compares lines against distinct entries,
-// so a full population plus one duplicate is 73 against 72 and it did return an
-// error. What it could not do is SAY anything: both lists came back empty and
-// the message named no label, so the one state it detected was the one state it
-// could not describe. And nothing drove it, so that was never visible. A
-// repeated label is its own state now, with its own message and its own case —
+// so a full population of N labels plus one duplicate is N+1 lines against N
+// distinct entries, and it did return an error. What it could not do is SAY
+// anything: both lists came back empty and the message named no label, so the
+// one state it detected was the one state it could not describe. And nothing
+// drove it, so that was never visible. A repeated label is its own state now,
+// with its own message and its own case —
 // the gain is diagnosis and coverage, not detection, and the first draft of this
 // comment claimed detection because "the arithmetic is gone" felt like it needed
 // a stronger justification than it did.
@@ -398,11 +399,15 @@ func TestRowdiffWatcherArmCensus(t *testing.T) {
 		// no sections.
 		plain string
 		// header pins the two counts the message opens with. They are the evidence
-		// for every claim made about this gate — "73 against 72" is the whole
-		// argument for one of them — and nothing asserted them: swapping the two
-		// arguments, or deleting the header outright, left all ten cases green.
+		// for every claim made about this gate — the argument that an exact count
+		// still misses a substitution is entirely these two numbers — and nothing
+		// asserted them: swapping the two arguments, or deleting the header
+		// outright, left all ten cases green.
 		//
-		// Deleting the header now reddens all five erroring cases. SWAPPING the two
+		// Deleting the header reddens all five erroring cases, and so does reporting
+		// ten too many arms — the shape a substring match let through, since
+		// "2 arms ran, 3 pinned" is a substring of "12 arms ran, 3 pinned". The whole
+		// first line is compared, not a fragment of it. SWAPPING the two
 		// counts reddens three, not five, and the two it cannot reach are the ones
 		// where the counts are EQUAL — 3 ran against 3 pinned, where a swap is the
 		// identity. That is a property of the fixtures, not a hole to be closed by
@@ -456,8 +461,15 @@ func TestRowdiffWatcherArmCensus(t *testing.T) {
 				t.Fatalf("checkArms(%v) = nil, want an error", armLabels(tc.out))
 			}
 			msg := err.Error()
-			if tc.header != "" && !strings.Contains(msg, tc.header) {
-				t.Errorf("checkArms error = %q, want the header %q", msg, tc.header)
+			// The WHOLE first line, not a substring of it. `Contains` on "2 arms ran,
+			// 3 pinned" also matches "12 arms ran, 3 pinned", so a regression adding ten
+			// to the reported count satisfies every one of these assertions — a count
+			// pinned by a substring is not pinned.
+			if tc.header != "" {
+				want := "rowdiff_watcher_suite.sh arm population differs: " + tc.header + "."
+				if got, _, _ := strings.Cut(msg, "\n"); got != want {
+					t.Errorf("checkArms header = %q, want %q", got, want)
+				}
 			}
 			if tc.plain != "" && !strings.Contains(msg, tc.plain) {
 				t.Errorf("checkArms error = %q, want it to contain %q", msg, tc.plain)
