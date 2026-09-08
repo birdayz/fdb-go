@@ -411,3 +411,50 @@ func TestIntegration_StrictFirstOrDefaultRequest(t *testing.T) {
 		}
 	}
 }
+
+func TestIntegration_DefaultEvaluationContext(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"first", "strict", "all"} {
+		for _, empty := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/empty=%v", kind, empty), func(t *testing.T) {
+				t.Parallel()
+				store := setupStore(t)
+				if !empty {
+					insertOrders(t, store, &gen.Order{OrderId: proto.Int64(1)})
+				}
+				scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
+				inner := mustExecutorConstruct(plans.NewRecordQueryMapPlan(scan, &values.ConstantValue{
+					Value: int64(11), Typ: values.NullableLong,
+				}))
+				plan := defaultContextPlan(t, kind, inner, &values.ParameterValue{Ordinal: 1, Typ: values.NullableLong})
+				_, err := testDB.Run(context.Background(), func(rtx *recordlayer.FDBRecordContext) (any, error) {
+					s, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).SetSubspace(testSubspace(t)).Open()
+					if err != nil {
+						return nil, err
+					}
+					cur, err := ExecutePlan(context.Background(), plan, s, EmptyEvaluationContext().WithParams([]any{int64(99)}), nil,
+						recordlayer.DefaultExecuteProperties())
+					if err != nil {
+						return nil, err
+					}
+					defer cur.Close()
+					rows, err := CollectAll(context.Background(), cur)
+					if err != nil {
+						return nil, err
+					}
+					want := int64(11)
+					if empty {
+						want = 99
+					}
+					if len(rows) != 1 || len(rows[0].Positional.Slots) != 1 || rows[0].Positional.Slots[0] != want {
+						t.Fatalf("FDB default rows %v, want [%d]", rows, want)
+					}
+					return nil, nil
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+			})
+		}
+	}
+}

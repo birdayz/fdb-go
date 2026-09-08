@@ -4617,16 +4617,23 @@ func executeTableFunction(
 	if result == nil {
 		return applySkipLimit(recordlayer.Empty[QueryResult](), props.Skip, props.ReturnedRowLimit), nil
 	}
+	var elementHandle values.ExactTypeHandle
+	if elementType := arrayElementType(sv); elementType != nil {
+		elementHandle, err = values.SnapshotExactType(elementType)
+		if err != nil {
+			return nil, err
+		}
+	}
 	list, ok := result.([]any)
 	if !ok {
 		return applySkipLimit(
-			recordlayer.FromListWithContinuation([]QueryResult{{Positional: explodeElementRow(result, arrayElementType(sv))}}, continuation),
+			recordlayer.FromListWithContinuation([]QueryResult{{Positional: explodeElementRow(result, elementHandle)}}, continuation),
 			props.Skip, props.ReturnedRowLimit,
 		), nil
 	}
 	items := make([]QueryResult, len(list))
 	for i, elem := range list {
-		items[i] = QueryResult{Positional: explodeElementRow(elem, arrayElementType(sv))}
+		items[i] = QueryResult{Positional: explodeElementRow(elem, elementHandle)}
 	}
 	return applySkipLimit(recordlayer.FromListWithContinuation(items, continuation), props.Skip, props.ReturnedRowLimit), nil
 }
@@ -4655,9 +4662,17 @@ func executeExplode(
 	// once from the plan's result type so every emitted row carries a
 	// PositionalRow of that schema. Nil unless with-ordinality.
 	var ordType *values.RecordType
+	var elementHandle values.ExactTypeHandle
 	if p.IsWithOrdinality() {
 		if rt, ok := p.GetResultType().(*values.RecordType); ok {
 			ordType = rt
+		}
+	} else {
+		// The result Value already owns the frozen element handle. Recover it
+		// once, not by re-snapshotting an ordinary Type for every array element.
+		elementHandle, err = values.ExactTypeForValue(p.GetResultValue())
+		if err != nil {
+			return nil, err
 		}
 	}
 	list, ok := result.([]any)
@@ -4671,7 +4686,7 @@ func executeExplode(
 			), nil
 		}
 		return applySkipLimit(
-			recordlayer.FromListWithContinuation([]QueryResult{{Positional: explodeElementRow(result, p.GetElementType())}}, continuation),
+			recordlayer.FromListWithContinuation([]QueryResult{{Positional: explodeElementRow(result, elementHandle)}}, continuation),
 			props.Skip, props.ReturnedRowLimit,
 		), nil
 	}
@@ -4687,53 +4702,51 @@ func executeExplode(
 			items[i] = explodeOrdinalityResult(ordType, elem, i+1)
 			continue
 		}
-		items[i] = QueryResult{Positional: explodePlanElementRow(p, elem, i)}
+		row, rowErr := explodePlanElementRow(p, elementHandle, elem, i)
+		if rowErr != nil {
+			return nil, rowErr
+		}
+		items[i] = QueryResult{Positional: row}
 	}
 	return applySkipLimit(recordlayer.FromListWithContinuation(items, continuation), props.Skip, props.ReturnedRowLimit), nil
 }
 
-// explodePlanElementRow materializes one ordinary Explode element against the
-// exact row type the plan admitted. Most elements use explodeElementRow's
-// representation-independent structural check. There is one deliberately
-// narrower authority for a literal record array after FinalizePlan: the
-// RecordConstructorValue evaluates to a synthetic proto.Message whose
-// descriptor canonicalizes every field nullable, while the already-admitted
-// literal row can contain NOT NULL fields. That descriptor is nevertheless
-// authoritative only when it is pointer-identical to the descriptor stamped
-// on the exact array element constructor that produced this element.
-//
-// The source constructor must still have exactly the frozen plan element type.
-// A later width/order/type/nullability mutation therefore loses this arm and
-// reaches the generic strict path, where the descriptor-derived row remains
-// incompatible with the plan layout. A structurally identical message from a
-// different type repository likewise has a different descriptor pointer and
-// is never trusted here.
-func explodePlanElementRow(p *plans.RecordQueryExplodePlan, elem any, elementIndex int) *PositionalRow {
+// explodePlanElementRow materializes an element against the frozen plan type.
+// A literal constructor's fields must still match that type: broader storage
+// admission must not hide a mutation of the source value graph. Its own stamped descriptor
+// supplies a fast path; independent equivalent descriptors use ordinary storage
+// admission, just as Java can evaluate one plan under different TypeRepositories.
+func explodePlanElementRow(p *plans.RecordQueryExplodePlan, elementHandle values.ExactTypeHandle, elem any, elementIndex int) (*PositionalRow, error) {
 	if p == nil {
-		return explodeElementRow(elem, nil)
+		return explodeElementRow(elem, elementHandle), nil
 	}
 	message, isMessage := elem.(proto.Message)
 	if !isMessage || message == nil || isNilProtoMessage(message) {
-		return explodeElementRow(elem, p.GetElementType())
+		return explodeElementRow(elem, elementHandle), nil
 	}
 	array, isArrayConstructor := p.GetCollectionValue().(*values.ArrayConstructorValue)
 	if !isArrayConstructor || elementIndex < 0 || elementIndex >= len(array.Elements) {
-		return explodeElementRow(elem, p.GetElementType())
+		return explodeElementRow(elem, elementHandle), nil
 	}
 	constructor, isRecordConstructor := array.Elements[elementIndex].(*values.RecordConstructorValue)
-	declared, isDeclaredRecord := p.GetElementType().(*values.RecordType)
-	if !isRecordConstructor || !isDeclaredRecord || declared == nil ||
-		constructor.MessageDescriptor() == nil ||
-		constructor.MessageDescriptor() != message.ProtoReflect().Descriptor() ||
-		!constructor.Type().Equals(declared) {
-		return explodeElementRow(elem, p.GetElementType())
+	declared, isDeclaredRecord := values.SharedExactType(elementHandle).(*values.RecordType)
+	if !isRecordConstructor || !isDeclaredRecord || declared == nil {
+		return explodeElementRow(elem, elementHandle), nil
+	}
+	// A present constructor is non-null even when the array admits NULL
+	// elements. Only root nullability is reconciled; field drift stays loud.
+	if !values.WithNullability(constructor.Type(), true).Equals(values.WithNullability(declared, true)) {
+		return nil, layoutBindingError(values.LayoutTypeMismatch, "explode source constructor changed its frozen element type")
+	}
+	if constructor.MessageDescriptor() == nil || constructor.MessageDescriptor() != message.ProtoReflect().Descriptor() {
+		return explodeElementRow(elem, elementHandle), nil
 	}
 	row := protoToPositional(message)
 	if row == nil || len(row.Slots) != len(declared.Fields) {
-		return explodeElementRow(elem, p.GetElementType())
+		return explodeElementRow(elem, elementHandle), nil
 	}
 	row.Type = declared
-	return row
+	return row, nil
 }
 
 // explodeOrdinalityResult builds a WITH-ORDINALITY box output row: a
@@ -4779,9 +4792,11 @@ func scalarPositionalRowOfType(v any, typ values.Type) *PositionalRow {
 // an alphabetical (or map-iteration) order, or a reference baked at ordinal i
 // silently reads a different field. Any other (scalar) element wraps in the
 // 1-slot `_0` bare-scalar shape. elemType is the array element type (declared
-// RecordType); nil/non-record falls back to sorted names (best-effort — a baked
+// RecordType recovered from its exact handle); nil/non-record falls back to
+// sorted names (best-effort — a baked
 // ordinal against an unknown declared order cannot be made sound here).
-func explodeElementRow(elem any, elemType values.Type) *PositionalRow {
+func explodeElementRow(elem any, elementHandle values.ExactTypeHandle) *PositionalRow {
+	elemType := values.SharedExactType(elementHandle)
 	m, ok := elem.(map[string]any)
 	if ok {
 		if rt, isRT := elemType.(*values.RecordType); isRT && len(rt.Fields) > 0 {
@@ -4807,18 +4822,17 @@ func explodeElementRow(elem any, elemType values.Type) *PositionalRow {
 	// proto.Message. Treating it as a scalar would wrap ELEM in `_0`, while the
 	// Explode plan's exact carrier is the ELEM record itself. Materialize it in
 	// descriptor order using the same record-row authority as a stored scan.
-	// Stamp the declared element type only after proving the entire structural
-	// row equal modulo the descriptor-vs-logical top-level record name. A width,
-	// leaf/nested type, or nullability drift keeps the independently derived
-	// anonymous type and therefore fails loudly when the plan layout attaches.
+	// The field reader owns descriptor compatibility, including nullable array
+	// wrappers and logical nullability that protobuf presence cannot express.
+	// Incompatible declarations keep the descriptor-derived carrier and fail
+	// normal layout attachment rather than being silently stamped.
 	if message, isMessage := elem.(proto.Message); isMessage && message != nil && !isNilProtoMessage(message) {
 		row := protoToPositional(message)
 		declared, isRecord := elemType.(*values.RecordType)
 		if row == nil || row.Type == nil || !isRecord || declared == nil {
 			return row
 		}
-		declaredAnonymous := values.NewRecordType("", declared.Nullable, declared.Fields)
-		if row.Type.Equals(declaredAnonymous) {
+		if values.ProtoRecordDescriptorCompatible(message.ProtoReflect().Descriptor(), elementHandle) {
 			row.Type = declared
 		}
 		return row
@@ -4854,12 +4868,12 @@ func arrayElementType(v values.Value) values.Type {
 	return nil
 }
 
-// resultFromValue wraps a single Value's evaluation (against a nil row — a
-// constant default) into a Positional QueryResult: a RecordConstructor evaluates
+// resultFromValue wraps a single Value's binding-context evaluation into a
+// Positional QueryResult: a RecordConstructor evaluates
 // field-by-field into dense ordinal slots (a duplicate output name keeps both
 // slots), any other (scalar) value wraps in a 1-slot `_0` row. Used by the
 // default-on-empty producers (FirstOrDefault / DefaultOnEmpty).
-func resultFromValue(v values.Value) (QueryResult, error) {
+func resultFromValue(v values.Value, rowCtx *values.RowEvalContext) (QueryResult, error) {
 	if rc, ok := v.(*values.RecordConstructorValue); ok {
 		resultType, err := exactRuntimeRecordType(
 			"record-constructor result", rc.Type(), len(rc.Fields))
@@ -4868,7 +4882,7 @@ func resultFromValue(v values.Value) (QueryResult, error) {
 		}
 		slots := make([]any, len(rc.Fields))
 		for i, f := range rc.Fields {
-			fv, err := f.Value.Evaluate(nil)
+			fv, err := f.Value.Evaluate(rowCtx)
 			if err != nil {
 				return QueryResult{}, err
 			}
@@ -4876,11 +4890,11 @@ func resultFromValue(v values.Value) (QueryResult, error) {
 		}
 		return QueryResult{Positional: &PositionalRow{Type: resultType, Slots: slots}}, nil
 	}
-	val, err := v.Evaluate(nil)
+	val, err := v.Evaluate(rowCtx)
 	if err != nil {
 		return QueryResult{}, err
 	}
-	return QueryResult{Positional: scalarPositionalRow(val)}, nil
+	return QueryResult{Positional: scalarPositionalRowOfType(val, v.Type())}, nil
 }
 
 // isBareScalarRow reports whether pos is the 1-slot `_0` wrapper scalarPositionalRow

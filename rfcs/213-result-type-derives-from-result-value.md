@@ -17,13 +17,15 @@ sequence anticipated:
 - The unconditional plan-level `UnknownType` stub inventory is **zero**.
 - Aggregate-index construction passes an exact candidate-derived result type;
   the former call-site `UnknownType` stub inventory is **zero**.
-- The result-type consumer classifier measures **FORWARD 1 / GUARDED 10 /
+- The result-type consumer classifier measures **FORWARD 1 / GUARDED 9 /
   PROPAGATED 27 / RAW 0** (the pinned test's comment carries every movement
   since this sentence was first written: 14/29 at that time; RFC-235 retired
   three reads; RFC-242 retired three more — `planColumnNamesWithMD` and
   `physicalPlanColumnNames`, both GUARDED tail reads of a union leg's row, and
   `columnRenameValue`'s PROPAGATED read — by deleting the union re-alignment
-  they served). `RAW == 0` remains the correctness ratchet. The
+  they served; RFC-243 merged the default materializers, retiring the GUARDED
+  read in `defaultOnEmptyResultFromValue` while retaining the PROPAGATED read
+  in shared `defaultResultFromValue`). `RAW == 0` remains the correctness ratchet. The
   post-implementation growth is executor exact-layout admission (projection,
   UPDATE, aggregate index, multi-intersection, and DefaultOnEmpty) plus VALUES
   passing its declared type to the runtime validator. The descendant producer
@@ -34,7 +36,7 @@ sequence anticipated:
   from `scan.ProvidedOutputLayout().Carrier()`: the retired declared result-type
   read could not identify the selected evaluation phase after exact filter
   normalization and made every PK point probe over-decline. One further read lets
-  `firstOrDefaultResultFromValue` materialize an empty arm in the plan's exact
+  `defaultResultFromValue` materialize an empty arm in the plan's exact
   record/layout carrier, or carry the declared scalar type into its positional
   row. None of this growth is a new unresolved producer.
 - `TestResultTypeStubInventoryIsCurrent`,

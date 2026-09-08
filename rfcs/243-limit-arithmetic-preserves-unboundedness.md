@@ -419,3 +419,167 @@ Re-inspectable session artifacts: `/tmp/bughunt-stress-before-{5,6,7,8}` and
 `.bep.jsonl`, `.md5` and `.check.log`. They replace the earlier after runs that
 predated the follow-up. The committed tables retain the conclusions independently
 of those temporary logs; the regression tests retain the correctness proofs.
+
+## Decision 14 — default expressions retain their evaluation context
+
+A further core-API probe found that both empty-input operators evaluate defaults
+with `Evaluate(nil)`, including each record-constructor field. Java's
+FirstOrDefaultPlan:110 and DefaultOnEmptyPlan:117 instead evaluate with the
+execution's store/context. Go consequently replaces bound parameters and outer
+correlations with NULL and reads wall time instead of the statement clock.
+The 15-case `TestDefaultEvaluationContext` probe (three operators × five default
+shapes) failed in every arm before the fix. The clock assertion expects the
+scalar function's documented formatted string, not a Go time.Time.
+
+Implementation: thread the binding-only `evalCtx.RowContext()` through default
+materialization, including the per-field constructor path. Never bind a consumed
+child row as the default's frontier. Keep evaluation lazy on empty input, keep
+strict/non-strict request and continuation contracts unchanged, and propagate
+evaluation errors. Preserve duplicate constructor fields by ordinal.
+
+The same probe exposes a second arm: a non-constructor RECORD default accepted
+only NULL, although Java accepts an evaluated record. The shared materializer
+copies an evaluated ordinal record or protobuf message into the exact declared
+output carrier. Positional rows must agree in width and type, permitting root
+nullability reconciliation; protobuf rows use the storage-shape admission below.
+There is no name-map fallback, fabricated correlation identity, or re-evaluation
+per field. A record NULL has an absent-current marker; a present all-NULL record
+remains present. Scalar defaults retain their declared type.
+
+The presence matrix also caught `normalizeDefaultOnEmptyResult` dropping a
+child's whole-record NULL marker while replacing its layout. Preserve/rebase
+that carrier-level absence to the parent's identity layout; never forward the
+child's source-window identities. `TestDefaultOnEmptyPreservesNullChild` pins
+this independently of default construction.
+
+The binding-only context does not invent a frontier, but an already-bound free
+correlation remains valid even when its identifier equals the physical child
+edge's alias. Java's correlated-to computation reports this dependency; it does
+not forbid it. The live-JVM/core probe pins eight value comparisons (two
+operators × empty/nonempty × parameter/same-edge-alias correlation), all 11 for
+nonempty inputs and 99 for empty inputs. Java correlation bindings hold
+QueryResult; parameter bindings hold the raw scalar. An alias-exclusion gate
+would reject inputs Java accepts and is not added.
+
+The shared helper preserves nil-default and nil-context behavior. The complete
+executor suite caught a removed nil-default guard through the existing exact
+mapped-empty-record regression; restoring the guard fixed the panic. The
+result-type census moves GUARDED 10→9 when the duplicate DefaultOnEmpty helper
+is removed; PROPAGATED remains 27 because FirstOrDefault's read survives in the
+shared helper. RFC-213 and its unit ratchet record this population change while
+retaining RAW=0.
+
+### Protobuf storage admission
+
+The initial protobuf comparison reconstructed declared fields with
+`NewRecordType`, which panicked on duplicate names. The same pattern already
+existed in `explodeElementRow`; that bridge also rejected a valid present object
+under a nullable record declaration. A root-only comparison was insufficient:
+a live JVM probe accepts and reads Order.tags `[a]` under a nullable ARRAY
+declaration backed by a plain repeated field, while Go rejected the record.
+`NullableArrayTypeUtils.unwrapIfArray` leaves an existing List alone under
+either nullability and unwraps a Message only for a nullable ARRAY.
+
+`ProtoRecordDescriptorCompatible` now reuses values' existing cached descriptor
+shape checker through an exact handle. The array rule is
+`!wrapped || expected.nullable`. Scalar/record logical nullability is already
+independent of protobuf presence: DDL emits optional fields even for NOT NULL.
+Widths and recursive value/storage shapes remain checked, including the existing
+storage aliases. Logical aliases do not have to equal descriptor field names;
+reads address ordinals. A record's own name is provenance, but logical **field**
+names remain part of Field equality. Unwrapped storage cannot distinguish an
+absent array from an empty array; both are `[]`, the same limitation Java has.
+
+The JVM duplicate-name probe rejects logical type construction with
+IllegalArgumentException (Multiple entries with same key). Go's exact handles
+also serve machinery-owned ordinal rows and intentionally admit duplicate
+columns. Protobuf output admission therefore checks name unambiguity explicitly,
+recursively, without reconstructing the type. It reports a typed runtime error
+rather than panicking; this differs from Java in rejection timing, not in which
+Java-accepted inputs it admits. Raw ordinal constructors retain duplicate names.
+Name unambiguity shares the immutable descriptor-verdict memo, avoiding a name
+set allocation per output row. Field reads retain their existing ordinal/name
+contract rather than gaining an additional duplicate-name restriction.
+
+Default protobuf rows and generic Explode/Stream materialization use this single
+admission authority and stamp the exact declared carrier only on success. The
+literal-constructor fast path retains its frozen source-type fence: width,
+field order, or field-nullability mutation is a typed failure, never a fall-through to
+broader storage admission. Descriptor pointer identity alone is not a semantic
+mismatch. A live JVM regression executes one inline-record Explode plan against
+two independent TypeRepositories and verifies both descriptor identities and
+`[[7,9],[7,9]]`. The Go conformance companion and foreign-descriptor unit arm
+accept equivalent repositories; the source-mutation negative arms stay strict.
+
+The final review caught another valid input: a present literal constructor is
+non-null even when the declared array element type permits NULL. The source
+fence must reconcile root nullability without relaxing any field. The committed
+JVM probe now runs both root nullabilities through both independent repositories;
+it confirmed Java success before the Go root-fence fix. The direct
+`TestExecuteExplode_NullableLiteralElement` pin drives the same shape. This proof
+uses a present literal with an explicitly nullable element declaration, not a
+claim that Java's immutable array constructor can contain a null value.
+
+Materialization also must not reconstruct an exact handle per element. The
+executor now obtains the frozen handle directly from the plan's result Value
+once per cursor and passes it through literal and generic row admission. The
+Stream arm likewise snapshots its element type outside the row loop. A profile
+of the retained 128-row `TestExecuteExplode_ProtoTypeAllocation` fixture located
+the repeated snapshot/intern walk, and restoring that walk mutation-fails its
+allocation ceiling (six allocations per materialized fixture row plus a small
+fixed cursor allowance). `ExactTypeHandle.Type()` already returns a shared
+thaw; this was redundant re-snapshotting, not fresh thawing on every read. The
+allocation pin exercises the executor, separately from the zero-allocation warm
+descriptor-admission pin.
+
+The new test populations are 15 context cases, six lazy-error cases, 42 record
+materialization cases, six real-FDB empty/nonempty cases, and 24 array-storage
+cases (two nesting depths × wrapped/plain × nullable/non-nullable ×
+absent/empty/populated). The storage cases exercise both output admission and
+FieldValue descent, including arrays under two nested records. Additional pins
+cover malformed declarations, duplicate names at depth, scalar/enum storage
+aliases, nil descriptors/handles, warm-cache allocation, NULL primary rows,
+source mutation, and independent repositories. Fuzz targets cover record
+default materialization and concurrent descriptor-verdict replacement.
+
+This is core-API reach, not a claim of new SQL wrong-row reach: SQL currently
+uses typed literal defaults in its generated scalar/outer legs. Existing SQL
+scalar-subquery, outer-join, and UNNEST cases remain controls. Live Java/core
+checks are retained in `continuation_conformance_test.go`, not throwaway probes.
+The final review/full-suite/stress checkpoint for this decision follows below;
+the earlier committed stress table describes decisions 1–13, not this follow-up.
+
+### Decision 14 draft checkpoint
+
+The implementation and its final delta received Graefe, Torvalds, and independent
+Codex ACKs. Both final review findings (valid nullable literal roots and per-row
+exact-type re-snapshotting) have retained regressions and compiled mutation reds.
+The misleading Explode getter fallback comments were then corrected; no further
+runtime behavior changed after the full uncached run.
+
+Verification at this checkpoint:
+
+- Full non-stress Bazel suite: **91/91 freshly executed, passing**, with source
+  checksums unchanged across the run. `just test` also passes 91/91. After the
+  comment correction, `just test` passes 91/91 again (two executed, 89 cached).
+- Focused race run: executor and values targets both pass uncached, including
+  the new context, record-shape, nested-array, allocation, and fuzz-seed pins.
+- Three live JVM specs pass with 18 explicit result lines: eight bound-default
+  comparisons, eight protobuf-shape cases, and two root-nullability cases each
+  exercising two independent type repositories in both engines.
+- `FuzzProtoRecordDescriptorAdmission`: 29,604,211 executions over 30 seconds;
+  `FuzzDefaultRecordMaterialization`: 11,834,566 executions over 30 seconds.
+- Five final mutations are present, compile, and fail the intended assertions:
+  raw root equality, restored per-row snapshot, old array-nullability predicate,
+  removed duplicate-name gate, and disabled source-field fence. All are restored.
+  The earlier default-context and whole-record-presence mutations also failed
+  their retained regressions.
+- Gazelle, module tidy, SQL coverage generation, and whitespace checks pass.
+
+Session artifacts are `/tmp/bughunt-admission-final-{full,java,mutations-summary}.log`,
+`/tmp/bughunt-admission-{race,comment-just-test}.log`, and the corresponding checksum
+files. The tests and the evidence populations above remain in the repository.
+**The final-source matched million-row comparison is still outstanding.** The
+preceding stress tables are explicitly for decisions 1–13; they are not promoted
+to evidence for decision 14. The TODO checkpoint stays open for that work while
+the owner reviews the draft PR.

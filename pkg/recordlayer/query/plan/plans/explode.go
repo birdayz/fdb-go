@@ -29,8 +29,8 @@ type RecordQueryExplodePlan struct {
 	// instance). A bare leaf that stands as its own Cascades expression must
 	// present a consistent row identity across repeated interrogations, the role
 	// physicalExplodeWrapper's fresh-per-call GetResultValue could not (RFC-184
-	// W2). nil for struct-literal test plans that bypass the constructor —
-	// GetResultValue falls back to PlanExprBase's fresh QOV there.
+	// W2). nil for struct-literal test plans that bypass the constructor;
+	// GetResultValue returns nil rather than inventing a row identity there.
 	resultValue values.Value
 }
 
@@ -168,8 +168,8 @@ func (p *RecordQueryExplodePlan) WithQuantifiers(qs []expressions.Quantifier) (e
 
 // GetResultValue returns the explode's STABLE per-instance result value — the
 // single correlation identity a bare explode carries as its own memo expression
-// (RFC-184 W2). Falls back to PlanExprBase (a fresh QOV per call) for
-// struct-literal test plans that bypass the constructor (resultValue is nil).
+// (RFC-184 W2). Struct-literal test plans that bypass the constructor return
+// nil; only the checked constructor establishes an exact result identity.
 func (p *RecordQueryExplodePlan) GetResultValue() values.Value {
 	return p.resultValue
 }

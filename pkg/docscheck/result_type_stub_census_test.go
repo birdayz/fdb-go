@@ -468,7 +468,10 @@ func TestResultTypeConsumersFailClosed(t *testing.T) {
 	// constructors assert it, so nothing reads a leg's declared type to compare
 	// legs any more. The stable census moves GUARDED 12 -> 10 and
 	// PROPAGATED 28 -> 27.
-	const wantForward, wantGuarded, wantPropagated = 1, 10, 27
+	// RFC-243 merges the default materializers: the GUARDED read in
+	// defaultOnEmptyResultFromValue disappears, while the PROPAGATED read in
+	// firstOrDefaultResultFromValue survives in shared defaultResultFromValue.
+	const wantForward, wantGuarded, wantPropagated = 1, 9, 27
 	if counts["FORWARD"] != wantForward || counts["GUARDED"] != wantGuarded || counts["PROPAGATED"] != wantPropagated {
 		t.Fatalf("consumer split moved: FORWARD=%d (want %d) GUARDED=%d (want %d) "+
 			"PROPAGATED=%d (want %d), total %d.\n"+

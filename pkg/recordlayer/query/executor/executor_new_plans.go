@@ -1429,7 +1429,7 @@ func executeFirstOrDefault(
 	if result.GetNoNextReason().IsOutOfBand() {
 		return checkpointAfterOutOfBand(result)
 	}
-	qr, err := firstOrDefaultResultFromValue(p, p.GetDefaultValue())
+	qr, err := defaultResultFromValue(p, p.GetDefaultValue(), evalCtx)
 	if err != nil {
 		return nil, err
 	}
@@ -1439,67 +1439,102 @@ func executeFirstOrDefault(
 	return newSingleResultCursor(qr), nil
 }
 
-// firstOrDefaultResultFromValue materializes the empty arm in the plan's exact
-// output carrier. A record NULL is not a scalar `_0 UNKNOWN` wrapper and it is
-// not a matched record whose fields merely happen to be NULL: it is an exact
-// record-shaped physical shell with an explicit absent-current marker.
-func firstOrDefaultResultFromValue(
-	p *plans.RecordQueryFirstOrDefaultPlan,
+// defaultResultFromValue evaluates an empty arm using bindings, never a consumed
+// child frontier. The plan owns the exact output carrier; SQL NULL records keep
+// an absent-current marker distinct from present records with all-NULL fields.
+func defaultResultFromValue(
+	p plans.RecordQueryPlan,
 	defaultValue values.Value,
+	evalCtx *EvaluationContext,
 ) (QueryResult, error) {
-	if p == nil {
-		return QueryResult{}, fmt.Errorf("FirstOrDefault default has no plan")
+	if evalCtx == nil {
+		evalCtx = EmptyEvaluationContext()
 	}
+	rowCtx := evalCtx.RowContext()
 	resultType := p.GetResultType()
-	if recordType, isRecord := resultType.(*values.RecordType); isRecord {
-		if constructor, ok := defaultValue.(*values.RecordConstructorValue); ok {
-			result, err := resultFromValue(constructor)
-			if err != nil {
-				return QueryResult{}, err
-			}
-			if result.Positional == nil || result.Positional.Type == nil ||
-				!result.Positional.Type.Equals(recordType) || len(result.Positional.Slots) != len(recordType.Fields) {
-				return QueryResult{}, fmt.Errorf(
-					"FirstOrDefault RECORD constructor type %v is incompatible with result type %s",
-					result.Positional, recordType)
-			}
-			return result, nil
-		}
+	recordType, isRecord := resultType.(*values.RecordType)
+	if !isRecord {
+		var value any
 		if defaultValue != nil {
-			value, err := defaultValue.Evaluate(nil)
+			var err error
+			value, err = defaultValue.Evaluate(rowCtx)
 			if err != nil {
 				return QueryResult{}, err
 			}
-			if value != nil {
-				return QueryResult{}, fmt.Errorf(
-					"FirstOrDefault non-constructor RECORD default evaluated to %T", value)
-			}
 		}
-		layout, err := p.ProvidedOutputLayout()
-		if err != nil {
-			return QueryResult{}, fmt.Errorf("FirstOrDefault provided output layout: %w", err)
-		}
-		row, err := NewLayoutPositionalRow(recordType, layout)
-		if err != nil {
-			return QueryResult{}, fmt.Errorf("FirstOrDefault default carrier: %w", err)
-		}
-		presence, err := values.NewOrdinalCarrierMatchPresence(layout, false)
-		if err != nil {
-			return QueryResult{}, fmt.Errorf("FirstOrDefault default presence: %w", err)
-		}
-		row.LayoutPresence = presence
-		return QueryResult{Positional: row}, nil
+		return QueryResult{Positional: scalarPositionalRowOfType(value, resultType)}, nil
 	}
 
-	var value any
-	if defaultValue != nil {
+	var datum any
+	if constructor, ok := defaultValue.(*values.RecordConstructorValue); ok {
+		result, err := resultFromValue(constructor, rowCtx)
+		if err != nil {
+			return QueryResult{}, err
+		}
+		datum = result.Positional
+	} else if defaultValue != nil {
 		var err error
-		value, err = defaultValue.Evaluate(nil)
+		datum, err = defaultValue.Evaluate(rowCtx)
 		if err != nil {
 			return QueryResult{}, err
 		}
 	}
-	return QueryResult{Positional: scalarPositionalRowOfType(value, resultType)}, nil
+	// A typed nil in an interface is still a NULL record, not a present shell.
+	if row, ok := datum.(*PositionalRow); ok && row == nil {
+		datum = nil
+	}
+	if message, ok := datum.(proto.Message); ok && isNilProtoMessage(message) {
+		datum = nil
+	}
+	layout, err := p.ProvidedOutputLayout()
+	if err != nil {
+		return QueryResult{}, err
+	}
+	row, err := NewLayoutPositionalRow(recordType, layout)
+	if err != nil {
+		return QueryResult{}, err
+	}
+	if datum != nil {
+		if message, ok := datum.(proto.Message); ok {
+			// Use the field reader's storage-shape authority. Logical field
+			// nullability is not protobuf presence, and nullable arrays may
+			// arrive as ordinary repeated fields rather than wrapper messages.
+			if !values.ProtoRecordDescriptorCompatible(message.ProtoReflect().Descriptor(), values.FlowedExactType(layout.Carrier())) {
+				return QueryResult{}, layoutBindingError(values.LayoutRuntimeShape,
+					"default protobuf descriptor disagrees with declared record type")
+			}
+			converted := protoToPositional(message)
+			converted.Type = recordType
+			datum = converted
+		}
+		if positional, ok := datum.(*PositionalRow); ok {
+			if positional.Type == nil || !values.WithNullability(positional.Type, true).Equals(values.WithNullability(recordType, true)) {
+				return QueryResult{}, layoutBindingError(values.LayoutRuntimeShape,
+					"default positional record disagrees with declared record type")
+			}
+		}
+		source, ok := datum.(values.OrdinalRow)
+		if !ok {
+			return QueryResult{}, layoutBindingError(values.LayoutRuntimeShape,
+				fmt.Sprintf("default record has non-ordinal runtime type %T", datum))
+		}
+		for i := range row.Slots {
+			field, exists := source.Get(i)
+			if !exists {
+				return QueryResult{}, layoutBindingError(values.LayoutRuntimeShape, "default record is shorter than declared type")
+			}
+			row.Slots[i] = field
+		}
+		if _, exists := source.Get(len(row.Slots)); exists {
+			return QueryResult{}, layoutBindingError(values.LayoutRuntimeShape, "default record is wider than declared type")
+		}
+	}
+	presence, err := values.NewOrdinalCarrierMatchPresence(layout, datum != nil)
+	if err != nil {
+		return QueryResult{}, err
+	}
+	row.LayoutPresence = presence
+	return QueryResult{Positional: row}, nil
 }
 
 // An out-of-band stop underneath a first-or-default is a resumable PAGE
@@ -1640,7 +1675,7 @@ func executeDefaultOnEmpty(
 		// supplier. A nil default flows a scalar NULL row.
 		var defaultRow QueryResult
 		if defaultVal := p.GetDefaultValue(); defaultVal != nil {
-			qr, err := defaultOnEmptyResultFromValue(p, defaultVal)
+			qr, err := defaultResultFromValue(p, defaultVal, evalCtx)
 			if err != nil {
 				return &errResultCursor{err: err}
 			}
@@ -1690,33 +1725,26 @@ func normalizeDefaultOnEmptyResult(
 	// that parent layout after the OrElse cursor chooses its branch.
 	row.Layout = nil
 	row.LayoutPresence = nil
-	result.Positional = &row
-	return result, nil
-}
-
-func defaultOnEmptyResultFromValue(
-	p *plans.RecordQueryDefaultOnEmptyPlan,
-	defaultValue values.Value,
-) (QueryResult, error) {
-	resultType, isRecord := p.GetResultType().(*values.RecordType)
-	if isRecord {
-		if _, isConstructor := defaultValue.(*values.RecordConstructorValue); !isConstructor {
-			value, err := defaultValue.Evaluate(nil)
-			if err != nil {
-				return QueryResult{}, err
-			}
-			if value == nil {
-				return QueryResult{Positional: NewPositionalRow(resultType)}, nil
-			}
-			return QueryResult{}, fmt.Errorf(
-				"DefaultOnEmpty non-constructor RECORD default evaluated to %T", value)
-		}
-	}
-	result, err := resultFromValue(defaultValue)
+	// Replacing the child's address layout must not turn a whole-record NULL
+	// into a present record whose fields happen to be NULL. Rebase only that
+	// carrier-level absence; the child's source-window identities do not flow.
+	_, absent, err := result.Positional.wholeObjectBinding()
 	if err != nil {
 		return QueryResult{}, err
 	}
-	return normalizeDefaultOnEmptyResult(p, result)
+	if absent {
+		layout, layoutErr := p.ProvidedOutputLayout()
+		if layoutErr != nil {
+			return QueryResult{}, layoutErr
+		}
+		presence, presenceErr := values.NewOrdinalCarrierMatchPresence(layout, false)
+		if presenceErr != nil {
+			return QueryResult{}, presenceErr
+		}
+		row.Layout, row.LayoutPresence = layout, presence
+	}
+	result.Positional = &row
+	return result, nil
 }
 
 func executeInJoin(

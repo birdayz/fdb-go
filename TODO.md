@@ -9751,3 +9751,20 @@ Total ratio of means 0.998x; no statistical speedup claim from four samples.
 All query timing ranges, exact command, review/test populations and artifact
 names are in RFC-243's "Final verification checkpoint". Initial apparent
 status-count/join slowdowns were remeasured, not dismissed from other rows.
+
+### RFC-243 decision 14 — default/context and protobuf-carrier follow-up
+
+- [ ] Complete final verification of the implemented follow-up. Bound defaults
+  now retain their evaluation context, evaluated record defaults materialize,
+  and DefaultOnEmpty preserves whole-record NULL presence. Shared values-layer
+  descriptor admission fixes duplicate-name panics and rejects malformed
+  protobuf carriers without refusing valid nullable records/arrays. JVM/core
+  probes pin binding behavior, nullable plain repeated fields, duplicate-name
+  rejection, and independent TypeRepositories. Regression matrices include
+  nested FieldValue reads and keep frozen source-constructor field mutations loud.
+  The final literal-source fence reconciles valid root nullability; a retained
+  executor allocation pin rejects re-snapshotting the frozen type per row.
+  RFC-243 decision 14 records the implementation and proof populations. Final
+  review, full-suite execution, focused race tests, and fuzzing are green.
+  Final-source matched 1M stress remains outstanding in the draft PR;
+  the preceding stress table covers decisions 1–13 only.
