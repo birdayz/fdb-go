@@ -618,6 +618,7 @@ func createPrimaryKeyIntersection(
 
 	var commonOrdering *properties.RichOrdering
 	var equalityBoundValues []values.Value
+	perLegEqualityBoundValues := make([][]values.Value, 0, len(accesses))
 	admittedComparisonKeySources := make(map[values.QuantifiedObjectValue]struct{})
 	var canonicalComparisonKeySource values.QuantifiedObjectValue
 	for _, access := range accesses {
@@ -640,11 +641,14 @@ func createPrimaryKeyIntersection(
 		} else {
 			commonOrdering = properties.MergeOrderingsForIntersection(commonOrdering, ordering)
 		}
+		var legEqualityBoundValues []values.Value
 		for value := range ordering.GetEqualityBoundValues() {
+			legEqualityBoundValues = append(legEqualityBoundValues, value)
 			if !containsIntersectionValue(equalityBoundValues, value) {
 				equalityBoundValues = append(equalityBoundValues, value)
 			}
 		}
+		perLegEqualityBoundValues = append(perLegEqualityBoundValues, legEqualityBoundValues)
 	}
 	if commonOrdering == nil {
 		return primaryKeyIntersectionBuild{}
@@ -672,8 +676,8 @@ func createPrimaryKeyIntersection(
 			// Java can represent more Value shapes than Go's executor today;
 			// declining here is the bounded, safe optimization miss.
 			if len(comparisonValues) == 0 ||
-				!comparisonKeyContainsFreePrimaryKey(
-					comparisonValues, pkValues, equalityBoundValues,
+				!comparisonKeyIdentifiesRecordInEveryLeg(
+					comparisonValues, pkValues, perLegEqualityBoundValues,
 				) {
 				continue
 			}
@@ -886,6 +890,45 @@ func implicitFixedPrimaryKeyValues(
 	return result
 }
 
+// comparisonKeyIdentifiesRecordInEveryLeg is the merge-soundness proof for a
+// primary-key intersection: within EVERY leg, the comparison key must identify
+// a record. A leg's stream is a set of records that all share the leg's own
+// equality-bound values, so the comparison key identifies a record in that leg
+// iff it contains every primary-key component the leg does not itself fix. Only
+// then does "equal comparison keys across the legs" mean "the same record", which
+// is the premise the merge cursor rests on.
+//
+// This deliberately diverges from Java's `isCompatibleComparisonKey`
+// (AbstractDataAccessRule.java), which filters the primary key with the UNION
+// of the legs' equality-bound values (`equalityBoundKeyValues` in
+// WithPrimaryKeyDataAccessRule.java). That union is too permissive and produces
+// a plan that returns wrong rows: over PRIMARY KEY (pk1, pk2) with indexes
+// (b, pk1) and (pk2), `WHERE b = 1 AND pk2 = 3` intersects the legs on the key
+// (pk1) alone — pk2 is equality-bound in the (pk2) leg, so the union drops it —
+// while the (b, pk1) leg carries several records per pk1 that differ only in
+// pk2. Measured on Java 4.12.11.0: `COVERING(TI_PK2) ∩ COVERING(TI_B_PK1)
+// COMPARE BY (_.PK1)` returns every pk2 = 3 record regardless of b
+// (conformance/pk_intersection_leg_bound_key_java_probe_test.go pins both
+// engines' answers; TODO.md section 9 books the upstream report). A component
+// fixed in ONE leg is a constant of that leg's
+// stream only; in every other leg it still varies and must be compared. The
+// per-leg proof declines the unsound merge, and the surviving single-index
+// alternative applies the other predicate as a residual filter.
+func comparisonKeyIdentifiesRecordInEveryLeg(
+	comparisonValues []values.Value,
+	pkValues []values.Value,
+	perLegEqualityBoundValues [][]values.Value,
+) bool {
+	for _, legEqualityBoundValues := range perLegEqualityBoundValues {
+		if !comparisonKeyContainsFreePrimaryKey(comparisonValues, pkValues, legEqualityBoundValues) {
+			return false
+		}
+	}
+	return true
+}
+
+// comparisonKeyContainsFreePrimaryKey is the single-leg proof: every primary-key
+// component not among equalityBoundValues must appear in the comparison key.
 func comparisonKeyContainsFreePrimaryKey(
 	comparisonValues []values.Value,
 	pkValues []values.Value,

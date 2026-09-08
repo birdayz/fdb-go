@@ -3382,6 +3382,47 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT id, val FROM T_CPK3 WHERE region = 'us' AND id >= 2 AND id < 4 ORDER BY region, id",
 		},
+		{
+			// A primary-key intersection whose legs fix DIFFERENT components of
+			// the composite primary key. Index (pk2) is equality-bound on pk2,
+			// index (b, pk1) on b; the merged ordering carries pk2 as a constant,
+			// so the only comparison key enumerated is (pk1). Java's
+			// isCompatibleComparisonKey accepts it — it subtracts the UNION of
+			// the legs' equality-bound values from the primary key — and the
+			// (b, pk1) leg holds several records per pk1 differing only in pk2,
+			// so Java answers every pk2 = 3 record regardless of b: COUNT 4 for
+			// a query whose answer is the single record (3, 3). Go's proof is
+			// per leg (comparisonKeyIdentifiesRecordInEveryLeg) and declines
+			// the merge. Live measurement of both engines:
+			// conformance/pk_intersection_leg_bound_key_java_probe_test.go.
+			// COUNT(*) is the pinned form because a one-row scalar has no row
+			// order to disagree about.
+			Name:           "pk_intersection_leg_bound_component_count",
+			SchemaTemplate: "CREATE TABLE T_PKI (pk1 BIGINT, pk2 BIGINT, b BIGINT, PRIMARY KEY (pk1, pk2)) CREATE INDEX t_pki_b_pk1 ON T_PKI (b, pk1) CREATE INDEX t_pki_pk2 ON T_PKI (pk2)",
+			SetupSqls: []string{
+				"INSERT INTO T_PKI VALUES (0, 2, 1), (0, 3, 0), (1, 4, 1), (1, 3, 0), (2, 0, 1), (2, 3, 7), (3, 3, 1), (4, 1, 1)",
+			},
+			Query: "SELECT COUNT(*) FROM T_PKI WHERE b = 1 AND pk2 = 3",
+			Divergence: &Divergence{
+				Reason:    "Java intersects the (b, pk1) and (pk2) covering scans on the comparison key (pk1) alone — pk2 is equality-bound in one leg, and isCompatibleComparisonKey subtracts the union of the legs' equality-bound values from the primary key — so it counts every pk2 = 3 record (4). Only (3, 3) satisfies b = 1 AND pk2 = 3; Go declines the unsound merge and answers 1.",
+				Direction: DivergenceJavaWrongRowsGoCorrect,
+				GoExpectedRows: [][]any{
+					{float64(1)},
+				},
+			},
+		},
+		{
+			// The same fixture with a requested ordering: Java then plans the
+			// (b, pk1) covering scan with a residual pk2 filter and both engines
+			// agree. The control that keeps the divergence entry above honest —
+			// if this one ever diverges, the fixture moved, not the planner.
+			Name:           "pk_intersection_leg_bound_component_ordered_control",
+			SchemaTemplate: "CREATE TABLE T_PKI2 (pk1 BIGINT, pk2 BIGINT, b BIGINT, PRIMARY KEY (pk1, pk2)) CREATE INDEX t_pki2_b_pk1 ON T_PKI2 (b, pk1) CREATE INDEX t_pki2_pk2 ON T_PKI2 (pk2)",
+			SetupSqls: []string{
+				"INSERT INTO T_PKI2 VALUES (0, 2, 1), (0, 3, 0), (1, 4, 1), (1, 3, 0), (2, 0, 1), (2, 3, 7), (3, 3, 1), (4, 1, 1)",
+			},
+			Query: "SELECT pk1, pk2, b FROM T_PKI2 WHERE pk2 = 3 AND b = 1 ORDER BY pk1, pk2",
+		},
 
 		// ===== Multi-aggregate single SELECT =====
 		// Pins type-promotion + aggregator wiring when several aggregates
