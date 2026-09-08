@@ -579,10 +579,9 @@ Verification at this checkpoint:
 Session artifacts are `/tmp/bughunt-admission-final-{full,java,mutations-summary}.log`,
 `/tmp/bughunt-admission-{race,comment-just-test}.log`, and the corresponding checksum
 files. The tests and the evidence populations above remain in the repository.
-**The final-source matched million-row comparison is still outstanding.** The
-preceding stress tables are explicitly for decisions 1–13; they are not promoted
-to evidence for decision 14. The TODO checkpoint stays open for that work while
-the owner reviews the draft PR.
+This draft checkpoint preceded the final-source matched million-row comparison.
+The preceding stress tables remain explicitly for decisions 1–13; the final
+readiness checkpoint below supplies the separate decision-14 measurements.
 
 ### CI allocation-measurement isolation
 
@@ -685,5 +684,128 @@ No allocation threshold or production code changed in this CI correction.
 Final artifacts are `/tmp/pr771-isolation-final-just-test.log`,
 `/tmp/pr771-isolation-closure-{race,coverage,fuzz}.log`,
 `/tmp/pr771-hnsw-{isolated-repeat,final-race,allocation-mutation}.log`, and
-`/tmp/pr771-helper-guard-mutations.log`. Final-source matched million-row stress
-and GitHub CI/review are the remaining PR gates, not inferred from earlier runs.
+`/tmp/pr771-helper-guard-mutations.log`. At this checkpoint, final-source matched
+million-row stress and GitHub CI/review were still pending. The final readiness
+checkpoint below records their completion rather than inferring it from these
+earlier runs.
+
+
+## Final readiness checkpoint — decision 14 and PR #771
+
+Measured code head `0d45fbcaa4fe7876044c752df53730d388af166b` versus
+`42a79173557936707a32a969e51489667db6ff01` (the merge-base on 2026-09-08).
+Four ordinary million-row runs per side, sequential ABBA then BAAB, on the same
+`/home` XFS filesystem at 98% utilization (about 25–27 GiB free). Recorded
+one-minute host loads were 1.48–4.15; no concurrent local heavy test/build work.
+All eight runs passed freshly, with identical 24 RUN names, 23 query row counts,
+and printed EXPLAIN strings. Per-run source checksums were unchanged. The
+command is the earlier matched-stress command, without profiler flags.
+
+Baseline total seconds: 179.00 / 178.83 / 178.07 / 177.66.
+Changed total seconds: 178.06 / 180.94 / 177.58 / 177.21.
+Ratio of means: **1.0003x**. This is not a statistical parity or speedup claim.
+The complete timing population below includes the initially concerning small
+aggregate rows, rather than hiding them behind the total. Ranges are milliseconds
+over four runs per side; COUNT(*) uses its subtest timer.
+
+| Query arm | Rows | Baseline ms | Changed ms | Mean ratio |
+|---|---:|---:|---:|---:|
+| PK lookup id=0 | 1 | 9.14–15.69 | 8.62–16.92 | 0.993x |
+| PK lookup id=N/2 | 1 | 8.67–19.23 | 8.36–18.59 | 0.933x |
+| PK lookup id=N-1 | 1 | 5.29–12.74 | 6.18–12.67 | 0.989x |
+| idx_customer eq | 8 | 6.76–18.68 | 6.63–19.00 | 0.976x |
+| idx_amount range >9000 | 100017 | 196.12–281.16 | 195.94–296.91 | 1.014x |
+| idx_status count pending | 1 | 321.38–405.90 | 379.50–415.79 | 1.063x |
+| full scan filter amount>5000 | 1 | 555.90–773.20 | 560.17–726.27 | 0.940x |
+| GROUP BY status | 4 | 5.99–13.04 | 5.88–20.32 | 1.456x |
+| GROUP BY status COUNT only | 4 | 5.33–15.85 | 5.34–11.54 | 1.047x |
+| SUM by status (aggregate index) | 4 | 5.68–11.29 | 5.73–18.86 | 1.545x |
+| GROUP BY customer HAVING | 47271 | 578.32–741.35 | 588.73–752.89 | 1.004x |
+| JOIN 10 orders x customers | 10 | 20.22–30.83 | 20.32–33.34 | 1.126x |
+| ORDER BY PK (full) | 1000000 | 3826.15–3873.52 | 3780.59–3919.96 | 0.993x |
+| ORDER BY PK + index filter | 8 | 8.80–9.24 | 8.67–9.31 | 1.004x |
+| scan all rows ordered | 1000000 | 3666.19–3691.25 | 3629.55–3684.99 | 0.994x |
+| scan all rows wide | 1000000 | 3928.13–3965.47 | 3886.53–3963.60 | 0.991x |
+| IN-list 5 values | 46 | 19.05–19.71 | 19.28–22.54 | 1.055x |
+| PK needle id=999999 | 1 | 5.76–6.30 | 5.52–6.04 | 0.971x |
+| PK+filter needle id=500000 | 1 | 7.27–7.61 | 7.27–7.75 | 1.013x |
+| full scan sparse filter | 97 | 3368.94–3383.90 | 3290.36–3357.95 | 0.982x |
+| UPDATE by index | 8 | 7.89–9.24 | 8.76–9.22 | 1.018x |
+| DELETE single row | 1 | 6.37–6.70 | 6.42–6.83 | 1.000x |
+| COUNT(*) | 1000000 | 3040.00–3180.00 | 2990.00–3140.00 | 0.991x |
+
+### Investigation of the small-query timing spread
+
+The first ABBA showed slower early point/index queries in the changed tree. The
+reverse-order repeat also produced those slower timings in the baseline. The
+remaining GROUP BY status / SUM means still differed, so the investigation did
+not stop at that reversal or extrapolate an error bound from other rows.
+
+Four additional exact 1M runs, sequential ABBA (two per side), captured CPU and
+all-event blocking profiles. These are a separate instrumented population, not
+mixed into the ordinary timing table. Each ran all 24 tests, passed freshly,
+and kept source checksums unchanged. The profiled aggregate queries show:
+
+| Profile | GROUP BY status elapsed / blocked ms | SUM by status elapsed / blocked ms |
+|---|---:|---:|
+| Baseline 1 | 13.028 / 10.322 | 11.170 / 8.512 |
+| Changed 1 | 6.309 / 4.058 | 5.719 / 3.979 |
+| Changed 2 | 11.020 / 8.306 | 12.602 / 9.938 |
+| Baseline 2 | 7.537 / 4.437 | 7.083 / 4.420 |
+
+The varying part is FDB/client waiting (GRV batching, PendingGet resolution,
+range replies, and transport), observed in both versions. In these four
+profiles each of the two merge queries has the same block-event counts by leaf
+caller: 3 GRV, 6 PendingGet, 5 range-reply, 5 SendFrame, 6 Flush events. The
+COUNT-only control has 3 / 6 / 4 / 4 / 6 respectively in each profile. These are
+**block-event counts**, not a census of all network requests. The elapsed-minus-
+blocked remainder for GROUP BY is 2.706/3.100 ms in baseline versus 2.251/2.714 ms
+changed; for SUM it is 2.658/2.663 versus 1.740/2.664 ms. That remainder is not a
+CPU-time measurement: it can include runnable scheduling time. The profiles
+identify the source of the observed timing spread without claiming a bound on
+future wall-clock variance or using a green rerun as a correctness fix.
+
+Reproduction adds these flags to the existing retained `TestFDB_Stress_1M`:
+
+```sh
+# Create an absolute OUT directory first. Mount it explicitly: writable_path
+# alone leaves /tmp profiles in the disposable sandbox on this Bazel setup.
+--test_arg=-test.cpuprofile="$OUT/cpu.pprof" \
+--test_arg=-test.blockprofile="$OUT/block.pprof" \
+--test_arg=-test.blockprofilerate=1 \
+--sandbox_writable_path="$OUT" --sandbox_add_mount_pair="$OUT"
+
+go tool pprof -traces -focus=timeQuery "$OUT/block.pprof"
+go tool pprof -traces -sample_index=contentions -focus=timeQuery "$OUT/block.pprof"
+go tool pprof -list=runStressSuite "$OUT/block.pprof"
+```
+
+The first profile-capture attempt passed its tests but lost the files with the
+sandbox; it supplied no profile evidence and is excluded. The corrected run
+requires nonempty CPU/block files. The two actual test executables also have
+different SHA-256s despite identical pprof Build ID labels; metadata and source
+checksums, not that label, authenticate the trees.
+
+Session artifacts: `/tmp/bughunt-stress-before-{9,10,11,12}`,
+`/tmp/bughunt-stress-after-{7,8,9,10}`, `/tmp/pr771-final-stress-parsed.json`,
+`/tmp/pr771-stress-profiles/{base-1,head-1,head-2,base-2}`, and
+`/tmp/pr771-profile-summary.json`. The tables preserve the findings; the exact
+SQL fixtures and assertions remain in the committed stress target.
+
+### GitHub review and CI
+
+All seven PR checks pass for the measured code head, including Build/Lint/Test,
+SQL/client/Cascades race, hosted smoke, C-client differential, deterministic wire
+oracle, CLI installation, and vulnerability scan. The full GitHub Claude review
+[approves](https://github.com/birdayz/fdb-go/pull/771#issuecomment-5583822464),
+conditional only on the then-pending stress and CI checks completed above.
+Virtual Graefe/Torvalds and independent Codex ACKs are recorded in the preceding
+implementation checkpoints. Live JVM claims remain limited to the conformance
+Java server and its Go companion; the values unit matrices are not themselves
+live JVM comparisons.
+
+The review's optional LIMIT reconstruction suggestion does not expose a new
+invalid-bound input: `WithQuantifiers` copies private validated limit/offset
+fields unchanged and validates the replacement quantifier/base. No new bound is
+computed or accepted there, so this copy is not an arithmetic-validation gap.
+No runtime change was made in response to that non-blocking suggestion.

@@ -9754,7 +9754,7 @@ status-count/join slowdowns were remeasured, not dismissed from other rows.
 
 ### RFC-243 decision 14 — default/context and protobuf-carrier follow-up
 
-- [ ] Complete final verification of the implemented follow-up. Bound defaults
+- [x] Complete final verification of the implemented follow-up. Bound defaults
   now retain their evaluation context, evaluated record defaults materialize,
   and DefaultOnEmpty preserves whole-record NULL presence. Shared values-layer
   descriptor admission fixes duplicate-name panics and rejects malformed
@@ -9766,8 +9766,9 @@ status-count/join slowdowns were remeasured, not dismissed from other rows.
   executor allocation pin rejects re-snapshotting the frozen type per row.
   RFC-243 decision 14 records the implementation and proof populations. Final
   review, full-suite execution, focused race tests, and fuzzing are green.
-  Final-source matched 1M stress remains outstanding in the draft PR;
-  the preceding stress table covers decisions 1–13 only.
+  Final-source matched 1M stress and GitHub review/CI are complete at
+  `0d45fbcaa`; the final table below covers this follow-up, while the preceding
+  table remains scoped to decisions 1–13.
 
 ### RFC-243 — PR #771 CI allocation-isolation correction
 
@@ -9780,7 +9781,7 @@ unit/fuzz coverage. Five full helper/executor/values repetitions pass (Explode
 770 allocations each; unchanged ceiling 784), and restored per-row snapshotting
 still mutation-fails at 1,026. RFC-243's CI allocation-measurement section records
 the design and proof populations. The decision-14 final-verification item above
-remains open until final suites, review, and matched stress complete.
+is closed by the final suites, review, and matched stress recorded below.
 
 ### RFC-243 — allocation-isolation verification checkpoint
 
@@ -9793,4 +9794,33 @@ recordlayer. Helper coverage includes child-only lines, protocol fuzz passes
 Virtual Graefe, virtual Torvalds, and independent Codex ACK the implementation
 and follow-up deltas. RFC-243's allocation-isolation commit checkpoint scopes
 the measurements and corrects the reviewed AllocsPerRun precision hypothesis.
-Final-source matched stress and GitHub review/CI remain the next PR gates.
+Final-source matched stress and GitHub review/CI subsequently completed;
+see the final readiness checkpoint below.
+
+### Stress test 1M baseline — RFC-243 final readiness (2026-09-08)
+
+- [x] Decision 14 final-source verification and review complete at code head
+  `0d45fbcaa4fe7876044c752df53730d388af166b`, compared with merge-base
+  `42a79173557936707a32a969e51489667db6ff01`. Four ordinary runs per side,
+  sequential ABBA then BAAB, same XFS filesystem at 98% utilization, one-minute
+  loads 1.48–4.15. All eight pass freshly with identical 24 RUN names and
+  23 query row counts; source checksums unchanged. All seven GitHub CI checks
+  pass, and the full GitHub Claude review approves. This closes the decision-14
+  checkpoint; earlier tables remain scoped to their earlier code heads.
+
+| Measurement | Baseline | Changed |
+|---|---:|---:|
+| Total seconds, four runs | 179.00 / 178.83 / 178.07 / 177.66 | 178.06 / 180.94 / 177.58 / 177.21 |
+| COUNT(*) / 1M, seconds | 3.04–3.18 | 2.99–3.14 |
+| ORDER BY PK / 1M, seconds | 3.826–3.874 | 3.781–3.920 |
+| Wide scan / 1M, seconds | 3.928–3.965 | 3.887–3.964 |
+| Sparse filter / 97 rows, seconds | 3.369–3.384 | 3.290–3.358 |
+
+Total ratio of means 1.0003x, not a statistical parity/speedup claim. The initially
+slower early-query timings also appeared in the baseline on the reverse repeat.
+Four additional profiled exact 1M runs (two per side) locate the remaining small
+aggregate timing spread in FDB/client waits with identical block-event counts
+by leaf caller for those queries, not increased nonblocking work. These profiles
+are not folded into the ordinary timing table. Full per-query ranges, profile
+measurements, scope limits, and reproduction commands are in RFC-243's final
+readiness checkpoint; it also records the GitHub review link and final CI scope.
