@@ -14,9 +14,90 @@ import (
 	"strings"
 	"testing"
 
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/dynamicpb"
+
+	"fdb.dev/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb/subspace"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/query/executor"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
+	"fdb.dev/pkg/relational/core/metadata"
 )
+
+func TestFDB_RuntimeRangeSetLimitThroughFilterAndDistinct(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	const path = "/testdb_range_budget"
+	setup := openTestDB(t, path)
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+path)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE range_budget "+
+		"CREATE TABLE t (id BIGINT, v DOUBLE, w BIGINT, payload STRING, PRIMARY KEY (id)) "+
+		"CREATE INDEX rb_vw ON t (v, w)")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+path+"/s WITH TEMPLATE range_budget")
+	t.Cleanup(func() {
+		for _, ddl := range []string{"DROP SCHEMA " + path + "/s", "DROP SCHEMA TEMPLATE range_budget", "DROP DATABASE " + path} {
+			if _, err := setup.ExecContext(ctx, ddl); err != nil {
+				t.Errorf("cleanup %s: %v", ddl, err)
+			}
+		}
+	})
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", path, clusterFilePath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	// The first physical sign branch starts with three rows that the filter
+	// rejects, or that DISTINCT collapses. A result cap of three is not a safe
+	// raw-row cap below either operator. The suffix equality forces range-set
+	// enumeration of both signs, rather than terminal-zero widening.
+	mwjoMustExec(t, db, ctx, "INSERT INTO t VALUES "+
+		"(1,-0.0,5,'a'),(2,-0.0,5,'a'),(3,-0.0,5,'a'),"+
+		"(4,-0.0,5,'b'),(5,0.0,5,'b'),(6,0.0,5,'c')")
+	for _, tc := range []struct {
+		name, query, operator, want string
+	}{
+		{"filter", "SELECT id FROM t WHERE v = 0 AND w = 5 AND payload <> 'a' LIMIT 3", "PredicatesFilter(", "[4 5 6]"},
+		{"distinct", "SELECT DISTINCT payload FROM t WHERE v = 0 AND w = 5 LIMIT 3", "Distinct(", "[a b c]"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			plan := planExplainVia(t, ctx, db, tc.query)
+			for _, part := range []string{"Limit(3", tc.operator, "IndexScan(RB_VW", "[=, =]"} {
+				if !strings.Contains(plan, part) {
+					t.Fatalf("plan %s does not exercise %s above the range set (missing %q)", plan, tc.operator, part)
+				}
+			}
+			t.Logf("range-set limit plan: %s", plan)
+			rows, err := db.QueryContext(ctx, tc.query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rows.Close()
+			var got []string
+			for rows.Next() {
+				var value string
+				if err := rows.Scan(&value); err != nil {
+					t.Fatal(err)
+				}
+				got = append(got, value)
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatal(err)
+			}
+			sort.Strings(got)
+			if fmt.Sprint(got) != tc.want {
+				t.Fatalf("bounded %s returned %v, want %s", tc.operator, got, tc.want)
+			}
+		})
+	}
+}
 
 func TestFDB_RuntimeSignedZeroRangeSetAccessPaths(t *testing.T) {
 	t.Parallel()
@@ -275,6 +356,120 @@ func TestFDB_RuntimeSignedZeroCorrelatedFloatAndDouble(t *testing.T) {
 			sort.Slice(got, func(i, j int) bool { return got[i] < got[j] })
 			if fmt.Sprint(got) != fmt.Sprint(tc.want) {
 				t.Fatalf("%s = %v, want %v", tc.q, got, tc.want)
+			}
+		})
+	}
+}
+
+// Unlike database/sql's automatic pagination, one ExecutePlan invocation cannot
+// hide an incorrectly capped filter/distinct child by resuming its empty page.
+func TestFDB_RuntimeRangeSetFilterDistinctOneExecution(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	fdb.MustAPIVersion(730)
+	rawDB, err := fdb.OpenDatabase(clusterFilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := recordlayer.NewFDBDatabase(rawDB)
+	ks := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
+	builder := metadata.NewSchemaTemplateBuilder().SetName("range_budget_direct")
+	builder.AddTable("T", []metadata.ColumnSpec{
+		metadata.NewColumnSpec("ID", api.NewLongType(false), 1),
+		metadata.NewColumnSpec("V", api.NewDoubleType(false), 2),
+		metadata.NewColumnSpec("W", api.NewLongType(false), 3),
+		metadata.NewColumnSpec("PAYLOAD", api.NewStringType(false), 4),
+	}, []string{"ID"})
+	builder.AddIndex("T", "RB_VW", []string{"V", "W"}, false)
+	template, err := builder.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	md := template.Underlying()
+	open := func(rtx *recordlayer.FDBRecordContext) (*recordlayer.FDBRecordStore, error) {
+		return recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+	}
+	_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		store, err := open(rtx)
+		if err != nil {
+			return nil, err
+		}
+		desc := md.GetRecordType("T").Descriptor
+		for i, payload := range []string{"a", "a", "a", "b", "b", "c"} {
+			zero := float64(0)
+			if i < 4 {
+				zero = math.Copysign(0, -1)
+			}
+			record := dynamicpb.NewMessage(desc)
+			record.Set(desc.Fields().ByName("ID"), protoreflect.ValueOfInt64(int64(i+1)))
+			record.Set(desc.Fields().ByName("V"), protoreflect.ValueOfFloat64(zero))
+			record.Set(desc.Fields().ByName("W"), protoreflect.ValueOfInt64(5))
+			record.Set(desc.Fields().ByName("PAYLOAD"), protoreflect.ValueOfString(payload))
+			if _, err := store.SaveRecord(record); err != nil {
+				return nil, err
+			}
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ name, sql, operator, want string }{
+		{"filter", "SELECT id FROM t WHERE v = 0 AND w = 5 AND payload <> 'a' LIMIT 3", "PredicatesFilter(", "[4 5 6]"},
+		{"distinct", "SELECT DISTINCT payload FROM t WHERE v = 0 AND w = 5 LIMIT 3", "Distinct(", "[a b c]"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			plan, err := embedded.PlanRecordQueryWithMetadata(tc.sql, md, properties.FixedStatistics{Cardinality: 1_000_000})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, part := range []string{"Limit(3", tc.operator, "IndexScan(RB_VW", "[=, =]"} {
+				if !strings.Contains(plan.Explain(), part) {
+					t.Fatalf("plan %s does not exercise %s (missing %q)", plan.Explain(), tc.operator, part)
+				}
+			}
+			t.Logf("single-execution range-set plan: %s", plan.Explain())
+			_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				store, err := open(rtx)
+				if err != nil {
+					return nil, err
+				}
+				cursor, err := executor.ExecutePlan(ctx, plan, store, executor.EmptyEvaluationContext(), nil,
+					recordlayer.DefaultExecuteProperties().WithReturnedRowLimit(3))
+				if err != nil {
+					return nil, err
+				}
+				defer cursor.Close()
+				var got []string
+				for {
+					row, err := cursor.OnNext(ctx)
+					if err != nil {
+						return nil, err
+					}
+					if !row.HasNext() {
+						if row.GetNoNextReason() != recordlayer.ReturnLimitReached || row.GetContinuation().IsEnd() {
+							t.Fatalf("single execution stopped with %v/end=%v, want resumable returned-row limit", row.GetNoNextReason(), row.GetContinuation().IsEnd())
+						}
+						break
+					}
+					value, ok := row.GetValue().Positional.Get(0)
+					if !ok {
+						t.Fatal("query result lost its projected column")
+					}
+					got = append(got, fmt.Sprint(value))
+				}
+				sort.Strings(got)
+				if fmt.Sprint(got) != tc.want {
+					t.Fatalf("one execution returned %v before its cap stop, want %s; raw child caps must be cleared below %s", got, tc.want, tc.operator)
+				}
+				return nil, nil
+			})
+			if err != nil {
+				t.Fatal(err)
 			}
 		})
 	}

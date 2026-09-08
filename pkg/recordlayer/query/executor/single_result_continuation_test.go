@@ -1,14 +1,22 @@
 package executor
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"fmt"
+	"reflect"
 	"testing"
+	"time"
 
+	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
+	"fdb.dev/pkg/relational/api"
+	"google.golang.org/protobuf/proto"
 )
 
 // TestSingleResultCursor_EmitsResumableContinuation pins the C6
@@ -262,4 +270,426 @@ func TestFirstOrDefaultAsFlatMapOuterPreservesWholeObjectPresence(t *testing.T) 
 			}
 		})
 	}
+}
+
+func TestFirstOrDefault_StrictRequestBoundary(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"direct", "map", "projection"} {
+		for _, shape := range []string{"empty", "one", "two", "two_semantic_limit"} {
+			for _, skip := range []int{0, 1} {
+				for _, cap := range []int{0, 1} {
+					t.Run(fmt.Sprintf("%s/%s/skip=%d/cap=%d", kind, shape, skip, cap), func(t *testing.T) {
+						t.Parallel()
+						ctx := context.Background()
+						input := []any{}
+						if shape != "empty" {
+							input = append(input, int64(11))
+						}
+						if shape == "two" || shape == "two_semantic_limit" {
+							input = append(input, int64(22))
+						}
+						var inner plans.RecordQueryPlan = mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{
+							Value: input, Typ: values.NewArrayType(false, values.NotNullLong),
+						}))
+						if shape == "two_semantic_limit" {
+							inner = mustExecutorConstruct(plans.NewRecordQueryLimitPlan(inner, 1, 0))
+						}
+						var plan plans.RecordQueryPlan = mustExecutorConstruct(plans.NewRecordQueryFirstOrDefaultPlanStrict(inner,
+							&values.ConstantValue{Value: int64(99), Typ: values.NotNullLong}))
+						constant := &values.ConstantValue{Value: int64(42), Typ: values.NotNullLong}
+						if kind == "map" {
+							plan = mustExecutorConstruct(plans.NewRecordQueryMapPlan(plan, constant))
+						} else if kind == "projection" {
+							plan = mustExecutorConstruct(plans.NewRecordQueryProjectionPlan([]values.Value{constant}, plan))
+						}
+						props := recordlayer.DefaultExecuteProperties().WithSkip(skip).WithReturnedRowLimit(cap)
+						cursor, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), nil, props)
+						if cursor != nil {
+							defer cursor.Close()
+						}
+						if shape == "two" {
+							var cardinality *api.Error
+							if !errors.As(err, &cardinality) || cardinality.Code != api.ErrCodeCardinalityViolation {
+								t.Fatalf("request must not hide second scalar row: error = %v, want 21000", err)
+							}
+							return
+						}
+						if err != nil {
+							t.Fatal(err)
+						}
+						row, err := cursor.OnNext(ctx)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if skip > 0 {
+							if row.HasNext() || row.GetNoNextReason() != recordlayer.SourceExhausted || !row.GetContinuation().IsEnd() {
+								t.Fatalf("strict singleton must be skipped, including default: %v", row)
+							}
+							if token := continuationBytesForTest(t, row.GetContinuation()); len(token) != 0 {
+								t.Fatalf("skipped singleton is END, not a resumable page: %x", token)
+							}
+							again, err := cursor.OnNext(ctx)
+							if err != nil || again.HasNext() || !again.GetContinuation().IsEnd() {
+								t.Fatalf("skipped singleton must remain exhausted: %v, %v", again, err)
+							}
+							return
+						}
+						want := int64(11)
+						if shape == "empty" {
+							want = 99
+						}
+						if kind != "direct" {
+							want = 42
+						}
+						if !row.HasNext() {
+							t.Fatalf("missing scalar row: %v", row)
+						}
+						if got, _ := row.GetValue().Positional.Get(0); got != want {
+							t.Fatalf("scalar = %v, want %d", got, want)
+						}
+						token := continuationBytesForTest(t, row.GetContinuation())
+						if len(token) == 0 || row.GetContinuation().IsEnd() {
+							t.Fatal("scalar row must carry a consumed continuation")
+						}
+						end, err := cursor.OnNext(ctx)
+						wantReason := recordlayer.SourceExhausted
+						if cap == 1 {
+							wantReason = recordlayer.ReturnLimitReached
+						}
+						if err != nil || end.HasNext() || end.GetNoNextReason() != wantReason {
+							t.Fatalf("strict stop = %v, %v; want %v", end, err, wantReason)
+						}
+						if cap == 1 && (end.GetContinuation().IsEnd() || !bytes.Equal(token, continuationBytesForTest(t, end.GetContinuation()))) {
+							t.Fatal("capped strict stop lost consumed row token")
+						}
+						resumed, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), token, props)
+						if err != nil {
+							t.Fatal(err)
+						}
+						defer resumed.Close()
+						end, err = resumed.OnNext(ctx)
+						if err != nil || end.HasNext() || end.GetNoNextReason() != recordlayer.SourceExhausted {
+							t.Fatalf("consumed strict resume must exhaust: %v, %v", end, err)
+						}
+					})
+				}
+			}
+		}
+	}
+}
+
+func TestFirstOrDefault_EmptyRecordRequestMatchesJava(t *testing.T) {
+	t.Parallel()
+	inner := mustExecutorConstruct(plans.NewRecordQueryValuesPlan(nil))
+	first := mustExecutorConstruct(plans.NewRecordQueryFirstOrDefaultPlan(inner, nil))
+	plan := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan([]values.Value{
+		&values.ConstantValue{Value: int64(42), Typ: values.NotNullLong},
+	}, first))
+	// Java forwards skip to the child BEFORE first/default. The skipped child
+	// is empty, so the default still flows through the transparent projection.
+	ctx := context.Background()
+	cursor, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), nil,
+		recordlayer.DefaultExecuteProperties().WithSkip(1).WithReturnedRowLimit(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cursor.Close()
+	row, err := cursor.OnNext(ctx)
+	if err != nil || !row.HasNext() {
+		t.Fatalf("Java first/default must still emit: %v, %v", row, err)
+	}
+	if got, _ := row.GetValue().Positional.Get(0); got != int64(42) {
+		t.Fatalf("projected default = %v, want 42", got)
+	}
+}
+
+func TestDefaultEvaluationContext(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"first", "strict", "all"} {
+		for _, shape := range []string{"parameter", "correlation", "constructor", "record_correlation", "clock"} {
+			t.Run(kind+"/"+shape, func(t *testing.T) {
+				t.Parallel()
+				ctx := context.Background()
+				stamp := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+				ec := EmptyEvaluationContext().WithParams([]any{int64(99), int64(88)}).WithStatementTime(stamp)
+				var fallback values.Value = &values.ParameterValue{Ordinal: 1, Typ: values.NullableLong}
+				want := []any{int64(99)}
+				switch shape {
+				case "correlation":
+					id := values.NamedCorrelationIdentifier("outer_default")
+					fallback = mustExecutorConstruct(values.NewQuantifiedObjectValue(id, values.NullableLong))
+					ec = ec.WithBinding(id, int64(99))
+				case "constructor":
+					fallback = values.NewRecordConstructorValue(
+						values.RecordConstructorField{Name: "D", Value: fallback},
+						values.RecordConstructorField{Name: "D", Value: &values.ParameterValue{Ordinal: 2, Typ: values.NullableLong}})
+					want = []any{int64(99), int64(88)}
+				case "record_correlation":
+					rt := exactTestRowType(values.Field{Name: "D", FieldType: values.NullableLong})
+					id := values.NamedCorrelationIdentifier("outer_record_default")
+					fallback = mustExecutorConstruct(values.NewQuantifiedObjectValue(id, rt))
+					ec = ec.WithBinding(id, &PositionalRow{Type: rt, Slots: []any{int64(99)}})
+				case "clock":
+					fallback = values.NewScalarFunctionValue("CURRENT_TIMESTAMP", values.NullableTimestamp)
+					want = []any{"2026-01-02 03:04:05"}
+				}
+				inner := mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{
+					Value: []any{}, Typ: values.NewArrayType(false, fallback.Type()),
+				}))
+				plan := defaultContextPlan(t, kind, inner, fallback)
+				cur, err := ExecutePlan(ctx, plan, nil, ec, nil, recordlayer.DefaultExecuteProperties())
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer cur.Close()
+				row, err := cur.OnNext(ctx)
+				if err != nil || !row.HasNext() {
+					t.Fatalf("default row: %v, %v", row, err)
+				}
+				if got := row.GetValue().Positional.Slots; !reflect.DeepEqual(got, want) {
+					t.Fatalf("default slots = %v, want %v", got, want)
+				}
+				if rt, record := plan.GetResultType().(*values.RecordType); record && !row.GetValue().Positional.Type.Equals(rt) {
+					t.Fatalf("default carrier %v, want %v", row.GetValue().Positional.Type, rt)
+				}
+				cont, err := row.GetContinuation().ToBytes()
+				if err != nil || len(cont) == 0 {
+					t.Fatalf("default continuation %x, %v", cont, err)
+				}
+				resumed, err := ExecutePlan(ctx, plan, nil, ec, cont, recordlayer.DefaultExecuteProperties())
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer resumed.Close()
+				end, err := resumed.OnNext(ctx)
+				if err != nil || end.HasNext() || end.GetNoNextReason() != recordlayer.SourceExhausted {
+					t.Fatalf("default replay on consumed resume: %v, %v", end, err)
+				}
+			})
+		}
+	}
+}
+
+func defaultContextPlan(t testing.TB, kind string, inner plans.RecordQueryPlan, fallback values.Value) plans.RecordQueryPlan {
+	t.Helper()
+	switch kind {
+	case "first":
+		return mustExecutorConstruct(plans.NewRecordQueryFirstOrDefaultPlan(inner, fallback))
+	case "strict":
+		return mustExecutorConstruct(plans.NewRecordQueryFirstOrDefaultPlanStrict(inner, fallback))
+	default:
+		return mustExecutorConstruct(plans.NewRecordQueryDefaultOnEmptyPlan(inner, fallback))
+	}
+}
+
+func TestDefaultEvaluationLazyError(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"first", "strict", "all"} {
+		for _, empty := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/empty=%v", kind, empty), func(t *testing.T) {
+				t.Parallel()
+				input := []any{int64(11)}
+				if empty {
+					input = nil
+				}
+				inner := mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{
+					Value: input, Typ: values.NewArrayType(false, values.NullableLong),
+				}))
+				fallback := mustExecutorConstruct(values.NewQuantifiedObjectValue(
+					values.NamedCorrelationIdentifier("unbound_default"), values.NullableLong))
+				plan := defaultContextPlan(t, kind, inner, fallback)
+				cur, err := ExecutePlan(context.Background(), plan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+				var row recordlayer.RecordCursorResult[QueryResult]
+				if err == nil {
+					defer cur.Close()
+					row, err = cur.OnNext(context.Background())
+				}
+				if empty {
+					var resolution *values.ResolutionError
+					if !errors.As(err, &resolution) || resolution.ErrorCode != values.UnboundCorrelation {
+						t.Fatalf("empty default error %v, want UnboundCorrelation", err)
+					}
+				} else if err != nil || !row.HasNext() || row.GetValue().Positional.Slots[0] != int64(11) {
+					t.Fatalf("nonempty child must not evaluate default: %v, %v", row, err)
+				}
+			})
+		}
+	}
+}
+
+func TestDefaultRecordMaterialization(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"first", "strict", "all"} {
+		for _, shape := range []string{"null", "nil_positional", "nil_proto", "all_null", "positional", "proto", "nullable_array_proto", "wrong_proto", "duplicate_proto", "wrong_type", "short", "wide", "map", "empty_record"} {
+			t.Run(kind+"/"+shape, func(t *testing.T) {
+				t.Parallel()
+				rt := values.NewRecordType("", true, []values.Field{{Name: "D", FieldType: values.NullableLong, Ordinal: 0}})
+				source := &PositionalRow{Type: rt, Slots: []any{int64(99)}}
+				var datum any = source
+				wantAbsent, wantError := false, false
+				switch shape {
+				case "null":
+					datum, wantAbsent = nil, true
+				case "nil_positional":
+					datum, wantAbsent = (*PositionalRow)(nil), true
+				case "nil_proto":
+					datum, wantAbsent = (*gen.Order)(nil), true
+				case "all_null":
+					source.Slots[0] = nil
+				case "proto", "nullable_array_proto", "wrong_proto", "duplicate_proto":
+					message := &gen.Order{OrderId: proto.Int64(99), Tags: []string{"a"}}
+					declared := PositionalTypeForDescriptor(message.ProtoReflect().Descriptor())
+					fields := append([]values.Field(nil), declared.Fields...)
+					if shape == "nullable_array_proto" {
+						fields[3].FieldType = values.WithNullability(fields[3].FieldType, true)
+					}
+					if shape == "wrong_proto" {
+						fields[0].FieldType = values.NullableString
+						wantError = true
+					}
+					if shape == "duplicate_proto" {
+						fields[1].Name = fields[0].Name
+						wantError = true
+					}
+					rt = &values.RecordType{RecordName: "NAMED_DEFAULT", Nullable: true, Fields: fields}
+					datum = message
+				case "wrong_type":
+					source.Type = values.NewRecordType("", true, []values.Field{{Name: "D", FieldType: values.NullableString, Ordinal: 0}})
+					wantError = true
+				case "short":
+					source.Slots, wantError = nil, true
+				case "wide":
+					source.Slots, wantError = []any{int64(99), int64(88)}, true
+				case "map":
+					datum, wantError = map[string]any{"D": int64(99)}, true
+				case "empty_record":
+					rt = values.NewRecordType("", true, nil)
+					source.Type, source.Slots = rt, nil
+				}
+				inner := mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{Value: []any{}, Typ: values.NewArrayType(false, rt)}))
+				plan := defaultContextPlan(t, kind, inner, &values.ParameterValue{Ordinal: 1, Typ: rt})
+				cur, err := ExecutePlan(context.Background(), plan, nil, EmptyEvaluationContext().WithParams([]any{datum}), nil, recordlayer.DefaultExecuteProperties())
+				var row recordlayer.RecordCursorResult[QueryResult]
+				if err == nil {
+					defer cur.Close()
+					row, err = cur.OnNext(context.Background())
+				}
+				if wantError {
+					var resolution *values.ResolutionError
+					if !errors.As(err, &resolution) || resolution.ErrorCode != values.LayoutRuntimeShape {
+						t.Fatalf("bad default shape: %v, want LayoutRuntimeShape", err)
+					}
+					return
+				}
+				if err != nil || !row.HasNext() {
+					t.Fatalf("record default: %v, %v", row, err)
+				}
+				pos := row.GetValue().Positional
+				if !pos.Type.Equals(rt) || len(pos.Slots) != len(rt.Fields) {
+					t.Fatalf("default record carrier %v, want %v", pos, rt)
+				}
+				whole, absent, err := pos.wholeObjectBinding()
+				if err != nil || absent != wantAbsent || (whole == nil) != wantAbsent {
+					t.Fatalf("default presence: %v absent=%v err=%v, want absent=%v", whole, absent, err, wantAbsent)
+				}
+				if shape == "proto" || shape == "nullable_array_proto" || shape == "positional" {
+					if pos.Slots[0] != int64(99) {
+						t.Fatalf("record default first ordinal %v, want 99", pos.Slots[0])
+					}
+				}
+				if shape == "nullable_array_proto" && !reflect.DeepEqual(pos.Slots[3], []any{"a"}) {
+					t.Fatalf("nullable repeated default field = %#v, want [a]", pos.Slots[3])
+				}
+				if shape == "positional" {
+					pos.Slots[0] = int64(1)
+					if source.Slots[0] != int64(99) || source.Layout != nil {
+						t.Fatal("materialization mutated the bound record")
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestDefaultOnEmptyPreservesNullChild(t *testing.T) {
+	t.Parallel()
+	rt := values.NewRecordType("", true, []values.Field{{Name: "D", FieldType: values.NullableLong, Ordinal: 0}})
+	empty := mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{Value: []any{}, Typ: values.NewArrayType(false, rt)}))
+	child := mustExecutorConstruct(plans.NewRecordQueryFirstOrDefaultPlan(empty, values.NewNullValue(rt)))
+	plan := mustExecutorConstruct(plans.NewRecordQueryDefaultOnEmptyPlan(child, values.NewNullValue(rt)))
+	cur, err := ExecutePlan(context.Background(), plan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cur.Close()
+	row, err := cur.OnNext(context.Background())
+	if err != nil || !row.HasNext() {
+		t.Fatalf("NULL child row: %v, %v", row, err)
+	}
+	whole, absent, err := row.GetValue().Positional.wholeObjectBinding()
+	if err != nil || whole != nil || !absent {
+		t.Fatalf("DefaultOnEmpty changed a NULL record into a present all-NULL record: %v, %v, %v", whole, absent, err)
+	}
+}
+
+func TestDefaultEvaluationNilContext(t *testing.T) {
+	t.Parallel()
+	fallback := &values.ConstantValue{Value: int64(99), Typ: values.NullableLong}
+	inner := mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{Value: []any{}, Typ: values.NewArrayType(false, values.NullableLong)}))
+	for _, kind := range []string{"first", "strict", "all"} {
+		plan := defaultContextPlan(t, kind, inner, fallback)
+		result, err := defaultResultFromValue(plan, fallback, nil)
+		if err != nil || len(result.Positional.Slots) != 1 || result.Positional.Slots[0] != int64(99) {
+			t.Fatalf("%s nil context: %v, %v", kind, result, err)
+		}
+	}
+}
+
+func FuzzDefaultRecordMaterialization(f *testing.F) {
+	for _, seed := range []byte{0, 1, 2, 3, 4, 5, 6} {
+		f.Add(seed, int64(99))
+	}
+	f.Fuzz(func(t *testing.T, shape byte, n int64) {
+		t.Parallel()
+		rt := values.NewRecordType("", true, []values.Field{{Name: "D", FieldType: values.NullableLong, Ordinal: 0}})
+		inner := mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{Value: []any{}, Typ: values.NewArrayType(false, rt)}))
+		fallback := &values.ParameterValue{Ordinal: 1, Typ: rt}
+		plan := defaultContextPlan(t, "first", inner, fallback)
+		var datum any
+		var absent, invalid bool
+		switch shape % 7 {
+		case 0:
+			absent = true
+		case 1:
+			datum, absent = (*PositionalRow)(nil), true
+		case 2:
+			datum = &PositionalRow{Type: rt, Slots: []any{nil}}
+		case 3:
+			datum = &PositionalRow{Type: rt, Slots: []any{n}}
+		case 4:
+			datum, invalid = &PositionalRow{Type: rt, Slots: nil}, true
+		case 5:
+			datum, invalid = &PositionalRow{Type: rt, Slots: []any{n, n}}, true
+		case 6:
+			datum, invalid = n, true
+		}
+		result, err := defaultResultFromValue(plan, fallback, EmptyEvaluationContext().WithParams([]any{datum}))
+		if invalid {
+			var resolution *values.ResolutionError
+			if !errors.As(err, &resolution) || resolution.ErrorCode != values.LayoutRuntimeShape {
+				t.Fatalf("shape %d: %v, want LayoutRuntimeShape", shape%7, err)
+			}
+			return
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		whole, gotAbsent, err := result.Positional.wholeObjectBinding()
+		if err != nil || gotAbsent != absent || (whole == nil) != absent || !result.Positional.Type.Equals(rt) {
+			t.Fatalf("shape %d: %v, absent=%v, error=%v", shape%7, whole, gotAbsent, err)
+		}
+		if shape%7 == 3 && result.Positional.Slots[0] != n {
+			t.Fatalf("default value %v, want %d", result.Positional.Slots[0], n)
+		}
+	})
 }

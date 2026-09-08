@@ -873,6 +873,51 @@ func TestScanRangeSetCursorInnerContinuationErrorDoesNotAdvance(t *testing.T) {
 	}
 }
 
+func TestScanRangeSetCursorChildBudgetResumesSameChoice(t *testing.T) {
+	t.Parallel()
+	props := recordlayer.NewScanProperties(recordlayer.DefaultExecuteProperties().WithReturnedRowLimit(1))
+	var continuation []byte
+	var all []int
+	ended := false
+	for page := 0; page < 8 && !ended; page++ {
+		cursor, err := newScanRangeSetCursor[int](testRangeSetSpec([]uint32{2}, nil), continuation, props,
+			func(r recordlayer.TupleRange, cont []byte, child recordlayer.ScanProperties) (recordlayer.RecordCursor[int], error) {
+				start := testRangeBranch(r) * 3
+				rows := recordlayer.FromListWithContinuation([]int{start, start + 1, start + 2}, cont)
+				return recordlayer.LimitRowsCursor(rows, child.ExecuteProperties.ReturnedRowLimit), nil
+			})
+		if err != nil {
+			t.Fatal(err)
+		}
+		rows, terminal := drainRangeSetCursor(t, cursor)
+		if err := cursor.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) > 1 {
+			t.Fatalf("child budget was not applied: page %d returned %v", page, rows)
+		}
+		all = append(all, rows...)
+		ended = terminal.GetNoNextReason().IsSourceExhausted()
+		if ended {
+			break
+		}
+		if terminal.GetNoNextReason() != recordlayer.ReturnLimitReached || len(rows) != 1 {
+			t.Fatalf("page %d: rows %v, stop %v; want one row and a child cap stop", page, rows, terminal.GetNoNextReason())
+		}
+		continuation = mustBytes(t, terminal.GetContinuation())
+		var decoded gen.ScanRangeSetContinuation
+		if err := decoded.UnmarshalVT(continuation); err != nil {
+			t.Fatal(err)
+		}
+		if len(decoded.Choices) != 1 || decoded.Choices[0] != uint32(rows[0]/3) || !decoded.GetChildStarted() {
+			t.Fatalf("child cap advanced the odometer: row %d, continuation %+v", rows[0], &decoded)
+		}
+	}
+	if !ended || fmt.Sprint(all) != "[0 1 2 3 4 5]" {
+		t.Fatalf("paged ranges: ended=%v rows=%v, want all six rows", ended, all)
+	}
+}
+
 func TestScanRangeSetCursorNormalizesAndSharesChildProperties(t *testing.T) {
 	t.Parallel()
 
@@ -896,8 +941,8 @@ func TestScanRangeSetCursorNormalizesAndSharesChildProperties(t *testing.T) {
 		input,
 		func(_ recordlayer.TupleRange, _ []byte, properties recordlayer.ScanProperties) (recordlayer.RecordCursor[int], error) {
 			states = append(states, properties.ExecuteProperties.ScanState)
-			if properties.ExecuteProperties.Skip != 0 || properties.ExecuteProperties.ReturnedRowLimit != 0 {
-				t.Fatalf("child skip/row-limit = %d/%d, want 0/0", properties.ExecuteProperties.Skip, properties.ExecuteProperties.ReturnedRowLimit)
+			if properties.ExecuteProperties.Skip != 0 || properties.ExecuteProperties.ReturnedRowLimit != 18 {
+				t.Fatalf("child skip/row-limit = %d/%d, want 0/18 (7 skipped + 11 returned)", properties.ExecuteProperties.Skip, properties.ExecuteProperties.ReturnedRowLimit)
 			}
 			if properties.ExecuteProperties.ScannedRecordsLimit != 13 ||
 				properties.ExecuteProperties.ScannedBytesLimit != 17 ||

@@ -98,7 +98,7 @@ func TestResultFromValue_RecordConstructorUsesDeclaredExactType(t *testing.T) {
 			Value: &values.ConstantValue{Value: "x", Typ: values.TypeString},
 		},
 	)
-	result, err := resultFromValue(rc)
+	result, err := resultFromValue(rc, EmptyEvaluationContext().RowContext())
 	if err != nil {
 		t.Fatalf("resultFromValue: %v", err)
 	}
@@ -6562,5 +6562,40 @@ func TestCTEDedupKeyer_DuplicatedColumnRefuses(t *testing.T) {
 			"  Absent and duplicated are different facts. Absent keys as NULL and always "+
 			"has; refusing it would fail every recursive CTE whose legs do not declare "+
 			"identical column sets.", err)
+	}
+}
+
+func TestExecuteExplode_ProtoDeclaredShape(t *testing.T) {
+	t.Parallel()
+	for _, nullable := range []bool{false, true} {
+		for _, duplicate := range []bool{false, true} {
+			t.Run(fmt.Sprintf("duplicate=%v/nullable=%v", duplicate, nullable), func(t *testing.T) {
+				t.Parallel()
+				message := &gen.Order{OrderId: proto.Int64(99)}
+				original := PositionalTypeForDescriptor(message.ProtoReflect().Descriptor())
+				fields := append([]values.Field(nil), original.Fields...)
+				if duplicate {
+					fields[1].Name = fields[0].Name
+				}
+				declared := &values.RecordType{RecordName: "OTHER_PROVENANCE", Nullable: nullable, Fields: fields}
+				plan := mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{
+					Value: []any{message}, Typ: values.NewArrayType(false, declared),
+				}))
+				cur, err := ExecutePlan(context.Background(), plan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+				var row recordlayer.RecordCursorResult[QueryResult]
+				if err == nil {
+					defer cur.Close()
+					row, err = cur.OnNext(context.Background())
+				}
+				if duplicate {
+					var resolution *values.ResolutionError
+					if !errors.As(err, &resolution) || resolution.ErrorCode != values.LayoutCarrierMismatch {
+						t.Fatalf("duplicate declared fields: %v, want LayoutCarrierMismatch", err)
+					}
+				} else if err != nil || !row.HasNext() || row.GetValue().Positional.Slots[0] != int64(99) {
+					t.Fatalf("valid structural record with different provenance: %v, %v", row, err)
+				}
+			})
+		}
 	}
 }

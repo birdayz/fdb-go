@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=371 queries=2778 dml=172 non_query=109 plan_errors=302 unexpected_errors=4
+# files=372 queries=2783 dml=172 non_query=109 plan_errors=303 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -11243,6 +11243,31 @@ shape:     RecordQueryFlatMapPlan
 shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryScanPlan
 shape:       RecordQueryScanPlan
+=== limit_offset_bounds.yaml#0
+sql:   SELECT * FROM (SELECT * FROM t LIMIT 9223372036854775807 OFFSET 9223372036854775807) u LIMIT 1 OFFSET 1
+plan:  Limit(1, offset=1, Limit(9223372036854775807, offset=9223372036854775807, Scan(T)))
+shape: RecordQueryLimitPlan
+shape:   RecordQueryLimitPlan
+shape:     RecordQueryScanPlan
+=== limit_offset_bounds.yaml#1
+sql:   SELECT * FROM (SELECT * FROM t LIMIT 9223372036854775807 OFFSET 9223372036854775807) u LIMIT 1 OFFSET 9223372036854775807
+plan:  Limit(1, offset=9223372036854775807, Limit(9223372036854775807, offset=9223372036854775807, Scan(T)))
+shape: RecordQueryLimitPlan
+shape:   RecordQueryLimitPlan
+shape:     RecordQueryScanPlan
+=== limit_offset_bounds.yaml#2
+sql:   SELECT * FROM t LIMIT 9223372036854775807 OFFSET 1
+plan:  Limit(9223372036854775807, offset=1, Scan(T))
+shape: RecordQueryLimitPlan
+shape:   RecordQueryScanPlan
+=== limit_offset_bounds.yaml#3
+sql:   SELECT * FROM (SELECT * FROM t LIMIT 3 OFFSET 1) u LIMIT 1 OFFSET 1
+plan:  Limit(1, offset=2, Scan(T))
+shape: RecordQueryLimitPlan
+shape:   RecordQueryScanPlan
+=== limit_offset_bounds.yaml#4 expect-error=42601
+sql:   SELECT id FROM t UNION ALL SELECT id FROM t OFFSET 2
+plan:  <PLAN-ERROR: parse SQL: 42601: syntax error: SELECT id FROM t UNION ALL SELECT id FROM t OFFSET 2 ^>
 === limit_offset_java.yaml#0
 sql:   SELECT id FROM items ORDER BY id LIMIT 3
 plan:  Limit(3, Project([_current.ID#0], Scan(ITEMS)))

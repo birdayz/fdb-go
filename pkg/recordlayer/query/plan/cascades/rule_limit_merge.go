@@ -1,6 +1,8 @@
 package cascades
 
 import (
+	"math"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 )
@@ -57,12 +59,19 @@ func (r *LimitMergeRule) OnMatch(call *ExpressionRuleCall) {
 	iLimit := inner.GetLimit()
 	iOffset := inner.GetOffset()
 
-	combinedOffset := iOffset + oOffset
+	combinedOffset, ok := checkedLimitSum(iOffset, oOffset)
+	if !ok {
+		// A semantic skip cannot saturate: retain the two exact windows when
+		// their combined offset cannot be represented by a single LIMIT.
+		return
+	}
 
 	var combinedLimit int64
 	if iLimit < 0 {
 		combinedLimit = oLimit
 	} else {
+		// Both operands are nonnegative (offsets are validated at construction),
+		// so subtraction cannot underflow int64 even when no rows remain.
 		available := iLimit - oOffset
 		if available <= 0 {
 			combinedLimit = 0
@@ -79,6 +88,16 @@ func (r *LimitMergeRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 	call.Yield(merged)
+}
+
+// checkedLimitSum adds finite, nonnegative row counts. Negative LIMIT values
+// are no-cap sentinels, not summands; an overflowing sum cannot be represented
+// by a static limit or offset.
+func checkedLimitSum(a, b int64) (int64, bool) {
+	if a < 0 || b < 0 || a > math.MaxInt64-b {
+		return 0, false
+	}
+	return a + b, true
 }
 
 var _ ExpressionRule = (*LimitMergeRule)(nil)

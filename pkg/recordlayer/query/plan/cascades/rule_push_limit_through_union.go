@@ -50,8 +50,10 @@ func (r *PushLimitThroughUnionRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	branchLimit := limit.GetLimit() + limit.GetOffset()
-	if branchLimit <= 0 {
+	// A no-cap sentinel must stay unbounded; a finite cap must include the
+	// entire offset without overflow. Otherwise leave the union uncapped.
+	branchLimit, representable := checkedLimitSum(limit.GetLimit(), limit.GetOffset())
+	if !representable || branchLimit <= 0 {
 		return
 	}
 

@@ -895,8 +895,9 @@ func (f *fieldValue) evaluateResolved(evalCtx any) (any, error) {
 // stored whole so a reader can never see a descriptor paired with a different
 // descriptor's verdict. See exactType.protoShape for why it is a single entry.
 type protoShapeVerdict struct {
-	descriptor protoreflect.MessageDescriptor
-	compatible bool
+	descriptor  protoreflect.MessageDescriptor
+	compatible  bool
+	unambiguous bool
 }
 
 // protoShapeCompatibleCached is protoRecordShapeCompatible with its answer
@@ -906,15 +907,24 @@ type protoShapeVerdict struct {
 // full scan pay O(fields²) per row for a verdict that cannot change within one
 // scan.
 func protoShapeCompatibleCached(descriptor protoreflect.MessageDescriptor, expected *exactType) bool {
+	verdict := protoShapeVerdictCached(descriptor, expected)
+	return verdict != nil && verdict.compatible
+}
+
+func protoShapeVerdictCached(descriptor protoreflect.MessageDescriptor, expected *exactType) *protoShapeVerdict {
 	if descriptor == nil || expected == nil {
-		return false
+		return nil
 	}
 	if cached := expected.protoShape.Load(); cached != nil && cached.descriptor == descriptor {
-		return cached.compatible
+		return cached
 	}
-	compatible := protoRecordShapeCompatible(descriptor, expected)
-	expected.protoShape.Store(&protoShapeVerdict{descriptor: descriptor, compatible: compatible})
-	return compatible
+	verdict := &protoShapeVerdict{
+		descriptor:  descriptor,
+		compatible:  protoRecordShapeCompatible(descriptor, expected),
+		unambiguous: protoFieldNamesUnambiguous(expected),
+	}
+	expected.protoShape.Store(verdict)
+	return verdict
 }
 
 func readProtoOrdinal(message protoreflect.Message, expected *exactType, ordinal, depth int) (any, error) {
@@ -935,6 +945,42 @@ func readProtoOrdinal(message protoreflect.Message, expected *exactType, ordinal
 	return ProtoFieldToRowValue(field, message.Get(field)), nil
 }
 
+// ProtoRecordDescriptorCompatible admits a protobuf-backed output carrier
+// against an exact logical declaration. Storage is addressed by ordinal, not
+// logical field names. Logical scalar/record nullability is not descriptor
+// presence; nullable arrays may also read an already-unwrapped repeated field.
+// Duplicate declared names are not representable as a protobuf record type;
+// machinery-owned duplicate columns retain their ordinal-row representation.
+func ProtoRecordDescriptorCompatible(descriptor protoreflect.MessageDescriptor, declared ExactTypeHandle) bool {
+	handle, ok := AsExactTypeHandle(declared)
+	if !ok {
+		return false
+	}
+	verdict := protoShapeVerdictCached(descriptor, handle.(*exactType))
+	return verdict != nil && verdict.compatible && verdict.unambiguous
+}
+
+// Name unambiguity is also a pure function of the captured type. Memoize it
+// with descriptor admission so each output row does not rebuild a name set.
+func protoFieldNamesUnambiguous(typ *exactType) bool {
+	if typ == nil {
+		return true
+	}
+	seen := make(map[string]struct{}, len(typ.fields))
+	for _, field := range typ.fields {
+		if field.name != "" {
+			if _, exists := seen[field.name]; exists {
+				return false
+			}
+			seen[field.name] = struct{}{}
+		}
+		if !protoFieldNamesUnambiguous(field.typ) {
+			return false
+		}
+	}
+	return protoFieldNamesUnambiguous(typ.element)
+}
+
 func protoRecordShapeCompatible(descriptor protoreflect.MessageDescriptor, expected *exactType) bool {
 	if descriptor == nil || expected == nil || expected.code != TypeCodeRecord || expected.anyRecord || descriptor.Fields().Len() != len(expected.fields) {
 		return false
@@ -953,7 +999,7 @@ func protoFieldShapeCompatible(field protoreflect.FieldDescriptor, expected *exa
 	}
 	if list, wrapped, ok := EffectiveListField(field); ok {
 		return expected.code == TypeCodeArray && expected.element != nil &&
-			expected.nullable == wrapped &&
+			(!wrapped || expected.nullable) &&
 			protoScalarShapeCompatible(list, expected.element)
 	}
 	if field.IsMap() {

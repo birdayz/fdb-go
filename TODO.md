@@ -9695,3 +9695,132 @@ covered by the correctness suite and the golden plan diff, not by this table.
   What would close it: any status that claims a gate ACKed must have fetched that gate's BODY for
   the head in question, and a count of its verdicts must come from counting them. Mechanically:
   `gh pr view <n> --json comments` and read `.body`, never the rendered preview.
+
+### RFC-243 — LIMIT and cursor-property bug hunt
+
+- [x] Preserve unbounded UNION windows and reject unrepresentable offset merges.
+  `limit_offset_bounds.yaml` pins SQL wrong rows; the logical API UNION regression
+  pins the OFFSET-only shape SQL cannot express. Original fix: `2afdb29a3`.
+- [x] Preserve finite read budgets and requested streaming modes through unions,
+  disjoint ranges, scan constructors and transparent map/projection operators.
+  Pin bounded child stops/resume, malformed LIMIT offsets, VALUES delegation,
+  and request skip outside semantic LIMIT. The real-FDB read-conflict probe has
+  56 cases (14 plan shapes × 4 mode/budget settings); filter/distinct clearing
+  has direct single-execution assertions and discriminating mutations, not only
+  SQL pagination tests that can mask empty intermediate pages.
+- [x] Fix aggregate default-mode boundaries and stale permuted MIN/MAX replacement
+  under concurrent delete/insert. Both corruption mirrors now conflict with 1020
+  and retry to the correct extremum. Real-FDB observers pin actual streaming
+  modes, isolation, direction and effective-mode overrides during NULL repair.
+- [x] Make strict scalar-subquery cardinality independent of request skip/cap.
+  A cap of one must not hide row two (21000); even a child cap of two is unsafe
+  across mixed record types. The 48-case request matrix and 12 real-FDB cases
+  cover cardinality, default/valued outputs, semantic child LIMIT, continuation
+  consumption, and before/after-first-row OOB checkpoint/restart. Non-strict
+  FirstOrDefault retains Java's different contract, pinned by 27 live-JVM/core
+  comparisons and the exact mapped-empty-record reproducer. SQL's bounded
+  FlatMap caller was already protected and is pinned separately.
+- [x] Final-source 1M measurements: four runs per side, sequential ABBA twice,
+  same XFS filesystem. Baseline `42a79173557936707a32a969e51489667db6ff01`
+  versus `e4c0e8ee807967a97989aa9eb5b1206f8563a9de`; all eight fresh runs
+  passed with identical row counts across 23 query arms (24 RUN lines each).
+  Total durations: baseline 177.53/177.22/177.54/179.41s, changed
+  177.16/177.74/177.76/177.30s. Detailed timing population and conditions are
+  recorded in RFC-243. Earlier after measurements are superseded.
+
+Design, rejected alternatives and verification scope:
+`rfcs/243-limit-arithmetic-preserves-unboundedness.md`.
+
+### Stress test 1M baseline — RFC-243 (2026-09-08)
+
+Baseline `42a79173557936707a32a969e51489667db6ff01` (merge-base at measurement)
+versus `e4c0e8ee807967a97989aa9eb5b1206f8563a9de`. Sequential ABBA twice;
+four runs per side, same XFS mount at 97% utilization, recorded one-minute
+loads 0.47–3.14. All eight runs passed uncached, with 24 RUN lines each and
+identical row counts for 23 query arms. Source checksums stayed unchanged.
+
+| Measurement | Baseline | Changed |
+|---|---:|---:|
+| Total seconds, four runs | 177.53 / 177.22 / 177.54 / 179.41 | 177.16 / 177.74 / 177.76 / 177.30 |
+| COUNT(*) / 1M, seconds | 3.10–3.16 | 3.10–3.21 |
+| ORDER BY PK / 1M, seconds | 3.834–3.959 | 3.879–3.961 |
+| Wide scan / 1M, seconds | 3.938–3.977 | 3.918–3.978 |
+| Sparse filter / 97 rows, seconds | 3.350–3.364 | 3.318–3.344 |
+
+Total ratio of means 0.998x; no statistical speedup claim from four samples.
+All query timing ranges, exact command, review/test populations and artifact
+names are in RFC-243's "Final verification checkpoint". Initial apparent
+status-count/join slowdowns were remeasured, not dismissed from other rows.
+
+### RFC-243 decision 14 — default/context and protobuf-carrier follow-up
+
+- [x] Complete final verification of the implemented follow-up. Bound defaults
+  now retain their evaluation context, evaluated record defaults materialize,
+  and DefaultOnEmpty preserves whole-record NULL presence. Shared values-layer
+  descriptor admission fixes duplicate-name panics and rejects malformed
+  protobuf carriers without refusing valid nullable records/arrays. JVM/core
+  probes pin binding behavior, nullable plain repeated fields, duplicate-name
+  rejection, and independent TypeRepositories. Regression matrices include
+  nested FieldValue reads and keep frozen source-constructor field mutations loud.
+  The final literal-source fence reconciles valid root nullability; a retained
+  executor allocation pin rejects re-snapshotting the frozen type per row.
+  RFC-243 decision 14 records the implementation and proof populations. Final
+  review, full-suite execution, focused race tests, and fuzzing are green.
+  Final-source matched 1M stress and GitHub review/CI are complete at
+  `0d45fbcaa`; the final table below covers this follow-up, while the preceding
+  table remains scoped to decisions 1–13.
+
+### RFC-243 — PR #771 CI allocation-isolation correction
+
+The CI unit job at `e3197dae0cb110fc2c2a2f1daec5590a87060de4` exposed
+process-wide Benchmark allocation contamination from parallel tests/background
+FDB activity. The test-only subprocess helper preserves parallel parent tests
+and all four original assertion thresholds. A deterministic handshake regression
+pins the contamination mechanism; isolation and non-vacuous completion have
+unit/fuzz coverage. Five full helper/executor/values repetitions pass (Explode
+770 allocations each; unchanged ceiling 784), and restored per-row snapshotting
+still mutation-fails at 1,026. RFC-243's CI allocation-measurement section records
+the design and proof populations. The decision-14 final-verification item above
+is closed by the final suites, review, and matched stress recorded below.
+
+### RFC-243 — allocation-isolation verification checkpoint
+
+The CI harness correction now covers five existing assertion sites, including
+the HNSW zero-allocation test identified during review. All original thresholds
+remain unchanged. Final `just test` is 92/92 (three fresh, 89 cached), following
+a 92/92 uncached checkpoint; final race runs cover helper, executor, values, and
+recordlayer. Helper coverage includes child-only lines, protocol fuzz passes
+19,271,222 executions/15s, and all retained guard/allocation mutations redden.
+Virtual Graefe, virtual Torvalds, and independent Codex ACK the implementation
+and follow-up deltas. RFC-243's allocation-isolation commit checkpoint scopes
+the measurements and corrects the reviewed AllocsPerRun precision hypothesis.
+Final-source matched stress and GitHub review/CI subsequently completed;
+see the final readiness checkpoint below.
+
+### Stress test 1M baseline — RFC-243 final readiness (2026-09-08)
+
+- [x] Decision 14 final-source verification and review complete at code head
+  `0d45fbcaa4fe7876044c752df53730d388af166b`, compared with merge-base
+  `42a79173557936707a32a969e51489667db6ff01`. Four ordinary runs per side,
+  sequential ABBA then BAAB, same XFS filesystem at 98% utilization, one-minute
+  loads 1.48–4.15. All eight pass freshly with identical 24 RUN names and
+  23 query row counts; source checksums unchanged. All seven GitHub CI checks
+  pass, and the full GitHub Claude review approves. This closes the decision-14
+  checkpoint; earlier tables remain scoped to their earlier code heads.
+
+| Measurement | Baseline | Changed |
+|---|---:|---:|
+| Total seconds, four runs | 179.00 / 178.83 / 178.07 / 177.66 | 178.06 / 180.94 / 177.58 / 177.21 |
+| COUNT(*) / 1M, seconds | 3.04–3.18 | 2.99–3.14 |
+| ORDER BY PK / 1M, seconds | 3.826–3.874 | 3.781–3.920 |
+| Wide scan / 1M, seconds | 3.928–3.965 | 3.887–3.964 |
+| Sparse filter / 97 rows, seconds | 3.369–3.384 | 3.290–3.358 |
+
+Total ratio of means 1.0003x, not a statistical parity/speedup claim. The initially
+slower early-query timings also appeared in the baseline on the reverse repeat.
+Four additional profiled exact 1M runs (two per side) locate the remaining small
+aggregate timing spread in FDB/client waits with identical block-event counts
+by leaf caller for those queries, not increased nonblocking work. These profiles
+are not folded into the ordinary timing table. Full per-query ranges, profile
+measurements, scope limits, and reproduction commands are in RFC-243's final
+readiness checkpoint; it also records the GitHub review link and final CI scope.

@@ -112,11 +112,7 @@ func executeAggregateIndexScan(
 		return nil, fmt.Errorf("executor: building scan ranges for %q: %w", idxPlan.GetIndexName(), err)
 	}
 
-	scanProps := recordlayer.ScanProperties{
-		ExecuteProperties:   props,
-		Reverse:             idxPlan.IsReverse(),
-		CursorStreamingMode: recordlayer.StreamingModeIterator,
-	}
+	scanProps := recordlayer.NewScanProperties(props).WithReverse(idxPlan.IsReverse())
 
 	canonicalName := p.CanonicalAggColumnName()
 	// The aggregate-index row's authoritative ordinal
@@ -302,6 +298,10 @@ func newPermutedAggregateIndexCursor(
 	}
 	totalSize := gke.ColumnSize()
 	inner := store.ScanIndexByType(idx, recordlayer.IndexScanByGroup, scanRange, continuation, scanProps)
+	// The repair constructs a new scan from these execution properties. Retain
+	// the effective mode even when WithStreamingMode overrode the default.
+	repairProps := scanProps.ExecuteProperties
+	repairProps.DefaultCursorStreamingMode = scanProps.CursorStreamingMode
 	return &permutedAggregateIndexCursor{
 		inner:      inner,
 		groupCount: groupCount,
@@ -318,7 +318,7 @@ func newPermutedAggregateIndexCursor(
 		repairNullMin:     recordlayer.IsPermutedMinIndex(idx),
 		ordinaryValueFrom: gke.GetGroupingCount(),
 		ordinaryValueTo:   totalSize,
-		scanProps:         scanProps.ExecuteProperties,
+		scanProps:         repairProps,
 	}, nil
 }
 
@@ -951,7 +951,7 @@ func executeUnorderedUnion(
 		return recordlayer.Empty[QueryResult](), nil
 	}
 	if len(inners) == 1 {
-		c, err := ExecutePlan(ctx, inners[0], store, evalCtx, continuation, props.ClearSkipAndLimit())
+		c, err := ExecutePlan(ctx, inners[0], store, evalCtx, continuation, props.ClearSkipAndAdjustLimit())
 		if err != nil {
 			return nil, err
 		}
@@ -973,7 +973,7 @@ func executeUnorderedUnion(
 	// carry the names every other leg's rows carry and nothing here re-types
 	// them (RFC-242). Java's UnorderedUnionCursor likewise concatenates the
 	// children's results unchanged.
-	childProps := props.ClearSkipAndLimit()
+	childProps := props.ClearSkipAndAdjustLimit()
 	u := &unorderedUnionCursor{
 		children:  make([]recordlayer.RecordCursor[QueryResult], len(inners)),
 		states:    make([]recordlayer.RecordCursorContinuation, len(inners)),
@@ -1257,7 +1257,10 @@ func executeMap(
 	continuation []byte,
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
-	inner, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props.ClearSkipAndLimit())
+	// As in Java's RecordQueryMapPlan, the child owns the original request
+	// and continuation. Mapping only returned rows also avoids evaluating
+	// expressions on rows the child discarded for request skip.
+	inner, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props)
 	if err != nil {
 		return nil, err
 	}
@@ -1334,7 +1337,7 @@ func executeMap(
 		}
 		return QueryResult{Positional: pos, Record: qr.Record, PrimaryKey: qr.PrimaryKey}
 	})
-	return &errCheckCursor{inner: applySkipLimit(mapped, props.Skip, props.ReturnedRowLimit), err: &evalErr}, nil
+	return &errCheckCursor{inner: mapped, err: &evalErr}, nil
 }
 
 func executeFirstOrDefault(
@@ -1356,7 +1359,17 @@ func executeFirstOrDefault(
 	if resume == fodResumeConsumed {
 		return recordlayer.Empty[QueryResult](), nil
 	}
-	inner, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, innerCont, props)
+	// Java's non-strict FirstOrDefault applies the request BEFORE first/default,
+	// unlike DefaultOnEmpty. The Go-only strict scalar barrier must instead
+	// validate the complete input: request skip or cap must not hide row two.
+	// Even a child cap of two is unsafe: a raw scan can spend that budget on
+	// another record type and one matching row, then stop in-band before the
+	// second match. Keep scan/time limits (which stop out-of-band), not row caps.
+	innerProps := props
+	if p.IsStrict() {
+		innerProps = props.ClearSkipAndLimit()
+	}
+	inner, err := ExecutePlan(ctx, p.GetInner(), store, evalCtx, innerCont, innerProps)
 	if err != nil {
 		return nil, err
 	}
@@ -1398,6 +1411,9 @@ func executeFirstOrDefault(
 			}
 		}
 		_ = inner.Close()
+		if p.IsStrict() {
+			return applySkipLimit(newSingleResultCursor(first), props.Skip, props.ReturnedRowLimit), nil
+		}
 		return newSingleResultCursor(first), nil
 	}
 	_ = inner.Close()
@@ -1413,74 +1429,112 @@ func executeFirstOrDefault(
 	if result.GetNoNextReason().IsOutOfBand() {
 		return checkpointAfterOutOfBand(result)
 	}
-	qr, err := firstOrDefaultResultFromValue(p, p.GetDefaultValue())
+	qr, err := defaultResultFromValue(p, p.GetDefaultValue(), evalCtx)
 	if err != nil {
 		return nil, err
+	}
+	if p.IsStrict() {
+		return applySkipLimit(newSingleResultCursor(qr), props.Skip, props.ReturnedRowLimit), nil
 	}
 	return newSingleResultCursor(qr), nil
 }
 
-// firstOrDefaultResultFromValue materializes the empty arm in the plan's exact
-// output carrier. A record NULL is not a scalar `_0 UNKNOWN` wrapper and it is
-// not a matched record whose fields merely happen to be NULL: it is an exact
-// record-shaped physical shell with an explicit absent-current marker.
-func firstOrDefaultResultFromValue(
-	p *plans.RecordQueryFirstOrDefaultPlan,
+// defaultResultFromValue evaluates an empty arm using bindings, never a consumed
+// child frontier. The plan owns the exact output carrier; SQL NULL records keep
+// an absent-current marker distinct from present records with all-NULL fields.
+func defaultResultFromValue(
+	p plans.RecordQueryPlan,
 	defaultValue values.Value,
+	evalCtx *EvaluationContext,
 ) (QueryResult, error) {
-	if p == nil {
-		return QueryResult{}, fmt.Errorf("FirstOrDefault default has no plan")
+	if evalCtx == nil {
+		evalCtx = EmptyEvaluationContext()
 	}
+	rowCtx := evalCtx.RowContext()
 	resultType := p.GetResultType()
-	if recordType, isRecord := resultType.(*values.RecordType); isRecord {
-		if constructor, ok := defaultValue.(*values.RecordConstructorValue); ok {
-			result, err := resultFromValue(constructor)
-			if err != nil {
-				return QueryResult{}, err
-			}
-			if result.Positional == nil || result.Positional.Type == nil ||
-				!result.Positional.Type.Equals(recordType) || len(result.Positional.Slots) != len(recordType.Fields) {
-				return QueryResult{}, fmt.Errorf(
-					"FirstOrDefault RECORD constructor type %v is incompatible with result type %s",
-					result.Positional, recordType)
-			}
-			return result, nil
-		}
+	recordType, isRecord := resultType.(*values.RecordType)
+	if !isRecord {
+		var value any
 		if defaultValue != nil {
-			value, err := defaultValue.Evaluate(nil)
+			var err error
+			value, err = defaultValue.Evaluate(rowCtx)
 			if err != nil {
 				return QueryResult{}, err
 			}
-			if value != nil {
-				return QueryResult{}, fmt.Errorf(
-					"FirstOrDefault non-constructor RECORD default evaluated to %T", value)
-			}
 		}
-		layout, err := p.ProvidedOutputLayout()
-		if err != nil {
-			return QueryResult{}, fmt.Errorf("FirstOrDefault provided output layout: %w", err)
-		}
-		row, err := NewLayoutPositionalRow(recordType, layout)
-		if err != nil {
-			return QueryResult{}, fmt.Errorf("FirstOrDefault default carrier: %w", err)
-		}
-		presence, err := values.NewOrdinalCarrierMatchPresence(layout, false)
-		if err != nil {
-			return QueryResult{}, fmt.Errorf("FirstOrDefault default presence: %w", err)
-		}
-		row.LayoutPresence = presence
-		return QueryResult{Positional: row}, nil
+		return QueryResult{Positional: scalarPositionalRowOfType(value, resultType)}, nil
 	}
 
-	var value any
-	if defaultValue != nil {
+	var datum any
+	if constructor, ok := defaultValue.(*values.RecordConstructorValue); ok {
+		result, err := resultFromValue(constructor, rowCtx)
+		if err != nil {
+			return QueryResult{}, err
+		}
+		datum = result.Positional
+	} else if defaultValue != nil {
 		var err error
-		value, err = defaultValue.Evaluate(nil)
+		datum, err = defaultValue.Evaluate(rowCtx)
 		if err != nil {
 			return QueryResult{}, err
 		}
 	}
-	return QueryResult{Positional: scalarPositionalRowOfType(value, resultType)}, nil
+	// A typed nil in an interface is still a NULL record, not a present shell.
+	if row, ok := datum.(*PositionalRow); ok && row == nil {
+		datum = nil
+	}
+	if message, ok := datum.(proto.Message); ok && isNilProtoMessage(message) {
+		datum = nil
+	}
+	layout, err := p.ProvidedOutputLayout()
+	if err != nil {
+		return QueryResult{}, err
+	}
+	row, err := NewLayoutPositionalRow(recordType, layout)
+	if err != nil {
+		return QueryResult{}, err
+	}
+	if datum != nil {
+		if message, ok := datum.(proto.Message); ok {
+			// Use the field reader's storage-shape authority. Logical field
+			// nullability is not protobuf presence, and nullable arrays may
+			// arrive as ordinary repeated fields rather than wrapper messages.
+			if !values.ProtoRecordDescriptorCompatible(message.ProtoReflect().Descriptor(), values.FlowedExactType(layout.Carrier())) {
+				return QueryResult{}, layoutBindingError(values.LayoutRuntimeShape,
+					"default protobuf descriptor disagrees with declared record type")
+			}
+			converted := protoToPositional(message)
+			converted.Type = recordType
+			datum = converted
+		}
+		if positional, ok := datum.(*PositionalRow); ok {
+			if positional.Type == nil || !values.WithNullability(positional.Type, true).Equals(values.WithNullability(recordType, true)) {
+				return QueryResult{}, layoutBindingError(values.LayoutRuntimeShape,
+					"default positional record disagrees with declared record type")
+			}
+		}
+		source, ok := datum.(values.OrdinalRow)
+		if !ok {
+			return QueryResult{}, layoutBindingError(values.LayoutRuntimeShape,
+				fmt.Sprintf("default record has non-ordinal runtime type %T", datum))
+		}
+		for i := range row.Slots {
+			field, exists := source.Get(i)
+			if !exists {
+				return QueryResult{}, layoutBindingError(values.LayoutRuntimeShape, "default record is shorter than declared type")
+			}
+			row.Slots[i] = field
+		}
+		if _, exists := source.Get(len(row.Slots)); exists {
+			return QueryResult{}, layoutBindingError(values.LayoutRuntimeShape, "default record is wider than declared type")
+		}
+	}
+	presence, err := values.NewOrdinalCarrierMatchPresence(layout, datum != nil)
+	if err != nil {
+		return QueryResult{}, err
+	}
+	row.LayoutPresence = presence
+	return QueryResult{Positional: row}, nil
 }
 
 // An out-of-band stop underneath a first-or-default is a resumable PAGE
@@ -1621,7 +1675,7 @@ func executeDefaultOnEmpty(
 		// supplier. A nil default flows a scalar NULL row.
 		var defaultRow QueryResult
 		if defaultVal := p.GetDefaultValue(); defaultVal != nil {
-			qr, err := defaultOnEmptyResultFromValue(p, defaultVal)
+			qr, err := defaultResultFromValue(p, defaultVal, evalCtx)
 			if err != nil {
 				return &errResultCursor{err: err}
 			}
@@ -1671,33 +1725,26 @@ func normalizeDefaultOnEmptyResult(
 	// that parent layout after the OrElse cursor chooses its branch.
 	row.Layout = nil
 	row.LayoutPresence = nil
-	result.Positional = &row
-	return result, nil
-}
-
-func defaultOnEmptyResultFromValue(
-	p *plans.RecordQueryDefaultOnEmptyPlan,
-	defaultValue values.Value,
-) (QueryResult, error) {
-	resultType, isRecord := p.GetResultType().(*values.RecordType)
-	if isRecord {
-		if _, isConstructor := defaultValue.(*values.RecordConstructorValue); !isConstructor {
-			value, err := defaultValue.Evaluate(nil)
-			if err != nil {
-				return QueryResult{}, err
-			}
-			if value == nil {
-				return QueryResult{Positional: NewPositionalRow(resultType)}, nil
-			}
-			return QueryResult{}, fmt.Errorf(
-				"DefaultOnEmpty non-constructor RECORD default evaluated to %T", value)
-		}
-	}
-	result, err := resultFromValue(defaultValue)
+	// Replacing the child's address layout must not turn a whole-record NULL
+	// into a present record whose fields happen to be NULL. Rebase only that
+	// carrier-level absence; the child's source-window identities do not flow.
+	_, absent, err := result.Positional.wholeObjectBinding()
 	if err != nil {
 		return QueryResult{}, err
 	}
-	return normalizeDefaultOnEmptyResult(p, result)
+	if absent {
+		layout, layoutErr := p.ProvidedOutputLayout()
+		if layoutErr != nil {
+			return QueryResult{}, layoutErr
+		}
+		presence, presenceErr := values.NewOrdinalCarrierMatchPresence(layout, false)
+		if presenceErr != nil {
+			return QueryResult{}, presenceErr
+		}
+		row.Layout, row.LayoutPresence = layout, presence
+	}
+	result.Positional = &row
+	return result, nil
 }
 
 func executeInJoin(
@@ -1801,18 +1848,7 @@ func executeInUnion(
 				source[0],
 			)
 		}
-		cursor, err := ExecutePlan(
-			ctx,
-			p.GetInner(),
-			store,
-			childContext,
-			continuation,
-			props.ClearSkipAndLimit(),
-		)
-		if err != nil {
-			return nil, err
-		}
-		return applySkipLimit(cursor, props.Skip, props.ReturnedRowLimit), nil
+		return ExecutePlan(ctx, p.GetInner(), store, childContext, continuation, props)
 	}
 
 	// Single binding dimension: execute inner once per IN value,
@@ -1840,18 +1876,12 @@ func executeInUnion(
 			return func(cont []byte) recordlayer.RecordCursor[QueryResult] {
 				boundCtx := evalCtx.WithBinding(bindingID, val)
 				childCtx := withRecursionInvocationBranch(ctx, idx)
-				cursor, err := ExecutePlan(childCtx, p.GetInner(), store, boundCtx, cont, props.ClearSkipAndLimit())
+				cursor, err := ExecutePlan(childCtx, p.GetInner(), store, boundCtx, cont, props.ClearSkipAndAdjustLimit())
 				if err != nil {
 					return &errResultCursor{err: err}
 				}
 				return cursor
 			}
-		}
-		if len(vals) == 1 {
-			// Java: size == 1 → childPlan.executePlan(store, childContext,
-			// continuation, executeProperties) — the raw child continuation IS
-			// the in-union continuation.
-			return applySkipLimit(childFactory(0, vals[0])(continuation), props.Skip, props.ReturnedRowLimit), nil
 		}
 		factories := make([]recordlayer.CursorFactory[QueryResult], len(vals))
 		for i, val := range vals {
@@ -1915,7 +1945,7 @@ func executeMergeSortUnion(
 	for i, inner := range inners {
 		inner := inner
 		factories[i] = func(cont []byte) recordlayer.RecordCursor[QueryResult] {
-			c, err := ExecutePlan(ctx, inner, store, evalCtx, cont, props.ClearSkipAndLimit())
+			c, err := ExecutePlan(ctx, inner, store, evalCtx, cont, props.ClearSkipAndAdjustLimit())
 			if err != nil {
 				return &errResultCursor{err: err}
 			}

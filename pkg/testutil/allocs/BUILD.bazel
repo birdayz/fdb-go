@@ -1,0 +1,15 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "allocs",
+    testonly = True,
+    srcs = ["isolated.go"],
+    importpath = "fdb.dev/pkg/testutil/allocs",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "allocs_test",
+    srcs = ["isolated_test.go"],
+    embed = [":allocs"],
+)

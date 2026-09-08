@@ -1,9 +1,14 @@
 package cascades
 
 import (
+	"errors"
+	"fmt"
+	"math"
+	"math/big"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 func TestLimitMergeRule_Fires(t *testing.T) {
@@ -124,6 +129,140 @@ func TestLimitMergeRule_InnerUnlimited(t *testing.T) {
 	}
 	if merged.GetOffset() != 25 {
 		t.Fatalf("offset = %d, want 25 (20+5)", merged.GetOffset())
+	}
+}
+
+// TestLimitMergeRule_OffsetOverflow keeps nested skips representable: wrapping
+// their sum negative would turn a query that skips every row into a prefix read.
+func TestLimitMergeRule_OffsetOverflow(t *testing.T) {
+	t.Parallel()
+	for _, outerOffset := range []int64{1, math.MaxInt64} {
+		t.Run(fmt.Sprint(outerOffset), func(t *testing.T) {
+			t.Parallel()
+			scanQ := expressions.ForEachQuantifier(expressions.InitialOf(smallRewriteScan("T")))
+			inner := smallRewriteLimit(math.MaxInt64, math.MaxInt64, scanQ)
+			innerQ := expressions.ForEachQuantifier(expressions.InitialOf(inner))
+			outer := smallRewriteLimit(1, outerOffset, innerQ)
+			results := fireSmallRewriteRule(t, NewLimitMergeRule(), expressions.InitialOf(outer))
+			if len(results) != 0 {
+				t.Fatalf("overflowing offsets must keep the nested limits, got %v", results)
+			}
+		})
+	}
+}
+
+func TestLimitMergeRule_OffsetBoundary(t *testing.T) {
+	t.Parallel()
+	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(smallRewriteScan("T")))
+	inner := smallRewriteLimit(-1, math.MaxInt64-1, scanQ)
+	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(inner))
+	outer := smallRewriteLimit(3, 1, innerQ)
+	results := fireSmallRewriteRule(t, NewLimitMergeRule(), expressions.InitialOf(outer))
+	if len(results) != 1 {
+		t.Fatalf("representable offset sum must still merge, got %d rewrites", len(results))
+	}
+	merged := results[0].(*expressions.LogicalLimitExpression)
+	if merged.GetOffset() != math.MaxInt64 || merged.GetLimit() != 3 {
+		t.Fatalf("merged window = %d/%d, want 3/MaxInt64", merged.GetLimit(), merged.GetOffset())
+	}
+}
+
+// FuzzLimitMerge_Window checks every yielded rewrite against sequential windows
+// on an arbitrarily long ordinal stream. Big integers keep the oracle independent
+// of the int64 arithmetic whose overflow caused the bug.
+func FuzzLimitMerge_Window(f *testing.F) {
+	f.Add(int64(math.MaxInt64), int64(math.MaxInt64), int64(1), int64(1))
+	f.Add(int64(-1), int64(math.MaxInt64-1), int64(3), int64(1))
+	f.Add(int64(50), int64(10), int64(20), int64(5))
+	f.Add(int64(0), int64(0), int64(-1), int64(1))
+	f.Fuzz(func(t *testing.T, iLimit, iOffset, oLimit, oOffset int64) {
+		t.Parallel()
+		iOffset &= math.MaxInt64
+		oOffset &= math.MaxInt64
+		scanQ := expressions.ForEachQuantifier(expressions.InitialOf(smallRewriteScan("T")))
+		inner := smallRewriteLimit(iLimit, iOffset, scanQ)
+		innerQ := expressions.ForEachQuantifier(expressions.InitialOf(inner))
+		outer := smallRewriteLimit(oLimit, oOffset, innerQ)
+		results := fireSmallRewriteRule(t, NewLimitMergeRule(), expressions.InitialOf(outer))
+		start := new(big.Int).Add(big.NewInt(iOffset), big.NewInt(oOffset))
+		wantRewrites := 0
+		if start.IsInt64() {
+			wantRewrites = 1
+		}
+		if len(results) != wantRewrites {
+			t.Fatalf("offset sum %s: got %d rewrites, want %d", start, len(results), wantRewrites)
+		}
+		var end *big.Int
+		if iLimit >= 0 {
+			end = new(big.Int).Add(big.NewInt(iOffset), big.NewInt(iLimit))
+		}
+		if oLimit >= 0 {
+			outerEnd := new(big.Int).Add(start, big.NewInt(oLimit))
+			if end == nil || outerEnd.Cmp(end) < 0 {
+				end = outerEnd
+			}
+		}
+		for _, result := range results {
+			merged := result.(*expressions.LogicalLimitExpression)
+			if end != nil && end.Cmp(start) <= 0 {
+				if merged.GetLimit() != 0 {
+					t.Fatalf("empty window became LIMIT %d", merged.GetLimit())
+				}
+				continue
+			}
+			if big.NewInt(merged.GetOffset()).Cmp(start) != 0 {
+				t.Fatalf("merged offset = %d, want %s", merged.GetOffset(), start)
+			}
+			if end == nil {
+				if merged.GetLimit() >= 0 {
+					t.Fatalf("unbounded window became LIMIT %d", merged.GetLimit())
+				}
+			} else if want := new(big.Int).Sub(end, start); big.NewInt(merged.GetLimit()).Cmp(want) != 0 {
+				t.Fatalf("merged limit = %d, want %s", merged.GetLimit(), want)
+			}
+		}
+	})
+}
+
+func TestCheckedLimitSum(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		a, b, want int64
+		ok         bool
+	}{
+		{name: "zero", ok: true},
+		{name: "finite", a: 5, b: 2, want: 7, ok: true},
+		{name: "maximum", a: math.MaxInt64 - 1, b: 1, want: math.MaxInt64, ok: true},
+		{name: "overflow", a: math.MaxInt64, b: 1},
+		{name: "negative_limit", a: -1, b: 2},
+		{name: "negative_offset", a: 2, b: -1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, ok := checkedLimitSum(tc.a, tc.b)
+			if got != tc.want || ok != tc.ok {
+				t.Fatalf("sum(%d,%d) = %d/%v, want %d/%v", tc.a, tc.b, got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}
+
+func TestLogicalLimit_RejectsNegativeOffset(t *testing.T) {
+	t.Parallel()
+	for _, offset := range []int64{-1, math.MinInt64} {
+		t.Run(fmt.Sprint(offset), func(t *testing.T) {
+			t.Parallel()
+			q := expressions.ForEachQuantifier(expressions.InitialOf(smallRewriteScan("T")))
+			var offsetErr *expressions.InvalidLimitOffsetError
+			if _, err := expressions.NewLogicalLimitExpression(5, offset, q); !errors.As(err, &offsetErr) || offsetErr.Offset != offset {
+				t.Fatalf("static LIMIT offset %d: got %v, want structured offset error", offset, err)
+			}
+			cap := &values.ConstantValue{Value: int64(5), Typ: values.NotNullLong}
+			if _, err := expressions.NewRuntimeLogicalLimitExpression(cap, offset, q); !errors.As(err, &offsetErr) || offsetErr.Offset != offset {
+				t.Fatalf("runtime LIMIT offset %d: got %v, want structured offset error", offset, err)
+			}
+		})
 	}
 }
 

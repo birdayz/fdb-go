@@ -379,8 +379,9 @@ func (f Field) Equals(other Field) bool {
 
 // RecordType is the Type impl for struct-shaped data. Mirrors Java's
 // Record nested type. Two RecordType instances are Equal iff their
-// Name + Nullable match AND their Fields slice is element-wise
-// equal (same length, each Field equals at the same index).
+// Nullable flags match AND their Fields slice is element-wise equal
+// (same length, each Field equals at the same index). The record's own name
+// is provenance; field names remain part of Field equality.
 //
 // Anonymous records (no name) are common — `RECORD<INT, STRING>`
 // produces a RecordType with Name="" and the corresponding Fields.

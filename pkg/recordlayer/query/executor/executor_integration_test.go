@@ -22,6 +22,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 	"fdb.dev/pkg/relational/api"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
+	"fdb.dev/pkg/testutil/allocs"
 )
 
 var testDB *recordlayer.FDBDatabase
@@ -91,6 +92,11 @@ func integrationJoinResult(
 }
 
 func TestMain(m *testing.M) {
+	// Allocation-only children run one exact test without FDB client/container
+	// background goroutines contributing to process-wide MemStats.
+	if allocs.IsChildProcess() {
+		os.Exit(m.Run())
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
@@ -131,7 +137,7 @@ func testSubspace(t *testing.T) subspace.Subspace {
 	return subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
 }
 
-func setupStore(t *testing.T) *recordlayer.FDBRecordStore {
+func setupStore(t *testing.T, extraIndexes ...*recordlayer.Index) *recordlayer.FDBRecordStore {
 	t.Helper()
 	ctx := context.Background()
 	ks := testSubspace(t)
@@ -141,6 +147,9 @@ func setupStore(t *testing.T) *recordlayer.FDBRecordStore {
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
 	builder.AddIndex("Order", recordlayer.NewIndex("order_price_idx", recordlayer.Field("price")))
+	for _, index := range extraIndexes {
+		builder.AddIndex("Order", index)
+	}
 	md, err := builder.Build()
 	if err != nil {
 		t.Fatalf("build metadata: %v", err)

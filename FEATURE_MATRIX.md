@@ -23,7 +23,7 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**371 scenarios · 3059 query/assertion cases** across 18 feature areas — 2680 supported, 115 unsupported-feature pins, 264 error-path pins.
+**372 scenarios · 3064 query/assertion cases** across 18 feature areas — 2684 supported, 115 unsupported-feature pins, 265 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
@@ -33,7 +33,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | CTEs | 14 | 179 | 137 | 7 | 35 |
 | Set operations (UNION / INTERSECT / EXCEPT) | 12 | 68 | 59 | 5 | 4 |
 | DML (INSERT / UPDATE / DELETE) | 26 | 238 | 202 | 4 | 32 |
-| Ordering & pagination | 17 | 133 | 129 | 0 | 4 |
+| Ordering & pagination | 18 | 138 | 133 | 0 | 5 |
 | Scalar functions & expressions | 34 | 381 | 328 | 21 | 32 |
 | Predicates & WHERE | 12 | 104 | 102 | 0 | 2 |
 | Column resolution & aliasing | 7 | 59 | 30 | 0 | 29 |
@@ -45,7 +45,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
 | Other | 38 | 329 | 291 | 12 | 26 |
-| **Total** | **371** | **3059** | **2680** | **115** | **264** |
+| **Total** | **372** | **3064** | **2684** | **115** | **265** |
 
 ## Aggregates & GROUP BY
 
@@ -300,6 +300,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 |---|--:|--:|--:|--:|---|
 | `e2e_order_management` | 5 | 5 | 0 | 0 | End-to-end order management |
 | `index_scan_order` | 5 | 5 | 0 | 0 | Index scan ordering (ASC/DESC) |
+| `limit_offset_bounds` | 5 | 4 | 0 | 1 | LIMIT/OFFSET are Go read-side extensions. |
 | `limit_offset_java` | 10 | 10 | 0 | 0 | LIMIT and OFFSET patterns. |
 | `limit_one_over_wide_filter` | 1 | 1 | 0 | 0 | RFC-188 finding 2 SQL-surface guard. |
 | `limit_zero` | 3 | 3 | 0 | 0 | LIMIT 0 edge case |

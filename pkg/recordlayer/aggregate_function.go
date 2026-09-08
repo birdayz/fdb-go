@@ -347,13 +347,8 @@ func evaluateMinMaxFromValueIndex(
 ) (tuple.Tuple, error) {
 	reverse := fn.Name == FunctionNameMax
 
-	props := ScanProperties{
-		ExecuteProperties: ExecuteProperties{
-			ReturnedRowLimit: 1,
-			IsolationLevel:   isolationLevel,
-		},
-		Reverse: reverse,
-	}
+	props := NewScanProperties(DefaultExecuteProperties().
+		WithReturnedRowLimit(1).WithIsolationLevel(isolationLevel)).WithReverse(reverse)
 
 	entry, err := First(ctx, maintainer.Scan(scanRange, nil, props))
 	if err != nil {
@@ -397,11 +392,7 @@ func evaluateAtomicAggregate(
 		return nil, fmt.Errorf("index maintainer for %q does not support aggregation", fn.Name)
 	}
 
-	props := ScanProperties{
-		ExecuteProperties: ExecuteProperties{
-			IsolationLevel: isolationLevel,
-		},
-	}
+	props := NewScanProperties(DefaultExecuteProperties().WithIsolationLevel(isolationLevel))
 
 	entries, err := AsList(ctx, maintainer.Scan(scanRange, nil, props))
 	if err != nil {

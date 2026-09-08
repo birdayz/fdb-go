@@ -125,6 +125,7 @@ func (c *countKVCursor) initIterator() error {
 
 	rng := fdb.KeyRange{Begin: begin, End: end}
 	options := fdb.RangeOptions{
+		Mode:    c.scanProps.CursorStreamingMode.ToFDB(),
 		Reverse: c.scanProps.IsReverse(),
 	}
 

@@ -6,13 +6,20 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/query/executor"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"google.golang.org/protobuf/proto"
 )
 
 var _ = Describe("Continuation Token Conformance", func() {
@@ -69,6 +76,232 @@ var _ = Describe("Continuation Token Conformance", func() {
 		}
 		return params
 	}
+
+	It("executes an inline record explode across independent Java type repositories", func() {
+		for _, nullable := range []bool{true, false} {
+			params := buildJavaParams()
+			params["nullable"] = nullable
+			raw, err := java.Invoke(ctx, "explodeIndependentRepositories", params)
+			Expect(err).NotTo(HaveOccurred())
+			var result struct {
+				Rows [][]int64 `json:"rows"`
+			}
+			Expect(json.Unmarshal(raw, &result)).To(Succeed())
+			Expect(result.Rows).To(Equal([][]int64{{7, 9}, {7, 9}}))
+			constructor := values.NewRawRecordConstructorValue(
+				values.RecordConstructorField{Name: "Z", Value: &values.ConstantValue{Typ: values.NotNullInt, Value: int32(7)}},
+				values.RecordConstructorField{Name: "A", Value: &values.ConstantValue{Typ: values.NotNullLong, Value: int64(9)}},
+			)
+			plan, err := plans.NewRecordQueryExplodePlan(values.NewArrayConstructorValue(values.WithNullability(constructor.Type(), nullable), []values.Value{constructor}))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cascades.FinalizePlan(plan)).To(Succeed())
+			original := constructor.MessageDescriptor()
+			foreign, err := values.NewTypeProtoRepository().MessageDescriptorFor(constructor.Type())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(foreign == original).To(BeFalse())
+			for i := range 2 {
+				if i == 1 {
+					constructor.SetMessageDescriptor(foreign)
+				}
+				cur, err := executor.ExecutePlan(ctx, plan, nil, executor.EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+				Expect(err).NotTo(HaveOccurred())
+				rows, err := executor.CollectAll(ctx, cur)
+				_ = cur.Close()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(rows).To(HaveLen(1))
+				Expect(rows[0].Positional.Slots).To(Equal([]any{int64(7), int64(9)}))
+			}
+			fmt.Fprintf(GinkgoWriter, "EXPLODE_REPOSITORIES nullable=%v Java rows=%v Go rows=[[7 9] [7 9]] distinct descriptors verified\n", nullable, result.Rows)
+		}
+	})
+
+	It("pins nullable protobuf explode carriers against Java", func() {
+		for _, nullable := range []bool{false, true} {
+			for _, nestedArray := range []bool{false, true} {
+				for _, duplicateNames := range []bool{false, true} {
+					params := buildJavaParams()
+					params["nullable"], params["nestedArray"], params["duplicateNames"] = nullable, nestedArray, duplicateNames
+					raw, err := java.Invoke(ctx, "explodeProtoShape", params)
+					if duplicateNames {
+						var javaErr *JavaError
+						Expect(errors.As(err, &javaErr)).To(BeTrue())
+						Expect(javaErr.ExceptionClass).To(Equal("IllegalArgumentException"))
+					} else {
+						Expect(err).NotTo(HaveOccurred())
+					}
+					var result struct {
+						Value    int64    `json:"value"`
+						Nullable bool     `json:"nullable"`
+						Tags     []string `json:"tags"`
+					}
+					if !duplicateNames {
+						Expect(json.Unmarshal(raw, &result)).To(Succeed())
+						Expect(result.Value).To(Equal(int64(99)))
+						Expect(result.Nullable).To(Equal(nullable))
+						Expect(result.Tags).To(Equal([]string{"a"}))
+					}
+					message := &gen.Order{OrderId: proto.Int64(99), Tags: []string{"a"}}
+					original := executor.PositionalTypeForDescriptor(message.ProtoReflect().Descriptor())
+					fields := append([]values.Field(nil), original.Fields...)
+					if duplicateNames {
+						fields[1].Name = fields[0].Name
+					}
+					if nestedArray {
+						fields[3].FieldType = values.WithNullability(fields[3].FieldType, true)
+					}
+					declared := &values.RecordType{Nullable: nullable, Fields: fields}
+					plan, err := plans.NewRecordQueryExplodePlan(&values.ConstantValue{Value: []any{message}, Typ: values.NewArrayType(false, declared)})
+					Expect(err).NotTo(HaveOccurred())
+					cur, err := executor.ExecutePlan(ctx, plan, nil, executor.EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+					Expect(err).NotTo(HaveOccurred())
+					rows, err := executor.CollectAll(ctx, cur)
+					_ = cur.Close()
+					if duplicateNames {
+						var resolution *values.ResolutionError
+						Expect(errors.As(err, &resolution)).To(BeTrue())
+						Expect(resolution.ErrorCode).To(Equal(values.LayoutCarrierMismatch))
+						fmt.Fprintf(GinkgoWriter, "EXPLODE_PROTO duplicateNames=true nullable=%v nestedArray=%v Java=IllegalArgumentException Go=LayoutCarrierMismatch\n", nullable, nestedArray)
+						continue
+					}
+					Expect(err).NotTo(HaveOccurred())
+					Expect(rows).To(HaveLen(1))
+					Expect(rows[0].Positional.Slots[0]).To(Equal(int64(99)))
+					Expect(rows[0].Positional.Type.IsNullable()).To(Equal(nullable))
+					Expect(rows[0].Positional.Slots[3]).To(Equal([]any{"a"}))
+					fmt.Fprintf(GinkgoWriter, "EXPLODE_PROTO nullable=%v nestedArray=%v duplicateNames=%v Java=%d Go=%v\n", nullable, nestedArray, duplicateNames, result.Value, rows[0].Positional.Slots[0])
+				}
+			}
+		}
+	})
+
+	It("evaluates bound defaults against the live Java core API", func() {
+		for _, all := range []bool{false, true} {
+			for _, empty := range []bool{false, true} {
+				for _, sameAlias := range []bool{false, true} {
+					params := buildJavaParams()
+					params["all"], params["empty"], params["sameAlias"] = all, empty, sameAlias
+					raw, err := java.Invoke(ctx, "defaultBinding", params)
+					Expect(err).NotTo(HaveOccurred())
+					var result struct {
+						Value     int64 `json:"value"`
+						Exhausted bool  `json:"exhausted"`
+					}
+					Expect(json.Unmarshal(raw, &result)).To(Succeed())
+					want := int64(11)
+					if empty {
+						want = 99
+					}
+					Expect(result.Value).To(Equal(want))
+					Expect(result.Exhausted).To(BeTrue())
+					input := []any{int64(11)}
+					if empty {
+						input = nil
+					}
+					inner, err := plans.NewRecordQueryExplodePlan(&values.ConstantValue{Value: input, Typ: values.NewArrayType(false, values.NullableLong)})
+					Expect(err).NotTo(HaveOccurred())
+					var fallback values.Value = &values.ParameterValue{Ordinal: 1, Typ: values.NullableLong}
+					quantifier := expressions.NewPhysicalQuantifier(expressions.FinalOf(inner))
+					ec := executor.EmptyEvaluationContext().WithParams([]any{int64(99)})
+					if sameAlias {
+						fallback, err = values.NewQuantifiedObjectValue(quantifier.GetAlias(), inner.GetResultType())
+						Expect(err).NotTo(HaveOccurred())
+						ec = ec.WithBinding(quantifier.GetAlias(), int64(99))
+					}
+					var plan plans.RecordQueryPlan
+					if all {
+						plan, err = plans.NewRecordQueryDefaultOnEmptyPlanFromQuantifier(quantifier, fallback)
+					} else {
+						plan, err = plans.NewRecordQueryFirstOrDefaultPlanFromQuantifier(quantifier, fallback)
+					}
+					Expect(err).NotTo(HaveOccurred())
+					cur, err := executor.ExecutePlan(ctx, plan, nil, ec, nil, recordlayer.DefaultExecuteProperties())
+					Expect(err).NotTo(HaveOccurred())
+					rows, err := executor.CollectAll(ctx, cur)
+					_ = cur.Close()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(rows).To(HaveLen(1))
+					Expect(rows[0].Positional.Slots).To(Equal([]any{want}))
+					fmt.Fprintf(GinkgoWriter, "DEFAULT_BINDING all=%v empty=%v sameAlias=%v Java=%d Go=%v\n", all, empty, sameAlias, result.Value, rows[0].Positional.Slots)
+				}
+			}
+		}
+	})
+
+	It("pins first-or-default request properties against the live Java core API", func() {
+		// This is a direct core-plan probe, not a SQL reach claim. Java has no
+		// separate projection plan; both Go mapping forms correspond to MapPlan.
+		for _, kind := range []string{"direct", "map", "projection"} {
+			for count := 0; count <= 2; count++ {
+				for skip := 0; skip <= 2; skip++ {
+					params := buildJavaParams()
+					params["count"], params["skip"], params["mapped"] = count, skip, kind != "direct"
+					raw, err := java.Invoke(ctx, "firstOrDefaultRequest", params)
+					Expect(err).NotTo(HaveOccurred())
+					var result struct {
+						Value           int64 `json:"value"`
+						RowResumable    bool  `json:"rowResumable"`
+						SourceExhausted bool  `json:"sourceExhausted"`
+						ResumeExhausted bool  `json:"resumeExhausted"`
+					}
+					Expect(json.Unmarshal(raw, &result)).To(Succeed())
+					want := int64(99)
+					if skip < count {
+						want = int64(11 * (skip + 1))
+					}
+					if kind != "direct" {
+						want = 42
+					}
+					Expect(result.Value).To(Equal(want))
+					Expect(result.RowResumable).To(BeTrue())
+					Expect(result.SourceExhausted).To(BeTrue())
+					Expect(result.ResumeExhausted).To(BeTrue())
+					input := []any{}
+					for i := 0; i < count; i++ {
+						input = append(input, int64(11*(i+1)))
+					}
+					inner, err := plans.NewRecordQueryExplodePlan(&values.ConstantValue{
+						Value: input, Typ: values.NewArrayType(false, values.NotNullLong),
+					})
+					Expect(err).NotTo(HaveOccurred())
+					first, err := plans.NewRecordQueryFirstOrDefaultPlan(inner, &values.ConstantValue{Value: int64(99), Typ: values.NotNullLong})
+					Expect(err).NotTo(HaveOccurred())
+					var plan plans.RecordQueryPlan = first
+					constant := &values.ConstantValue{Value: int64(42), Typ: values.NotNullLong}
+					if kind == "map" {
+						plan, err = plans.NewRecordQueryMapPlan(plan, constant)
+					} else if kind == "projection" {
+						plan, err = plans.NewRecordQueryProjectionPlan([]values.Value{constant}, plan)
+					}
+					Expect(err).NotTo(HaveOccurred())
+					props := recordlayer.DefaultExecuteProperties().WithSkip(skip).WithReturnedRowLimit(1)
+					cursor, err := executor.ExecutePlan(ctx, plan, nil, executor.EmptyEvaluationContext(), nil, props)
+					Expect(err).NotTo(HaveOccurred())
+					row, err := cursor.OnNext(ctx)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(row.HasNext()).To(BeTrue())
+					got, ok := row.GetValue().Positional.Get(0)
+					Expect(ok).To(BeTrue())
+					Expect(got).To(Equal(want))
+					token, err := row.GetContinuation().ToBytes()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(token).NotTo(BeEmpty())
+					end, err := cursor.OnNext(ctx)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(end.HasNext()).To(BeFalse())
+					Expect(end.GetNoNextReason()).To(Equal(recordlayer.SourceExhausted))
+					Expect(cursor.Close()).To(Succeed())
+					resumed, err := executor.ExecutePlan(ctx, plan, nil, executor.EmptyEvaluationContext(), token, props)
+					Expect(err).NotTo(HaveOccurred())
+					end, err = resumed.OnNext(ctx)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(end.HasNext()).To(BeFalse())
+					Expect(end.GetNoNextReason()).To(Equal(recordlayer.SourceExhausted))
+					Expect(resumed.Close()).To(Succeed())
+					GinkgoWriter.Printf("FOD_REQUEST kind=%s count=%d skip=%d java=%d go=%v\n", kind, count, skip, result.Value, got)
+				}
+			}
+		}
+	})
 
 	// javaScanResult represents the response from scanOrdersWithContinuation
 	type javaScanResult struct {

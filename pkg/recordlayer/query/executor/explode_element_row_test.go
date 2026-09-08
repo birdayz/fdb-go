@@ -1,7 +1,11 @@
 package executor
 
 import (
+	"context"
+	"errors"
 	"testing"
+
+	"fdb.dev/pkg/testutil/allocs"
 
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
@@ -9,6 +13,7 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/dynamicpb"
 
+	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
@@ -26,7 +31,7 @@ func TestExplodeElementRow_DeclaredOrder(t *testing.T) {
 		{Name: "Z", FieldType: values.NullableLong, Ordinal: 0},
 		{Name: "A", FieldType: values.NullableLong, Ordinal: 1},
 	}}
-	row := explodeElementRow(map[string]any{"Z": int64(100), "A": int64(200)}, elemType)
+	row := explodeElementRow(map[string]any{"Z": int64(100), "A": int64(200)}, mustExecutorConstruct(values.SnapshotExactType(elemType)))
 	if v, _ := row.Get(0); v != int64(100) {
 		t.Fatalf("slot 0 = Z (declared first) must be 100, got %v (an alphabetical sort puts A here = 200)", v)
 	}
@@ -38,7 +43,7 @@ func TestExplodeElementRow_DeclaredOrder(t *testing.T) {
 	}
 
 	// Case-insensitive element-map keys, and an absent declared field -> NULL slot.
-	row2 := explodeElementRow(map[string]any{"z": int64(7)}, elemType)
+	row2 := explodeElementRow(map[string]any{"z": int64(7)}, mustExecutorConstruct(values.SnapshotExactType(elemType)))
 	if v, _ := row2.Get(0); v != int64(7) {
 		t.Fatalf("case-insensitive key: slot 0 (Z) must be 7, got %v", v)
 	}
@@ -57,10 +62,9 @@ func TestExplodeElementRow_ProtoMessageRequiresExactDeclaredRecord(t *testing.T)
 	t.Parallel()
 
 	message, declared := explodeProtoRecordFixture(t)
-	row := explodeElementRow(message, declared)
-	if row == nil || row.Type != declared {
-		t.Fatalf("exact proto element row type = %p/%v, want declared handle %p/%v",
-			row.Type, row.Type, declared, declared)
+	row := explodeElementRow(message, mustExecutorConstruct(values.SnapshotExactType(declared)))
+	if row == nil || !row.Type.Equals(declared) {
+		t.Fatalf("exact proto element row type = %v, want declared type %v", row.Type, declared)
 	}
 	sub, ok := row.Slots[0].([]any)
 	if !ok || len(sub) != 2 || sub[0] != int64(7) || sub[1] != int64(9) {
@@ -74,6 +78,14 @@ func TestExplodeElementRow_ProtoMessageRequiresExactDeclaredRecord(t *testing.T)
 	}
 	if _, err := row.AttachOrdinalLayout(explodeRecordLayout(t, declared), explodeRecordLayout(t, declared).Carrier().FlowedType()); err != nil {
 		t.Fatalf("exact declared proto row rejected its layout: %v", err)
+	}
+
+	for _, nullable := range []bool{false, true} {
+		widened := values.WithNullability(declared, nullable).(*values.RecordType)
+		materialized := explodeElementRow(message, mustExecutorConstruct(values.SnapshotExactType(widened)))
+		if materialized == nil || !materialized.Type.Equals(widened) {
+			t.Fatalf("valid root nullability %v rejected", nullable)
+		}
 	}
 
 	cloneFields := func() []values.Field {
@@ -98,11 +110,11 @@ func TestExplodeElementRow_ProtoMessageRequiresExactDeclaredRecord(t *testing.T)
 			fields[2].FieldType = values.NewRecordType(nested.RecordName, nested.Nullable, nestedFields)
 			return values.NewRecordType(declared.RecordName, false, fields)
 		}(),
-		"record_nullability": values.NewRecordType(declared.RecordName, true, cloneFields()),
 	}
 	for name, drift := range mutations {
 		t.Run(name, func(t *testing.T) {
-			mutated := explodeElementRow(message, drift)
+			t.Parallel()
+			mutated := explodeElementRow(message, mustExecutorConstruct(values.SnapshotExactType(drift)))
 			if mutated == nil || mutated.Type == drift || mutated.Type.Equals(drift) {
 				t.Fatalf("structurally foreign declaration %s was stamped onto runtime row: %v", drift, mutated)
 			}
@@ -147,26 +159,23 @@ func TestExplodePlanElementRow_TrustsOnlyItsFinalizedElementConstructor(t *testi
 
 	assertRejected := func(t *testing.T, plan *plans.RecordQueryExplodePlan, message proto.Message) {
 		t.Helper()
-		row := explodePlanElementRow(plan, message, 0)
-		declared := plan.GetElementType().(*values.RecordType)
-		if row == nil || row.Type == declared || row.Type.Equals(declared) {
-			t.Fatalf("foreign or mutated constructed row acquired frozen type: row=%v declared=%v", row, declared)
-		}
-		layout, err := plan.ProvidedOutputLayout()
-		if err != nil {
-			t.Fatalf("explode layout: %v", err)
-		}
-		if _, err := row.AttachOrdinalLayout(layout, layout.Carrier().FlowedType()); err == nil {
-			t.Fatalf("foreign or mutated constructed row attached to exact explode layout")
+		row, err := explodePlanElementRow(plan, mustExecutorConstruct(values.ExactTypeForValue(plan.GetResultValue())), message, 0)
+		var resolution *values.ResolutionError
+		if row != nil || !errors.As(err, &resolution) || resolution.ErrorCode != values.LayoutTypeMismatch {
+			t.Fatalf("mutated source constructor accepted: row=%v error=%v", row, err)
 		}
 	}
 
 	t.Run("exact finalized constructor", func(t *testing.T) {
+		t.Parallel()
 		plan, array, constructor, message := newFixture(t)
 		beforeType := constructor.Type()
 		beforeDescriptor := constructor.MessageDescriptor()
 		beforeElement := array.Elements[0]
-		row := explodePlanElementRow(plan, message, 0)
+		row, err := explodePlanElementRow(plan, mustExecutorConstruct(values.ExactTypeForValue(plan.GetResultValue())), message, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
 		declared := plan.GetElementType().(*values.RecordType)
 		if row == nil || !row.Type.Equals(declared) {
 			t.Fatalf("constructed row type = %v, want frozen declared %v", row.Type, declared)
@@ -184,6 +193,7 @@ func TestExplodePlanElementRow_TrustsOnlyItsFinalizedElementConstructor(t *testi
 	})
 
 	t.Run("foreign structurally same descriptor", func(t *testing.T) {
+		t.Parallel()
 		plan, _, constructor, _ := newFixture(t)
 		foreignRepo := values.NewTypeProtoRepository()
 		foreignDescriptor, err := foreignRepo.MessageDescriptorFor(constructor.Type())
@@ -199,7 +209,10 @@ func TestExplodePlanElementRow_TrustsOnlyItsFinalizedElementConstructor(t *testi
 		if err != nil {
 			t.Fatalf("evaluate foreign constructor: %v", err)
 		}
-		assertRejected(t, plan, evaluated.(proto.Message))
+		row, err := explodePlanElementRow(plan, mustExecutorConstruct(values.ExactTypeForValue(plan.GetResultValue())), evaluated.(proto.Message), 0)
+		if err != nil || row == nil || !row.Type.Equals(plan.GetElementType()) || row.Slots[0] != int64(7) || row.Slots[1] != int64(9) {
+			t.Fatalf("equivalent descriptor from independent repository rejected: %v, %v", row, err)
+		}
 	})
 
 	mutations := map[string]func(*values.RecordConstructorValue){
@@ -216,6 +229,7 @@ func TestExplodePlanElementRow_TrustsOnlyItsFinalizedElementConstructor(t *testi
 	}
 	for name, mutate := range mutations {
 		t.Run("source "+name+" drift", func(t *testing.T) {
+			t.Parallel()
 			plan, _, constructor, message := newFixture(t)
 			mutate(constructor)
 			assertRejected(t, plan, message)
@@ -293,4 +307,79 @@ func explodeProtoRecordFixture(t testing.TB) (proto.Message, *values.RecordType)
 		t.Fatalf("repeated message element type = %T, want *values.RecordType", values.ScalarTypeForProtoKind(hostField))
 	}
 	return message, declared
+}
+
+func TestExecuteExplode_NullableLiteralElement(t *testing.T) {
+	t.Parallel()
+	constructor := values.NewRawRecordConstructorValue(
+		values.RecordConstructorField{Name: "Z", Value: &values.ConstantValue{Typ: values.NotNullInt, Value: int32(7)}},
+		values.RecordConstructorField{Name: "A", Value: &values.ConstantValue{Typ: values.NotNullLong, Value: int64(9)}},
+	)
+	declared := values.WithNullability(constructor.Type(), true)
+	plan := mustExecutorConstruct(plans.NewRecordQueryExplodePlan(values.NewArrayConstructorValue(declared, []values.Value{constructor})))
+	if err := cascades.FinalizePlan(plan); err != nil {
+		t.Fatal(err)
+	}
+	cur, err := ExecutePlan(context.Background(), plan, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cur.Close()
+	rows, err := CollectAll(context.Background(), cur)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("nullable literal: %v, %v", rows, err)
+	}
+	if !rows[0].Positional.Type.Equals(declared) || rows[0].Positional.Slots[0] != int64(7) || rows[0].Positional.Slots[1] != int64(9) {
+		t.Fatalf("nullable literal lost its declared carrier or values: %v", rows[0])
+	}
+}
+
+func TestExecuteExplode_ProtoTypeAllocation(t *testing.T) {
+	t.Parallel()
+	allocs.Run(t, func() {
+		message, declared := explodeProtoRecordFixture(t)
+		items := make([]any, 128)
+		for i := range items {
+			items[i] = message
+		}
+		plan := mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{Value: items, Typ: values.NewArrayType(false, declared)}))
+		ctx, ec, props := context.Background(), EmptyEvaluationContext(), recordlayer.DefaultExecuteProperties()
+		measurement := testing.Benchmark(func(b *testing.B) {
+			b.ReportAllocs()
+			for range b.N {
+				cursor, err := executeExplode(plan, ec, nil, props)
+				if err != nil {
+					b.Fatal(err)
+				}
+				count := 0
+				for {
+					row, err := cursor.OnNext(ctx)
+					if err != nil {
+						b.Fatal(err)
+					}
+					if !row.HasNext() {
+						break
+					}
+					if row.GetValue().Positional.Slots[1] != int64(11) {
+						b.Fatal("wrong record value")
+					}
+					count++
+				}
+				_ = cursor.Close()
+				if count != len(items) {
+					b.Fatalf("read %d rows, want %d", count, len(items))
+				}
+			}
+		})
+		if measurement.N == 0 {
+			t.Fatal("empty allocation measurement")
+		}
+		// This fixture needs six allocations per materialized record, plus fixed
+		// cursor overhead. Re-snapshotting its nested Type per row adds two more;
+		// the small fixed allowance cannot hide that O(rows) regression.
+		if got, ceiling := measurement.AllocsPerOp(), int64(6*len(items)+16); got > ceiling {
+			t.Fatalf("Explode allocated %d times for %d rows (ceiling %d); reuse the frozen element handle", got, len(items), ceiling)
+		}
+		t.Logf("EXPLODE_ALLOC rows=%d allocs/op=%d bytes/op=%d ns/op=%d", len(items), measurement.AllocsPerOp(), measurement.AllocedBytesPerOp(), measurement.NsPerOp())
+	})
 }

@@ -12,12 +12,10 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
-// The row path's cost is pinned STRUCTURALLY rather than by a measured
-// allocation count: every test in this package is parallel, so
-// testing.AllocsPerRun panics and testing.Benchmark reads process-wide MemStats
-// that a concurrent test inflates. The property that PRODUCES the saving —
-// a row minted with its plan's layout crosses the output boundary as itself —
-// is deterministic, and it is what these tests assert.
+// These tests pin the property that produces the row-path saving: a row minted
+// with its plan's layout crosses the output boundary as itself. Identity is a
+// deterministic assertion of that contract, independent of the allocation
+// measurement isolation used by other tests.
 
 func scanPlanWithLayout(t *testing.T, rowType *values.RecordType) (plans.RecordQueryPlan, values.OrdinalLayout) {
 	t.Helper()
