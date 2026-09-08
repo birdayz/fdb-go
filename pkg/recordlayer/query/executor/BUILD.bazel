@@ -301,6 +301,7 @@ go_test(
         "//pkg/relational/core/functions",
         "//pkg/relational/core/rowstruct",
         "//pkg/testcontainers/foundationdb",
+        "//pkg/testutil/allocs",
         "@org_golang_google_protobuf//proto",
         "@org_golang_google_protobuf//reflect/protodesc",
         "@org_golang_google_protobuf//reflect/protoreflect",

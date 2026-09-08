@@ -9768,3 +9768,29 @@ status-count/join slowdowns were remeasured, not dismissed from other rows.
   review, full-suite execution, focused race tests, and fuzzing are green.
   Final-source matched 1M stress remains outstanding in the draft PR;
   the preceding stress table covers decisions 1–13 only.
+
+### RFC-243 — PR #771 CI allocation-isolation correction
+
+The CI unit job at `e3197dae0cb110fc2c2a2f1daec5590a87060de4` exposed
+process-wide Benchmark allocation contamination from parallel tests/background
+FDB activity. The test-only subprocess helper preserves parallel parent tests
+and all four original assertion thresholds. A deterministic handshake regression
+pins the contamination mechanism; isolation and non-vacuous completion have
+unit/fuzz coverage. Five full helper/executor/values repetitions pass (Explode
+770 allocations each; unchanged ceiling 784), and restored per-row snapshotting
+still mutation-fails at 1,026. RFC-243's CI allocation-measurement section records
+the design and proof populations. The decision-14 final-verification item above
+remains open until final suites, review, and matched stress complete.
+
+### RFC-243 — allocation-isolation verification checkpoint
+
+The CI harness correction now covers five existing assertion sites, including
+the HNSW zero-allocation test identified during review. All original thresholds
+remain unchanged. Final `just test` is 92/92 (three fresh, 89 cached), following
+a 92/92 uncached checkpoint; final race runs cover helper, executor, values, and
+recordlayer. Helper coverage includes child-only lines, protocol fuzz passes
+19,271,222 executions/15s, and all retained guard/allocation mutations redden.
+Virtual Graefe, virtual Torvalds, and independent Codex ACK the implementation
+and follow-up deltas. RFC-243's allocation-isolation commit checkpoint scopes
+the measurements and corrects the reviewed AllocsPerRun precision hypothesis.
+Final-source matched stress and GitHub review/CI remain the next PR gates.

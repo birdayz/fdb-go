@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"testing"
 
+	"fdb.dev/pkg/testutil/allocs"
+
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
 )
@@ -166,15 +168,17 @@ func TestProtoRecordDescriptorAdmissionRejectsMalformedDeclarations(t *testing.T
 	if !ProtoRecordDescriptorCompatible(message.Descriptor(), handle) {
 		t.Fatal("valid renamed declaration rejected")
 	}
-	measured := testing.Benchmark(func(b *testing.B) {
-		b.ReportAllocs()
-		for range b.N {
-			_ = ProtoRecordDescriptorCompatible(message.Descriptor(), handle)
+	allocs.Run(t, func() {
+		measured := testing.Benchmark(func(b *testing.B) {
+			b.ReportAllocs()
+			for range b.N {
+				_ = ProtoRecordDescriptorCompatible(message.Descriptor(), handle)
+			}
+		})
+		if measured.N == 0 || measured.AllocsPerOp() != 0 {
+			t.Fatalf("warm descriptor admission: %d iterations, %d allocations per row", measured.N, measured.AllocsPerOp())
 		}
 	})
-	if measured.N == 0 || measured.AllocsPerOp() != 0 {
-		t.Fatalf("warm descriptor admission: %d iterations, %d allocations per row", measured.N, measured.AllocsPerOp())
-	}
 }
 
 func TestProtoRecordAdmissionUsesScalarStorageAuthority(t *testing.T) {

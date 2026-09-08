@@ -583,3 +583,107 @@ files. The tests and the evidence populations above remain in the repository.
 preceding stress tables are explicitly for decisions 1–13; they are not promoted
 to evidence for decision 14. The TODO checkpoint stays open for that work while
 the owner reviews the draft PR.
+
+### CI allocation-measurement isolation
+
+PR #771's unit job at `e3197dae0cb110fc2c2a2f1daec5590a87060de4`
+exposed a flaw in the allocation regression harness: `testing.Benchmark` reads
+process-wide MemStats, so other parallel tests and FDB client goroutines can
+inflate its counts. A retained channel-handshake test demonstrates that an
+allocation made in another goroutine is charged to the measured iteration.
+This was a test-isolation defect, not evidence permitting a higher ceiling.
+
+The test-only `pkg/testutil/allocs` helper executes an allocation assertion in
+an exact-filter subprocess. Parent tests remain parallel; the executor's
+TestMain omits background FDB services only for that exact child invocation.
+The child retains the original assertion and threshold. It removes inherited
+Bazel filtering/sharding/report controls, keeps runfiles paths, and has both a
+Go test timeout and a parent process timeout. Success requires an actual RUN,
+PASS, and exactly one assertion-completion marker, not merely exit status zero.
+Helper pins cover invocation validation, inherited controls, empty/duplicate
+results, and an allocating parent with an allocation-free child.
+
+This wraps the Explode executor pin and the three values-layer Benchmark
+assertions for descriptor admission, scalar shapes, and quantified-row shapes.
+Five uncached repetitions of all tests in the helper, executor, and values
+targets passed. Each of the five Explode measurements reported 770 allocations
+for 128 rows against the unchanged 784 ceiling. Restoring the per-row snapshot
+compiled and failed in the isolated child at 1,026 allocations; the production
+source was then restored and checksum-verified. The helper protocol fuzz target
+passed 19,211,190 executions over 15 seconds. Artifacts are
+`/tmp/pr771-alloc-repeat.log`, `/tmp/pr771-isolated-snapshot-mutation.log`, and
+`/tmp/pr771-alloc-fuzz.log`; the tests themselves are retained in the repository.
+This correction changes test execution only, not query behavior or the earlier
+JVM evidence. Final full-suite, race, review, and stress results follow below.
+
+The isolation review also tightened the helper's supported scope: it accepts
+only top-level tests, rejecting subtests before starting another process. Go's
+slash-split test filter does not give a full-name regexp the same anchoring
+semantics, and subtest parent setup could itself start concurrent work. The
+negative invocation pin and a real failing-child regression enforce this
+boundary. The environment pin preserves `TEST_SRCDIR`, `TEST_WORKSPACE`, and
+`TEST_TMPDIR` as well as `RUNFILES_DIR`. It redirects `COVERAGE_OUTPUT_FILE` and
+`GOCOVERDIR` to a child-private directory: rules_go's generated test main writes
+the former profile directly, whereas its `COVERAGE_DIR` LCOV output uses unique
+filenames and remains shared for Bazel's merger. The allocation-noise control
+is rate-limited instead of spinning. The earlier 92-target full uncached pass
+and `just test` pass preceded these harness refinements; final evidence must
+exercise the refined helper too.
+
+The refined helper passed the full non-stress suite (92/92 freshly executed),
+`just test` (92/92, two executed), and all three helper/executor/values race
+targets uncached, with frozen source checksums unchanged. The repeated target
+run again measured 770 allocations in each of five Explode executions. Its
+protocol fuzz passed 18,922,139 executions over 15 seconds. Live Bazel coverage
+also passed: the merged LCOV report includes the child-only `measure()` and
+completion-marker lines, verifying child coverage survives `GO_TEST_WRAP=0`.
+These results are in `/tmp/pr771-isolation-refined-{full,race,just-test}.log`,
+`/tmp/pr771-isolation-reviewed-repeat.log`, and
+`/tmp/pr771-isolation-{coverage,final-fuzz}.log`.
+
+A final clarification makes the isolation pin's reasoning explicit: the child
+invocation check establishes isolation while the parent allocator is active;
+the zero-allocation no-op measurement is a separate assertion, not a sensitivity
+claim about rate-limited noise (integer allocations/op can round that noise to
+zero). Malformed marked children now fail before spawning again, with a retained
+real-child regression. The negative-test harness also rejects a malformed marker
+rather than treating it as a fresh parent. Final validation of these small guards
+is recorded with the commit checkpoint below.
+
+The final allocation-site sweep also found the existing HNSW byte-distance
+`AllocsPerRun` assertion in the recordlayer package. A serial test does not
+isolate process-wide counters from FDB client goroutines left by the Ginkgo
+suite. It now uses the same child helper and a parallel-parent Benchmark,
+retaining the zero-allocation requirement across the same three metrics and
+rejecting zero measured iterations or a declined byte-direct path. No additional
+TestMain bypass is needed: Ginkgo setup belongs to `TestRecordLayer`, which the
+exact HNSW child filter does not select. This brings the migrated allocation
+assertion population to five (four executor/values sites plus one recordlayer
+site); the earlier four-site measurements retain their stated population.
+
+### Allocation-isolation commit checkpoint
+
+The five-site test delta and all review follow-ups received virtual Graefe,
+virtual Torvalds, and independent Codex ACKs. The final `just test` run passes
+92/92 (three freshly executed, 89 cached); the preceding full uncached checkpoint
+executed 92/92 successfully. Final helper/executor/values race targets pass
+uncached, as does the full recordlayer race target after its HNSW migration.
+All corresponding frozen-source checksum checks pass. Final helper coverage
+passes and includes the child-only measure/marker lines; protocol fuzz passes
+19,271,222 executions over 15 seconds. Five HNSW repetitions pass, and adding a
+query-vector clone compiles and fails all three metrics at one allocation/op.
+The mutation was restored in `hnsw_distance_bytes.go` (SHA-256
+`229fb4f345fdcd6ef4386fde9e09f3e56961ef96ebab6b37a43b3899f0936a49`).
+
+The review's suggested precision difference was checked against Go's testing
+source: both `AllocsPerRun` and `BenchmarkResult.AllocsPerOp` divide as integers;
+there is no fractional precision downgrade. `AllocsPerOp` also guards `N <= 0`,
+so reporting a failed empty benchmark does not divide by zero. The malformed
+child and subtest-filter mutations compile and redden their retained guards.
+No allocation threshold or production code changed in this CI correction.
+
+Final artifacts are `/tmp/pr771-isolation-final-just-test.log`,
+`/tmp/pr771-isolation-closure-{race,coverage,fuzz}.log`,
+`/tmp/pr771-hnsw-{isolated-repeat,final-race,allocation-mutation}.log`, and
+`/tmp/pr771-helper-guard-mutations.log`. Final-source matched million-row stress
+and GitHub CI/review are the remaining PR gates, not inferred from earlier runs.

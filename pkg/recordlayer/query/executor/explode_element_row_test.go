@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 
+	"fdb.dev/pkg/testutil/allocs"
+
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -334,48 +336,50 @@ func TestExecuteExplode_NullableLiteralElement(t *testing.T) {
 
 func TestExecuteExplode_ProtoTypeAllocation(t *testing.T) {
 	t.Parallel()
-	message, declared := explodeProtoRecordFixture(t)
-	items := make([]any, 128)
-	for i := range items {
-		items[i] = message
-	}
-	plan := mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{Value: items, Typ: values.NewArrayType(false, declared)}))
-	ctx, ec, props := context.Background(), EmptyEvaluationContext(), recordlayer.DefaultExecuteProperties()
-	measurement := testing.Benchmark(func(b *testing.B) {
-		b.ReportAllocs()
-		for range b.N {
-			cursor, err := executeExplode(plan, ec, nil, props)
-			if err != nil {
-				b.Fatal(err)
-			}
-			count := 0
-			for {
-				row, err := cursor.OnNext(ctx)
+	allocs.Run(t, func() {
+		message, declared := explodeProtoRecordFixture(t)
+		items := make([]any, 128)
+		for i := range items {
+			items[i] = message
+		}
+		plan := mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{Value: items, Typ: values.NewArrayType(false, declared)}))
+		ctx, ec, props := context.Background(), EmptyEvaluationContext(), recordlayer.DefaultExecuteProperties()
+		measurement := testing.Benchmark(func(b *testing.B) {
+			b.ReportAllocs()
+			for range b.N {
+				cursor, err := executeExplode(plan, ec, nil, props)
 				if err != nil {
 					b.Fatal(err)
 				}
-				if !row.HasNext() {
-					break
+				count := 0
+				for {
+					row, err := cursor.OnNext(ctx)
+					if err != nil {
+						b.Fatal(err)
+					}
+					if !row.HasNext() {
+						break
+					}
+					if row.GetValue().Positional.Slots[1] != int64(11) {
+						b.Fatal("wrong record value")
+					}
+					count++
 				}
-				if row.GetValue().Positional.Slots[1] != int64(11) {
-					b.Fatal("wrong record value")
+				_ = cursor.Close()
+				if count != len(items) {
+					b.Fatalf("read %d rows, want %d", count, len(items))
 				}
-				count++
 			}
-			_ = cursor.Close()
-			if count != len(items) {
-				b.Fatalf("read %d rows, want %d", count, len(items))
-			}
+		})
+		if measurement.N == 0 {
+			t.Fatal("empty allocation measurement")
 		}
+		// This fixture needs six allocations per materialized record, plus fixed
+		// cursor overhead. Re-snapshotting its nested Type per row adds two more;
+		// the small fixed allowance cannot hide that O(rows) regression.
+		if got, ceiling := measurement.AllocsPerOp(), int64(6*len(items)+16); got > ceiling {
+			t.Fatalf("Explode allocated %d times for %d rows (ceiling %d); reuse the frozen element handle", got, len(items), ceiling)
+		}
+		t.Logf("EXPLODE_ALLOC rows=%d allocs/op=%d bytes/op=%d ns/op=%d", len(items), measurement.AllocsPerOp(), measurement.AllocedBytesPerOp(), measurement.NsPerOp())
 	})
-	if measurement.N == 0 {
-		t.Fatal("empty allocation measurement")
-	}
-	// This fixture needs six allocations per materialized record, plus fixed
-	// cursor overhead. Re-snapshotting its nested Type per row adds two more;
-	// the small fixed allowance cannot hide that O(rows) regression.
-	if got, ceiling := measurement.AllocsPerOp(), int64(6*len(items)+16); got > ceiling {
-		t.Fatalf("Explode allocated %d times for %d rows (ceiling %d); reuse the frozen element handle", got, len(items), ceiling)
-	}
-	t.Logf("EXPLODE_ALLOC rows=%d allocs/op=%d bytes/op=%d ns/op=%d", len(items), measurement.AllocsPerOp(), measurement.AllocedBytesPerOp(), measurement.NsPerOp())
 }

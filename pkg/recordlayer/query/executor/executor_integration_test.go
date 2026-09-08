@@ -22,6 +22,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 	"fdb.dev/pkg/relational/api"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
+	"fdb.dev/pkg/testutil/allocs"
 )
 
 var testDB *recordlayer.FDBDatabase
@@ -91,6 +92,11 @@ func integrationJoinResult(
 }
 
 func TestMain(m *testing.M) {
+	// Allocation-only children run one exact test without FDB client/container
+	// background goroutines contributing to process-wide MemStats.
+	if allocs.IsChildProcess() {
+		os.Exit(m.Run())
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 

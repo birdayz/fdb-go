@@ -2,6 +2,8 @@ package values
 
 import (
 	"testing"
+
+	"fdb.dev/pkg/testutil/allocs"
 )
 
 // The exact channel answers "are these two flowed types equal" from immutable
@@ -524,42 +526,44 @@ func containsWord(pair, word string) bool {
 func TestQuantifiedRowShapesAgreeAllocatesNothing(t *testing.T) {
 	t.Parallel()
 
-	// A record pair that takes the differing-bits arm — the arm that used to
-	// allocate — and agrees, so the walk runs to completion rather than
-	// short-circuiting on the first field.
-	fields := []Field{
-		{Name: "ID", FieldType: &PrimitiveType{TypeCode: TypeCodeLong}, Ordinal: 0},
-		{Name: "VAL", FieldType: &PrimitiveType{TypeCode: TypeCodeString, Nullable: true}, Ordinal: 1},
-	}
-	left := &RecordType{RecordName: "R", Nullable: true, Fields: fields}
-	right := &RecordType{RecordName: "R", Nullable: false, Fields: fields}
-	if !QuantifiedRowShapesAgree(left, right) {
-		t.Fatal("the probe pair must AGREE, or the walk short-circuits and the " +
-			"allocation measurement covers only the first field")
-	}
-
-	// testing.Benchmark rather than testing.AllocsPerRun: this test runs under
-	// t.Parallel() as every test here must, and AllocsPerRun panics outright when
-	// called from a parallel test. Benchmark measures the same quantity with no
-	// such restriction.
-	result := testing.Benchmark(func(b *testing.B) {
-		var agree bool
-		for i := 0; i < b.N; i++ {
-			agree = QuantifiedRowShapesAgree(left, right)
+	allocs.Run(t, func() {
+		// A record pair that takes the differing-bits arm — the arm that used to
+		// allocate — and agrees, so the walk runs to completion rather than
+		// short-circuiting on the first field.
+		fields := []Field{
+			{Name: "ID", FieldType: &PrimitiveType{TypeCode: TypeCodeLong}, Ordinal: 0},
+			{Name: "VAL", FieldType: &PrimitiveType{TypeCode: TypeCodeString, Nullable: true}, Ordinal: 1},
 		}
-		if !agree {
-			b.Fatal("unexpected disagreement")
+		left := &RecordType{RecordName: "R", Nullable: true, Fields: fields}
+		right := &RecordType{RecordName: "R", Nullable: false, Fields: fields}
+		if !QuantifiedRowShapesAgree(left, right) {
+			t.Fatal("the probe pair must AGREE, or the walk short-circuits and the " +
+				"allocation measurement covers only the first field")
+		}
+
+		// testing.Benchmark rather than testing.AllocsPerRun: this test runs under
+		// t.Parallel() as every test here must, and AllocsPerRun panics outright when
+		// called from a parallel test. The child contains no sibling tests, so
+		// process-wide Benchmark counters belong to this measurement alone.
+		result := testing.Benchmark(func(b *testing.B) {
+			var agree bool
+			for i := 0; i < b.N; i++ {
+				agree = QuantifiedRowShapesAgree(left, right)
+			}
+			if !agree {
+				b.Fatal("unexpected disagreement")
+			}
+		})
+		if result.N == 0 {
+			t.Fatal("the benchmark ran zero iterations, so its allocation figure " +
+				"describes nothing")
+		}
+		if allocs := result.AllocsPerOp(); allocs != 0 {
+			t.Errorf("QuantifiedRowShapesAgree allocated %d objects per call on the "+
+				"differing-nullability arm over %d iterations; it must allocate none. "+
+				"A normalising rebuild has been reintroduced", allocs, result.N)
 		}
 	})
-	if result.N == 0 {
-		t.Fatal("the benchmark ran zero iterations, so its allocation figure " +
-			"describes nothing")
-	}
-	if allocs := result.AllocsPerOp(); allocs != 0 {
-		t.Errorf("QuantifiedRowShapesAgree allocated %d objects per call on the "+
-			"differing-nullability arm over %d iterations; it must allocate none. "+
-			"A normalising rebuild has been reintroduced", allocs, result.N)
-	}
 }
 
 // TestTypeEqualsIsSymmetricOverTheCorpus pins the property that lets the

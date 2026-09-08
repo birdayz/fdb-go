@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/vectorcodec"
+	"fdb.dev/pkg/testutil/allocs"
 )
 
 // TestVectorDistanceFromBytes_MatchesDeserialize asserts the zero-alloc
@@ -72,21 +73,28 @@ func TestVectorDistanceFromBytes_MatchesDeserialize(t *testing.T) {
 }
 
 func TestVectorDistanceFromBytes_ZeroAlloc(t *testing.T) {
-	query := make([]float64, 1536)
-	raw := make([]float64, 1536)
-	for i := range raw {
-		raw[i] = float64(i) * 0.01
-		query[i] = float64(i) * 0.02
-	}
-	stored := vectorcodec.Serialize(raw)
-	for _, m := range []VectorMetric{VectorMetricEuclidean, VectorMetricCosine, VectorMetricInnerProduct} {
-		allocs := testing.AllocsPerRun(50, func() {
-			_, _ = vectorDistanceFromBytes(query, stored, m)
-		})
-		if allocs != 0 {
-			t.Errorf("metric=%d: vectorDistanceFromBytes allocated %v/op, want 0", m, allocs)
+	t.Parallel()
+	allocs.Run(t, func() {
+		query := make([]float64, 1536)
+		raw := make([]float64, 1536)
+		for i := range raw {
+			raw[i] = float64(i) * 0.01
+			query[i] = float64(i) * 0.02
 		}
-	}
+		stored := vectorcodec.Serialize(raw)
+		for _, m := range []VectorMetric{VectorMetricEuclidean, VectorMetricCosine, VectorMetricInnerProduct} {
+			measured := testing.Benchmark(func(b *testing.B) {
+				for range b.N {
+					if _, ok := vectorDistanceFromBytes(query, stored, m); !ok {
+						b.Fatal("valid stored vector declined the byte-direct path")
+					}
+				}
+			})
+			if measured.N == 0 || measured.AllocsPerOp() != 0 {
+				t.Errorf("metric=%d: vectorDistanceFromBytes allocated %d/op over %d iterations, want 0", m, measured.AllocsPerOp(), measured.N)
+			}
+		}
+	})
 }
 
 func approxEqual(a, b, relTol float64) bool {

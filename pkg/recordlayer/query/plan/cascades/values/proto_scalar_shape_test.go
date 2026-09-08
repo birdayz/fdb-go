@@ -17,6 +17,8 @@ package values
 import (
 	"testing"
 
+	"fdb.dev/pkg/testutil/allocs"
+
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -191,48 +193,50 @@ func TestProtoScalarShapeKeepsOnlyTheIntendedStorageAliases(t *testing.T) {
 // and return LONG), and the plain enum is its control.
 func TestProtoScalarShapeCompatibleAllocatesNothing(t *testing.T) {
 	t.Parallel()
-	md := scalarShapeDescriptor(t)
+	allocs.Run(t, func() {
+		md := scalarShapeDescriptor(t)
 
-	mk := func(code TypeCode) *exactType {
-		typ := &exactType{code: code, nullable: true}
-		typ.finishCanonical()
-		return typ
-	}
+		mk := func(code TypeCode) *exactType {
+			typ := &exactType{code: code, nullable: true}
+			typ.finishCanonical()
+			return typ
+		}
 
-	fields := md.Fields()
-	// Vacuity guard: an empty descriptor would make the loop below allocate
-	// nothing for the reason that it does nothing.
-	if fields.Len() < 4 {
-		t.Fatalf("fixture descriptor has %d fields; this needs the scalar, enum and aliased-enum "+
-			"arms to be measuring anything", fields.Len())
-	}
+		fields := md.Fields()
+		// Vacuity guard: an empty descriptor would make the loop below allocate
+		// nothing for the reason that it does nothing.
+		if fields.Len() < 4 {
+			t.Fatalf("fixture descriptor has %d fields; this needs the scalar, enum and aliased-enum "+
+				"arms to be measuring anything", fields.Len())
+		}
 
-	expected := mk(TypeCodeLong)
-	// testing.Benchmark rather than testing.AllocsPerRun: the latter panics
-	// inside a parallel test, and this file's tests are parallel like every
-	// other in the tree. Benchmark brings its own harness, so the measurement
-	// keeps working without making this test the one that opts out.
-	res := testing.Benchmark(func(b *testing.B) {
-		b.ReportAllocs()
-		for n := 0; n < b.N; n++ {
-			for i := 0; i < fields.Len(); i++ {
-				fd := fields.Get(i)
-				if fd.Kind() == protoreflect.MessageKind || fd.Kind() == protoreflect.GroupKind {
-					// Records are answered STRUCTURALLY and legitimately walk
-					// the descriptor; only the scalar path claims to be free.
-					continue
+		expected := mk(TypeCodeLong)
+		// testing.Benchmark rather than testing.AllocsPerRun: the latter panics
+		// inside a parallel test, and this file's tests are parallel like every
+		// other in the tree. The subprocess removes sibling tests from the
+		// process-wide counters without making the parent opt out of parallelism.
+		res := testing.Benchmark(func(b *testing.B) {
+			b.ReportAllocs()
+			for n := 0; n < b.N; n++ {
+				for i := 0; i < fields.Len(); i++ {
+					fd := fields.Get(i)
+					if fd.Kind() == protoreflect.MessageKind || fd.Kind() == protoreflect.GroupKind {
+						// Records are answered STRUCTURALLY and legitimately walk
+						// the descriptor; only the scalar path claims to be free.
+						continue
+					}
+					_ = protoScalarShapeCompatible(fd, expected)
 				}
-				_ = protoScalarShapeCompatible(fd, expected)
 			}
+		})
+		if res.N == 0 {
+			t.Fatal("the benchmark ran zero iterations, so the allocation reading below is about nothing")
+		}
+		if got := res.AllocsPerOp(); got != 0 {
+			t.Errorf("protoScalarShapeCompatible allocates %d times per sweep of the scalar fields, "+
+				"want 0. This runs per field read per row, so a Type constructed here becomes "+
+				"O(rows x accesses x width) of garbage; take the CODE from ScalarCodeForProtoKind "+
+				"rather than the Type from ScalarTypeForProtoKind", got)
 		}
 	})
-	if res.N == 0 {
-		t.Fatal("the benchmark ran zero iterations, so the allocation reading below is about nothing")
-	}
-	if got := res.AllocsPerOp(); got != 0 {
-		t.Errorf("protoScalarShapeCompatible allocates %d times per sweep of the scalar fields, "+
-			"want 0. This runs per field read per row, so a Type constructed here becomes "+
-			"O(rows x accesses x width) of garbage; take the CODE from ScalarCodeForProtoKind "+
-			"rather than the Type from ScalarTypeForProtoKind", got)
-	}
 }
