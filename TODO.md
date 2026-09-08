@@ -9824,3 +9824,32 @@ by leaf caller for those queries, not increased nonblocking work. These profiles
 are not folded into the ordinary timing table. Full per-query ranges, profile
 measurements, scope limits, and reproduction commands are in RFC-243's final
 readiness checkpoint; it also records the GitHub review link and final CI scope.
+
+
+### Stress test 1M baseline — RFC-244 join predicate dependencies (2026-09-08)
+
+- [x] Matched timing verification for implementation
+  `0b8ba2ee2e26e5a53a0a04b36a9181c4ff7fe034`, against merge-base
+  `c50ec7e5313b45e968e9b196da5eebd191151810` on 2026-09-08. Four ordinary
+  uncached runs per side, sequential BB A A BB A A on the same filesystem at
+  94.42–94.44% utilization; endpoint one-minute loads 2.09–6.51. All eight
+  runs pass, each with 24 RUN lines and identical 22 timed query row counts
+  plus COUNT(*) = 1,000,000. The Go/build manifest remained unchanged through
+  runs and the commit hook. Full per-query samples and SHA-scoped ratios are
+  in [RFC-244](rfcs/244-join-pushdown-uses-predicate-correlations.md#matched-timing-comparison-2026-09-08).
+
+| Measurement | Baseline seconds, four runs | Implementation seconds, four runs |
+|---|---|---|
+| Full stress test | 183.22 / 176.76 / 175.96 / 176.71 | 176.04 / 177.29 / 176.25 / 176.55 |
+| ORDER BY PK / 1M | 3.784 / 3.928 / 3.837 / 3.847 | 3.786 / 3.841 / 3.835 / 3.839 |
+| Ordered narrow scan / 1M | 3.671 / 3.626 / 3.655 / 3.632 | 3.613 / 3.650 / 3.626 / 3.623 |
+| Wide scan / 1M | 3.913 / 3.915 / 3.887 / 3.902 | 3.854 / 3.904 / 3.870 / 3.891 |
+| Sparse filter / 97 rows | 3.273 / 3.291 / 3.298 / 3.283 | 3.268 / 3.268 / 3.301 / 3.292 |
+
+Small-query median differences are not resolved as wins/regressions at n=4.
+Two additional exact full stress profiles per side investigated the spread;
+all pass, and per-query block accounting does not establish repeatable added
+work. RFC-244 records the measurements, executable fingerprints, reproduction
+commands and limitations. Point lookups exceed the aspirational <5 ms target
+on both trees. The evidence delta received Graefe/Torvalds ACK; this closes
+the timing measurement requirement, not GitHub CI or merge authorization.
