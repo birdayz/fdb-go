@@ -7,6 +7,9 @@ package embedded
 import (
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/relational/core/query"
 )
 
 // AGG-RESIDUAL: AggregateDataAccessRule must NOT serve a query from an
@@ -259,5 +262,63 @@ func TestBugHunt_DistinctOverUnionAllKeepsDedup(t *testing.T) {
 	}
 	if !hasUnion && strings.Contains(plan, "<nil>") {
 		t.Errorf("collapsed plan carries a nil child: %s", plan)
+	}
+}
+
+// These SQL forms start with their cross-leg predicate inside Select, not in
+// Filter(Select). Keep the negative result separate from the rule-level nested
+// dependency regression: correct rows here alone did not catch that defect.
+func TestBugHunt_NestedJoinPredicateStartsInsideSelect(t *testing.T) {
+	t.Parallel()
+	const ddl = `CREATE TYPE AS STRUCT nst (sk BIGINT, co BIGINT)
+CREATE TABLE a (id BIGINT, PRIMARY KEY (id))
+CREATE TABLE b (id BIGINT, n nst, PRIMARY KEY (id))`
+	for _, sql := range []string{
+		"SELECT a.id, b.id FROM a JOIN b ON TRUE WHERE a.id = b.n.co ORDER BY a.id",
+		"SELECT a.id, b.id FROM a JOIN b ON TRUE WHERE b.n.co = a.id ORDER BY a.id",
+		"SELECT a.id, b.id FROM a JOIN b ON a.id = b.n.co ORDER BY a.id",
+	} {
+		t.Run(sql, func(t *testing.T) {
+			t.Parallel()
+			tmpl, err := buildSchemaTemplateFromDDL(ddl)
+			if err != nil {
+				t.Fatal(err)
+			}
+			md := tmpl.Underlying()
+			op := buildViaPlanVisitor(t, md, sql)
+			ref, _, err := query.TranslateToCascadesWithError(op, md)
+			if err != nil || ref == nil {
+				t.Fatalf("translation: ref=%v err=%v", ref, err)
+			}
+			crossLegPredicates := 0
+			var walk func(expressions.RelationalExpression)
+			walk = func(expr expressions.RelationalExpression) {
+				if filter, ok := expr.(*expressions.LogicalFilterExpression); ok {
+					if sel, isJoin := filter.GetInner().GetRangesOver().Get().(*expressions.SelectExpression); isJoin && len(sel.GetQuantifiers()) == 2 {
+						t.Error("translator introduced Filter around this inner join; Filter(Select) re-arms the specialized pushdown path that previously lost nested sibling dependencies")
+					}
+				}
+				if sel, ok := expr.(*expressions.SelectExpression); ok && len(sel.GetQuantifiers()) == 2 {
+					qs := sel.GetQuantifiers()
+					for _, pred := range sel.GetPredicates() {
+						corr := pred.GetCorrelatedTo()
+						_, left := corr[qs[0].GetAlias()]
+						_, right := corr[qs[1].GetAlias()]
+						if left && right {
+							crossLegPredicates++
+						}
+					}
+				}
+				for _, q := range expr.GetQuantifiers() {
+					for _, child := range q.GetRangesOver().AllMembers() {
+						walk(child)
+					}
+				}
+			}
+			walk(ref.Get())
+			if crossLegPredicates != 1 {
+				t.Fatalf("translated Select carries %d cross-leg predicates, want one; losing this placement re-arms nested-dependency pushdown", crossLegPredicates)
+			}
+		})
 	}
 }

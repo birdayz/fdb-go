@@ -4750,12 +4750,10 @@ func legCorrelationOf(fv values.FieldValue) (values.CorrelationIdentifier, bool)
 	// from how it is spelled. A migration that launders a decision into
 	// invisibility is worse than one that leaves it listed.
 	//
-	// Failing closed here is safe at every caller, which is why the arm could
-	// go before its producers do: matchJoinPKPredicate declines the rewrite and
-	// predicateSingleSide attributes the reference to neither side and keeps the
-	// predicate above the join. Each is a declined optimization, never a wrong
-	// slot. Nothing in the explaindiff corpus takes the arm (0 of 1944 calls), so
-	// the optimization was theoretical.
+	// Failing closed here lets matchJoinPKPredicate decline the rewrite rather
+	// than read a wrong slot. Predicate pushdown uses the complete predicate
+	// correlation set instead: ignoring an unrecognized field in that decision
+	// could hide a sibling dependency while another field licenses the push.
 	return values.CorrelationIdentifier{}, false
 }
 

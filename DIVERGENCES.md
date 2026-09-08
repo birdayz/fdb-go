@@ -2547,3 +2547,21 @@ claim about the decode stated at the scan level, which is the same slip the
 duplicate-rows paragraph above corrects.) The old bytes were therefore never
 Java-compatible, which is the whole point of the port. The choice is between
 data that disagrees with Java forever and one rebuild.
+
+### Filter-over-join predicate pushdown (RFC-244)
+
+Java's `PredicatePushDownRule` matches a Select and pushes predicates whose
+transitive correlations exclude its other owned quantifiers. Go's generic rule
+has that shape; `PushFilterBelowJoinRule` additionally handles Filter(Select)
+in the same memo. It now consumes the same complete predicate correlation
+contract rather than walking selected predicate kinds and one-accessor fields.
+Nested fields, whole-object values, existential predicates and range comparands
+therefore cannot hide a sibling dependency. Classification uses typed owned
+quantifier identities; source labels are checked separately for agreement with
+their labels. Null-on-empty and strict-single edges are barriers.
+
+The specialized two-leg rule deliberately keeps predicates referencing neither
+owned leg above the join, where Java's per-quantifier rule can push them. There
+is no uniquely referenced leg to choose in this specialized rule. This is a
+conservative admission difference, not different SQL semantics or a second
+execution pipeline. The generic Select rule remains Java-shaped.

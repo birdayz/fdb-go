@@ -144,3 +144,55 @@ func TestFDB_QualifiedNestedAccessorReadsTheLeafNotTheStructRoot(t *testing.T) {
 		})
 	}
 }
+
+func TestFDB_JoinFilterKeepsNestedDependency(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	const dbPath = "/testdb_join_nested_dependency"
+	setup := openTestDB(t, dbPath)
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE join_nested_dependency "+
+		"CREATE TYPE AS STRUCT nst (sk BIGINT, co BIGINT) "+
+		"CREATE TABLE a (id BIGINT, PRIMARY KEY (id)) "+
+		"CREATE TABLE b (id BIGINT, n nst, PRIMARY KEY (id))")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE join_nested_dependency")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	mwjoMustExec(t, db, ctx, "INSERT INTO a VALUES (1), (2), (3)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO b VALUES (10, (90, 2)), (20, (80, 1))")
+	for _, query := range []string{
+		"SELECT a.id, b.id FROM a JOIN b ON TRUE WHERE a.id = b.n.co ORDER BY a.id",
+		"SELECT a.id, b.id FROM a JOIN b ON TRUE WHERE b.n.co = a.id ORDER BY a.id",
+		"SELECT a.id, b.id FROM a JOIN b ON a.id = b.n.co ORDER BY a.id",
+	} {
+		t.Run(query, func(t *testing.T) {
+			t.Parallel()
+			t.Logf("plan: %s", mwjoExplainer(t, db, ctx)(query))
+			rows, err := db.QueryContext(ctx, query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rows.Close()
+			var got [][2]int64
+			for rows.Next() {
+				var pair [2]int64
+				if err := rows.Scan(&pair[0], &pair[1]); err != nil {
+					t.Fatal(err)
+				}
+				got = append(got, pair)
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != 2 || got[0] != [2]int64{1, 20} || got[1] != [2]int64{2, 10} {
+				t.Fatalf("nested join comparison returned %v, want [[1 20] [2 10]]", got)
+			}
+		})
+	}
+}

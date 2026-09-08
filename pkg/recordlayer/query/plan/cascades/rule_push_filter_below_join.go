@@ -15,11 +15,12 @@ import (
 //	  → Filter([a.id=b.aid], Select(rv, [qA', qB], [jpreds]))
 //	    where qA' = ForEach(Filter([a.name='foo'], A))
 //
-// A predicate is pushable to side i when every FieldValue in its
-// tree is qualified with sourceAliases[i] and does not reference
-// sourceAliases[j] (j != i). Predicates that reference both sides,
-// or that have no FieldValue references at all, are kept on the
-// filter above the join (conservative).
+// A predicate is pushable to side i when its complete correlation set
+// references that owned quantifier and not its sibling. External correlations
+// do not prevent pushdown, as in Java's PredicatePushDownRule. Predicates
+// referencing both sides or neither owned side stay above this two-leg join.
+// Source alias labels must agree with the owned quantifiers' labels, but
+// dependency classification uses the quantifier identities, never those labels.
 //
 // The rule only fires on INNER joins (JoinInner). LEFT OUTER and
 // CROSS joins have different NULL-preservation semantics that make
@@ -76,8 +77,17 @@ func (r *PushFilterBelowJoinRule) OnMatch(call *ExpressionRuleCall) {
 	}
 
 	aliases := sel.GetSourceAliases()
-	if len(aliases) < 2 {
+	if len(aliases) != len(quantifiers) {
 		return
+	}
+	for i, q := range quantifiers {
+		// Filtering before null extension is not equivalent to filtering the
+		// null-extended row. Check the parallel source labels without turning
+		// them into identities: a unique-kind alias cannot be reconstructed
+		// with NamedCorrelationIdentifier, even when its label agrees.
+		if q.IsNullOnEmpty() || q.GetAlias().IsZero() || q.GetAlias().Name() != aliases[i] {
+			return
+		}
 	}
 
 	filterPreds := f.GetPredicates()
@@ -88,7 +98,7 @@ func (r *PushFilterBelowJoinRule) OnMatch(call *ExpressionRuleCall) {
 	// Partition predicates into: push-to-0, push-to-1, keep-on-join.
 	var pushTo0, pushTo1, keep []predicates.QueryPredicate
 	for _, pred := range filterPreds {
-		side := predicateSingleSide(pred, aliases[0], aliases[1])
+		side := predicateSingleSide(pred, quantifiers[0].GetAlias(), quantifiers[1].GetAlias())
 		switch side {
 		case 0:
 			pushTo0 = append(pushTo0, pred)
@@ -104,35 +114,27 @@ func (r *PushFilterBelowJoinRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	// Build the new quantifiers, wrapping each side with a filter
-	// if there are predicates to push to it. Use NamedForEachQuantifier
-	// so the filter's inner quantifier alias matches the predicate's
-	// QOV correlation — ImplementFilterRule uses this alias for WithAlias
-	// binding at execution time.
+	// Reuse the original edge inside each filter and retain its owned alias
+	// on the replacement edge, as Java's PredicatePushDownRule does. The
+	// Select's result value and join predicates still read those aliases.
 	newQ0 := quantifiers[0]
 	if len(pushTo0) > 0 {
-		innerRef0 := quantifiers[0].GetRangesOver()
-		filterInnerQ0 := expressions.NamedForEachQuantifier(
-			values.NamedCorrelationIdentifier(aliases[0]), innerRef0)
-		pushed0, err := expressions.NewLogicalFilterExpression(pushTo0, filterInnerQ0)
+		pushed0, err := expressions.NewLogicalFilterExpression(pushTo0, quantifiers[0])
 		if err != nil {
 			call.Fail(err)
 			return
 		}
-		newQ0 = expressions.ForEachQuantifier(call.MemoizeExpression(pushed0))
+		newQ0 = expressions.NamedForEachQuantifier(quantifiers[0].GetAlias(), call.MemoizeExpression(pushed0))
 	}
 
 	newQ1 := quantifiers[1]
 	if len(pushTo1) > 0 {
-		innerRef1 := quantifiers[1].GetRangesOver()
-		filterInnerQ1 := expressions.NamedForEachQuantifier(
-			values.NamedCorrelationIdentifier(aliases[1]), innerRef1)
-		pushed1, err := expressions.NewLogicalFilterExpression(pushTo1, filterInnerQ1)
+		pushed1, err := expressions.NewLogicalFilterExpression(pushTo1, quantifiers[1])
 		if err != nil {
 			call.Fail(err)
 			return
 		}
-		newQ1 = expressions.ForEachQuantifier(call.MemoizeExpression(pushed1))
+		newQ1 = expressions.NamedForEachQuantifier(quantifiers[1].GetAlias(), call.MemoizeExpression(pushed1))
 	}
 
 	// Build the new SelectExpression with the modified quantifiers.
@@ -168,34 +170,14 @@ func (r *PushFilterBelowJoinRule) OnMatch(call *ExpressionRuleCall) {
 // references:
 //   - 0 if it only references alias0
 //   - 1 if it only references alias1
-//   - -1 if it references both, neither, or has no FieldValue refs
-func predicateSingleSide(pred predicates.QueryPredicate, alias0, alias1 string) int {
-	corr0 := values.NamedCorrelationIdentifier(alias0)
-	corr1 := values.NamedCorrelationIdentifier(alias1)
-
-	refs0, refs1 := false, false
-	foundAnyField := false
-
-	// Which SIDE a reference belongs to is a question about its CORRELATION —
-	// the quantifier whose row it reads — not about the column it names.
-	walkPredicateFieldValues(pred, func(fv values.FieldValue) {
-		foundAnyField = true
-		root, ok := values.AsQuantifiedObjectValue(fv.ChildValue())
-		if !ok || fv.Path().Len() != 1 {
-			return
-		}
-		leg := root.Correlation()
-		if values.SameLeg(leg, corr0) {
-			refs0 = true
-		}
-		if values.SameLeg(leg, corr1) {
-			refs1 = true
-		}
-	})
-
-	if !foundAnyField {
-		return -1
-	}
+//   - -1 if it references both or neither owned alias
+func predicateSingleSide(pred predicates.QueryPredicate, corr0, corr1 values.CorrelationIdentifier) int {
+	// A missing dependency is permission to move a predicate. Ask the
+	// predicate for its transitive set rather than enumerating field depths
+	// or predicate kinds, which can silently hide an owned sibling.
+	correlated := predicates.GetCorrelatedToOfPredicate(pred)
+	_, refs0 := correlated[corr0]
+	_, refs1 := correlated[corr1]
 	if refs0 && !refs1 {
 		return 0
 	}
@@ -203,32 +185,6 @@ func predicateSingleSide(pred predicates.QueryPredicate, alias0, alias1 string) 
 		return 1
 	}
 	return -1
-}
-
-// walkPredicateFieldValues walks all Value trees reachable from a
-// predicate, calling visit for each FieldValue found.
-func walkPredicateFieldValues(pred predicates.QueryPredicate, visit func(values.FieldValue)) {
-	predicates.WalkPredicate(pred, func(node predicates.QueryPredicate) bool {
-		switch np := node.(type) {
-		case *predicates.ValuePredicate:
-			walkValueForFieldValues(np.Value, visit)
-		case *predicates.ComparisonPredicate:
-			walkValueForFieldValues(np.Operand, visit)
-			walkValueForFieldValues(np.Comparison.Operand, visit)
-		}
-		return true
-	})
-}
-
-// walkValueForFieldValues walks a Value tree, calling visit for each
-// FieldValue found.
-func walkValueForFieldValues(v values.Value, visit func(values.FieldValue)) {
-	values.WalkValue(v, func(node values.Value) bool {
-		if fv, ok := values.AsFieldValue(node); ok {
-			visit(fv)
-		}
-		return true
-	})
 }
 
 var _ ExpressionRule = (*PushFilterBelowJoinRule)(nil)
