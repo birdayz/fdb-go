@@ -5108,6 +5108,32 @@ comparisons instead of 2.
 
 ---
 
+### [ ] Widen the pk-intersection comparison key with a per-leg singular fixed PK component (RFC-245 follow-on; query-engine gate)
+
+RFC-245 made the primary-key intersection prove its comparison key leg by leg and DECLINES the
+partition when a primary-key component is equality-bound in one leg only. That is sound, and it
+forfeits a real plan: in the reproducer (`PRIMARY KEY (pk1, pk2)`, indexes `(b, pk1)` and `(pk2)`,
+`WHERE b = 1 AND pk2 = 3`) both legs are physically ordered `(pk1, pk2)` — the `(pk2)` leg
+trivially so, every one of its rows carrying pk2 = 3 — so a merge on the comparison key
+`(pk1, pk2)` is sound and beats the surviving covering-scan-plus-residual alternative.
+
+Why it was not done inside RFC-245: the enumeration that offers comparison keys,
+`RichOrdering.EnumerateSatisfyingIntersectionComparisonKeyValues` (rich_ordering.go), filters
+values with a singular FIXED binding out of the candidate set — a port of Java's
+`SetOperationsOrdering.enumerateSatisfyingComparisonKeyValues`, and shared ordering algebra.
+Admitting a per-leg fixed primary-key component means teaching the intersection enumeration
+that a value FIXED in the merged ordering can still be a comparison-key part when some leg
+SORTS it, and giving that part a direction (`RecordQuerySetPlan.adjustFixedBindings` already
+assigns fixed parts the comparison's direction, so the executor side exists). That is a change
+to the ordering algebra, not to the soundness proof, and it needs its own RFC + Graefe/Torvalds
+lap.
+
+DONE when: the reproducer plans `Intersection(IndexScan(TI_B_PK1), IndexScan(TI_PK2))` with a
+two-component comparison key and `TestFDB_PkIntersectionLegBoundComponent` still passes — its
+plan-property arm (every TI intersection compares on both components) was written to accept
+exactly this outcome; `TestIntersector_DeclinesPrimaryKeyComponentFixedInOneLegOnly` flips to
+asserting the widened key; the union `equalityBoundValues` fed to redundancy pruning stays as
+is. Run the EXPLAIN corpus diff and the 1M stress comparison as for RFC-245.
 
 ---
 

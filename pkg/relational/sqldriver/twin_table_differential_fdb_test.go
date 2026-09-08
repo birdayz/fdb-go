@@ -450,7 +450,12 @@ func TestFDB_TwinTableDifferential(t *testing.T) {
 		{"SELECT * FROM (SELECT a, b FROM {T} WHERE a = 1 UNION SELECT a, b FROM {T} WHERE s = 'b') AS x WHERE b = 1", false},
 	}
 
-	var mismatches int
+	// Population counters. Every degenerate outcome below (both twins error,
+	// both return nothing, the paged read declines) is legitimate for SOME
+	// query in the list — but a run in which most queries land there has
+	// compared nothing, and would otherwise be green. The floors at the end
+	// state the population this net actually measures.
+	var mismatches, compared, nonEmpty, bothErrored, pagedCompared, pagingDeclined int
 	explain := mwjoExplainer(t, db, ctx)
 	for _, q := range queries {
 		qi := strings.ReplaceAll(q.sql, "{T}", "TI")
@@ -463,9 +468,11 @@ func TestFDB_TwinTableDifferential(t *testing.T) {
 			continue
 		}
 		if erri != nil {
+			bothErrored++
 			t.Logf("both errored: %s\n  err: %v", q.sql, erri)
 			continue
 		}
+		compared++
 		if strings.Join(ci, ",") != strings.Join(cn, ",") {
 			mismatches++
 			t.Errorf("COLUMN DIVERGENCE\n  sql: %s\n  TI: %v\n  TN: %v", q.sql, ci, cn)
@@ -483,7 +490,9 @@ func TestFDB_TwinTableDifferential(t *testing.T) {
 		}
 		if len(ri) == 0 {
 			t.Logf("EMPTY (both): %s", q.sql)
+			continue
 		}
+		nonEmpty++
 	}
 
 	// Paging variant on the indexed twin: a pinned connection with a tiny
@@ -512,6 +521,7 @@ func TestFDB_TwinTableDifferential(t *testing.T) {
 		paged, _, err := twinRows(ctx, conn, qi)
 		if err != nil {
 			if strings.Contains(err.Error(), "54F01") {
+				pagingDeclined++
 				t.Logf("paging decline (54F01): %s", q.sql)
 				continue
 			}
@@ -519,6 +529,7 @@ func TestFDB_TwinTableDifferential(t *testing.T) {
 			t.Errorf("PAGING ERROR\n  sql: %s\n  err: %v", q.sql, err)
 			continue
 		}
+		pagedCompared++
 		sf, sp := append([]string(nil), full...), append([]string(nil), paged...)
 		if !q.ordered {
 			sort.Strings(sf)
@@ -530,5 +541,26 @@ func TestFDB_TwinTableDifferential(t *testing.T) {
 				q.ordered, q.sql, explain(qi), len(full), strings.Join(full, "\n    "), len(paged), strings.Join(paged, "\n    "))
 		}
 	}
-	t.Logf("twin differential: %d queries, %d mismatches", len(queries), mismatches)
+	t.Logf("twin differential: %d queries, %d mismatches; compared=%d nonEmpty=%d bothErrored=%d pagedCompared=%d pagingDeclined=%d",
+		len(queries), mismatches, compared, nonEmpty, bothErrored, pagedCompared, pagingDeclined)
+
+	// Non-vacuity floors, measured at 258 queries: compared=241 nonEmpty=224
+	// bothErrored=17 pagedCompared=239 pagingDeclined=2. Each floor sits far
+	// enough below its reading to absorb a query or two changing class, and
+	// far enough above zero that a net comparing nothing cannot pass.
+	if compared < 230 {
+		t.Errorf("only %d of %d queries were compared across the twins (measured 241 at 258 queries); the net is not measuring what it claims", compared, len(queries))
+	}
+	if nonEmpty < 200 {
+		t.Errorf("only %d compared queries returned rows (measured 224 at 258 queries); an empty fixture agrees with itself on everything", nonEmpty)
+	}
+	if bothErrored > 25 {
+		t.Errorf("%d queries errored on both twins (measured 17 at 258 queries); a parse/plan regression is being logged as agreement", bothErrored)
+	}
+	if pagedCompared < 220 {
+		t.Errorf("only %d paged re-reads were compared (measured 239 at 258 queries); the continuation axis is not being exercised", pagedCompared)
+	}
+	if pagingDeclined > 10 {
+		t.Errorf("%d paged re-reads declined with 54F01 (measured 2 at 258 queries); the scan limit is silencing the continuation axis", pagingDeclined)
+	}
 }
