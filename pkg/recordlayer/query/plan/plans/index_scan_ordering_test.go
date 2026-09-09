@@ -122,3 +122,50 @@ func TestRecordQueryIndexPlan_HintOrdering_EqualityPrefixThenRangeStopsAtFirstNo
 		}
 	}
 }
+
+// TestRecordQueryIndexPlan_HintRichOrdering_UntypedOperandOnDoubleIsNotFixed is
+// the index-scan twin of the aggregate arm of the same name: a DOUBLE index
+// column bound by an UNKNOWN-typed non-constant operand may be zero at runtime
+// and widen across both signed-zero blocks, so the rich form binds it SORTED
+// (own order, scan direction) and drops the tail; it must never be FIXED, the
+// reading the operand-only predicate gives. On a LONG column the same operand
+// IS fixed and the PK suffix stays claimable.
+func TestRecordQueryIndexPlan_HintRichOrdering_UntypedOperandOnDoubleIsNotFixed(t *testing.T) {
+	t.Parallel()
+	untyped := plannerDynamicEquality(t, values.UnknownType)
+	layout := values.NewRecordType("index_ordering_double_row", false, []values.Field{
+		{Name: "D", FieldType: values.NullableDouble, Ordinal: 0},
+		{Name: "B", FieldType: values.NotNullLong, Ordinal: 1},
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 2},
+	})
+	double := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+		return NewRecordQueryIndexPlan("IDX", []*predicates.ComparisonRange{untyped}, []string{"T"}, layout, false)
+	}).
+		WithKeyComponentTypes([]values.Type{values.NullableDouble, values.NotNullLong}).
+		WithIndexMetadata([]string{"D", "B"}, []string{"ID"}, false).
+		WithPrimaryKeyComponentTypes(testPhysicalLongTypes(1))
+	if got := double.HintOrdering(); got.IsKnown {
+		t.Fatalf("HintOrdering(d = ?) = %#v, want unknown", got)
+	}
+	rich := double.HintRichOrdering()
+	if n := len(rich.GetKeys()); n != 1 {
+		t.Fatalf("HintRichOrdering(d = ?) has %d keys, want [D] alone with the tail dropped", n)
+	}
+	if b := rich.GetBindingMap()[rich.GetKeys()[0]]; len(b) != 1 || b[0].IsFixed() {
+		t.Fatalf("D bound by an untyped operand = %v, want SORTED, not FIXED", b)
+	}
+
+	long := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+		return NewRecordQueryIndexPlan("IDX", []*predicates.ComparisonRange{untyped}, []string{"T"}, indexOrderingLayout(), false)
+	}).
+		WithKeyComponentTypes(testPhysicalLongTypes(2)).
+		WithIndexMetadata([]string{"A", "B"}, []string{"ID"}, false).
+		WithPrimaryKeyComponentTypes(testPhysicalLongTypes(1))
+	richLong := long.HintRichOrdering()
+	if n := len(richLong.GetKeys()); n != 3 {
+		t.Fatalf("HintRichOrdering(a = ? on a LONG) has %d keys, want [A, B, ID]", n)
+	}
+	if b := richLong.GetBindingMap()[richLong.GetKeys()[0]]; len(b) != 1 || !b[0].IsFixed() {
+		t.Fatalf("A (LONG) bound by an untyped operand = %v, want FIXED", b)
+	}
+}

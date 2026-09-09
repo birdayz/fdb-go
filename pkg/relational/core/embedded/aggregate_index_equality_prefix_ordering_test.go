@@ -11,9 +11,16 @@ package embedded
 // Plan-shape pins over the typed tree (never EXPLAIN text): the fixed-prefix
 // shapes plan without an in-memory sort; the controls that must KEEP one — a
 // signed-zero equality on a DOUBLE grouping column, a DOUBLE in the sorted
-// tail, an inequality on the prefix, a fully unbound scan — still carry it.
+// tail, a fully unbound scan — still carry it. (An inequality on the prefix is
+// not a control here: the aggregate data-access rule does not match a range on
+// the grouping key at all, so that shape never reaches the aggregate index.)
 // Row correctness rides on the sqldriver twin
 // (TestFDB_AggregateIndexEqualityPrefixOrdering).
+//
+// The `ORDER BY b DESC, a` arm is the one that needs the RICH form: the plain
+// ordering drops b, so the request's b can only be satisfied by b's FIXED
+// binding, which is direction-free. Deleting HintRichOrdering reddens exactly
+// that arm and the full-order arm below it.
 
 import (
 	"testing"
@@ -68,6 +75,7 @@ CREATE INDEX t_cnt_b_d AS SELECT COUNT(*) FROM t GROUP BY b, d`
 	}{
 		{"count_prefix_fixed", "SELECT b, a, COUNT(*) FROM t WHERE b = 1 GROUP BY b, a ORDER BY a", false},
 		{"count_prefix_fixed_full_order", "SELECT b, a, COUNT(*) FROM t WHERE b = 1 GROUP BY b, a ORDER BY b, a", false},
+		{"count_prefix_fixed_desc_then_asc", "SELECT b, a, COUNT(*) FROM t WHERE b = 1 GROUP BY b, a ORDER BY b DESC, a", false},
 		{"count_pk_prefix_fixed", "SELECT pk1, a, COUNT(*) FROM t WHERE pk1 = 1 GROUP BY pk1, a ORDER BY a", false},
 		{"max_prefix_fixed", "SELECT b, a, MAX(pk2) FROM t WHERE b = 1 GROUP BY b, a ORDER BY a", false},
 		{"count_prefix_fixed_limit", "SELECT b, a, COUNT(*) FROM t WHERE b = 1 GROUP BY b, a ORDER BY a LIMIT 2", false},

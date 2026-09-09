@@ -183,3 +183,60 @@ func TestAggregateIndexPlan_HintOrdering_FloatPrefix(t *testing.T) {
 		t.Fatalf("HintOrdering(b = 1, tail D) = %#v, want unknown: a DOUBLE in the sorted tail terminates the claim", floatTail)
 	}
 }
+
+// TestAggregateIndexPlan_HintRichOrdering_UntypedOperandOnDoubleIsNotFixed:
+// a DOUBLE grouping column bound by an UNKNOWN-typed non-constant operand (an
+// IN binding, a parameter) may be zero at runtime and then widens across both
+// signed-zero blocks, so it pins no single physical key. The plain form
+// already declines to claim past it; the rich form must bind it SORTED (own
+// order, scan direction), never FIXED — FIXED says "any requested direction is
+// satisfied", which would let `ORDER BY d DESC` elide its sort against a
+// forward scan that emits -0.0 before +0.0. The same coordinate on a LONG
+// column IS fixed: no signed zero exists there, whatever the operand.
+func TestAggregateIndexPlan_HintRichOrdering_UntypedOperandOnDoubleIsNotFixed(t *testing.T) {
+	t.Parallel()
+	untyped := plannerDynamicEquality(t, values.UnknownType)
+
+	double := aggregateOrderingPlan(t, []string{"D", "A"}, []values.Type{values.NullableDouble, values.NullableLong},
+		[]*predicates.ComparisonRange{untyped}, false)
+	if got := double.HintOrdering(); got.IsKnown {
+		t.Fatalf("HintOrdering(d = ?) = %#v, want unknown: the operand may be zero and the tail restarts at each block", got)
+	}
+	rich := double.HintRichOrdering()
+	if !sameNames(orderingKeyNames(t, rich.GetKeys()), []string{"D"}) {
+		t.Fatalf("HintRichOrdering(d = ?) keys = %v, want [D] alone", orderingKeyNames(t, rich.GetKeys()))
+	}
+	if b := rich.GetBindingMap()[rich.GetKeys()[0]]; len(b) != 1 || b[0].IsFixed() {
+		t.Fatalf("D bound by an untyped operand = %v, want SORTED: the operand-only reading would call it FIXED", b)
+	}
+
+	long := aggregateOrderingPlan(t, []string{"B", "A"}, twoLongs,
+		[]*predicates.ComparisonRange{untyped}, false)
+	if got := long.HintOrdering(); !got.IsKnown || !sameNames(orderingKeyNames(t, got.Keys), []string{"A"}) {
+		t.Fatalf("HintOrdering(b = ? on a LONG) = %#v, want [A]", got)
+	}
+	richLong := long.HintRichOrdering()
+	if b := richLong.GetBindingMap()[richLong.GetKeys()[0]]; len(b) != 1 || !b[0].IsFixed() {
+		t.Fatalf("B (LONG) bound by an untyped operand = %v, want FIXED", b)
+	}
+}
+
+// TestAggregateIndexPlan_HintOrdering_ReverseWithPrefix: under a reverse scan
+// the sorted tail descends while the fixed prefix stays direction-free.
+func TestAggregateIndexPlan_HintOrdering_ReverseWithPrefix(t *testing.T) {
+	t.Parallel()
+	plan := aggregateOrderingPlan(t, []string{"B", "A"}, twoLongs,
+		[]*predicates.ComparisonRange{pkOrderingEq(t, int64(1))}, true)
+	got := plan.HintOrdering()
+	if !got.IsKnown || !sameNames(orderingKeyNames(t, got.Keys), []string{"A"}) || !got.DescendingAt(0) {
+		t.Fatalf("HintOrdering(b = 1, reverse) = %#v, want [A] descending", got)
+	}
+	rich := plan.HintRichOrdering()
+	bm := rich.GetBindingMap()
+	if b := bm[rich.GetKeys()[0]]; len(b) != 1 || !b[0].IsFixed() {
+		t.Fatalf("B binding under a reverse scan = %v, want FIXED (direction-free)", b)
+	}
+	if a := bm[rich.GetKeys()[1]]; len(a) != 1 || a[0].IsFixed() || !a[0].GetSortOrder().IsAnyDescending() {
+		t.Fatalf("A binding under a reverse scan = %v, want SORTED descending", a)
+	}
+}

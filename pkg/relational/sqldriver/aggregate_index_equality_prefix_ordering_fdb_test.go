@@ -7,9 +7,11 @@ package sqldriver_test
 // groups included (NULL sorts first ascending), through DML that adds, empties
 // and revives groups, and for a DOUBLE prefix pinned to one physical key.
 //
-// The plan-shape half lives in the embedded package; this half asserts the
-// aggregate index is reached (via the typed plan, never EXPLAIN text) so a
-// green here is a statement about the index's order and not about a fallback.
+// This test asserts, via the typed plan and never EXPLAIN text, that every read
+// is served by the aggregate index AND carries no in-memory sort — without the
+// second half it would pass with the fix reverted, because a sorted plan
+// answers the same sequence. With it, a green is a statement about the order
+// the index delivers.
 
 import (
 	"context"
@@ -62,16 +64,21 @@ func TestFDB_AggregateIndexEqualityPrefixOrdering(t *testing.T) {
 		"SELECT b, a, COUNT(*) FROM t WHERE b = 1 GROUP BY b, a ORDER BY a LIMIT 2 OFFSET 1",
 		"SELECT b, a, COUNT(*) FROM t WHERE b = 1 GROUP BY b, a HAVING COUNT(*) > 1 ORDER BY a",
 	}
-	// The whole point: every read must be answered BY the aggregate index. A
-	// read that fell back to a scan-and-sort would agree with the oracle for a
-	// reason unrelated to this change.
+	// The whole point: every read must be answered BY the aggregate index and
+	// WITHOUT a sort. A read that fell back to a scan-and-sort, or sorted the
+	// index's groups in memory, would agree with the oracle for a reason
+	// unrelated to this change.
 	for _, q := range reads {
 		plan, err := embedded.PlanPhysicalForTest(q, table+indexes, nil)
 		if err != nil {
 			t.Fatalf("plan %s: %v", q, err)
 		}
-		if !reachesAggregateIndex(plan) {
+		reached, sorted := aggregateIndexAndSortIn(plan)
+		if !reached {
 			t.Fatalf("read is not served by the aggregate index, so its order proves nothing here\n  q: %s\n  plan: %s", q, plan.Explain())
+		}
+		if sorted {
+			t.Fatalf("read sorts the aggregate index's groups in memory, so the sequence below is the sort's, not the index's\n  q: %s\n  plan: %s", q, plan.Explain())
 		}
 	}
 	sweep := func(stage string) {
@@ -106,17 +113,21 @@ func TestFDB_AggregateIndexEqualityPrefixOrdering(t *testing.T) {
 	}
 }
 
-func reachesAggregateIndex(plan plans.RecordQueryPlan) bool {
-	found := false
+// aggregateIndexAndSortIn walks the typed plan tree and reports whether it holds
+// an aggregate index scan and whether it holds an in-memory sort.
+func aggregateIndexAndSortIn(plan plans.RecordQueryPlan) (reached, sorted bool) {
 	var walk func(p plans.RecordQueryPlan)
 	walk = func(p plans.RecordQueryPlan) {
-		if _, ok := p.(*plans.RecordQueryAggregateIndexPlan); ok {
-			found = true
+		switch p.(type) {
+		case *plans.RecordQueryAggregateIndexPlan:
+			reached = true
+		case *plans.RecordQueryInMemorySortPlan:
+			sorted = true
 		}
 		for _, c := range p.GetChildren() {
 			walk(c)
 		}
 	}
 	walk(plan)
-	return found
+	return reached, sorted
 }
