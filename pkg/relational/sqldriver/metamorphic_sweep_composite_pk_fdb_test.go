@@ -104,14 +104,22 @@ func TestFDB_MetamorphicCompositePrimaryKey(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	w := mmNewTwin(t, ctx, "/testdb_mhcpk", "mhcpk", mhcpkTable,
+	// U is the second relation for the join section: its (upk1, upk2) pair
+	// refers to t's composite primary key, with a composite index over the
+	// pair and a single-column index over its first half.
+	w := mmNewTwin(t, ctx, "/testdb_mhcpk", "mhcpk",
+		mhcpkTable+
+			"CREATE TABLE u (uid BIGINT, upk1 BIGINT, upk2 BIGINT, uv BIGINT, us STRING, PRIMARY KEY (uid)) ",
 		"CREATE INDEX t_a ON t (a) "+
 			"CREATE INDEX t_s ON t (s) "+
 			"CREATE INDEX t_asb ON t (a, s, b) "+
 			"CREATE INDEX t_b_pk1 ON t (b, pk1) "+
 			"CREATE INDEX t_d ON t (d) "+
 			"CREATE INDEX t_f ON t (f) "+
-			"CREATE INDEX t_pk2 ON t (pk2) ")
+			"CREATE INDEX t_pk2 ON t (pk2) "+
+			"CREATE INDEX u_pk12 ON u (upk1, upk2) "+
+			"CREATE INDEX u_pk1 ON u (upk1) "+
+			"CREATE INDEX u_uv ON u (uv) ")
 
 	// Deterministic data: duplicates, NULLs, boundaries.
 	rng := rand.New(rand.NewPCG(7, 11))
@@ -165,8 +173,83 @@ func TestFDB_MetamorphicCompositePrimaryKey(t *testing.T) {
 		"(-1, -1, 1, 1, 'b', TRUE, 1.0)",
 	)
 	w.Exec("INSERT INTO t (pk1, pk2, a, b, s, f, d) VALUES " + strings.Join(values, ", "))
+	// u: some rows reference existing t keys, some dangle (upk2 out of range),
+	// some carry NULL halves, some duplicate a reference.
+	var urows []string
+	for uid := int64(1); uid <= 40; uid++ {
+		var upk1, upk2, uv, us any
+		switch rng.IntN(6) {
+		case 0:
+			upk1 = nil
+		default:
+			upk1 = int64(rng.IntN(8))
+		}
+		switch rng.IntN(6) {
+		case 0:
+			upk2 = nil
+		case 1:
+			upk2 = int64(9) // dangling: no t row has pk2 = 9
+		default:
+			upk2 = int64(rng.IntN(7))
+		}
+		if rng.IntN(5) != 0 {
+			uv = int64(rng.IntN(4))
+		}
+		if rng.IntN(4) != 0 {
+			us = strDomain[rng.IntN(5)]
+		}
+		urows = append(urows, fmt.Sprintf("(%d, %s, %s, %s, %s)", uid, mhcpkLit(upk1), mhcpkLit(upk2), mhcpkLit(uv), mhcpkLit(us)))
+	}
+	w.Exec("INSERT INTO u (uid, upk1, upk2, uv, us) VALUES " + strings.Join(urows, ", "))
 
 	queries := []mhcpkQuery{
+		// Joins between the two relations on the composite key and its halves.
+		{"SELECT u.uid, t.pk1, t.pk2 FROM u JOIN t ON u.upk1 = t.pk1 AND u.upk2 = t.pk2 ORDER BY u.uid, t.pk1, t.pk2", true},
+		{"SELECT u.uid, t.pk1, t.pk2 FROM u LEFT JOIN t ON u.upk1 = t.pk1 AND u.upk2 = t.pk2 ORDER BY u.uid, t.pk1, t.pk2", true},
+		{"SELECT u.uid, t.pk1, t.pk2 FROM t JOIN u ON u.upk1 = t.pk1 AND u.upk2 = t.pk2 WHERE t.a = 1 ORDER BY u.uid, t.pk1, t.pk2", true},
+		{"SELECT u.uid, t.pk1, t.pk2 FROM t LEFT JOIN u ON u.upk1 = t.pk1 AND u.upk2 = t.pk2 WHERE t.a = 1 ORDER BY t.pk1, t.pk2, u.uid", true},
+		{"SELECT u.uid, t.pk1, t.pk2 FROM u JOIN t ON u.upk1 = t.pk1 WHERE u.uv = 1 ORDER BY u.uid, t.pk1, t.pk2", true},
+		{"SELECT u.uid, t.pk1, t.pk2 FROM u JOIN t ON u.upk2 = t.pk2 WHERE t.b = 1 ORDER BY u.uid, t.pk1, t.pk2", true},
+		{"SELECT u.uid, t.pk1, t.pk2 FROM u JOIN t ON u.upk2 = t.pk2 AND t.b = u.uv ORDER BY u.uid, t.pk1, t.pk2", true},
+		{"SELECT u.uid, t.pk1, t.pk2 FROM u LEFT JOIN t ON u.upk2 = t.pk2 AND t.b = 1 ORDER BY u.uid, t.pk1, t.pk2", true},
+		{"SELECT u.uid, t.pk1, t.pk2 FROM u LEFT JOIN t ON u.upk2 = t.pk2 WHERE t.b = 1 ORDER BY u.uid, t.pk1, t.pk2", true},
+		{"SELECT u.uid FROM u LEFT JOIN t ON u.upk1 = t.pk1 AND u.upk2 = t.pk2 WHERE t.pk1 IS NULL ORDER BY u.uid", true},
+		{"SELECT u.uid, t.pk1, t.pk2 FROM u JOIN t ON u.upk1 = t.pk1 AND u.upk2 = t.pk2 AND u.uv = t.b ORDER BY u.uid, t.pk1, t.pk2", true},
+		{"SELECT u.uid, t.pk1, t.pk2 FROM u JOIN t ON u.upk1 = t.pk1 AND u.upk2 = t.pk2 WHERE t.a = 1 AND t.s = 'b' ORDER BY u.uid, t.pk1, t.pk2", true},
+		{"SELECT u.uid, t.pk1, t.pk2 FROM u JOIN t ON u.upk1 = t.pk1 AND u.upk2 = t.pk2 WHERE t.b = 1 AND t.pk2 = 3 ORDER BY u.uid, t.pk1, t.pk2", true},
+		{"SELECT u.uid, t.pk1, t.pk2 FROM u JOIN t ON u.upk1 = t.pk1 AND u.upk2 = t.pk2 WHERE u.upk2 = 3 AND t.b = 1 ORDER BY u.uid, t.pk1, t.pk2", true},
+		{"SELECT u.uid, t.pk1, t.pk2 FROM u JOIN t ON u.upk1 = t.pk1 WHERE u.upk1 IN (1, 2) AND t.a = 1 ORDER BY u.uid, t.pk1, t.pk2", true},
+		{"SELECT u.uid, t.pk1, t.pk2 FROM u JOIN t ON u.upk2 = t.pk2 OR u.uv = t.b WHERE u.uid < 6 ORDER BY u.uid, t.pk1, t.pk2", true},
+		{"SELECT u.uid, t.pk1, t.pk2 FROM u LEFT JOIN t ON u.upk2 = t.pk2 OR u.upk1 = t.pk1 WHERE u.uid < 6 ORDER BY u.uid, t.pk1, t.pk2", true},
+		{"SELECT COUNT(*) FROM u JOIN t ON u.upk1 = t.pk1 AND u.upk2 = t.pk2", false},
+		{"SELECT COUNT(*) FROM u LEFT JOIN t ON u.upk1 = t.pk1 AND u.upk2 = t.pk2", false},
+		{"SELECT u.upk1, COUNT(*) FROM u JOIN t ON u.upk1 = t.pk1 AND u.upk2 = t.pk2 GROUP BY u.upk1 ORDER BY u.upk1", true},
+		{"SELECT t.a, COUNT(*) FROM u JOIN t ON u.upk1 = t.pk1 GROUP BY t.a ORDER BY t.a", true},
+		{"SELECT t.pk1, t.pk2, COUNT(*) FROM u JOIN t ON u.upk1 = t.pk1 AND u.upk2 = t.pk2 GROUP BY t.pk1, t.pk2 ORDER BY t.pk1, t.pk2", true},
+		{"SELECT u.uid FROM u WHERE EXISTS (SELECT 1 FROM t WHERE t.pk1 = u.upk1 AND t.pk2 = u.upk2) ORDER BY u.uid", true},
+		{"SELECT u.uid FROM u WHERE NOT EXISTS (SELECT 1 FROM t WHERE t.pk1 = u.upk1 AND t.pk2 = u.upk2) ORDER BY u.uid", true},
+		{"SELECT u.uid FROM u WHERE EXISTS (SELECT 1 FROM t WHERE t.pk2 = u.upk2 AND t.b = u.uv) ORDER BY u.uid", true},
+		{"SELECT u.uid FROM u WHERE EXISTS (SELECT 1 FROM t WHERE t.pk1 = u.upk1 AND t.a = 1 AND t.s = 'b') ORDER BY u.uid", true},
+		{"SELECT u.uid FROM u WHERE NOT EXISTS (SELECT 1 FROM t WHERE t.pk2 = u.upk2 AND t.b = 1) ORDER BY u.uid", true},
+		{"SELECT u.uid FROM u WHERE EXISTS (SELECT 1 FROM t WHERE t.pk1 = u.upk1) AND NOT EXISTS (SELECT 1 FROM t WHERE t.pk2 = u.upk2 AND t.a = 2) ORDER BY u.uid", true},
+		{"SELECT t.pk1, t.pk2 FROM t WHERE EXISTS (SELECT 1 FROM u WHERE u.upk1 = t.pk1 AND u.upk2 = t.pk2 AND u.uv = 1) ORDER BY t.pk1, t.pk2", true},
+		{"SELECT t.pk1, t.pk2 FROM t WHERE t.a = 1 AND NOT EXISTS (SELECT 1 FROM u WHERE u.upk1 = t.pk1 AND u.upk2 = t.pk2) ORDER BY t.pk1, t.pk2", true},
+		{"SELECT u.uid, (SELECT COUNT(*) FROM t WHERE t.pk1 = u.upk1) AS n FROM u ORDER BY u.uid", true},
+		{"SELECT u.uid, (SELECT MAX(t.b) FROM t WHERE t.pk1 = u.upk1 AND t.pk2 = u.upk2) AS m FROM u ORDER BY u.uid", true},
+		{"SELECT u.uid FROM u WHERE u.uv = (SELECT MAX(t.b) FROM t WHERE t.pk1 = u.upk1) ORDER BY u.uid", true},
+		{"SELECT u.uid FROM u WHERE u.uv > (SELECT COUNT(*) FROM t WHERE t.pk2 = u.upk2 AND t.a = 1) ORDER BY u.uid", true},
+		{"SELECT x.uid, t.pk1 FROM (SELECT uid, upk1 FROM u WHERE uv = 1 ORDER BY uid LIMIT 5) AS x JOIN t ON x.upk1 = t.pk1 ORDER BY x.uid, t.pk1, t.pk2", true},
+		{"SELECT x.upk1, x.n FROM (SELECT upk1, COUNT(*) AS n FROM u GROUP BY upk1) AS x JOIN t ON x.upk1 = t.pk1 WHERE t.pk2 = 0 ORDER BY x.upk1", true},
+		{"SELECT u.uid, t.pk1, t.pk2 FROM u JOIN t ON u.upk1 = t.pk1 AND u.upk2 = t.pk2 ORDER BY u.uid, t.pk1, t.pk2 LIMIT 5 OFFSET 2", true},
+		{"SELECT u.uid, t.pk1, t.pk2 FROM u LEFT JOIN t ON u.upk1 = t.pk1 AND u.upk2 = t.pk2 ORDER BY u.uid DESC, t.pk1, t.pk2 LIMIT 7", true},
+		{"SELECT DISTINCT t.pk1 FROM u JOIN t ON u.upk1 = t.pk1 ORDER BY t.pk1", true},
+		{"SELECT DISTINCT u.upk1, u.upk2 FROM u JOIN t ON u.upk1 = t.pk1 AND u.upk2 = t.pk2 ORDER BY u.upk1, u.upk2", true},
+		{"SELECT u.uid, t.pk1, t.pk2, v.uid FROM u JOIN t ON u.upk1 = t.pk1 AND u.upk2 = t.pk2 JOIN u AS v ON v.upk1 = t.pk1 WHERE v.uid <> u.uid ORDER BY u.uid, t.pk1, t.pk2, v.uid", true},
+		{"SELECT u.uid, t.pk1, t.pk2, v.uid FROM u JOIN t ON u.upk1 = t.pk1 AND u.upk2 = t.pk2 LEFT JOIN u AS v ON v.upk2 = t.pk2 AND v.uv = t.b ORDER BY u.uid, t.pk1, t.pk2, v.uid", true},
+		{"SELECT u.uid, t.pk1, t.pk2 FROM u RIGHT JOIN t ON u.upk1 = t.pk1 AND u.upk2 = t.pk2 ORDER BY t.pk1, t.pk2, u.uid", true},
+		{"SELECT u.uid, t.pk1, t.pk2 FROM u JOIN t ON u.upk1 = t.pk1 AND u.upk2 = t.pk2 WHERE u.us = t.s ORDER BY u.uid, t.pk1, t.pk2", true},
+		{"SELECT u.uid, t.pk1, t.pk2 FROM u JOIN t ON u.upk1 = t.pk1 AND u.upk2 = t.pk2 WHERE u.us IS NULL AND t.s IS NULL ORDER BY u.uid, t.pk1, t.pk2", true},
+		{"SELECT u.uid, t.pk1, t.pk2 FROM u JOIN t ON u.upk1 = t.pk1 AND u.upk2 = t.pk2 AND u.us = t.s ORDER BY u.uid, t.pk1, t.pk2", true},
 		// Composite PK bounds.
 		{"SELECT * FROM t WHERE pk1 = 1 AND pk2 > 3 ORDER BY pk1, pk2", true},
 		{"SELECT * FROM t WHERE pk1 > 1 AND pk2 = 3 ORDER BY pk1, pk2", true},
@@ -559,24 +642,24 @@ func TestFDB_MetamorphicCompositePrimaryKey(t *testing.T) {
 	t.Logf("composite-pk read sweep: %d queries; compared=%d nonEmpty=%d bothErrored=%d pagedCompared=%d pagingDeclined=%d",
 		len(queries), compared, nonEmpty, bothErrored, pagedCompared, pagingDeclined)
 
-	// Non-vacuity floors, measured at 305 queries: compared=286 nonEmpty=263
-	// bothErrored=19 pagedCompared=284 pagingDeclined=2. Each floor sits far
+	// Non-vacuity floors, measured at 351 queries: compared=332 nonEmpty=304
+	// bothErrored=19 pagedCompared=329 pagingDeclined=3. Each floor sits far
 	// enough below its reading to absorb a query or two changing class, and
 	// far enough above zero that a net comparing nothing cannot pass.
-	if compared < 270 {
-		t.Errorf("only %d of %d queries were compared across the twins (measured 286 at 305 queries); the net is not measuring what it claims", compared, len(queries))
+	if compared < 310 {
+		t.Errorf("only %d of %d queries were compared across the twins (measured 332 at 351 queries); the net is not measuring what it claims", compared, len(queries))
 	}
-	if nonEmpty < 240 {
-		t.Errorf("only %d compared queries returned rows (measured 263 at 305 queries); an empty fixture agrees with itself on everything", nonEmpty)
+	if nonEmpty < 280 {
+		t.Errorf("only %d compared queries returned rows (measured 304 at 351 queries); an empty fixture agrees with itself on everything", nonEmpty)
 	}
 	if bothErrored > 30 {
-		t.Errorf("%d queries errored on both schemas (measured 19 at 305 queries); a parse/plan regression is being logged as agreement", bothErrored)
+		t.Errorf("%d queries errored on both schemas (measured 19 at 351 queries); a parse/plan regression is being logged as agreement", bothErrored)
 	}
-	if pagedCompared < 265 {
-		t.Errorf("only %d paged re-reads were compared (measured 284 at 305 queries); the continuation axis is not being exercised", pagedCompared)
+	if pagedCompared < 305 {
+		t.Errorf("only %d paged re-reads were compared (measured 329 at 351 queries); the continuation axis is not being exercised", pagedCompared)
 	}
-	if pagingDeclined > 10 {
-		t.Errorf("%d paged re-reads declined with 54F01 (measured 2 at 305 queries); the scan limit is silencing the continuation axis", pagingDeclined)
+	if pagingDeclined > 12 {
+		t.Errorf("%d paged re-reads declined with 54F01 (measured 3 at 351 queries); the scan limit is silencing the continuation axis", pagingDeclined)
 	}
 }
 

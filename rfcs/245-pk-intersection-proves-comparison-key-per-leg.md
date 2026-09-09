@@ -121,16 +121,18 @@ change is in which logical alternatives the data-access rule yields.
 * Net: `TestFDB_MetamorphicCompositePrimaryKey` — a new axis of the existing
   indexed/unindexed twin (`mmTwin`, `metamorphic_twin_test.go`; every other
   axis keys its table on a single `id`, which is exactly the shape under which
-  this class cannot arise): 305 queries over a composite primary key, a
-  three-column mixed-type index and indexes repeating primary-key components,
-  each run against both schemas and again through a paged connection. This is
-  what found the defect (2 of the first 240 queries diverged at `d6b5a0d84`;
-  the 18 `… AND pk2 = …` probes were added on the finding, and 47 group-order,
-  LIMIT/OFFSET-over-merge, DISTINCT-over-merge and IN-union-on-a-non-identifying
-  ordering probes after the review, all agreeing). It carries non-vacuity
-  floors stated with their population: at 305 queries, compared=286
-  nonEmpty=263 bothErrored=19 pagedCompared=284 pagingDeclined=2
-  (floors 270 / 240 / ≤30 / 265 / ≤10). Its DML companion
+  this class cannot arise): 351 queries over a composite primary key, a
+  three-column mixed-type index, indexes repeating primary-key components,
+  and a second relation joined on that key and its halves, each run against
+  both schemas and again through a paged connection. This is what found the
+  defect (2 of the first 240 queries diverged at `d6b5a0d84`; the 18
+  `… AND pk2 = …` probes were added on the finding, and 93 group-order,
+  LIMIT/OFFSET-over-merge, DISTINCT-over-merge, IN-union-on-a-non-identifying
+  ordering, composite-key join, EXISTS/NOT EXISTS and scalar-subquery probes
+  after the review, all agreeing). It carries non-vacuity floors stated with
+  their population: at 351 queries, compared=332 nonEmpty=304 bothErrored=19
+  pagedCompared=329 pagingDeclined=3 (floors 310 / 280 / ≤30 / 305 / ≤12).
+  Its DML companion
   `TestFDB_MetamorphicCompositePrimaryKeyDML` applies 19 UPDATE/DELETE/INSERT
   statements to both schemas and compares the table and 19 index-backed reads
   after each; every read compares (380 of 380) and all agree. Run at
