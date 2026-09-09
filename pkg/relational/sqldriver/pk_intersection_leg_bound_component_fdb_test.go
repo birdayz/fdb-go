@@ -39,7 +39,10 @@ func TestFDB_PkIntersectionLegBoundComponent(t *testing.T) {
 		"CREATE INDEX ti_pk2 ON ti (pk2) " +
 		"CREATE TABLE tj (pk1 BIGINT, pk2 BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (pk1, pk2)) " +
 		"CREATE INDEX tj_a_pk2 ON tj (a, pk2) " +
-		"CREATE INDEX tj_b_pk2 ON tj (b, pk2)"
+		"CREATE INDEX tj_b_pk2 ON tj (b, pk2) " +
+		// D drives the OR-union arm: the correlated inner of a LEFT JOIN is the
+		// shape that reaches the union of index probes today.
+		"CREATE TABLE d (did BIGINT, x BIGINT, y BIGINT, PRIMARY KEY (did))"
 	setup := openTestDB(t, "/testdb_pkilbc")
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_pkilbc")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE pkilbc "+ddl)
@@ -59,6 +62,9 @@ func TestFDB_PkIntersectionLegBoundComponent(t *testing.T) {
 		"(2, 0, 0, 1), (2, 3, 0, 7), (3, 3, 1, 1), (4, 1, 0, 1), (5, 3, 1, 1), (6, 3, 1, 0)"
 	mwjoMustExec(t, db, ctx, "INSERT INTO ti (pk1, pk2, a, b) VALUES "+rows)
 	mwjoMustExec(t, db, ctx, "INSERT INTO tj (pk1, pk2, a, b) VALUES "+rows)
+	// did=1 probes the two legs of the defect (b = 1, pk2 = 3); did=2 probes a
+	// disjoint pair (b = 7, pk2 = 4); did=3 matches nothing.
+	mwjoMustExec(t, db, ctx, "INSERT INTO d (did, x, y) VALUES (1, 1, 3), (2, 7, 4), (3, 9, 9)")
 
 	explain := mwjoExplainer(t, db, ctx)
 	rowsOf := func(q string) []string {
@@ -90,6 +96,16 @@ func TestFDB_PkIntersectionLegBoundComponent(t *testing.T) {
 		// Accept arm: both legs fix pk2, so (pk1) identifies a record in each.
 		{"tj", "SELECT pk1, pk2, a, b FROM tj WHERE a = 1 AND b = 1 AND pk2 = 3 ORDER BY pk1", []string{"3|3|1|1", "5|3|1|1"}},
 		{"tj", "SELECT COUNT(*) FROM tj WHERE a = 1 AND b = 1 AND pk2 = 3", []string{"2"}},
+		// Union arm: the SAME two legs, (b, pk1) and (pk2), under OR. The union
+		// dedups by the full primary key, so a component fixed in one leg only
+		// cannot collapse two records; (3, 3) and (5, 3) satisfy both disjuncts
+		// and must appear once each. Measured, because the union path's
+		// soundness was otherwise established by reading alone.
+		{
+			"d", "SELECT d.did, t.pk1, t.pk2 FROM d LEFT JOIN ti AS t ON t.b = d.x OR t.pk2 = d.y ORDER BY d.did, t.pk1, t.pk2",
+			[]string{"1|0|2", "1|0|3", "1|1|3", "1|1|4", "1|2|0", "1|2|3", "1|3|3", "1|4|1", "1|5|3", "1|6|3", "2|1|4", "2|2|3", "3|NULL|NULL"},
+		},
+		{"d", "SELECT COUNT(*) FROM d LEFT JOIN ti AS t ON t.b = d.x OR t.pk2 = d.y", []string{"13"}},
 	}
 	for _, c := range cases {
 		got := rowsOf(c.sql)
@@ -105,11 +121,21 @@ func TestFDB_PkIntersectionLegBoundComponent(t *testing.T) {
 	// the (pk1)-only merge fails. Over TJ both legs fix pk2, so the sound
 	// merge compares on (pk1) alone and MUST be built: that is the arm that
 	// catches a proof declining every intersection whose legs share an equality.
-	var tiIntersections, tjIntersections int
+	var tiIntersections, tjIntersections, unions int
 	for _, c := range cases {
 		plan, err := embedded.PlanPhysicalForTest(c.sql, ddl, nil)
 		if err != nil {
 			t.Fatalf("plan %s: %v", c.sql, err)
+		}
+		if c.table == "d" {
+			// The union arm proves nothing unless the plan actually unions the
+			// two index probes; a nested-loop fallback answers the same rows.
+			if n := unorderedUnionsIn(plan); n == 0 {
+				t.Errorf("the OR arm no longer reaches an UnorderedUnion of the two index probes\n  sql:  %s\n  plan: %s", c.sql, plan.Explain())
+			} else {
+				unions += n
+			}
+			continue
 		}
 		for _, ip := range intersectionsIn(plan) {
 			n := len(ip.GetComparisonKeyValues())
@@ -137,6 +163,25 @@ func TestFDB_PkIntersectionLegBoundComponent(t *testing.T) {
 	if tjIntersections == 0 {
 		t.Error("no intersection was built over TJ — the per-leg proof is declining the SOUND merge whose legs all fix pk2")
 	}
+	if unions == 0 {
+		t.Error("no UnorderedUnion was built for the OR arms — the union path over the same two legs is unmeasured")
+	}
+}
+
+// unorderedUnionsIn counts the UnorderedUnion plans in the typed plan tree.
+func unorderedUnionsIn(plan plans.RecordQueryPlan) int {
+	n := 0
+	var walk func(p plans.RecordQueryPlan)
+	walk = func(p plans.RecordQueryPlan) {
+		if _, ok := p.(*plans.RecordQueryUnorderedUnionPlan); ok {
+			n++
+		}
+		for _, c := range p.GetChildren() {
+			walk(c)
+		}
+	}
+	walk(plan)
+	return n
 }
 
 // intersectionsIn walks the typed plan tree and returns every primary-key

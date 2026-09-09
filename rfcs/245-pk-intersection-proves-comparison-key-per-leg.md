@@ -102,7 +102,15 @@ change is in which logical alternatives the data-access rule yields.
   projection, `COUNT(*)`, an added range residual, the three-way shape, the
   `(a)`/`(pk2)` pair, IN-list variants, and a control pair that fixes no
   primary-key component), plus the property that every intersection the
-  planner builds for them compares on both primary-key components.
+  planner builds for them compares on both primary-key components; table TJ
+  (indexes `(a, pk2)` and `(b, pk2)`) pins the accept direction end to end —
+  its merge on `(pk1)` must be built and answer correctly; and an OR arm over
+  the SAME two legs (`LEFT JOIN … ON t.b = d.x OR t.pk2 = d.y`, the shape that
+  reaches `UnorderedUnion(IndexScan(TI_B_PK1), IndexScan(TI_PK2))` today) pins
+  the union path by measurement: it dedups by the full primary key, so a
+  component fixed in one leg only cannot collapse two records, and the plan
+  is asserted to contain the union so a nested-loop fallback cannot satisfy
+  the rows.
 * Cross-engine: `conformance/pk_intersection_leg_bound_key_java_probe_test.go`
   asserts Go's correct rows absolutely, asserts Java's WRONG rows on three arms
   (so a fixed upstream fails the probe and forces reclassification), and asserts
@@ -202,6 +210,8 @@ all folded:
   one — booked as an unchecked TODO.md section 3 item ("Widen the
   pk-intersection comparison key …") referencing this RFC, rather than left in
   prose here.
+* @claude (PR #773): the union path's soundness rested on reading; now
+  measured by the OR arm above over the same two legs.
 * Torvalds: the FDB pin's header said "six rows" for a fixture that yields four
   (fixed); the plan-property loop asserted nothing when no intersection was
   built (now floored: TI must build one for the control, TJ must build the
