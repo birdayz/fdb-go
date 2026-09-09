@@ -63,6 +63,13 @@ func TestFDB_AggregateIndexEqualityPrefixOrdering(t *testing.T) {
 		"SELECT b, a, COUNT(*) FROM t WHERE b = 1 GROUP BY b, a ORDER BY a LIMIT 3",
 		"SELECT b, a, COUNT(*) FROM t WHERE b = 1 GROUP BY b, a ORDER BY a LIMIT 2 OFFSET 1",
 		"SELECT b, a, COUNT(*) FROM t WHERE b = 1 GROUP BY b, a HAVING COUNT(*) > 1 ORDER BY a",
+		// Every grouping column bound: `b = 1 AND a = 3` arrives as one
+		// AndPredicate whose conjuncts the aggregate data-access rule flattens
+		// into two scan bounds (one group, a point read; DML stage 3 empties it
+		// and stage 4 revives it). Any requested direction is served — every
+		// column is FIXED — so the DESC request must not sort either.
+		"SELECT b, a, COUNT(*) FROM t WHERE b = 1 AND a = 3 GROUP BY b, a ORDER BY a DESC",
+		"SELECT d, a, COUNT(*) FROM t WHERE d = 0.5 AND a = 2 GROUP BY d, a ORDER BY a DESC",
 	}
 	// The whole point: every read must be answered BY the aggregate index and
 	// WITHOUT a sort. A read that fell back to a scan-and-sort, or sorted the

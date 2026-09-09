@@ -515,7 +515,12 @@ func aggInnerFilterFullyConsumable(ref *expressions.Reference, cand *AggregateIn
 		if !ok {
 			continue
 		}
-		preds := f.GetPredicates()
+		// `a = 'x' AND b = 'y'` arrives as ONE AndPredicate; Java's
+		// SelectExpression holds its conjuncts as a flat list, so the guard reads
+		// the same flattened list buildAggScanPrefix binds from — a conjunction
+		// read whole here and never decomposed there is how every multi-equality
+		// on the grouping prefix used to fall back to a full scan.
+		preds := flattenConjuncts(f.GetPredicates())
 		// Record which grouping column each predicate equality-binds. Anything
 		// that is not an equality on a grouping column (a non-comparison
 		// predicate, a non-equality, a non-group column) makes the index unable
@@ -609,7 +614,9 @@ func valueReadsField(v values.Value) bool {
 }
 
 // extractInnerFilterPredicates returns ComparisonPredicates from the
-// inner Reference's Filter expressions. Used by AggregateDataAccessRule
+// inner Reference's Filter expressions, conjunctions flattened (the same list
+// aggInnerFilterFullyConsumable guards, so the two cannot disagree on what a
+// filter holds). Used by AggregateDataAccessRule
 // to push WHERE predicates on group keys into the aggregate index scan
 // range. Returns nil if no filter predicates are found.
 func extractInnerFilterPredicates(ref *expressions.Reference) []*predicates.ComparisonPredicate {
@@ -619,7 +626,7 @@ func extractInnerFilterPredicates(ref *expressions.Reference) []*predicates.Comp
 		if !ok {
 			continue
 		}
-		for _, p := range f.GetPredicates() {
+		for _, p := range flattenConjuncts(f.GetPredicates()) {
 			if cp, ok := p.(*predicates.ComparisonPredicate); ok {
 				result = append(result, cp)
 			}
