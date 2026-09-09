@@ -140,3 +140,109 @@ func TestMatchedOrderingParts_NonZeroFloatEqualityKeepsThePKSuffix(t *testing.T)
 		t.Fatalf("ID suffix ordinal path = %v, want [0]", got)
 	}
 }
+
+// signedZeroTwoColumnCandidate builds INDEX(V DOUBLE, B LONG) over PK (ID), for
+// the coordinate AFTER a widened one.
+func signedZeroTwoColumnCandidate(t *testing.T) (*ValueIndexScanMatchCandidate, []values.CorrelationIdentifier) {
+	t.Helper()
+	row := values.NewRecordType("", false, []values.Field{
+		{Name: "ID", FieldType: values.NullableLong, Ordinal: 0},
+		{Name: "V", FieldType: values.NullableDouble, Ordinal: 1},
+		{Name: "B", FieldType: values.NullableLong, Ordinal: 2},
+	})
+	aliases := []values.CorrelationIdentifier{values.UniqueCorrelationIdentifier(), values.UniqueCorrelationIdentifier()}
+	cand := newKnownDistinctValueIndexCandidate(
+		"IDX_V_B", []string{"T"},
+		[]string{"V", "B"},
+		aliases,
+		row, false,
+		[]string{"ID"}).
+		WithKeyComponentTypes([]values.Type{values.NullableDouble, values.NullableLong}).
+		WithPrimaryKeyComponentTypes([]values.Type{values.NullableLong})
+	cand.WithRecordTypeRowTypes([]values.Type{row})
+	return cand, aliases
+}
+
+func signedZeroTwoColumnParts(t *testing.T, bindings ...*predicates.ComparisonRange) []*MatchedOrderingPart {
+	t.Helper()
+	cand, aliases := signedZeroTwoColumnCandidate(t)
+	bound := map[values.CorrelationIdentifier]*predicates.ComparisonRange{}
+	for i, cr := range bindings {
+		if cr != nil {
+			bound[aliases[i]] = cr
+		}
+	}
+	mi := NewRegularMatchInfo(bound, nil, nil, nil, nil, nil, nil, nil)
+	return cand.ComputeMatchedOrderingParts(mi, aliases, false)
+}
+
+func partNames(parts []*MatchedOrderingPart) []string {
+	got := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if fv, ok := values.AsFieldValue(p.GetValue()); ok {
+			got = append(got, fv.DisplayName())
+		} else {
+			got = append(got, fmt.Sprintf("%v", p.GetValue()))
+		}
+	}
+	return got
+}
+
+// TestMatchedOrderingParts_PinnedCoordinateAfterWidenedOneIsEmitted: FIXED is a
+// per-coordinate fact. Under `v = 0.0 AND b = 1` the widened V is emitted (its
+// own order) and B — one physical key within every block of V, every admitted
+// row carrying b = 1 — is emitted too, as an equality part the consumer reads
+// as FIXED; the PK suffix stays refused because V carries no order through
+// itself. This is the candidate-side twin of the plan-side rich form, which
+// binds B FIXED for the same scan; breaking at V emitted nothing for B and
+// let the two derivations disagree on the same coordinate.
+func TestMatchedOrderingParts_PinnedCoordinateAfterWidenedOneIsEmitted(t *testing.T) {
+	t.Parallel()
+
+	parts := signedZeroTwoColumnParts(t,
+		signedZeroEqualityRange(t, float64(0)), signedZeroEqualityRange(t, int64(1)))
+	if got := partNames(parts); len(got) != 2 || got[0] != "V" || got[1] != "B" {
+		t.Fatalf("matched ordering parts = %v, want [V B]: B = 1 pins one key within each of V's "+
+			"two blocks, so it is FIXED everywhere in the stream; the ID suffix restarts at the "+
+			"block boundary and must not follow", got)
+	}
+	if !parts[1].GetComparisonRange().IsEquality() {
+		t.Fatal("B must carry its equality range so the consumer classifies it FIXED")
+	}
+}
+
+// TestMatchedOrderingParts_UnboundOrWidenedCoordinateAfterWidenedOneIsNotEmitted:
+// only a PINNED coordinate may follow a widened one. An unbound B restarts at
+// each of V's block boundaries, and a second widened equality (both zero
+// doubles, over INDEX(V, V2)) restarts likewise — neither is ordered across
+// the stream, so the claim ends at V.
+func TestMatchedOrderingParts_UnboundOrWidenedCoordinateAfterWidenedOneIsNotEmitted(t *testing.T) {
+	t.Parallel()
+
+	unbound := signedZeroTwoColumnParts(t, signedZeroEqualityRange(t, float64(0)), nil)
+	if got := partNames(unbound); len(got) != 1 || got[0] != "V" {
+		t.Fatalf("matched ordering parts (v = 0.0, b unbound) = %v, want [V]: an unbound B is "+
+			"ordered only within each of V's blocks", got)
+	}
+
+	row := values.NewRecordType("", false, []values.Field{
+		{Name: "ID", FieldType: values.NullableLong, Ordinal: 0},
+		{Name: "V", FieldType: values.NullableDouble, Ordinal: 1},
+		{Name: "V2", FieldType: values.NullableDouble, Ordinal: 2},
+	})
+	aliases := []values.CorrelationIdentifier{values.UniqueCorrelationIdentifier(), values.UniqueCorrelationIdentifier()}
+	cand := newKnownDistinctValueIndexCandidate(
+		"IDX_V_V2", []string{"T"}, []string{"V", "V2"}, aliases, row, false, []string{"ID"}).
+		WithKeyComponentTypes([]values.Type{values.NullableDouble, values.NullableDouble}).
+		WithPrimaryKeyComponentTypes([]values.Type{values.NullableLong})
+	cand.WithRecordTypeRowTypes([]values.Type{row})
+	mi := NewRegularMatchInfo(map[values.CorrelationIdentifier]*predicates.ComparisonRange{
+		aliases[0]: signedZeroEqualityRange(t, float64(0)),
+		aliases[1]: signedZeroEqualityRange(t, float64(0)),
+	}, nil, nil, nil, nil, nil, nil, nil)
+	widened := cand.ComputeMatchedOrderingParts(mi, aliases, false)
+	if got := partNames(widened); len(got) != 1 || got[0] != "V" {
+		t.Fatalf("matched ordering parts (v = 0.0, v2 = 0.0) = %v, want [V]: a second widened "+
+			"coordinate spans two blocks within each of V's and is not ordered across them", got)
+	}
+}

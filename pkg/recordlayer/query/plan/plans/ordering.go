@@ -282,11 +282,14 @@ func (p *RecordQueryScanPlan) HintOrdering() properties.Ordering {
 }
 
 // equalityPrefixLen returns the length of the leading equality-bound prefix
-// in comps, capped at n key positions. It is the SINGLE SOURCE OF TRUTH both
-// ordering derivations below consult — HintOrdering drops this prefix from
-// the ordering keys, HintRichOrdering retains it as FixedBinding entries —
-// so the two cannot classify a column differently by one caller's loop
-// breaking where the other's does not.
+// in comps, capped at n key positions, read from the operand alone. It is what
+// the PRIMARY-KEY scan's two ordering derivations consult (PKScanOrdering
+// drops this prefix from the ordering keys, RecordQueryScanPlan.
+// HintRichOrdering retains it as FixedBinding entries), so the two cannot
+// classify a column differently by one caller's loop breaking where the
+// other's does not. The index and aggregate scans, whose coordinates carry
+// physical key types, ask the column-aware per-coordinate form instead
+// (splitKeyOrder's pins).
 //
 // Mirrors Java's ValueIndexLikeMatchCandidate.computeOrderingFromScanComparisons,
 // whose equality prefix is scanComparisons.getEqualitySize(): a leading run
@@ -313,29 +316,9 @@ func (p *RecordQueryScanPlan) HintOrdering() properties.Ordering {
 // equality past a gap), but the helper defines it anyway rather than leaving
 // it to whichever caller's loop happens to run first.
 func equalityPrefixLen(comps []*predicates.ComparisonRange, n int) int {
-	return equalityPrefixLenOnColumns(comps, n, nil)
-}
-
-// equalityPrefixLenOnColumns is equalityPrefixLen for a caller that can resolve
-// each coordinate's type. columnCouldBeFloat reports, per key position, whether
-// that coordinate can hold a signed zero; a nil func means "unknown", which
-// falls back to the operand-only reading.
-//
-// Threading the column type is what lets a FLOAT coordinate bound by an
-// UNKNOWN-typed operand (an IN-list binding) stop the prefix while an INT
-// coordinate bound by the same untyped operand keeps it. Deciding that from the
-// operand alone cannot separate the two — see
-// EqualityPinsSinglePhysicalKeyOnColumn.
-func equalityPrefixLenOnColumns(comps []*predicates.ComparisonRange, n int, columnCouldBeFloat func(int) bool) int {
 	prefix := 0
 	for i := 0; i < n && i < len(comps); i++ {
-		var pins bool
-		if columnCouldBeFloat == nil {
-			pins = EqualityPinsSinglePhysicalKey(comps[i])
-		} else {
-			pins = EqualityPinsSinglePhysicalKeyOnColumn(comps[i], columnCouldBeFloat(i))
-		}
-		if !pins {
+		if !EqualityPinsSinglePhysicalKey(comps[i]) {
 			break
 		}
 		prefix = i + 1
@@ -370,9 +353,12 @@ func ownOrderPrefixLen(comps []*predicates.ComparisonRange, n int) int {
 	return prefix
 }
 
-// indexColumnCouldBeFloat resolves each index key column against the scan's
+// IndexColumnCouldBeFloat resolves each index key column against the scan's
 // flowed record layout and reports whether it can hold a signed zero. It is the
-// per-position input equalityPrefixLenOnColumns needs, and it delegates to
+// per-position input splitKeyOrder's pins need, and the cascades-side match
+// candidate asks the SAME function for its matched ordering parts
+// (ValueIndexScanMatchCandidate.ComputeMatchedOrderingParts), so the two
+// derivations cannot classify a coordinate differently. It delegates to
 // values.ColumnCouldBeFloat so the float classification stays in the one file
 // that owns it.
 //
@@ -385,7 +371,7 @@ func ownOrderPrefixLen(comps []*predicates.ComparisonRange, n int) int {
 // makes this whole fix INERT on such a plan. ColumnCouldBeFloat fails closed
 // instead; see its comment for why a burden-of-proof direction cannot be
 // inverted.
-func indexColumnCouldBeFloat(
+func IndexColumnCouldBeFloat(
 	keyTypes []values.Type, layout values.Type, columnNames []string,
 ) func(int) bool {
 	return func(i int) bool {
@@ -813,7 +799,7 @@ func splitKeyOrder(
 	keyTypes []values.Type, layout values.Type,
 ) keyOrderSplit {
 	split := keyOrderSplit{fixedLen: ownOrderPrefixLen(comps, len(keyColumns))}
-	couldBeFloat := indexColumnCouldBeFloat(keyTypes, layout, keyColumns)
+	couldBeFloat := IndexColumnCouldBeFloat(keyTypes, layout, keyColumns)
 	split.pins = make([]bool, split.fixedLen)
 	for i := range split.pins {
 		split.pins[i] = EqualityPinsSinglePhysicalKeyOnColumn(comps[i], couldBeFloat(i))

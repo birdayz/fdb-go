@@ -58,8 +58,17 @@ and reports:
   is free over a forward scan. The second cut read pins as the length of the
   leading pinned run and demoted that `b` to SORTED — a regression against
   the merge-base's operand-only classification, which was per-coordinate —
-  pinned at all three levels (property, plan shape, and
-  the aggregate twin);
+  pinned at all three levels (property, plan shape, and the aggregate twin).
+  The cascades-side twin of this question,
+  `ValueIndexScanMatchCandidate.ComputeMatchedOrderingParts`, had the same
+  shape: it broke at the first coordinate that carries no order through
+  itself and so emitted NO part for a pinned `b` after a widened `d`, while
+  the plan side now says FIXED. It continues past such a coordinate for
+  coordinates that PIN (asked through the same `IndexColumnCouldBeFloat` /
+  `EqualityPinsSinglePhysicalKeyOnColumn` pair, fed the candidate's physical
+  key types), stops at the first that does not, and still refuses the PK
+  suffix — so the two derivations classify every coordinate alike, which is
+  what its comment claimed and had stopped being true;
 * `tail` — the sorted coordinates after the prefix, truncated at the first
   FLOAT/DOUBLE (the NaN-tie hazard), and `untruncated` for the storage-key
   completeness stamp the index's rich form makes.
@@ -160,6 +169,14 @@ precondition at the site.
   prefix length (mutated in `splitKeyOrder`) exactly the two
   after-a-widened-coordinate arms and the embedded pin below fail, and the
   untyped-operand and distinctness arms stay green.
+* Unit, candidate side (`cascades/signed_zero_pk_suffix_ordering_test.go`):
+  over INDEX(V DOUBLE, B LONG), `v = 0.0 AND b = 1` emits `[V, B]` with B's
+  equality range and no PK suffix; `v = 0.0` with B unbound emits `[V]`; two
+  widened equalities over INDEX(V, V2) emit `[V]`. With the loop restored to
+  break at the first non-carrying coordinate (mutated in place), exactly the
+  `[V, B]` arm fails and the other four `TestMatchedOrderingParts_*` arms
+  pass. `equalityPrefixLenOnColumns`, whose column-aware arm had no caller
+  left, is folded into the operand-only `equalityPrefixLen` the PK scan uses.
 * Plan shape (`embedded/aggregate_index_equality_prefix_ordering_test.go`):
   seven fixed-prefix shapes (COUNT, MAX, a primary-key grouping column, full
   `ORDER BY b, a`, `ORDER BY b DESC, a`, `LIMIT`, a pinned DOUBLE prefix) plan
@@ -171,8 +188,10 @@ precondition at the site.
   `INDEX(d, b)` and `GROUP BY d, b`, `WHERE d = 0.0 AND b = 1` with
   `ORDER BY b DESC` / `ORDER BY b` / `ORDER BY d` / `ORDER BY d DESC` (the
   last by a reverse scan) plans with no in-memory sort for both plan types,
-  and the control `ORDER BY id` keeps its sort; every arm asserts an index
-  scan is reached. Under pins-as-prefix-length exactly the four arms that
+  and the control `ORDER BY id` keeps its sort; the value-index arms assert a
+  value-index scan is reached and the aggregate arms assert the aggregate
+  index plan itself (an aggregate plan wraps its own index scan, so counting
+  both would let an aggregate arm pass on a streaming aggregation). Under pins-as-prefix-length exactly the four arms that
   request `b` fail (index and aggregate, ASC and DESC) and the three others
   pass; with the conjunct flattening removed the two aggregate arms no longer
   reach the index. `bug_hunt_cascades_test.go`'s `and_wrapped_multi_equality`
@@ -271,4 +290,15 @@ coordinates demoted a pinned coordinate after a widened one to SORTED, a
 regression against the merge-base — corrected to per-coordinate `pins` and
 pinned at property, plan-shape and rows level, with the aggregate rule's
 conjunct flattening found and fixed on the way to that pin's SQL face.
-@claude on the PR.
+
+The second delta re-confirmation (per-coordinate pins + conjunct flattening):
+codex ACK. Graefe ACK with one condition, folded — the cascades-side
+`ComputeMatchedOrderingParts` broke at the first non-carrying coordinate and
+emitted nothing for a still-pinned equality after it, contradicting its own
+"the two derivations cannot classify a column differently" comment; it now
+continues for pinned coordinates and the comment states what is shared.
+Torvalds ACK with four conditions, folded — the dead column-aware arm of
+`equalityPrefixLenOnColumns` deleted, the aggregate arms of the embedded pin
+assert the aggregate plan rather than any index scan, and the EXPLAIN corpus,
+Bazel-by-name run, mutation-present greps and stress comparison re-run at the
+final head and recorded above with their SHAs. @claude on the PR.
