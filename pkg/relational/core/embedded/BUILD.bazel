@@ -140,6 +140,7 @@ go_test(
         "driver_value_struct_test.go",
         "duplicate_from_alias_binding_test.go",
         "embedded_test.go",
+        "equality_prefix_pins_per_coordinate_test.go",
         "exists_in_on_plan_test.go",
         "explain_no_silent_degrade_test.go",
         "float_order_by_sort_retention_test.go",
@@ -427,6 +428,7 @@ go_test(
         "aggregate_call_provenance_test.go",
         "aggregate_distinct_latent_bind_test.go",
         "aggregate_index_equality_prefix_ordering_test.go",
+        "equality_prefix_pins_per_coordinate_test.go",
     ],
     deps = [
         "//gen",

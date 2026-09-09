@@ -51,13 +51,19 @@ import (
 // drops DefaultOnEmpty wrappers and residual filters silently. Until those
 // rules memoize, these bodies stay unreachable.
 //
-// The HintRichOrdering bodies are NOT all write-only. Of the five,
-// RecordQueryAggregateIndexPlan's is LIVE: that plan sits in the memo as its
-// own expression (physical_wrapper.go, IsPhysicalAggregateIndex), so
-// computeWrapperRichOrdering dispatches to it directly, and the index scan's
-// is reached through the data-access rule's plan-backed leaf
-// (scanPlanExpression.HintRichOrdering delegates to it). The others are
-// staging like the delegators above.
+// The HintRichOrdering bodies are NOT write-only, and which of them is reached
+// is decided by memo residency, not by a list kept here: computeWrapperRichOrdering
+// (cascades/plan_properties.go) dispatches to the rich form of ANY memo
+// expression that implements it, and every plan with a rich form in this
+// package — the five below and RecordQueryCoveringIndexPlan's, which
+// delegates to the index scan's — also implements physicalPlanExpression
+// (GetRecordQueryPlan). The PK scan, the index scan and the vector scan are
+// memoized bare by the data-access rule (cascades/abstract_data_access_rule.go,
+// RFC-184 W2); the aggregate plan is memoized directly (physical_wrapper.go,
+// IsPhysicalAggregateIndex); the covering scan and the fetch are memo
+// expressions of their own; and a plan the scanPlanExpression leaf wraps (a
+// TypeFilter over a scan) is reached through that leaf's delegation
+// (orderingSourceOfDataAccessPlan). Treat every rich body below as LIVE.
 //
 // They are kept rather than deleted because re-deriving them at deletion time
 // is where a transcription slip would land, and the parity tests in
@@ -768,31 +774,37 @@ func PKScanOrdering(plan *RecordQueryScanPlan) properties.Ordering {
 // the aggregate index's grouping key, because a second hand-rolled copy of it
 // is how the plain and rich forms once disagreed on the same plan.
 //
-//   - pinned: the number of leading coordinates PINNED to one physical key —
-//     equalityPrefixLenOnColumns, asked with the coordinate's type so a FLOAT
-//     bound by an untyped operand (an IN binding that may be zero at runtime)
-//     does not count. Only these may be bound FIXED: a fixed binding claims
-//     "no order, any requested direction is satisfied", which is true of
-//     exactly one physical key.
-//   - fixedLen: the leading prefix bound by ANY equality (ownOrderPrefixLen),
-//     >= pinned. A coordinate in [pinned, fixedLen) — a signed-zero constant,
-//     or a possibly-zero operand on a float column — keeps its OWN order in
-//     the scan's direction (the range set opens its blocks in key order), but
-//     nothing after it is globally ordered.
+//   - fixedLen: the leading prefix bound by ANY equality (ownOrderPrefixLen).
+//   - pins[i], for i < fixedLen: whether coordinate i is PINNED to one
+//     physical key — EqualityPinsSinglePhysicalKeyOnColumn, asked with the
+//     coordinate's type so a FLOAT bound by an untyped operand (an IN binding
+//     that may be zero at runtime) does not pin. Only a pinned coordinate may
+//     be bound FIXED: a fixed binding claims "no order, any requested
+//     direction is satisfied", which is true of exactly one physical key. A
+//     prefix coordinate that does NOT pin — a signed-zero constant, or a
+//     possibly-zero operand on a float column — keeps its OWN order in the
+//     scan's direction (the range set opens its blocks in key order), but
+//     nothing after it is globally ordered. This is a PER-COORDINATE fact,
+//     not a prefix length: under `d = 0.0 AND b = 1` the widened D does not
+//     pin, and B still does — every admitted row carries b = 1, one physical
+//     key within each of D's blocks — so B binds FIXED and `ORDER BY b DESC`
+//     is free over a forward scan. Reading pins as the length of the leading
+//     pinned run demoted B to SORTED and cost that plan.
 //   - tail: the sorted coordinates after the prefix — the remaining key
 //     columns then suffix — truncated at the first FLOAT/DOUBLE (NaN packs
 //     into two disjoint blocks, and the tie class it forms leaves every later
 //     coordinate unordered within it). Empty when tailDropped.
-//   - tailDropped: fixedLen != pinned. The tail is dropped WHOLESALE rather
-//     than truncated by type: a later coordinate restarts at each block
-//     boundary of the widened prefix coordinate.
+//   - tailDropped: some prefix coordinate does not pin. The tail is dropped
+//     WHOLESALE rather than truncated by type: a later coordinate restarts at
+//     each block boundary of the widened prefix coordinate.
 //   - untruncated: the tail's length before the float truncation, for callers
 //     that must know whether the claim covers the whole storage key.
 type keyOrderSplit struct {
-	pinned, fixedLen int
-	tail             []string
-	tailDropped      bool
-	untruncated      int
+	fixedLen    int
+	pins        []bool
+	tail        []string
+	tailDropped bool
+	untruncated int
 }
 
 func splitKeyOrder(
@@ -800,13 +812,16 @@ func splitKeyOrder(
 	keyColumns, suffix []string,
 	keyTypes []values.Type, layout values.Type,
 ) keyOrderSplit {
-	split := keyOrderSplit{
-		pinned: equalityPrefixLenOnColumns(comps, len(keyColumns),
-			indexColumnCouldBeFloat(keyTypes, layout, keyColumns)),
-		fixedLen: ownOrderPrefixLen(comps, len(keyColumns)),
+	split := keyOrderSplit{fixedLen: ownOrderPrefixLen(comps, len(keyColumns))}
+	couldBeFloat := indexColumnCouldBeFloat(keyTypes, layout, keyColumns)
+	split.pins = make([]bool, split.fixedLen)
+	for i := range split.pins {
+		split.pins[i] = EqualityPinsSinglePhysicalKeyOnColumn(comps[i], couldBeFloat(i))
+		if !split.pins[i] {
+			split.tailDropped = true
+		}
 	}
-	if split.fixedLen != split.pinned {
-		split.tailDropped = true
+	if split.tailDropped {
 		return split
 	}
 	tail := make([]string, 0, len(keyColumns)-split.fixedLen+len(suffix))
@@ -1414,12 +1429,12 @@ func (p *RecordQueryAggregateIndexPlan) HintRichOrdering() *properties.RichOrder
 		}
 		keys = append(keys, key)
 		// FIXED only for a coordinate provably pinned to ONE physical key
-		// (split.pinned, the column-aware question). A signed-zero equality,
-		// or a possibly-zero untyped operand on a FLOAT grouping column, admits
-		// two distinct sort values ordered only in the scan's direction, so it
-		// binds SORTED — the same reasoning as RecordQueryIndexPlan.
-		// HintRichOrdering.
-		if i < split.pinned {
+		// (split.pins, the column-aware question, per coordinate). A
+		// signed-zero equality, or a possibly-zero untyped operand on a FLOAT
+		// grouping column, admits two distinct sort values ordered only in the
+		// scan's direction, so it binds SORTED — the same reasoning as
+		// RecordQueryIndexPlan.HintRichOrdering.
+		if split.pins[i] {
 			bm[key] = []properties.OrderingBinding{properties.FixedBinding(comps[i])}
 		} else {
 			bm[key] = []properties.OrderingBinding{properties.SortedBinding(dir)}
@@ -1635,11 +1650,12 @@ func (p *RecordQueryIndexPlan) HintRichOrdering() *properties.RichOrdering {
 		// FIXED means "states no order, so ANY requested direction is
 		// satisfied". That is only true of a coordinate pinned to ONE physical
 		// key, where every admitted row shares one SORT value — the
-		// column-aware question splitKeyOrder already asked (pinned), never
-		// the operand-only one: a FLOAT coordinate bound by an untyped
-		// non-constant operand (an IN binding) is not provably nonzero, widens
-		// at runtime across both signed-zero blocks, and binding it FIXED
-		// would let a request in the opposite direction elide its sort.
+		// column-aware question splitKeyOrder already asked, per coordinate
+		// (pins), never the operand-only one: a FLOAT coordinate bound by an
+		// untyped non-constant operand (an IN binding) is not provably
+		// nonzero, widens at runtime across both signed-zero blocks, and
+		// binding it FIXED would let a request in the opposite direction elide
+		// its sort.
 		//
 		// A signed-zero-widened equality is not such a coordinate either. The
 		// PREDICATE comparator makes -0.0 and +0.0 equal, which is why the
@@ -1650,7 +1666,7 @@ func (p *RecordQueryIndexPlan) HintRichOrdering() *properties.RichOrdering {
 		// FIXED. Calling it FIXED elides the sort on `WHERE z = 0.0 ORDER BY z
 		// DESC` and answers it from a FORWARD scan, returning the two zero
 		// blocks ascending.
-		if i < split.pinned {
+		if split.pins[i] {
 			bm[key] = []properties.OrderingBinding{properties.FixedBinding(comps[i])}
 		} else {
 			bm[key] = []properties.OrderingBinding{properties.SortedBinding(dir)}

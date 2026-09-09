@@ -5108,6 +5108,39 @@ comparisons instead of 2.
 
 ---
 
+### [ ] Aggregate data access: a grouping-key equality outside the bound prefix should be a residual over the aggregate scan, not a full-scan decline (RFC-246 follow-on; query-engine gate)
+
+`AggregateDataAccessRule` (rule_aggregate_data_access.go, `aggInnerFilterFullyConsumable`)
+declines the aggregate index whenever a filter predicate is not an equality on the CONTIGUOUS
+LEADING grouping prefix, and the query falls back to a full scan into a streaming aggregation:
+
+```
+CREATE INDEX sum_abc AS SELECT SUM(v) FROM T GROUP BY a, b, c
+SELECT a, b, c, SUM(v) FROM t WHERE b = 'x'            GROUP BY a, b, c   -- non_leading_key
+SELECT a, b, c, SUM(v) FROM t WHERE a = 'x' AND c = 'z' GROUP BY a, b, c   -- gap_in_prefix
+```
+
+Both are pinned as must-decline in `embedded/bug_hunt_cascades_test.go`
+(`TestBugHunt_AggregateIndexMultiKeyResidual`), and the decline is correct today because the
+rule has no residual: a dropped predicate would return aggregates over the wrong groups. RFC-246
+fixed the neighbouring gap (a conjunction of leading-prefix equalities was read whole and
+declined; it now flattens and binds), which is what surfaced this one.
+
+Java does not decline. Its aggregate access rides the generic match + `Compensation` path
+(`rules/AggregateDataAccessRule.java`, `Compensation.applyAllNeededCompensations`): every
+grouping value is a `Placeholder` in the candidate's select-having expansion
+(`AggregateIndexExpansionVisitor.constructSelectHaving`), so a query equality on ANY grouping
+column matches; the leading run becomes scan comparisons and the rest is re-applied as a
+residual predicate over the aggregate scan's output, where the grouping values are visible. A
+residual on a GROUPING column filters whole groups and is sound; only a residual on the
+aggregation INPUT (a non-grouping column) is impossible, and that arm must keep declining.
+
+DONE when: the two shapes above plan `Filter(AggregateIndex(SUM_ABC, [a = 'x']))` (or the
+companion-merged form for SUM) with the residual on the grouping column, rows agree with the
+unindexed twin through DML, `TestBugHunt_AggregateIndexMultiKeyResidual` flips those two arms
+from must-decline to must-bind-with-residual, and a non-grouping-column residual still declines
+(pin it). Graefe/Torvalds ACK on the RFC and the impl; run the EXPLAIN corpus diff and the 1M
+stress comparison as for RFC-246.
 
 ---
 

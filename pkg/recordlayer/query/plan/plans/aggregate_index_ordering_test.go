@@ -240,3 +240,56 @@ func TestAggregateIndexPlan_HintOrdering_ReverseWithPrefix(t *testing.T) {
 		t.Fatalf("A binding under a reverse scan = %v, want SORTED descending", a)
 	}
 }
+
+// TestAggregateIndexPlan_HintRichOrdering_PinnedCoordinateAfterWidenedOneStaysFixed
+// is the aggregate twin of the index-scan arm of the same name: under
+// `d = 0.0 AND a = 1` over GROUP BY d, a the widened D binds SORTED and drops
+// the tail, while A — one physical key within each of D's blocks — binds FIXED.
+func TestAggregateIndexPlan_HintRichOrdering_PinnedCoordinateAfterWidenedOneStaysFixed(t *testing.T) {
+	t.Parallel()
+	plan := aggregateOrderingPlan(t, []string{"D", "A"}, []values.Type{values.NullableDouble, values.NullableLong},
+		[]*predicates.ComparisonRange{pkOrderingEq(t, float64(0)), pkOrderingEq(t, int64(1))}, false)
+	if got := plan.HintOrdering(); got.IsKnown {
+		t.Fatalf("HintOrdering(d = 0.0, a = 1) = %#v, want unknown: two groups, ordered only by D's block order", got)
+	}
+	rich := plan.HintRichOrdering()
+	if !sameNames(orderingKeyNames(t, rich.GetKeys()), []string{"D", "A"}) {
+		t.Fatalf("HintRichOrdering(d = 0.0, a = 1) keys = %v, want [D, A]", orderingKeyNames(t, rich.GetKeys()))
+	}
+	bm := rich.GetBindingMap()
+	if b := bm[rich.GetKeys()[0]]; len(b) != 1 || b[0].IsFixed() {
+		t.Fatalf("D under a signed-zero equality = %v, want SORTED", b)
+	}
+	if a := bm[rich.GetKeys()[1]]; len(a) != 1 || !a[0].IsFixed() {
+		t.Fatalf("A = 1 after a widened D = %v, want FIXED: every flowed group carries a = 1", a)
+	}
+}
+
+// TestAggregateIndexPlan_HintRichOrdering_DistinctFollowsInnerScan: the rich
+// form's distinctness is the inner scan's isStrictlySorted(), the flag Java's
+// OrderingProperty.visitAggregateIndexPlan hands computeOrderingFromScanComparisons.
+// Both arms are driven: the default inner scan claims nothing, and the same
+// plan over a WithStrictlySorted inner scan claims DistinctOverAllKeys.
+func TestAggregateIndexPlan_HintRichOrdering_DistinctFollowsInnerScan(t *testing.T) {
+	t.Parallel()
+	comps := []*predicates.ComparisonRange{pkOrderingEq(t, int64(1))}
+	plain := aggregateOrderingPlan(t, []string{"B", "A"}, twoLongs, comps, false)
+	if plain.HintRichOrdering().IsDistinct() {
+		t.Fatalf("IsDistinct() = true over an inner scan that is not strictly sorted")
+	}
+	index := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+		return NewRecordQueryIndexPlan("AGG_IDX", comps, []string{"T"}, aggregateOrderingRow([]string{"B", "A"}, twoLongs), false)
+	}).WithKeyComponentTypes(twoLongs).WithStrictlySorted()
+	agg, err := NewRecordQueryAggregateIndexPlan(index, "T", aggregateOrderingRow([]string{"B", "A"}, twoLongs), "COUNT")
+	if err != nil {
+		t.Fatalf("aggregate index plan: %v", err)
+	}
+	strict := agg.WithGroupColumns([]string{"B", "A"}, "").WithGroupColumnLayout(aggregateOrderingBase())
+	rich := strict.HintRichOrdering()
+	if !rich.IsDistinct() {
+		t.Fatalf("IsDistinct() = false over a strictly sorted inner scan, want true: Java passes indexPlan.isStrictlySorted()")
+	}
+	if !sameNames(orderingKeyNames(t, rich.GetKeys()), []string{"B", "A"}) {
+		t.Fatalf("keys = %v, want [B, A] unchanged by the distinctness flag", orderingKeyNames(t, rich.GetKeys()))
+	}
+}

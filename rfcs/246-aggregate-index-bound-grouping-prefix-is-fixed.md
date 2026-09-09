@@ -44,14 +44,22 @@ copies the index plan carried (the shape the file's own comments name as how
 its plain and rich forms once drifted apart). It reads a scan's comparisons
 and reports:
 
-* `pinned` — the leading coordinates PINNED to one physical key
-  (`equalityPrefixLenOnColumns`, asked with the physical coordinate types so a
-  FLOAT bound by an untyped operand does not count);
-* `fixedLen` — the leading prefix bound by any equality (`ownOrderPrefixLen`).
-  A coordinate in `[pinned, fixedLen)` — a signed-zero constant such as
+* `fixedLen` — the leading prefix bound by any equality (`ownOrderPrefixLen`);
+* `pins[i]`, for `i < fixedLen` — whether coordinate `i` is PINNED to one
+  physical key (`EqualityPinsSinglePhysicalKeyOnColumn`, asked with the
+  physical coordinate type so a FLOAT bound by an untyped operand does not
+  pin). A prefix coordinate that does not pin — a signed-zero constant such as
   `d = 0.0`, or a possibly-zero untyped operand on a float column — keeps its
   own order in the scan's direction but nothing after it is globally ordered,
-  so the tail is dropped wholesale (`tailDropped`);
+  so the tail is dropped wholesale (`tailDropped`). This is a per-coordinate
+  fact, not a prefix length: under `d = 0.0 AND b = 1` the widened `d` does
+  not pin and `b` still does (every admitted row carries `b = 1`, one physical
+  key within each of `d`'s blocks), so `b` binds FIXED and `ORDER BY b DESC`
+  is free over a forward scan. The second cut read pins as the length of the
+  leading pinned run and demoted that `b` to SORTED — a regression against
+  the merge-base's operand-only classification, which was per-coordinate —
+  pinned at all three levels (property, plan shape, and
+  the aggregate twin);
 * `tail` — the sorted coordinates after the prefix, truncated at the first
   FLOAT/DOUBLE (the NaN-tie hazard), and `untruncated` for the storage-key
   completeness stamp the index's rich form makes.
@@ -63,17 +71,18 @@ one group and reports a known, key-less ordering; under a dropped tail it
 reports unknown.
 
 `HintRichOrdering` is added alongside, the binding-carrying form Java's
-candidate produces: the prefix as `FixedBinding(comparison)` for `i < pinned`
-and `SortedBinding` for the rest of it, the tail as `SortedBinding`. FIXED is
-bound from the COLUMN-AWARE `pinned`, never from the operand-only
+candidate produces: each prefix coordinate as `FixedBinding(comparison)` when
+`pins[i]` and `SortedBinding` otherwise, the tail as `SortedBinding`. FIXED is
+bound from the COLUMN-AWARE `pins`, never from the operand-only
 `EqualityPinsSinglePhysicalKey` — that predicate answers "pins" for a FLOAT
 coordinate bound by an untyped non-constant operand (an IN binding, a
 parameter), which may be zero at runtime and then widens across both
 signed-zero blocks; binding it FIXED ("no order, any requested direction is
 satisfied") would let `ORDER BY d DESC` elide its sort against a forward scan
 that emits -0.0 before +0.0. The value index's rich form carried exactly that
-drift (`pinned` computed column-aware, the binding decided operand-only); it is
-corrected in the same change and pinned for both plan types. Today no plan
+drift (the prefix length computed column-aware, the binding decided
+operand-only); it is corrected in the same change and pinned for both plan
+types. Today no plan
 reaches it — the in-union declines a float IN-list on the plain ordering
 first — so this is a latent inconsistency closed, not a live wrong answer.
 
@@ -103,8 +112,23 @@ bindings, and that property is read by the sort rule (above), the in-join,
 distinct-union and nested-loop-join rules, and partition roll-ups. None of
 them is edited; each now sees a bound grouping column as FIXED rather than
 SORTED, which is strictly more information and what Java reports. No wire
-format, executor, cost formula or rule body changes; the EXPLAIN baseline is
-unchanged because the corpus holds no shape that reads the difference.
+format, executor or cost formula changes; the EXPLAIN baseline is unchanged
+because the corpus holds no shape that reads the difference.
+
+One rule body does change, found on the way to the per-coordinate pin's SQL
+face. `AggregateDataAccessRule` read a filter's predicate list whole, and
+`WHERE a = 'x' AND b = 'y'` arrives as ONE `AndPredicate`, so every
+multi-equality on an aggregate index's grouping prefix — including the shape
+above and the plain `WHERE d = 1.0 AND b = 1 GROUP BY d, b` — declined the
+index and full-scanned into a streaming aggregation. The decline was pinned as
+expected behaviour (`bug_hunt_cascades_test.go`, `and_wrapped_multi_equality`)
+with a "perf follow-up that needs conjunct flattening" note tracked nowhere
+else. Java's `SelectExpression` holds its conjuncts flat, so both the
+consumption guard (`aggInnerFilterFullyConsumable`) and the bound builder
+(`extractInnerFilterPredicates`) now read `flattenConjuncts` of the filter's
+predicates — the same list, so the two cannot disagree on what a filter holds.
+The gap and non-leading-key declines are unchanged (the guard sees the gap
+after flattening). The corpus holds no such shape either.
 
 Permuted MIN/MAX indexes interpose the aggregate value before the permuted
 grouping suffix, so `groupCols[fixedLen:]` would misread their key; they never
@@ -123,12 +147,19 @@ precondition at the site.
   sorted with the tail dropped; a DOUBLE tail under `b = 1` yields unknown; a
   reverse scan under `b = 1` yields `[A]` descending with `B` fixed; a DOUBLE
   bound by an UNKNOWN-typed parameter yields unknown with the rich form `[D]`
-  SORTED while the same operand on a LONG is FIXED. Under the pre-fix split
-  (mutated in place: `fixedLen = 0`, tail = all columns) the three prefix
-  arms fail and the two unchanged arms pass; under the operand-only FIXED
-  classification (mutated in both rich forms) the two untyped-operand arms —
-  the aggregate one and its index twin in `index_scan_ordering_test.go` —
-  fail.
+  SORTED while the same operand on a LONG is FIXED; `d = 0.0 AND a = 1`
+  yields `[D]` SORTED and `[A]` FIXED (its index twin,
+  `TestRecordQueryIndexPlan_HintRichOrdering_PinnedCoordinateAfterWidenedOneStaysFixed`,
+  is green at `d6b5a0d84` and red at `82e7d1c19`); the rich form's
+  distinctness is false over the default inner scan and true over a
+  `WithStrictlySorted` one. Under the pre-fix split (mutated in place:
+  `fixedLen = 0`, tail = all columns) the three prefix arms fail and the two
+  unchanged arms pass; under the operand-only FIXED classification (mutated
+  in both rich forms) the two untyped-operand arms — the aggregate one and its
+  index twin in `index_scan_ordering_test.go` — fail; under pins read as a
+  prefix length (mutated in `splitKeyOrder`) exactly the two
+  after-a-widened-coordinate arms and the embedded pin below fail, and the
+  untyped-operand and distinctness arms stay green.
 * Plan shape (`embedded/aggregate_index_equality_prefix_ordering_test.go`):
   seven fixed-prefix shapes (COUNT, MAX, a primary-key grouping column, full
   `ORDER BY b, a`, `ORDER BY b DESC, a`, `LIMIT`, a pinned DOUBLE prefix) plan
@@ -136,20 +167,80 @@ precondition at the site.
   (unbound, signed-zero DOUBLE prefix, DOUBLE tail) keep theirs; every arm
   asserts the aggregate index is reached. Deleting `HintRichOrdering` reddens
   exactly the two arms that request `b`.
+* Plan shape (`embedded/equality_prefix_pins_per_coordinate_test.go`): over
+  `INDEX(d, b)` and `GROUP BY d, b`, `WHERE d = 0.0 AND b = 1` with
+  `ORDER BY b DESC` / `ORDER BY b` / `ORDER BY d` / `ORDER BY d DESC` (the
+  last by a reverse scan) plans with no in-memory sort for both plan types,
+  and the control `ORDER BY id` keeps its sort; every arm asserts an index
+  scan is reached. Under pins-as-prefix-length exactly the four arms that
+  request `b` fail (index and aggregate, ASC and DESC) and the three others
+  pass; with the conjunct flattening removed the two aggregate arms no longer
+  reach the index. `bug_hunt_cascades_test.go`'s `and_wrapped_multi_equality`
+  flips from must-decline to must-bind, alongside a new every-key-bound arm;
+  `gap_in_prefix` and `non_leading_key` still decline.
 * Rows (`sqldriver/aggregate_index_equality_prefix_ordering_fdb_test.go`):
-  the indexed/unindexed twin over ten reads whose order now comes from the
-  index — NULL groups, LIMIT/OFFSET, HAVING, a pinned DOUBLE prefix —
+  the indexed/unindexed twin over twelve reads whose order now comes from
+  the index — NULL groups, LIMIT/OFFSET, HAVING, a pinned DOUBLE prefix, and
+  two every-column-bound point reads whose `AND` the rule now flattens —
   compared as SEQUENCES against the sorting oracle through six DML stages that
   add, empty, revive and merge groups. Every read is asserted, via the typed
   plan, to be served by the aggregate index AND to carry no in-memory sort;
   without the second assertion the test passes with the fix reverted (a sorted
   plan answers the same sequence), so that assertion is what makes it a pin
   of the index's order rather than of the sort's.
-* EXPLAIN corpus (`cmd/explain-differ`), `d6b5a0d84` vs this change: 2955
-  entries, 2955 identical — the corpus holds no aggregate-index shape with a
-  bound prefix and an ORDER BY on the next grouping column.
-* `just test` green on the commit (pre-commit hook), stress and fuzz recorded
-  below.
+* EXPLAIN corpus (`cmd/explain-differ`), `d6b5a0d84` vs `82e7d1c19`: 2955
+  entries, 2955 identical, 0 shape flips — the corpus holds no aggregate-index
+  shape with a bound prefix and an ORDER BY on the next grouping column.
+* `just test` green on both commits (pre-commit hook). The new tests run under
+  Bazel by name at `82e7d1c19`: the seven `TestAggregateIndexPlan_HintOrdering_*`
+  / `HintRichOrdering_*` arms and
+  `TestRecordQueryIndexPlan_HintRichOrdering_UntypedOperandOnDoubleIsNotFixed`
+  in `//pkg/recordlayer/query/plan/plans:plans_test`, the ten
+  `TestAggregateIndexEqualityPrefixElidesSort/*` arms in
+  `//pkg/relational/core/embedded:embedded_test`, and
+  `TestFDB_AggregateIndexEqualityPrefixOrdering` in
+  `//pkg/relational/sqldriver:sqldriver_test` (each `=== RUN` line seen,
+  `--nocache_test_results`).
+* Planner fuzz at `82e7d1c19`, 30s each: `FuzzPlanner_Determinism` 5,786,862
+  executions, PASS; `FuzzPlanner_PlanFullPipeline` 2,061,381 executions, PASS.
+
+### 1M stress comparison
+
+Baseline `d6b5a0d84` (the merge-base on 2026-09-09; `origin/master` was at
+the same commit) in a worktree on the same filesystem (`/home`, 99% used, 15G
+free) versus `82e7d1c19`, two uncached `TestFDB_Stress_1M` runs per side,
+strictly sequential (base, branch, base, branch), load average at each start
+14.3 / 2.4 / 2.1 / 1.8; `ordering.go` md5-checked in both trees after the last
+run. Every run has 24 `=== RUN` lines and 24 passes; all 22 labelled readings
+agree on row counts across the four runs. Ratio = min(branch) / min(base):
+
+| query | rows | base | branch | ratio |
+|---|---|---|---|---|
+| PK lookup id=0 / N/2 / N-1 | 1 | 8.4 / 8.4 / 6.2 ms | 8.5 / 8.4 / 6.3 ms | 1.01 / 1.01 / 1.00 |
+| idx_customer eq | 8 | 6.3 ms | 6.5 ms | 1.02 |
+| idx_amount range >9000 | 100017 | 208.6 ms | 195.0 ms | 0.93 |
+| idx_status count pending | 1 | 394.0 ms | 379.2 ms | 0.96 |
+| full scan filter amount>5000 | 1 | 666.5 ms | 626.3 ms | 0.94 |
+| GROUP BY status | 4 | 5.8 ms | 5.9 ms | 1.01 |
+| GROUP BY status COUNT only | 4 | 5.3 ms | 5.3 ms | 1.01 |
+| SUM by status (aggregate index) | 4 | 5.7 ms | 5.7 ms | 0.99 |
+| GROUP BY customer HAVING | 47271 | 572.1 ms | 570.3 ms | 1.00 |
+| JOIN 10 orders x customers | 10 | 19.9 ms | 20.1 ms | 1.01 |
+| ORDER BY PK (full) | 1000000 | 3867 ms | 3816 ms | 0.99 |
+| ORDER BY PK + index filter | 8 | 9.0 ms | 8.7 ms | 0.97 |
+| scan all rows ordered / wide | 1000000 | 3686 / 3931 ms | 3623 / 3853 ms | 0.98 / 0.98 |
+| IN-list 5 values | 46 | 18.8 ms | 18.6 ms | 0.99 |
+| PK needle id=999999 | 1 | 5.8 ms | 5.7 ms | 1.00 |
+| PK+filter needle id=500000 | 1 | 7.4 ms | 7.4 ms | 0.99 |
+| full scan sparse filter | 97 | 3326 ms | 3278 ms | 0.99 |
+| UPDATE by index / DELETE single row | 8 / 1 | 9.0 / 6.4 ms | 8.9 / 6.4 ms | 0.99 / 1.00 |
+
+The workload's aggregate-index reads (`GROUP BY status`, `SUM by status`)
+bind no grouping prefix, so `splitKeyOrder` reports what the old derivation
+did and their plans are unchanged; this is a no-change confirmation. The three
+readings below 0.95 are range/full scans whose base runs differ from each
+other by more than the branch differs from either (idx_amount: 208.6 vs
+236.6 ms between the two base runs).
 
 ## Review
 
@@ -166,4 +257,18 @@ reverse-scan arms, the no-sort assertion in the rows twin, the corrected
 header claim in `plans/ordering.go` (the aggregate rich form is LIVE, and the
 enumeration of producers that ask the ordering-claim predicate names it), and
 the "no rule changes" sentence replaced by the list of consumers whose input
-changes. @claude on the PR.
+changes.
+
+The delta re-confirmation on the fold found three more things, all folded:
+Graefe and Torvalds both caught the header still calling the PK scan's rich
+form staging when the data-access leaf reaches it (and Torvalds the count
+having lost its "in this file" scope) — the header now states the dispatch
+route (`computeWrapperRichOrdering` reaches the rich form of any memo
+expression that implements it, and every plan with one does) instead of a
+liveness list; Torvalds that the `IsStrictlySorted()` true arm had no pin —
+added; and codex that the fold's prefix-length reading of the pinned
+coordinates demoted a pinned coordinate after a widened one to SORTED, a
+regression against the merge-base — corrected to per-coordinate `pins` and
+pinned at property, plan-shape and rows level, with the aggregate rule's
+conjunct flattening found and fixed on the way to that pin's SQL face.
+@claude on the PR.
