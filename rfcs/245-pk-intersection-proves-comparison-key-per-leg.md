@@ -110,15 +110,26 @@ change is in which logical alternatives the data-access rule yields.
   `pk_intersection_leg_bound_component_count` carries the same pin as a
   `DivergenceJavaWrongRowsGoCorrect` annotation with its ordered control beside
   it.
-* Net: `TestFDB_TwinTableDifferential` — 258 queries over a composite primary
-  key, a three-column mixed-type index and indexes repeating primary-key
-  components, each run against an indexed and an index-free twin and again
-  through a paged connection. This is what found the defect (2 of the first
-  240 queries diverged at `d6b5a0d84`; the 18 `… AND pk2 = …` probes were added
-  on the finding), and it is kept as the regression net for the axis the
-  RFC-182 generator does not reach. It carries non-vacuity floors stated with
-  their population: at 258 queries, compared=241 nonEmpty=224 bothErrored=17
-  pagedCompared=239 pagingDeclined=2 (floors 230 / 200 / ≤25 / 220 / ≤10).
+* Net: `TestFDB_MetamorphicCompositePrimaryKey` — a new axis of the existing
+  indexed/unindexed twin (`mmTwin`, `metamorphic_twin_test.go`; every other
+  axis keys its table on a single `id`, which is exactly the shape under which
+  this class cannot arise): 258 queries over a composite primary key, a
+  three-column mixed-type index and indexes repeating primary-key components,
+  each run against both schemas and again through a paged connection. This is
+  what found the defect (2 of the first 240 queries diverged at `d6b5a0d84`;
+  the 18 `… AND pk2 = …` probes were added on the finding). It carries
+  non-vacuity floors stated with their population: at 258 queries,
+  compared=241 nonEmpty=224 bothErrored=17 pagedCompared=239 pagingDeclined=2
+  (floors 230 / 200 / ≤25 / 220 / ≤10). Its DML companion
+  `TestFDB_MetamorphicCompositePrimaryKeyDML` applies 19 UPDATE/DELETE/INSERT
+  statements to both schemas and compares the table and 19 index-backed reads
+  after each; every read compares (380 of 380) and all agree. Run at
+  `d6b5a0d84` it measures the defect's DML face: its first statement,
+  `UPDATE t SET a = 5 WHERE b = 1 AND pk2 = 3`, reports `rows affected
+  diverge: indexed=5 unindexed=3` — the unsound merge fed the UPDATE's target
+  set, so the indexed schema rewrote two records the predicate never matched,
+  and 224 read comparisons disagree from that statement on. The class is not a
+  wrong SELECT only; it corrupts data through DML.
 * Every pin was run against the unfixed tree `d6b5a0d84`, with the shipped
   files copied into a worktree at that commit: the unit decline and three-way
   arms fail (`comparison key [_current.ID#0] cannot identify a record …`,
@@ -127,7 +138,9 @@ change is in which logical alternatives the data-access rule yields.
   `a ∧ s`, `a ∧ b`, the `pk1`-only projection and `COUNT(*)`) and the FDB pin
   reports 7 wrong-row cases plus 7 plan-property failures (`TI intersection
   compares on 1 key(s)`), while its TJ accept arm passes on both trees — the
-  merge whose legs all fix pk2 was never in question; the corpus entry was
+  merge whose legs all fix pk2 was never in question; the DML sweep reports
+  five statements with divergent `rows affected` (`indexed=5 unindexed=3` on
+  the first) and 224 disagreeing reads; the corpus entry was
   mutated (`GoExpectedRows` `1 → 4`) and reported `STALE … Go rows changed from
   the annotation: [[1]]`.
 * EXPLAIN corpus (`cmd/explain-differ`), baseline `d6b5a0d84` vs `e937f1513`:

@@ -8954,7 +8954,7 @@ records; `intersector_primary_key.go` now proves the key leg by leg
 merge, so the surviving single-index alternative applies the other predicate as a residual. Pinned
 by `TestFDB_PkIntersectionLegBoundComponent`, `intersector_leg_bound_pk_test.go` (decline / accept
 when every leg fixes the component / three-way keeps the sound pair), and found by
-`TestFDB_TwinTableDifferential`. Direction: `DivergenceJavaWrongRowsGoCorrect`; DIVERGENCES.md
+`TestFDB_MetamorphicCompositePrimaryKey`. Direction: `DivergenceJavaWrongRowsGoCorrect`; DIVERGENCES.md
 "PK-intersection comparison key" has the write-up.
 
 TO REPORT UPSTREAM with the reproducer above. Nothing here is blocked on the upstream fix; if

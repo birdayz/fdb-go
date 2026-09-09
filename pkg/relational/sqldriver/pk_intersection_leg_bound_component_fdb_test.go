@@ -63,7 +63,7 @@ func TestFDB_PkIntersectionLegBoundComponent(t *testing.T) {
 	explain := mwjoExplainer(t, db, ctx)
 	rowsOf := func(q string) []string {
 		t.Helper()
-		out, _, err := twinRows(ctx, db, q)
+		out, err := mmRows(t, ctx, db, q)
 		if err != nil {
 			t.Fatalf("%s: %v", q, err)
 		}

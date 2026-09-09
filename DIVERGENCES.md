@@ -965,7 +965,7 @@ bound on pk2) still intersects on `(pk1)`. Go used to port Java's union and retu
 `(b, pk1)` leg's four records. Pinned by `TestFDB_PkIntersectionLegBoundComponent` (rows), the
 `intersector_leg_bound_pk_test.go` unit arms (decline / accept / three-way keeps the sound pair),
 corpus entry `pk_intersection_leg_bound_component_count` (`DivergenceJavaWrongRowsGoCorrect`), and
-`TestFDB_TwinTableDifferential` (the composite-PK twin-table net that found it). Booked in
+`TestFDB_MetamorphicCompositePrimaryKey` (the composite-PK axis of the indexed/unindexed twin, which found it). Booked in
 TODO.md section 9 for the upstream report.
 
 ## Plan Architecture: Go collapses Java class hierarchies
