@@ -1257,13 +1257,29 @@ func orderProducingScanIsReverse(plan RecordQueryPlan) bool {
 // as groupColLayout from the match candidate's base record type. With none
 // (a multi-record-type index), the predicate's fail-open direction applies and
 // the claim stands, exactly as it does for an untyped index scan.
+//
+// A grouping prefix the scan binds by EQUALITY contributes no sort position:
+// every emitted group shares that value, so the group order is the order of
+// the columns AFTER it, and `WHERE b = 1 GROUP BY b, a ORDER BY a` is served
+// by the scan as it stands. Java's AggregateIndexMatchCandidate.
+// computeOrderingFromScanComparisons is the reference — Binding.fixed for
+// i < scanComparisons.getEqualitySize(), and the ordering sequence starting
+// there — and RecordQueryIndexPlan.HintOrdering is the value-index twin of the
+// same split. The prefix/tail rules (a signed-zero equality keeps its own order
+// but drops the tail; the tail is truncated at the first FLOAT/DOUBLE) are the
+// index plan's, applied to the grouping key.
 func (p *RecordQueryAggregateIndexPlan) HintOrdering() properties.Ordering {
 	groupCols := p.GetGroupCols()
 	if len(groupCols) == 0 {
 		return properties.Ordering{IsKnown: true}
 	}
-	groupCols = groupCols[:claimableNameLimit(p.GetGroupColumnLayout(), groupCols)]
-	if len(groupCols) == 0 {
+	fixedLen, sortedCols, tailDropped := p.groupingOrderSplit(groupCols)
+	if len(sortedCols) == 0 {
+		if fixedLen == len(groupCols) && !tailDropped {
+			// Every grouping column is pinned to one physical key: at most one
+			// group flows, which is ordered by anything.
+			return properties.Ordering{IsKnown: true}
+		}
 		return properties.Ordering{IsKnown: false}
 	}
 	// Grouping column i IS slot i of the row this plan flows
@@ -1273,20 +1289,121 @@ func (p *RecordQueryAggregateIndexPlan) HintOrdering() properties.Ordering {
 	// thing about its own output row; both must, because a requested ORDER BY
 	// key on an aggregate output is baked against that row and an ordinal with
 	// no domain is one no consumer may compare.
-	keys := make([]values.Value, len(groupCols))
-	desc := make([]bool, len(groupCols))
-	for i, col := range groupCols {
-		request, err := values.FieldByNameAndOrdinal(col, i)
-		if err != nil {
+	keys := make([]values.Value, 0, len(sortedCols))
+	desc := make([]bool, 0, len(sortedCols))
+	for i, col := range sortedCols {
+		key := p.groupingOrderingKey(col, fixedLen+i)
+		if key == nil {
 			return properties.Ordering{IsKnown: false}
 		}
-		keys[i], err = values.ResolveFieldAccess(p.GetResultValue(), []values.FieldRequest{request})
-		if err != nil {
-			return properties.Ordering{IsKnown: false}
-		}
-		desc[i] = p.IsReverse()
+		keys = append(keys, key)
+		desc = append(desc, p.IsReverse())
 	}
 	return properties.Ordering{IsKnown: true, Keys: keys, Descending: desc}
+}
+
+// groupingScanComparisons is the scan's bound prefix over the physical group
+// key, positionally aligned with groupCols. A plan built without an index scan
+// (struct-literal test plans) binds nothing.
+func (p *RecordQueryAggregateIndexPlan) groupingScanComparisons() []*predicates.ComparisonRange {
+	if p.indexPlan == nil {
+		return nil
+	}
+	return p.indexPlan.GetScanComparisons()
+}
+
+// groupingOrderSplit divides the grouping columns into the leading prefix the
+// scan FIXES and the SORTED tail it delivers in key order, by the same three
+// rules RecordQueryIndexPlan applies to an index key:
+//
+//   - equalityPrefixLenOnColumns: coordinates pinned to one physical key,
+//     asked with the coordinate's type so a FLOAT bound by an untyped operand
+//     stops the prefix;
+//   - ownOrderPrefixLen: a signed-zero equality also belongs to the leading
+//     prefix (it enumerates its two blocks in key order) but nothing after it is
+//     globally ordered, so when the two lengths differ the tail is dropped
+//     wholesale;
+//   - claimableNameLimit: the tail is truncated at the first FLOAT/DOUBLE
+//     grouping column, the NaN-tie hazard this producer already asked about.
+//
+// fixedLen is the leading prefix length (ownOrderPrefixLen); sortedCols is the
+// tail that may be claimed, in order, starting at ordinal fixedLen; tailDropped
+// reports the signed-zero case, where the prefix holds a coordinate that spans
+// two physical keys and the tail was dropped wholesale.
+func (p *RecordQueryAggregateIndexPlan) groupingOrderSplit(groupCols []string) (fixedLen int, sortedCols []string, tailDropped bool) {
+	comps := p.groupingScanComparisons()
+	layout := p.GetGroupColumnLayout()
+	firstNonEq := equalityPrefixLenOnColumns(comps, len(groupCols),
+		indexColumnCouldBeFloat(p.GetKeyComponentTypes(), layout, groupCols))
+	fixedLen = ownOrderPrefixLen(comps, len(groupCols))
+	if fixedLen != firstNonEq {
+		return fixedLen, nil, true
+	}
+	tail := groupCols[fixedLen:]
+	return fixedLen, tail[:claimableNameLimit(layout, tail)], false
+}
+
+// groupingOrderingKey mints the ordering key for grouping column col, which is
+// slot ordinal of the row this plan flows.
+func (p *RecordQueryAggregateIndexPlan) groupingOrderingKey(col string, ordinal int) values.Value {
+	request, err := values.FieldByNameAndOrdinal(col, ordinal)
+	if err != nil {
+		return nil
+	}
+	key, err := values.ResolveFieldAccess(p.GetResultValue(), []values.FieldRequest{request})
+	if err != nil {
+		return nil
+	}
+	return key
+}
+
+// HintRichOrdering is the binding-carrying form: the equality-bound grouping
+// prefix is retained as FixedBinding entries (carrying the comparison) and the
+// sorted tail as SortedBinding entries — Java's Binding.fixed / Binding.sorted
+// split in AggregateIndexMatchCandidate.computeOrderingFromScanComparisons. A
+// consumer that reasons about set operations over aggregate scans (an in-union
+// over `WHERE b IN (…) GROUP BY b, a`) needs the fixed entry to promote the
+// bound column into its comparison key; the plain form above drops it.
+func (p *RecordQueryAggregateIndexPlan) HintRichOrdering() *properties.RichOrdering {
+	groupCols := p.GetGroupCols()
+	if len(groupCols) == 0 {
+		return properties.EmptyOrdering()
+	}
+	comps := p.groupingScanComparisons()
+	fixedLen, sortedCols, _ := p.groupingOrderSplit(groupCols)
+	dir := properties.ProvidedSortOrderAscending
+	if p.IsReverse() {
+		dir = properties.ProvidedSortOrderDescending
+	}
+	bm := make(map[values.Value][]properties.OrderingBinding, len(groupCols))
+	keys := make([]values.Value, 0, len(groupCols))
+	for i, col := range groupCols[:fixedLen] {
+		key := p.groupingOrderingKey(col, i)
+		if key == nil {
+			return properties.EmptyOrdering()
+		}
+		keys = append(keys, key)
+		// A signed-zero-widened equality admits two distinct sort values and is
+		// ordered only in the scan's direction, so it binds SORTED, not FIXED —
+		// the same reasoning as RecordQueryIndexPlan.HintRichOrdering.
+		if EqualityPinsSinglePhysicalKey(comps[i]) {
+			bm[key] = []properties.OrderingBinding{properties.FixedBinding(comps[i])}
+		} else {
+			bm[key] = []properties.OrderingBinding{properties.SortedBinding(dir)}
+		}
+	}
+	for i, col := range sortedCols {
+		key := p.groupingOrderingKey(col, fixedLen+i)
+		if key == nil {
+			return properties.EmptyOrdering()
+		}
+		keys = append(keys, key)
+		bm[key] = []properties.OrderingBinding{properties.SortedBinding(dir)}
+	}
+	if len(keys) == 0 {
+		return properties.EmptyOrdering()
+	}
+	return properties.NewRichOrdering(bm, keys, properties.NotDistinct())
 }
 
 // --- unordered --------------------------------------------------------------

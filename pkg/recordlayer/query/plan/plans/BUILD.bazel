@@ -80,6 +80,7 @@ go_test(
         "aggregate_index_builder_copies_test.go",
         "aggregate_index_cost_test.go",
         "aggregate_index_identity_test.go",
+        "aggregate_index_ordering_test.go",
         "conjunct_packaging_cost_test.go",
         "continuable_without_duplicates_property_test.go",
         "coverage_test.go",
@@ -267,6 +268,7 @@ go_test(
         "plan_comparison_identity_drift_test.go",
         "unordered_union_leg_types_test.go",
         "erased_record_result_base_test.go",
+        "aggregate_index_ordering_test.go",
     ],
     deps = [
         "//pkg/fdbgo/fdb/tuple",
