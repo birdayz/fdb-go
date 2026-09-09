@@ -40,6 +40,11 @@ import (
 	"fdb.dev/pkg/relational/core/embedded"
 )
 
+// mhcpkQuery is one sweep query. A query with a LIMIT must carry a TOTAL
+// ORDER BY (and be marked ordered): under a partial order the top-k is a SET of
+// valid answers, and two correct plans legitimately pick different members of
+// the tie group straddling the cut — a multiset comparison there reports a
+// disagreement that is not one.
 type mhcpkQuery struct {
 	sql     string
 	ordered bool // ORDER BY is total → compare sequences, not multisets
@@ -385,6 +390,59 @@ func TestFDB_MetamorphicCompositePrimaryKey(t *testing.T) {
 		{"SELECT a, COUNT(*) FROM t WHERE a IN (1, 2) GROUP BY a ORDER BY a", true},
 		{"SELECT a, COUNT(*) FROM t WHERE a = 1 OR s = 'b' GROUP BY a ORDER BY a", true},
 		{"SELECT pk1, COUNT(*) FROM t GROUP BY pk1 ORDER BY pk1", true},
+		// Group keys that no scan orders by: the aggregation must not trust an
+		// index (b, pk1) or the primary key (pk1, pk2) for an order it lacks.
+		{"SELECT pk2, COUNT(*) FROM t GROUP BY pk2 ORDER BY pk2", true},
+		{"SELECT pk2, pk1, COUNT(*) FROM t GROUP BY pk2, pk1 ORDER BY pk2, pk1", true},
+		{"SELECT pk1, COUNT(*) FROM t WHERE b IS NOT NULL GROUP BY pk1 ORDER BY pk1", true},
+		{"SELECT pk1, COUNT(*) FROM t WHERE b = 1 GROUP BY pk1 ORDER BY pk1", true},
+		{"SELECT pk1, SUM(b) FROM t WHERE b > 0 GROUP BY pk1 ORDER BY pk1", true},
+		{"SELECT b, pk1, COUNT(*) FROM t GROUP BY b, pk1 ORDER BY b, pk1", true},
+		{"SELECT pk1, b, COUNT(*) FROM t GROUP BY pk1, b ORDER BY pk1, b", true},
+		{"SELECT s, a, COUNT(*) FROM t GROUP BY s, a ORDER BY s, a", true},
+		{"SELECT b, s, a, COUNT(*) FROM t WHERE a = 1 GROUP BY b, s, a ORDER BY b, s, a", true},
+		{"SELECT s, COUNT(*) FROM t WHERE a = 1 AND b = 1 GROUP BY s ORDER BY s", true},
+		{"SELECT a, COUNT(*) FROM t WHERE s = 'b' AND b = 1 GROUP BY a ORDER BY a", true},
+		{"SELECT pk2, MAX(a), MIN(s) FROM t WHERE pk1 = 1 GROUP BY pk2 ORDER BY pk2", true},
+		{"SELECT a, COUNT(*) FROM t WHERE pk2 = 3 GROUP BY a ORDER BY a", true},
+		{"SELECT b, COUNT(*) FROM t WHERE pk2 = 3 GROUP BY b ORDER BY b", true},
+		{"SELECT d, COUNT(*) FROM t GROUP BY d ORDER BY d", true},
+		{"SELECT f, COUNT(*) FROM t GROUP BY f ORDER BY f", true},
+		{"SELECT a, s, COUNT(*) FROM t WHERE a IN (1, 2) GROUP BY a, s ORDER BY a, s", true},
+		{"SELECT a, COUNT(*) FROM t WHERE a = 1 OR s = 'b' GROUP BY a HAVING COUNT(*) > 1 ORDER BY a", true},
+		{"SELECT COUNT(*), MAX(pk1), MIN(pk2) FROM t WHERE a = 1 AND s = 'b'", false},
+		// LIMIT / OFFSET / DISTINCT over the merge shapes.
+		{"SELECT * FROM t WHERE a = 1 AND s = 'b' ORDER BY pk1, pk2 LIMIT 2", true},
+		{"SELECT * FROM t WHERE a = 1 AND s = 'b' ORDER BY pk1, pk2 LIMIT 2 OFFSET 1", true},
+		{"SELECT * FROM t WHERE a = 1 AND s = 'b' ORDER BY pk1 DESC, pk2 DESC LIMIT 3", true},
+		{"SELECT pk1, pk2 FROM t WHERE a = 1 AND d = 1 ORDER BY pk1, pk2 LIMIT 3 OFFSET 2", true},
+		{"SELECT DISTINCT pk1 FROM t WHERE a = 1 AND s = 'b' ORDER BY pk1 LIMIT 2", true},
+		{"SELECT DISTINCT a FROM t WHERE a = 1 AND s = 'b' LIMIT 2", false},
+		{"SELECT * FROM t WHERE b = 1 AND pk2 = 3 ORDER BY pk1 LIMIT 1", true},
+		{"SELECT * FROM t WHERE a = 1 AND pk2 = 3 ORDER BY pk1 LIMIT 2 OFFSET 1", true},
+		{"SELECT COUNT(*) FROM (SELECT pk1 FROM t WHERE a = 1 AND s = 'b' ORDER BY pk1, pk2 LIMIT 2) AS x", false},
+		{"SELECT * FROM (SELECT pk1, pk2 FROM t WHERE a = 1 AND s = 'b' ORDER BY pk1, pk2 LIMIT 2) AS x WHERE pk1 > 0", false},
+		{"SELECT * FROM t WHERE (a = 1 AND s = 'b') OR (b = 1 AND pk2 = 3) ORDER BY pk1, pk2 LIMIT 4", true},
+		{"SELECT * FROM t WHERE a = 1 AND s = 'b' AND b = 1 ORDER BY pk1, pk2 LIMIT 1 OFFSET 1", true},
+		// IN-union merges on a requested ordering that does NOT identify a
+		// record: records from different legs that agree on the ordering key
+		// must all survive the merge.
+		{"SELECT * FROM t WHERE a IN (1, 2) ORDER BY s", false},
+		{"SELECT * FROM t WHERE a IN (1, 2) ORDER BY b", false},
+		{"SELECT * FROM t WHERE a IN (1, 2) ORDER BY s, b", false},
+		{"SELECT * FROM t WHERE a IN (1, 2) AND s = 'b' ORDER BY b", false},
+		{"SELECT * FROM t WHERE a IN (1, 2) AND s = 'b' ORDER BY b DESC", false},
+		{"SELECT * FROM t WHERE a IN (0, 1, 2) ORDER BY s DESC, b", false},
+		{"SELECT * FROM t WHERE a IN (1, 2) ORDER BY s, pk1, pk2 LIMIT 3", true},
+		{"SELECT s, b FROM t WHERE a IN (1, 2) ORDER BY s, b", false},
+		{"SELECT COUNT(*) FROM t WHERE a IN (1, 2)", false},
+		{"SELECT * FROM t WHERE b IN (0, 1) ORDER BY pk1", false},
+		{"SELECT * FROM t WHERE pk2 IN (2, 3) ORDER BY pk1", false},
+		{"SELECT * FROM t WHERE pk1 IN (1, 2) ORDER BY pk2", false},
+		{"SELECT * FROM t WHERE d IN (0.5, 1) ORDER BY pk1", false},
+		{"SELECT * FROM t WHERE s IN ('b', 'ba') ORDER BY pk1", false},
+		{"SELECT * FROM t WHERE a IN (1, 2) AND s IN ('b', 'ba') ORDER BY b", false},
+		{"SELECT COUNT(*) FROM t WHERE a = 1 AND s = 'b' AND b = 1 AND pk1 > 1", false},
 		{"SELECT pk1, COUNT(*) FROM t WHERE pk1 > 3 GROUP BY pk1 ORDER BY pk1", true},
 		{"SELECT a, COUNT(*) FROM t GROUP BY a ORDER BY COUNT(*) DESC, a", true},
 		{"SELECT COUNT(*), SUM(a), AVG(a) FROM t", false},
@@ -501,24 +559,24 @@ func TestFDB_MetamorphicCompositePrimaryKey(t *testing.T) {
 	t.Logf("composite-pk read sweep: %d queries; compared=%d nonEmpty=%d bothErrored=%d pagedCompared=%d pagingDeclined=%d",
 		len(queries), compared, nonEmpty, bothErrored, pagedCompared, pagingDeclined)
 
-	// Non-vacuity floors, measured at 258 queries: compared=241 nonEmpty=224
-	// bothErrored=17 pagedCompared=239 pagingDeclined=2. Each floor sits far
+	// Non-vacuity floors, measured at 305 queries: compared=286 nonEmpty=263
+	// bothErrored=19 pagedCompared=284 pagingDeclined=2. Each floor sits far
 	// enough below its reading to absorb a query or two changing class, and
 	// far enough above zero that a net comparing nothing cannot pass.
-	if compared < 230 {
-		t.Errorf("only %d of %d queries were compared across the twins (measured 241 at 258 queries); the net is not measuring what it claims", compared, len(queries))
+	if compared < 270 {
+		t.Errorf("only %d of %d queries were compared across the twins (measured 286 at 305 queries); the net is not measuring what it claims", compared, len(queries))
 	}
-	if nonEmpty < 200 {
-		t.Errorf("only %d compared queries returned rows (measured 224 at 258 queries); an empty fixture agrees with itself on everything", nonEmpty)
+	if nonEmpty < 240 {
+		t.Errorf("only %d compared queries returned rows (measured 263 at 305 queries); an empty fixture agrees with itself on everything", nonEmpty)
 	}
-	if bothErrored > 25 {
-		t.Errorf("%d queries errored on both schemas (measured 17 at 258 queries); a parse/plan regression is being logged as agreement", bothErrored)
+	if bothErrored > 30 {
+		t.Errorf("%d queries errored on both schemas (measured 19 at 305 queries); a parse/plan regression is being logged as agreement", bothErrored)
 	}
-	if pagedCompared < 220 {
-		t.Errorf("only %d paged re-reads were compared (measured 239 at 258 queries); the continuation axis is not being exercised", pagedCompared)
+	if pagedCompared < 265 {
+		t.Errorf("only %d paged re-reads were compared (measured 284 at 305 queries); the continuation axis is not being exercised", pagedCompared)
 	}
 	if pagingDeclined > 10 {
-		t.Errorf("%d paged re-reads declined with 54F01 (measured 2 at 258 queries); the scan limit is silencing the continuation axis", pagingDeclined)
+		t.Errorf("%d paged re-reads declined with 54F01 (measured 2 at 305 queries); the scan limit is silencing the continuation axis", pagingDeclined)
 	}
 }
 
