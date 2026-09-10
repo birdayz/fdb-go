@@ -5108,6 +5108,35 @@ comparisons instead of 2.
 
 ---
 
+### [ ] Widen the pk-intersection comparison key with a per-leg singular fixed PK component (RFC-245 follow-on; query-engine gate)
+
+RFC-245 made the primary-key intersection prove its comparison key leg by leg and DECLINES the
+partition when a primary-key component is equality-bound in one leg only. That is sound, and it
+forfeits a real plan: in the reproducer (`PRIMARY KEY (pk1, pk2)`, indexes `(b, pk1)` and `(pk2)`,
+`WHERE b = 1 AND pk2 = 3`) both legs are physically ordered `(pk1, pk2)` — the `(pk2)` leg
+trivially so, every one of its rows carrying pk2 = 3 — so a merge on the comparison key
+`(pk1, pk2)` is sound and beats the surviving covering-scan-plus-residual alternative.
+
+Why it was not done inside RFC-245: the enumeration that offers comparison keys,
+`RichOrdering.EnumerateSatisfyingIntersectionComparisonKeyValues` (rich_ordering.go), filters
+values with a singular FIXED binding out of the candidate set — a port of Java's
+`SetOperationsOrdering.enumerateSatisfyingComparisonKeyValues`, and shared ordering algebra.
+Admitting a per-leg fixed primary-key component means teaching the intersection enumeration
+that a value FIXED in the merged ordering can still be a comparison-key part when some leg
+SORTS it, and giving that part a direction (`RecordQuerySetPlan.adjustFixedBindings` already
+assigns fixed parts the comparison's direction, so the executor side exists). That is a change
+to the ordering algebra, not to the soundness proof, and it needs its own RFC + Graefe/Torvalds
+lap.
+
+DONE when: the reproducer plans `Intersection(IndexScan(TI_B_PK1), IndexScan(TI_PK2))` with a
+two-component comparison key and `TestFDB_PkIntersectionLegBoundComponent` still passes — its
+plan-property arm (every TI intersection compares on both components) was written to accept
+exactly this outcome; `TestIntersector_DeclinesPrimaryKeyComponentFixedInOneLegOnly` flips to
+asserting the widened key; the union `equalityBoundValues` fed to redundancy pruning stays as
+is. Run the EXPLAIN corpus diff and the 1M stress comparison as for RFC-245.
+
+---
+
 ### [ ] Aggregate data access: a grouping-key equality outside the bound prefix should be a residual over the aggregate scan, not a full-scan decline (RFC-246 follow-on; query-engine gate)
 
 `AggregateDataAccessRule` (rule_aggregate_data_access.go, `aggInnerFilterFullyConsumable`)
@@ -8917,6 +8946,55 @@ which is how a Java-issued `[0x00]` would previously have been fed to the wrong 
 Java's, since it will finally be able to express the state. Until then the reachability bound
 is what keeps this benign: this continuation is internal to the Go paginating driver, and no
 cross-engine test exchanges it — if that ever changes, this entry becomes urgent.
+
+### [ ] UPSTREAM — Java's primary-key intersection compares on a key that omits a component fixed in one leg only (wrong rows)
+
+MEASURED on both engines (`conformance/pk_intersection_leg_bound_key_java_probe_test.go`, which
+asserts Java's wrong answer and fails if Java starts agreeing; corpus entry
+`pk_intersection_leg_bound_component_count` carries the same pin as `DivergenceJavaWrongRowsGoCorrect`):
+
+```
+CREATE TABLE ti (pk1 BIGINT, pk2 BIGINT, b BIGINT, PRIMARY KEY (pk1, pk2))
+CREATE INDEX ti_b_pk1 ON ti (b, pk1)
+CREATE INDEX ti_pk2 ON ti (pk2)
+rows (pk1,pk2,b): (0,2,1) (0,3,0) (1,4,1) (1,3,0) (2,0,1) (2,3,7) (3,3,1) (4,1,1)
+
+SELECT pk1, pk2, b FROM ti WHERE b = 1 AND pk2 = 3
+  java: [[0 3 0] [1 3 0] [2 3 7] [3 3 1]]     <- every pk2 = 3 record, b ignored
+  go  : [[3 3 1]]                             <- SQL-correct
+SELECT COUNT(*) FROM ti WHERE b = 1 AND pk2 = 3
+  java: [[4]]      go: [[1]]
+EXPLAIN (java): COVERING(TI_PK2 [EQUALS …]) ∩ COVERING(TI_B_PK1 [EQUALS …]) COMPARE BY (_.PK1) | FETCH
+
+… ORDER BY pk1  (or pk1, pk2)
+  java and go IDENTICAL [[3 3 1]]             <- the control: Java plans the covering scan
+                                                 + residual filter when an ordering is requested
+```
+
+Root cause, in `fdb-record-layer-core/.../rules/AbstractDataAccessRule.java`
+`isCompatibleComparisonKey(comparisonKeyValues, commonRecordKeyValues, equalityBoundKeyValues)`:
+the primary-key components a comparison key must contain are filtered by `equalityBoundKeyValues`,
+which `WithPrimaryKeyDataAccessRule.createIntersectionAndCompensation` builds as the UNION of every
+leg's equality-bound matched ordering parts. A component equality-bound in ONE leg is a constant of
+that leg's stream only; in every other leg it still varies, so a comparison key that omits it no
+longer identifies a record there, and the merge (`IntersectionCursor` emits the first leg's current
+record when all keys agree, then advances every leg) returns records the other legs never matched.
+The proof has to hold per leg — equivalently, subtract the INTERSECTION of the legs' equality-bound
+sets. Reachable only with a composite primary key (a single-component PK fixed in a leg makes that
+leg max-cardinality 1 and `isPartitionRedundant` prunes it), which is why upstream's fixtures — and
+this repo's RFC-182 generator, whose table has the fixed `ID` key — never crossed it.
+
+Go carried the same union until 2026-09-09 (ported faithfully) and returned the OTHER leg's four
+records; `intersector_primary_key.go` now proves the key leg by leg
+(`comparisonKeyIdentifiesRecordInEveryLeg`, comment at the site names this entry) and declines the
+merge, so the surviving single-index alternative applies the other predicate as a residual. Pinned
+by `TestFDB_PkIntersectionLegBoundComponent`, `intersector_leg_bound_pk_test.go` (decline / accept
+when every leg fixes the component / three-way keeps the sound pair), and found by
+`TestFDB_MetamorphicCompositePrimaryKey`. Direction: `DivergenceJavaWrongRowsGoCorrect`; DIVERGENCES.md
+"PK-intersection comparison key" has the write-up.
+
+TO REPORT UPSTREAM with the reproducer above. Nothing here is blocked on the upstream fix; if
+upstream fixes it the probe and the corpus entry both fail and say so.
 
 ---
 
