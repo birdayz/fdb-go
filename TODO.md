@@ -8848,6 +8848,39 @@ the ci.yml race-lane comment names both hosts.
 
 ---
 
+### [ ] STOP (owner): the `hetzner-fdb-vm` runner service is being stopped under running jobs — Nightly Coverage has not completed in 33 days, Nightly Reconcile is red for that reason
+
+MEASURED 2026-09-10: every `Nightly Coverage` run from 2026-08-30 through 2026-09-10 (12 of 12)
+ends with `##[error]The runner has received a shutdown signal. This can happen when the runner
+service is stopped, or a manually started runner is canceled.` followed by `The operation was
+canceled.`, on BOTH hosts (`/mnt/HC_Volume_106058499/…` and `/mnt/HC_Volume_106516390/…` appear
+in the aborted `factorycorpus_test (Exit 255)` paths), between 3 and 75 minutes into the job
+(08-30 07:01→07:04, 09-03 06:58→07:06, 09-05 06:46→06:59, most days ~07:00→~08:00). `Nightly
+Reconcile` (13:31) reports the consequence — `coverage: last genuine run was 2026-08-08T04:30:20Z
+(33 days ago), limit is 3 days` — and is red for exactly that; every other net it checks is
+inside its limit. Today's `Nightly Factory` growth lane (08:22→08:42, `gh-runner-fdb`) died of
+the same signal, and its own `::error::` about the census rebase is the abort path that runs
+after a cancel, not a real conflict.
+
+The coverage net is therefore not a net: 33 days of coverage/race/bench readings do not exist,
+and the ratchets it carries have not been measured against anything in that time. Whatever
+stops the runner service — a daily restart/reboot timer, a runner self-update loop, an
+autoscaler recycling the VM, the same "drain" mechanism the second runner is named for — it
+fires while a job is running, on both hosts. Nobody here can read the hosts' service logs.
+
+Owner: `journalctl -u actions.runner.*` on both hosts around the timestamps above; look for a
+timer or an external stop; the fix is to drain BEFORE stopping (or to stop only between jobs).
+Separate from the drain-0 34-minute container loss above (that one is a container/network
+reaper while the runner keeps running; this one stops the runner itself).
+
+DONE when: a Nightly Coverage run completes on its own (no shutdown signal), Reconcile's
+coverage age drops under 3 days, and the ratchets it carries are re-read against the 33-day gap.
+
+The reconcile job also lists four OPEN pull requests without their required checks (#486, #579,
+#745, #747) — the owner's older branches, not touched here.
+
+---
+
 
 ---
 
