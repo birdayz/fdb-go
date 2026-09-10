@@ -84,9 +84,13 @@ func TestFDB_PkIntersectionLegBoundComponent(t *testing.T) {
 
 	// merge names the plan the reproducer shapes MUST take since RFC-247 —
 	// a positive assertion per query, not the conditional property arm below:
-	// an intersection whose legs are exactly these indexes, comparing on
-	// (PK1, PK2) in that order, in the stated direction. If the cost model
-	// stops choosing it the arm fails here.
+	// an intersection whose legs are exactly these indexes, in this order,
+	// comparing on (PK1, PK2) in that order, in the stated direction. If the
+	// cost model stops choosing it the arm fails here. Leg order is
+	// deterministic: the planner sorts match candidates by name before the
+	// intersector partitions them (cascades/planner.go, the sort.Slice over
+	// CandidateName in the data-access driver), so a leg-order failure here is
+	// a planner change, not a flake.
 	type mergePin struct {
 		legs    []string
 		reverse bool
@@ -101,6 +105,18 @@ func TestFDB_PkIntersectionLegBoundComponent(t *testing.T) {
 	}{
 		{"ti", "SELECT pk1, pk2, a, b FROM ti WHERE b = 1 AND pk2 = 3 ORDER BY pk1", []string{"3|3|1|1", "5|3|1|1"}, bPk1AndPk2},
 		{"ti", "SELECT pk1, pk2, a, b FROM ti WHERE b = 1 AND pk2 = 3 ORDER BY pk1 DESC", []string{"5|3|1|1", "3|3|1|1"}, bPk1AndPk2Reverse},
+		// The widened pk2 is constant in every emitted row, so a request that
+		// directs it against the legs' sort is satisfied by the output as it
+		// stands: the merge still takes its direction from pk1.
+		{"ti", "SELECT pk1, pk2, a, b FROM ti WHERE b = 1 AND pk2 = 3 ORDER BY pk2 DESC, pk1", []string{"3|3|1|1", "5|3|1|1"}, bPk1AndPk2},
+		// The reverse mixed request is NOT merged, and not because of the
+		// widening: every match picks its own scan direction against the
+		// request (SatisfiesAnyRequestedOrderings, the structure Java has), and
+		// the (b, pk1) leg satisfies [pk1 DESC, pk2 ASC] in neither direction,
+		// so it arrives forward while the (pk2) leg arrives reversed — the
+		// intersector has no common direction to merge. The reversed (pk2)
+		// scan with a residual is the right plan; rows only.
+		{"ti", "SELECT pk1, pk2, a, b FROM ti WHERE b = 1 AND pk2 = 3 ORDER BY pk1 DESC, pk2", []string{"5|3|1|1", "3|3|1|1"}, nil},
 		{"ti", "SELECT pk1, pk2, a, b FROM ti WHERE pk2 = 3 AND b = 1 ORDER BY pk1, pk2", []string{"3|3|1|1", "5|3|1|1"}, bPk1AndPk2},
 		{"ti", "SELECT pk1 FROM ti WHERE b = 1 AND pk2 = 3 ORDER BY pk1", []string{"3", "5"}, bPk1AndPk2},
 		{"ti", "SELECT COUNT(*) FROM ti WHERE b = 1 AND pk2 = 3", []string{"2"}, bPk1AndPk2},
@@ -187,7 +203,9 @@ func TestFDB_PkIntersectionLegBoundComponent(t *testing.T) {
 		}
 	}
 	// Floors: the property loop asserts nothing over a plan set with no
-	// intersections, and the fix DECLINES most of the TI shapes by design.
+	// intersections. The merge pins above already require several TI
+	// intersections; the floors stay so the property arm cannot go vacuous if
+	// those pins are ever loosened.
 	if tiIntersections == 0 {
 		t.Error("no intersection was built over TI at all — the control (a = 1 AND b = 1) is expected to build one; the plan-property arm is vacuous")
 	}

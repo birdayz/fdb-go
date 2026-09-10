@@ -688,6 +688,7 @@ func createPrimaryKeyIntersection(
 				requested,
 				properties.ProvidedSortOrderFixed,
 			)
+			parts = widenedPartsTakeTheMergeDirection(parts, commonOrdering)
 			reverse := ResolveComparisonDirection(parts)
 			parts = AdjustFixedBindings(parts, reverse)
 			if !everyLegDeliversComparisonKey(legOrderings, parts) {
@@ -953,8 +954,21 @@ func primaryKeyComponentsToCompare(
 	return mustCompare
 }
 
-// legFixedComparison reports whether a leg's ordering binds value FIXED, and
-// the comparison it fixes it to (nil for an implicit fixed component).
+// legFixedComparison reports whether a leg's ordering binds value FIXED to ONE
+// comparison this proof can read, and that comparison (nil for the implicit
+// record-type component, which adjustedIntersectionOrdering binds
+// FixedBinding(nil) in every leg).
+//
+// It fails CLOSED, because "fixed" here means "omittable from the comparison
+// key", and an omission this proof cannot justify is the unsound (ID)-only
+// merge RFC-247 exists to close. A leg carrying more than one binding for the
+// value, or a FIXED payload that is not a *predicates.Comparison (the plans
+// package stores a *ComparisonRange in its own FIXED bindings; a hand-built
+// ordering may store a string), reports NOT fixed — the component is then
+// compared, which is always sound. Only a nil payload is read as the implicit
+// component; a payload of another type must not collapse into it, or two legs
+// fixing a component to different constants would compare "nil == nil" and
+// drop it.
 func legFixedComparison(
 	leg *properties.RichOrdering,
 	value values.Value,
@@ -964,10 +978,17 @@ func legFixedComparison(
 			continue
 		}
 		bindings := leg.GetBindingMap()[key]
-		if len(bindings) == 0 || !properties.AreAllBindingsFixed(bindings) {
+		if len(bindings) != 1 || !bindings[0].IsFixed() {
 			return nil, false
 		}
-		comparison, _ := bindings[0].GetComparison().(*predicates.Comparison)
+		payload := bindings[0].GetComparison()
+		if payload == nil {
+			return nil, true
+		}
+		comparison, ok := payload.(*predicates.Comparison)
+		if !ok || comparison == nil {
+			return nil, false
+		}
 		return comparison, true
 	}
 	return nil, false
@@ -1001,6 +1022,36 @@ func comparisonKeyIdentifiesRecordInEveryLeg(
 		}
 	}
 	return true
+}
+
+// widenedPartsTakeTheMergeDirection resets a part the MERGED ordering binds
+// FIXED back to FIXED so AdjustFixedBindings gives it the merge's direction.
+// Such a part is in the key only because the intersector widened it (Java's
+// filter never offers a fixed value), and DirectionalOrderingParts stamps it
+// with the REQUESTED direction when the request names it. That direction is
+// vacuous: the merged ordering binds the value FIXED because some leg fixes
+// it, so every row the intersection emits carries that one value and any
+// requested direction on it is satisfied by the output as it stands. Keeping
+// the stamp would make `ORDER BY pk2 DESC, pk1` produce the parts
+// [pk1 ASC, pk2 DESC] — a mixed key no leg delivers and
+// NaturalComparisonKeyValues refuses — and forfeit the merge for a request the
+// merged ordering satisfies. A part the merged ordering SORTS keeps its
+// direction: that is the direction the merge takes, and the legs' own
+// directions still decide, through everyLegDeliversComparisonKey, whether the
+// merge is built at all.
+func widenedPartsTakeTheMergeDirection(
+	parts []properties.ProvidedOrderingPart,
+	merged *properties.RichOrdering,
+) []properties.ProvidedOrderingPart {
+	result := make([]properties.ProvidedOrderingPart, len(parts))
+	for i, part := range parts {
+		result[i] = part
+		if bindings := merged.GetBindingMap()[part.Value]; len(bindings) > 0 &&
+			properties.AreAllBindingsFixed(bindings) {
+			result[i].SortOrder = properties.ProvidedSortOrderFixed
+		}
+	}
+	return result
 }
 
 // everyLegDeliversComparisonKey is the directed proof (RFC-247 step 4): the

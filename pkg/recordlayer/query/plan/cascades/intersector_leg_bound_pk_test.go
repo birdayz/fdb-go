@@ -255,13 +255,13 @@ func TestIntersector_ComparesOnTheComponentLegsFixToDifferentConstants(t *testin
 	}
 }
 
-// TestIntersector_ThreeWayComparesOnBothComponentsInEveryPartition: with the
-// VERSION-fixing leg admitted, the redundancy pruning keeps the widest
-// partition — measured: exactly one intersection, over all three legs,
-// comparing on (ID, VERSION). Before RFC-247 the only sound partition was the
-// A ∧ B pair; every partition with the VERSION-fixing leg is now sound and the
-// pruning prefers the one that binds the most.
-func TestIntersector_ThreeWayComparesOnBothComponentsInEveryPartition(t *testing.T) {
+// TestIntersector_ThreeWayBuildsTheWidestPartitionOnBothComponents: with the
+// VERSION-fixing leg admitted, every partition is sound and the redundancy
+// pruning keeps the widest — measured: exactly one intersection, over all
+// three legs, comparing on (ID, VERSION). Before RFC-247 the only sound
+// partition was the A ∧ B pair (two children, scanC in no intersection); those
+// assertions flip here to three children including scanC.
+func TestIntersector_ThreeWayBuildsTheWidestPartitionOnBothComponents(t *testing.T) {
 	t.Parallel()
 
 	legA := makeLegOverColumns(t, "idxA", mustDataAccessTestPlan(t, "scanA"), []string{"A", "ID", "VERSION"}, 1)
@@ -387,4 +387,144 @@ func mergedKeyNamed(t testing.TB, o *properties.RichOrdering, name string) value
 	}
 	t.Fatalf("merged ordering has no key %s", name)
 	return nil
+}
+
+// TestPrimaryKeyComponentsToCompare_OmitsOnlyWhatEveryLegFixesAlike drives the
+// omission proof directly over hand-built leg orderings, one arm per branch of
+// legFixedComparison. "Fixed alike" is the only way a primary-key component
+// leaves the comparison key, and every way the proof cannot read a leg's
+// binding must land on "compare it": a leg that SORTS the component; legs that
+// fix it to different comparisons; a leg whose FIXED payload is not a
+// *predicates.Comparison (a hand-built ordering stores a string; the plans
+// package stores a *ComparisonRange) — reading that as the nil implicit
+// payload would make two different constants compare "nil == nil" and drop the
+// component; a leg carrying two bindings for it. Only the same comparison in
+// every leg, or the nil payload the implicit record-type component carries in
+// every leg, omits it.
+func TestPrimaryKeyComponentsToCompare_OmitsOnlyWhatEveryLegFixesAlike(t *testing.T) {
+	t.Parallel()
+
+	id := dataAccessTestKey("ID")
+	version := dataAccessTestKey("VERSION")
+	eq := func(lit int64) *predicates.Comparison {
+		cmp := predicates.NewLiteralComparison(predicates.ComparisonEquals, lit)
+		return &cmp
+	}
+	leg := func(versionBindings ...properties.OrderingBinding) *properties.RichOrdering {
+		return properties.NewRichOrdering(
+			map[values.Value][]properties.OrderingBinding{
+				version: versionBindings,
+				id:      {properties.SortedBinding(properties.ProvidedSortOrderAscending)},
+			},
+			[]values.Value{version, id},
+			properties.NotDistinct())
+	}
+	fixed := func(payload any) properties.OrderingBinding { return properties.FixedBinding(payload) }
+	sorted := properties.SortedBinding(properties.ProvidedSortOrderAscending)
+
+	for _, tc := range []struct {
+		name        string
+		legs        []*properties.RichOrdering
+		wantVersion bool // VERSION must be compared
+	}{
+		{"same comparison in every leg: omitted", []*properties.RichOrdering{leg(fixed(eq(1))), leg(fixed(eq(1)))}, false},
+		{"nil (implicit) payload in every leg: omitted", []*properties.RichOrdering{leg(fixed(nil)), leg(fixed(nil))}, false},
+		{"different comparisons: compared", []*properties.RichOrdering{leg(fixed(eq(1))), leg(fixed(eq(2)))}, true},
+		{"sorted in one leg: compared", []*properties.RichOrdering{leg(fixed(eq(1))), leg(sorted)}, true},
+		{"unreadable payload in one leg: compared, not read as implicit", []*properties.RichOrdering{leg(fixed(nil)), leg(fixed("version = 2"))}, true},
+		{"unreadable payload in every leg: compared", []*properties.RichOrdering{leg(fixed("version = 1")), leg(fixed("version = 2"))}, true},
+		{"two bindings in one leg: compared", []*properties.RichOrdering{leg(fixed(eq(1))), leg(fixed(eq(1)), fixed(eq(1)))}, true},
+		{"typed nil comparison: compared", []*properties.RichOrdering{leg(fixed((*predicates.Comparison)(nil))), leg(fixed((*predicates.Comparison)(nil)))}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			must := primaryKeyComponentsToCompare([]values.Value{id, version}, tc.legs)
+			if !containsIntersectionValue(must, id) {
+				t.Fatal("ID is sorted in every leg and must always be compared")
+			}
+			if got := containsIntersectionValue(must, version); got != tc.wantVersion {
+				t.Fatalf("VERSION must be compared = %v, want %v: an omission the proof cannot justify is the "+
+					"unsound single-component merge", got, tc.wantVersion)
+			}
+		})
+	}
+}
+
+// TestIntersector_WidenedPartIgnoresItsRequestedDirection: a request that
+// names the widened component in the OTHER direction from the legs' sort —
+// [VERSION DESC, ID ASC] over legs that deliver [ID ASC, VERSION ASC] and
+// [ID ASC, VERSION fixed] — must still build the forward merge on
+// (ID, VERSION). VERSION is constant in every emitted row, so its requested
+// direction is satisfied by the output whatever the merge does with it; the
+// merge takes its direction from ID. Stamping VERSION DESC from the request
+// produced the mixed key [ID ASC, VERSION DESC], which no leg delivers, and
+// forfeited the merge. The reverse request [ID DESC, VERSION ASC] over reverse
+// legs likewise merges in reverse.
+func TestIntersector_WidenedPartIgnoresItsRequestedDirection(t *testing.T) {
+	t.Parallel()
+
+	req := func(parts ...properties.RequestedOrderingPart) *properties.RequestedOrdering {
+		return properties.NewRequestedOrdering(parts, properties.DistinctnessNotDistinct, false)
+	}
+	for _, tc := range []struct {
+		name        string
+		requested   *properties.RequestedOrdering
+		reverseLegs bool
+		wantReverse bool
+	}{
+		{
+			"version desc then id asc, forward legs",
+			req(
+				properties.RequestedOrderingPart{Value: dataAccessTestKey("VERSION"), SortOrder: properties.RequestedSortOrderDescending},
+				properties.RequestedOrderingPart{Value: dataAccessTestKey("ID"), SortOrder: properties.RequestedSortOrderAscending},
+			),
+			false, false,
+		},
+		{
+			"id asc then version desc, forward legs",
+			req(
+				properties.RequestedOrderingPart{Value: dataAccessTestKey("ID"), SortOrder: properties.RequestedSortOrderAscending},
+				properties.RequestedOrderingPart{Value: dataAccessTestKey("VERSION"), SortOrder: properties.RequestedSortOrderDescending},
+			),
+			false, false,
+		},
+		{
+			"id desc then version asc, reverse legs",
+			req(
+				properties.RequestedOrderingPart{Value: dataAccessTestKey("ID"), SortOrder: properties.RequestedSortOrderDescending},
+				properties.RequestedOrderingPart{Value: dataAccessTestKey("VERSION"), SortOrder: properties.RequestedSortOrderAscending},
+			),
+			true, true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			legA := makeLegOverColumns(t, "idxA", mustDataAccessTestPlan(t, "scanA"), []string{"A", "ID", "VERSION"}, 1)
+			legB := makeLegOverColumns(t, "idxB", mustDataAccessTestPlan(t, "scanB"), []string{"VERSION", "ID"}, 1)
+			ctx := newTestPKContext("TestRecord", []string{"id", "version"})
+			mk := makeVectoredAccess
+			if tc.reverseLegs {
+				mk = makeReverseVectoredAccess
+			}
+			result := WithPrimaryKeyIntersector(ctx)([]Vectored[*SingleMatchedAccess]{
+				mk(legA, 0), mk(legB, 1),
+			}, []*properties.RequestedOrdering{tc.requested})
+			got := intersectionPlansOf(t, result)
+			if len(got) != 1 {
+				t.Fatalf("%d intersections built, want one: the widened VERSION's requested direction is vacuous "+
+					"(constant in every emitted row) and must not forfeit the merge", len(got))
+			}
+			if keys := comparisonKeyNames(t, got[0]); !sameStrings(keys, []string{"ID", "VERSION"}) {
+				t.Fatalf("comparison key = %v, want (ID, VERSION)", keys)
+			}
+			if got[0].IsReverse() != tc.wantReverse {
+				t.Fatalf("reverse = %v, want %v: the merge direction comes from ID, the component the legs sort", got[0].IsReverse(), tc.wantReverse)
+			}
+			for _, part := range got[0].GetComparisonKeyOrderingParts() {
+				if part.SortOrder.IsAnyDescending() != tc.wantReverse {
+					t.Fatalf("part %s has direction %v; every part must carry the merge direction", values.ExplainValue(part.Value), part.SortOrder)
+				}
+			}
+		})
+	}
 }

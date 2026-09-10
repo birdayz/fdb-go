@@ -59,7 +59,15 @@ and proves the offer:
    comparisons are not all `comparisonsEqual` (`partial_match_identity.go:203`,
    the semantic equality the partial-match identity already uses; `nil`
    equals `nil`, which is how the implicit record-type component stays
-   omittable), the component must be in the comparison key. Restricted to
+   omittable), the component must be in the comparison key. Reading a leg's
+   binding fails CLOSED (`legFixedComparison`): a leg carrying more than one
+   binding for the component, or a FIXED payload that is not a
+   `*predicates.Comparison`, or a typed nil, reports "not fixed" and the
+   component is compared. Only a nil payload is the implicit component; a
+   payload of another type must not collapse into it, or two legs fixing a
+   component to different constants would compare "nil == nil" and omit it —
+   the bug this RFC closes, re-armed by a provider change (the `plans`
+   package already stores a `*ComparisonRange` in its own FIXED bindings). Restricted to
    `pkValues` deliberately: the primary key is what identifies a record, and
    a non-key column one leg sorts and another fixes adds nothing to the proof
    while adding a factor to the enumeration.
@@ -91,10 +99,17 @@ and proves the offer:
 
 4. **Prove the DIRECTED key against every leg's own ordering.** After
    `DirectionalOrderingParts` (`rich_ordering.go:650`: a merged-FIXED part
-   takes the requested direction or `FIXED`) and `AdjustFixedBindings`
-   (`set_plan_helpers.go:27`, `RecordQuerySetPlan.adjustFixedBindings`: a
-   FIXED part takes the comparison's direction — the executor side already
-   exists), the parts are turned into a `RequestedOrdering` and EVERY leg's
+   takes the requested direction or `FIXED`), a part the merged ordering
+   binds FIXED is reset to FIXED (`widenedPartsTakeTheMergeDirection`): such a
+   part is in the key only because the intersector widened it, and its
+   requested direction is vacuous — every emitted row carries the one value,
+   so the output satisfies any direction on it as it stands — while keeping
+   the stamp makes `ORDER BY pk2 DESC, pk1` produce the mixed key
+   `[pk1 ASC, pk2 DESC]` that no leg delivers and forfeits the merge. Then
+   `AdjustFixedBindings` (`set_plan_helpers.go:27`,
+   `RecordQuerySetPlan.adjustFixedBindings`: a FIXED part takes the
+   comparison's direction — the executor side already exists) directs it
+   with the merge, and the parts are turned into a `RequestedOrdering` and EVERY leg's
    adjusted ordering must `Satisfies` it (`rich_ordering.go:287`). This is
    the gate that makes step 2 sound rather than optimistic, and it is the
    same predicate sort elision rests on. It works through `MapAll`'s cascade
@@ -185,11 +200,22 @@ enumeration).
     reproducer above yields exactly one intersection on `(ID, VERSION)`;
     red at `64a737edd` (built on `(ID)`).
   * `…ThreeWayKeepsSoundPairDropsLegFixingPkComponent` becomes
-    `…ThreeWayComparesOnBothComponentsInEveryPartition`: its "only the A ∧ B
+    `…ThreeWayBuildsTheWidestPartitionOnBothComponents`: its "only the A ∧ B
     pair", "2 children" and "scanC is inside no intersection" assertions
-    flip to: every intersection built compares on `(ID, VERSION)`, the
-    partitions built are exactly those the redundancy pruning admits
-    (measured and stated in the test), and `scanC` appears in at least one.
+    flip to, measured: exactly ONE intersection, over all three legs
+    (`scanA, scanB, scanC`), comparing on `(ID, VERSION)` — the redundancy
+    pruning keeps the widest sound partition.
+  * `TestPrimaryKeyComponentsToCompare_OmitsOnlyWhatEveryLegFixesAlike`
+    drives the omission proof over hand-built leg orderings, one arm per
+    branch of `legFixedComparison`: same comparison everywhere and nil
+    (implicit) everywhere omit; different comparisons, a sorted leg, an
+    unreadable (string) payload in one or every leg, two bindings in a leg,
+    and a typed nil comparison all compare.
+  * `TestIntersector_WidenedPartIgnoresItsRequestedDirection`:
+    `[VERSION DESC, ID ASC]` and `[ID ASC, VERSION DESC]` over forward legs
+    build the forward merge on `(ID, VERSION)`; `[ID DESC, VERSION ASC]`
+    over reverse legs builds the reverse one; every part carries the merge
+    direction.
   * New arms: a leg whose key is `(VERSION, X, ID)` with only VERSION bound —
     ID ordered only within X, which the other leg cannot compare — yields no
     intersection (the `(VERSION)` offer fails step 3, `(VERSION, ID)` fails
@@ -214,21 +240,53 @@ enumeration).
     neither is — the cascade's actual rule, degree to zero, not "any parent
     removed".
 * Plan shape + rows (`sqldriver/pk_intersection_leg_bound_component_fdb_test.go`,
-  the RFC-245 pin): the reproducer and its `ORDER BY pk1 DESC` twin are
-  asserted PER QUERY to plan an intersection over `TI_B_PK1` and `TI_PK2`
-  comparing on `(PK1, PK2)` (reverse for the DESC twin) — a positive
-  assertion, not the conditional property arm, which stays as is; row
-  expectations unchanged. If the cost model does not choose the intersection
-  the arm fails and the reason gets fixed in this change, not filed.
+  the RFC-245 pin): the reproducer, its `ORDER BY pk1 DESC` twin and
+  `ORDER BY pk2 DESC, pk1` are asserted PER QUERY to plan an intersection
+  over exactly `TI_B_PK1, TI_PK2` in that leg order (the planner sorts
+  candidates by name) comparing on `(PK1, PK2)`, forward or reverse as
+  stated. `ORDER BY pk1 DESC, pk2` is a rows-only case: it is not merged,
+  and not because of this RFC — every match picks its scan direction against
+  the request on its own (`SatisfiesAnyRequestedOrderings`, the structure
+  Java has), the `(b, pk1)` leg satisfies `[pk1 DESC, pk2 ASC]` in neither
+  direction and arrives forward while `(pk2)` arrives reversed, and the
+  reversed `(pk2)` scan with a residual is the right plan. The unit arm that
+  merges `[ID DESC, VERSION ASC]` over two REVERSE legs states what the
+  intersector does when both legs are reversed, which that rule does not
+  produce for this request; the three-way `a = 1 AND b = 1 AND pk2 = 3`
+  over `TI_A, TI_B_PK1, TI_PK2` and `a = 1 AND pk2 = 3` over `TI_A, TI_PK2`
+  likewise. Measured at the implementation: the cost model chooses every
+  one of them (`Fetch(Intersection(IndexScan(TI_B_PK1, [=, *] COVERING),
+  IndexScan(TI_PK2, [=] COVERING)))`, `REVERSE` on both legs and the merge
+  for the DESC shapes). Row expectations unchanged.
 * Cross-engine: the RFC-245 probe and corpus entry
   (`pk_intersection_leg_bound_component_count`, `DivergenceJavaWrongRowsGoCorrect`)
   keep asserting Java's wrong answer and Go's right one; Go's PLAN changes,
   its rows do not.
 * `TestFDB_MetamorphicCompositePrimaryKey` and its DML twin (the net that found
   RFC-245's defect) stay green with their floors.
-* EXPLAIN corpus diff `64a737edd` vs the implementation; 1M stress comparison
-  as for RFC-245/246; planner fuzz; every mutation claim with its
-  mutation-present grep.
+* Mutations, each taken with the mutated text `grep -c`'d present (1) in
+  the same invocation and absent (0) after restoring, over the 29
+  `TestIntersector_*` / `TestPrimaryKeyComponentsToCompare_*` top-level
+  tests: the directed gate disabled (`if false && !everyLegDeliversComparisonKey`)
+  reddens `ComparesOnTheComponentOneLegFixes`, both arms of
+  `WidenedPartOrderingClaimIsVacuousByConstancy`, and
+  `ThreeWayBuildsTheWidestPartitionOnBothComponents` — the three "exactly
+  one" pins — and nothing else (the two decline arms and the
+  different-constants arm stay green: their declines and their
+  both-components assertion do not depend on the gate); the same-comparison
+  clause disabled reddens exactly `ComparesOnTheComponentLegsFixToDifferentConstants`;
+  the requested-direction reset disabled reddens exactly the three arms of
+  `WidenedPartIgnoresItsRequestedDirection`.
+* EXPLAIN corpus (`cmd/explain-differ`, the yamsql conformance corpus),
+  `64a737edd` vs the implementation: 2955 entries, 2955 identical, 0 shape
+  flips. Population: that corpus holds no composite-primary-key intersection
+  whose legs fix a component unevenly — the `T_PKI` shapes live in the
+  cross-engine `SeedRunCorpus` (`plandiff/corpus.go`), not in the EXPLAIN
+  baseline — so this green says the directed gate declined none of the
+  corpus's EXISTING primary-key intersections (every pk-intersection
+  candidate now passes through it), not that it exercised the widening.
+* 1M stress comparison and planner fuzz at the implementation head,
+  recorded below.
 
 ## Review
 
@@ -242,5 +300,21 @@ the enumeration bound stated, the fixed-key edge exclusion stated as the
 gate's precondition and pinned, the `MapAll` sentence corrected to "all
 dependencies removed" with a multi-parent pin, one enumeration function
 rather than a survivor, the per-query positive plan assertion, and the
-three-way flips spelled out. Implementation lap, codex and @claude recorded
-below.
+three-way flips spelled out.
+
+Implementation lap on `81cd73533`: Graefe ACK with conditions, Torvalds ACK
+with conditions, codex one P2 — all folded. Graefe and Torvalds both found
+the same defect, `legFixedComparison` failing OPEN (a discarded type-assertion
+`ok` and `bindings[0]` under several bindings would read an unreadable
+payload as the nil implicit component and omit a component two legs fix to
+different constants — the bug this RFC closes, re-armed); it fails closed
+now with an arm per branch. codex found that a widened part took its
+REQUESTED direction, so `ORDER BY pk2 DESC, pk1` forfeited the merge on a
+mixed key; the part now takes the merge's direction, pinned at unit and
+SQL level. Also folded: the three-way test renamed to what it asserts
+(one intersection, all three legs); the mutation claims replaced by the
+measured reddened names with their populations; the EXPLAIN corpus stated
+with its population; the FDB pin's stale "declines most of the TI shapes"
+prose and its leg-order determinism cited; RFC-245's old symbol names
+annotated. The stress and fuzz figures are the docs commit that follows.
+@claude on the PR.

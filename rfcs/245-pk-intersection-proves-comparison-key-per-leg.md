@@ -4,7 +4,9 @@
 
 At `d6b5a0d84`, `createPrimaryKeyIntersection` (`intersector_primary_key.go`)
 admits a comparison key when `comparisonKeyContainsFreePrimaryKey` holds against
-the UNION of every leg's equality-bound values. That is a faithful port of Java
+the UNION of every leg's equality-bound values. (Symbol names in this RFC are as
+of its implementation; RFC-247 folded `comparisonKeyContainsFreePrimaryKey` into
+`primaryKeyComponentsToCompare` and restated the proof.) That is a faithful port of Java
 4.12.11.0's `AbstractDataAccessRule.isCompatibleComparisonKey`, whose
 `equalityBoundKeyValues` argument `WithPrimaryKeyDataAccessRule.
 createIntersectionAndCompensation` builds by flattening the equality-bound
