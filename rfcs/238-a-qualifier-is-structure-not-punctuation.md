@@ -64,8 +64,8 @@ Anything later found to mint a key joins it rather than being argued out of it.
 | `legColumns` | `ToUpper(alias) + "." + ToUpper(col)` (two lines; sweep misses it) | GONE |
 | `logicalLegFields` | `ToUpper(alias) + "." + col` | THE ONE |
 | `scalar_subquery_seed.go:143` | `ToUpper(innerAlias) + "." + scalarCol` | GONE |
-| `clustered_outer_scalar.go:509` | `leg.binding + "." + leg.typ.Fields[i].Name` | GONE |
-| `clustered_outer_scalar.go:537` | `ToUpper(innerAlias) + "." + scalarCol` | GONE |
+| `clustered_outer_scalar.go:506` | `leg.binding + "." + leg.typ.Fields[i].Name` | GONE |
+| `clustered_outer_scalar.go:534` | `ToUpper(innerAlias) + "." + scalarCol` | GONE |
 | `qualifyAndMergeColumns` (two sites) | `alias + "." + ToUpper(c.Name)` | GONE |
 | `cascades_translator.go:4076` (unnest leg mint) | `leg + "." + ToUpper(rootName)` | GONE |
 
@@ -313,7 +313,7 @@ than at the end.
 2. Move label derivation off the split, onto the structured qualifier.
 3. Collapse ALL EIGHT renderers, not the first two — including `qualifyAndMergeColumns` (two sites) and the UNNEST leg mint at `cascades_translator.go:4076`, which the table marks GONE and an earlier step list silently left standing: `legColumns`' join arm defers
    to `logicalLegFields`, and `scalar_subquery_seed.go:143`,
-   `clustered_outer_scalar.go:509` and `:537` defer to the same boundary, where
+   `clustered_outer_scalar.go:506` and `:534` defer to the same boundary, where
    the descriptor-name decision also moves. Collapsing a subset leaves live
    paths spelling keys independently — and those three already disagree with
    each other on case.
@@ -895,7 +895,7 @@ and that is not one option of two. Java never couples them:
 `QueryVisitor.java:836` sets `targetRecordType` from `getStorageName()` at
 construction, and `UpdateExpression.java:100-105` correlates the transforms to
 the SOURCE quantifier only. Go's coupling is its own, originating at
-`logical_predicate.go:7117` where `buildSelectScope` takes the bare table name
+`logical_predicate.go:7123` where `buildSelectScope` takes the bare table name
 as the alias. "Rebase the transforms onto the new identifier" would preserve
 that divergence while working around it. INSERT has no such coupling: `executor.go:3973`
 resolves ITS target through the tolerant `GetRecordType` -- an INSERT-only
@@ -983,7 +983,7 @@ FIRST: "escaped names only", from a SELECT-only measurement. Wrong as method —
 SELECT and DML did not resolve a table name the same way and nothing said so.
 
 SECOND: "two populations, and case is the larger one", after measuring DML.
-`recordTypeCI` (`logical_predicate.go:6909`) resolved a DML target
+`recordTypeCI` (`logical_predicate.go:6915`) resolved a DML target
 CASE-INSENSITIVELY, so an unquoted `DELETE FROM customer` against a table
 declared `"Customer"` VALIDATED and then planned
 `Delete(CUSTOMER, PredicatesFilter(Scan(CUSTOMER), [1 preds]))` — a target
@@ -1212,7 +1212,7 @@ an exact `SemanticAnalyzer.getTable` before anything looks at a column.
 
 UPDATE IS ON BOTH SIDES, BY CLAUSE, and that is the shape to carry away rather
 than "UPDATE is fixed". Its SET-column check had its own `recordTypeCI` call
-(`logical_predicate.go:7008`) that folded case purely to find a descriptor, so
+(`logical_predicate.go:7014`) that folded case purely to find a descriptor, so
 making it strict leaves `rt` nil for an unresolvable target, the SET check
 declines, and the 42F01 answers. Its WHERE clause does not go through that
 check at all.

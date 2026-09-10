@@ -12,7 +12,10 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/api"
 )
 
 func TestFDB_ExistsInOn(t *testing.T) {
@@ -118,13 +121,26 @@ func TestFDB_ExistsInOn(t *testing.T) {
 				"LEFT JOIN c ON c.a_id = a.id AND EXISTS (SELECT 1 FROM d WHERE d.id = a.id)")
 	})
 
-	// EXISTS buried under OR in the ON clause is NOT the directly-handled
-	// semi-join shape (the flatten only lifts a top-level AND). The
-	// CheckBuriedExistentialPredicate backstop must reject it cleanly rather than
-	// route it through the existential peel's regular-predicate bucket
-	// (which would let the empty-FOD NULL pass every row → silent wrong result).
+	// EXISTS under OR in the ON clause: an inner join's ON is a WHERE conjunct
+	// and the builder folds its EXISTS into the WHERE, so this is the WHERE's
+	// EXISTS-under-OR — refused by the builder with the WHERE's own 0A000
+	// before anything is planned (the semi-join lowering cannot express a
+	// disjunction; routing it through would let the empty-probe NULL pass
+	// every row). The WHERE spelling is the control: same code, same message.
 	t.Run("inner_exists_under_or_in_on_rejected", func(t *testing.T) {
-		assertUnsupported(t, db, ctx,
-			"SELECT a.id, c.id FROM a JOIN c ON (c.a_id = a.id AND EXISTS (SELECT 1 FROM d WHERE d.id = a.id)) OR c.id > 100")
+		for _, q := range []string{
+			"SELECT a.id, c.id FROM a JOIN c ON (c.a_id = a.id AND EXISTS (SELECT 1 FROM d WHERE d.id = a.id)) OR c.id > 100",
+			"SELECT a.id, c.id FROM a JOIN c ON c.a_id = a.id WHERE EXISTS (SELECT 1 FROM d WHERE d.id = a.id) OR c.id > 100",
+		} {
+			rows, qErr := db.QueryContext(ctx, q)
+			if qErr == nil {
+				rows.Close()
+				t.Fatalf("EXISTS under OR planned; want a typed rejection\n  sql: %s", q)
+			}
+			requireSQLSTATE(t, qErr, api.ErrCodeUnsupportedOperation)
+			if !strings.Contains(qErr.Error(), "EXISTS within an OR (disjunction) is not supported") {
+				t.Fatalf("error = %v, want the WHERE's EXISTS-under-OR wording\n  sql: %s", qErr, q)
+			}
+		}
 	})
 }

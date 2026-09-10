@@ -455,6 +455,19 @@ func (v *PlanVisitor) VisitQueryTerm(qt antlrgen.IQueryTermContext) (logical.Log
 }
 
 func (v *PlanVisitor) visitSimpleTableBody(simpleTable *antlrgen.SimpleTableContext) (logical.LogicalOperator, error) {
+	op, err := v.visitSimpleTableBodyUnfolded(simpleTable)
+	if err != nil {
+		return nil, err
+	}
+	// The block's last step: an inner join's ON-clause EXISTS becomes a
+	// WHERE-EXISTS (on_exists_fold.go), so no plan leaves the builder with a
+	// join carrying its own existential.
+	return foldInnerOnExistsIntoWhere(op)
+}
+
+// visitSimpleTableBodyUnfolded builds the block; visitSimpleTableBody folds
+// its ON-clause EXISTS afterwards.
+func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleTableContext) (logical.LogicalOperator, error) {
 	// Step 1: FROM → parse the source first. Java's QueryVisitor
 	// rejects FROM-less SELECTs before any function dispatch, so
 	// parseFromSource must run before classification/validation.

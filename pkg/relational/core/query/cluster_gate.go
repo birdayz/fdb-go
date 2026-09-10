@@ -253,87 +253,12 @@ func hasWrappedBuriedJoin(op logical.LogicalOperator) bool {
 	return walk(op, false)
 }
 
-// scanFamilyLegCteAware reports whether op is a single base-table SCAN
-// (through filters), resolving a CTE-name scan THROUGH cteScope to its body.
-// This is the cteScope-AWARE root-cause counterpart of the plain (syntactic,
-// cteScope-blind) isScanFamilyLeg: a CTE whose body is a JOIN or an OPAQUE BOX
-// (aggregate/union/sort/distinct/limit) is NOT scan-family — it flows a merged
-// or multi-source row the 2-way EXISTS-in-ON ordinal seed is unverified over.
-// A cteExprScope name (recursive-CTE self-reference / temp-table scan) is a
-// pre-translated opaque reference → not scan-family (conservative). The body
-// is walked under inCTEDefiningScope — the SAME cteShadowStack mechanism
-// translateScan/legColumns use — so a SAME-NAMED scan inside the body resolves
-// to the OUTER shadowed binding (not the base table), keeping classification
-// in lockstep with translation (a plain delete-during-walk would diverge:
-// `WITH c AS (SELECT * FROM c)` shadowing an outer join/box would misresolve
-// the inner c to the base table and over-gate).
-func (t *cascadesTranslator) scanFamilyLegCteAware(op logical.LogicalOperator) bool {
-	for {
-		switch n := op.(type) {
-		case *logical.LogicalScan:
-			key := strings.ToUpper(n.Table)
-			if _, ok := t.cteExprScope[key]; ok {
-				return false
-			}
-			if body, ok := t.cteScope[key]; ok {
-				var r bool
-				t.inCTEDefiningScope(key, body, func() {
-					r = t.scanFamilyLegCteAware(body)
-				})
-				return r
-			}
-			return true
-		case *logical.LogicalFilter:
-			op = n.Input
-		default:
-			return false
-		}
-	}
-}
-
 func (t *cascadesTranslator) ordinalWedgeGateDecide(j *logical.LogicalJoin) wedgeGateDecision {
 	if _, isUnnest := j.Right.(*logical.LogicalUnnest); isUnnest {
 		// Lateral unnest lowers to FlatMap-over-Explode with dotted-prefix
 		// bipartition machinery (RFC-142) via its own dedicated translation
 		// path (translateUnnestJoin) — never through this binary-join gate.
 		return wedgeGateDecision{Arity: arityPoison, Reason: "lateral unnest join (handled by its own dedicated translation path)"}
-	}
-	if len(j.OnExistsSubqueries) > 0 {
-		// A BARE 2-way NON-ENCLOSED INNER EXISTS-in-ON gates
-		// ordinal. Both legs must be a single SCAN SOURCE (through filters),
-		// tested by scanFamilyLegCteAware — the SINGLE root-cause predicate that
-		// resolves a CTE-name scan THROUGH cteScope and checks the BODY, so it
-		// excludes at once: a FULL/aggregate/union/sort box (not a scan → a
-		// buried join = the index-matching wall, a null-drain, or an opaque
-		// merged row the 2-leg seed is unverified over), an N-way join leg (not
-		// a scan), a CTE-backed join AND a CTE-backed opaque box (the scan
-		// resolves to a non-scan body). A scan-scan 2-way seeds
-		// [ForEach, ForEach, Existential], which the existential peel's
-		// 2-leg arm plans ordinal AND index-neutral (the existential already
-		// drops even a 2-way join to a plain NLJ on the name model, so no index
-		// is lost — EXPLAIN-verified); the translateJoin binary arm builds the
-		// ordinal seed and attaches the existentials unchanged. The poison STAYS
-		// for an ENCLOSED or N-WAY EXISTS-in-ON (the existential would ride into
-		// the ≥3-quantifier partition machinery, or hit the buried-inner-box
-		// index-matching wall — the booked ordinal-fold-over-index-matched-box
-		// prerequisite) and for any non-scan leg.
-		// DUPLICATE ALIAS: two legs sharing a SQL alias get a parser-minted
-		// Q$DUPn binding on the later leg (mintedBindingLeg finds it). The gated
-		// arm here RETURNS EARLY, before the pairwise dup-binding poison check below,
-		// so without this guard a dup-alias EXISTS-in-ON would gate and the
-		// 2-leg fold would LOSE the minted binding → serve NULLs (silent wrong;
-		// the name model loud-declines it). Keep dup-alias poisoned here so it
-		// falls to that loud decline (base behaviour).
-		if j.Kind == logical.JoinInner && !t.inInnerCluster &&
-			t.scanFamilyLegCteAware(j.Left) && t.scanFamilyLegCteAware(j.Right) &&
-			mintedBindingLeg(j.Left, j.Right) == "" {
-			return wedgeGateDecision{Gated: true, Arity: 2, Reason: "bare 2-way non-enclosed EXISTS-in-ON (scan legs; 2-leg ordinal fold)"}
-		}
-		// The seed select carries existential quantifiers; if it merges, they
-		// ride along and land the merged select in the ≥3-quantifier
-		// partition machinery. Stays name-model (the existential seeds own
-		// this path).
-		return wedgeGateDecision{Arity: arityPoison, Reason: "existential quantifiers on the join select"}
 	}
 	// PAIRWISE dup check over the kind-aware leg list, keyed by the BINDING
 	// correlation: duplicate SQL aliases with
@@ -592,7 +517,7 @@ func (t *cascadesTranslator) derivedBodyOpaqueOrdinalLeg(body logical.LogicalOpe
 // positional read. Conditions:
 //   - plain filters only above the join (a subquery-carrying WHERE routes the
 //     body through the EXISTS/scalar dispatches — different seeds);
-//   - a bare INNER comma unnest join (no ON, no ON-EXISTS) with an AS or AT
+//   - a bare INNER comma unnest join (no ON) with an AS or AT
 //     binding and a segment path (`t.arr`, `t.rec.arr`);
 //   - a SINGLE-SOURCE, single-alias outer (clusterArity 1 — excludes the
 //     merge-opaque FULL box, which is also arity 1 but multi-alias) bound to a
@@ -647,7 +572,7 @@ func (t *cascadesTranslator) derivedBodyStarOrdinalLeg(body logical.LogicalOpera
 		op = f.Input
 	}
 	j, isJ := op.(*logical.LogicalJoin)
-	if !isJ || j.Kind != logical.JoinInner || len(j.OnExistsSubqueries) > 0 || j.OnPredicate != nil {
+	if !isJ || j.Kind != logical.JoinInner || j.OnPredicate != nil {
 		return nil, false
 	}
 	u, isU := j.Right.(*logical.LogicalUnnest)
@@ -865,9 +790,6 @@ func (t *cascadesTranslator) clusterArity(op logical.LogicalOperator) int {
 	switch o := op.(type) {
 	case *logical.LogicalJoin:
 		if _, isUnnest := o.Right.(*logical.LogicalUnnest); isUnnest {
-			return arityPoison
-		}
-		if len(o.OnExistsSubqueries) > 0 {
 			return arityPoison
 		}
 		if o.Kind == logical.JoinFull {

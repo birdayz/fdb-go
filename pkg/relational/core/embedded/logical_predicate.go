@@ -2121,11 +2121,10 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 		}
 		if sq.joins[sqIdx].onExpr != nil && j.OnPredicate == nil {
 			// EXISTS in a JOIN ON clause (RFC-154 §5, Java parity). For an INNER
-			// join this is equivalent to EXISTS in WHERE (no null-extension):
-			// install a SubqueryPlanner so WalkPredicate builds the ON predicate's
-			// ExistentialValuePredicate, then carry the collected EXISTS subqueries
-			// on the join so translateJoin attaches the existential quantifier and
-			// the existential peel builds the semi-join.
+			// join this IS EXISTS in WHERE (no null-extension): install a
+			// SubqueryPlanner so WalkPredicate builds the ON predicate's
+			// ExistentialValuePredicate, then park the collected EXISTS subqueries
+			// on the join for foldInnerOnExistsIntoWhere to move into the WHERE.
 			//
 			// OUTER joins are deferred (RFC-154 §5.2b): the ON-EXISTS is correlated
 			// to the PRESERVED side and gates null-extension, which the semi-join
@@ -2154,17 +2153,10 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 					return api.NewErrorf(api.ErrCodeUnsupportedQuery,
 						"unsupported EXISTS in JOIN ON clause: %v", walkErr)
 				}
-				// The existential peel handles exactly ONE
-				// existential quantifier on a binary join (a 2-ForEach + 1-Existential
-				// select); a join with two+ existentials falls through unplanned. That
-				// is a pre-existing limitation shared with WHERE EXISTS over a join —
-				// reject MULTIPLE EXISTS-in-ON cleanly here rather than let it surface
-				// as the opaque "Cascades planner could not plan query" (RFC-154 §5;
-				// single EXISTS-in-ON is the supported shape).
-				if len(onPlanner.subqueries) > 1 {
-					return api.NewError(api.ErrCodeUnsupportedQuery,
-						"multiple EXISTS in a JOIN ON clause is not yet supported")
-				}
+				// Parked on the join for the block's last step,
+				// foldInnerOnExistsIntoWhere, which moves the markers and the
+				// subqueries into the WHERE (on_exists_fold.go): several EXISTS in
+				// one ON are several WHERE-EXISTS, exactly as Java has them.
 				j.OnPredicate = predicates.SimplifyPredicateValues(pred)
 				j.OnExistsSubqueries = onPlanner.subqueries
 				continue
@@ -3739,6 +3731,20 @@ func normalizeSchemaQualifiedSelectSources(sq *selectQuery, schemaName string, m
 }
 
 func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource, cteOnScopes map[string]semantic.ScopeSource, cteBodies ...map[string]logical.LogicalOperator) (logical.LogicalOperator, error) {
+	built, err := buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op, sq, md, schemaName, cteScopes, cteOnScopes, cteBodies...)
+	if err != nil {
+		return nil, err
+	}
+	// The block's last step: an inner join's ON-clause EXISTS becomes a
+	// WHERE-EXISTS (on_exists_fold.go), so no plan leaves the builder with a
+	// join carrying its own existential.
+	return foldInnerOnExistsIntoWhere(built)
+}
+
+// buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded runs the upgrades;
+// buildLogicalPlanForSelectWithCTECatalog_postBuild folds the block's
+// ON-clause EXISTS afterwards.
+func buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource, cteOnScopes map[string]semantic.ScopeSource, cteBodies ...map[string]logical.LogicalOperator) (logical.LogicalOperator, error) {
 	queryCTEScopes := singleSourceQueryBlockCTEScopes(sq, cteScopes, cteOnScopes)
 	// Build the semantic scope once. All identifier resolution below
 	// goes through this scope — same architecture as Java's

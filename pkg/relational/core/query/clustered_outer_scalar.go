@@ -231,9 +231,6 @@ func rebuildInnerWithValues(op logical.LogicalOperator, fn func(values.Value) va
 	case *logical.LogicalScan:
 		return o, true
 	case *logical.LogicalJoin:
-		if len(o.OnExistsSubqueries) > 0 {
-			return nil, false
-		}
 		l, ok := rebuildInnerWithValues(o.Left, fn)
 		if !ok {
 			return nil, false

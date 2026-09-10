@@ -286,9 +286,9 @@ func TestFDB_ExistsOverNonGroupedAggregate(t *testing.T) {
 			"SELECT p.id FROM p WHERE EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id LIMIT 1 OFFSET ?) ORDER BY p.id", 1), nil)
 	})
 
-	// Projected and JOIN-ON consumers do not yet have constant Value/ON-marker
-	// substitution. KnownTruth must therefore reject them typed-loud; neither is
-	// allowed to fall through to the raw-row semi-join.
+	// The projected consumer does not yet have constant Value substitution.
+	// KnownTruth must therefore reject it typed-loud rather than fall through
+	// to the raw-row semi-join.
 	t.Run("projected_known_truth_rejected", func(t *testing.T) {
 		rows, qErr := db.QueryContext(ctx, "SELECT p.id, EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id LIMIT 1 OFFSET 1) FROM p")
 		if qErr == nil {
@@ -297,13 +297,18 @@ func TestFDB_ExistsOverNonGroupedAggregate(t *testing.T) {
 		}
 		requireSQLSTATE(t, qErr, api.ErrCodeUnsupportedQuery)
 	})
-	t.Run("join_on_known_truth_rejected", func(t *testing.T) {
-		rows, qErr := db.QueryContext(ctx, "SELECT p.id FROM p JOIN g ON g.gid = 901 AND EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id LIMIT 1 OFFSET 1)")
-		if qErr == nil {
-			rows.Close()
-			t.Fatal("JOIN ON cardinality-known EXISTS planned; expected typed unsupported rejection")
-		}
-		requireSQLSTATE(t, qErr, api.ErrCodeUnsupportedQuery)
+	// An inner join's ON-clause EXISTS is a WHERE-EXISTS (the builder folds it
+	// into the WHERE), so the cardinality-known ON consumer is the WHERE
+	// consumer: OFFSET 1 over the one aggregate row is statically FALSE, and
+	// the join (g has the 901 row, so every p would otherwise pair) returns
+	// nothing — exactly as the WHERE spelling does.
+	t.Run("join_on_known_false_substituted", func(t *testing.T) {
+		eq(t, "join_on_known_false", ids(t,
+			"SELECT p.id FROM p JOIN g ON g.gid = 901 AND EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id LIMIT 1 OFFSET 1) ORDER BY p.id"), nil)
+		eq(t, "join_where_known_false", ids(t,
+			"SELECT p.id FROM p JOIN g ON g.gid = 901 WHERE EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id LIMIT 1 OFFSET 1) ORDER BY p.id"), nil)
+		eq(t, "join_on_known_true", ids(t,
+			"SELECT p.id FROM p JOIN g ON g.gid = 901 AND EXISTS (SELECT COUNT(*) FROM e WHERE e.eref = p.id LIMIT 1 OFFSET 0) ORDER BY p.id"), []int64{1, 2, 3})
 	})
 
 	// DML must share SELECT's parse-tree window-aggregate guard. The mixed

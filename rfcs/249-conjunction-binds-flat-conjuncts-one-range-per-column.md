@@ -275,18 +275,37 @@ replacing the all-or-nothing column.
   a root carrying ON-EXISTS — the root's ON predicates dropped with it. The
   root cause is one spelling reaching two mechanisms: Java has no ON-EXISTS
   at all, because `QueryVisitor.visitSimpleTable` folds every inner-join ON
-  conjunct into the WHERE of the single SelectExpression it builds, and Go's
-  `translateProjection` already did that fold — but only for a FROM with no
-  WHERE. `on_exists_fold.go` now folds an inner cluster's ON-EXISTS into the
-  WHERE wherever the translator first sees a filter (`translateFilter`,
-  `findExistsFilterUnderUnaryChain`), and the projection-level lift uses the
-  same `liftClusterOnExists` walk (so a NESTED join's ON-EXISTS lifts too);
-  every route then sees the WHERE-EXISTS shape it already plans. The
-  three-leg ON+WHERE shapes, the ON-EXISTS beside a plain WHERE, and the
-  nested-ON no-WHERE shape now answer with the right rows. Mutation-checked:
-  with the filter-level fold disabled exactly the three WHERE arms of
-  `TestFDB_ExistsInOnPlusWhereExists` redden and the two no-WHERE arms stay
-  green through the projection-level lift.
+  conjunct into the WHERE of the single SelectExpression it builds, while Go
+  carried an inner join's ON-EXISTS on the join (`OnExistsSubqueries`) and
+  special-cased it in the translator — a gate arm for the bare 2-way, a
+  projection-level lift for a FROM with no WHERE, a boundary in every cluster
+  walk, and nothing for the shapes above. The fold now happens where Java
+  does it, in the BUILDER: `embedded/on_exists_fold.go`'s
+  `foldInnerOnExistsIntoWhere` is the last step of every query-block build
+  (`visitSimpleTableBody`, `…_postBuild`), moving the ON's markers into the
+  block's WHERE conjunction (FROM order first) and its subqueries onto the
+  WHERE filter, synthesizing the filter directly above the join when the
+  block has no WHERE, and copying every node it touches. The walk is the
+  cluster `gatherInnerClusterLegs` flattens (INNER nodes; an OUTER join, a
+  lateral unnest or a non-join leg is a boundary), decided per join BEFORE
+  recursing so no child's lift is ever collected under an unlifted parent.
+  It refuses, with the WHERE's own wording, the two shapes that cannot lift
+  whole — an EXISTS under an OR (its marker would stay under the OR while its
+  quantifier moved: the dangling shape again) and a subquery with no marker
+  in conjunct position. A plan leaving the builder never carries an
+  `OnExistsSubqueries`; the translator asserts that in `translateJoin`
+  (`0AF00 … reached the translator unfolded`) and every translator consumer
+  of the spelling is deleted: the gate arm and `scanFamilyLegCteAware`, the
+  projection-level lift and its cardinality-known ON rejection, the
+  ON-attach halves of both existential flattens, `translateJoin`'s ON-exists
+  arm, and the `OnExistsSubqueries` boundaries in the cluster, chained-unnest,
+  unnest-gather and clustered-scalar walks. Three former rejections became
+  answers, as in Java: two EXISTS in one ON, a cardinality-known EXISTS in
+  ON (substituted like the WHERE's), and every three-leg ON+WHERE shape;
+  EXISTS under OR in ON is now refused by the builder with the WHERE's 0A000
+  instead of the backstop's 0AF00. Mutation-checked: with the builder fold
+  disabled every ON-EXISTS arm in `TestFDB_ExistsInOn*` reddens through the
+  translator's assertion — a refusal, never wrong rows.
 
 * *Criterion #6 read the root only.* `inPlanPenaltyRank` penalises an
   IN-plan whose bindings never became search arguments, and it read
@@ -396,16 +415,27 @@ is where the fold lives, not what it computes.
   changes the answer, the ON+WHERE form and the WHERE+WHERE form both return
   exactly `(2, 51)`; over three legs, the EXISTS in the root join's ON, in
   the nested join's ON, beside a plain WHERE, and with no WHERE at all each
-  return exactly the rows the WHERE+WHERE control does. Unit,
-  `query/on_exists_fold_test.go` (8 arms): the lift takes the root's and a
-  nested inner join's ON-EXISTS, keeps the other ON conjuncts, leaves an
-  untyped nil when the ON was only the EXISTS, copies every node on the path
-  and shares untouched legs, stops at an OUTER join and at a lateral unnest,
-  is the identity with nothing to lift, and the lifted cluster gathers as
-  three flat legs where the un-lifted one gathered two; the filter fold
-  appends the markers after the WHERE's own conjuncts and the subqueries
-  after the WHERE's own, and `findExistsFilterUnderUnaryChain` finds a WHERE
-  whose only existential rode the ON.
+  return exactly the rows the WHERE+WHERE control does; two EXISTS in one
+  ON answer `(1, 50)`; a cardinality-known EXISTS in ON answers exactly as
+  the WHERE spelling (`exists_over_aggregate_fdb_test.go`
+  `join_on_known_false_substituted`); EXISTS under OR in ON and in WHERE
+  fail with the same 0A000 and the same message. Unit,
+  `embedded/on_exists_fold_test.go` (22 arms): the lift takes the root's, a
+  nested join's and two EXISTS of one ON, in FROM order, keeps the other ON
+  conjuncts, leaves an untyped nil when the ON was only the EXISTS, copies
+  every node on the path and shares untouched legs, stops at an OUTER join
+  and at a lateral unnest, refuses an EXISTS under OR and a subquery without
+  a conjunct marker (and the refusal propagates through a clean parent), and
+  is the identity with nothing to lift; the fold merges into the WHERE filter
+  ahead of its own conjuncts and subqueries, synthesizes the filter under a
+  shell and at the root, leaves a text-only WHERE alone, touches nothing
+  without a lift, and propagates the refusal; and, driven through the SQL
+  builder (`TestOnExistsFold_NoJoinLeavesTheBuilderUnfolded`, 7 spellings
+  incl. ORDER BY/LIMIT with no WHERE), no join leaves the builder carrying
+  `OnExistsSubqueries` and the block's single WHERE filter carries every
+  existential with its marker in conjunct position. Plan,
+  `plan_harness_test.go` `join_on_known_false_substituted`: the ON and WHERE
+  spellings of a cardinality-known EXISTS plan to the same tree.
 * Unit, `cascades/in_plan_order_independence_test.go`: the wrapped
   unSARGed IN-plan ranks 1 and loses to the plain filter through the full
   chain with the "more IN-joins" rung pointing the other way; the wrapped
@@ -578,3 +608,19 @@ the two 3-second full scans, and they moved by ≤ 0.02 s.
   on a single table, unrelated to joins or ON — booked in `TODO.md` with the
   reproducer; it is its own capability (the existential fold with two
   quantifiers) and needs its own RFC.
+- **Graefe and Torvalds, second implementation delta (the translator-level
+  ON-EXISTS fold): both NAK**, converging: the fold belonged in the builder
+  (Java's `visitSimpleTable`), where it retires the inner ON-EXISTS spelling
+  and every `OnExistsSubqueries` special case, instead of at two translator
+  entry points that still missed a FROM with no WHERE under ORDER BY / LIMIT
+  (Torvalds) and left the translateJoin ON-exists arm and the attach halves
+  as dead dual mechanisms (Graefe); the lift's `return op` after recursing
+  could collect a child's lift under an unlifted parent (both); an EXISTS
+  under OR in ON lifted the subquery while its marker stayed under the OR
+  (both); the cardinality-known ON rejection at the projection root still
+  fired before the lift (Graefe); no row pin for a binary ON-EXISTS beside a
+  plain WHERE (both). All folded as the builder fold above: boundary decided
+  before recursing, EXISTS-under-OR and marker-less subqueries refused, the
+  known-truth rejection deleted (the WHERE consumer substitutes), the binary
+  ON+plain-WHERE spelling pinned in the builder-exit test and by
+  `binary_on_exists_plus_where` rows. Delta re-confirmation: see below.

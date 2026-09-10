@@ -43,15 +43,19 @@ func TestFDB_ExistsInOn_Probe(t *testing.T) {
 	mwjoMustExec(t, db, ctx, "INSERT INTO d (id) VALUES (1)")
 	mwjoMustExec(t, db, ctx, "INSERT INTO e (id, c_id) VALUES (900, 50)")
 
-	// Two EXISTS conjuncts in one ON → MORE than one existential quantifier on
-	// the binary join, which the NLJ rule does not implement (single-existential
-	// only — a pre-existing limit shared with WHERE EXISTS over a join). Must
-	// reject CLEANLY (not the opaque "could not plan query").
-	t.Run("two_exists_in_on_rejected", func(t *testing.T) {
-		assertUnsupported(t, db, ctx,
+	// Two EXISTS conjuncts in one ON are two WHERE-EXISTS (the builder folds
+	// an inner join's ON-EXISTS into the WHERE), applied one after the other
+	// by the existential peel. a JOIN c on a_id: (1,50),(2,51),(1,52); EXISTS
+	// d (d={1}) keeps (1,50),(1,52); EXISTS e (e.c_id=50) keeps (1,50).
+	t.Run("two_exists_in_on", func(t *testing.T) {
+		got := scanPairs(t, db, ctx,
 			"SELECT a.id, c.id FROM a JOIN c ON c.a_id = a.id "+
 				"AND EXISTS (SELECT 1 FROM d WHERE d.id = a.id) "+
 				"AND EXISTS (SELECT 1 FROM e WHERE e.c_id = c.id)")
+		want := []string{"1|50"}
+		if !eqStrSlices(got, want) {
+			t.Errorf("two-EXISTS-in-ON rows = %v, want %v", got, want)
+		}
 	})
 
 	// EXISTS in ON + EXISTS in WHERE together: both existentials are owned by
@@ -145,17 +149,18 @@ func sortStrings(s []string) {
 
 // TestFDB_ExistsInOnPlusWhereExists pins, on data that can tell, that BOTH
 // existentials of `JOIN … ON … AND EXISTS(d) WHERE EXISTS(e)` are applied —
-// an inner join's ON-EXISTS is a WHERE-EXISTS (on_exists_fold.go), on the
-// binary join and on a three-leg cluster with the EXISTS in either join's ON.
-// The translator used to attach only the WHERE's existential quantifier on
-// the binary shape, leaving the ON's `EXISTS(q$N)` marker referencing a
-// quantifier no Select owned; the buried-existential backstop happened to
-// reject the query while the ON predicate arrived as one AND, and once the
-// Select constructor lifted the conjunction the dangling marker reached the
-// planner and was dropped — every row the ON-EXISTS should have excluded came
-// back. The three-leg shapes were refused outright (the gate poisons an N-way
-// join carrying its own existential) until the ON-EXISTS was folded into the
-// WHERE before any route saw it.
+// an inner join's ON-EXISTS is a WHERE-EXISTS, folded into the WHERE by the
+// builder (embedded/on_exists_fold.go) — on the binary join and on a
+// three-leg cluster with the EXISTS in either join's ON. The translator used
+// to attach only the WHERE's existential quantifier on the binary shape,
+// leaving the ON's `EXISTS(q$N)` marker referencing a quantifier no Select
+// owned; the buried-existential backstop happened to reject the query while
+// the ON predicate arrived as one AND, and once the Select constructor lifted
+// the conjunction the dangling marker reached the planner and was dropped —
+// every row the ON-EXISTS should have excluded came back. The three-leg
+// shapes were refused outright (the gate poisoned an N-way join carrying its
+// own existential) until the builder folded the ON-EXISTS into the WHERE so
+// no route ever saw a join carrying one.
 //
 // Binary: a={1,2,3}; c: 50→a1, 51→a2, 52→a1, 53→a2; d={2}; e: 900→c50,
 // 901→c51. Join pairs on a_id: (1,50),(2,51),(1,52),(2,53). EXISTS d (a.id ∈
@@ -276,7 +281,7 @@ func TestFDB_ExistsInOnPlusWhereExists(t *testing.T) {
 	// (TODO.md "A projected EXISTS beside a WHERE-EXISTS fails opaquely"): it
 	// fails on a single table too, so it is not about the ON clause or the
 	// join. Pinned as a refusal — never wrong rows — on the single-table form
-	// and on the ON-EXISTS form the fold now turns into it; when the
+	// and on the ON-EXISTS form the builder's fold turns into it; when the
 	// capability lands these arms flip to row assertions.
 	for _, tc := range []struct {
 		name string

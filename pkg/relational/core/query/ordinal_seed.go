@@ -393,8 +393,7 @@ func (t *cascadesTranslator) gatherInnerClusterLegs(j *logical.LogicalJoin) []cl
 	var legs []clusterLeg
 	var walk func(op logical.LogicalOperator)
 	walk = func(op logical.LogicalOperator) {
-		if nj, isJoin := op.(*logical.LogicalJoin); isJoin && nj.Kind == logical.JoinInner &&
-			len(nj.OnExistsSubqueries) == 0 {
+		if nj, isJoin := op.(*logical.LogicalJoin); isJoin && nj.Kind == logical.JoinInner {
 			if _, isUnnest := nj.Right.(*logical.LogicalUnnest); !isUnnest {
 				walk(nj.Left)
 				walk(nj.Right)
@@ -415,7 +414,7 @@ func (t *cascadesTranslator) gatherInnerClusterOnPredicates(j *logical.LogicalJo
 	var walk func(op logical.LogicalOperator)
 	walk = func(op logical.LogicalOperator) {
 		nj, isJoin := op.(*logical.LogicalJoin)
-		if !isJoin || nj.Kind != logical.JoinInner || len(nj.OnExistsSubqueries) != 0 {
+		if !isJoin || nj.Kind != logical.JoinInner {
 			return
 		}
 		if _, isUnnest := nj.Right.(*logical.LogicalUnnest); isUnnest {
@@ -575,7 +574,7 @@ func gatherInnerClusterPreds(j *logical.LogicalJoin) []predicates.QueryPredicate
 	var walk func(op logical.LogicalOperator)
 	walk = func(op logical.LogicalOperator) {
 		nj, isJoin := op.(*logical.LogicalJoin)
-		if !isJoin || nj.Kind != logical.JoinInner || len(nj.OnExistsSubqueries) > 0 {
+		if !isJoin || nj.Kind != logical.JoinInner {
 			return
 		}
 		if _, isUnnest := nj.Right.(*logical.LogicalUnnest); isUnnest {

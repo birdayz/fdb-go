@@ -2911,10 +2911,6 @@ func (t *cascadesTranslator) translateScan(s *logical.LogicalScan) expressions.R
 }
 
 func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressions.RelationalExpression {
-	// An inner cluster's ON-clause EXISTS is a WHERE-EXISTS (on_exists_fold.go);
-	// fold it first so the known-truth substitution and every route below see
-	// one spelling.
-	f = foldInnerOnExistsIntoFilter(f)
 	// Fold a WHERE-EXISTS whose post-pagination cardinality is known before any
 	// routing. The front-end proves the inner either empty or non-empty (notably:
 	// a non-grouped aggregate emits one row before LIMIT/OFFSET), so both EXISTS
@@ -4945,18 +4941,14 @@ func (t *cascadesTranslator) buildExistentialJoinSelect(
 	allPreds = append(allPreds, splitNonExistsPredicates(f.Predicate)...)
 	allPreds = append(allPreds, extractExistsPredicates(f.Predicate)...)
 
-	//
-	// The join's own ON-clause EXISTS subqueries are attached here too: their
-	// markers ride in j.OnPredicate (appended above), so their existential
-	// quantifiers must be owned by this Select exactly as translateJoin owns
-	// them on the filter-less path. Without this an ON-EXISTS beside a
-	// WHERE-EXISTS left `EXISTS(q$N)` referencing a quantifier no Select owned
-	// — a dangling existential the planner dropped, returning rows the ON
-	// clause should have excluded. CheckBuriedExistentialPredicate refuses that
-	// shape (DanglingExistentialPredicateError) should it ever recur.
+	// Every existential of the block is on the filter: an inner join's
+	// ON-clause EXISTS was folded into the WHERE by the builder
+	// (embedded/on_exists_fold.go), so a Select owning a marker always owns
+	// its quantifier; CheckBuriedExistentialPredicate refuses a dangling one
+	// (DanglingExistentialPredicateError) should a marker ever arrive alone.
 	sourceAliases := []string{leftAlias, rightAlias}
-	for _, esqs := range [][]logical.ExistsSubquery{j.OnExistsSubqueries, f.ExistsSubqueries} {
-		for _, esq := range esqs {
+	{
+		for _, esq := range f.ExistsSubqueries {
 			subRef := t.translateSubqueryRef(esq.Plan)
 			if subRef == nil {
 				return nil
@@ -6009,10 +6001,6 @@ func findExistsFilterUnderUnaryChain(input logical.LogicalOperator) (*logical.Lo
 	cur := input
 	for {
 		if f, ok := cur.(*logical.LogicalFilter); ok {
-			// The filter the fold reasons over is the ON-EXISTS-folded one
-			// (on_exists_fold.go) — a WHERE whose only existential rides the
-			// inner cluster's ON clause is an existential filter too.
-			f = foldInnerOnExistsIntoFilter(f)
 			if len(f.ExistsSubqueries) > 0 {
 				return f, chain
 			}
@@ -7191,44 +7179,6 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
 			"correlated scalar subqueries in both SELECT and WHERE are not yet supported"))
 		return nil
-	}
-
-	// ON-clause EXISTS is translated through a separate existential-join path,
-	// not translateFilter's known-truth substitution. Until that consumer can
-	// replace its ON marker with the constant, reject rather than raw-semi-join
-	// the fallback plan and lose aggregate/pagination cardinality.
-	if join, ok := p.Input.(*logical.LogicalJoin); ok &&
-		hasKnownExistsTruth(join.OnExistsSubqueries) {
-		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
-			"a cardinality-known EXISTS in a JOIN ON clause is not yet supported"))
-		return nil
-	}
-
-	// A FROM with no WHERE whose inner cluster carries an ON-clause EXISTS: the
-	// ON-EXISTS is a WHERE-EXISTS (on_exists_fold.go — the same lift
-	// translateFilter applies when a WHERE exists), so synthesize the
-	// equivalent WHERE-EXISTS filter and route the projection through the
-	// ORDINAL gather (translateExistsOverGatheredCluster) instead of the
-	// name-model ON-exists semi-join (translateJoin's OnExistsSubqueries arm).
-	// The non-EXISTS ON conjuncts stay on the cluster (SARG'd by the cluster
-	// machinery, as they are for the equivalent WHERE-EXISTS query); only the
-	// existential markers lift. Fail-open: a non-foldable shape (arity<=2,
-	// dup-alias, ungated, or the gather declining) falls through to today's
-	// name-model path.
-	if join, ok := p.Input.(*logical.LogicalJoin); ok && join.Kind == logical.JoinInner &&
-		len(p.CorrelatedScalarSubqueries) == 0 {
-		if lifted, markers, subqueries := liftClusterOnExists(join); len(subqueries) > 0 {
-			synthFilter := &logical.LogicalFilter{
-				Input:            lifted,
-				Predicate:        andOf(markers),
-				ExistsSubqueries: subqueries,
-			}
-			if t.existsFoldableGatheredCluster(synthFilter) {
-				if sel := t.translateProjectOverExistsFilter(p, synthFilter, nil); sel != nil {
-					return sel
-				}
-			}
-		}
 	}
 
 	// RFC-141 Phase 2: a projection over a filter that carries existential
@@ -8550,6 +8500,17 @@ func aggregateFunctionByName(name string) (expressions.AggregateFunction, bool) 
 }
 
 func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.RelationalExpression {
+	// An inner join's ON-clause EXISTS is a WHERE-EXISTS and the builder folds
+	// it into the block's filter before the plan leaves it
+	// (embedded/on_exists_fold.go); a join still carrying one is a builder
+	// invariant broken, refused here rather than planned without its
+	// quantifier.
+	if len(j.OnExistsSubqueries) > 0 {
+		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
+			"a JOIN ON clause EXISTS reached the translator unfolded (%d subqueries); the builder folds it into the WHERE",
+			len(j.OnExistsSubqueries)))
+		return nil
+	}
 	// For RIGHT JOIN, swap branches and treat as LEFT JOIN. The NLJ
 	// executor iterates the "outer" (left) and for each unmatched row
 	// emits NULLs for the inner (right) columns. Swapping makes the
@@ -8684,20 +8645,7 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 	var preds []predicates.QueryPredicate
 	if j.OnPredicate != nil {
 		if qp, ok := j.OnPredicate.(predicates.QueryPredicate); ok {
-			// When the ON clause carries EXISTS subqueries (RFC-154 §5), flatten a
-			// top-level AND so the ExistentialValuePredicate becomes its OWN
-			// top-level conjunct — the directly-handled semi-join shape
-			// CheckBuriedExistentialPredicate requires and the existential peel
-			// routes (a single And(equi, EXISTS) predicate reads as a BURIED
-			// existential and is rejected). Mirrors translateJoinWithExists's flatten
-			// of the WHERE predicate. Non-EXISTS joins keep the single predicate
-			// (the conjunctive SelectExpression predicate list is semantically the
-			// same; this avoids touching the heavily-tested plain-join shape).
-			if and, ok := qp.(*predicates.AndPredicate); ok && len(j.OnExistsSubqueries) > 0 {
-				preds = append(preds, and.SubPredicates...)
-			} else {
-				preds = []predicates.QueryPredicate{qp}
-			}
+			preds = []predicates.QueryPredicate{qp}
 		}
 	}
 
@@ -8758,38 +8706,6 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 
 	quantifiers := []expressions.Quantifier{leftQ, rightQ}
 	sourceAliases := []string{leftAlias, rightAlias}
-
-	// EXISTS in the ON clause (RFC-154 §5): attach each lifted EXISTS subquery as
-	// an existential quantifier + its correlation predicate, producing a
-	// 2-ForEach-+-Existential SelectExpression that the NLJ rule's
-	// the existential peel path lowers to a semi-join. Only populated for
-	// INNER joins (upgradeJoinOnPredicates rejects OUTER EXISTS-in-ON), so the
-	// joinType passed below is JoinInner and the existential semantics match
-	// EXISTS-in-WHERE-over-a-join (translateJoinWithExists).
-	// Defensive polarity guard for the ON-lift path: a flagged esq under a
-	// negated ON marker would outer-route an outer-only conjunct into
-	// anti-join semantics (same law as the WHERE sites).
-	if onPred, ok := j.OnPredicate.(predicates.QueryPredicate); ok && t.declineNegatedOuterOnlyEsq(onPred, j.OnExistsSubqueries) {
-		return nil
-	}
-	if hasKnownExistsTruth(j.OnExistsSubqueries) {
-		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
-			"a cardinality-known EXISTS in a JOIN ON clause is not yet supported"))
-		return nil
-	}
-	for _, esq := range j.OnExistsSubqueries {
-		subRef := t.translateSubqueryRef(esq.Plan)
-		if subRef == nil {
-			return nil
-		}
-		existQ := expressions.NamedExistentialQuantifier(esq.Alias, subRef)
-		quantifiers = append(quantifiers, existQ)
-		innerCorrName, joinPred := t.existsInnerCorrelation(esq)
-		if joinPred != nil {
-			preds = append(preds, joinPred)
-		}
-		sourceAliases = append(sourceAliases, innerCorrName)
-	}
 
 	return t.exactSelectWithJoinType(
 		resultValue,
@@ -8967,18 +8883,14 @@ func (t *cascadesTranslator) translateJoinWithExists(
 	// ordinal seed via downstreamLegWindows, not the exists inner's probe), so
 	// the minted-dup upper (QOV(Q$DUPn)) resolves positionally instead of serving
 	// NULLs off a name Datum that never had the binding-keyed column.
-	//
-	// The join's own ON-clause EXISTS subqueries are attached here too: their
-	// markers ride in j.OnPredicate (appended above), so their existential
-	// quantifiers must be owned by this Select exactly as translateJoin owns
-	// them on the filter-less path. Without this an ON-EXISTS beside a
-	// WHERE-EXISTS left `EXISTS(q$N)` referencing a quantifier no Select owned
-	// — a dangling existential the planner dropped, returning rows the ON
-	// clause should have excluded. CheckBuriedExistentialPredicate refuses that
-	// shape (DanglingExistentialPredicateError) should it ever recur.
+	// Every existential of the block is on the filter: an inner join's
+	// ON-clause EXISTS was folded into the WHERE by the builder
+	// (embedded/on_exists_fold.go), so a Select owning a marker always owns
+	// its quantifier; CheckBuriedExistentialPredicate refuses a dangling one
+	// (DanglingExistentialPredicateError) should a marker ever arrive alone.
 	sourceAliases := []string{leftAlias, rightAlias}
-	for _, esqs := range [][]logical.ExistsSubquery{j.OnExistsSubqueries, f.ExistsSubqueries} {
-		for _, esq := range esqs {
+	{
+		for _, esq := range f.ExistsSubqueries {
 			subRef := t.translateSubqueryRef(esq.Plan)
 			if subRef == nil {
 				return nil
