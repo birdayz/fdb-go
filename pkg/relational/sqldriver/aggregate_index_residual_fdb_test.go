@@ -73,6 +73,10 @@ func TestFDB_AggregateIndexResidual(t *testing.T) {
 		{"SELECT a, b, c, COUNT(*) FROM t WHERE a = 'x' AND c = 'z' GROUP BY a, b, c ORDER BY a DESC, b", true},
 		{"SELECT d, a, COUNT(*) FROM t WHERE d > 1.0 GROUP BY d, a ORDER BY d, a", true},
 		{"SELECT a, b, c, COUNT(*) FROM t WHERE b = 'p' GROUP BY a, b, c HAVING COUNT(*) > 1 ORDER BY a, c", true},
+		// A grouping-column leaf under a function wrapper stays wrapped after
+		// the rewrite.
+		{"SELECT a, b, c, COUNT(*) FROM t WHERE UPPER(b) = 'P' GROUP BY a, b, c ORDER BY a, c", true},
+		{"SELECT a, b, c, SUM(v) FROM t WHERE LENGTH(c) = 1 AND a = 'y' GROUP BY a, b, c ORDER BY b, c", true},
 		// Correlated: the outer row's b shares the grouping column's name and
 		// must stay the outer read — rewritten by name it would compare the
 		// group with itself and count every group for every customer.

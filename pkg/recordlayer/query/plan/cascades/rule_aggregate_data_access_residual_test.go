@@ -216,6 +216,22 @@ func TestAggregatePredicatePartition(t *testing.T) {
 			false, nil, 0,
 		},
 		{
+			"a grouping leaf under a function wrapper is residual (walk descends, wrapper kept)",
+			[]predicates.QueryPredicate{&predicates.ComparisonPredicate{
+				Operand:    values.NewScalarFunctionValue("UPPER", values.NullableString, f.field(t, "status")),
+				Comparison: predicates.NewLiteralComparison(predicates.ComparisonEquals, "OPEN"),
+			}},
+			true, nil, 1,
+		},
+		{
+			"a non-grouping leaf under a function wrapper declines",
+			[]predicates.QueryPredicate{&predicates.ComparisonPredicate{
+				Operand:    values.NewScalarFunctionValue("ABS", values.NullableLong, f.field(t, "amount")),
+				Comparison: predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)),
+			}},
+			false, nil, 0,
+		},
+		{
 			"leading IS NULL binds as an equality on the null key",
 			[]predicates.QueryPredicate{f.cmp(t, "region", predicates.ComparisonIsNull, nil)},
 			true,
@@ -385,5 +401,44 @@ func TestAggregatePredicatePartition_OuterCorrelationIsCarriedNotRewritten(t *te
 	}
 	if !values.ValuesStructurallyEqual(cp.Comparison.Operand, f.outerField(t, "region")) {
 		t.Fatalf("the outer operand changed: %s", values.ExplainValue(cp.Comparison.Operand))
+	}
+}
+
+// TestAggregatePredicatePartition_WrappedLeafKeepsItsWrapper: a residual
+// whose grouping-column leaf sits under a function wrapper is rewritten at
+// the leaf only — `UPPER(status) = 'OPEN'` becomes `UPPER(<row>.status) =
+// 'OPEN'` over the aggregate row, the wrapper intact and the bridge holding.
+func TestAggregatePredicatePartition_WrappedLeafKeepsItsWrapper(t *testing.T) {
+	t.Parallel()
+	f := newResidualFixture(t)
+	wrapped := &predicates.ComparisonPredicate{
+		Operand:    values.NewScalarFunctionValue("UPPER", values.NullableString, f.field(t, "status")),
+		Comparison: predicates.NewLiteralComparison(predicates.ComparisonEquals, "OPEN"),
+	}
+	p, ok := partitionAggregatePredicates(f.cand, f.preds(wrapped))
+	if !ok || len(p.residuals) != 1 || len(p.scanPrefix) != 0 {
+		t.Fatalf("partition ok=%v residuals=%d bound=%d, want one residual and no bound", ok, len(p.residuals), len(p.scanPrefix))
+	}
+	scan := extractIndexPlan(f.cand.ToScanPlan(p.scanPrefix, false))
+	agg, err := plans.NewRecordQueryAggregateIndexPlan(scan, "Orders", aggregateDataRowType("Orders"), "COUNT")
+	if err != nil {
+		t.Fatal(err)
+	}
+	agg = agg.WithGroupColumns(f.cand.groupCols, "").WithGroupColumnLayout(f.cand.GetBaseRowType())
+	filtered, ok := p.applyResiduals(agg)
+	if !ok {
+		t.Fatal("applyResiduals declined a wrapped grouping leaf")
+	}
+	cp := filtered.(*plans.RecordQueryPredicatesFilterPlan).GetPredicates()[0].(*predicates.ComparisonPredicate)
+	fn, isFn := cp.Operand.(*values.ScalarFunctionValue)
+	if !isFn || fn.FuncName != "UPPER" || len(fn.Children()) != 1 {
+		t.Fatalf("the wrapper did not survive the rewrite: %s", values.ExplainValue(cp.Operand))
+	}
+	leaf, isField := values.AsFieldValue(fn.Children()[0])
+	if !isField || leaf.Path().Ordinals()[0] != 1 {
+		t.Fatalf("the wrapped leaf reads %s, want ordinal 1 (status) of the aggregate row", values.ExplainValue(fn.Children()[0]))
+	}
+	if corr := cp.GetCorrelatedTo(); len(corr) != 1 {
+		t.Fatalf("residual correlated to %v, want the aggregate row only", corr)
 	}
 }

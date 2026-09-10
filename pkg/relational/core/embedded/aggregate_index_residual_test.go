@@ -90,6 +90,11 @@ CREATE TABLE CUST (id BIGINT, b STRING, region STRING, PRIMARY KEY (id))`
 		// sorted, so both requests are served with no sort.
 		{"residual_keeps_fixed_binding_desc", "SELECT a, b, c, COUNT(*) FROM t WHERE a = 'x' AND c = 'z' GROUP BY a, b, c ORDER BY a DESC, b", true, 1, 1, false},
 		{"residual_keeps_sorted_tail", "SELECT a, b, c, COUNT(*) FROM t WHERE a = 'x' AND c = 'z' GROUP BY a, b, c ORDER BY b", true, 1, 1, false},
+		// The grouping-column leaf under a function / CAST wrapper: the walk
+		// descends to the leaf, the rewrite replaces only the leaf and keeps
+		// the wrapper.
+		{"wrapped_leaf_function", "SELECT a, b, c, COUNT(*) FROM t WHERE UPPER(b) = 'P' GROUP BY a, b, c", true, 0, 1, false},
+		{"wrapped_leaf_cast", "SELECT a, b, c, COUNT(*) FROM t WHERE CAST(b AS STRING) = 'p' AND a = 'x' GROUP BY a, b, c", true, 1, 1, false},
 		// A correlated residual: `t.b = c.b` reads the OUTER row's b — the same
 		// NAME as the grouping column — and must stay correlated to it; the
 		// input-rooted read moves onto the aggregate row, the outer one does

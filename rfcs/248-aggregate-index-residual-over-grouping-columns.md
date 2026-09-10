@@ -182,6 +182,12 @@ residual on the select-having row, decline on the input — and states that.
   read stays, the residual is correlated to exactly the aggregate row and
   the outer quantifier); two more table arms: the same shape is a residual,
   and an outer field alone is not a grouping read and declines.
+  `…_WrappedLeafKeepsItsWrapper` and two table arms: a grouping leaf under
+  a function wrapper (`UPPER(status) = 'OPEN'`) is a residual rewritten at
+  the leaf only, the wrapper intact; a non-grouping leaf under a wrapper
+  declines. Embedded `wrapped_leaf_function` / `wrapped_leaf_cast` and two
+  rows reads (`UPPER(b)`, `LENGTH(c)` with a bound) carry the same
+  dimension end to end.
 * Plan shape (`embedded/aggregate_index_residual_test.go`, 21 arms over the
   typed tree): each arm asserts whether the aggregate index is reached, the
   scan's comparison arity, the residual filter's predicate count (−1 = no
@@ -361,4 +367,8 @@ leaf rooted there is a grouping read, an outer-rooted leaf is carried
 unchanged; the bridge asserts the exact correlation set (root present, input
 gone, every other correlation preserved, none invented). Pinned at unit,
 plan and rows level (the scalar-subquery shape reaches the rule), and the
-by-name rewrite measured to decline rather than answer. @claude on the PR.
+by-name rewrite measured to decline rather than answer.
+
+@claude on PR #777: approve, no soundness bug found; one non-blocking
+suggestion — the grouping leaf under a CAST / function wrapper was an
+unpinned dimension — folded as the wrapped-leaf arms above.
