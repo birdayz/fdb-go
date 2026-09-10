@@ -196,6 +196,7 @@ go_test(
         "plan_harness_one_final_test.go",
         "plan_harness_test.go",
         "plan_logging_test.go",
+        "plan_stress_shapes_bench_test.go",
         "plan_visitor_where_installation_test.go",
         "planner_cancellation_test.go",
         "planner_error_test.go",
@@ -429,6 +430,7 @@ go_test(
         "aggregate_distinct_latent_bind_test.go",
         "aggregate_index_equality_prefix_ordering_test.go",
         "equality_prefix_pins_per_coordinate_test.go",
+        "plan_stress_shapes_bench_test.go",
     ],
     deps = [
         "//gen",

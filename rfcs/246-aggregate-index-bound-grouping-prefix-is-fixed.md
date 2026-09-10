@@ -207,59 +207,80 @@ precondition at the site.
   without the second assertion the test passes with the fix reverted (a sorted
   plan answers the same sequence), so that assertion is what makes it a pin
   of the index's order rather than of the sort's.
-* EXPLAIN corpus (`cmd/explain-differ`), `d6b5a0d84` vs `82e7d1c19`: 2955
+* EXPLAIN corpus (`cmd/explain-differ`), `d6b5a0d84` vs `984ccbca3`: 2955
   entries, 2955 identical, 0 shape flips — the corpus holds no aggregate-index
-  shape with a bound prefix and an ORDER BY on the next grouping column.
-* `just test` green on both commits (pre-commit hook). The new tests run under
-  Bazel by name at `82e7d1c19`: the seven `TestAggregateIndexPlan_HintOrdering_*`
-  / `HintRichOrdering_*` arms and
-  `TestRecordQueryIndexPlan_HintRichOrdering_UntypedOperandOnDoubleIsNotFixed`
-  in `//pkg/recordlayer/query/plan/plans:plans_test`, the ten
-  `TestAggregateIndexEqualityPrefixElidesSort/*` arms in
-  `//pkg/relational/core/embedded:embedded_test`, and
-  `TestFDB_AggregateIndexEqualityPrefixOrdering` in
-  `//pkg/relational/sqldriver:sqldriver_test` (each `=== RUN` line seen,
-  `--nocache_test_results`).
-* Planner fuzz at `82e7d1c19`, 30s each: `FuzzPlanner_Determinism` 5,786,862
-  executions, PASS; `FuzzPlanner_PlanFullPipeline` 2,061,381 executions, PASS.
+  shape with a bound prefix and an ORDER BY on the next grouping column, and
+  no multi-equality on an aggregate index's grouping prefix.
+* `just test` green on every commit (pre-commit hook, 92 targets). At
+  `984ccbca3`, one `--nocache_test_results` run of
+  `//pkg/recordlayer/query/plan/plans:plans_test`,
+  `//pkg/recordlayer/query/plan/cascades:cascades_test` and
+  `//pkg/relational/core/embedded:embedded_test` filtered to
+  `TestAggregateIndexPlan_Hint|TestRecordQueryIndexPlan_HintRichOrdering_|
+  TestAggregateIndexEqualityPrefixElidesSort|TestPinnedCoordinateAfterWidenedOneElidesSort|
+  TestBugHunt_AggregateIndexMultiKeyResidual|TestMatchedOrderingParts_` printed
+  43 `=== RUN` lines (19 top-level tests, 24 sub-arms), 19 `--- PASS`, 0
+  `--- FAIL`; `//pkg/relational/sqldriver:sqldriver_test` filtered to
+  `TestFDB_AggregateIndexEqualityPrefixOrdering|TestFDB_SignedZero` printed
+  2 `--- PASS`. Every mutation claim above was taken with the mutated text
+  `grep -c`'d present (1 or 2 lines) in the same invocation and absent (0)
+  after restoring.
+* Planner fuzz at `984ccbca3`, 30s each: `FuzzPlanner_Determinism` 5,826,390
+  executions, PASS; `FuzzPlanner_PlanFullPipeline` 2,047,991 executions, PASS
+  (at `82e7d1c19`: 5,786,862 and 2,061,381, PASS).
 
 ### 1M stress comparison
 
 Baseline `d6b5a0d84` (the merge-base on 2026-09-09; `origin/master` was at
-the same commit) in a worktree on the same filesystem (`/home`, 99% used, 15G
-free) versus `82e7d1c19`, two uncached `TestFDB_Stress_1M` runs per side,
-strictly sequential (base, branch, base, branch), load average at each start
-14.3 / 2.4 / 2.1 / 1.8; `ordering.go` md5-checked in both trees after the last
-run. Every run has 24 `=== RUN` lines and 24 passes; all 22 labelled readings
-agree on row counts across the four runs. Ratio = min(branch) / min(base):
+the same commit) in a worktree on the same filesystem (`/home`, 99% used, 13G
+free) versus `984ccbca3`, `TestFDB_Stress_1M` uncached, strictly sequential,
+in TWO orderings of two runs per side — base, branch, base, branch (load at
+each start 8.7 / 3.0 / 2.1 / 2.2) and then branch, base, branch, base (1.4 /
+2.9 / 3.0 / 2.8) — with `ordering.go`, `rule_aggregate_data_access.go` and
+`match_candidate_index.go` md5-checked in both trees after each sequence.
+All eight runs have 24 `=== RUN` lines and 24 passes; all 22 labelled
+readings agree on row counts across the eight runs.
+
+The first ordering read 1.7–2.6x on its first five readings (the three PK
+lookups, `idx_customer eq`, `idx_amount range`) in BOTH branch runs. The
+second ordering read the same 1.7–2.6x on the same five readings in BOTH base
+runs: the disturbance sits at positions 2 and 4 of each sequence whichever
+tree runs there, and the identically-planned `PK needle` later in every run
+is 1.00. The planner-only cost of those shapes, measured with no FDB behind
+it (`embedded/plan_stress_shapes_bench_test.go`, 3×200 iterations per tree):
+PK lookup 1.50 vs 1.50 ms, idx_customer eq 2.22 vs 2.22 ms, idx_amount range
+2.35 vs 2.36 ms, GROUP BY status 1.71 vs 1.72 ms, SUM by status 1.60 vs
+1.63 ms (+2%, the per-call `pins` slice and closure), IN-list 10.3 vs
+10.3 ms. Ratio below = min over the four runs per side:
 
 | query | rows | base | branch | ratio |
 |---|---|---|---|---|
-| PK lookup id=0 / N/2 / N-1 | 1 | 8.4 / 8.4 / 6.2 ms | 8.5 / 8.4 / 6.3 ms | 1.01 / 1.01 / 1.00 |
-| idx_customer eq | 8 | 6.3 ms | 6.5 ms | 1.02 |
-| idx_amount range >9000 | 100017 | 208.6 ms | 195.0 ms | 0.93 |
-| idx_status count pending | 1 | 394.0 ms | 379.2 ms | 0.96 |
-| full scan filter amount>5000 | 1 | 666.5 ms | 626.3 ms | 0.94 |
-| GROUP BY status | 4 | 5.8 ms | 5.9 ms | 1.01 |
-| GROUP BY status COUNT only | 4 | 5.3 ms | 5.3 ms | 1.01 |
-| SUM by status (aggregate index) | 4 | 5.7 ms | 5.7 ms | 0.99 |
-| GROUP BY customer HAVING | 47271 | 572.1 ms | 570.3 ms | 1.00 |
-| JOIN 10 orders x customers | 10 | 19.9 ms | 20.1 ms | 1.01 |
-| ORDER BY PK (full) | 1000000 | 3867 ms | 3816 ms | 0.99 |
-| ORDER BY PK + index filter | 8 | 9.0 ms | 8.7 ms | 0.97 |
-| scan all rows ordered / wide | 1000000 | 3686 / 3931 ms | 3623 / 3853 ms | 0.98 / 0.98 |
-| IN-list 5 values | 46 | 18.8 ms | 18.6 ms | 0.99 |
-| PK needle id=999999 | 1 | 5.8 ms | 5.7 ms | 1.00 |
-| PK+filter needle id=500000 | 1 | 7.4 ms | 7.4 ms | 0.99 |
-| full scan sparse filter | 97 | 3326 ms | 3278 ms | 0.99 |
-| UPDATE by index / DELETE single row | 8 / 1 | 9.0 / 6.4 ms | 8.9 / 6.4 ms | 0.99 / 1.00 |
+| PK lookup id=0 / N/2 / N-1 | 1 | 8.5 / 8.5 / 5.1 ms | 8.6 / 8.4 / 6.3 ms | 1.02 / 0.98 / 1.22 |
+| idx_customer eq | 8 | 6.5 ms | 6.4 ms | 0.99 |
+| idx_amount range >9000 | 100017 | 191.0 ms | 190.8 ms | 1.00 |
+| idx_status count pending | 1 | 333.3 ms | 336.9 ms | 1.01 |
+| full scan filter amount>5000 | 1 | 679.3 ms | 596.7 ms | 0.88 |
+| GROUP BY status | 4 | 5.9 ms | 5.7 ms | 0.96 |
+| GROUP BY status COUNT only | 4 | 5.4 ms | 5.7 ms | 1.06 |
+| SUM by status (aggregate index) | 4 | 5.7 ms | 6.0 ms | 1.05 |
+| GROUP BY customer HAVING | 47271 | 575.9 ms | 579.7 ms | 1.01 |
+| JOIN 10 orders x customers | 10 | 19.7 ms | 19.5 ms | 0.99 |
+| ORDER BY PK (full) | 1000000 | 3854 ms | 3779 ms | 0.98 |
+| ORDER BY PK + index filter | 8 | 8.9 ms | 9.0 ms | 1.01 |
+| scan all rows ordered / wide | 1000000 | 3672 / 3925 ms | 3627 / 3870 ms | 0.99 / 0.99 |
+| IN-list 5 values | 46 | 18.9 ms | 18.9 ms | 1.00 |
+| PK needle id=999999 | 1 | 5.8 ms | 5.8 ms | 1.00 |
+| PK+filter needle id=500000 | 1 | 7.3 ms | 7.4 ms | 1.01 |
+| full scan sparse filter | 97 | 3316 ms | 3262 ms | 0.98 |
+| UPDATE by index / DELETE single row | 8 / 1 | 8.7 / 6.2 ms | 8.8 / 6.3 ms | 1.00 / 1.02 |
 
-The workload's aggregate-index reads (`GROUP BY status`, `SUM by status`)
-bind no grouping prefix, so `splitKeyOrder` reports what the old derivation
-did and their plans are unchanged; this is a no-change confirmation. The three
-readings below 0.95 are range/full scans whose base runs differ from each
-other by more than the branch differs from either (idx_amount: 208.6 vs
-236.6 ms between the two base runs).
+`PK lookup id=N-1` at 1.22 is one 5.1 ms base reading against 6.3 ms in the
+other three base runs and 6.3 ms on the branch — the same query at
+`82e7d1c19` read 6.2 vs 6.3. The workload's aggregate-index reads bind no
+grouping prefix and carry a single predicate, so `splitKeyOrder` reports what
+the old derivation did and the conjunct flattening sees one conjunct; their
+plans are unchanged (EXPLAIN lines identical across all eight logs). This is
+a no-change confirmation.
 
 ## Review
 
