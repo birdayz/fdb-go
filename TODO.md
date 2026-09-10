@@ -5108,7 +5108,16 @@ comparisons instead of 2.
 
 ---
 
-### [ ] Widen the pk-intersection comparison key with a per-leg singular fixed PK component (RFC-245 follow-on; query-engine gate)
+### [x] Widen the pk-intersection comparison key with a per-leg singular fixed PK component (RFC-245 follow-on; query-engine gate)
+
+DONE (RFC-247): `primaryKeyComponentsToCompare` names every primary-key component the legs do not
+all fix to the same comparison, the enumeration offers those, and `everyLegDeliversComparisonKey`
+proves each directed offer against every leg's own ordering. The reproducer plans
+`Intersection(IndexScan(TI_B_PK1), IndexScan(TI_PK2))` on `(PK1, PK2)` (reverse under
+`ORDER BY pk1 DESC`), pinned per query in `TestFDB_PkIntersectionLegBoundComponent`. The RFC lap
+found that RFC-245's proof let legs fixing a component to DIFFERENT constants merge without it —
+fixed in the same change (`TestIntersector_ComparesOnTheComponentLegsFixToDifferentConstants`,
+red at `64a737edd`). Original entry follows.
 
 RFC-245 made the primary-key intersection prove its comparison key leg by leg and DECLINES the
 partition when a primary-key component is equality-bound in one leg only. That is sound, and it
@@ -8798,6 +8807,47 @@ Do not "fix" this by hand-deleting entries. That is what fails the hook.
 
 ---
 
+### [ ] STOP (owner): `gh-runner-drain-0` loses its FDB testcontainer 34–36 minutes into every long job — the CI race lane and Nightly Stress go red on that host only
+
+MEASURED 2026-09-10 across every `hetzner-fdb-vm` job of the last two days, by the `Machine name`
+in each job log:
+
+| job | host | started → container lost | outcome |
+|---|---|---|---|
+| CI race lane, master `64a737edd` | `gh-runner-drain-0` | 07:14:02 → 07:50:34 (36 min) | `sqldriver_test TIMEOUT in 3606.5s` |
+| Nightly Stress, master | `gh-runner-drain-0` | 09:09:25 → 09:43:39 (34 min) | `stress_test TIMEOUT in 3605.4s` |
+| CI race lane, PR #775 `f13d2d12b` | `gh-runner-drain-0` | 13:22:59 → 13:56:24 (34 min) | `sqldriver_test FAILED in 2678.2s` |
+| CI race lane, `bot/frl-pin-bump` 10:15 | `gh-runner-drain-0` | finished in 31 min | pass |
+| CI race lane, `#773` 09-08 22:41 | `gh-runner-drain-0` | finished in 32 min | pass |
+| CI race lane ×5 (09-09 06:57 … 09-10 06:33, incl. `#774`'s head `89ac807c6`) | `gh-runner-fdb` | — | pass |
+
+Every loss is the same line — `WARN fdbgo: connection to server failed address=172.16.0.3:4500` —
+followed by `open catalog store: failed to read store info: context deadline exceeded` on every
+query until the Bazel test timeout; no `DATA RACE` anywhere in any of the three logs. drain-0's
+two passes are exactly the jobs that FINISHED before the 34-minute mark; the identical content
+(`64a737edd` is the merge of `89ac807c6`) passed on `gh-runner-fdb` at 06:33 and died on drain-0 at
+07:14. Nothing was co-resident on drain-0 during any of the three deaths (Nightly Factory, Nightly
+Coverage and the Claude job all ran on `gh-runner-fdb`), and the sqldriver lane was already running
+~3x slower than its green duration BEFORE the loss, so the host is also starving the lane.
+
+This is the drain-0 HOST, not a change in this repo: something on it reaps the FDB container (or
+its `172.16.0.x` network) at a fixed ~34-minute mark — a container/network prune timer, an
+ephemeral-runner drain script, or an autoscaler lifetime. The two runners share the label
+`hetzner-fdb-vm`, so no workflow can steer a long lane away from drain-0, and the ci.yml race-lane
+comments ("the single self-hosted runner", the 7.6 GB memory discipline) predate the second host.
+Nobody here can read drain-0's docker/systemd/kernel logs, which is what settles the mechanism.
+
+Owner: inspect drain-0 for the 34-minute reaper (`docker events` around a loss, systemd timers,
+the runner's service unit / any `--ephemeral`-style wrapper), or drop it from the `hetzner-fdb-vm`
+label until it is understood. Until then, a race-lane or Nightly Stress failure whose log carries
+that `connection to server failed address=172.16.0.3:4500` line at the 34-minute mark is this
+entry, and a re-run that lands on `gh-runner-fdb` is the verification, not a fix.
+
+DONE when: a >34-minute FDB job passes on drain-0 (or drain-0 no longer carries the label), and
+the ci.yml race-lane comment names both hosts.
+
+---
+
 
 ---
 
@@ -8986,10 +9036,10 @@ this repo's RFC-182 generator, whose table has the fixed `ID` key — never cros
 
 Go carried the same union until 2026-09-09 (ported faithfully) and returned the OTHER leg's four
 records; `intersector_primary_key.go` now proves the key leg by leg
-(`comparisonKeyIdentifiesRecordInEveryLeg`, comment at the site names this entry) and declines the
-merge, so the surviving single-index alternative applies the other predicate as a residual. Pinned
-by `TestFDB_PkIntersectionLegBoundComponent`, `intersector_leg_bound_pk_test.go` (decline / accept
-when every leg fixes the component / three-way keeps the sound pair), and found by
+(`primaryKeyComponentsToCompare`, comment at the site names this entry): a component leaves the
+key only when every leg fixes it to the same comparison, and Go compares on `(pk1, pk2)` here —
+the order both legs deliver — where RFC-245 had declined the merge (RFC-247). Pinned by
+`TestFDB_PkIntersectionLegBoundComponent`, `intersector_leg_bound_pk_test.go`, and found by
 `TestFDB_MetamorphicCompositePrimaryKey`. Direction: `DivergenceJavaWrongRowsGoCorrect`; DIVERGENCES.md
 "PK-intersection comparison key" has the write-up.
 

@@ -4,6 +4,7 @@ import (
 	"slices"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
@@ -618,7 +619,7 @@ func createPrimaryKeyIntersection(
 
 	var commonOrdering *properties.RichOrdering
 	var equalityBoundValues []values.Value
-	perLegEqualityBoundValues := make([][]values.Value, 0, len(accesses))
+	legOrderings := make([]*properties.RichOrdering, 0, len(accesses))
 	admittedComparisonKeySources := make(map[values.QuantifiedObjectValue]struct{})
 	var canonicalComparisonKeySource values.QuantifiedObjectValue
 	for _, access := range accesses {
@@ -626,6 +627,7 @@ func createPrimaryKeyIntersection(
 		if ordering == nil {
 			return primaryKeyIntersectionBuild{}
 		}
+		legOrderings = append(legOrderings, ordering)
 		orderingSources := intersectionOrderingSources(ordering, comparisonKeyLayout)
 		if len(orderingSources) == 0 {
 			return primaryKeyIntersectionBuild{}
@@ -641,18 +643,17 @@ func createPrimaryKeyIntersection(
 		} else {
 			commonOrdering = properties.MergeOrderingsForIntersection(commonOrdering, ordering)
 		}
-		var legEqualityBoundValues []values.Value
 		for value := range ordering.GetEqualityBoundValues() {
-			legEqualityBoundValues = append(legEqualityBoundValues, value)
 			if !containsIntersectionValue(equalityBoundValues, value) {
 				equalityBoundValues = append(equalityBoundValues, value)
 			}
 		}
-		perLegEqualityBoundValues = append(perLegEqualityBoundValues, legEqualityBoundValues)
 	}
 	if commonOrdering == nil {
 		return primaryKeyIntersectionBuild{}
 	}
+	mustCompare := primaryKeyComponentsToCompare(pkValues, legOrderings)
+	offeredComponents := mergedOrderingKeysFor(commonOrdering, mustCompare)
 
 	compensations := make([]Compensation, 0, len(accesses))
 	for _, access := range accesses {
@@ -670,15 +671,15 @@ func createPrimaryKeyIntersection(
 		if requested == nil {
 			continue
 		}
-		enumerated := commonOrdering.EnumerateSatisfyingIntersectionComparisonKeyValues(requested)
+		enumerated := commonOrdering.EnumerateSatisfyingIntersectionComparisonKeyValues(
+			requested, offeredComponents,
+		)
 		for _, comparisonValues := range enumerated {
 			// An empty physical merge key cannot establish cursor progress.
 			// Java can represent more Value shapes than Go's executor today;
 			// declining here is the bounded, safe optimization miss.
 			if len(comparisonValues) == 0 ||
-				!comparisonKeyIdentifiesRecordInEveryLeg(
-					comparisonValues, pkValues, perLegEqualityBoundValues,
-				) {
+				!comparisonKeyIdentifiesRecordInEveryLeg(comparisonValues, mustCompare) {
 				continue
 			}
 
@@ -687,8 +688,12 @@ func createPrimaryKeyIntersection(
 				requested,
 				properties.ProvidedSortOrderFixed,
 			)
+			parts = widenedPartsTakeTheMergeDirection(parts, commonOrdering)
 			reverse := ResolveComparisonDirection(parts)
 			parts = AdjustFixedBindings(parts, reverse)
+			if !everyLegDeliversComparisonKey(legOrderings, parts) {
+				continue
+			}
 			if _, ok := properties.NaturalComparisonKeyValues(parts, reverse); !ok {
 				continue
 			}
@@ -890,13 +895,24 @@ func implicitFixedPrimaryKeyValues(
 	return result
 }
 
-// comparisonKeyIdentifiesRecordInEveryLeg is the merge-soundness proof for a
-// primary-key intersection: within EVERY leg, the comparison key must identify
-// a record. A leg's stream is a set of records that all share the leg's own
-// equality-bound values, so the comparison key identifies a record in that leg
-// iff it contains every primary-key component the leg does not itself fix. Only
-// then does "equal comparison keys across the legs" mean "the same record", which
-// is the premise the merge cursor rests on.
+// primaryKeyComponentsToCompare is the merge-soundness statement of a
+// primary-key intersection, computed from the legs' OWN orderings: the merge
+// cursor rests on "equal comparison keys across the legs ⇒ the same record",
+// and a primary-key component may be OMITTED from the key only when every leg
+// binds it FIXED and every leg fixes it to the same comparison. A component
+// one leg sorts is not constant in that leg's stream; a component the legs
+// fix to different constants is constant in each leg but differs between them
+// (legs fixing VERSION = 1 and VERSION = 2 would align (id = 1, 1) with
+// (id = 1, 2) on the key (ID) and emit a record for an empty conjunction).
+// Either way it must be compared, and the intersector both offers it to the
+// enumeration and requires it of every key (RFC-247).
+//
+// The same-comparison clause is asked with comparisonsEqual, the semantic
+// equality the partial-match identity uses; a nil comparison equals nil,
+// which is how the implicit record-type component every leg fixes without a
+// scan comparison stays omittable. A component absent from a leg's ordering
+// is not fixed there, so it must be compared — and, being absent from the
+// merged ordering too, cannot be offered, so the partition declines.
 //
 // This deliberately diverges from Java's `isCompatibleComparisonKey`
 // (AbstractDataAccessRule.java), which filters the primary key with the UNION
@@ -909,36 +925,168 @@ func implicitFixedPrimaryKeyValues(
 // pk2. Measured on Java 4.12.11.0: `COVERING(TI_PK2) ∩ COVERING(TI_B_PK1)
 // COMPARE BY (_.PK1)` returns every pk2 = 3 record regardless of b
 // (conformance/pk_intersection_leg_bound_key_java_probe_test.go pins both
-// engines' answers; TODO.md section 9 books the upstream report). A component
-// fixed in ONE leg is a constant of that leg's
-// stream only; in every other leg it still varies and must be compared. The
-// per-leg proof declines the unsound merge, and the surviving single-index
-// alternative applies the other predicate as a residual filter.
+// engines' answers; TODO.md section 9 books the upstream report). Go compares
+// on (pk1, pk2) there, a merge Java cannot express soundly.
+func primaryKeyComponentsToCompare(
+	pkValues []values.Value,
+	legOrderings []*properties.RichOrdering,
+) []values.Value {
+	var mustCompare []values.Value
+	for _, pkValue := range pkValues {
+		var first *predicates.Comparison
+		haveFirst := false
+		for _, leg := range legOrderings {
+			comparison, fixed := legFixedComparison(leg, pkValue)
+			if !fixed {
+				mustCompare = append(mustCompare, pkValue)
+				break
+			}
+			if !haveFirst {
+				first, haveFirst = comparison, true
+				continue
+			}
+			if !comparisonsEqual(first, comparison) {
+				mustCompare = append(mustCompare, pkValue)
+				break
+			}
+		}
+	}
+	return mustCompare
+}
+
+// legFixedComparison reports whether a leg's ordering binds value FIXED to ONE
+// comparison this proof can read, and that comparison (nil for the implicit
+// record-type component, which adjustedIntersectionOrdering binds
+// FixedBinding(nil) in every leg).
+//
+// It fails CLOSED, because "fixed" here means "omittable from the comparison
+// key", and an omission this proof cannot justify is the unsound (ID)-only
+// merge RFC-247 exists to close. A leg carrying more than one binding for the
+// value, or a FIXED payload that is not a *predicates.Comparison (the plans
+// package stores a *ComparisonRange in its own FIXED bindings; a hand-built
+// ordering may store a string), reports NOT fixed — the component is then
+// compared, which is always sound. Only a nil payload is read as the implicit
+// component; a payload of another type must not collapse into it, or two legs
+// fixing a component to different constants would compare "nil == nil" and
+// drop it.
+func legFixedComparison(
+	leg *properties.RichOrdering,
+	value values.Value,
+) (*predicates.Comparison, bool) {
+	for _, key := range leg.GetKeys() {
+		if !intersectionValuesEqualIn(key, value) {
+			continue
+		}
+		bindings := leg.GetBindingMap()[key]
+		if len(bindings) != 1 || !bindings[0].IsFixed() {
+			return nil, false
+		}
+		payload := bindings[0].GetComparison()
+		if payload == nil {
+			return nil, true
+		}
+		comparison, ok := payload.(*predicates.Comparison)
+		if !ok || comparison == nil {
+			return nil, false
+		}
+		return comparison, true
+	}
+	return nil, false
+}
+
+// mergedOrderingKeysFor resolves each value to the merged ordering's own key
+// object, which is what the enumeration filters by; a value the merged
+// ordering does not carry is dropped here and declined by the proof below.
+func mergedOrderingKeysFor(
+	merged *properties.RichOrdering,
+	wanted []values.Value,
+) []values.Value {
+	var keys []values.Value
+	for _, key := range merged.GetKeys() {
+		if containsIntersectionValue(wanted, key) {
+			keys = append(keys, key)
+		}
+	}
+	return keys
+}
+
+// comparisonKeyIdentifiesRecordInEveryLeg is the proof step over an offered
+// key: it must contain every component primaryKeyComponentsToCompare named.
 func comparisonKeyIdentifiesRecordInEveryLeg(
 	comparisonValues []values.Value,
-	pkValues []values.Value,
-	perLegEqualityBoundValues [][]values.Value,
+	mustCompare []values.Value,
 ) bool {
-	for _, legEqualityBoundValues := range perLegEqualityBoundValues {
-		if !comparisonKeyContainsFreePrimaryKey(comparisonValues, pkValues, legEqualityBoundValues) {
+	for _, value := range mustCompare {
+		if !containsIntersectionValue(comparisonValues, value) {
 			return false
 		}
 	}
 	return true
 }
 
-// comparisonKeyContainsFreePrimaryKey is the single-leg proof: every primary-key
-// component not among equalityBoundValues must appear in the comparison key.
-func comparisonKeyContainsFreePrimaryKey(
-	comparisonValues []values.Value,
-	pkValues []values.Value,
-	equalityBoundValues []values.Value,
-) bool {
-	for _, pkValue := range pkValues {
-		if containsIntersectionValue(equalityBoundValues, pkValue) {
-			continue
+// widenedPartsTakeTheMergeDirection resets a part the MERGED ordering binds
+// FIXED back to FIXED so AdjustFixedBindings gives it the merge's direction.
+// Such a part is in the key only because the intersector widened it (Java's
+// filter never offers a fixed value), and DirectionalOrderingParts stamps it
+// with the REQUESTED direction when the request names it. That direction is
+// vacuous: the merged ordering binds the value FIXED because some leg fixes
+// it, so every row the intersection emits carries that one value and any
+// requested direction on it is satisfied by the output as it stands. Keeping
+// the stamp would make `ORDER BY pk2 DESC, pk1` produce the parts
+// [pk1 ASC, pk2 DESC] — a mixed key no leg delivers and
+// NaturalComparisonKeyValues refuses — and forfeit the merge for a request the
+// merged ordering satisfies. A part the merged ordering SORTS keeps its
+// direction: that is the direction the merge takes, and the legs' own
+// directions still decide, through everyLegDeliversComparisonKey, whether the
+// merge is built at all.
+func widenedPartsTakeTheMergeDirection(
+	parts []properties.ProvidedOrderingPart,
+	merged *properties.RichOrdering,
+) []properties.ProvidedOrderingPart {
+	result := make([]properties.ProvidedOrderingPart, len(parts))
+	for i, part := range parts {
+		result[i] = part
+		if bindings := merged.GetBindingMap()[part.Value]; len(bindings) > 0 &&
+			properties.AreAllBindingsFixed(bindings) {
+			result[i].SortOrder = properties.ProvidedSortOrderFixed
 		}
-		if !containsIntersectionValue(comparisonValues, pkValue) {
+	}
+	return result
+}
+
+// everyLegDeliversComparisonKey is the directed proof (RFC-247 step 4): the
+// comparison key, with the directions the merge will use, must be an ordering
+// EVERY leg satisfies on its own. The merged ordering cannot make that claim
+// for a component the intersector widened into the key — once a leg fixes a
+// value, combineBindingsForIntersection binds it FIXED in the merge and
+// normalisation strips its edges, so the enumeration offers it in any position
+// — but each leg's own ordering still knows: a leg that sorts pk2 only within
+// pk1 refuses [pk2, pk1] (Satisfies filters the leg's poset to the requested
+// values, and MapAll drops a value only once ALL its dependencies are gone,
+// so the surviving pk2→pk1 edge contradicts the request); a leg that sorts
+// pk2 only within a value the key omits loses pk2 in that filter and refuses
+// the key outright; a leg that fixes the value satisfies any direction.
+//
+// This stands on NewRichOrdering chaining only a leg's NON-fixed keys: a
+// fixed key has no edges and nothing depends on it, so filtering the
+// (b, pk1) leg to {pk1, pk2} does not cascade through the fixed b. Pinned by
+// TestNewRichOrdering_FixedKeysCarryNoEdges.
+func everyLegDeliversComparisonKey(
+	legOrderings []*properties.RichOrdering,
+	parts []properties.ProvidedOrderingPart,
+) bool {
+	requestedParts := make([]properties.RequestedOrderingPart, 0, len(parts))
+	for _, part := range parts {
+		requestedParts = append(requestedParts, properties.RequestedOrderingPart{
+			Value:     part.Value,
+			SortOrder: part.SortOrder.ToRequestedSortOrder(),
+		})
+	}
+	requested := properties.NewRequestedOrdering(
+		requestedParts, properties.DistinctnessPreserveDistinctness, false,
+	)
+	for _, leg := range legOrderings {
+		if !leg.Satisfies(requested) {
 			return false
 		}
 	}

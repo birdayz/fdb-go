@@ -124,8 +124,9 @@ func TestIntersectionComparatorSeparatesSameSlotDifferentLayouts(t *testing.T) {
 // through to the decision that CONSUMES it, so the net covers the consequence and
 // not only the predicate.
 //
-// comparisonKeyContainsFreePrimaryKey proves that every primary-key column not
-// already fixed by an equality appears in the intersection's comparison key. That
+// comparisonKeyIdentifiesRecordInEveryLeg proves that every primary-key column
+// the legs do not all fix alike (primaryKeyComponentsToCompare) appears in the
+// intersection's comparison key. That
 // proof is what makes the merge sound: the comparison key is how the legs are
 // aligned, so a PK column missing from it means two distinct records compare
 // equal and the intersection drops or duplicates rows. Under a domain-blind
@@ -136,12 +137,11 @@ func TestFreePrimaryKeyProofSeparatesSameSlotDifferentLayouts(t *testing.T) {
 
 	pkKey, foreignRowKey := twoLayoutOrdinalCollision(t)
 
-	if comparisonKeyContainsFreePrimaryKey(
+	if comparisonKeyIdentifiesRecordInEveryLeg(
 		[]values.Value{foreignRowKey}, // the comparison key: another row's slot 0
-		[]values.Value{pkKey},         // the primary key: this row's slot 0
-		nil,                           // nothing is equality-bound
+		[]values.Value{pkKey},         // the primary-key column no leg fixes: must be compared
 	) {
-		t.Fatalf("comparisonKeyContainsFreePrimaryKey accepted a comparison key "+
+		t.Fatalf("comparisonKeyIdentifiesRecordInEveryLeg accepted a comparison key "+
 			"of %q as containing the primary-key column %q.\n\n"+
 			"It does not contain it — the two agree only on their ORDINAL, in two "+
 			"different row layouts. An intersection built on this proof aligns its "+

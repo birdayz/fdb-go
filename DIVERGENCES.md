@@ -926,7 +926,7 @@ Confirmed via cross-engine probes. Go's correct behavior is pinned in Go-only po
 | `SELECT v = 0.0` vs `WHERE v = 0.0` on the same `-0.0` | Agree (both IEEE) | **Contradict each other** — see below |
 | UNION ALL outer ORDER BY | Deterministic sorted output | Intermittent ordering |
 | `WHERE pk_col = nonpk_col` | SQL-correct | `Missing binding` planner error |
-| PK-intersection whose legs fix DIFFERENT primary-key components (`PRIMARY KEY (pk1, pk2)`, indexes `(b, pk1)` and `(pk2)`, `WHERE b = 1 AND pk2 = 3`) | Declines the merge; single index + residual filter, correct rows | Intersects on `COMPARE BY (_.PK1)` and returns every `pk2 = 3` record regardless of `b` (`COUNT(*)` 4 for a 1-row answer) — see below |
+| PK-intersection whose legs fix DIFFERENT primary-key components (`PRIMARY KEY (pk1, pk2)`, indexes `(b, pk1)` and `(pk2)`, `WHERE b = 1 AND pk2 = 3`) | Intersects on `(pk1, pk2)`, the order both legs deliver; correct rows (RFC-245 declined the merge, RFC-247 widened the key) | Intersects on `COMPARE BY (_.PK1)` and returns every `pk2 = 3` record regardless of `b` (`COUNT(*)` 4 for a 1-row answer) — see below |
 
 4.12.11.0 fixed three former entries, now removed from this table — they run as plain cross-engine
 equivalence in the corpus: PK literal-eq AND join predicate (`pk_literal_eq_in_join`) and 3-way join
@@ -957,16 +957,21 @@ other leg never matched. Measured on 4.12.11.0
 `COUNT(*) = 4` where the answer is the single record `(3, 3)`. With an `ORDER BY` Java picks the
 covering scan + residual filter and is correct — that arm is the probe's control.
 
-**Go** (`intersector_primary_key.go`, `comparisonKeyIdentifiesRecordInEveryLeg`) requires the
-proof leg by leg: the comparison key must contain every primary-key component the LEG does not
-itself fix. Equivalent to subtracting the INTERSECTION of the legs' equality-bound sets, so a
-partition where every leg fixes the same component (indexes `(a, pk2)` and `(b, pk2)`, both
-bound on pk2) still intersects on `(pk1)`. Go used to port Java's union and returned the
-`(b, pk1)` leg's four records. Pinned by `TestFDB_PkIntersectionLegBoundComponent` (rows), the
-`intersector_leg_bound_pk_test.go` unit arms (decline / accept / three-way keeps the sound pair),
-corpus entry `pk_intersection_leg_bound_component_count` (`DivergenceJavaWrongRowsGoCorrect`), and
-`TestFDB_MetamorphicCompositePrimaryKey` (the composite-PK axis of the indexed/unindexed twin, which found it). Booked in
-TODO.md section 9 for the upstream report.
+**Go** (`intersector_primary_key.go`, `primaryKeyComponentsToCompare`) states the proof as its
+real invariant: a primary-key component may leave the comparison key only when EVERY leg fixes it
+AND every leg fixes it to the same comparison; every other component must be compared. A
+partition where every leg fixes the same component to the same constant (indexes `(a, pk2)` and
+`(b, pk2)`, both bound on `pk2 = 3`) still intersects on `(pk1)`. For the shape above Go compares
+on `(pk1, pk2)` — the order both legs deliver, the `(pk2)` leg trivially — a merge Java cannot
+express soundly (RFC-247; RFC-245 declined it). Legs that fix a component to DIFFERENT constants
+compare on it too, so the merge finds nothing, correctly (RFC-245's proof let that key through;
+found and fixed in RFC-247). Go used to port Java's union and returned the `(b, pk1)` leg's four
+records. Pinned by `TestFDB_PkIntersectionLegBoundComponent` (rows, and the merge per query), the
+`intersector_leg_bound_pk_test.go` unit arms (widen / accept / different constants / three-way /
+two declines / the vacuous direction claim), corpus entry
+`pk_intersection_leg_bound_component_count` (`DivergenceJavaWrongRowsGoCorrect`), and
+`TestFDB_MetamorphicCompositePrimaryKey` (the composite-PK axis of the indexed/unindexed twin, which
+found it). Booked in TODO.md section 9 for the upstream report.
 
 ## Plan Architecture: Go collapses Java class hierarchies
 
