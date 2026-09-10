@@ -490,8 +490,22 @@ func (o *RichOrdering) EnumerateSatisfyingComparisonKeyValues(
 // SetOperationsOrdering filters to singular non-fixed values, removes fixed
 // values from the requested prefix, and then enumerates full topological
 // permutations of that reduced set.
+//
+// mustCompare widens that filter (RFC-247): a value in it is offered as a
+// key part even though the merged ordering binds it FIXED. The intersector
+// computes the set from the legs' OWN orderings — a primary-key component
+// one leg sorts, or one the legs fix to different constants, is constant in
+// the merged output yet not the same record across the legs, so the merge
+// cursor must compare it. It is the caller's set and not a property of this
+// ordering because the merged ordering cannot say which leg sorted a value
+// once combineBindingsForIntersection has collapsed SORTED ∧ FIXED to FIXED.
+// The merged poset carries no edges for such a value (a fixed value's
+// dependencies are normalised away), so it is offered in every position the
+// sorted values allow; the intersector proves each offer against every leg
+// (RFC-247 step 4). An empty set is Java's enumeration exactly.
 func (o *RichOrdering) EnumerateSatisfyingIntersectionComparisonKeyValues(
 	requested *RequestedOrdering,
+	mustCompare []values.Value,
 ) [][]values.Value {
 	if o == nil || requested == nil {
 		return nil
@@ -521,7 +535,18 @@ func (o *RichOrdering) EnumerateSatisfyingIntersectionComparisonKeyValues(
 
 	filtered := o.orderingSet.FilterElements(func(key string) bool {
 		value := o.keyLookup[key]
-		return value != nil && o.IsSingularNonFixedValue(value)
+		if value == nil {
+			return false
+		}
+		if o.IsSingularNonFixedValue(value) {
+			return true
+		}
+		for _, must := range mustCompare {
+			if valuesEqual(value, must) {
+				return true
+			}
+		}
+		return false
 	})
 	if filtered.Size() == 0 {
 		// Java's topological iterator yields the one empty permutation.

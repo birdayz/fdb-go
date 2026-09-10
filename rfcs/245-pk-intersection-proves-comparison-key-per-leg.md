@@ -69,6 +69,10 @@ Consequences, chosen deliberately:
   surviving single-index alternative to apply the other predicate as a
   residual filter. A future planner that widens instead passes every pin here
   (they assert rows, and that any intersection compares on both components).
+  RFC-247 is that planner: it widens the offer to the components the legs do
+  not all fix alike, proves each offer against every leg, and also closes the
+  clause this proof left open (legs fixing a component to DIFFERENT constants
+  were still merged without it).
 * Partitions where EVERY leg fixes the same primary-key component still
   intersect on the remaining components — indexes `(a, pk2)` and `(b, pk2)`
   under `a = … AND b = … AND pk2 = …` merge on `(pk1)`. The intersection-of-sets

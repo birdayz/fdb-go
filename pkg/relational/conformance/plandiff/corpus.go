@@ -3404,7 +3404,7 @@ func SeedRunCorpus() []RunQuery {
 			},
 			Query: "SELECT COUNT(*) FROM T_PKI WHERE b = 1 AND pk2 = 3",
 			Divergence: &Divergence{
-				Reason:    "Java intersects the (b, pk1) and (pk2) covering scans on the comparison key (pk1) alone — pk2 is equality-bound in one leg, and isCompatibleComparisonKey subtracts the union of the legs' equality-bound values from the primary key — so it counts every pk2 = 3 record (4). Only (3, 3) satisfies b = 1 AND pk2 = 3; Go declines the unsound merge and answers 1.",
+				Reason:    "Java intersects the (b, pk1) and (pk2) covering scans on the comparison key (pk1) alone — pk2 is equality-bound in one leg, and isCompatibleComparisonKey subtracts the union of the legs' equality-bound values from the primary key — so it counts every pk2 = 3 record (4). Only (3, 3) satisfies b = 1 AND pk2 = 3; Go compares on (pk1, pk2), the order both legs deliver, and answers 1.",
 				Direction: DivergenceJavaWrongRowsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1)},

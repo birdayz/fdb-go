@@ -5108,7 +5108,16 @@ comparisons instead of 2.
 
 ---
 
-### [ ] Widen the pk-intersection comparison key with a per-leg singular fixed PK component (RFC-245 follow-on; query-engine gate)
+### [x] Widen the pk-intersection comparison key with a per-leg singular fixed PK component (RFC-245 follow-on; query-engine gate)
+
+DONE (RFC-247): `primaryKeyComponentsToCompare` names every primary-key component the legs do not
+all fix to the same comparison, the enumeration offers those, and `everyLegDeliversComparisonKey`
+proves each directed offer against every leg's own ordering. The reproducer plans
+`Intersection(IndexScan(TI_B_PK1), IndexScan(TI_PK2))` on `(PK1, PK2)` (reverse under
+`ORDER BY pk1 DESC`), pinned per query in `TestFDB_PkIntersectionLegBoundComponent`. The RFC lap
+found that RFC-245's proof let legs fixing a component to DIFFERENT constants merge without it —
+fixed in the same change (`TestIntersector_ComparesOnTheComponentLegsFixToDifferentConstants`,
+red at `64a737edd`). Original entry follows.
 
 RFC-245 made the primary-key intersection prove its comparison key leg by leg and DECLINES the
 partition when a primary-key component is equality-bound in one leg only. That is sound, and it
@@ -8986,10 +8995,10 @@ this repo's RFC-182 generator, whose table has the fixed `ID` key — never cros
 
 Go carried the same union until 2026-09-09 (ported faithfully) and returned the OTHER leg's four
 records; `intersector_primary_key.go` now proves the key leg by leg
-(`comparisonKeyIdentifiesRecordInEveryLeg`, comment at the site names this entry) and declines the
-merge, so the surviving single-index alternative applies the other predicate as a residual. Pinned
-by `TestFDB_PkIntersectionLegBoundComponent`, `intersector_leg_bound_pk_test.go` (decline / accept
-when every leg fixes the component / three-way keeps the sound pair), and found by
+(`primaryKeyComponentsToCompare`, comment at the site names this entry): a component leaves the
+key only when every leg fixes it to the same comparison, and Go compares on `(pk1, pk2)` here —
+the order both legs deliver — where RFC-245 had declined the merge (RFC-247). Pinned by
+`TestFDB_PkIntersectionLegBoundComponent`, `intersector_leg_bound_pk_test.go`, and found by
 `TestFDB_MetamorphicCompositePrimaryKey`. Direction: `DivergenceJavaWrongRowsGoCorrect`; DIVERGENCES.md
 "PK-intersection comparison key" has the write-up.
 

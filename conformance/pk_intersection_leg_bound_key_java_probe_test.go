@@ -24,8 +24,9 @@ package conformance_test
 // for a query whose answer is the single record (3, 3). Go used to build the
 // same merge (emitting the (b, pk1) leg's rows instead, so four b = 1 records
 // with the wrong pk2). Go's proof is now per leg
-// (cascades/intersector_primary_key.go, comparisonKeyIdentifiesRecordInEveryLeg)
-// and declines the merge; Java's answer is pinned as WRONG here, direction
+// (cascades/intersector_primary_key.go, primaryKeyComponentsToCompare) and
+// compares on (pk1, pk2), the order both legs deliver (RFC-247; RFC-245 declined
+// the merge outright); Java's answer is pinned as WRONG here, direction
 // DivergenceJavaWrongRowsGoCorrect, booked in TODO.md section 9.
 //
 // The ORDER BY arms are the control. With a requested ordering Java plans the

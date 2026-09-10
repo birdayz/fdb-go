@@ -556,7 +556,7 @@ func TestIntersectionOrdering_ExcludesFixedKeysAndPreservesDescendingRequest(t *
 		DistinctnessNotDistinct,
 		false,
 	)
-	keys := merged.EnumerateSatisfyingIntersectionComparisonKeyValues(requested)
+	keys := merged.EnumerateSatisfyingIntersectionComparisonKeyValues(requested, nil)
 	if len(keys) != 1 || len(keys[0]) != 2 {
 		t.Fatalf("intersection comparison keys = %#v, want exactly [sort_key, id]", keys)
 	}
@@ -609,7 +609,7 @@ func TestIntersectionOrdering_FixedPrefixFreesPrimaryKey(t *testing.T) {
 		DistinctnessNotDistinct,
 		false,
 	)
-	keys := merged.EnumerateSatisfyingIntersectionComparisonKeyValues(requested)
+	keys := merged.EnumerateSatisfyingIntersectionComparisonKeyValues(requested, nil)
 	if len(keys) != 1 || len(keys[0]) != 1 ||
 		!values.ValuesStructurallyEqual(keys[0][0], primaryKey) {
 		t.Fatalf("comparison keys = %#v, want exactly [pk]", keys)
@@ -639,7 +639,7 @@ func TestRichOrdering_DoesNotCollapseDifferentBakedOrdinals(t *testing.T) {
 	if ordering.Satisfies(requested) {
 		t.Fatal("ordering on ordinal 0 must not satisfy the same display name at ordinal 1")
 	}
-	if got := ordering.EnumerateSatisfyingIntersectionComparisonKeyValues(requested); got != nil {
+	if got := ordering.EnumerateSatisfyingIntersectionComparisonKeyValues(requested, nil); got != nil {
 		t.Fatalf("different baked ordinal produced intersection comparison keys: %#v", got)
 	}
 
@@ -1417,4 +1417,191 @@ func TestRichOrdering_GetOrderingKeys_AllFixed(t *testing.T) {
 	if len(keys) != 0 {
 		t.Fatalf("all-fixed ordering should have no ordering keys, got %d", len(keys))
 	}
+}
+
+// TestIntersectionEnumeration_MustCompareOffersALegSortedFixedValue (RFC-247):
+// over legs (b FIXED, pk1, pk2) and (pk2 FIXED, pk1) the merged ordering binds
+// pk2 FIXED — the intersection combinator's answer for the OUTPUT — and the
+// enumeration filters it out as a singular fixed value. Named in mustCompare
+// it is offered, in every position the merged poset allows (it carries no
+// edges there: a fixed value's dependencies are normalised away), and the
+// intersector proves each offer against the legs. With an empty set the
+// enumeration is Java's, element for element.
+func TestIntersectionEnumeration_MustCompareOffersALegSortedFixedValue(t *testing.T) {
+	t.Parallel()
+
+	b := fieldVal(t, "b")
+	pk1 := fieldVal(t, "pk1")
+	pk2 := fieldVal(t, "pk2")
+	legA := NewRichOrdering(
+		map[values.Value][]OrderingBinding{
+			b:   {FixedBinding("b = 1")},
+			pk1: {SortedBinding(ProvidedSortOrderAscending)},
+			pk2: {SortedBinding(ProvidedSortOrderAscending)},
+		},
+		[]values.Value{b, pk1, pk2},
+		NotDistinct())
+	legB := NewRichOrdering(
+		map[values.Value][]OrderingBinding{
+			pk2: {FixedBinding("pk2 = 3")},
+			pk1: {SortedBinding(ProvidedSortOrderAscending)},
+		},
+		[]values.Value{pk2, pk1},
+		NotDistinct())
+	merged := MergeOrderingsForIntersection(legA, legB)
+	if !AreAllBindingsFixed(merged.GetBindingMap()[mergedKeyEqualTo(t, merged, pk2)]) {
+		t.Fatal("pk2 is not FIXED in the merged ordering; the combinator's SORTED ∧ FIXED → FIXED is the premise here")
+	}
+	preserve := PreserveOrdering()
+
+	narrow := merged.EnumerateSatisfyingIntersectionComparisonKeyValues(preserve, nil)
+	if len(narrow) != 1 || len(narrow[0]) != 1 || !values.ValuesStructurallyEqual(narrow[0][0], pk1) {
+		t.Fatalf("with no mustCompare the enumeration = %s, want exactly [[pk1]] (Java's filter)", explainKeySets(narrow))
+	}
+
+	wide := merged.EnumerateSatisfyingIntersectionComparisonKeyValues(preserve,
+		[]values.Value{mergedKeyEqualTo(t, merged, pk2)})
+	if len(wide) != 2 {
+		t.Fatalf("with pk2 in mustCompare the enumeration = %s, want both [pk1 pk2] and [pk2 pk1]: "+
+			"pk2 has no edges in the merged poset, so the offer is unordered and the intersector proves it per leg",
+			explainKeySets(wide))
+	}
+	seen := map[string]bool{}
+	for _, key := range wide {
+		if len(key) != 2 {
+			t.Fatalf("offer %s does not carry both components", explainKeySets(wide))
+		}
+		seen[values.ExplainValue(key[0])+","+values.ExplainValue(key[1])] = true
+	}
+	if !seen[values.ExplainValue(pk1)+","+values.ExplainValue(pk2)] || !seen[values.ExplainValue(pk2)+","+values.ExplainValue(pk1)] {
+		t.Fatalf("offers = %s, want [pk1 pk2] and [pk2 pk1]", explainKeySets(wide))
+	}
+
+	// The value the intersector then proves against: leg A delivers [pk1, pk2]
+	// and refuses [pk2, pk1]; leg B, fixing pk2, delivers either.
+	asc := func(vs ...values.Value) *RequestedOrdering {
+		parts := make([]RequestedOrderingPart, 0, len(vs))
+		for _, v := range vs {
+			parts = append(parts, RequestedOrderingPart{Value: v, SortOrder: RequestedSortOrderAscending})
+		}
+		return NewRequestedOrdering(parts, DistinctnessPreserveDistinctness, false)
+	}
+	if !legA.Satisfies(asc(pk1, pk2)) || legA.Satisfies(asc(pk2, pk1)) {
+		t.Fatal("leg A must deliver [pk1, pk2] and refuse [pk2, pk1]")
+	}
+	if !legB.Satisfies(asc(pk1, pk2)) || !legB.Satisfies(asc(pk2, pk1)) {
+		t.Fatal("leg B fixes pk2 and must deliver either order")
+	}
+}
+
+// TestNewRichOrdering_FixedKeysCarryNoEdges pins the precondition RFC-247's
+// directed gate stands on: NewRichOrdering chains only a leg's NON-fixed keys,
+// so a fixed key between two sorted ones neither has an edge nor receives one,
+// and filtering the leg to its sorted keys does not cascade through the fixed
+// one. Were fixed keys chained, everyLegDeliversComparisonKey would refuse
+// every widened key on a leg with a fixed prefix — the RFC-247 reproducer
+// included — and the widening would silently no-op.
+func TestNewRichOrdering_FixedKeysCarryNoEdges(t *testing.T) {
+	t.Parallel()
+
+	a := fieldVal(t, "a")
+	b := fieldVal(t, "b")
+	c := fieldVal(t, "c")
+	leg := NewRichOrdering(
+		map[values.Value][]OrderingBinding{
+			a: {SortedBinding(ProvidedSortOrderAscending)},
+			b: {FixedBinding("b = 1")},
+			c: {SortedBinding(ProvidedSortOrderAscending)},
+		},
+		[]values.Value{a, b, c},
+		NotDistinct())
+	deps := leg.OrderingSet().DependencyMap()
+	ka, kb, kc := values.ExplainValue(a), values.ExplainValue(b), values.ExplainValue(c)
+	if deps.Contains(kb, ka) || deps.Contains(kc, kb) {
+		t.Fatalf("a fixed key is chained (b<-a: %v, c<-b: %v); everyLegDeliversComparisonKey filters a leg to the "+
+			"comparison key's values and MapAll would cascade through the fixed key, refusing every widened key",
+			deps.Contains(kb, ka), deps.Contains(kc, kb))
+	}
+	if !deps.Contains(kc, ka) {
+		t.Fatal("the sorted keys around the fixed one must still be chained (c <- a)")
+	}
+	requested := NewRequestedOrdering([]RequestedOrderingPart{
+		{Value: a, SortOrder: RequestedSortOrderAscending},
+		{Value: c, SortOrder: RequestedSortOrderAscending},
+	}, DistinctnessPreserveDistinctness, false)
+	if !leg.Satisfies(requested) {
+		t.Fatal("[a, c] over (a, b FIXED, c) must be satisfied: the fixed b is transparent to the cascade")
+	}
+}
+
+// TestRichOrdering_SatisfiesDropsAValueOnlyWhenEveryDependencyIsGone pins the
+// cascade's actual rule, which RFC-247's gate reads through Satisfies: MapAll
+// removes an element once ALL of its dependencies are gone (degree to zero),
+// not when any one of them is. Over a leg built with explicit multi-parent
+// edges — c depends on both a and b — requesting [a, c] keeps c (b's removal
+// leaves the a edge), so the request is satisfied; requesting [c] alone drops
+// c and is refused.
+func TestRichOrdering_SatisfiesDropsAValueOnlyWhenEveryDependencyIsGone(t *testing.T) {
+	t.Parallel()
+
+	a := fieldVal(t, "a")
+	b := fieldVal(t, "b")
+	c := fieldVal(t, "c")
+	deps := combinatorics.NewSetMultimap[string]()
+	deps.Put(values.ExplainValue(c), values.ExplainValue(a))
+	deps.Put(values.ExplainValue(c), values.ExplainValue(b))
+	leg := NewRichOrderingWithDeps(
+		map[values.Value][]OrderingBinding{
+			a: {SortedBinding(ProvidedSortOrderAscending)},
+			b: {SortedBinding(ProvidedSortOrderAscending)},
+			c: {SortedBinding(ProvidedSortOrderAscending)},
+		},
+		[]values.Value{a, b, c},
+		deps,
+		NotDistinct())
+	req := func(vs ...values.Value) *RequestedOrdering {
+		parts := make([]RequestedOrderingPart, 0, len(vs))
+		for _, v := range vs {
+			parts = append(parts, RequestedOrderingPart{Value: v, SortOrder: RequestedSortOrderAscending})
+		}
+		return NewRequestedOrdering(parts, DistinctnessPreserveDistinctness, false)
+	}
+	if !leg.Satisfies(req(a, c)) {
+		t.Fatal("[a, c] must be satisfied: filtering b out leaves c's edge to a, so c survives and follows a")
+	}
+	if leg.Satisfies(req(c)) {
+		t.Fatal("[c] alone must be refused: both of c's dependencies are filtered out, so the cascade drops c")
+	}
+	if leg.Satisfies(req(c, a)) {
+		t.Fatal("[c, a] must be refused: c cannot precede a dependency the request retains")
+	}
+}
+
+func mergedKeyEqualTo(t testing.TB, o *RichOrdering, v values.Value) values.Value {
+	t.Helper()
+	for _, key := range o.GetKeys() {
+		if values.ValuesStructurallyEqual(key, v) {
+			return key
+		}
+	}
+	t.Fatalf("merged ordering has no key equal to %s", values.ExplainValue(v))
+	return nil
+}
+
+func explainKeySets(sets [][]values.Value) string {
+	out := "["
+	for i, set := range sets {
+		if i > 0 {
+			out += " "
+		}
+		out += "["
+		for j, v := range set {
+			if j > 0 {
+				out += " "
+			}
+			out += values.ExplainValue(v)
+		}
+		out += "]"
+	}
+	return out + "]"
 }
