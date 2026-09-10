@@ -431,6 +431,7 @@ jobs:
         # CPU-only — no Docker, no FDB, no testcontainers — so unlike bench and
         # conformance it costs a compile plus a few seconds of tests.
         run: |
+          echo "RACE_JOB_START=$(date -u +%FT%TZ)" >> "$GITHUB_ENV"
           bazelisk shutdown
           RACE_BASE="$HOME/.cache/bazel/_race_output_base"
           REL_SCOPE="//pkg/relational/... -//pkg/relational/conformance/..."
@@ -490,6 +491,41 @@ jobs:
           $RACE --build_event_json_file=.bazel-bep.race-cascades.jsonl -- $CASCADES_SCOPE
           $RACE --build_event_json_file=.bazel-bep.race-rel.jsonl -- $REL_SCOPE
           $RACE --build_event_json_file=.bazel-bep.race-client.jsonl -- $CLIENT_SCOPE
+
+      - name: FDB container loss diagnostics (on failure)
+        # Three red lanes in two days, on BOTH hetzner-fdb-vm hosts, carried the
+        # same line — `WARN fdbgo: connection to server failed address=172.16.0.3:4500`
+        # followed by `context deadline exceeded` on every query — 34-36 minutes
+        # after the job started, in the one lane that keeps a single FDB
+        # testcontainer in use that long (TODO.md §8, the runner STOP entries).
+        # Nobody reading the job log can tell an OOM-killed fdbserver (the test
+        # container runs the MEMORY storage engine and the package accumulates
+        # databases for the whole lane) from a container the host reaped or a
+        # network the daemon dropped. These are the three readings that
+        # separate them, taken after the fact — `docker events` replays the
+        # daemon's own record of oom / die / kill / destroy for the job's
+        # window, the kernel log names an OOM victim, `free` says whether the
+        # box was at the wall. Diagnostic only; never gates.
+        if: ${{ !cancelled() && steps.race.outcome == 'failure' }}
+        run: |
+          echo "::group::docker events since job start (oom / die / kill / destroy / disconnect)"
+          docker events --since "${RACE_JOB_START:-1h}" --until "$(date -u +%FT%TZ)" \
+            --filter event=oom --filter event=die --filter event=kill \
+            --filter event=destroy --filter event=disconnect 2>&1 | tail -n 100 || true
+          echo "::endgroup::"
+          echo "::group::containers still present"
+          docker ps -a --format '{{.ID}} {{.Image}} {{.Status}} {{.Names}}' 2>&1 | head -n 50 || true
+          for id in $(docker ps -aq 2>/dev/null); do
+            docker inspect --format '{{.Name}} oomkilled={{.State.OOMKilled}} exit={{.State.ExitCode}} finished={{.State.FinishedAt}}' "$id" 2>/dev/null || true
+          done
+          echo "::endgroup::"
+          echo "::group::kernel OOM record (last 40 lines mentioning oom / killed process)"
+          (dmesg -T 2>/dev/null || sudo -n dmesg -T 2>/dev/null || journalctl -k --no-pager -q 2>/dev/null) \
+            | grep -i -E 'oom|killed process|out of memory' | tail -n 40 || true
+          echo "::endgroup::"
+          echo "::group::memory and swap now"
+          free -m || true
+          echo "::endgroup::"
 
       - name: Race lane timeout budgets
         # Runs on success OR failure: a lane that just timed out is exactly the
