@@ -69,9 +69,9 @@ func (r *AggregateDataAccessRule) OnMatch(call *ExpressionRuleCall) {
 	}
 	scanTypes := scan.GetRecordTypes()
 
-	// Extract filter predicates from the GroupBy's inner when it wraps
-	// a Filter(pred, Scan). Predicates on group key columns become scan
-	// bounds on the aggregate index (bounded AISCAN).
+	// The GroupBy's inner filter, when it wraps a Filter(pred, Scan), is
+	// partitioned per candidate into scan bounds, residuals over the
+	// aggregate row, or a decline (RFC-248, partitionAggregatePredicates).
 	innerFilterPreds := extractInnerFilterPredicates(innerRef)
 
 	// Path 1: single-aggregate match — one candidate covers the full GroupBy.
@@ -88,14 +88,13 @@ func (r *AggregateDataAccessRule) OnMatch(call *ExpressionRuleCall) {
 			continue
 		}
 		// An aggregate index stores aggregates precomputed over ALL rows of the
-		// group. A residual predicate that filters the aggregation INPUT (a
-		// non-grouping column, or a non-equality on a grouping column) cannot be
-		// compensated after the fact, so the index must NOT be used — Java's
-		// data-access compensation marks such a match impossible and falls back
-		// to StreamingAgg over a filtered scan. buildAggScanPrefix only turns
-		// grouping-key EQUALITIES into scan bounds; if any other filter
-		// predicate remains, decline this candidate.
-		if !aggInnerFilterFullyConsumable(innerRef, aggCand) {
+		// group. A predicate on the aggregation INPUT (a non-grouping column)
+		// cannot be compensated after the fact, so the candidate declines —
+		// Java's GroupByExpression.compensate returns impossibleCompensation
+		// for it. A predicate over grouping columns the scan does not bind
+		// filters whole groups and is applied as a residual above the scan.
+		partition, ok := partitionAggregatePredicates(aggCand, innerFilterPreds)
+		if !ok {
 			continue
 		}
 
@@ -113,11 +112,15 @@ func (r *AggregateDataAccessRule) OnMatch(call *ExpressionRuleCall) {
 			if companion == nil {
 				continue
 			}
-			mergePlan := buildGroupExistenceMerge(call, companion, aggCand, innerFilterPreds)
+			mergePlan := buildGroupExistenceMerge(call, companion, aggCand, partition.scanPrefix)
 			if mergePlan == nil {
 				continue
 			}
-			logicalPlan, err := projectAggregateResultToGroupBy(mergePlan, gb)
+			filtered, ok := partition.applyResiduals(mergePlan)
+			if !ok {
+				continue
+			}
+			logicalPlan, err := projectAggregateResultToGroupBy(filtered, gb)
 			if err != nil {
 				call.Fail(err)
 				return
@@ -127,11 +130,10 @@ func (r *AggregateDataAccessRule) OnMatch(call *ExpressionRuleCall) {
 			continue
 		}
 
-		prefix := buildAggScanPrefix(aggCand, innerFilterPreds)
-		if !candidateBindingRangesEligible(aggCand, prefix) {
+		if !candidateBindingRangesEligible(aggCand, partition.scanPrefix) {
 			continue
 		}
-		scanPlan := aggCand.ToScanPlan(prefix, false)
+		scanPlan := aggCand.ToScanPlan(partition.scanPrefix, false)
 		idxPlan := extractIndexPlan(scanPlan)
 		if idxPlan == nil {
 			continue
@@ -155,7 +157,11 @@ func (r *AggregateDataAccessRule) OnMatch(call *ExpressionRuleCall) {
 		aggPlan = aggPlan.WithGroupColumns(aggCand.groupCols, aggCand.aggColumn).
 			WithGroupColumnLayout(aggCand.GetBaseRowType()).
 			WithLiveGroupsOnly(dropsVacatedGroups(aggCand))
-		logicalPlan, err := projectAggregateResultToGroupBy(aggPlan, gb)
+		filtered, ok := partition.applyResiduals(aggPlan)
+		if !ok {
+			continue
+		}
+		logicalPlan, err := projectAggregateResultToGroupBy(filtered, gb)
 		if err != nil {
 			call.Fail(err)
 			return
@@ -364,20 +370,21 @@ func sameRecordTypeNames(a, b []string) bool {
 func buildGroupExistenceMerge(
 	call *ExpressionRuleCall,
 	companion, owner *AggregateIndexMatchCandidate,
-	innerFilterPreds []*predicates.ComparisonPredicate,
+	ownerScanPrefix map[values.CorrelationIdentifier]*predicates.ComparisonRange,
 ) plans.RecordQueryPlan {
 	groupCols := owner.groupCols
 	if len(groupCols) == 0 {
 		return nil
 	}
 
-	// The companion carries the same grouping columns, so the WHERE-equality
-	// bounds derived for the owner apply to it verbatim; both streams then emit
+	// The companion carries the same grouping columns, so the owner's scan
+	// bounds — already truncated to the leading run the scan applies — apply
+	// to it verbatim once re-keyed to its aliases; both streams then emit
 	// exactly the groups the query asked for.
 	legs := []*AggregateIndexMatchCandidate{companion, owner}
 	childPlans := make([]plans.RecordQueryPlan, len(legs))
 	for i, cand := range legs {
-		prefix := buildAggScanPrefix(cand, innerFilterPreds)
+		prefix := rekeyScanPrefix(ownerScanPrefix, owner, cand)
 		if !candidateBindingRangesEligible(cand, prefix) {
 			return nil
 		}
@@ -500,70 +507,284 @@ func emptyGroupIdentity(owner *AggregateIndexMatchCandidate, pickUp values.Value
 		pickUp, &values.ConstantValue{Value: int64(0)})
 }
 
-// aggInnerFilterFullyConsumable reports whether EVERY predicate on the
-// aggregation's input Filter can be turned into a grouping-key equality scan
-// bound (i.e. consumed by buildAggScanPrefix). If any predicate cannot — a
-// non-ComparisonPredicate, a non-equality comparison, or a comparison whose LHS
-// is not a grouping column — the aggregate index cannot faithfully serve the
-// query (the dropped predicate would be silently ignored, returning aggregates
-// over the unfiltered population), so the caller must decline the match and let
-// StreamingAgg-over-filtered-scan handle it. This is the Go analog of Java's
-// data-access compensation declaring the match impossible.
-func aggInnerFilterFullyConsumable(ref *expressions.Reference, cand *AggregateIndexMatchCandidate) bool {
-	for _, m := range ref.Members() {
-		f, ok := m.(*expressions.LogicalFilterExpression)
-		if !ok {
-			continue
-		}
-		// `a = 'x' AND b = 'y'` arrives as ONE AndPredicate; Java's
-		// SelectExpression holds its conjuncts as a flat list, so the guard reads
-		// the same flattened list buildAggScanPrefix binds from — a conjunction
-		// read whole here and never decomposed there is how every multi-equality
-		// on the grouping prefix used to fall back to a full scan.
-		preds := flattenConjuncts(f.GetPredicates())
-		// Record which grouping column each predicate equality-binds. Anything
-		// that is not an equality on a grouping column (a non-comparison
-		// predicate, a non-equality, a non-group column) makes the index unable
-		// to serve the query → decline.
-		bound := make([]bool, len(cand.groupCols))
-		n := 0
-		for _, p := range preds {
-			cp, ok := p.(*predicates.ComparisonPredicate)
-			if !ok {
-				return false
-			}
-			idx := groupColEqualityIndex(cp, cand.groupCols)
-			if idx < 0 || bound[idx] {
-				// not a grouping-key equality, or a duplicate bound on the same
-				// column (e.g. `a=1 AND a=2`) — the scan applies only one.
-				return false
-			}
-			bound[idx] = true
-			n++
-		}
-		// ToScanPlan consumes ONLY the contiguous LEADING prefix of bound
-		// columns (it breaks at the first gap), so an equality on a non-leading
-		// grouping key (`WHERE subregion=… GROUP BY region, subregion`) would be
-		// silently dropped. Require the n bound columns to be exactly the leading
-		// prefix groupCols[0..n-1] — then every predicate maps 1:1 to a column
-		// the scan actually applies.
-		for i := 0; i < n; i++ {
-			if !bound[i] {
-				return false
-			}
-		}
-	}
-	return true
+// aggregatePredicatePartition is RFC-248's three-way partition of the
+// GroupBy's inner filter for one aggregate-index candidate: the scan bounds
+// the candidate's scan will apply, and the predicates left over that the
+// aggregate row can still answer. A predicate that is neither — one that
+// reads the aggregation input — makes the candidate decline, so a partition
+// is only ever built for a candidate that can serve the whole filter.
+type aggregatePredicatePartition struct {
+	cand *AggregateIndexMatchCandidate
+	// scanPrefix is the leading run ToScanPlan applies, keyed by the
+	// candidate's aliases: equalities, then at most one inequality — the
+	// candidate's ComputeBoundParameterPrefixMap over the per-column folds.
+	scanPrefix map[values.CorrelationIdentifier]*predicates.ComparisonRange
+	// residuals are the predicates the scan does not apply, still in the
+	// query's own terms (over the base row); applyResiduals rewrites them
+	// onto the row of the plan being yielded.
+	residuals []predicates.QueryPredicate
 }
 
-// groupColEqualityIndex returns the index of the grouping column that cp is an
-// EQUALITY bound on (matching buildAggScanPrefix's column matching), or -1 if cp
-// is not an equality predicate whose LHS is a grouping column. Shared by the
-// consumption guard (aggInnerFilterFullyConsumable) and the bound builder
-// (buildAggScanPrefix) so the two cannot drift — the drift between guard and
-// consumer is what let the original residual-drop bug ship.
-func groupColEqualityIndex(cp *predicates.ComparisonPredicate, groupCols []string) int {
-	if cp.Comparison.Type != predicates.ComparisonEquals {
+// partitionAggregatePredicates sorts the flattened filter predicates into
+// scan bounds and residuals, or reports that the candidate cannot serve the
+// filter at all.
+//
+// Scan bounds: every comparison on a grouping column whose other side reads
+// no field (groupColComparisonIndex) is FOLDED per column through
+// ComparisonRange.Merge — `a > 5 AND a < 10` is one range; `a = 1 AND a = 2`
+// does not merge, so that column gets no range and both predicates are
+// residuals. The candidate's ComputeBoundParameterPrefixMap then truncates the
+// folds to the leading run the scan can apply (equalities, then at most one
+// inequality — the port of Java's MatchCandidate.computeBoundParameterPrefixMap);
+// ToScanPlan itself breaks only on an ABSENT column, never after an inequality,
+// so the TRUNCATED map is the one every scan site receives. Predicates on a
+// column outside the run are residuals.
+//
+// Residuals: admitted by an allow-list of predicate kinds whose FieldValue
+// leaves, enumerated, each name a grouping column (aggColumnMatches). A leaf
+// that names anything else reads the aggregation input — no filter above a
+// pre-aggregated stream can reconstruct it — and declines the candidate; a
+// predicate with no FieldValue leaf is declined too, rather than admitted by a
+// vacuous "every leaf is a grouping column". The rewrite onto the yielded row
+// and the asserted bridge that a rewritten residual reads ONLY that row are in
+// applyResiduals.
+func partitionAggregatePredicates(
+	cand *AggregateIndexMatchCandidate,
+	filterPreds []predicates.QueryPredicate,
+) (*aggregatePredicatePartition, bool) {
+	partition := &aggregatePredicatePartition{cand: cand}
+	perColumn := make([][]*predicates.ComparisonPredicate, len(cand.groupCols))
+	var others []predicates.QueryPredicate
+	for _, p := range filterPreds {
+		if cp, ok := p.(*predicates.ComparisonPredicate); ok {
+			if idx := groupColComparisonIndex(cp, cand.groupCols); idx >= 0 {
+				perColumn[idx] = append(perColumn[idx], cp)
+				continue
+			}
+		}
+		others = append(others, p)
+	}
+
+	folded := make(map[values.CorrelationIdentifier]*predicates.ComparisonRange)
+	for idx, comparisons := range perColumn {
+		if len(comparisons) == 0 {
+			continue
+		}
+		cr := predicates.EmptyComparisonRange()
+		ok := true
+		for _, cp := range comparisons {
+			result := cr.Merge(&cp.Comparison)
+			if !result.Ok {
+				ok = false
+				break
+			}
+			cr = result.Range
+		}
+		if ok {
+			folded[cand.aliases[idx]] = cr
+		}
+	}
+	partition.scanPrefix = cand.ComputeBoundParameterPrefixMap(folded)
+	// A bound the scan cannot execute — a FLOAT range whose tuple order is not
+	// the comparator's, an unknown physical type, a constant NaN — is not a
+	// reason to decline the candidate: the predicate filters whole groups just
+	// as well above the scan. Peel the run from its end (the ineligible bound
+	// is on the last column of the run or before it) until what remains is
+	// eligible; the peeled columns' predicates become residuals.
+	for len(partition.scanPrefix) > 0 && !candidateBindingRangesEligible(cand, partition.scanPrefix) {
+		last := -1
+		for idx, alias := range cand.aliases {
+			if _, bound := partition.scanPrefix[alias]; bound {
+				last = idx
+			}
+		}
+		delete(partition.scanPrefix, cand.aliases[last])
+	}
+
+	var residuals []predicates.QueryPredicate
+	for idx, comparisons := range perColumn {
+		if _, bound := partition.scanPrefix[cand.aliases[idx]]; bound {
+			continue
+		}
+		for _, cp := range comparisons {
+			residuals = append(residuals, cp)
+		}
+	}
+	residuals = append(residuals, others...)
+	for _, p := range residuals {
+		if !residualOverGroupingColumns(p, cand.groupCols) {
+			return nil, false
+		}
+	}
+	partition.residuals = residuals
+	return partition, true
+}
+
+// residualOverGroupingColumns is bucket 2's admission: a predicate kind the
+// rewrite walks, with at least one FieldValue leaf, every one of which names a
+// grouping column. A bare quantified/object leaf is not a column read the
+// aggregate row can serve and declines; so does a kind ReplaceValues would
+// pass through unchanged, since that is indistinguishable from a rewrite
+// that did nothing.
+func residualOverGroupingColumns(p predicates.QueryPredicate, groupCols []string) bool {
+	switch pred := p.(type) {
+	case *predicates.ComparisonPredicate, *predicates.ValuePredicate:
+		// leaf kinds: checked below
+	case *predicates.AndPredicate:
+		for _, sub := range pred.SubPredicates {
+			if !residualOverGroupingColumns(sub, groupCols) {
+				return false
+			}
+		}
+		return true
+	case *predicates.OrPredicate:
+		for _, sub := range pred.SubPredicates {
+			if !residualOverGroupingColumns(sub, groupCols) {
+				return false
+			}
+		}
+		return true
+	case *predicates.NotPredicate:
+		return residualOverGroupingColumns(pred.Child, groupCols)
+	default:
+		return false
+	}
+	leaves := 0
+	allGrouping := true
+	for _, v := range predicateEmbeddedValues(p) {
+		values.WalkValue(v, func(node values.Value) bool {
+			if !allGrouping {
+				return false
+			}
+			if _, isField := values.AsFieldValue(node); isField {
+				leaves++
+				if groupingColumnIndex(node, groupCols) < 0 {
+					allGrouping = false
+				}
+				return false
+			}
+			switch node.(type) {
+			case values.QuantifiedObjectValue, *values.ObjectValue:
+				// A whole-row leaf is not a grouping column.
+				allGrouping = false
+				return false
+			}
+			return true
+		})
+	}
+	return allGrouping && leaves > 0
+}
+
+// predicateEmbeddedValues lists the Value trees a leaf predicate embeds, the
+// same trees ReplaceValues rewrites.
+func predicateEmbeddedValues(p predicates.QueryPredicate) []values.Value {
+	switch pred := p.(type) {
+	case *predicates.ComparisonPredicate:
+		out := []values.Value{pred.Operand}
+		if pred.Comparison.Operand != nil {
+			out = append(out, pred.Comparison.Operand)
+		}
+		return out
+	case *predicates.ValuePredicate:
+		return []values.Value{pred.Value}
+	}
+	return nil
+}
+
+// groupingColumnIndex is the grouping column a field read names, by the
+// accessor-path match the bound builder uses, or -1.
+func groupingColumnIndex(v values.Value, groupCols []string) int {
+	for i, col := range groupCols {
+		if aggColumnMatches(v, col) {
+			return i
+		}
+	}
+	return -1
+}
+
+// applyResiduals wraps plan in ONE PredicatesFilter carrying the residuals
+// rewritten onto plan's row — grouping column i is ordinal i of the row the
+// aggregate scan, the companion merge and the multi-aggregate intersection
+// all flow — and asserts the bridge: a rewritten residual must be correlated
+// to plan's alias and nothing else. A leaf the rewrite did not reach, or a
+// predicate kind ReplaceValues passed through unchanged, still names the base
+// quantifier and fails that assertion, so it declines rather than filtering
+// on a row it does not read. With no residuals the plan is returned as is.
+func (partition *aggregatePredicatePartition) applyResiduals(
+	plan plans.RecordQueryPlan,
+) (plans.RecordQueryPlan, bool) {
+	if len(partition.residuals) == 0 {
+		return plan, true
+	}
+	innerQ := plans.QuantifierOverPlan(plan)
+	root, err := innerQ.RequireFlowedObjectValue()
+	if err != nil {
+		return nil, false
+	}
+	groupCols := partition.cand.groupCols
+	rewritten := make([]predicates.QueryPredicate, 0, len(partition.residuals))
+	for _, residual := range partition.residuals {
+		failed := false
+		moved := predicates.ReplaceValues(residual, func(v values.Value) values.Value {
+			if _, isField := values.AsFieldValue(v); !isField {
+				return v
+			}
+			idx := groupingColumnIndex(v, groupCols)
+			if idx < 0 {
+				failed = true
+				return v
+			}
+			replacement, resolveErr := values.ResolveFieldOrdinals(root, []int{idx})
+			if resolveErr != nil {
+				failed = true
+				return v
+			}
+			return replacement
+		})
+		if failed {
+			return nil, false
+		}
+		correlated := moved.GetCorrelatedTo()
+		if _, reads := correlated[root.Correlation()]; !reads || len(correlated) != 1 {
+			return nil, false
+		}
+		rewritten = append(rewritten, moved)
+	}
+	filtered, err := plans.NewRecordQueryPredicatesFilterPlanFromQuantifier(innerQ, rewritten)
+	if err != nil {
+		return nil, false
+	}
+	return filtered, true
+}
+
+// rekeyScanPrefix carries the owner's truncated scan bounds onto a companion
+// candidate over the same grouping columns, alias by position.
+func rekeyScanPrefix(
+	prefix map[values.CorrelationIdentifier]*predicates.ComparisonRange,
+	owner, target *AggregateIndexMatchCandidate,
+) map[values.CorrelationIdentifier]*predicates.ComparisonRange {
+	if owner == target {
+		return prefix
+	}
+	out := make(map[values.CorrelationIdentifier]*predicates.ComparisonRange, len(prefix))
+	for i, alias := range owner.aliases {
+		if cr, ok := prefix[alias]; ok && i < len(target.aliases) {
+			out[target.aliases[i]] = cr
+		}
+	}
+	return out
+}
+
+// groupColComparisonIndex returns the index of the grouping column that cp is
+// a scan-bindable comparison on — an equality, an inequality, IS NULL / IS NOT
+// NULL or STARTS_WITH, the set the index-match gate admits
+// (isSargableComparisonForMatch) — or -1 if cp is not such a comparison whose
+// LHS is a grouping column. Shared by the partition's bound fold and, through
+// groupingColumnIndex, its residual rewrite, so the two cannot drift — the
+// drift between guard and consumer is what let the original residual-drop bug
+// ship.
+func groupColComparisonIndex(cp *predicates.ComparisonPredicate, groupCols []string) int {
+	if !isSargableComparisonForMatch(cp.Comparison.Type) {
 		return -1
 	}
 	fv, ok := values.AsFieldValue(cp.Operand)
@@ -573,25 +794,14 @@ func groupColEqualityIndex(cp *predicates.ComparisonPredicate, groupCols []strin
 	// The comparand (RHS) must be a constant the scan can bind to — a literal or
 	// parameter — NOT a value that reads a record field. `region = status`
 	// correlates two columns of the SAME record and can never be an index bound;
-	// it must stay a residual (decline -> StreamingAgg). Without this, the field
-	// comparand makes buildAggScanPrefix.Merge fail to bind while the guard still
-	// marks the predicate "consumed", silently dropping it (wrong rows). A rare
-	// genuinely-correlated bound is conservatively declined too.
+	// it stays a residual (sound when both are grouping columns, declined
+	// otherwise). Without this the field comparand makes Merge fail to bind
+	// while the predicate would be counted as consumed, silently dropping it
+	// (wrong rows).
 	if valueReadsField(cp.Comparison.Operand) {
 		return -1
 	}
-	for i, col := range groupCols {
-		// Match the grouping column by full accessor PATH, not leaf name, so a
-		// nested `addr.city` group-key predicate never binds a same-leaf-named
-		// top-level `city` aggregate index (RFC-187 S5). Dropping the former
-		// dotted-leaf-strip fallback means a form-(c) flat-dotted qualified key
-		// (`T.city`) that cannot be structurally resolved falls back to a
-		// StreamingAgg (correct rows) rather than risk the nested collision.
-		if aggColumnMatches(fv, col) {
-			return i
-		}
-	}
-	return -1
+	return groupingColumnIndex(fv, groupCols)
 }
 
 // valueReadsField reports whether v references a record field anywhere in
@@ -613,55 +823,22 @@ func valueReadsField(v values.Value) bool {
 	return false
 }
 
-// extractInnerFilterPredicates returns ComparisonPredicates from the
-// inner Reference's Filter expressions, conjunctions flattened (the same list
-// aggInnerFilterFullyConsumable guards, so the two cannot disagree on what a
-// filter holds). Used by AggregateDataAccessRule
-// to push WHERE predicates on group keys into the aggregate index scan
-// range. Returns nil if no filter predicates are found.
-func extractInnerFilterPredicates(ref *expressions.Reference) []*predicates.ComparisonPredicate {
-	var result []*predicates.ComparisonPredicate
+// extractInnerFilterPredicates returns every predicate of the inner
+// Reference's Filter expressions, conjunctions flattened (`a = 'x' AND b = 'y'`
+// arrives as ONE AndPredicate; Java's SelectExpression holds its conjuncts as a
+// flat list). The one list partitionAggregatePredicates reads, so no second
+// reader can disagree on what a filter holds. Returns nil if no filter
+// predicates are found.
+func extractInnerFilterPredicates(ref *expressions.Reference) []predicates.QueryPredicate {
+	var result []predicates.QueryPredicate
 	for _, m := range ref.Members() {
 		f, ok := m.(*expressions.LogicalFilterExpression)
 		if !ok {
 			continue
 		}
-		for _, p := range flattenConjuncts(f.GetPredicates()) {
-			if cp, ok := p.(*predicates.ComparisonPredicate); ok {
-				result = append(result, cp)
-			}
-		}
+		result = append(result, flattenConjuncts(f.GetPredicates())...)
 	}
 	return result
-}
-
-// buildAggScanPrefix matches filter predicates against an aggregate
-// index candidate's group columns. For each group column that has an
-// equality predicate in the filter, creates a ComparisonRange bound
-// in the prefix map. This converts WHERE group_key = X into a bounded
-// AISCAN [EQUALS X] range.
-func buildAggScanPrefix(
-	cand *AggregateIndexMatchCandidate,
-	filterPreds []*predicates.ComparisonPredicate,
-) map[values.CorrelationIdentifier]*predicates.ComparisonRange {
-	prefix := make(map[values.CorrelationIdentifier]*predicates.ComparisonRange)
-	if len(filterPreds) == 0 {
-		return prefix
-	}
-	for _, cp := range filterPreds {
-		idx := groupColEqualityIndex(cp, cand.groupCols)
-		if idx < 0 {
-			continue
-		}
-		if _, exists := prefix[cand.aliases[idx]]; exists {
-			continue // first equality on a column wins
-		}
-		cr := predicates.EmptyComparisonRange()
-		if result := cr.Merge(&cp.Comparison); result.Ok {
-			prefix[cand.aliases[idx]] = result.Range
-		}
-	}
-	return prefix
 }
 
 // aggregateFlowedColumnName returns the column name under which the
@@ -820,7 +997,7 @@ func tryMultiAggregateIntersection(
 	gb *expressions.GroupByExpression,
 	candidates []MatchCandidate,
 	scanTypes []string,
-	innerFilterPreds []*predicates.ComparisonPredicate,
+	innerFilterPreds []predicates.QueryPredicate,
 ) {
 	aggs := gb.GetAggregates()
 	if len(aggs) < 2 {
@@ -880,14 +1057,12 @@ func tryMultiAggregateIntersection(
 		}
 	}
 
-	// Same residual-compensation guard as the single-aggregate path: if any
-	// input filter predicate is not a grouping-key equality (so it cannot
-	// become a scan bound), the aggregate indexes cannot serve the filtered
-	// query — decline and fall back to StreamingAgg over a filtered scan.
-	if innerRef := gb.GetInner().GetRangesOver(); innerRef != nil {
-		if !aggInnerFilterFullyConsumable(innerRef, matched[0]) {
-			return
-		}
+	// The same partition as the single-aggregate path, over the first leg's
+	// candidate (every leg shares its grouping columns): scan bounds for the
+	// legs, residuals above the merge, or a decline.
+	partition, ok := partitionAggregatePredicates(matched[0], innerFilterPreds)
+	if !ok {
+		return
 	}
 
 	// RFC-209 §5.3, "Multi-aggregate": group existence is decided ONCE, not per
@@ -959,7 +1134,7 @@ func tryMultiAggregateIntersection(
 	// merge step below depend on.
 	childPlans := make([]plans.RecordQueryPlan, len(legs))
 	for i, mc := range legs {
-		prefix := buildAggScanPrefix(mc, innerFilterPreds)
+		prefix := rekeyScanPrefix(partition.scanPrefix, matched[0], mc)
 		if !candidateBindingRangesEligible(mc, prefix) {
 			return
 		}
@@ -1118,7 +1293,11 @@ func tryMultiAggregateIntersection(
 		// point it at a different stream.
 		merge = merge.WithDrivingStream(childQuants[drivingLeg].GetAlias())
 	}
-	logicalPlan, err := projectAggregateResultToGroupBy(merge, gb)
+	filtered, ok := partition.applyResiduals(merge)
+	if !ok {
+		return
+	}
+	logicalPlan, err := projectAggregateResultToGroupBy(filtered, gb)
 	if err != nil {
 		call.Fail(err)
 		return

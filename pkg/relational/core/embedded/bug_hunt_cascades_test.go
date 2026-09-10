@@ -37,7 +37,6 @@ CREATE INDEX sum_amount_by_region AS SELECT SUM(amount) FROM ORDERS GROUP BY reg
 		sql  string
 	}{
 		{"non_group_col", "SELECT region, SUM(amount) FROM orders WHERE status = 'paid' GROUP BY region"},
-		{"non_equality_on_group_col", "SELECT region, SUM(amount) FROM orders WHERE region > 'm' GROUP BY region"},
 		{"non_group_range", "SELECT region, SUM(amount) FROM orders WHERE amount > 100 GROUP BY region"},
 		// RHS is another column, not a constant — `region = status` correlates
 		// two columns of the same record; it can never be a scan bound.
@@ -59,6 +58,23 @@ CREATE INDEX sum_amount_by_region AS SELECT SUM(amount) FROM ORDERS GROUP BY reg
 		})
 	}
 
+	// Control: a grouping-key INEQUALITY on the leading column is a RANGE scan
+	// bound of the group key (RFC-248; Java's computeBoundParameterPrefixMap
+	// binds one trailing inequality the same way) — the aggregate index is
+	// used, and rows are pinned by TestFDB_AggregateIndexResidual's range arms.
+	// This arm used to assert the decline, when the rule could bind equalities
+	// only.
+	t.Run("group_col_inequality_binds_a_range", func(t *testing.T) {
+		plan, err := PlanQueryForTest("SELECT region, SUM(amount) FROM orders WHERE region > 'm' GROUP BY region", schema, nil)
+		if err != nil {
+			t.Fatalf("plan: %v", err)
+		}
+		t.Logf("plan: %s", plan)
+		if !strings.Contains(plan, "AggregateIndex") {
+			t.Errorf("a leading grouping-key inequality should bind the aggregate index as a range, got %s", plan)
+		}
+	})
+
 	// Control: a grouping-key EQUALITY residual IS a valid scan bound — the
 	// aggregate index may still be used.
 	t.Run("group_col_equality_still_uses_index", func(t *testing.T) {
@@ -73,49 +89,23 @@ CREATE INDEX sum_amount_by_region AS SELECT SUM(amount) FROM ORDERS GROUP BY reg
 	})
 }
 
-// AGG-RESIDUAL multi-key: ToScanPlan consumes only the CONTIGUOUS LEADING prefix
-// of grouping-key equality bounds (it breaks at the first gap). An equality on a
-// non-leading grouping key, or a gap in the bound prefix, cannot be applied — the
-// aggregate index must be declined. A contiguous leading prefix is fine.
+// AGG-RESIDUAL multi-key. ToScanPlan consumes only the CONTIGUOUS LEADING run
+// of grouping-key bounds; a grouping-key predicate outside that run used to
+// decline the aggregate index outright (the rule had no residual, and a
+// dropped predicate meant wrong groups). Since RFC-248 it is a residual filter
+// above the aggregate scan — sound, because a predicate over grouping columns
+// filters whole groups — so every shape here binds; the typed-tree pins with
+// the scan arity and residual count are in aggregate_index_residual_test.go.
+// What still declines is a predicate on the aggregation INPUT.
 func TestBugHunt_AggregateIndexMultiKeyResidual(t *testing.T) {
 	t.Parallel()
 	const schema = `
 CREATE TABLE T (id BIGINT, a STRING, b STRING, c STRING, v BIGINT, PRIMARY KEY (id))
 CREATE INDEX sum_abc AS SELECT SUM(v) FROM T GROUP BY a, b, c`
 
-	// Must NOT use the aggregate index — the rule has no residual, so a
-	// predicate it cannot bind would be dropped. Java re-applies such a
-	// grouping-column equality as a residual over the aggregate scan instead of
-	// declining; TODO.md section 3, "Aggregate data access: a grouping-key
-	// equality outside the bound prefix should be a residual", carries that
-	// follow-on and flips these two arms when it lands.
-	// (gap_in_prefix arrives as one AndPredicate; the guard flattens it and sees
-	// the gap at b. Before conjunct flattening the PRE-guard code used an
-	// *unbounded* aggregate index here and dropped both conjuncts → wrong
-	// groups.)
-	mustDecline := []struct{ name, sql string }{
+	for _, tc := range []struct{ name, sql string }{
 		{"non_leading_key", "SELECT a, b, c, SUM(v) FROM t WHERE b = 'x' GROUP BY a, b, c"},
 		{"gap_in_prefix", "SELECT a, b, c, SUM(v) FROM t WHERE a = 'x' AND c = 'z' GROUP BY a, b, c"},
-	}
-	for _, tc := range mustDecline {
-		t.Run(tc.name, func(t *testing.T) {
-			plan, err := PlanQueryForTest(tc.sql, schema, nil)
-			if err != nil {
-				t.Fatalf("plan: %v", err)
-			}
-			t.Logf("plan: %s", plan)
-			if strings.Contains(plan, "AggregateIndex") {
-				t.Errorf("non-faithfully-bound residual dropped: aggregate index used\n  sql: %s\n  plan: %s", tc.sql, plan)
-			}
-		})
-	}
-
-	// A contiguous leading-prefix equality run IS a faithful scan bound → index
-	// is used, whether it is one conjunct or several. `a = 'x' AND b = 'y'`
-	// arrives as ONE AndPredicate; the guard and the bound builder both read its
-	// flattened conjuncts (Java's SelectExpression holds them flat), so both
-	// bind. Reading the conjunction whole used to decline it to a full scan.
-	for _, tc := range []struct{ name, sql string }{
 		{"leading_prefix_one", "SELECT a, b, c, SUM(v) FROM t WHERE a = 'x' GROUP BY a, b, c"},
 		{"and_wrapped_leading_prefix_two", "SELECT a, b, c, SUM(v) FROM t WHERE a = 'x' AND b = 'y' GROUP BY a, b, c"},
 		{"and_wrapped_every_key_bound", "SELECT a, b, c, SUM(v) FROM t WHERE a = 'x' AND b = 'y' AND c = 'z' GROUP BY a, b, c"},
@@ -127,10 +117,24 @@ CREATE INDEX sum_abc AS SELECT SUM(v) FROM T GROUP BY a, b, c`
 			}
 			t.Logf("plan: %s", plan)
 			if !strings.Contains(plan, "AggregateIndex") {
-				t.Errorf("leading-prefix equality run should use the aggregate index\n  sql: %s\n  plan: %s", tc.sql, plan)
+				t.Errorf("a predicate over grouping columns must be served by the aggregate index (bound or residual)\n  sql: %s\n  plan: %s", tc.sql, plan)
 			}
 		})
 	}
+
+	// A predicate on the aggregation input cannot be answered above a
+	// pre-aggregated stream: the index must still decline.
+	t.Run("input_predicate_declines", func(t *testing.T) {
+		const sql = "SELECT a, b, c, SUM(v) FROM t WHERE a = 'x' AND v > 0 GROUP BY a, b, c"
+		plan, err := PlanQueryForTest(sql, schema, nil)
+		if err != nil {
+			t.Fatalf("plan: %v", err)
+		}
+		t.Logf("plan: %s", plan)
+		if strings.Contains(plan, "AggregateIndex") {
+			t.Errorf("aggregate index used with a predicate on the aggregation input\n  sql: %s\n  plan: %s", sql, plan)
+		}
+	})
 }
 
 // HAVING-PUSHDOWN: a HAVING predicate that references an aggregate must NOT be

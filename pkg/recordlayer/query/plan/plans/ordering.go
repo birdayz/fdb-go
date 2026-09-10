@@ -55,7 +55,7 @@ import (
 // is decided by memo residency, not by a list kept here: computeWrapperRichOrdering
 // (cascades/plan_properties.go) dispatches to the rich form of ANY memo
 // expression that implements it, and every plan with a rich form in this
-// package — the five below and RecordQueryCoveringIndexPlan's, which
+// package — the six below and RecordQueryCoveringIndexPlan's, which
 // delegates to the index scan's — also implements physicalPlanExpression
 // (GetRecordQueryPlan). The PK scan, the index scan and the vector scan are
 // memoized bare by the data-access rule (cascades/abstract_data_access_rule.go,
@@ -1683,6 +1683,22 @@ func (p *RecordQueryIndexPlan) HintRichOrdering() *properties.RichOrdering {
 // synthesized fallback, so no caller mistakes distance order for key order.
 func (p *RecordQueryVectorIndexPlan) HintRichOrdering() *properties.RichOrdering {
 	return properties.EmptyOrdering()
+}
+
+// HintRichOrdering: a predicate filter passes its input's rich ordering
+// through, bindings and all — Java's OrderingProperty.visitPredicatesFilterPlan
+// is orderingFromSingleChild. Before this the memo's computeWrapperRichOrdering
+// found no rich form on the filter and synthesised sorted-only bindings from
+// the plain HintOrdering, so a filter MEMBER's PropRichOrdering — the property
+// the in-union and in-join partition roll-ups read — dropped the FIXED
+// bindings of an equality-prefixed scan beneath it. Sort elision was never
+// affected: memberSatisfiesOrdering walks a filter as an orderingDelegator to
+// its source's rich form. Measured at RFC-248: no plan in the 2955-entry
+// EXPLAIN corpus changes with or without this method, so it closes a latent
+// divergence in the property, not a live plan; the plans-level pin is what
+// holds it. Same source-reference shape as the fetch below.
+func (p *RecordQueryPredicatesFilterPlan) HintRichOrdering() *properties.RichOrdering {
+	return richOrderingOf(p.OrderingSourceRef())
 }
 
 // HintRichOrdering: fetching the full record per index entry preserves the
