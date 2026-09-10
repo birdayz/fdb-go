@@ -18,6 +18,9 @@ import (
 type residualFixture struct {
 	cand *AggregateIndexMatchCandidate
 	row  values.QuantifiedObjectValue
+	// outer is a second quantifier over the SAME row type — a correlated
+	// query's outer row, whose fields share the grouping columns' names.
+	outer values.QuantifiedObjectValue
 }
 
 func newResidualFixture(t *testing.T) residualFixture {
@@ -29,19 +32,51 @@ func newResidualFixture(t *testing.T) residualFixture {
 		[]string{"Orders"}, aggregateDataRowType("Orders")))
 	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
 	row := mustAggregateDataConstruct(scanQ.RequireFlowedObjectValue())
-	return residualFixture{cand: cand, row: row}
+	outerScan := mustAggregateDataConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{"Orders"}, aggregateDataRowType("Orders")))
+	outerQ := expressions.ForEachQuantifier(expressions.InitialOf(outerScan))
+	outer := mustAggregateDataConstruct(outerQ.RequireFlowedObjectValue())
+	return residualFixture{cand: cand, row: row, outer: outer}
+}
+
+// preds tags query-side predicates with the fixture's input alias, the way
+// extractInnerFilterPredicates tags a filter's conjuncts.
+func (f residualFixture) preds(ps ...predicates.QueryPredicate) []aggregateFilterPredicate {
+	out := make([]aggregateFilterPredicate, len(ps))
+	for i, p := range ps {
+		out[i] = aggregateFilterPredicate{pred: p, input: f.row.Correlation()}
+	}
+	return out
 }
 
 func (f residualFixture) field(t *testing.T, name string) values.Value {
 	t.Helper()
+	return fieldOf(t, f.row, name)
+}
+
+func (f residualFixture) outerField(t *testing.T, name string) values.Value {
+	t.Helper()
+	return fieldOf(t, f.outer, name)
+}
+
+func fieldOf(t *testing.T, row values.QuantifiedObjectValue, name string) values.Value {
+	t.Helper()
 	rt := aggregateDataRowType("Orders")
 	for i, fld := range rt.Fields {
 		if fld.Name == name {
-			return mustAggregateDataConstruct(values.ResolveFieldOrdinals(f.row, []int{i}))
+			return mustAggregateDataConstruct(values.ResolveFieldOrdinals(row, []int{i}))
 		}
 	}
 	t.Fatalf("no field %s", name)
 	return nil
+}
+
+func (f residualFixture) inputToOuter(t *testing.T, left, right string) *predicates.ComparisonPredicate {
+	t.Helper()
+	return &predicates.ComparisonPredicate{
+		Operand:    f.field(t, left),
+		Comparison: predicates.Comparison{Type: predicates.ComparisonEquals, Operand: f.outerField(t, right)},
+	}
 }
 
 func (f residualFixture) cmp(t *testing.T, col string, typ predicates.ComparisonType, lit any) *predicates.ComparisonPredicate {
@@ -94,6 +129,19 @@ func TestAggregatePredicatePartition(t *testing.T) {
 		wantBound []string
 		wantResid int
 	}{
+		{
+			"input column compared to a same-named OUTER column is a residual that keeps the outer read",
+			[]predicates.QueryPredicate{f.inputToOuter(t, "region", "region")},
+			true, nil, 1,
+		},
+		{
+			"an outer column alone is not a grouping read and declines",
+			[]predicates.QueryPredicate{&predicates.ComparisonPredicate{
+				Operand:    f.outerField(t, "region"),
+				Comparison: predicates.NewLiteralComparison(predicates.ComparisonEquals, "us"),
+			}},
+			false, nil, 0,
+		},
 		{"leading equality is bound", []predicates.QueryPredicate{eq("region", "us")}, true, []string{"region:="}, 0},
 		{
 			"leading inequality is bound as a range and ends the run",
@@ -167,10 +215,22 @@ func TestAggregatePredicatePartition(t *testing.T) {
 			[]predicates.QueryPredicate{&predicates.ValuePredicate{Value: f.row}},
 			false, nil, 0,
 		},
+		{
+			"leading IS NULL binds as an equality on the null key",
+			[]predicates.QueryPredicate{f.cmp(t, "region", predicates.ComparisonIsNull, nil)},
+			true,
+			[]string{"region:="},
+			0,
+		},
+		{
+			"a vector distance-rank bound on a grouping column declines",
+			[]predicates.QueryPredicate{f.cmp(t, "region", predicates.ComparisonDistanceRankLessThan, int64(3))},
+			false, nil, 0,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			p, ok := partitionAggregatePredicates(f.cand, tc.preds)
+			p, ok := partitionAggregatePredicates(f.cand, f.preds(tc.preds...))
 			if ok != tc.wantOK {
 				t.Fatalf("ok = %v, want %v", ok, tc.wantOK)
 			}
@@ -204,11 +264,11 @@ func TestAggregatePredicatePartition(t *testing.T) {
 func TestAggregatePredicatePartition_ScanReceivesOnlyTheTruncatedRun(t *testing.T) {
 	t.Parallel()
 	f := newResidualFixture(t)
-	p, ok := partitionAggregatePredicates(f.cand, []predicates.QueryPredicate{
+	p, ok := partitionAggregatePredicates(f.cand, f.preds(
 		f.cmp(t, "region", predicates.ComparisonGreaterThan, "m"),
 		f.cmp(t, "status", predicates.ComparisonEquals, "open"),
 		f.cmp(t, "year", predicates.ComparisonEquals, "2024"),
-	})
+	))
 	if !ok {
 		t.Fatal("partition declined")
 	}
@@ -232,9 +292,9 @@ func TestAggregatePredicatePartition_ScanReceivesOnlyTheTruncatedRun(t *testing.
 func TestAggregatePredicatePartition_ApplyResidualsRewritesOntoTheAggregateRow(t *testing.T) {
 	t.Parallel()
 	f := newResidualFixture(t)
-	p, ok := partitionAggregatePredicates(f.cand, []predicates.QueryPredicate{
+	p, ok := partitionAggregatePredicates(f.cand, f.preds(
 		f.cmp(t, "status", predicates.ComparisonEquals, "open"),
-	})
+	))
 	if !ok {
 		t.Fatal("partition declined a non-leading grouping equality")
 	}
@@ -281,8 +341,49 @@ func TestAggregatePredicatePartition_ApplyResidualsRewritesOntoTheAggregateRow(t
 	// Bridge: a residual whose leaf the rewrite cannot place declines. Built
 	// by hand past the admission (a whole-row leaf is refused there), so this
 	// exercises applyResiduals' own assertion.
-	p.residuals = []predicates.QueryPredicate{&predicates.ValuePredicate{Value: f.row}}
+	p.residuals = f.preds(&predicates.ValuePredicate{Value: f.row})
 	if _, ok := p.applyResiduals(agg); ok {
 		t.Fatal("applyResiduals accepted a residual still correlated to the base quantifier")
+	}
+}
+
+// TestAggregatePredicatePartition_OuterCorrelationIsCarriedNotRewritten: in a
+// correlated shape, `o.region = c.region` — the outer row's field shares the
+// grouping column's NAME — only the input-rooted read moves onto the
+// aggregate row; the outer read stays correlated to the outer quantifier. A
+// rewrite that matched by name alone turned this into
+// `group.region = group.region` and passed every group.
+func TestAggregatePredicatePartition_OuterCorrelationIsCarriedNotRewritten(t *testing.T) {
+	t.Parallel()
+	f := newResidualFixture(t)
+	p, ok := partitionAggregatePredicates(f.cand, f.preds(f.inputToOuter(t, "region", "region")))
+	if !ok || len(p.residuals) != 1 {
+		t.Fatalf("partition ok=%v residuals=%d, want a single residual", ok, len(p.residuals))
+	}
+	scan := extractIndexPlan(f.cand.ToScanPlan(p.scanPrefix, false))
+	agg, err := plans.NewRecordQueryAggregateIndexPlan(scan, "Orders", aggregateDataRowType("Orders"), "COUNT")
+	if err != nil {
+		t.Fatal(err)
+	}
+	agg = agg.WithGroupColumns(f.cand.groupCols, "").WithGroupColumnLayout(f.cand.GetBaseRowType())
+	filtered, ok := p.applyResiduals(agg)
+	if !ok {
+		t.Fatal("applyResiduals declined a residual over a grouping column with an outer parameter")
+	}
+	fp := filtered.(*plans.RecordQueryPredicatesFilterPlan)
+	cp := fp.GetPredicates()[0].(*predicates.ComparisonPredicate)
+	corr := cp.GetCorrelatedTo()
+	if _, outerKept := corr[f.outer.Correlation()]; !outerKept {
+		t.Fatalf("the outer correlation was erased: residual now reads %v; `o.region = c.region` became a "+
+			"comparison of the group with itself", corr)
+	}
+	if _, inputGone := corr[f.row.Correlation()]; inputGone {
+		t.Fatal("the input read was not moved onto the aggregate row")
+	}
+	if len(corr) != 2 {
+		t.Fatalf("residual correlated to %v, want exactly the aggregate row and the outer quantifier", corr)
+	}
+	if !values.ValuesStructurallyEqual(cp.Comparison.Operand, f.outerField(t, "region")) {
+		t.Fatalf("the outer operand changed: %s", values.ExplainValue(cp.Comparison.Operand))
 	}
 }

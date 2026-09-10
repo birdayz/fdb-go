@@ -1,23 +1,18 @@
 package sqldriver_test
 
-// Bug hunt probe: AggregateDataAccessRule drops residual WHERE predicates.
-//
-// Go's AggregateDataAccessRule.OnMatch (rule_aggregate_data_access.go) extracts
-// the inner filter predicates and converts ONLY group-column EQUALITY predicates
-// into aggregate-index scan bounds (buildAggScanPrefix). Any other filter
-// predicate — one on a non-group column, or an inequality on a group column —
-// is silently dropped, and the rule yields the AggregateIndex scan with NO
-// compensating PredicatesFilter and NO impossibility check.
-//
-// Java's AggregateDataAccessRule (extends AbstractDataAccessRule) runs the full
-// compensation machinery: reduce(impossibleCompensation, Compensation::intersect),
-// then checks compensation.isImpossible() and applies applyAllNeededCompensations.
-// A residual that filters the AGGREGATION INPUT (e.g. a non-group column) cannot
-// be compensated on a pre-aggregated index, so Java rejects the match and falls
-// back to StreamingAgg over a filtered scan.
-//
-// Result: Go reads pre-aggregated sums computed over ALL rows, ignoring the WHERE
-// → WRONG aggregate values / WRONG groups.
+// Rows behind AggregateDataAccessRule's handling of a WHERE it cannot bind as
+// a scan bound. Found as a bug hunt: the rule once converted ONLY leading
+// grouping-key equalities into scan bounds and DROPPED every other predicate,
+// answering pre-aggregated sums over ALL rows (wrong values, wrong groups). The
+// cases here keep asserting the correct rows. What answers them now
+// (rule_aggregate_data_access.go, partitionAggregatePredicates, RFC-248): a
+// predicate over grouping columns the scan cannot bind — a non-leading
+// equality, a column-to-column comparison of two grouping columns — is a
+// residual filter above the aggregate scan; a leading inequality is a range
+// scan bound; a predicate on the aggregation INPUT (a non-grouping column, or
+// a column-to-column comparison with one) declines the index — Java's
+// GroupByExpression.compensate returning impossibleCompensation — and the
+// query falls back to StreamingAgg over a filtered scan.
 
 import (
 	"context"
@@ -78,8 +73,9 @@ func TestFDB_AggIndexResidualDrop(t *testing.T) {
 		return got
 	}
 
-	// Case A: residual on a NON-group column. The aggregate index cannot enforce
-	// f=1 (it pre-summed over all f). Correct answer: g=1 => 30, g=2 => 40.
+	// Case A: predicate on a NON-group column. The aggregate index cannot
+	// enforce f=1 (it pre-summed over all f); the index declines. Correct
+	// answer: g=1 => 30, g=2 => 40.
 	t.Run("non_group_residual", func(t *testing.T) {
 		q := "SELECT g, SUM(v) FROM ga WHERE f = 1 GROUP BY g"
 		plan := dump(q)
@@ -98,8 +94,9 @@ func TestFDB_AggIndexResidualDrop(t *testing.T) {
 	})
 
 	// Case C: equality whose RHS is another COLUMN (g = f), not a constant — can
-	// never be a scan bound. Correct answer: only the row where g==f (row 2:
-	// g=1,f=1,v=30) => g=1 SUM 30. Not all groups.
+	// never be a scan bound, and f is not a grouping column, so the index
+	// declines. Correct answer: only the row where g==f (row 2: g=1,f=1,v=30)
+	// => g=1 SUM 30. Not all groups.
 	t.Run("non_constant_rhs_residual", func(t *testing.T) {
 		q := "SELECT g, SUM(v) FROM ga WHERE g = f GROUP BY g"
 		plan := dump(q)
@@ -114,8 +111,9 @@ func TestFDB_AggIndexResidualDrop(t *testing.T) {
 		}
 	})
 
-	// Case B: inequality on the GROUP column. buildAggScanPrefix only handles
-	// equality, so g>1 is dropped. Correct answer: only g=2 => 45.
+	// Case B: inequality on the GROUP column. Since RFC-248 a leading
+	// inequality is a range scan bound of the group key; it used to be dropped.
+	// Correct answer: only g=2 => 45.
 	t.Run("group_inequality_residual", func(t *testing.T) {
 		q := "SELECT g, SUM(v) FROM ga WHERE g > 1 GROUP BY g"
 		plan := dump(q)
@@ -132,8 +130,9 @@ func TestFDB_AggIndexResidualDrop(t *testing.T) {
 }
 
 // Multi-key GROUP BY: an equality on a NON-LEADING grouping key cannot become a
-// scan bound (ToScanPlan breaks at the first gap), so the aggregate index must
-// not serve it. The review's repro.
+// scan bound (ToScanPlan breaks at the first gap); since RFC-248 it is a
+// residual filter above the aggregate scan, before that the index declined.
+// Either way the rows are these. The review's repro.
 func TestFDB_AggIndexResidualDrop_NonLeadingKey(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {

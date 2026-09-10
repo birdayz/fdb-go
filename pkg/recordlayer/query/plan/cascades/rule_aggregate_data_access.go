@@ -520,9 +520,10 @@ type aggregatePredicatePartition struct {
 	// candidate's ComputeBoundParameterPrefixMap over the per-column folds.
 	scanPrefix map[values.CorrelationIdentifier]*predicates.ComparisonRange
 	// residuals are the predicates the scan does not apply, still in the
-	// query's own terms (over the base row); applyResiduals rewrites them
-	// onto the row of the plan being yielded.
-	residuals []predicates.QueryPredicate
+	// query's own terms (over the base row, plus any outer parameters);
+	// applyResiduals rewrites the base-row reads onto the row of the plan
+	// being yielded and carries the outer parameters unchanged.
+	residuals []aggregateFilterPredicate
 }
 
 // partitionAggregatePredicates sorts the flattened filter predicates into
@@ -550,19 +551,19 @@ type aggregatePredicatePartition struct {
 // applyResiduals.
 func partitionAggregatePredicates(
 	cand *AggregateIndexMatchCandidate,
-	filterPreds []predicates.QueryPredicate,
+	filterPreds []aggregateFilterPredicate,
 ) (*aggregatePredicatePartition, bool) {
 	partition := &aggregatePredicatePartition{cand: cand}
-	perColumn := make([][]*predicates.ComparisonPredicate, len(cand.groupCols))
-	var others []predicates.QueryPredicate
-	for _, p := range filterPreds {
-		if cp, ok := p.(*predicates.ComparisonPredicate); ok {
-			if idx := groupColComparisonIndex(cp, cand.groupCols); idx >= 0 {
-				perColumn[idx] = append(perColumn[idx], cp)
+	perColumn := make([][]aggregateFilterPredicate, len(cand.groupCols))
+	var others []aggregateFilterPredicate
+	for _, fp := range filterPreds {
+		if cp, ok := fp.pred.(*predicates.ComparisonPredicate); ok {
+			if idx := groupColComparisonIndex(cp, cand.groupCols, fp.input); idx >= 0 {
+				perColumn[idx] = append(perColumn[idx], fp)
 				continue
 			}
 		}
-		others = append(others, p)
+		others = append(others, fp)
 	}
 
 	folded := make(map[values.CorrelationIdentifier]*predicates.ComparisonRange)
@@ -572,7 +573,8 @@ func partitionAggregatePredicates(
 		}
 		cr := predicates.EmptyComparisonRange()
 		ok := true
-		for _, cp := range comparisons {
+		for _, fp := range comparisons {
+			cp := fp.pred.(*predicates.ComparisonPredicate)
 			result := cr.Merge(&cp.Comparison)
 			if !result.Ok {
 				ok = false
@@ -598,21 +600,26 @@ func partitionAggregatePredicates(
 				last = idx
 			}
 		}
+		if last < 0 {
+			// Only the candidate's own aliases are ever keys here; a map with
+			// entries and no such key would be a construction error, and the
+			// safe reading of it is "bind nothing".
+			partition.scanPrefix = map[values.CorrelationIdentifier]*predicates.ComparisonRange{}
+			break
+		}
 		delete(partition.scanPrefix, cand.aliases[last])
 	}
 
-	var residuals []predicates.QueryPredicate
+	var residuals []aggregateFilterPredicate
 	for idx, comparisons := range perColumn {
 		if _, bound := partition.scanPrefix[cand.aliases[idx]]; bound {
 			continue
 		}
-		for _, cp := range comparisons {
-			residuals = append(residuals, cp)
-		}
+		residuals = append(residuals, comparisons...)
 	}
 	residuals = append(residuals, others...)
-	for _, p := range residuals {
-		if !residualOverGroupingColumns(p, cand.groupCols) {
+	for _, fp := range residuals {
+		if !residualOverGroupingColumns(fp.pred, cand.groupCols, fp.input) {
 			return nil, false
 		}
 	}
@@ -621,31 +628,44 @@ func partitionAggregatePredicates(
 }
 
 // residualOverGroupingColumns is bucket 2's admission: a predicate kind the
-// rewrite walks, with at least one FieldValue leaf, every one of which names a
-// grouping column. A bare quantified/object leaf is not a column read the
-// aggregate row can serve and declines; so does a kind ReplaceValues would
-// pass through unchanged, since that is indistinguishable from a rewrite
-// that did nothing.
-func residualOverGroupingColumns(p predicates.QueryPredicate, groupCols []string) bool {
+// rewrite walks, with at least one FieldValue leaf rooted at the aggregation
+// input, every such leaf naming a grouping column. A field rooted elsewhere is
+// an outer parameter and is neither a grouping column nor a reason to
+// decline: it stays as it is. A bare quantified/object leaf rooted at the
+// input is not a column read the aggregate row can serve and declines; so
+// does a kind ReplaceValues would pass through unchanged, since that is
+// indistinguishable from a rewrite that did nothing.
+func residualOverGroupingColumns(
+	p predicates.QueryPredicate,
+	groupCols []string,
+	input values.CorrelationIdentifier,
+) bool {
 	switch pred := p.(type) {
-	case *predicates.ComparisonPredicate, *predicates.ValuePredicate:
-		// leaf kinds: checked below
+	case *predicates.ComparisonPredicate:
+		if isDistanceRankComparison(pred.Comparison.Type) {
+			// A vector-distance rank is a scan construct, not a row predicate;
+			// there is nothing to evaluate above a pre-aggregated stream.
+			return false
+		}
+		// leaf kind: checked below
+	case *predicates.ValuePredicate:
+		// leaf kind: checked below
 	case *predicates.AndPredicate:
 		for _, sub := range pred.SubPredicates {
-			if !residualOverGroupingColumns(sub, groupCols) {
+			if !residualOverGroupingColumns(sub, groupCols, input) {
 				return false
 			}
 		}
 		return true
 	case *predicates.OrPredicate:
 		for _, sub := range pred.SubPredicates {
-			if !residualOverGroupingColumns(sub, groupCols) {
+			if !residualOverGroupingColumns(sub, groupCols, input) {
 				return false
 			}
 		}
 		return true
 	case *predicates.NotPredicate:
-		return residualOverGroupingColumns(pred.Child, groupCols)
+		return residualOverGroupingColumns(pred.Child, groupCols, input)
 	default:
 		return false
 	}
@@ -657,22 +677,35 @@ func residualOverGroupingColumns(p predicates.QueryPredicate, groupCols []string
 				return false
 			}
 			if _, isField := values.AsFieldValue(node); isField {
+				if !rootedAt(node, input) {
+					return false // an outer parameter: carried, not a grouping read
+				}
 				leaves++
-				if groupingColumnIndex(node, groupCols) < 0 {
+				if groupingColumnIndex(node, groupCols, input) < 0 {
 					allGrouping = false
 				}
 				return false
 			}
 			switch node.(type) {
 			case values.QuantifiedObjectValue, *values.ObjectValue:
-				// A whole-row leaf is not a grouping column.
-				allGrouping = false
+				if rootedAt(node, input) {
+					// A whole-row leaf is not a grouping column.
+					allGrouping = false
+				}
 				return false
 			}
 			return true
 		})
 	}
 	return allGrouping && leaves > 0
+}
+
+// rootedAt reports whether v reads exactly the quantifier alias — the
+// aggregation input for a filter conjunct — and nothing else.
+func rootedAt(v values.Value, alias values.CorrelationIdentifier) bool {
+	correlated := values.GetCorrelatedToOfValue(v)
+	_, reads := correlated[alias]
+	return reads && len(correlated) == 1
 }
 
 // predicateEmbeddedValues lists the Value trees a leaf predicate embeds, the
@@ -691,9 +724,14 @@ func predicateEmbeddedValues(p predicates.QueryPredicate) []values.Value {
 	return nil
 }
 
-// groupingColumnIndex is the grouping column a field read names, by the
-// accessor-path match the bound builder uses, or -1.
-func groupingColumnIndex(v values.Value, groupCols []string) int {
+// groupingColumnIndex is the grouping column a field read names — a field
+// rooted at the aggregation input, matched by accessor path as the bound
+// builder matches — or -1. A same-named field rooted at another quantifier is
+// an outer parameter, not a grouping column.
+func groupingColumnIndex(v values.Value, groupCols []string, input values.CorrelationIdentifier) int {
+	if !rootedAt(v, input) {
+		return -1
+	}
 	for i, col := range groupCols {
 		if aggColumnMatches(v, col) {
 			return i
@@ -705,11 +743,13 @@ func groupingColumnIndex(v values.Value, groupCols []string) int {
 // applyResiduals wraps plan in ONE PredicatesFilter carrying the residuals
 // rewritten onto plan's row — grouping column i is ordinal i of the row the
 // aggregate scan, the companion merge and the multi-aggregate intersection
-// all flow — and asserts the bridge: a rewritten residual must be correlated
-// to plan's alias and nothing else. A leaf the rewrite did not reach, or a
-// predicate kind ReplaceValues passed through unchanged, still names the base
-// quantifier and fails that assertion, so it declines rather than filtering
-// on a row it does not read. With no residuals the plan is returned as is.
+// all flow — and asserts the bridge: a rewritten residual must read plan's
+// alias, must no longer read the aggregation input, and must read exactly
+// the outer parameters it read before (an outer field is carried, never
+// rewritten). A leaf the rewrite did not reach, or a predicate kind
+// ReplaceValues passed through unchanged, still names the input and fails
+// that assertion, so it declines rather than filtering on a row it does not
+// read. With no residuals the plan is returned as is.
 func (partition *aggregatePredicatePartition) applyResiduals(
 	plan plans.RecordQueryPlan,
 ) (plans.RecordQueryPlan, bool) {
@@ -724,12 +764,13 @@ func (partition *aggregatePredicatePartition) applyResiduals(
 	groupCols := partition.cand.groupCols
 	rewritten := make([]predicates.QueryPredicate, 0, len(partition.residuals))
 	for _, residual := range partition.residuals {
+		input := residual.input
 		failed := false
-		moved := predicates.ReplaceValues(residual, func(v values.Value) values.Value {
-			if _, isField := values.AsFieldValue(v); !isField {
+		moved := predicates.ReplaceValues(residual.pred, func(v values.Value) values.Value {
+			if _, isField := values.AsFieldValue(v); !isField || !rootedAt(v, input) {
 				return v
 			}
-			idx := groupingColumnIndex(v, groupCols)
+			idx := groupingColumnIndex(v, groupCols, input)
 			if idx < 0 {
 				failed = true
 				return v
@@ -744,8 +785,7 @@ func (partition *aggregatePredicatePartition) applyResiduals(
 		if failed {
 			return nil, false
 		}
-		correlated := moved.GetCorrelatedTo()
-		if _, reads := correlated[root.Correlation()]; !reads || len(correlated) != 1 {
+		if !residualBridgeHolds(residual.pred.GetCorrelatedTo(), moved.GetCorrelatedTo(), input, root.Correlation()) {
 			return nil, false
 		}
 		rewritten = append(rewritten, moved)
@@ -757,8 +797,47 @@ func (partition *aggregatePredicatePartition) applyResiduals(
 	return filtered, true
 }
 
+// residualBridgeHolds is applyResiduals' assertion: after the rewrite the
+// residual reads the yielded plan's alias, no longer reads the aggregation
+// input, and reads exactly the other correlations (outer parameters) it read
+// before — no more, no fewer.
+func residualBridgeHolds(
+	before, after map[values.CorrelationIdentifier]struct{},
+	input, root values.CorrelationIdentifier,
+) bool {
+	if _, readsRoot := after[root]; !readsRoot {
+		return false
+	}
+	if _, stillReadsInput := after[input]; stillReadsInput {
+		return false
+	}
+	for alias := range before {
+		if alias == input {
+			continue
+		}
+		if _, kept := after[alias]; !kept {
+			return false
+		}
+	}
+	for alias := range after {
+		if alias == root {
+			continue
+		}
+		if _, had := before[alias]; !had {
+			return false
+		}
+	}
+	return true
+}
+
 // rekeyScanPrefix carries the owner's truncated scan bounds onto a companion
-// candidate over the same grouping columns, alias by position.
+// candidate over the same grouping columns, alias by POSITION. Position is the
+// right key because both callers hold the legs' grouping columns equal AND in
+// the same order: the group-existence companion is found by groupingSignature
+// equality (findGroupCountCompanion), the normalised proto encoding of the
+// index's grouping KeyExpression, which is order-sensitive and is what
+// groupCols derives from; the multi-aggregate intersection checks its legs'
+// groupCols name by name in order before it gets here.
 func rekeyScanPrefix(
 	prefix map[values.CorrelationIdentifier]*predicates.ComparisonRange,
 	owner, target *AggregateIndexMatchCandidate,
@@ -777,14 +856,21 @@ func rekeyScanPrefix(
 
 // groupColComparisonIndex returns the index of the grouping column that cp is
 // a scan-bindable comparison on — an equality, an inequality, IS NULL / IS NOT
-// NULL or STARTS_WITH, the set the index-match gate admits
-// (isSargableComparisonForMatch) — or -1 if cp is not such a comparison whose
-// LHS is a grouping column. Shared by the partition's bound fold and, through
+// NULL or STARTS_WITH, exactly the value-index range set plus the two NULL
+// comparisons ComparisonRange.Merge classifies (IS NULL an equality on the
+// [null] key, IS NOT NULL the (null, +inf) range); NOT the vector
+// DISTANCE_RANK bounds the index-match gate also admits, which a
+// ComparisonRange cannot hold — or -1 if cp is not such a comparison whose LHS
+// is a grouping column. Shared by the partition's bound fold and, through
 // groupingColumnIndex, its residual rewrite, so the two cannot drift — the
 // drift between guard and consumer is what let the original residual-drop bug
 // ship.
-func groupColComparisonIndex(cp *predicates.ComparisonPredicate, groupCols []string) int {
-	if !isSargableComparisonForMatch(cp.Comparison.Type) {
+func groupColComparisonIndex(
+	cp *predicates.ComparisonPredicate,
+	groupCols []string,
+	input values.CorrelationIdentifier,
+) int {
+	if !aggregateScanBindableComparison(cp.Comparison.Type) {
 		return -1
 	}
 	fv, ok := values.AsFieldValue(cp.Operand)
@@ -801,7 +887,29 @@ func groupColComparisonIndex(cp *predicates.ComparisonPredicate, groupCols []str
 	if valueReadsField(cp.Comparison.Operand) {
 		return -1
 	}
-	return groupingColumnIndex(fv, groupCols)
+	return groupingColumnIndex(fv, groupCols, input)
+}
+
+// aggregateScanBindableComparison is the comparison-type set the group-key
+// scan can execute as a range: the value-index range set (=, <, <=, >, >=,
+// STARTS_WITH) plus IS NULL / IS NOT NULL.
+func aggregateScanBindableComparison(t predicates.ComparisonType) bool {
+	if isScanRangeCompatible(t) {
+		return true
+	}
+	return t == predicates.ComparisonIsNull || t == predicates.ComparisonIsNotNull
+}
+
+// isDistanceRankComparison reports a vector DISTANCE_RANK bound, which is a
+// scan construct of a vector candidate and never a row predicate.
+func isDistanceRankComparison(t predicates.ComparisonType) bool {
+	switch t {
+	case predicates.ComparisonDistanceRankEquals,
+		predicates.ComparisonDistanceRankLessThan,
+		predicates.ComparisonDistanceRankLessThanOrEq:
+		return true
+	}
+	return false
 }
 
 // valueReadsField reports whether v references a record field anywhere in
@@ -823,20 +931,35 @@ func valueReadsField(v values.Value) bool {
 	return false
 }
 
+// aggregateFilterPredicate is one conjunct of the GroupBy's inner filter with
+// the alias of the quantifier that filter reads — the aggregation INPUT. A
+// field the predicate reads is a grouping column only when it is rooted at
+// that alias: a same-named field rooted anywhere else is an OUTER parameter
+// of a correlated query, which the residual must carry unchanged, never
+// rewrite onto the aggregate row (that would turn `o.region = c.region` into
+// `group.region = group.region` and pass every group).
+type aggregateFilterPredicate struct {
+	pred  predicates.QueryPredicate
+	input values.CorrelationIdentifier
+}
+
 // extractInnerFilterPredicates returns every predicate of the inner
 // Reference's Filter expressions, conjunctions flattened (`a = 'x' AND b = 'y'`
 // arrives as ONE AndPredicate; Java's SelectExpression holds its conjuncts as a
-// flat list). The one list partitionAggregatePredicates reads, so no second
-// reader can disagree on what a filter holds. Returns nil if no filter
-// predicates are found.
-func extractInnerFilterPredicates(ref *expressions.Reference) []predicates.QueryPredicate {
-	var result []predicates.QueryPredicate
+// flat list), each with the alias of the filter's inner quantifier. The one
+// list partitionAggregatePredicates reads, so no second reader can disagree on
+// what a filter holds. Returns nil if no filter predicates are found.
+func extractInnerFilterPredicates(ref *expressions.Reference) []aggregateFilterPredicate {
+	var result []aggregateFilterPredicate
 	for _, m := range ref.Members() {
 		f, ok := m.(*expressions.LogicalFilterExpression)
 		if !ok {
 			continue
 		}
-		result = append(result, flattenConjuncts(f.GetPredicates())...)
+		input := f.GetInner().GetAlias()
+		for _, p := range flattenConjuncts(f.GetPredicates()) {
+			result = append(result, aggregateFilterPredicate{pred: p, input: input})
+		}
 	}
 	return result
 }
@@ -997,7 +1120,7 @@ func tryMultiAggregateIntersection(
 	gb *expressions.GroupByExpression,
 	candidates []MatchCandidate,
 	scanTypes []string,
-	innerFilterPreds []predicates.QueryPredicate,
+	innerFilterPreds []aggregateFilterPredicate,
 ) {
 	aggs := gb.GetAggregates()
 	if len(aggs) < 2 {

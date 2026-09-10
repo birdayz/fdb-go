@@ -29,7 +29,8 @@ func TestFDB_AggregateIndexResidual(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 	ctx := context.Background()
-	const table = "CREATE TABLE t (id BIGINT, a STRING, b STRING, c STRING, v BIGINT, d DOUBLE, PRIMARY KEY (id)) "
+	const table = "CREATE TABLE t (id BIGINT, a STRING, b STRING, c STRING, v BIGINT, d DOUBLE, PRIMARY KEY (id)) " +
+		"CREATE TABLE cust (id BIGINT, b STRING, region STRING, PRIMARY KEY (id)) "
 	const indexes = "CREATE INDEX t_sum_abc AS SELECT SUM(v) FROM t GROUP BY a, b, c " +
 		"CREATE INDEX t_cnt_abc AS SELECT COUNT(*) FROM t GROUP BY a, b, c " +
 		"CREATE INDEX t_cnt_d_a AS SELECT COUNT(*) FROM t GROUP BY d, a "
@@ -45,40 +46,59 @@ func TestFDB_AggregateIndexResidual(t *testing.T) {
 			as[id%4], bs[(id/2)%3], cs[(id/3)%3], (id*7)%11-3, ds[(id/5)%4]))
 	}
 	w.Exec("INSERT INTO t (id, a, b, c, v, d) VALUES " + strings.Join(rows, ", "))
+	w.Exec("INSERT INTO cust (id, b, region) VALUES (1, 'p', 'eu'), (2, 'q', 'us'), (3, NULL, 'us'), (4, 'zz', 'eu')")
 
-	reads := []string{
-		"SELECT a, b, c, COUNT(*) FROM t WHERE b = 'p' GROUP BY a, b, c ORDER BY a, b, c",
-		"SELECT a, b, c, SUM(v) FROM t WHERE b = 'p' GROUP BY a, b, c ORDER BY a, b, c",
-		"SELECT a, b, c, COUNT(*) FROM t WHERE a = 'x' AND c = 'z' GROUP BY a, b, c ORDER BY b",
-		"SELECT a, b, c, SUM(v) FROM t WHERE a = 'x' AND c = 'z' GROUP BY a, b, c ORDER BY b",
-		"SELECT a, b, c, COUNT(*) FROM t WHERE a > 'x' GROUP BY a, b, c ORDER BY a, b, c",
-		"SELECT a, b, c, SUM(v) FROM t WHERE a > 'x' GROUP BY a, b, c ORDER BY a, b, c",
-		"SELECT a, b, c, COUNT(*) FROM t WHERE a > 'x' AND b = 'q' GROUP BY a, b, c ORDER BY a, c",
-		"SELECT a, b, c, COUNT(*) FROM t WHERE a >= 'x' AND a < 'z' GROUP BY a, b, c ORDER BY a, b, c",
-		"SELECT a, b, c, COUNT(*) FROM t WHERE b IS NULL GROUP BY a, b, c ORDER BY a, c",
-		"SELECT a, b, c, COUNT(*) FROM t WHERE c IN ('m', 'z') GROUP BY a, b, c ORDER BY a, b, c",
-		"SELECT a, b, c, COUNT(*) FROM t WHERE a = c GROUP BY a, b, c ORDER BY a, b",
-		"SELECT a, b, c, SUM(v) FROM t WHERE b = 'q' OR c = 'm' GROUP BY a, b, c ORDER BY a, b, c",
-		"SELECT a, b, c, COUNT(*) FROM t WHERE a = 'x' AND a = 'y' GROUP BY a, b, c",
-		"SELECT a, b, c, COUNT(*) FROM t WHERE a = 'x' AND c = 'z' GROUP BY a, b, c ORDER BY a DESC, b",
-		"SELECT d, a, COUNT(*) FROM t WHERE d > 1.0 GROUP BY d, a ORDER BY d, a",
-		"SELECT a, b, c, COUNT(*) FROM t WHERE b = 'p' GROUP BY a, b, c HAVING COUNT(*) > 1 ORDER BY a, c",
+	// wantResidual says which reads carry a residual filter above the aggregate
+	// scan; the others bind everything they filter (a leading range, a leading
+	// IS NULL). Asserted on the typed plan, never by matching SQL text.
+	reads := []struct {
+		sql          string
+		wantResidual bool
+	}{
+		{"SELECT a, b, c, COUNT(*) FROM t WHERE b = 'p' GROUP BY a, b, c ORDER BY a, b, c", true},
+		{"SELECT a, b, c, SUM(v) FROM t WHERE b = 'p' GROUP BY a, b, c ORDER BY a, b, c", true},
+		{"SELECT a, b, c, COUNT(*) FROM t WHERE a = 'x' AND c = 'z' GROUP BY a, b, c ORDER BY b", true},
+		{"SELECT a, b, c, SUM(v) FROM t WHERE a = 'x' AND c = 'z' GROUP BY a, b, c ORDER BY b", true},
+		{"SELECT a, b, c, COUNT(*) FROM t WHERE a > 'x' GROUP BY a, b, c ORDER BY a, b, c", false},
+		{"SELECT a, b, c, SUM(v) FROM t WHERE a > 'x' GROUP BY a, b, c ORDER BY a, b, c", false},
+		{"SELECT a, b, c, COUNT(*) FROM t WHERE a > 'x' AND b = 'q' GROUP BY a, b, c ORDER BY a, c", true},
+		{"SELECT a, b, c, COUNT(*) FROM t WHERE a >= 'x' AND a < 'z' GROUP BY a, b, c ORDER BY a, b, c", false},
+		{"SELECT a, b, c, COUNT(*) FROM t WHERE a IS NULL GROUP BY a, b, c ORDER BY b, c", false},
+		{"SELECT a, b, c, COUNT(*) FROM t WHERE a IS NULL AND c = 'z' GROUP BY a, b, c ORDER BY b", true},
+		{"SELECT a, b, c, COUNT(*) FROM t WHERE b IS NULL GROUP BY a, b, c ORDER BY a, c", true},
+		{"SELECT a, b, c, COUNT(*) FROM t WHERE c IN ('m', 'z') GROUP BY a, b, c ORDER BY a, b, c", true},
+		{"SELECT a, b, c, COUNT(*) FROM t WHERE a = c GROUP BY a, b, c ORDER BY a, b", true},
+		{"SELECT a, b, c, SUM(v) FROM t WHERE b = 'q' OR c = 'm' GROUP BY a, b, c ORDER BY a, b, c", true},
+		{"SELECT a, b, c, COUNT(*) FROM t WHERE a = 'x' AND a = 'y' GROUP BY a, b, c", true},
+		{"SELECT a, b, c, COUNT(*) FROM t WHERE a = 'x' AND c = 'z' GROUP BY a, b, c ORDER BY a DESC, b", true},
+		{"SELECT d, a, COUNT(*) FROM t WHERE d > 1.0 GROUP BY d, a ORDER BY d, a", true},
+		{"SELECT a, b, c, COUNT(*) FROM t WHERE b = 'p' GROUP BY a, b, c HAVING COUNT(*) > 1 ORDER BY a, c", true},
+		// Correlated: the outer row's b shares the grouping column's name and
+		// must stay the outer read — rewritten by name it would compare the
+		// group with itself and count every group for every customer.
+		{"SELECT c.id, (SELECT COUNT(*) FROM t WHERE t.b = c.b AND t.a = 'x' AND t.c = 'z' GROUP BY t.a, t.b, t.c) FROM cust c ORDER BY c.id", true},
+		{"SELECT c.id, (SELECT SUM(v) FROM t WHERE t.b = c.b AND t.a = 'y' AND t.c = 'm' GROUP BY t.a, t.b, t.c) FROM cust c ORDER BY c.id", true},
+		// Two aggregates over two indexes: the residual sits above the
+		// intersection (the third scan site).
+		{"SELECT a, b, c, SUM(v), COUNT(*) FROM t WHERE b = 'p' GROUP BY a, b, c ORDER BY a, b, c", true},
+		{"SELECT a, b, c, SUM(v), COUNT(*) FROM t WHERE a = 'x' AND c = 'z' GROUP BY a, b, c ORDER BY b", true},
 	}
-	for _, q := range reads {
-		plan, err := embedded.PlanPhysicalForTest(q, table+indexes, nil)
+	for _, r := range reads {
+		plan, err := embedded.PlanPhysicalForTest(r.sql, table+indexes, nil)
 		if err != nil {
-			t.Fatalf("plan %s: %v", q, err)
+			t.Fatalf("plan %s: %v", r.sql, err)
 		}
 		if reached, _ := aggregateIndexAndSortIn(plan); !reached {
-			t.Fatalf("read is not served by the aggregate index, so its rows prove nothing here\n  q: %s\n  plan: %s", q, plan.Explain())
+			t.Fatalf("read is not served by the aggregate index, so its rows prove nothing here\n  q: %s\n  plan: %s", r.sql, plan.Explain())
 		}
-		if !residualFilterIn(plan) && !strings.Contains(q, "a > 'x' GROUP") && !strings.Contains(q, "a >= 'x' AND a < 'z'") {
-			t.Fatalf("read carries no residual filter above the aggregate scan\n  q: %s\n  plan: %s", q, plan.Explain())
+		if residualFilterIn(plan) != r.wantResidual {
+			t.Fatalf("residual filter above the aggregate scan = %v, want %v\n  q: %s\n  plan: %s", !r.wantResidual, r.wantResidual, r.sql, plan.Explain())
 		}
 	}
 	sweep := func(stage string) {
 		t.Helper()
-		for _, q := range reads {
+		for _, r := range reads {
+			q := r.sql
 			gi, ei := mmRows(t, ctx, w.idx, q)
 			gn, en := mmRows(t, ctx, w.plain, q)
 			if ei != nil || en != nil {

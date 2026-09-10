@@ -69,22 +69,30 @@ every scan site consumes:
 
 2. **Residuals.** Every remaining predicate is admitted by an ALLOW-LIST of
    predicate kinds — `ComparisonPredicate`, `ValuePredicate`, `AndPredicate`,
-   `OrPredicate`, `NotPredicate` — whose FieldValue leaves, ENUMERATED (not
-   probed with the boolean `valueReadsField`), each name a grouping column of
-   the candidate by `aggColumnMatches`; a predicate with no FieldValue leaf
-   at all is not "vacuously all grouping", it is declined. The predicate is
-   rewritten with `predicates.ReplaceValues` onto the row of the plan the
-   rule yields — grouping column `i` is ordinal `i` of the candidate's
-   `groupCols`, which is the LEAF row's layout `[groupCols…, FUNC(col)]`
-   and the companion-merge and intersection rows' layout alike (all three
-   place the grouping columns at ordinals `0..n-1`) — and then the bridge is
-   ASSERTED: the rewritten predicate's correlated-to set must be exactly the
-   yielded plan's alias, or the predicate declines. That is what catches a
-   `QuantifiedObjectValue`/`ObjectValue` leaf, an outer correlation, and a
-   predicate kind `ReplaceValues` returns unchanged (its default arm is a
-   silent pass-through, indistinguishable from a no-op rewrite). A residual
-   over grouping columns filters WHOLE groups and is sound: the group's
-   aggregate is complete regardless of which groups survive.
+   `OrPredicate`, `NotPredicate` — whose FieldValue leaves ROOTED AT THE
+   AGGREGATION INPUT (the filter's inner quantifier, carried with each
+   conjunct as `aggregateFilterPredicate.input`), ENUMERATED (not probed
+   with the boolean `valueReadsField`), each name a grouping column of the
+   candidate by `aggColumnMatches`; a predicate with no such leaf is not
+   "vacuously all grouping", it is declined. A field rooted at any OTHER
+   quantifier is an outer parameter of a correlated query — `t.b = c.b` in a
+   scalar subquery, where the outer `c.b` shares the grouping column's
+   NAME — and is carried unchanged, never rewritten: matching by accessor
+   path alone would turn that predicate into `group.b = group.b` and pass
+   every group. The predicate is rewritten with `predicates.ReplaceValues`
+   onto the row of the plan the rule yields — grouping column `i` is
+   ordinal `i` of the candidate's `groupCols`, which is the LEAF row's
+   layout `[groupCols…, FUNC(col)]` and the companion-merge and intersection
+   rows' layout alike (all three place the grouping columns at ordinals
+   `0..n-1`) — and then the bridge is ASSERTED (`residualBridgeHolds`): the
+   rewritten predicate reads the yielded plan's alias, no longer reads the
+   input, and reads EXACTLY the other correlations it read before. That is
+   what catches a `QuantifiedObjectValue`/`ObjectValue` leaf, an erased or
+   invented correlation, and a predicate kind `ReplaceValues` returns
+   unchanged (its default arm is a silent pass-through, indistinguishable
+   from a no-op rewrite). A residual over grouping columns filters WHOLE
+   groups and is sound: the group's aggregate is complete regardless of
+   which groups survive.
 
    The residual sits BELOW `projectAggregateResultToGroupBy`, as ONE
    `RecordQueryPredicatesFilterPlan` over the aggregate scan / companion
@@ -153,49 +161,108 @@ residual on the select-having row, decline on the input — and states that.
 
 ## Verification
 
-* Unit (`cascades/rule_aggregate_data_access_test.go` or a new file beside
-  it): the partition over hand-built predicates — leading equality bound;
-  leading inequality bound and ends the run; equality after an inequality is
-  residual; non-leading equality residual; gap residual; contradictory
-  equalities on one column residual (no bound); `IS NULL` / `IN` / OR of
-  grouping predicates residual; column-to-column on two grouping columns
-  residual; non-grouping leaf declines; a leaf on the aggregated column
-  declines. Each residual is asserted to reference the aggregate row's
-  ordinal for its column and nothing else.
-* Plan shape (`embedded/bug_hunt_cascades_test.go`, the two must-decline arms
-  flip to must-bind-with-residual, plus new arms): over the typed tree,
-  `non_leading_key` plans `PredicatesFilter(AggregateIndex(SUM_ABC…))` with
-  an unbounded scan; `gap_in_prefix` plans the same over `[a = 'x']`;
-  `leading_inequality` plans `AggregateIndex` over a range with NO filter;
-  `range_then_equality` (`a > 'm' AND b = 'y'`) plans the range with a
-  residual on `b`; `non_grouping_residual` (`… AND v > 0`) still declines to
-  `StreamingAgg`; the COUNT(*) companion merge carries the residual above the
-  merge. Each arm asserts the residual's predicate count and that the scan's
-  comparison arity is what the run allows.
-* Rows (`sqldriver/…_fdb_test.go`, indexed/unindexed twin): the three shapes
-  plus `IS NULL`, `IN`, a column-to-column residual, an ORDER BY over a
-  residual-filtered scan, through DML that empties and revives groups, for
-  COUNT(*) (plain) and SUM (companion-merged); every read asserted via the
-  typed plan to be served by the aggregate index.
-* Unit for the partition's hazards, each an arm: `a > 5 AND a < 10` folds to
-  one range (the mutation restoring first-wins reddens it); `a = 1 AND a = 2`
-  binds nothing and both are residual; the truncated map, not the folded
-  one, reaches `ToScanPlan` at all three sites (an equality after an
-  inequality never appears in the scan's comparisons); a predicate kind
-  outside the allow-list declines; a predicate with no FieldValue leaf
-  declines; a correlated leaf declines through the bridge.
+* Unit (`cascades/rule_aggregate_data_access_residual_test.go`,
+  `TestAggregatePredicatePartition`, 17 arms): leading equality bound;
+  leading inequality bound and ends the run; `a > 5 AND a < 10` folds to one
+  range carrying BOTH comparisons (the arm counts them, so
+  first-comparison-wins cannot pass as a fold); contradictory equalities
+  bind nothing and are both residual; non-leading equality, gap, IS NULL on a
+  non-leading column, OR, NOT and column-to-column over two grouping columns
+  residual; leading IS NULL bound as an equality on the null key; a leaf on
+  a non-grouping column, a column-to-column with a non-grouping column, a
+  predicate with no field leaf, a kind outside the allow-list, a whole-row
+  leaf and a vector distance-rank bound all decline. Plus
+  `…_ScanReceivesOnlyTheTruncatedRun` (an equality after a range never
+  reaches the scan's comparisons) and
+  `…_ApplyResidualsRewritesOntoTheAggregateRow` (the residual reads ordinal
+  1 of the aggregate row and that row's alias only; a residual the rewrite
+  cannot place is refused by the bridge), and
+  `…_OuterCorrelationIsCarriedNotRewritten` (`o.region = c.region` over a
+  second quantifier of the same row type: the input read moves, the outer
+  read stays, the residual is correlated to exactly the aggregate row and
+  the outer quantifier); two more table arms: the same shape is a residual,
+  and an outer field alone is not a grouping read and declines.
+* Plan shape (`embedded/aggregate_index_residual_test.go`, 21 arms over the
+  typed tree): each arm asserts whether the aggregate index is reached, the
+  scan's comparison arity, the residual filter's predicate count (−1 = no
+  filter) and whether an in-memory sort remains. Residual arms: non-leading
+  equality (COUNT and the companion-merged SUM), gap, range-then-equality,
+  contradictory equalities (2 residuals), IS NULL, IN, column-to-column, OR,
+  a one-sided DOUBLE range demoted from the run, leading IS NULL then a gap,
+  and the multi-aggregate intersection with a residual (both a full scan and
+  a bound one) — the third scan site. Bound-only arms: leading inequality
+  (COUNT and SUM), two bounds folding to one range, leading IS NULL. ORDER BY
+  arms `residual_keeps_fixed_binding_desc` / `residual_keeps_sorted_tail`
+  stay sort-free through the residual. `correlated_outer_field_same_name` —
+  the scalar subquery `(SELECT COUNT(*) FROM t WHERE t.b = c.b AND t.a = 'x'
+  AND t.c = 'z' GROUP BY …)` — reaches the aggregate index with one bound
+  and two residuals. Declines: a non-grouping leaf, a column-to-column with
+  the input. Every "reached" arm with `wantScan: 0` is
+  the cost measurement: `Filter(unbounded AggregateIndex)` was CHOSEN over
+  `Scan + StreamingAgg`. `TestBugHunt_AggregateIndexMultiKeyResidual`'s
+  `non_leading_key` and `gap_in_prefix` flip from must-decline to must-bind
+  and `TestBugHunt_AggregateIndexResidualNotDropped`'s leading-inequality arm
+  becomes a range-bound control; its input-predicate arms still decline.
+  `TestAggregateIndexResidual_RecordTypedGroupingKeyIsUnreachable` pins the
+  negative result behind the below-the-projection placement: an aggregate
+  index over nested struct fields is refused at DDL validation, so a
+  record-typed grouping key never reaches the rule with a candidate; the
+  arm's failure message names what re-arms.
 * Unit (`plans/index_scan_ordering_test.go`):
   `RecordQueryPredicatesFilterPlan.HintRichOrdering` carries its source's
-  FIXED bindings. Embedded arms `residual_keeps_fixed_binding_desc` and
-  `residual_keeps_sorted_tail` (`ORDER BY a DESC, b` / `ORDER BY b` over a
-  residual-filtered `[a = 'x']` scan) plan with no sort — through the
-  delegator walk, and measured to stay green with the rich form removed.
-* The `leading_inequality` arms state their column type: a STRING or BIGINT
-  range keeps the companion merge's ordering gate; a one-sided FLOAT range is
-  terminal there and the SUM shape falls to the plain-scan arm.
-* Every pin measured red under the mutation that reverts bucket 2 to a
-  decline, with the mutation-present grep; EXPLAIN corpus diff with its
-  population stated and every flip read; fuzz; 1M stress as for RFC-246/247.
+  FIXED bindings. The embedded ORDER BY arms stay green with the rich form
+  removed (measured): sort elision delegates through the filter.
+* Rows (`sqldriver/aggregate_index_residual_fdb_test.go`,
+  `TestFDB_AggregateIndexResidual`): 22 reads over the indexed/unindexed
+  twin — every residual shape above, the leading range (STRING), the leading
+  IS NULL, a double range, ORDER BY through the residual, HAVING, the
+  two-aggregate intersection, and two correlated scalar subqueries whose
+  outer field shares the grouping column's name (COUNT and the
+  companion-merged SUM) — through 6 DML stages that move groups into
+  and out of the residual's selection, empty and revive groups, zero a SUM
+  under the range and empty the double-range arm; each read asserted via
+  the typed plan to be served by the aggregate index and, by a
+  `wantResidual` field (not SQL text), to carry or not carry the residual.
+* Superseded prose swept: `grep -rn 'groupColEqualityIndex\|buildAggScanPrefix\|
+  aggInnerFilterFullyConsumable' pkg --include='*.go'` → 0 lines (positive
+  control `partitionAggregatePredicates` → 10); the three files that carried
+  the old reading (`bug_hunt_cascades_test.go`'s header,
+  `agg_index_residual_drop_probe_test.go`'s header and case comments,
+  `aggregate_column_identity_test.go`) now describe the partition.
+* Mutations, each with the mutated text `grep -c`'d present (1) and absent
+  (0) after restoring, over `bazelisk test //pkg/recordlayer/query/plan/
+  cascades:cascades_test //pkg/relational/core/embedded:embedded_test
+  --nocache_test_results --test_arg=--test.run=TestAggregatePredicatePartition|
+  TestAggregateIndexResidual|TestBugHunt_AggregateIndex` (56 `=== RUN`
+  lines):
+  * bucket 2 reverted to a decline (`if len(residuals) > 0 { return nil,
+    false }`): 25 leaf arms redden — the 8 residual-bearing partition arms,
+    15 embedded residual arms, both bug-hunt arms — plus the two standalone
+    partition tests; the 24 bound-only and decline arms stay green.
+  * first-comparison-wins restored in the fold (`comparisons[:1]`): the
+    fold arm and the contradictory-equalities arm redden, and
+    `TestFDB_AggregateIndexResidual` reddens on rows (`a >= 'x' AND a < 'z'`
+    binds `>=` alone and returns extra groups).
+  * the filter's `HintRichOrdering` removed: the plans pin fails to build;
+    no embedded arm reddens (measured, and stated above as the reason the
+    method is a property fix, not a plan change).
+  * `rootedAt` mutated to "always true" (a rewrite by accessor path alone,
+    the shape codex found): over 48 `=== RUN` lines,
+    `…_OuterCorrelationIsCarriedNotRewritten`, the outer-column-alone arm,
+    the embedded `correlated_outer_field_same_name` arm and
+    `TestFDB_AggregateIndexResidual` redden — and they redden as a DECLINE
+    (`StreamingAgg`), not as wrong rows, because the exact-set bridge
+    refuses the erased correlation independently of `rootedAt`. The bridge
+    as first written (`correlated == {root}`) would have accepted it.
+* EXPLAIN corpus (`cmd/explain-differ`, the yamsql corpus), `7e3d59a8b` vs
+  the implementation: 2955 entries, 2955 identical, 0 shape flips; also
+  2955/2955 with and without the filter's rich form. Population: the corpus
+  holds no aggregate-index shape with a predicate outside the bound run, so
+  this green says the partition declined none of the corpus's EXISTING
+  aggregate-index plans (every one now passes through it), not that it
+  exercised the residual.
+* Planner fuzz and the 1M stress comparison at the implementation head,
+  recorded below.
 
 ## Review
 
@@ -209,4 +276,33 @@ residual placed below the projection with the record-typed-grouping-key
 reason, ordinals from the candidate's `groupCols`, the filter's
 `HintRichOrdering` delegation, the HAVING and `impossibleCompensation`
 statements, the range arm's column type, and the cost outcome measured
-rather than asserted. Implementation lap, codex and @claude recorded below.
+rather than asserted.
+
+Implementation lap on `c0f684739`: Graefe ACK with conditions, Torvalds ACK
+with conditions, folded — the fold's admission set narrowed to what a
+`ComparisonRange` can hold (the value-index range set plus the NULL
+comparisons; a vector distance-rank bound now declines, with an arm); the
+peel loop's `last` guarded; the positional re-keying at `rekeyScanPrefix`
+justified at the site by the `groupingSignature` invariant (order-sensitive)
+and the intersection's in-order name check; the multi-aggregate intersection
+with a residual pinned at plan and rows level (the third scan site); a
+leading IS NULL pinned as a bound (new reach the fold admitted); the
+record-typed grouping key pinned as unreachable with its re-arming message;
+the FDB twin's SQL-substring exemptions replaced by a `wantResidual` field;
+the superseded prose in three files rewritten and the zero-grep reported;
+the mutation populations re-derived with their command. Also corrected on
+the way: the RFC's own claim that the filter's rich form was needed for
+sort elision — it is not (the delegator walk already reaches the source);
+the method stays as Java's property, pinned, and stated as a no-plan-change.
+
+codex on `c0f684739`: one P1 — the residual rewrite matched a field to a
+grouping column by accessor path alone, so in a correlated shape
+(`t.b = c.b`, the outer field sharing the name) BOTH reads were re-hung on
+the aggregate row, the correlation vanished, and the bridge of that commit
+(`correlated == {root}`) passed the result. Folded: each filter conjunct
+carries the alias of the quantifier it reads (the aggregation input); only a
+leaf rooted there is a grouping read, an outer-rooted leaf is carried
+unchanged; the bridge asserts the exact correlation set (root present, input
+gone, every other correlation preserved, none invented). Pinned at unit,
+plan and rows level (the scalar-subquery shape reaches the rule), and the
+by-name rewrite measured to decline rather than answer. @claude on the PR.

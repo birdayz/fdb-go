@@ -5146,7 +5146,15 @@ is. Run the EXPLAIN corpus diff and the 1M stress comparison as for RFC-245.
 
 ---
 
-### [ ] Aggregate data access: a grouping-key equality outside the bound prefix should be a residual over the aggregate scan, not a full-scan decline (RFC-246 follow-on; query-engine gate)
+### [x] Aggregate data access: a grouping-key equality outside the bound prefix should be a residual over the aggregate scan, not a full-scan decline (RFC-246 follow-on; query-engine gate)
+
+DONE (RFC-248): `partitionAggregatePredicates` sorts the GroupBy's inner filter into scan bounds
+(per-column `Merge` fold, truncated to the leading run — equalities then one inequality — at all
+three scan sites), residuals over the aggregate row (allow-listed kinds whose leaves all name
+grouping columns, rewritten onto the yielded plan's row below the projection, bridge asserted) and
+declines (a leaf on the aggregation input). Both shapes above plan
+`PredicatesFilter(AggregateIndex(…))`, a leading inequality binds as a range, and
+`TestFDB_AggregateIndexResidual` (20 reads × 7 DML stages) pins the rows. Original entry follows.
 
 `AggregateDataAccessRule` (rule_aggregate_data_access.go, `aggInnerFilterFullyConsumable`)
 declines the aggregate index whenever a filter predicate is not an equality on the CONTIGUOUS

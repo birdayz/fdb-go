@@ -10,6 +10,7 @@ package embedded
 // (TestFDB_AggregateIndexResidual).
 
 import (
+	"strings"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
@@ -50,7 +51,8 @@ func TestAggregateIndexResidualOverGroupingColumns(t *testing.T) {
 CREATE TABLE T (id BIGINT, a STRING, b STRING, c STRING, v BIGINT, d DOUBLE, PRIMARY KEY (id))
 CREATE INDEX sum_abc AS SELECT SUM(v) FROM T GROUP BY a, b, c
 CREATE INDEX cnt_abc AS SELECT COUNT(*) FROM T GROUP BY a, b, c
-CREATE INDEX cnt_d_a AS SELECT COUNT(*) FROM T GROUP BY d, a`
+CREATE INDEX cnt_d_a AS SELECT COUNT(*) FROM T GROUP BY d, a
+CREATE TABLE CUST (id BIGINT, b STRING, region STRING, PRIMARY KEY (id))`
 
 	cases := []struct {
 		name      string
@@ -75,10 +77,24 @@ CREATE INDEX cnt_d_a AS SELECT COUNT(*) FROM T GROUP BY d, a`
 		// A one-sided DOUBLE range cannot be a scan bound (tuple order is not
 		// the comparator's), so it is peeled into the residual, not declined.
 		{"double_range_demotes_to_residual", "SELECT d, a, COUNT(*) FROM t WHERE d > 1.5 GROUP BY d, a", true, 0, 1, false},
+		// A LEADING IS NULL binds as an equality range on the [null] key (Java's
+		// ScanComparisons classifies IS NULL as EQUALITY) — new reach, since the
+		// old builder bound `=` only.
+		{"leading_is_null_binds", "SELECT a, b, c, COUNT(*) FROM t WHERE a IS NULL GROUP BY a, b, c", true, 1, -1, false},
+		{"leading_is_null_then_gap", "SELECT a, b, c, COUNT(*) FROM t WHERE a IS NULL AND c = 'z' GROUP BY a, b, c", true, 1, 1, false},
+		// The third scan site: two aggregates over two indexes intersect on the
+		// grouping key, with the residual above the intersection.
+		{"multi_aggregate_intersection_residual", "SELECT a, b, c, SUM(v), COUNT(*) FROM t WHERE b = 'x' GROUP BY a, b, c", true, 0, 1, false},
+		{"multi_aggregate_intersection_bound_and_residual", "SELECT a, b, c, SUM(v), COUNT(*) FROM t WHERE a = 'x' AND c = 'z' GROUP BY a, b, c", true, 1, 1, false},
 		// The filter passes the scan's rich ordering through: a FIXED and b
 		// sorted, so both requests are served with no sort.
 		{"residual_keeps_fixed_binding_desc", "SELECT a, b, c, COUNT(*) FROM t WHERE a = 'x' AND c = 'z' GROUP BY a, b, c ORDER BY a DESC, b", true, 1, 1, false},
 		{"residual_keeps_sorted_tail", "SELECT a, b, c, COUNT(*) FROM t WHERE a = 'x' AND c = 'z' GROUP BY a, b, c ORDER BY b", true, 1, 1, false},
+		// A correlated residual: `t.b = c.b` reads the OUTER row's b — the same
+		// NAME as the grouping column — and must stay correlated to it; the
+		// input-rooted read moves onto the aggregate row, the outer one does
+		// not. Two residuals (the correlated one and c = 'z'), a bound on a.
+		{"correlated_outer_field_same_name", "SELECT c.id, (SELECT COUNT(*) FROM t WHERE t.b = c.b AND t.a = 'x' AND t.c = 'z' GROUP BY t.a, t.b, t.c) FROM cust c", true, 1, 2, false},
 		// Decline: a leaf on the aggregation input.
 		{"non_grouping_leaf_declines", "SELECT a, b, c, COUNT(*) FROM t WHERE a = 'x' AND v > 0 GROUP BY a, b, c", false, 0, -1, true},
 		{"column_to_column_with_input_declines", "SELECT a, b, c, COUNT(*) FROM t WHERE a = 'x' AND v = id GROUP BY a, b, c", false, 0, -1, true},
@@ -110,5 +126,33 @@ CREATE INDEX cnt_d_a AS SELECT COUNT(*) FROM T GROUP BY d, a`
 				t.Errorf("in-memory sorts = %d, want sort=%v: the residual filter must pass the scan's rich ordering through\n  sql:  %s\n  plan: %s", sorts, c.wantSort, c.sql, plan.Explain())
 			}
 		})
+	}
+}
+
+// TestAggregateIndexResidual_RecordTypedGroupingKeyIsUnreachable is a NEGATIVE
+// result that guards an ordinal argument. RFC-248 places the residual BELOW
+// projectAggregateResultToGroupBy because on the leaf row grouping column i
+// is ordinal i of the candidate's groupCols, whereas the GroupBy row's ordinals
+// differ when a grouping key is RECORD-typed (MatchesGroupBy expands such a
+// key to its primitive leaves, so the GroupBy row carries fewer, wider
+// columns than the candidate). That shape cannot reach the rule today: an
+// aggregate index over nested struct fields is rejected at DDL validation, so
+// no candidate ever has a leaf-expanded grouping column. If this DDL is ever
+// accepted, the residual's ordinal rewrite over a record-typed grouping key
+// becomes live and needs its own rows pin; this arm is what says so.
+func TestAggregateIndexResidual_RecordTypedGroupingKeyIsUnreachable(t *testing.T) {
+	t.Parallel()
+	const schema = `
+CREATE TYPE AS STRUCT ADDR (city STRING, zip BIGINT)
+CREATE TABLE T_S (id BIGINT, home ADDR, cat STRING, PRIMARY KEY (id))
+CREATE INDEX cnt_home_cat AS SELECT COUNT(*) FROM T_S GROUP BY home.city, home.zip, cat`
+	_, err := PlanPhysicalForTest("SELECT home, cat, COUNT(*) FROM T_S WHERE cat = 'x' GROUP BY home, cat", schema, nil)
+	if err == nil {
+		t.Fatal("an aggregate index over nested struct fields was accepted: a record-typed grouping key can now " +
+			"reach AggregateDataAccessRule, and RFC-248's residual rewrite (grouping column i = leaf-row ordinal i, " +
+			"below the projection) needs a rows pin over that shape before this arm is removed")
+	}
+	if !strings.Contains(err.Error(), "is a message type") {
+		t.Fatalf("the DDL was refused for a different reason than the nested-field limitation this arm rests on: %v", err)
 	}
 }

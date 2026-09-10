@@ -13,10 +13,14 @@ import (
 )
 
 // AGG-RESIDUAL: AggregateDataAccessRule must NOT serve a query from an
-// aggregate index when there is a residual predicate it cannot turn into a
-// grouping-key scan bound — the precomputed aggregate is over ALL rows, so the
-// residual would be silently dropped (wrong SUM / wrong groups). The engine
-// must fall back to StreamingAgg over a filtered scan.
+// aggregate index when a predicate reads the aggregation INPUT — a non-grouping
+// column, alone or compared to a grouping one — because the precomputed
+// aggregate is over ALL rows and no filter above the scan can reconstruct it.
+// The engine must fall back to StreamingAgg over a filtered scan. A predicate
+// over grouping columns is a different matter (RFC-248): a leading inequality
+// binds as a range, anything else over grouping columns is a residual filter
+// above the scan; the controls below pin both, and
+// aggregate_index_residual_test.go carries the full partition.
 func TestBugHunt_AggregateIndexResidualNotDropped(t *testing.T) {
 	t.Parallel()
 	const schema = `
