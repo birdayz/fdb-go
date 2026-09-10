@@ -8807,7 +8807,26 @@ Do not "fix" this by hand-deleting entries. That is what fails the hook.
 
 ---
 
-### [ ] STOP (owner): `gh-runner-drain-0` loses its FDB testcontainer 34–36 minutes into every long job — the CI race lane and Nightly Stress go red on that host only
+### [ ] STOP (owner): a `hetzner-fdb-vm` job loses its FDB testcontainer 34–36 minutes in — the CI race lane and Nightly Stress go red whenever one container stays in use that long
+
+SUPERSEDED IN PART, same day: this was first booked as a drain-0-only property (the table below
+was drain-0 3-for-3, `gh-runner-fdb` 0-for-5). PR #777's race lane then died the same way on
+`gh-runner-fdb` at 16:51:57 → 17:28:05 (36 min; `HC_Volume_106058499`; `sqldriver_test FAILED
+in 2836.4s`, no `DATA RACE`). So the loss is not a host: it is whatever happens ~35 minutes into
+a job that keeps ONE FDB testcontainer in use that long. The lanes that do are exactly the red
+ones — the -race sqldriver package (~1300 tests, one container for the whole package) and Nightly
+Stress at 1M rows. What both have in common and the green lanes do not: the test container runs
+the MEMORY storage engine (`pkg/testcontainers/foundationdb`, default engine "memory") and the
+work accumulates in it for the whole lane — every sqldriver test creates its own database and
+nothing drops them; the stress test writes 1M rows. On a 7.6 GB box shared with a -race test
+binary, an OOM-killed `fdbserver` (fdbmonitor restarts it, the memory engine reloads, the client
+sees `connection to server failed` and then `context deadline exceeded` on every read while it is
+down or being killed again) fits every timing above better than a reaper. It is a hypothesis,
+not a finding: nobody here can read the hosts' kernel log. The race lane and Nightly Stress now
+carry a post-failure diagnostic step (`docker events` oom/die/kill for the job's window, container
+`OOMKilled` flags, the kernel OOM record, `free -m`) so the next loss names its mechanism in the
+job log — read that step first. If it is OOM, the fix is in this repo (an SSD-engine container
+for the long lanes, or dropping test databases), not on the host. The original entry follows.
 
 MEASURED 2026-09-10 across every `hetzner-fdb-vm` job of the last two days, by the `Machine name`
 in each job log:
