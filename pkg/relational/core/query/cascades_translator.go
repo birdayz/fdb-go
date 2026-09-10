@@ -2911,6 +2911,10 @@ func (t *cascadesTranslator) translateScan(s *logical.LogicalScan) expressions.R
 }
 
 func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressions.RelationalExpression {
+	// An inner cluster's ON-clause EXISTS is a WHERE-EXISTS (on_exists_fold.go);
+	// fold it first so the known-truth substitution and every route below see
+	// one spelling.
+	f = foldInnerOnExistsIntoFilter(f)
 	// Fold a WHERE-EXISTS whose post-pagination cardinality is known before any
 	// routing. The front-end proves the inner either empty or non-empty (notably:
 	// a non-grouped aggregate emits one row before LIMIT/OFFSET), so both EXISTS
@@ -6005,6 +6009,10 @@ func findExistsFilterUnderUnaryChain(input logical.LogicalOperator) (*logical.Lo
 	cur := input
 	for {
 		if f, ok := cur.(*logical.LogicalFilter); ok {
+			// The filter the fold reasons over is the ON-EXISTS-folded one
+			// (on_exists_fold.go) — a WHERE whose only existential rides the
+			// inner cluster's ON clause is an existential filter too.
+			f = foldInnerOnExistsIntoFilter(f)
 			if len(f.ExistsSubqueries) > 0 {
 				return f, chain
 			}
@@ -7196,36 +7204,28 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 		return nil
 	}
 
-	// An INNER join carrying an ON-clause EXISTS is
-	// SEMANTICALLY IDENTICAL to WHERE-EXISTS — Java folds every inner-join ON
-	// predicate into the WHERE of one SelectExpression (QueryVisitor.visitSimpleTable
-	// conjoins inner-join expressions into the WHERE), so `JOIN e ON e.c_id = c.id
-	// AND EXISTS(sub)` plans as the same correlated semi-join over the flattened
-	// a⋈c⋈e cluster. Go's ON-EXISTS lift already builds the ExistentialValuePredicate
-	// marker into join.OnPredicate and the subquery into join.OnExistsSubqueries;
-	// synthesize the equivalent WHERE-EXISTS filter here so the projection routes
-	// through the ORDINAL gather (translateExistsOverGatheredCluster) instead of the
-	// name-model ON-exists semi-join (translateJoin's OnExistsSubqueries arm). The
-	// non-EXISTS ON conjuncts stay on the join (SARG'd by the cluster machinery, as
-	// they are for an equivalent WHERE-EXISTS query); only the existential marker is
-	// lifted into the filter. Fail-open: a non-foldable shape (arity<=2, dup-alias,
-	// ungated, or the gather declining) falls through to today's name-model path.
+	// A FROM with no WHERE whose inner cluster carries an ON-clause EXISTS: the
+	// ON-EXISTS is a WHERE-EXISTS (on_exists_fold.go — the same lift
+	// translateFilter applies when a WHERE exists), so synthesize the
+	// equivalent WHERE-EXISTS filter and route the projection through the
+	// ORDINAL gather (translateExistsOverGatheredCluster) instead of the
+	// name-model ON-exists semi-join (translateJoin's OnExistsSubqueries arm).
+	// The non-EXISTS ON conjuncts stay on the cluster (SARG'd by the cluster
+	// machinery, as they are for the equivalent WHERE-EXISTS query); only the
+	// existential markers lift. Fail-open: a non-foldable shape (arity<=2,
+	// dup-alias, ungated, or the gather declining) falls through to today's
+	// name-model path.
 	if join, ok := p.Input.(*logical.LogicalJoin); ok && join.Kind == logical.JoinInner &&
-		len(join.OnExistsSubqueries) > 0 && len(p.CorrelatedScalarSubqueries) == 0 {
-		if onPred, isPred := join.OnPredicate.(predicates.QueryPredicate); isPred {
-			if markers := extractExistsPredicates(onPred); len(markers) > 0 {
-				joinCopy := *join
-				joinCopy.OnPredicate = andOf(splitNonExistsPredicates(onPred))
-				joinCopy.OnExistsSubqueries = nil
-				synthFilter := &logical.LogicalFilter{
-					Input:            &joinCopy,
-					Predicate:        andOf(markers),
-					ExistsSubqueries: join.OnExistsSubqueries,
-				}
-				if t.existsFoldableGatheredCluster(synthFilter) {
-					if sel := t.translateProjectOverExistsFilter(p, synthFilter, nil); sel != nil {
-						return sel
-					}
+		len(p.CorrelatedScalarSubqueries) == 0 {
+		if lifted, markers, subqueries := liftClusterOnExists(join); len(subqueries) > 0 {
+			synthFilter := &logical.LogicalFilter{
+				Input:            lifted,
+				Predicate:        andOf(markers),
+				ExistsSubqueries: subqueries,
+			}
+			if t.existsFoldableGatheredCluster(synthFilter) {
+				if sel := t.translateProjectOverExistsFilter(p, synthFilter, nil); sel != nil {
+					return sel
 				}
 			}
 		}

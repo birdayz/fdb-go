@@ -96,6 +96,7 @@ func TestComparisonRange_MergeIsTotal(t *testing.T) {
 
 	equality := EmptyComparisonRange().Merge(&eq5).Range
 	inequality := EmptyComparisonRange().Merge(&gt3).Range
+	twoInequalities := inequality.Merge(&lt20).Range
 
 	for _, tc := range []struct {
 		name          string
@@ -121,6 +122,7 @@ func TestComparisonRange_MergeIsTotal(t *testing.T) {
 		{"present_inequality_into_inequality_dedups", inequality, &gt3Again, ComparisonRangeInequality, []*Comparison{&gt3}, nil, true},
 		{"new_inequality_into_inequality_appends", inequality, &lt20, ComparisonRangeInequality, []*Comparison{&gt3, &lt20}, nil, false},
 		{"equality_into_inequality_wins_and_residualises_the_inequalities", inequality, &eq10, ComparisonRangeEquality, []*Comparison{&eq10}, []*Comparison{&gt3}, false},
+		{"equality_into_two_inequalities_residualises_both_in_order", twoInequalities, &eq10, ComparisonRangeEquality, []*Comparison{&eq10}, []*Comparison{&gt3, &lt20}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

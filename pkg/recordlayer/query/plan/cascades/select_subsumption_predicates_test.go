@@ -1008,7 +1008,8 @@ func TestSelectSubsumptionGroupAlternatives_FoldsOnlyWellFormedPlaceholderMappin
 		RegularMappingBuilder(lt, lt, tautology).Build(),
 	}
 	alternatives = selectSubsumptionGroupAlternatives(tautology, residuals)
-	if len(alternatives) != 2 {
-		t.Fatalf("non-placeholder group: want 2 alternatives, got %d", len(alternatives))
+	if len(alternatives) != 2 || len(alternatives[0]) != 1 || len(alternatives[1]) != 1 ||
+		alternatives[0][0] != residuals[0] || alternatives[1][0] != residuals[1] {
+		t.Fatalf("non-placeholder group: want the two mappings back one per alternative, in order, got %v", alternatives)
 	}
 }

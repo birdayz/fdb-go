@@ -144,19 +144,30 @@ func sortStrings(s []string) {
 }
 
 // TestFDB_ExistsInOnPlusWhereExists pins, on data that can tell, that BOTH
-// existentials of `JOIN … ON … AND EXISTS(d) WHERE EXISTS(e)` are applied.
+// existentials of `JOIN … ON … AND EXISTS(d) WHERE EXISTS(e)` are applied —
+// an inner join's ON-EXISTS is a WHERE-EXISTS (on_exists_fold.go), on the
+// binary join and on a three-leg cluster with the EXISTS in either join's ON.
 // The translator used to attach only the WHERE's existential quantifier on
-// this shape, leaving the ON's `EXISTS(q$N)` marker referencing a quantifier
-// no Select owned; the buried-existential backstop happened to reject the
-// query while the ON predicate arrived as one AND, and once the Select
-// constructor lifted the conjunction the dangling marker reached the planner
-// and was dropped — every row the ON-EXISTS should have excluded came back.
+// the binary shape, leaving the ON's `EXISTS(q$N)` marker referencing a
+// quantifier no Select owned; the buried-existential backstop happened to
+// reject the query while the ON predicate arrived as one AND, and once the
+// Select constructor lifted the conjunction the dangling marker reached the
+// planner and was dropped — every row the ON-EXISTS should have excluded came
+// back. The three-leg shapes were refused outright (the gate poisons an N-way
+// join carrying its own existential) until the ON-EXISTS was folded into the
+// WHERE before any route saw it.
 //
-// a={1,2,3}; c: 50→a1, 51→a2, 52→a1, 53→a2; d={2}; e: 900→c50, 901→c51.
-// Join pairs on a_id: (1,50),(2,51),(1,52),(2,53). EXISTS d (a.id ∈ {2}) keeps
-// (2,51),(2,53); EXISTS e (c.id ∈ {50,51}) keeps (2,51). Dropping the
-// ON-EXISTS would return (1,50) as well; dropping the WHERE-EXISTS would
+// Binary: a={1,2,3}; c: 50→a1, 51→a2, 52→a1, 53→a2; d={2}; e: 900→c50,
+// 901→c51. Join pairs on a_id: (1,50),(2,51),(1,52),(2,53). EXISTS d (a.id ∈
+// {2}) keeps (2,51),(2,53); EXISTS e (c.id ∈ {50,51}) keeps (2,51). Dropping
+// the ON-EXISTS would return (1,50) as well; dropping the WHERE-EXISTS would
 // return (2,53) as well.
+//
+// Three-leg: g: 900→c50, 901→c51, 902→c53; h: 7000→g901, 7001→g900. Triples
+// on a_id/c_id: (1,50,900),(2,51,901),(2,53,902). EXISTS d keeps
+// (2,51,901),(2,53,902); EXISTS h (g.id ∈ {900,901}) keeps (2,51,901).
+// Dropping the ON-EXISTS would return (1,50,900) as well; dropping the
+// WHERE-EXISTS would return (2,53,902) as well.
 func TestFDB_ExistsInOnPlusWhereExists(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -171,8 +182,12 @@ func TestFDB_ExistsInOnPlusWhereExists(t *testing.T) {
 			"CREATE TABLE c (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE d (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE e (id BIGINT, c_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE g (id BIGINT, c_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE h (id BIGINT, g_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE INDEX c_a_id ON c (a_id) "+
-			"CREATE INDEX e_c_id ON e (c_id)")
+			"CREATE INDEX e_c_id ON e (c_id) "+
+			"CREATE INDEX g_c_id ON g (c_id) "+
+			"CREATE INDEX h_g_id ON h (g_id)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_exists_on_where/s WITH TEMPLATE exists_on_where")
 	dsn := fmt.Sprintf("fdbsql:///testdb_exists_on_where?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
@@ -184,6 +199,8 @@ func TestFDB_ExistsInOnPlusWhereExists(t *testing.T) {
 	mwjoMustExec(t, db, ctx, "INSERT INTO c (id, a_id) VALUES (50, 1), (51, 2), (52, 1), (53, 2)")
 	mwjoMustExec(t, db, ctx, "INSERT INTO d (id) VALUES (2)")
 	mwjoMustExec(t, db, ctx, "INSERT INTO e (id, c_id) VALUES (900, 50), (901, 51)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO g (id, c_id) VALUES (900, 50), (901, 51), (902, 53)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO h (id, g_id) VALUES (7000, 901), (7001, 900)")
 
 	for _, tc := range []struct {
 		name string
@@ -200,6 +217,82 @@ func TestFDB_ExistsInOnPlusWhereExists(t *testing.T) {
 			if !eqStrSlices(got, want) {
 				t.Errorf("rows = %v, want %v\n  sql: %s", got, want, tc.sql)
 			}
+		})
+	}
+
+	const whereH = " WHERE EXISTS (SELECT 1 FROM h WHERE h.g_id = g.id)"
+	const existsD = " AND EXISTS (SELECT 1 FROM d WHERE d.id = a.id)"
+	for _, tc := range []struct {
+		name string
+		sql  string
+		want []string
+	}{
+		// The EXISTS in the ROOT join's ON (the second JOIN) beside a WHERE-EXISTS.
+		{
+			"threeway_root_on_exists_plus_where_exists",
+			"SELECT a.id, c.id, g.id FROM a JOIN c ON c.a_id = a.id JOIN g ON g.c_id = c.id" + existsD + whereH,
+			[]string{"2|51|901"},
+		},
+		// The EXISTS in the NESTED join's ON (the first JOIN) beside a WHERE-EXISTS.
+		{
+			"threeway_nested_on_exists_plus_where_exists",
+			"SELECT a.id, c.id, g.id FROM a JOIN c ON c.a_id = a.id" + existsD + " JOIN g ON g.c_id = c.id" + whereH,
+			[]string{"2|51|901"},
+		},
+		// Control: both existentials in WHERE.
+		{
+			"threeway_both_exists_in_where",
+			"SELECT a.id, c.id, g.id FROM a JOIN c ON c.a_id = a.id JOIN g ON g.c_id = c.id WHERE EXISTS (SELECT 1 FROM d WHERE d.id = a.id) AND EXISTS (SELECT 1 FROM h WHERE h.g_id = g.id)",
+			[]string{"2|51|901"},
+		},
+		// A ROOT ON-EXISTS beside a plain (non-EXISTS) WHERE.
+		{
+			"threeway_root_on_exists_plus_where",
+			"SELECT a.id, c.id, g.id FROM a JOIN c ON c.a_id = a.id JOIN g ON g.c_id = c.id" + existsD + " WHERE a.id > 0",
+			[]string{"2|51|901", "2|53|902"},
+		},
+		// A NESTED ON-EXISTS with no WHERE at all (the projection-level lift).
+		{
+			"threeway_nested_on_exists_no_where",
+			"SELECT a.id, c.id, g.id FROM a JOIN c ON c.a_id = a.id" + existsD + " JOIN g ON g.c_id = c.id",
+			[]string{"2|51|901", "2|53|902"},
+		},
+		// A ROOT ON-EXISTS with no WHERE (already served before the fold).
+		{
+			"threeway_root_on_exists_no_where",
+			"SELECT a.id, c.id, g.id FROM a JOIN c ON c.a_id = a.id JOIN g ON g.c_id = c.id" + existsD,
+			[]string{"2|51|901", "2|53|902"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := scanTriples(t, db, ctx, tc.sql)
+			if !eqStrSlices(got, tc.want) {
+				t.Errorf("rows = %v, want %v\n  sql: %s", got, tc.want, tc.sql)
+			}
+		})
+	}
+
+	// A PROJECTED EXISTS beside a WHERE-EXISTS is a separate, pre-existing gap
+	// (TODO.md "A projected EXISTS beside a WHERE-EXISTS fails opaquely"): it
+	// fails on a single table too, so it is not about the ON clause or the
+	// join. Pinned as a refusal — never wrong rows — on the single-table form
+	// and on the ON-EXISTS form the fold now turns into it; when the
+	// capability lands these arms flip to row assertions.
+	for _, tc := range []struct {
+		name string
+		sql  string
+	}{
+		{
+			"projected_exists_beside_where_exists_single_table_refused",
+			"SELECT a.id, EXISTS (SELECT 1 FROM c WHERE c.a_id = a.id) FROM a WHERE EXISTS (SELECT 1 FROM d WHERE d.id = a.id)",
+		},
+		{
+			"projected_exists_beside_on_exists_threeway_refused",
+			"SELECT a.id, c.id, g.id, EXISTS (SELECT 1 FROM h WHERE h.g_id = g.id) FROM a JOIN c ON c.a_id = a.id JOIN g ON g.c_id = c.id" + existsD,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assertUnsupported(t, db, ctx, tc.sql)
 		})
 	}
 }

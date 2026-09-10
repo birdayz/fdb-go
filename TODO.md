@@ -10058,3 +10058,32 @@ both ways.
   tie on the outer cardinality) so a materialized join's order is chosen by cost, not by which
   conjunct came first. Query-engine gate. Pin: the reproducer plans the same tree under both
   conjunct orders.
+
+### A projected EXISTS beside a WHERE-EXISTS fails opaquely ("Cascades planner could not plan query")
+
+Found while closing RFC-249's ON-EXISTS reach gap. Independent of joins and of the ON clause: the
+single-table form fails the same way. Reproducer, identical on master `b6789c1a0` and on the
+RFC-249 head (`sqldriver` fixture: `a(id)`, `c(id, a_id)`, `d(id)`):
+
+```
+SELECT a.id, EXISTS (SELECT 1 FROM c WHERE c.a_id = a.id) FROM a
+  WHERE EXISTS (SELECT 1 FROM d WHERE d.id = a.id)
+```
+
+`0AF00: Cascades planner could not plan query` — the opaque failure, not a typed decline. Each half
+works alone (projected EXISTS with no WHERE; WHERE-EXISTS with no projected EXISTS), and two
+WHERE-EXISTS together work over one table and over a three-leg cluster. The projected-EXISTS fold
+(RFC-141 Phase 2, `translateProjectOverExistsFilter` → `buildExistentialSelect`) builds one
+Select carrying BOTH existential quantifiers with the projection's `ExistsValue` as the result
+value, and no implementation rule yields a plan for a select whose result value reads one
+existential while a predicate reads another. Java answers this (one SelectExpression, its
+`exists(q1)` evaluated in the RETURN while `exists(q2)` filters). The fix is a capability — the
+existential peel handling a projected `ExistsValue` alongside a second existential quantifier —
+and needs its own RFC and Graefe lap; until then the shape must at least decline TYPED
+(`findUnfoldableProjectedExists` is the guard that names the shape today, and it does not see
+this one).
+
+- [ ] Plan a projected EXISTS beside a WHERE-EXISTS (single table, binary join, three-leg
+  cluster; ON-EXISTS spellings fold to the WHERE form already). Query-engine gate. Pins: the
+  reproducer above returns `(1,true),(2,…)` per the fixture on every shape; the interim typed
+  decline, if landed first, names the shape.

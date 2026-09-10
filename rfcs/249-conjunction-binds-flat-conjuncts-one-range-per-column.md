@@ -267,6 +267,27 @@ replacing the all-or-nothing column.
   refuses the query (`0AF00 … q$2`); with it present the plan carries two
   `FirstOrDefault` probes.
 
+  The attachment covers the binary shape only; the same query over THREE
+  legs was refused on master and on the branch alike (`0AF00 join did not
+  ordinalize`), by the cluster gate's poison for an N-way join carrying its
+  own existential, and a projected EXISTS over such a cluster reached the
+  gathered branch, whose `gatherInnerClusterOnPredicates` returns NOTHING for
+  a root carrying ON-EXISTS — the root's ON predicates dropped with it. The
+  root cause is one spelling reaching two mechanisms: Java has no ON-EXISTS
+  at all, because `QueryVisitor.visitSimpleTable` folds every inner-join ON
+  conjunct into the WHERE of the single SelectExpression it builds, and Go's
+  `translateProjection` already did that fold — but only for a FROM with no
+  WHERE. `on_exists_fold.go` now folds an inner cluster's ON-EXISTS into the
+  WHERE wherever the translator first sees a filter (`translateFilter`,
+  `findExistsFilterUnderUnaryChain`), and the projection-level lift uses the
+  same `liftClusterOnExists` walk (so a NESTED join's ON-EXISTS lifts too);
+  every route then sees the WHERE-EXISTS shape it already plans. The
+  three-leg ON+WHERE shapes, the ON-EXISTS beside a plain WHERE, and the
+  nested-ON no-WHERE shape now answer with the right rows. Mutation-checked:
+  with the filter-level fold disabled exactly the three WHERE arms of
+  `TestFDB_ExistsInOnPlusWhereExists` redden and the two no-WHERE arms stay
+  green through the projection-level lift.
+
 * *Criterion #6 read the root only.* `inPlanPenaltyRank` penalises an
   IN-plan whose bindings never became search arguments, and it read
   `isInPlan(root)` as Java's `PlanningCostModel.compareInOperator` does. Java
@@ -373,7 +394,18 @@ is where the fold lives, not what it computes.
   existential probes. Rows, `sqldriver/exists_in_on_probe_test.go`
   (`TestFDB_ExistsInOnPlusWhereExists`): on data where dropping either EXISTS
   changes the answer, the ON+WHERE form and the WHERE+WHERE form both return
-  exactly `(2, 51)`.
+  exactly `(2, 51)`; over three legs, the EXISTS in the root join's ON, in
+  the nested join's ON, beside a plain WHERE, and with no WHERE at all each
+  return exactly the rows the WHERE+WHERE control does. Unit,
+  `query/on_exists_fold_test.go` (8 arms): the lift takes the root's and a
+  nested inner join's ON-EXISTS, keeps the other ON conjuncts, leaves an
+  untyped nil when the ON was only the EXISTS, copies every node on the path
+  and shares untouched legs, stops at an OUTER join and at a lateral unnest,
+  is the identity with nothing to lift, and the lifted cluster gathers as
+  three flat legs where the un-lifted one gathered two; the filter fold
+  appends the markers after the WHERE's own conjuncts and the subqueries
+  after the WHERE's own, and `findExistsFilterUnderUnaryChain` finds a WHERE
+  whose only existential rode the ON.
 * Unit, `cascades/in_plan_order_independence_test.go`: the wrapped
   unSARGed IN-plan ranks 1 and loses to the plain filter through the full
   chain with the "more IN-joins" rung pointing the other way; the wrapped
@@ -501,7 +533,7 @@ the two 3-second full scans, and they moved by ≤ 0.02 s.
   field-holder; it returns its inner as a child and is walked. Folded: the
   sentence names `RecordQueryCoveringIndexPlan` and
   `RecordQueryAggregateIndexPlan`, the two nil-children field-holders, both
-  wrapping an index leaf. Delta re-confirmation: see below.
+  wrapping an index leaf. Delta re-confirmation: ACK (below).
 - **Torvalds, implementation lap: NAK** (four bookkeeping defects). (1)
   `partitionAggregatePredicates`' docstring still said `a = 1 AND a = 2`
   "does not merge … both residuals", contradicted 37 lines later by the
@@ -520,4 +552,29 @@ the two 3-second full scans, and they moved by ≤ 0.02 s.
   (two one-comparison mappings fold to one alternative over a shared
   two-comparison range; a mapping over a two-comparison range is not folded
   and comes back untouched one per alternative; non-placeholder groups give
-  one per alternative). Delta re-confirmation: see below.
+  one per alternative). Delta re-confirmation: ACK ("the fold now tells
+  'incoming comparison is the residual' from 'range displaced' by reading the
+  residual list … `flattenConjuncts` is gone, a quoted grep over `pkg` finds 0
+  hits for either old name against 6 for the renamed function"); two nits
+  folded — the displacement arm now has a two-inequality case
+  (`equality_into_two_inequalities_residualises_both_in_order`) and the
+  non-placeholder group asserts each alternative's mapping by identity.
+- **Graefe, implementation delta: ACK** — "Dedups and appends go through the
+  `Complete()` arm, and a displacement can't put the incoming equality in its
+  own residuals … I checked the one-line `return nil` form of `GetChildren`
+  under `plans/` (11 non-test types): those two are the only ones that wrap
+  another plan."
+- **codex (`codex exec review --base master`): one P2** — the ON-EXISTS
+  attachment of Decision part 4 covered the binary join only; a three-leg
+  inner cluster with an ON-EXISTS beside a WHERE-EXISTS was still refused
+  (codex read the refusal as `CheckBuriedExistentialPredicate`; measured, it
+  is the cluster gate's N-way poison, and the projected-EXISTS gathered branch
+  additionally dropped the root's ON predicates). Both master and the branch
+  behaved identically on all six three-leg shapes probed, so not a regression
+  — but a real reach gap in the very mechanism the RFC was fixing. Folded as
+  the ON-EXISTS fold above, with the unit and FDB pins listed. The probe also
+  surfaced a SEPARATE pre-existing gap — a projected EXISTS beside a
+  WHERE-EXISTS fails opaquely (`Cascades planner could not plan query`) even
+  on a single table, unrelated to joins or ON — booked in `TODO.md` with the
+  reproducer; it is its own capability (the existential fold with two
+  quantifiers) and needs its own RFC.
