@@ -104,18 +104,23 @@ func TestComparisonRange_MergeIsTotal(t *testing.T) {
 		wantType      ComparisonRangeType
 		wantRange     []*Comparison // the comparisons the merged range carries, in order
 		wantResiduals []*Comparison
+		// sameRange: the result IS the receiver (the range did not move). The
+		// two arms that build a new range are the appends and the
+		// displacement; every dedup and every residual arm hands the receiver
+		// back, and a caller may read that identity as "nothing moved".
+		sameRange bool
 	}{
-		{"none_type_into_empty_is_residual", EmptyComparisonRange(), &ne7, ComparisonRangeEmpty, nil, []*Comparison{&ne7}},
-		{"in_into_equality_is_residual", equality, &in, ComparisonRangeEquality, []*Comparison{&eq5}, []*Comparison{&in}},
-		{"none_type_into_inequality_is_residual", inequality, &ne7, ComparisonRangeInequality, []*Comparison{&gt3}, []*Comparison{&ne7}},
-		{"equality_into_empty", EmptyComparisonRange(), &eq5, ComparisonRangeEquality, []*Comparison{&eq5}, nil},
-		{"inequality_into_empty", EmptyComparisonRange(), &gt3, ComparisonRangeInequality, []*Comparison{&gt3}, nil},
-		{"inequality_into_equality_is_residual", equality, &gt3, ComparisonRangeEquality, []*Comparison{&eq5}, []*Comparison{&gt3}},
-		{"same_equality_into_equality_dedups", equality, &eq5Again, ComparisonRangeEquality, []*Comparison{&eq5}, nil},
-		{"other_equality_into_equality_is_residual", equality, &eq10, ComparisonRangeEquality, []*Comparison{&eq5}, []*Comparison{&eq10}},
-		{"present_inequality_into_inequality_dedups", inequality, &gt3Again, ComparisonRangeInequality, []*Comparison{&gt3}, nil},
-		{"new_inequality_into_inequality_appends", inequality, &lt20, ComparisonRangeInequality, []*Comparison{&gt3, &lt20}, nil},
-		{"equality_into_inequality_wins_and_residualises_the_inequalities", inequality, &eq10, ComparisonRangeEquality, []*Comparison{&eq10}, []*Comparison{&gt3}},
+		{"none_type_into_empty_is_residual", EmptyComparisonRange(), &ne7, ComparisonRangeEmpty, nil, []*Comparison{&ne7}, true},
+		{"in_into_equality_is_residual", equality, &in, ComparisonRangeEquality, []*Comparison{&eq5}, []*Comparison{&in}, true},
+		{"none_type_into_inequality_is_residual", inequality, &ne7, ComparisonRangeInequality, []*Comparison{&gt3}, []*Comparison{&ne7}, true},
+		{"equality_into_empty", EmptyComparisonRange(), &eq5, ComparisonRangeEquality, []*Comparison{&eq5}, nil, false},
+		{"inequality_into_empty", EmptyComparisonRange(), &gt3, ComparisonRangeInequality, []*Comparison{&gt3}, nil, false},
+		{"inequality_into_equality_is_residual", equality, &gt3, ComparisonRangeEquality, []*Comparison{&eq5}, []*Comparison{&gt3}, true},
+		{"same_equality_into_equality_dedups", equality, &eq5Again, ComparisonRangeEquality, []*Comparison{&eq5}, nil, true},
+		{"other_equality_into_equality_is_residual", equality, &eq10, ComparisonRangeEquality, []*Comparison{&eq5}, []*Comparison{&eq10}, true},
+		{"present_inequality_into_inequality_dedups", inequality, &gt3Again, ComparisonRangeInequality, []*Comparison{&gt3}, nil, true},
+		{"new_inequality_into_inequality_appends", inequality, &lt20, ComparisonRangeInequality, []*Comparison{&gt3, &lt20}, nil, false},
+		{"equality_into_inequality_wins_and_residualises_the_inequalities", inequality, &eq10, ComparisonRangeEquality, []*Comparison{&eq10}, []*Comparison{&gt3}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -130,6 +135,25 @@ func TestComparisonRange_MergeIsTotal(t *testing.T) {
 			assertSameComparisons(t, "residuals", res.Residuals, tc.wantResiduals)
 			if res.Complete() != (len(tc.wantResiduals) == 0) {
 				t.Fatalf("Complete() = %v with residuals %v", res.Complete(), res.Residuals)
+			}
+			if (res.Range == tc.start) != tc.sameRange {
+				t.Fatalf("result is the receiver: %v, want %v — a residual or dedup arm must hand the receiver back, an append or displacement must not", res.Range == tc.start, tc.sameRange)
+			}
+			// A residual list is one of exactly two shapes: the incoming
+			// comparison alone (the range did not move), or the accumulated
+			// inequalities an equality displaced (never including the
+			// incoming). The fold reads which of the two it got off this.
+			if len(res.Residuals) > 0 {
+				incomingIsResidual := len(res.Residuals) == 1 && res.Residuals[0] == tc.incoming
+				displaced := !incomingIsResidual
+				for _, r := range res.Residuals {
+					if displaced && r == tc.incoming {
+						t.Fatalf("displacement residuals must not include the incoming comparison: %v", res.Residuals)
+					}
+				}
+				if displaced != !tc.sameRange {
+					t.Fatalf("residual shape (displaced=%v) disagrees with range movement (moved=%v)", displaced, !tc.sameRange)
+				}
 			}
 		})
 	}

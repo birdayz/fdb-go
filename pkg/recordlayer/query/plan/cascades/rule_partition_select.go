@@ -299,12 +299,12 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 	// cross products when configured to do so.
 	independentPartitioning := computeIndependentQuantifiersPartitioning(sel, fullCorrelationOrder)
 
-	// The select's flattened conjuncts, computed once: the classifier loop
+	// The select's conjuncts (its list, lifted flat by the constructor): the classifier loop
 	// consumes them per bipartition, and the disconnected-lower guard judges
 	// lower connectivity against the FULL set (any predicate touching two
 	// lower aliases connects them — including spanning N-ary predicates that
 	// can only ever live upper).
-	allPredicates := flattenConjuncts(sel.GetPredicates())
+	allPredicates := sel.GetPredicates()
 
 	// Enumerate all non-trivial bipartitions of the quantifier set.
 	// "lower" is each non-empty proper subset; "upper" is the complement.

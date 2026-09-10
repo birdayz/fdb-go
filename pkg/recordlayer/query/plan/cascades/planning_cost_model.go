@@ -912,9 +912,11 @@ func inPlanPenaltyRankOfPlan(p plans.RecordQueryPlan) int {
 			return 1
 		}
 	}
-	// A wrapper that holds its input as a field rather than a child (the
-	// covering scan, the fetch) has no IN-plan beneath it that this walk
-	// could reach, and none that can exist there: both wrap a scan.
+	// The two wrappers whose GetChildren is nil because they hold their
+	// input as a FIELD — RecordQueryCoveringIndexPlan and
+	// RecordQueryAggregateIndexPlan — both wrap an index scan leaf, so no
+	// IN-plan can exist beneath them for this walk to miss. A fetch is not
+	// one of them: it returns its inner as a child and is walked.
 	return 0
 }
 

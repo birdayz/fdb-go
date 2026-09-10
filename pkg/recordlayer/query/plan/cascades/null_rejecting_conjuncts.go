@@ -166,7 +166,7 @@ func conjunctsBetweenScanAnd(expr expressions.RelationalExpression) []predicates
 		case *expressions.FullUnorderedScanExpression:
 			return out
 		case *expressions.LogicalFilterExpression:
-			out = append(out, flattenConjuncts(typed.GetPredicates())...)
+			out = append(out, typed.GetPredicates()...)
 			inner = typed.GetInner()
 		case *expressions.LogicalProjectionExpression:
 			inner = typed.GetInner()

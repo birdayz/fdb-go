@@ -71,11 +71,10 @@ func enumerateSelectSubsumptionPredicateAlternatives(
 		[]predicates.QueryPredicate(nil),
 		translatedQueryPredicates...,
 	)
-	// Select construction can retain a top-level AndPredicate even though
-	// predicate implication is conjunct-based. Flatten after construction so
-	// candidate Placeholder leaves participate directly, while preserving
-	// their pointer identities for candidate-group coverage.
-	candidatePredicates, candidatePredicatesOK := selectSubsumptionFlattenConjunctsMaybe(
+	// The candidate's list is its conjunction (the Select constructor lifts
+	// every top-level AND), so each Placeholder leaf participates directly
+	// with its pointer identity, which candidate-group coverage keys on.
+	candidatePredicates, candidatePredicatesOK := selectSubsumptionPredicatesWellFormedMaybe(
 		append(
 			[]predicates.QueryPredicate(nil),
 			candidateSelect.GetPredicates()...,
@@ -217,9 +216,12 @@ func selectSubsumptionGroupAlternatives(
 			len(comparisonRange.GetComparisons()) != 1 {
 			// Every placeholder mapping is built by
 			// selectSubsumptionPredicateImpliedMappingMaybe over exactly one
-			// bound comparison; a mapping shaped otherwise cannot be folded,
-			// and the group enumerates one mapping per alternative as the
-			// cross product always did.
+			// bound comparison; a mapping shaped otherwise cannot be folded
+			// without dropping what the fold does not read, so the group
+			// enumerates one mapping per alternative as the cross product
+			// always did. Unreachable from the builder; pinned as a fallback
+			// (not a drop) by
+			// TestSelectSubsumptionGroupAlternatives_FoldsOnlyWellFormedPlaceholderMappings.
 			return oneEach()
 		}
 		bound = append(bound, placeholderBinding{

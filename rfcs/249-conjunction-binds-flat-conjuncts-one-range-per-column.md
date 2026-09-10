@@ -429,8 +429,95 @@ is where the fold lives, not what it computes.
 
 ### 1M stress comparison
 
-(filled in at implementation)
+Base `b6789c1a0` (the merge-base on 2026-09-10) in
+`/home/birdy/projects/fdb-baseline-pki`; head is this branch's working tree
+at the fold commit. Six sequential runs (3 base, then 3 head, never
+concurrent), 23/23 `--- PASS` on every run, load average 1.7–3.8 at each
+run's end. Per-run logs `/tmp/stress249-{base,head}{1,2,3}.log`.
+
+| query | base min of 3 (`b6789c1a0`) | head min of 3 | ratio | samples base / head |
+|---|---|---|---|---|
+| pk_lookup_first | 0.04s | 0.06s | 1.50x | 0.06/0.04/0.06 / 0.06/0.06/0.06 |
+| pk_lookup_middle | 0.01s | 0.01s | 1.00x | 0.01/0.01/0.03 / 0.01/0.01/0.02 |
+| pk_lookup_last | 0.01s | 0.01s | 1.00x | 0.01/0.01/0.01 / 0.01/0.01/0.01 |
+| index_customer_eq | 0.01s | 0.01s | 1.00x | 0.01/0.01/0.03 / 0.01/0.01/0.02 |
+| index_amount_range | 0.19s | 0.20s | 1.05x | 0.21/0.19/0.27 / 0.25/0.20/0.27 |
+| index_status_count | 0.33s | 0.34s | 1.03x | 0.41/0.42/0.33 / 0.34/0.40/0.39 |
+| full_scan_count | 3.02s | 2.97s | 0.98x | 3.02/3.03/3.06 / 2.99/2.97/2.97 |
+| full_scan_filter | 0.59s | 0.70s | 1.19x | 0.59/0.76/0.71 / 0.72/0.75/0.70 |
+| group_by_status | 0.02s | 0.01s | 0.50x | 0.04/0.02/0.03 / 0.02/0.03/0.01 |
+| group_by_status_count_only | 0.02s | 0.01s | 0.50x | 0.02/0.02/0.02 / 0.03/0.02/0.01 |
+| sum_by_status | 0.02s | 0.01s | 0.50x | 0.02/0.02/0.03 / 0.02/0.03/0.01 |
+| group_by_customer_having | 0.59s | 0.58s | 0.98x | 0.76/0.59/0.64 / 0.62/0.62/0.58 |
+| join_10_outer | 0.04s | 0.04s | 1.00x | 0.04/0.04/0.04 / 0.04/0.04/0.04 |
+| order_by_pk_full | 3.80s | 3.81s | 1.00x | 3.80/3.83/3.81 / 3.86/3.81/3.82 |
+| order_by_pk_index_filter | 0.01s | 0.01s | 1.00x | 0.01/0.01/0.01 / 0.01/0.01/0.01 |
+| scan_all_narrow | 3.62s | 3.63s | 1.00x | 3.64/3.65/3.62 / 3.64/3.66/3.63 |
+| scan_all_wide | 3.87s | 3.86s | 1.00x | 3.88/3.90/3.87 / 3.89/3.89/3.86 |
+| in_list | 0.02s | 0.02s | 1.00x | 0.02/0.02/0.02 / 0.02/0.02/0.02 |
+| needle_in_haystack_pk | 0.01s | 0.01s | 1.00x | 0.01/0.01/0.01 / 0.01/0.01/0.01 |
+| needle_in_haystack_filter | 0.01s | 0.01s | 1.00x | 0.01/0.01/0.01 / 0.01/0.01/0.01 |
+| full_scan_sparse_filter | 3.28s | 3.29s | 1.00x | 3.29/3.30/3.28 / 3.32/3.30/3.29 |
+| update_by_index | 0.01s | 0.01s | 1.00x | 0.01/0.01/0.01 / 0.01/0.01/0.01 |
+| delete_single_row | 0.01s | 0.01s | 1.00x | 0.01/0.01/0.01 / 0.01/0.01/0.01 |
+
+Every timed query's plan is identical on both sides (the stress test EXPLAINs
+its arms; `full_scan_filter` gained an EXPLAIN line in this change so its
+plan — `StreamingAgg(IndexScan(IDX_AMOUNT, [<>] COVERING))` on both sides —
+is on the record). The rows off 1.00x are all sub-100 ms point reads or
+within the sample spread: `pk_lookup_first` is the first read after the
+load, position-dependent 2x noise (0.04/0.06 on base vs 0.06 ×3 on head);
+`full_scan_filter`'s 1.19x is base's single 0.59 s outlier against 0.70–0.76 s
+on the other five samples — with n=2 per side it read 1.22x and motivated the
+third pair; the three `group_by_status*` rows are 10 ms readings of aggregate
+index probes. No planner or executor path this RFC touches is exercised by
+the two 3-second full scans, and they moved by ≤ 0.02 s.
 
 ## Review
 
-(filled in at implementation)
+- **Graefe, RFC lap: ACK with 6 conditions**, all folded (the eleven `.Ok`
+  readers enumerated with the per-site NONE-arm mapping, `MergeRange` ported,
+  three-way `scanRangeComparisonType`, the mid-fold `carriable` gate and
+  `BoundRangeCarriable` deleted in favour of the candidate's own prefix-map
+  truncation, the fixpoint paragraph, the `a > 2 AND a < 5 AND b = 3` arm).
+  Delta re-confirmation: ACK.
+- **Torvalds, RFC lap: NAK** (three holes: the unenumerated `.Ok` readers,
+  the vector candidate's raw-bindings path under a folded STARTS_WITH range,
+  the `BoundRangeCarriable` factoring drifting from the fold). All three
+  folded as above; the STARTS_WITH shape declines the candidate and is
+  pinned. Delta re-confirmation: ACK.
+- **Graefe, implementation lap: ACK with 2 conditions.** (1) The fold
+  discriminated residual from displacement by receiver identity
+  (`res.Range == merged`), which only the nil arm pinned; a defensive copy
+  on the equality-vs-equality residual arm would have made the fold take the
+  displacement branch, mark the second equality matched and never re-apply
+  it — wrong rows, green suite. Folded: the fold reads the residual list
+  (`len==1 && Residuals[0]==incoming` is "incoming is the residual", anything
+  else is the displacement), and `TestComparisonRange_MergeIsTotal` now pins
+  per arm both receiver identity (every residual and dedup arm hands the
+  receiver back; the appends and the displacement do not) and that the
+  residual list is one of exactly those two shapes. (2) The
+  `inPlanPenaltyRankOfPlan` scope sentence named the fetch as a
+  field-holder; it returns its inner as a child and is walked. Folded: the
+  sentence names `RecordQueryCoveringIndexPlan` and
+  `RecordQueryAggregateIndexPlan`, the two nil-children field-holders, both
+  wrapping an index leaf. Delta re-confirmation: see below.
+- **Torvalds, implementation lap: NAK** (four bookkeeping defects). (1)
+  `partitionAggregatePredicates`' docstring still said `a = 1 AND a = 2`
+  "does not merge … both residuals", contradicted 37 lines later by the
+  fold's own comment — rewritten. (2) The fetch sentence, as Graefe (2). (3)
+  `flattenConjuncts` was dead at all five sites (every site reads
+  `GetPredicates()` and both implementors lift in their constructors) and
+  its "stays for a hand-built list" justification was false — the function
+  and all five calls deleted; the same AND arm in
+  `selectSubsumptionFlattenConjunctsMaybe` deleted and the function renamed
+  `selectSubsumptionPredicatesWellFormedMaybe`, which is what it does (the
+  typed-nil fail-closed preflight); the four call-site comments that said
+  "flatten" now say the constructor lifts. (4) The `oneEach()` fallback in
+  `selectSubsumptionGroupAlternatives` was an untested silent degradation on
+  an unreachable shape — pinned by
+  `TestSelectSubsumptionGroupAlternatives_FoldsOnlyWellFormedPlaceholderMappings`
+  (two one-comparison mappings fold to one alternative over a shared
+  two-comparison range; a mapping over a two-comparison range is not folded
+  and comes back untouched one per alternative; non-placeholder groups give
+  one per alternative). Delta re-confirmation: see below.

@@ -532,9 +532,9 @@ type aggregatePredicatePartition struct {
 //
 // Scan bounds: every comparison on a grouping column whose other side reads
 // no field (groupColComparisonIndex) is FOLDED per column through
-// ComparisonRange.Merge — `a > 5 AND a < 10` is one range; `a = 1 AND a = 2`
-// does not merge, so that column gets no range and both predicates are
-// residuals. The candidate's ComputeBoundParameterPrefixMap then truncates the
+// foldPlaceholderBindings — `a > 5 AND a < 10` is one range; `a = 1 AND a > 0`
+// and `a = 1 AND a = 2` bind the equality and re-apply the other comparison
+// as a residual. The candidate's ComputeBoundParameterPrefixMap then truncates the
 // folds to the leading run the scan can apply (equalities, then at most one
 // inequality — the port of Java's MatchCandidate.computeBoundParameterPrefixMap);
 // ToScanPlan itself breaks only on an ABSENT column, never after an inequality,
@@ -974,8 +974,8 @@ type aggregateFilterPredicate struct {
 // per distinct predicate. Without the dedup every compensation member
 // contributed its copy, the per-column fold made each copy a residual, and
 // `a = 1 AND a > 0 GROUP BY a` carried four residuals above the aggregate
-// scan and lost on cost to a full scan. Conjunctions arrive flat from the
-// filter constructor; flattenConjuncts stays for a hand-built list.
+// scan and lost on cost to a full scan. A filter's list is already its
+// conjunction (the constructor lifts every top-level AND).
 func extractInnerFilterPredicates(ref *expressions.Reference) []aggregateFilterPredicate {
 	var result []aggregateFilterPredicate
 	for _, m := range ref.Members() {
@@ -984,7 +984,7 @@ func extractInnerFilterPredicates(ref *expressions.Reference) []aggregateFilterP
 			continue
 		}
 		input := f.GetInner().GetAlias()
-		for _, p := range flattenConjuncts(f.GetPredicates()) {
+		for _, p := range f.GetPredicates() {
 			dup := false
 			for _, existing := range result {
 				if existing.input == input && predicates.StructurallyEqual(existing.pred, p) {

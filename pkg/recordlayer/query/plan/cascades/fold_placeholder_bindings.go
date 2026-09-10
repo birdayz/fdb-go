@@ -51,12 +51,16 @@ func foldPlaceholderBindings(bound []placeholderBinding) (*predicates.Comparison
 			members = append(members, b)
 			continue
 		}
-		if res.Range == merged {
-			// The range did not move: the incoming comparison is the residual.
+		// Which side the residuals are on is read off the residual list
+		// itself, never off range identity: the incoming comparison is either
+		// the sole residual (the range did not move) or an equality that
+		// displaced every accumulated inequality (the residuals are those, and
+		// the range is the equality alone). Merge's arm table admits no third
+		// outcome; the Merge tests pin that the residual list is exactly one
+		// of these two.
+		if len(res.Residuals) == 1 && res.Residuals[0] == b.comparison {
 			continue
 		}
-		// An equality displaced the accumulated inequalities: the range is the
-		// equality alone and every earlier member is now a residual.
 		merged = res.Range
 		members = []placeholderBinding{b}
 	}

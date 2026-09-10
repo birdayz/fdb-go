@@ -244,7 +244,7 @@ func matchIntermediateWithCandidate(
 		matchSingleSourceAgainstSelect(
 			call,
 			qe,
-			flattenConjuncts(qe.GetPredicates()),
+			qe.GetPredicates(),
 			cs,
 			candidate,
 			candidateRef,
@@ -388,13 +388,13 @@ func matchSelectSubsumption(
 					if !ok {
 						return true
 					}
-					originalPredicates, ok := selectSubsumptionFlattenConjunctsMaybe(
+					originalPredicates, ok := selectSubsumptionPredicatesWellFormedMaybe(
 						querySelect.GetPredicates(),
 					)
 					if !ok {
 						return true
 					}
-					translatedPredicates, ok = selectSubsumptionFlattenConjunctsMaybe(
+					translatedPredicates, ok = selectSubsumptionPredicatesWellFormedMaybe(
 						translatedPredicates,
 					)
 					if !ok ||
@@ -1467,21 +1467,6 @@ func columnPathListsMatch(a, b []values.Value) bool {
 		}
 	}
 	return true
-}
-
-// flattenConjuncts recursively expands AndPredicates into their
-// constituent conjuncts. [AND(a, b), c] → [a, b, c]. Non-AND
-// predicates pass through unchanged.
-func flattenConjuncts(preds []predicates.QueryPredicate) []predicates.QueryPredicate {
-	var result []predicates.QueryPredicate
-	for _, p := range preds {
-		if and, ok := p.(*predicates.AndPredicate); ok {
-			result = append(result, flattenConjuncts(and.SubPredicates)...)
-		} else {
-			result = append(result, p)
-		}
-	}
-	return result
 }
 
 var _ ExpressionRule = (*MatchIntermediateRule)(nil)

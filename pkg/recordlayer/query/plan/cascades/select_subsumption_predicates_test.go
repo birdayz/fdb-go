@@ -948,3 +948,67 @@ func TestSelectSubsumptionPredicateAlternativesBuildersAreLazyStableAndStoppable
 		t.Fatalf("stopped enumeration visited %d builders, want 1", visits)
 	}
 }
+
+// TestSelectSubsumptionGroupAlternatives_FoldsOnlyWellFormedPlaceholderMappings
+// pins the shape selectSubsumptionGroupAlternatives folds and the one it
+// refuses to. Every placeholder mapping the implication builder produces
+// carries exactly ONE bound comparison, and a group of those folds into a
+// single alternative over the merged range. A mapping shaped otherwise — a
+// range holding two comparisons, or a non-comparison translated predicate —
+// cannot be folded without silently dropping what the fold does not read, so
+// the group falls back to one mapping per alternative, the cross product as
+// it always was. That fallback is unreachable from the builder today; this
+// pins that it stays a fallback and not a drop.
+func TestSelectSubsumptionGroupAlternatives_FoldsOnlyWellFormedPlaceholderMappings(t *testing.T) {
+	t.Parallel()
+	candidateAlias := values.NamedCorrelationIdentifier("candidate")
+	parameterAlias := values.NamedCorrelationIdentifier("parameter")
+	placeholder := predicates.NewPlaceholder(parameterAlias, selectSubsumptionTestField(candidateAlias, "x"))
+	gt := predicates.NewComparisonPredicate(
+		selectSubsumptionTestField(candidateAlias, "x"),
+		predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(1)),
+	)
+	lt := predicates.NewComparisonPredicate(
+		selectSubsumptionTestField(candidateAlias, "x"),
+		predicates.NewLiteralComparison(predicates.ComparisonLessThan, int64(9)),
+	)
+	oneComparison := func(cp *predicates.ComparisonPredicate) *predicates.ComparisonRange {
+		return predicates.EmptyComparisonRange().Merge(&cp.Comparison).Range
+	}
+	wellFormed := []*PredicateMapping{
+		selectSubsumptionSargableMapping(gt, gt, placeholder, oneComparison(gt)),
+		selectSubsumptionSargableMapping(lt, lt, placeholder, oneComparison(lt)),
+	}
+	alternatives := selectSubsumptionGroupAlternatives(placeholder, wellFormed)
+	if len(alternatives) != 1 || len(alternatives[0]) != 2 {
+		t.Fatalf("two one-comparison mappings must fold into ONE alternative of two members, got %d alternatives", len(alternatives))
+	}
+	if alternatives[0][0].GetComparisonRange() != alternatives[0][1].GetComparisonRange() ||
+		len(alternatives[0][0].GetComparisonRange().GetComparisons()) != 2 {
+		t.Fatal("the fold's members must share one merged range carrying both comparisons")
+	}
+
+	twoComparisons := predicates.MergeAll([]*predicates.Comparison{&gt.Comparison, &lt.Comparison}).Range
+	malformed := []*PredicateMapping{
+		selectSubsumptionSargableMapping(gt, gt, placeholder, twoComparisons),
+		selectSubsumptionSargableMapping(lt, lt, placeholder, oneComparison(lt)),
+	}
+	alternatives = selectSubsumptionGroupAlternatives(placeholder, malformed)
+	if len(alternatives) != 2 || len(alternatives[0]) != 1 || len(alternatives[1]) != 1 {
+		t.Fatalf("a mapping over a two-comparison range must not be folded; want one mapping per alternative, got %v", alternatives)
+	}
+	if alternatives[0][0] != malformed[0] || alternatives[1][0] != malformed[1] {
+		t.Fatal("the fallback must hand back the mappings as given, untouched")
+	}
+
+	// A non-placeholder candidate is never folded: one mapping per alternative.
+	tautology := predicates.NewConstantPredicate(predicates.TriTrue)
+	residuals := []*PredicateMapping{
+		RegularMappingBuilder(gt, gt, tautology).Build(),
+		RegularMappingBuilder(lt, lt, tautology).Build(),
+	}
+	alternatives = selectSubsumptionGroupAlternatives(tautology, residuals)
+	if len(alternatives) != 2 {
+		t.Fatalf("non-placeholder group: want 2 alternatives, got %d", len(alternatives))
+	}
+}

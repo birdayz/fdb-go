@@ -183,18 +183,17 @@ func (r *PartitionBinarySelectRule) tryPartition(
 	var leftPredicates []predicates.QueryPredicate
 	var rightPredicates []predicates.QueryPredicate
 
-	// Route each CONJUNCT independently, not the predicate list opaquely. Go
-	// stores a multi-conjunct WHERE as a single AndPredicate; Java's
-	// SelectExpression keeps a FLAT conjunct list, so Java's identical routing
-	// loop splits `o.fk = c.id AND o.id = 5` into a join conjunct (→ the inner
-	// leg, creating the correlation) and a selective conjunct (→ the outer leg,
-	// where it SARGs the driver's scan). Without flattening, the whole And —
-	// correlated to BOTH sides — lands on one leg, so the selective conjunct
-	// never reaches the outer leg as a separate SARGable predicate and the driver
-	// stays a full scan (the index-nested-loop's selective driver is lost; this is
-	// the selective-driver SARG the retired tryFlatMapPlan used to hand-roll).
-	// PartitionSelectRule (the ≥3-way twin) already flattens the same way.
-	for _, pred := range flattenConjuncts(sel.GetPredicates()) {
+	// Route each CONJUNCT independently, not the predicate list opaquely. The
+	// Select's list IS its flat conjunct list — the constructor lifts every
+	// top-level AND, as Java's SelectExpression does — so Java's identical
+	// routing loop splits `o.fk = c.id AND o.id = 5` into a join conjunct (→
+	// the inner leg, creating the correlation) and a selective conjunct (→ the
+	// outer leg, where it SARGs the driver's scan). Routed as one And —
+	// correlated to BOTH sides — the whole predicate would land on one leg and
+	// the selective conjunct would never reach the outer leg as a separate
+	// SARGable predicate, leaving the driver a full scan (the index-nested-
+	// loop's selective driver the retired tryFlatMapPlan used to hand-roll).
+	for _, pred := range sel.GetPredicates() {
 		correlatedTo := predicates.GetCorrelatedToOfPredicate(pred)
 		if _, ok := correlatedTo[rightAlias]; ok {
 			rightPredicates = append(rightPredicates, pred)

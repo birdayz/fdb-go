@@ -549,6 +549,7 @@ func runStressSuite(t *testing.T, suffix string, n int) {
 		}
 	})
 	t.Run("full_scan_filter", func(t *testing.T) {
+		h.explain(t, "SELECT COUNT(*) FROM orders WHERE amount > 5000")
 		r := h.timeQuery("SELECT COUNT(*) FROM orders WHERE amount > 5000")
 		r.mustSucceed(t, "full scan filter amount>5000")
 	})
