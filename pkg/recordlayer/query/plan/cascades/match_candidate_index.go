@@ -824,6 +824,11 @@ func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
 	// coordinate is the LAST index column, the count is full even though the
 	// claim stops there.
 	suffixCarried := true
+	// The per-coordinate "could this hold a signed zero" question, answered by
+	// the physical key type first and the layout second — the plan side's
+	// splitKeyOrder asks the same function, which is what keeps the two
+	// derivations classifying every coordinate alike.
+	columnCouldBeFloat := plans.IndexColumnCouldBeFloat(c.keyComponentTypes, c.orderingKeyLayout(), c.columnNames)
 	for _, paramID := range sortParameterIDs {
 		idx := -1
 		for i, alias := range c.sargableAliases {
@@ -867,9 +872,14 @@ func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
 		// is FIXED, not sorted, so it claims no order and the columns after it
 		// stay claimable. The duplicate-producing arm above does NOT cover this
 		// — it is gated on duplicateProducingColumns[idx] and never sees an
-		// ordinary column. Ask the plan-side authorities instead, the same ones
-		// equalityPrefixLen consults, so the two derivations cannot classify a
-		// column differently.
+		// ordinary column. Ask the plan-side authorities instead — the same
+		// EqualityBoundCoordinateClaimsOwnOrder / EqualityPinsSinglePhysicalKey
+		// OnColumn pair splitKeyOrder consults, fed the same per-coordinate
+		// type answer (IndexColumnCouldBeFloat) — so the two derivations
+		// classify every coordinate alike: a widened equality claims its own
+		// order on both sides (SORTED there), a pinned equality is FIXED on both
+		// sides even after a widened one, and nothing after a widened
+		// coordinate is claimed sorted on either.
 		//
 		// TWO questions, deliberately asked separately, because a signed-zero
 		// float equality answers them differently and answering both with one
@@ -902,10 +912,21 @@ func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
 		// operand-only predicate reads as "not a float" and pins on — so the
 		// per-binding leg advertised a PK order the runtime signed-zero widening
 		// does not deliver. Ask the column-aware authority, the same one the
-		// plans-side derivation now asks, so neither half can classify this
-		// coordinate differently from the other.
-		carriesTheSuffix := canExtend ||
-			plans.EqualityPinsSinglePhysicalKeyOnColumn(cr, true)
+		// plans-side derivation asks per coordinate (splitKeyOrder's pins), so
+		// neither half can classify this coordinate differently from the other.
+		pinsOneKey := plans.EqualityPinsSinglePhysicalKeyOnColumn(cr, columnCouldBeFloat(idx))
+		carriesTheSuffix := canExtend || pinsOneKey
+		// Past a coordinate that does not carry the suffix, only a coordinate
+		// PINNED to one physical key may still be emitted: every admitted row
+		// carries its one value within every block of the widened coordinate,
+		// so it is FIXED everywhere in the stream (`d = 0.0 AND b = 1` binds B
+		// FIXED; the plan-side rich form says the same). A coordinate that is
+		// merely sorted, or itself widened, restarts at each block boundary and
+		// is not ordered across the stream, so it ends the claim here — and the
+		// PK suffix stays refused (suffixCarried) whatever follows.
+		if !suffixCarried && !pinsOneKey {
+			break
+		}
 		if !claimsOwnOrder {
 			break
 		}
@@ -922,19 +943,18 @@ func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
 
 		parts = append(parts, NewMatchedOrderingPart(paramID, colValue, cr, sortOrder))
 
-		// Emitted, but nothing may claim order THROUGH it. Breaking AFTER the
-		// append rather than before is the whole point of the split: the
-		// coordinate keeps its own claim. The PK suffix, however, must still be
-		// refused — the equality spans two physical blocks, so a later column
-		// restarts at the boundary and is not ordered across them (do not call
-		// this a "tie class": for signed zeros the two comparators disagree, so
-		// the admitted rows are two sort values, not one) — and breaking alone
-		// does not refuse it: the
-		// gate below counts emitted parts against the key length, and this
-		// coordinate has now been counted. Record the refusal explicitly.
+		// Emitted, but nothing may claim order THROUGH it. Recording the
+		// refusal AFTER the append rather than breaking before it is the whole
+		// point of the split: the coordinate keeps its own claim. The PK
+		// suffix, however, must be refused — the equality spans two physical
+		// blocks, so a later sorted column restarts at the boundary and is not
+		// ordered across them (do not call this a "tie class": for signed zeros
+		// the two comparators disagree, so the admitted rows are two sort
+		// values, not one) — and the loop continuing for pinned coordinates
+		// does not refuse it either: the gate below counts emitted parts
+		// against the key length, and a fully pinned tail fills that count.
 		if !carriesTheSuffix {
 			suffixCarried = false
-			break
 		}
 	}
 

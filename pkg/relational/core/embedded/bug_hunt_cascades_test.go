@@ -83,16 +83,19 @@ func TestBugHunt_AggregateIndexMultiKeyResidual(t *testing.T) {
 CREATE TABLE T (id BIGINT, a STRING, b STRING, c STRING, v BIGINT, PRIMARY KEY (id))
 CREATE INDEX sum_abc AS SELECT SUM(v) FROM T GROUP BY a, b, c`
 
-	// Must NOT use the aggregate index — the residual can't be faithfully bound.
-	// (and_wrapped: `a=x AND b=y` is a single AndPredicate the bound-builder can't
-	// decompose, so it conservatively falls back to StreamingAgg — correct rows;
-	// binding it via the index is a perf follow-up that needs conjunct flattening.
-	// Crucially the PRE-fix code used an *unbounded* aggregate index here and
-	// dropped both conjuncts → wrong groups; the guard now declines it.)
+	// Must NOT use the aggregate index — the rule has no residual, so a
+	// predicate it cannot bind would be dropped. Java re-applies such a
+	// grouping-column equality as a residual over the aggregate scan instead of
+	// declining; TODO.md section 3, "Aggregate data access: a grouping-key
+	// equality outside the bound prefix should be a residual", carries that
+	// follow-on and flips these two arms when it lands.
+	// (gap_in_prefix arrives as one AndPredicate; the guard flattens it and sees
+	// the gap at b. Before conjunct flattening the PRE-guard code used an
+	// *unbounded* aggregate index here and dropped both conjuncts → wrong
+	// groups.)
 	mustDecline := []struct{ name, sql string }{
 		{"non_leading_key", "SELECT a, b, c, SUM(v) FROM t WHERE b = 'x' GROUP BY a, b, c"},
 		{"gap_in_prefix", "SELECT a, b, c, SUM(v) FROM t WHERE a = 'x' AND c = 'z' GROUP BY a, b, c"},
-		{"and_wrapped_multi_equality", "SELECT a, b, c, SUM(v) FROM t WHERE a = 'x' AND b = 'y' GROUP BY a, b, c"},
 	}
 	for _, tc := range mustDecline {
 		t.Run(tc.name, func(t *testing.T) {
@@ -107,18 +110,27 @@ CREATE INDEX sum_abc AS SELECT SUM(v) FROM T GROUP BY a, b, c`
 		})
 	}
 
-	// A single leading-prefix equality IS a faithful scan bound → index is used.
-	t.Run("leading_prefix_one", func(t *testing.T) {
-		const sql = "SELECT a, b, c, SUM(v) FROM t WHERE a = 'x' GROUP BY a, b, c"
-		plan, err := PlanQueryForTest(sql, schema, nil)
-		if err != nil {
-			t.Fatalf("plan: %v", err)
-		}
-		t.Logf("plan: %s", plan)
-		if !strings.Contains(plan, "AggregateIndex") {
-			t.Errorf("leading-prefix equality should use the aggregate index\n  sql: %s\n  plan: %s", sql, plan)
-		}
-	})
+	// A contiguous leading-prefix equality run IS a faithful scan bound → index
+	// is used, whether it is one conjunct or several. `a = 'x' AND b = 'y'`
+	// arrives as ONE AndPredicate; the guard and the bound builder both read its
+	// flattened conjuncts (Java's SelectExpression holds them flat), so both
+	// bind. Reading the conjunction whole used to decline it to a full scan.
+	for _, tc := range []struct{ name, sql string }{
+		{"leading_prefix_one", "SELECT a, b, c, SUM(v) FROM t WHERE a = 'x' GROUP BY a, b, c"},
+		{"and_wrapped_leading_prefix_two", "SELECT a, b, c, SUM(v) FROM t WHERE a = 'x' AND b = 'y' GROUP BY a, b, c"},
+		{"and_wrapped_every_key_bound", "SELECT a, b, c, SUM(v) FROM t WHERE a = 'x' AND b = 'y' AND c = 'z' GROUP BY a, b, c"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			plan, err := PlanQueryForTest(tc.sql, schema, nil)
+			if err != nil {
+				t.Fatalf("plan: %v", err)
+			}
+			t.Logf("plan: %s", plan)
+			if !strings.Contains(plan, "AggregateIndex") {
+				t.Errorf("leading-prefix equality run should use the aggregate index\n  sql: %s\n  plan: %s", tc.sql, plan)
+			}
+		})
+	}
 }
 
 // HAVING-PUSHDOWN: a HAVING predicate that references an aggregate must NOT be

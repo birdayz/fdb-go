@@ -41,15 +41,29 @@ import (
 //
 // UNREACHABLE TODAY — DELIBERATELY KEPT
 //
-// The 9 delegator HintOrdering bodies, the 9 OrderingSourceRef methods, and
-// the 4 HintRichOrdering bodies below are WRITE-ONLY: nothing in production
-// calls them. Every ordering question the memo asks still goes to the
-// physical wrapper. They are staging for the wrapper deletion that would flip
-// the caller over — and that deletion is BLOCKED, by RFC-183 §11: four rules
-// build compensating plans they never memoize, so a plan's quantifier and its
-// plan pointer are two DIFFERENT facts (what the memo costs vs. what
-// executes), and collapsing them drops DefaultOnEmpty wrappers and residual
-// filters silently. Until those rules memoize, these bodies stay unreachable.
+// The 9 delegator HintOrdering bodies and the 9 OrderingSourceRef methods
+// below are WRITE-ONLY: nothing in production calls them. Every ordering
+// question the memo asks still goes to the physical wrapper. They are staging
+// for the wrapper deletion that would flip the caller over — and that
+// deletion is BLOCKED, by RFC-183 §11: four rules build compensating plans
+// they never memoize, so a plan's quantifier and its plan pointer are two
+// DIFFERENT facts (what the memo costs vs. what executes), and collapsing them
+// drops DefaultOnEmpty wrappers and residual filters silently. Until those
+// rules memoize, these bodies stay unreachable.
+//
+// The HintRichOrdering bodies are NOT write-only, and which of them is reached
+// is decided by memo residency, not by a list kept here: computeWrapperRichOrdering
+// (cascades/plan_properties.go) dispatches to the rich form of ANY memo
+// expression that implements it, and every plan with a rich form in this
+// package — the five below and RecordQueryCoveringIndexPlan's, which
+// delegates to the index scan's — also implements physicalPlanExpression
+// (GetRecordQueryPlan). The PK scan, the index scan and the vector scan are
+// memoized bare by the data-access rule (cascades/abstract_data_access_rule.go,
+// RFC-184 W2); the aggregate plan is memoized directly (physical_wrapper.go,
+// IsPhysicalAggregateIndex); the covering scan and the fetch are memo
+// expressions of their own; and a plan the scanPlanExpression leaf wraps (a
+// TypeFilter over a scan) is reached through that leaf's delegation
+// (orderingSourceOfDataAccessPlan). Treat every rich body below as LIVE.
 //
 // They are kept rather than deleted because re-deriving them at deletion time
 // is where a transcription slip would land, and the parity tests in
@@ -69,10 +83,10 @@ import (
 //   - ASK, because their order IS the tuple-key order:
 //     RecordQueryScanPlan.HintOrdering (via PKScanOrdering),
 //     RecordQueryIndexPlan.HintOrdering, both of their HintRichOrdering forms,
-//     RecordQueryStreamingAggregationPlan.HintOrdering and
-//     RecordQueryAggregateIndexPlan.HintOrdering. The last two claim GROUP
-//     order, which is the group column's key order and therefore the same
-//     hazard one level up.
+//     RecordQueryStreamingAggregationPlan.HintOrdering, and both forms of
+//     RecordQueryAggregateIndexPlan (HintOrdering and HintRichOrdering, through
+//     splitKeyOrder). The last three claim GROUP order, which is the group
+//     column's key order and therefore the same hazard one level up.
 //
 //   - DOES NOT ASK, and must not: RecordQueryInMemorySortPlan.HintOrdering. It
 //     restates the keys it sorted BY, with the comparator. Its claim is true by
@@ -268,11 +282,14 @@ func (p *RecordQueryScanPlan) HintOrdering() properties.Ordering {
 }
 
 // equalityPrefixLen returns the length of the leading equality-bound prefix
-// in comps, capped at n key positions. It is the SINGLE SOURCE OF TRUTH both
-// ordering derivations below consult — HintOrdering drops this prefix from
-// the ordering keys, HintRichOrdering retains it as FixedBinding entries —
-// so the two cannot classify a column differently by one caller's loop
-// breaking where the other's does not.
+// in comps, capped at n key positions, read from the operand alone. It is what
+// the PRIMARY-KEY scan's two ordering derivations consult (PKScanOrdering
+// drops this prefix from the ordering keys, RecordQueryScanPlan.
+// HintRichOrdering retains it as FixedBinding entries), so the two cannot
+// classify a column differently by one caller's loop breaking where the
+// other's does not. The index and aggregate scans, whose coordinates carry
+// physical key types, ask the column-aware per-coordinate form instead
+// (splitKeyOrder's pins).
 //
 // Mirrors Java's ValueIndexLikeMatchCandidate.computeOrderingFromScanComparisons,
 // whose equality prefix is scanComparisons.getEqualitySize(): a leading run
@@ -299,29 +316,9 @@ func (p *RecordQueryScanPlan) HintOrdering() properties.Ordering {
 // equality past a gap), but the helper defines it anyway rather than leaving
 // it to whichever caller's loop happens to run first.
 func equalityPrefixLen(comps []*predicates.ComparisonRange, n int) int {
-	return equalityPrefixLenOnColumns(comps, n, nil)
-}
-
-// equalityPrefixLenOnColumns is equalityPrefixLen for a caller that can resolve
-// each coordinate's type. columnCouldBeFloat reports, per key position, whether
-// that coordinate can hold a signed zero; a nil func means "unknown", which
-// falls back to the operand-only reading.
-//
-// Threading the column type is what lets a FLOAT coordinate bound by an
-// UNKNOWN-typed operand (an IN-list binding) stop the prefix while an INT
-// coordinate bound by the same untyped operand keeps it. Deciding that from the
-// operand alone cannot separate the two — see
-// EqualityPinsSinglePhysicalKeyOnColumn.
-func equalityPrefixLenOnColumns(comps []*predicates.ComparisonRange, n int, columnCouldBeFloat func(int) bool) int {
 	prefix := 0
 	for i := 0; i < n && i < len(comps); i++ {
-		var pins bool
-		if columnCouldBeFloat == nil {
-			pins = EqualityPinsSinglePhysicalKey(comps[i])
-		} else {
-			pins = EqualityPinsSinglePhysicalKeyOnColumn(comps[i], columnCouldBeFloat(i))
-		}
-		if !pins {
+		if !EqualityPinsSinglePhysicalKey(comps[i]) {
 			break
 		}
 		prefix = i + 1
@@ -356,9 +353,12 @@ func ownOrderPrefixLen(comps []*predicates.ComparisonRange, n int) int {
 	return prefix
 }
 
-// indexColumnCouldBeFloat resolves each index key column against the scan's
+// IndexColumnCouldBeFloat resolves each index key column against the scan's
 // flowed record layout and reports whether it can hold a signed zero. It is the
-// per-position input equalityPrefixLenOnColumns needs, and it delegates to
+// per-position input splitKeyOrder's pins need, and the cascades-side match
+// candidate asks the SAME function for its matched ordering parts
+// (ValueIndexScanMatchCandidate.ComputeMatchedOrderingParts), so the two
+// derivations cannot classify a coordinate differently. It delegates to
 // values.ColumnCouldBeFloat so the float classification stays in the one file
 // that owns it.
 //
@@ -371,7 +371,7 @@ func ownOrderPrefixLen(comps []*predicates.ComparisonRange, n int) int {
 // makes this whole fix INERT on such a plan. ColumnCouldBeFloat fails closed
 // instead; see its comment for why a burden-of-proof direction cannot be
 // inverted.
-func indexColumnCouldBeFloat(
+func IndexColumnCouldBeFloat(
 	keyTypes []values.Type, layout values.Type, columnNames []string,
 ) func(int) bool {
 	return func(i int) bool {
@@ -754,6 +754,70 @@ func PKScanOrdering(plan *RecordQueryScanPlan) properties.Ordering {
 	return properties.Ordering{IsKnown: true, Keys: keys, Descending: desc}
 }
 
+// keyOrderSplit is how a scan's key order is read off its comparisons: the
+// leading coordinates the scan FIXES, and the SORTED tail it delivers in key
+// order. One derivation, shared by the value index (plain and rich forms) and
+// the aggregate index's grouping key, because a second hand-rolled copy of it
+// is how the plain and rich forms once disagreed on the same plan.
+//
+//   - fixedLen: the leading prefix bound by ANY equality (ownOrderPrefixLen).
+//   - pins[i], for i < fixedLen: whether coordinate i is PINNED to one
+//     physical key — EqualityPinsSinglePhysicalKeyOnColumn, asked with the
+//     coordinate's type so a FLOAT bound by an untyped operand (an IN binding
+//     that may be zero at runtime) does not pin. Only a pinned coordinate may
+//     be bound FIXED: a fixed binding claims "no order, any requested
+//     direction is satisfied", which is true of exactly one physical key. A
+//     prefix coordinate that does NOT pin — a signed-zero constant, or a
+//     possibly-zero operand on a float column — keeps its OWN order in the
+//     scan's direction (the range set opens its blocks in key order), but
+//     nothing after it is globally ordered. This is a PER-COORDINATE fact,
+//     not a prefix length: under `d = 0.0 AND b = 1` the widened D does not
+//     pin, and B still does — every admitted row carries b = 1, one physical
+//     key within each of D's blocks — so B binds FIXED and `ORDER BY b DESC`
+//     is free over a forward scan. Reading pins as the length of the leading
+//     pinned run demoted B to SORTED and cost that plan.
+//   - tail: the sorted coordinates after the prefix — the remaining key
+//     columns then suffix — truncated at the first FLOAT/DOUBLE (NaN packs
+//     into two disjoint blocks, and the tie class it forms leaves every later
+//     coordinate unordered within it). Empty when tailDropped.
+//   - tailDropped: some prefix coordinate does not pin. The tail is dropped
+//     WHOLESALE rather than truncated by type: a later coordinate restarts at
+//     each block boundary of the widened prefix coordinate.
+//   - untruncated: the tail's length before the float truncation, for callers
+//     that must know whether the claim covers the whole storage key.
+type keyOrderSplit struct {
+	fixedLen    int
+	pins        []bool
+	tail        []string
+	tailDropped bool
+	untruncated int
+}
+
+func splitKeyOrder(
+	comps []*predicates.ComparisonRange,
+	keyColumns, suffix []string,
+	keyTypes []values.Type, layout values.Type,
+) keyOrderSplit {
+	split := keyOrderSplit{fixedLen: ownOrderPrefixLen(comps, len(keyColumns))}
+	couldBeFloat := IndexColumnCouldBeFloat(keyTypes, layout, keyColumns)
+	split.pins = make([]bool, split.fixedLen)
+	for i := range split.pins {
+		split.pins[i] = EqualityPinsSinglePhysicalKeyOnColumn(comps[i], couldBeFloat(i))
+		if !split.pins[i] {
+			split.tailDropped = true
+		}
+	}
+	if split.tailDropped {
+		return split
+	}
+	tail := make([]string, 0, len(keyColumns)-split.fixedLen+len(suffix))
+	tail = append(tail, keyColumns[split.fixedLen:]...)
+	tail = append(tail, suffix...)
+	split.untruncated = len(tail)
+	split.tail = tail[:claimableNameLimit(layout, tail)]
+	return split
+}
+
 // HintOrdering: an index scan produces rows in index-key order for the
 // non-equality-bound suffix columns, extended by the trimmed primary-key
 // suffix (index entries are (index key, primary key), so the PK columns
@@ -777,30 +841,10 @@ func (p *RecordQueryIndexPlan) HintOrdering() properties.Ordering {
 		return properties.Ordering{}
 	}
 	columnNames, pkColumnNames := p.GetColumnNames(), p.GetPKColumnNames()
-	comps := p.GetScanComparisons()
-	firstNonEq := equalityPrefixLenOnColumns(comps, len(columnNames),
-		indexColumnCouldBeFloat(p.GetKeyComponentTypes(), p.GetFlowedType(), columnNames))
 	rev := p.IsReverse()
-	// The SORTED coordinates, in order: the non-equality-bound index columns
-	// followed by the trimmed PK suffix. The claim is truncated at the first
-	// FLOAT/DOUBLE among them — an index on a double column does NOT deliver
-	// its own key order (NaN packs into two disjoint blocks), and because all
-	// NaNs are one logical tie class split across those blocks, the PK suffix
-	// after it is not ordered within the tie either.
-	// A coordinate bound by an equality that spans BOTH signed zeros stays in
-	// that prefix — the range set opens its two blocks in key order, so a sort on
-	// it is satisfied in the scan's direction, NOT because it admits one logical
-	// value (it admits two distinct sort values; see
-	// EqualityBoundCoordinateClaimsOwnOrder) — but nothing after it is globally
-	// ordered, so the sorted tail goes away entirely rather than being truncated
-	// by type.
-	fixedLen := ownOrderPrefixLen(comps, len(columnNames))
-	sorted := make([]string, 0, len(columnNames)-fixedLen+len(pkColumnNames))
-	if fixedLen == firstNonEq {
-		sorted = append(sorted, columnNames[fixedLen:]...)
-		sorted = append(sorted, TrimmedPKSuffix(columnNames, pkColumnNames)...)
-		sorted = sorted[:claimableNameLimit(p.GetFlowedType(), sorted)]
-	}
+	split := splitKeyOrder(p.GetScanComparisons(), columnNames,
+		TrimmedPKSuffix(columnNames, pkColumnNames), p.GetKeyComponentTypes(), p.GetFlowedType())
+	sorted := split.tail
 	if len(sorted) == 0 {
 		return properties.Ordering{}
 	}
@@ -1257,13 +1301,30 @@ func orderProducingScanIsReverse(plan RecordQueryPlan) bool {
 // as groupColLayout from the match candidate's base record type. With none
 // (a multi-record-type index), the predicate's fail-open direction applies and
 // the claim stands, exactly as it does for an untyped index scan.
+//
+// A grouping prefix the scan binds by EQUALITY contributes no sort position:
+// every emitted group shares that value, so the group order is the order of
+// the columns AFTER it, and `WHERE b = 1 GROUP BY b, a ORDER BY a` is served
+// by the scan as it stands. Java's AggregateIndexMatchCandidate.
+// computeOrderingFromScanComparisons is the reference — Binding.fixed for
+// i < scanComparisons.getEqualitySize(), and the ordering sequence starting
+// there — and RecordQueryIndexPlan.HintOrdering is the value-index twin of the
+// same split. The prefix/tail rules (a signed-zero equality keeps its own order
+// but drops the tail; the tail is truncated at the first FLOAT/DOUBLE) are the
+// index plan's, applied to the grouping key.
 func (p *RecordQueryAggregateIndexPlan) HintOrdering() properties.Ordering {
 	groupCols := p.GetGroupCols()
 	if len(groupCols) == 0 {
 		return properties.Ordering{IsKnown: true}
 	}
-	groupCols = groupCols[:claimableNameLimit(p.GetGroupColumnLayout(), groupCols)]
-	if len(groupCols) == 0 {
+	split := p.groupingOrderSplit(groupCols)
+	fixedLen, sortedCols := split.fixedLen, split.tail
+	if len(sortedCols) == 0 {
+		if fixedLen == len(groupCols) && !split.tailDropped {
+			// Every grouping column is pinned to one physical key: at most one
+			// group flows, which is ordered by anything.
+			return properties.Ordering{IsKnown: true}
+		}
 		return properties.Ordering{IsKnown: false}
 	}
 	// Grouping column i IS slot i of the row this plan flows
@@ -1273,20 +1334,114 @@ func (p *RecordQueryAggregateIndexPlan) HintOrdering() properties.Ordering {
 	// thing about its own output row; both must, because a requested ORDER BY
 	// key on an aggregate output is baked against that row and an ordinal with
 	// no domain is one no consumer may compare.
-	keys := make([]values.Value, len(groupCols))
-	desc := make([]bool, len(groupCols))
-	for i, col := range groupCols {
-		request, err := values.FieldByNameAndOrdinal(col, i)
-		if err != nil {
+	keys := make([]values.Value, 0, len(sortedCols))
+	desc := make([]bool, 0, len(sortedCols))
+	for i, col := range sortedCols {
+		key := p.groupingOrderingKey(col, fixedLen+i)
+		if key == nil {
 			return properties.Ordering{IsKnown: false}
 		}
-		keys[i], err = values.ResolveFieldAccess(p.GetResultValue(), []values.FieldRequest{request})
-		if err != nil {
-			return properties.Ordering{IsKnown: false}
-		}
-		desc[i] = p.IsReverse()
+		keys = append(keys, key)
+		desc = append(desc, p.IsReverse())
 	}
 	return properties.Ordering{IsKnown: true, Keys: keys, Descending: desc}
+}
+
+// groupingScanComparisons is the scan's bound prefix over the physical group
+// key, positionally aligned with groupCols. A plan built without an index scan
+// (struct-literal test plans) binds nothing.
+func (p *RecordQueryAggregateIndexPlan) groupingScanComparisons() []*predicates.ComparisonRange {
+	if p.indexPlan == nil {
+		return nil
+	}
+	return p.indexPlan.GetScanComparisons()
+}
+
+// groupingOrderSplit is splitKeyOrder over the grouping key: the same three
+// rules RecordQueryIndexPlan applies to an index key, with no suffix (the
+// aggregate value lives in the FDB value, not the key, and takes no part in
+// the order).
+//
+// PRECONDITION: the grouping columns ARE the physical key prefix, in order.
+// That is false for a PERMUTED_MIN/MAX index with a positive permutation,
+// whose physical key interposes the aggregate value before the permuted
+// grouping suffix; such an index never becomes an aggregate plan
+// (tryAggregateIndexCandidate declines permutedSize > 0, and the candidate's
+// ComputeBoundParameterPrefixMap caps bindings at physicalGroupingPrefixCount),
+// so `groupCols[fixedLen:]` reads the key here and nowhere else.
+func (p *RecordQueryAggregateIndexPlan) groupingOrderSplit(groupCols []string) keyOrderSplit {
+	return splitKeyOrder(p.groupingScanComparisons(), groupCols, nil,
+		p.GetKeyComponentTypes(), p.GetGroupColumnLayout())
+}
+
+// groupingOrderingKey mints the ordering key for grouping column col, which is
+// slot ordinal of the row this plan flows.
+func (p *RecordQueryAggregateIndexPlan) groupingOrderingKey(col string, ordinal int) values.Value {
+	request, err := values.FieldByNameAndOrdinal(col, ordinal)
+	if err != nil {
+		return nil
+	}
+	key, err := values.ResolveFieldAccess(p.GetResultValue(), []values.FieldRequest{request})
+	if err != nil {
+		return nil
+	}
+	return key
+}
+
+// HintRichOrdering is the binding-carrying form: the equality-bound grouping
+// prefix is retained as FixedBinding entries (carrying the comparison) and the
+// sorted tail as SortedBinding entries — Java's Binding.fixed / Binding.sorted
+// split in AggregateIndexMatchCandidate.computeOrderingFromScanComparisons. A
+// consumer that reasons about set operations over aggregate scans (an in-union
+// over `WHERE b IN (…) GROUP BY b, a`) needs the fixed entry to promote the
+// bound column into its comparison key; the plain form above drops it.
+func (p *RecordQueryAggregateIndexPlan) HintRichOrdering() *properties.RichOrdering {
+	groupCols := p.GetGroupCols()
+	if len(groupCols) == 0 {
+		return properties.EmptyOrdering()
+	}
+	comps := p.groupingScanComparisons()
+	split := p.groupingOrderSplit(groupCols)
+	dir := properties.ProvidedSortOrderAscending
+	if p.IsReverse() {
+		dir = properties.ProvidedSortOrderDescending
+	}
+	bm := make(map[values.Value][]properties.OrderingBinding, len(groupCols))
+	keys := make([]values.Value, 0, len(groupCols))
+	for i, col := range groupCols[:split.fixedLen] {
+		key := p.groupingOrderingKey(col, i)
+		if key == nil {
+			return properties.EmptyOrdering()
+		}
+		keys = append(keys, key)
+		// FIXED only for a coordinate provably pinned to ONE physical key
+		// (split.pins, the column-aware question, per coordinate). A
+		// signed-zero equality, or a possibly-zero untyped operand on a FLOAT
+		// grouping column, admits two distinct sort values ordered only in the
+		// scan's direction, so it binds SORTED — the same reasoning as
+		// RecordQueryIndexPlan.HintRichOrdering.
+		if split.pins[i] {
+			bm[key] = []properties.OrderingBinding{properties.FixedBinding(comps[i])}
+		} else {
+			bm[key] = []properties.OrderingBinding{properties.SortedBinding(dir)}
+		}
+	}
+	for i, col := range split.tail {
+		key := p.groupingOrderingKey(col, split.fixedLen+i)
+		if key == nil {
+			return properties.EmptyOrdering()
+		}
+		keys = append(keys, key)
+		bm[key] = []properties.OrderingBinding{properties.SortedBinding(dir)}
+	}
+	if len(keys) == 0 {
+		return properties.EmptyOrdering()
+	}
+	// Java hands computeOrderingFromScanComparisons the inner scan's
+	// isStrictlySorted() (OrderingProperty.visitAggregateIndexPlan), the same
+	// flag the value index reads for its own claim.
+	strictlySorted := p.indexPlan != nil && p.indexPlan.IsStrictlySorted()
+	return properties.NewRichOrdering(bm, keys, properties.DistinctOverAllKeysIf(strictlySorted))
 }
 
 // --- unordered --------------------------------------------------------------
@@ -1439,8 +1594,6 @@ func (p *RecordQueryIndexPlan) HintRichOrdering() *properties.RichOrdering {
 	}
 	columnNames, pkColumnNames := p.GetColumnNames(), p.GetPKColumnNames()
 	comps := p.GetScanComparisons()
-	prefixLen := equalityPrefixLenOnColumns(comps, len(columnNames),
-		indexColumnCouldBeFloat(p.GetKeyComponentTypes(), p.GetFlowedType(), columnNames))
 	bm := make(map[values.Value][]properties.OrderingBinding)
 	keys := make([]values.Value, 0, len(columnNames)+len(pkColumnNames))
 
@@ -1448,46 +1601,33 @@ func (p *RecordQueryIndexPlan) HintRichOrdering() *properties.RichOrdering {
 	if p.IsReverse() {
 		dir = properties.ProvidedSortOrderDescending
 	}
-	// Same split as the plain form: the equality-bound prefix is FIXED (no order
-	// claimed, so a float there is harmless), and the SORTED tail — the
-	// remaining index columns plus the trimmed PK suffix — is truncated at the
-	// first FLOAT/DOUBLE.
-	// A coordinate bound by an equality spanning BOTH signed zeros belongs in
-	// that leading prefix too — but as a SORTED entry, not a FIXED one, which is
-	// why the prefix length comes from ownOrderPrefixLen rather than from the
-	// pins-one-key question. Its ground is RFC-208's range set opening the two
-	// zero blocks in KEY ORDER (reversed wholesale under a reverse scan), NOT
-	// that it admits one logical value: it admits two distinct sort values, so
-	// `ORDER BY` on it is satisfied only in the direction the scan runs. The
-	// loop below binds it accordingly; do not restate the vacuity argument here,
-	// it is refuted at EqualityBoundCoordinateClaimsOwnOrder.
-	// What it cannot do is carry the tail: a later coordinate restarts at the
-	// block boundary. So the tail is dropped outright rather than truncated by
-	// type, and the leading prefix keeps its full length.
-	fixedLen := ownOrderPrefixLen(comps, len(columnNames))
-	tail := make([]string, 0, len(columnNames)-fixedLen+len(pkColumnNames))
-	untruncated := 0
-	if fixedLen == prefixLen {
-		tail = append(tail, columnNames[fixedLen:]...)
-		tail = append(tail, TrimmedPKSuffix(columnNames, pkColumnNames)...)
-		untruncated = len(tail)
-		tail = tail[:claimableNameLimit(p.GetFlowedType(), tail)]
-	}
+	// Same split as the plain form (splitKeyOrder): the equality-bound prefix
+	// is retained here rather than dropped, and the SORTED tail — the remaining
+	// index columns plus the trimmed PK suffix — is truncated at the first
+	// FLOAT/DOUBLE. A coordinate bound by an equality spanning BOTH signed zeros
+	// belongs in that leading prefix too — but as a SORTED entry, not a FIXED
+	// one. Its ground is RFC-208's range set opening the two zero blocks in KEY
+	// ORDER (reversed wholesale under a reverse scan), NOT that it admits one
+	// logical value: it admits two distinct sort values, so `ORDER BY` on it is
+	// satisfied only in the direction the scan runs. The loop below binds it
+	// accordingly; do not restate the vacuity argument here, it is refuted at
+	// EqualityBoundCoordinateClaimsOwnOrder.
+	split := splitKeyOrder(comps, columnNames, TrimmedPKSuffix(columnNames, pkColumnNames),
+		p.GetKeyComponentTypes(), p.GetFlowedType())
+	tail := split.tail
 	// The coordinates below are the whole storage key exactly when the tail was
-	// neither dropped wholesale (fixedLen != prefixLen, a signed-zero equality
-	// that restarts the order at a block boundary) nor truncated at a FLOAT, AND
-	// the index key and its primary-key suffix both make physical uniqueness
-	// mean logical uniqueness. Every one of those facts is settled right here;
-	// stamping it is what keeps a consumer from asking a second property to
-	// agree with this one by hand.
-	storageComplete := fixedLen == prefixLen && len(tail) == untruncated &&
+	// neither dropped wholesale (a signed-zero equality that restarts the order
+	// at a block boundary) nor truncated at a FLOAT, AND the index key and its
+	// primary-key suffix both make physical uniqueness mean logical uniqueness.
+	// Every one of those facts is settled right here; stamping it is what keeps
+	// a consumer from asking a second property to agree with this one by hand.
+	storageComplete := !split.tailDropped && len(tail) == split.untruncated &&
 		len(p.GetRecordTypes()) == 1 &&
 		properties.TupleKeyUniquenessMatchesLogicalEquality(
 			p.GetKeyComponentTypes(), len(columnNames)) &&
 		properties.TupleKeyUniquenessMatchesLogicalEquality(
 			p.GetPrimaryKeyComponentTypes(), len(pkColumnNames))
-	prefixLen = fixedLen
-	for i, col := range columnNames[:prefixLen] {
+	for i, col := range columnNames[:split.fixedLen] {
 		key := orderingColumnOfName(p.GetResultValue(), p.GetFlowedType(), col)
 		if key == nil {
 			return properties.EmptyOrdering()
@@ -1495,9 +1635,15 @@ func (p *RecordQueryIndexPlan) HintRichOrdering() *properties.RichOrdering {
 		keys = append(keys, key)
 		// FIXED means "states no order, so ANY requested direction is
 		// satisfied". That is only true of a coordinate pinned to ONE physical
-		// key, where every admitted row shares one SORT value.
+		// key, where every admitted row shares one SORT value — the
+		// column-aware question splitKeyOrder already asked, per coordinate
+		// (pins), never the operand-only one: a FLOAT coordinate bound by an
+		// untyped non-constant operand (an IN binding) is not provably
+		// nonzero, widens at runtime across both signed-zero blocks, and
+		// binding it FIXED would let a request in the opposite direction elide
+		// its sort.
 		//
-		// A signed-zero-widened equality is not such a coordinate. The
+		// A signed-zero-widened equality is not such a coordinate either. The
 		// PREDICATE comparator makes -0.0 and +0.0 equal, which is why the
 		// equality admits both; the SORT comparator (values.CompareFloat64,
 		// faithful to java.lang.Double.compare) ranks -0.0 BELOW +0.0, which is
@@ -1506,7 +1652,7 @@ func (p *RecordQueryIndexPlan) HintRichOrdering() *properties.RichOrdering {
 		// FIXED. Calling it FIXED elides the sort on `WHERE z = 0.0 ORDER BY z
 		// DESC` and answers it from a FORWARD scan, returning the two zero
 		// blocks ascending.
-		if EqualityPinsSinglePhysicalKey(comps[i]) {
+		if split.pins[i] {
 			bm[key] = []properties.OrderingBinding{properties.FixedBinding(comps[i])}
 		} else {
 			bm[key] = []properties.OrderingBinding{properties.SortedBinding(dir)}
