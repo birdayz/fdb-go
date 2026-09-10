@@ -14,7 +14,7 @@ func equalityRange(t *testing.T, lit any) *predicates.ComparisonRange {
 		Type:    predicates.ComparisonEquals,
 		Operand: values.LiteralValue(lit),
 	})
-	if !res.Ok {
+	if !res.Complete() {
 		t.Fatalf("EmptyComparisonRange().Merge(= %v) failed", lit)
 	}
 	return res.Range
@@ -67,57 +67,29 @@ func TestRecordQueryIndexPlan_ComparandIdentity(t *testing.T) {
 	}
 }
 
-// textRange builds a single-column TEXT_CONTAINS_ALL inequality ComparisonRange
-// carrying a tokenizer, so a text comparand's identity fields reach the memo
-// helpers via a real plan's scan comparisons.
-func textRange(t *testing.T, tokenizer string) *predicates.ComparisonRange {
-	t.Helper()
-	res := predicates.EmptyComparisonRange().Merge(&predicates.Comparison{
-		Type:              predicates.ComparisonTextContainsAll,
-		Operand:           values.LiteralValue("hello world"),
-		TextTokenizerName: tokenizer,
-	})
-	if !res.Ok {
-		t.Fatalf("Merge(TEXT_CONTAINS_ALL, tokenizer=%q) failed", tokenizer)
-	}
-	return res.Range
-}
-
-// TestRecordQueryIndexPlan_TextComparandIdentity (F30) pins that a text-index
-// scan's identity includes the text-search comparand fields, not just the
-// operator + operand. Before the fix comparisonEqual folded only
-// Type/Escape/ParameterName/Operand and IGNORED the tokenizer/analyzer/
-// max-distance/strict-prefix fields, so two TEXT_CONTAINS scans differing ONLY
-// in tokenizer — which read DIFFERENT results — compared EQUAL and collapsed
-// into one memo Reference (the F21 memo-poisoning class, for text comparands).
-// Java's TextComparison.equals() includes the tokenizer.
-func TestRecordQueryIndexPlan_TextComparandIdentity(t *testing.T) {
+// TestRecordQueryIndexPlan_TextComparisonNeverEntersAScanRange (F30) pins
+// where a text comparand's identity is decided. A TEXT_CONTAINS_* comparison
+// is a NONE type for scan ranges (Java's ScanComparisons.getComparisonType
+// sends it to NONE; Go's Merge hands it back as a residual), so it can never
+// sit in an IndexScan's scan comparisons and the plan-level identity helpers
+// never see one. Its tokenizer/analyzer/max-distance/strict-prefix fields are
+// identity-bearing at the PREDICATE level, where comparisonIdentityEqual folds
+// every field (TestComparisonIdentityFoldsEveryField) — the F21 memo-poisoning
+// class for text comparands is closed there, not here.
+func TestRecordQueryIndexPlan_TextComparisonNeverEntersAScanRange(t *testing.T) {
 	t.Parallel()
 
-	pDefault := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
-		return NewRecordQueryIndexPlan("tidx", []*predicates.ComparisonRange{textRange(t, "default")}, []string{"T"}, exactTestRecordType(), false)
-	})
-	pNgram := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
-		return NewRecordQueryIndexPlan("tidx", []*predicates.ComparisonRange{textRange(t, "ngram")}, []string{"T"}, exactTestRecordType(), false)
-	})
-
-	// Different tokenizer MUST be unequal (was TRUE before the fix — the bug).
-	if pDefault.EqualsPlanWithoutChildren(pNgram) {
-		t.Error("text IndexScan(tokenizer=default) must NOT EqualsWithoutChildren IndexScan(tokenizer=ngram) — tokenizer-blind collapse")
-	}
-	if pDefault.HashCodeWithoutChildren() == pNgram.HashCodeWithoutChildren() {
-		t.Error("text IndexScans differing only in tokenizer must hash apart")
-	}
-
-	// Same tokenizer MUST stay equal + same hash (preserve dedup for real twins).
-	pDefault2 := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
-		return NewRecordQueryIndexPlan("tidx", []*predicates.ComparisonRange{textRange(t, "default")}, []string{"T"}, exactTestRecordType(), false)
-	})
-	if !pDefault.EqualsPlanWithoutChildren(pDefault2) {
-		t.Error("identical text IndexScan(tokenizer=default) must remain EqualsWithoutChildren-equal")
-	}
-	if pDefault.HashCodeWithoutChildren() != pDefault2.HashCodeWithoutChildren() {
-		t.Error("identical text IndexScan must hash identically")
+	for _, tokenizer := range []string{"default", "ngram"} {
+		comparison := &predicates.Comparison{
+			Type:              predicates.ComparisonTextContainsAll,
+			Operand:           values.LiteralValue("hello world"),
+			TextTokenizerName: tokenizer,
+		}
+		res := predicates.EmptyComparisonRange().Merge(comparison)
+		if res.Complete() || !res.Range.IsEmpty() ||
+			len(res.Residuals) != 1 || res.Residuals[0] != comparison {
+			t.Fatalf("Merge(TEXT_CONTAINS_ALL, tokenizer=%q) = %+v, want an untouched empty range and the comparison as its residual", tokenizer, res)
+		}
 	}
 }
 

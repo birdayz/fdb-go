@@ -113,7 +113,7 @@ func runAggregateSignedZeroRangeSet(t *testing.T, width string) {
 	comparisonRange := func(t *testing.T, comparison predicates.Comparison) *predicates.ComparisonRange {
 		t.Helper()
 		merged := predicates.EmptyComparisonRange().Merge(&comparison)
-		if !merged.Ok {
+		if !merged.Complete() {
 			t.Fatalf("comparison range merge failed: %v", comparison)
 		}
 		return merged.Range

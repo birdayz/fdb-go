@@ -157,7 +157,7 @@ func TestFDB_InMemorySortRowsRead_RFC184(t *testing.T) {
 			Type:    predicates.ComparisonGreaterThanEq,
 			Operand: &values.ConstantValue{Value: int64(398), Typ: values.NotNullLong},
 		})
-		if !res.Ok {
+		if !res.Complete() {
 			t.Fatal("build price>=398 comparison range")
 		}
 		selectiveIndex := mustExecutorConstruct(plans.NewRecordQueryIndexPlan(

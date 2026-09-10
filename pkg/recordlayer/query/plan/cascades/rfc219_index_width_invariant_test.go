@@ -93,7 +93,7 @@ func rfc219EqualityRange(t *testing.T, literal int64) *predicates.ComparisonRang
 	t.Helper()
 	cmp := predicates.NewLiteralComparison(predicates.ComparisonEquals, literal)
 	res := predicates.EmptyComparisonRange().Merge(&cmp)
-	if !res.Ok {
+	if !res.Complete() {
 		t.Fatal("Empty + EQUALS must merge; an unbound range here would silently shrink the " +
 			"comparison count the invariant is measuring")
 	}

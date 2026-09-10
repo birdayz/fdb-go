@@ -1086,7 +1086,7 @@ func TestSatisfiesRequestedOrdering_EqualitySkip(t *testing.T) {
 	eqComp := predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(42))
 	eqRange := predicates.EmptyComparisonRange()
 	merged := eqRange.Merge(&eqComp)
-	if !merged.Ok {
+	if !merged.Complete() {
 		t.Fatal("failed to create equality comparison range")
 	}
 
@@ -1147,7 +1147,7 @@ func TestSatisfiesRequestedOrdering_PhysicalSignedZeroDoesNotSkip(t *testing.T) 
 				tc.literal,
 			)
 			equality := predicates.EmptyComparisonRange().Merge(&comparison)
-			if !equality.Ok {
+			if !equality.Complete() {
 				t.Fatal("failed to build equality range")
 			}
 			parts := []*MatchedOrderingPart{

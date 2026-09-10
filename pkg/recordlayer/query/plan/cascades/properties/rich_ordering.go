@@ -1084,7 +1084,7 @@ func translateFixedOrderingComparison(
 			return comparison, true
 		}
 		merged := predicates.EmptyComparisonRange().Merge(translatedComparison)
-		if !merged.Ok {
+		if !merged.Complete() {
 			return nil, false
 		}
 		return merged.Range, true

@@ -1,7 +1,5 @@
 package predicates
 
-import "fdb.dev/pkg/recordlayer/query/plan/cascades/values"
-
 // ComparisonRange represents a contiguous range of values for a
 // single column. Mirrors Java's
 // `com.apple.foundationdb.record.query.plan.cascades.ComparisonRange`.
@@ -17,19 +15,24 @@ import "fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 // derived from the predicate set. The planner then converts the
 // list of per-column ranges into an index scan key range.
 //
-// Range type discipline (mirrors Java):
-//   - Adding any comparison to an Empty range produces a non-empty
-//     range of the corresponding type.
-//   - Adding an equality to an Equality range only succeeds if the
-//     two equality values are SAME (otherwise the merge is rejected
-//     — the planner knows the predicate set is unsatisfiable).
-//   - Adding an inequality to an Equality range is rejected (the
-//     planner can't combine equality + inequality on the same col).
-//   - Adding any comparison to an Inequality range merges into the
-//     existing list.
+// Range type discipline (Java's ComparisonRange.merge, arm for arm):
+//   - A NONE-type comparison (NOT_EQUALS, IN, LIKE, TEXT_*, …) never enters a
+//     range; it comes back as a residual and the range is untouched.
+//   - Adding any scan-range comparison to an Empty range produces a
+//     non-empty range of the corresponding type.
+//   - Adding an equality to an Equality range is a no-op when the two
+//     are the same comparison, and leaves the incoming one as a residual
+//     when they differ (the planner scans the first and re-checks the
+//     second; a contradiction reads zero rows).
+//   - Adding an inequality to an Equality range leaves it as a residual.
+//   - Adding an inequality to an Inequality range appends it, unless it
+//     is already present.
+//   - Adding an equality to an Inequality range makes the equality the
+//     range and every accumulated inequality a residual.
 //
-// Returned MergeResult carries either the merged range or a "merge
-// failed" indicator with the rejected comparison.
+// The merge is TOTAL: it never fails. MergeResult carries the range plus
+// the residual comparisons, and a caller that cannot carry residuals reads
+// len(Residuals) > 0 as its rejection.
 type ComparisonRange struct {
 	// rangeType is empty / equality / inequality.
 	rangeType ComparisonRangeType
@@ -92,16 +95,19 @@ func (r *ComparisonRange) GetInequalityComparisons() []*Comparison {
 	return r.inequalities
 }
 
-// MergeResult carries the outcome of a Merge call.
+// MergeResult carries the outcome of a Merge call: the merged range and the
+// comparisons that could not be pushed into it. Java's
+// ComparisonRange.MergeResult.
 type MergeResult struct {
-	// Range is the merged range when Ok is true.
+	// Range is the merged range. Never nil.
 	Range *ComparisonRange
-	// Ok reports merge success.
-	Ok bool
-	// Residual is the comparison that couldn't be merged when Ok is
-	// false. Nil otherwise.
-	Residual *Comparison
+	// Residuals are the comparisons the range could not carry, in the order
+	// they were offered. Empty when everything merged.
+	Residuals []*Comparison
 }
+
+// Complete reports whether every offered comparison merged into the range.
+func (m MergeResult) Complete() bool { return len(m.Residuals) == 0 }
 
 // GetComparisons returns every Comparison this range carries, whichever shape
 // it has: the single equality, or all the inequalities. It returns an empty
@@ -125,72 +131,112 @@ func (r *ComparisonRange) GetComparisons() []*Comparison {
 	}
 }
 
-// Merge attempts to add a comparison to the range. Returns a
-// MergeResult capturing success / failure.
-//
-// Rules (per Java):
-//   - Empty + EQUALS  → Equality
-//   - Empty + INEQ    → Inequality
-//   - Equality + EQUALS (same value) → Equality (idempotent)
-//   - Equality + EQUALS (different value) → Failed (unsatisfiable)
-//   - Equality + INEQ → Failed (planner doesn't combine = + range
-//     on the same column)
-//   - Inequality + INEQ → Inequality (extended)
-//   - Inequality + EQUALS → Failed (similar reasoning)
+// Merge adds a comparison to the range. Total: the outcome is always a
+// range plus the residual comparisons that did not fit — see the type
+// comment for the arm table (Java's ComparisonRange.merge(Comparison)).
 func (r *ComparisonRange) Merge(c *Comparison) MergeResult {
 	if c == nil {
-		return MergeResult{Range: r, Ok: true}
+		return MergeResult{Range: r}
+	}
+	kind := scanRangeComparisonType(c.Type)
+	if kind == scanRangeNone {
+		return MergeResult{Range: r, Residuals: []*Comparison{c}}
 	}
 	switch r.rangeType {
 	case ComparisonRangeEmpty:
-		if isScanRangeEqualityType(c.Type) {
-			// IS NULL is an EQUALITY range on the NULL value, matching Java's
-			// ScanComparisons.getComparisonType(IS_NULL) == EQUALITY: the index
-			// scan seeks the single [null] key. IS NOT DISTINCT FROM is likewise
-			// a null-safe equality and must reach the exact-key binder rather than
-			// the ordered-inequality combiner. (IS NOT NULL stays an inequality —
-			// the (null, +inf) range — handled below.)
+		if kind == scanRangeEquality {
+			return MergeResult{Range: &ComparisonRange{
+				rangeType: ComparisonRangeEquality,
+				equality:  c,
+			}}
+		}
+		return MergeResult{Range: &ComparisonRange{
+			rangeType:    ComparisonRangeInequality,
+			inequalities: []*Comparison{c},
+		}}
+	case ComparisonRangeEquality:
+		if kind == scanRangeEquality && r.equality != nil && comparisonsEqualValue(r.equality, c) {
+			return MergeResult{Range: r}
+		}
+		return MergeResult{Range: r, Residuals: []*Comparison{c}}
+	case ComparisonRangeInequality:
+		if kind == scanRangeEquality {
 			return MergeResult{
-				Range: &ComparisonRange{
-					rangeType: ComparisonRangeEquality,
-					equality:  c,
-				},
-				Ok: true,
+				Range:     &ComparisonRange{rangeType: ComparisonRangeEquality, equality: c},
+				Residuals: append([]*Comparison(nil), r.inequalities...),
 			}
 		}
-		// All non-equals (including IsNotNull / Not) are inequalities
-		// for range purposes — they restrict the universe.
-		return MergeResult{
-			Range: &ComparisonRange{
-				rangeType:    ComparisonRangeInequality,
-				inequalities: []*Comparison{c},
-			},
-			Ok: true,
-		}
-	case ComparisonRangeEquality:
-		if !isScanRangeEqualityType(c.Type) {
-			return MergeResult{Ok: false, Residual: c}
-		}
-		// Two equality comparisons must agree. Go compares via
-		// the wrapped Operand's ExplainValue (structural string
-		// match) — no alias context needed because operands at this
-		// stage are typically literals.
-		if r.equality == nil || !comparisonsEqualValue(r.equality, c) {
-			return MergeResult{Ok: false, Residual: c}
-		}
-		return MergeResult{Range: r, Ok: true}
-	case ComparisonRangeInequality:
-		if isScanRangeEqualityType(c.Type) {
-			return MergeResult{Ok: false, Residual: c}
+		for _, existing := range r.inequalities {
+			if comparisonsEqualValue(existing, c) {
+				return MergeResult{Range: r}
+			}
 		}
 		merged := &ComparisonRange{
 			rangeType:    ComparisonRangeInequality,
-			inequalities: append([]*Comparison(nil), r.inequalities...),
+			inequalities: append(append([]*Comparison(nil), r.inequalities...), c),
 		}
-		merged.inequalities = append(merged.inequalities, c)
-		return MergeResult{Range: merged, Ok: true}
+		return MergeResult{Range: merged}
 	}
-	return MergeResult{Ok: false, Residual: c}
+	return MergeResult{Range: r, Residuals: []*Comparison{c}}
+}
+
+// MergeRange merges every comparison another range carries into this one,
+// accumulating the residuals — Java's ComparisonRange.merge(ComparisonRange).
+func (r *ComparisonRange) MergeRange(other *ComparisonRange) MergeResult {
+	result := MergeResult{Range: r}
+	if other == nil {
+		return result
+	}
+	for _, c := range other.GetComparisons() {
+		next := result.Range.Merge(c)
+		result.Range = next.Range
+		result.Residuals = append(result.Residuals, next.Residuals...)
+	}
+	return result
+}
+
+// MergeAll folds a list of comparisons into one range from the empty range,
+// accumulating the residuals — Java's ComparisonRange.mergeAll.
+func MergeAll(comparisons []*Comparison) MergeResult {
+	result := MergeResult{Range: EmptyComparisonRange()}
+	for _, c := range comparisons {
+		next := result.Range.Merge(c)
+		result.Range = next.Range
+		result.Residuals = append(result.Residuals, next.Residuals...)
+	}
+	return result
+}
+
+// scanRangeComparisonKind is a comparison's role in a scan range: an exact
+// key, an ordered bound, or neither. Java's ScanComparisons.ComparisonType.
+type scanRangeComparisonKind int
+
+const (
+	scanRangeNone scanRangeComparisonKind = iota
+	scanRangeEquality
+	scanRangeInequality
+)
+
+// scanRangeComparisonType classifies a comparison type for range merging —
+// Java's ScanComparisons.getComparisonType, with the two documented Go
+// differences kept (see isScanRangeEqualityType): NOT_DISTINCT_FROM is an
+// exact key, DISTANCE_RANK_EQUALS is an ordered bound. Everything Java's
+// switch sends to `default: NONE` is none here too, so it never enters a
+// range and always comes back as a residual.
+func scanRangeComparisonType(t ComparisonType) scanRangeComparisonKind {
+	if isScanRangeEqualityType(t) {
+		return scanRangeEquality
+	}
+	switch t {
+	case ComparisonLessThan, ComparisonLessThanOrEq,
+		ComparisonGreaterThan, ComparisonGreaterThanEq,
+		ComparisonStartsWith, ComparisonIsNotNull, ComparisonSort,
+		ComparisonDistanceRankEquals, ComparisonDistanceRankLessThan,
+		ComparisonDistanceRankLessThanOrEq:
+		return scanRangeInequality
+	default:
+		return scanRangeNone
+	}
 }
 
 // isScanRangeEqualityType reports whether a comparison binds an EXACT KEY in a
@@ -230,27 +276,15 @@ func isScanRangeEqualityType(comparisonType ComparisonType) bool {
 	}
 }
 
-// comparisonsEqualValue compares two equality Comparisons via their
-// Operand's structural rendering (values.ExplainValue). Returns true
-// if the values match. Used by Merge's equality-vs-equality check.
-//
-// Conformance trade-off: ExplainValue rendering is fragile for non-
-// literal Operands (float formatting, alias names in sub-expressions
-// can cause text drift between structurally-equal Values). The
-// rendering-based comparison degrades to FALSE on uncertain
-// equality — never to TRUE. That means Merge() rejects ambiguous
-// equality merges (planner falls back to keeping both predicates as
-// residual filters); it does NOT silently accept a wrong merge
-// (which would drop a predicate). Sound for SQL semantics; only
-// cost (extra residual filter) is at risk on non-literal Operand
-// rendering drift. Merge's callers pass literal Operands
-// only, so the renderable-string contract is reliable in practice.
+// comparisonsEqualValue reports whether two Comparisons are the same
+// comparison — every identity-bearing field, through comparisonIdentityEqual,
+// so a parameter-bound `= ?p` and a literal `= 7` over the same operand are
+// different comparisons. Merge uses it for the two dedup arms —
+// equality-vs-equality and an inequality already present — where Java uses
+// Comparison.equals.
 func comparisonsEqualValue(a, b *Comparison) bool {
 	if a == nil || b == nil {
 		return false
 	}
-	if a.Type != b.Type {
-		return false
-	}
-	return values.ValuesStructurallyEqual(a.Operand, b.Operand)
+	return comparisonIdentityEqual(*a, *b)
 }

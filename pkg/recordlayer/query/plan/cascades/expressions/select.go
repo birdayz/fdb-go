@@ -79,8 +79,12 @@ func newSelectExpression(resultValue values.Value, quantifiers []Quantifier, que
 	}
 	copiedQ := make([]Quantifier, len(quantifiers))
 	copy(copiedQ, quantifiers)
-	copiedP := make([]predicates.QueryPredicate, len(queryPredicates))
-	copy(copiedP, queryPredicates)
+	// The predicate list is the conjunction: top-level ANDs are lifted into
+	// it, as Java's SelectExpression constructor does
+	// (SelectExpression.partitionPredicates). See NewLogicalFilterExpression.
+	flat := predicates.FlattenConjunction(queryPredicates)
+	copiedP := make([]predicates.QueryPredicate, len(flat))
+	copy(copiedP, flat)
 	copiedA := make([]string, len(sourceAliases))
 	copy(copiedA, sourceAliases)
 	return &SelectExpression{

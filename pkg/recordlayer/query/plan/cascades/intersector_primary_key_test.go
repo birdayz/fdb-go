@@ -949,7 +949,7 @@ func TestAdjustedIntersectionOrdering_SignedZeroIsDirectional(t *testing.T) {
 				tc.literal,
 			)
 			rangeResult := predicates.EmptyComparisonRange().Merge(&comparison)
-			if !rangeResult.Ok {
+			if !rangeResult.Complete() {
 				t.Fatal("failed to build equality range")
 			}
 

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 	"fdb.dev/pkg/relational/core/query"
 )
 
@@ -338,6 +339,93 @@ CREATE TABLE b (id BIGINT, n nst, PRIMARY KEY (id))`
 			walk(ref.Get())
 			if crossLegPredicates != 1 {
 				t.Fatalf("translated Select carries %d cross-leg predicates, want one; losing this placement re-arms nested-dependency pushdown", crossLegPredicates)
+			}
+		})
+	}
+}
+
+// CONJUNCTION-BINDING (RFC-249). Two wrong-plan classes with one root: Go
+// bound ONE comparison per index placeholder and its IN-to-explode rule read
+// only a filter's top-level predicate list, while Java's SelectExpression
+// constructor flattens the conjunction and folds every comparison on one
+// column into a single scan range. Every BETWEEN was a half-bounded scan with
+// a residual, and `id IN (1, 2) AND b > 5` was a FULL TABLE SCAN. Correct
+// rows throughout, which is why a rows net never saw it; the pin is the plan.
+// conjunction_binding_test.go carries the full arm table over the typed tree.
+func TestBugHunt_ConjunctionBindsOneRangePerColumnAndExplodesInUnderAnd(t *testing.T) {
+	t.Parallel()
+	const schema = `
+CREATE TABLE T (id BIGINT, a BIGINT, b BIGINT, v BIGINT, PRIMARY KEY (id))
+CREATE INDEX idx_ab ON T(a, b)`
+
+	t.Run("between_is_one_two_sided_range", func(t *testing.T) {
+		t.Parallel()
+		plan, err := PlanPhysicalForTest("SELECT id FROM t WHERE a = 1 AND b BETWEEN 2 AND 5", schema, nil)
+		if err != nil {
+			t.Fatalf("plan: %v", err)
+		}
+		got := conjunctionBindingShapeOf(plan)
+		want := conjunctionBindingShape{scan: "IDX_AB[= 1][>= 2 <= 5]"}
+		if got != want {
+			t.Fatalf("BETWEEN did not bind both bounds: %+v, want %+v\n  plan: %s", got, want, plan.Explain())
+		}
+	})
+	t.Run("in_under_and_explodes", func(t *testing.T) {
+		t.Parallel()
+		plan, err := PlanPhysicalForTest("SELECT id FROM t WHERE id IN (1, 2) AND b > 5", schema, nil)
+		if err != nil {
+			t.Fatalf("plan: %v", err)
+		}
+		got := conjunctionBindingShapeOf(plan)
+		want := conjunctionBindingShape{scan: "PK[= $]", residuals: 1, inJoins: 1}
+		if got != want {
+			t.Fatalf("IN under AND did not explode into PK probes: %+v, want %+v\n  plan: %s", got, want, plan.Explain())
+		}
+	})
+}
+
+// DANGLING-EXISTENTIAL. `JOIN c ON … AND EXISTS(d) WHERE EXISTS(e)`: the
+// translator attached only the WHERE's existential quantifier on this shape
+// and left the ON's `EXISTS(q$N)` marker referencing a quantifier no Select
+// owned. The buried-existential backstop happened to refuse the query while
+// the ON predicate arrived as one AND; once the Select constructor lifted the
+// conjunction (RFC-249) the dangling marker reached the planner and was
+// DROPPED — rows the ON-EXISTS should have excluded came back. Both
+// existentials are attached now, and CheckBuriedExistentialPredicate refuses
+// a dangling one should the shape recur. This pin counts the existential
+// probes in the plan; the rows pin is TestFDB_ExistsInOnPlusWhereExists.
+func TestBugHunt_ExistsInOnBesideWhereExistsKeepsBothExistentials(t *testing.T) {
+	t.Parallel()
+	const schema = `
+CREATE TABLE A (id BIGINT, PRIMARY KEY (id))
+CREATE TABLE C (id BIGINT, a_id BIGINT, PRIMARY KEY (id))
+CREATE TABLE D (id BIGINT, PRIMARY KEY (id))
+CREATE TABLE E (id BIGINT, c_id BIGINT, PRIMARY KEY (id))
+CREATE INDEX c_a_id ON C (a_id)
+CREATE INDEX e_c_id ON E (c_id)`
+	for _, sql := range []string{
+		"SELECT a.id, c.id FROM a JOIN c ON c.a_id = a.id AND EXISTS (SELECT 1 FROM d WHERE d.id = a.id) WHERE EXISTS (SELECT 1 FROM e WHERE e.c_id = c.id)",
+		"SELECT a.id, c.id FROM a JOIN c ON c.a_id = a.id WHERE EXISTS (SELECT 1 FROM d WHERE d.id = a.id) AND EXISTS (SELECT 1 FROM e WHERE e.c_id = c.id)",
+	} {
+		t.Run(sql, func(t *testing.T) {
+			t.Parallel()
+			plan, err := PlanPhysicalForTest(sql, schema, nil)
+			if err != nil {
+				t.Fatalf("plan: %v", err)
+			}
+			probes := 0
+			var walk func(p plans.RecordQueryPlan)
+			walk = func(p plans.RecordQueryPlan) {
+				if _, ok := p.(*plans.RecordQueryFirstOrDefaultPlan); ok {
+					probes++
+				}
+				for _, c := range p.GetChildren() {
+					walk(c)
+				}
+			}
+			walk(plan)
+			if probes != 2 {
+				t.Fatalf("plan carries %d existential probe(s), want 2 (one per EXISTS): an EXISTS was dropped\n  plan: %s", probes, plan.Explain())
 			}
 		})
 	}

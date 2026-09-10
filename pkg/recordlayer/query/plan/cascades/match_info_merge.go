@@ -195,6 +195,20 @@ func tryMergeParameterBindings(
 	return result, true
 }
 
+// mergeComparisonRanges merges the ranges two child branches bound to ONE
+// parameter alias — Java's tryMergeParameterBindings, which merges through
+// ComparisonRange.merge(ComparisonRange). Java's merge is total and carries
+// its residuals; this caller cannot carry them ACROSS QUANTIFIER BOUNDARIES
+// (a PartialMatch has no channel for a filter predicate that belongs to a
+// sibling branch), so it fails closed on a non-empty residual list — the
+// index candidate Java would keep (equality seek plus a residual filter) is
+// not produced. Wrong plan, never wrong rows. Same-quantifier conjunctions do
+// not come through here: they are folded into one range before binding
+// (foldPlaceholderBindings), which is where Java's residuals ARE carried.
+// Threading residuals through MatchInfo for the cross-quantifier case is the
+// remaining scope of the ComparisonRange.MergeResult entry in TODO.md; the
+// rejecting arms are pinned in
+// TestMergeComparisonRanges_EqualityInequalityRejectsUnlikeJava.
 func mergeComparisonRanges(
 	left, right *predicates.ComparisonRange,
 ) (*predicates.ComparisonRange, bool) {
@@ -204,62 +218,11 @@ func mergeComparisonRanges(
 	if partialMatchComparisonRangesEqual(left, right) {
 		return left, true
 	}
-	if left.IsEmpty() {
-		return right, true
-	}
-	if right.IsEmpty() {
-		return left, true
-	}
-	if left.IsEquality() || right.IsEquality() {
-		// The exact-equality case returned above. Any remaining equality pair
-		// is conflicting, and equality/inequality is not representable by
-		// ComparisonRange without a residual.
-		//
-		// Java does not have to reject here. Its ComparisonRange.merge is TOTAL:
-		// MergeResult carries a range plus a residual LIST, so an equality always
-		// wins the range and whatever cannot be pushed down comes back as a filter
-		// predicate. Go's MergeResult carries `Ok bool` and a single `Residual`
-		// that no caller reads, so this rejection propagates through
-		// tryMergeParameterBindings as a LOST MATCH — the index candidate Java
-		// keeps (equality seek + residual filter) is never produced. Wrong plan,
-		// never wrong rows.
-		//
-		// Closing that is an architectural change to the matching infrastructure;
-		// see the ComparisonRange.MergeResult entry in TODO.md for the measured
-		// reachability and the full Java-vs-Go table. The three rejecting arms are
-		// pinned in TestMergeComparisonRanges_EqualityInequalityRejectsUnlikeJava,
-		// whose failure message says what to REPLACE it with once they are closed.
+	merged := left.MergeRange(right)
+	if !merged.Complete() {
 		return nil, false
 	}
-
-	if !left.IsInequality() || !right.IsInequality() {
-		return nil, false
-	}
-	comparisons := append(
-		[]*predicates.Comparison(nil),
-		left.GetInequalityComparisons()...,
-	)
-	for _, incoming := range right.GetInequalityComparisons() {
-		duplicate := false
-		for _, existing := range comparisons {
-			if comparisonsEqual(existing, incoming) {
-				duplicate = true
-				break
-			}
-		}
-		if !duplicate {
-			comparisons = append(comparisons, incoming)
-		}
-	}
-	result := predicates.EmptyComparisonRange()
-	for _, comparison := range comparisons {
-		merged := result.Merge(comparison)
-		if !merged.Ok || !merged.Range.IsInequality() {
-			return nil, false
-		}
-		result = merged.Range
-	}
-	return result, true
+	return merged.Range, true
 }
 
 func pullUpAndMergeGroupByMappings(

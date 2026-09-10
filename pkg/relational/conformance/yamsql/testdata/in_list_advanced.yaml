@@ -24,10 +24,12 @@ tests:
     plan_not_contains: "InUnion"
     rows:
       - [3, 6]
-  # IN list with no matches.
+  # IN list with no matches, over a column no index binds: one filtered scan.
+  # An IN-join here would scan the table once per IN element (criterion #6 of
+  # the cost model penalises an unSARGed IN-plan anywhere in the tree).
   - query: SELECT a, b FROM ta WHERE b IN (10, 33, 66)
-    plan_contains: "InJoin("
-    plan_not_contains: "InUnion"
+    plan_contains: "PredicatesFilter(Scan(TA), [1 preds])"
+    plan_not_contains: "InJoin("
     rows: []
   # Repeated values in IN list — equivalent to single occurrence.
   - query: SELECT a, b FROM ta WHERE b IN (1, 1, 1, 1)

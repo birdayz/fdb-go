@@ -257,7 +257,13 @@ func TestSelectSubsumptionPredicateAlternativesFreshResidualsHaveDistinctIdentit
 	}
 }
 
-func TestSelectSubsumptionPredicateAlternativesSharedPlaceholderRetainsResidual(
+// TestSelectSubsumptionPredicateAlternativesSharedPlaceholderFolds pins that
+// every query comparison binding one placeholder folds into ONE alternative
+// (Java's single sargable per column): two different equalities produce one
+// product whose range is the FIRST equality, the second re-applied as a fresh
+// residual; two inequalities produce one product whose range carries BOTH,
+// each query predicate mapped to the placeholder over that same range.
+func TestSelectSubsumptionPredicateAlternativesSharedPlaceholderFolds(
 	t *testing.T,
 ) {
 	ref := selectSubsumptionPredicateTestRef()
@@ -272,51 +278,28 @@ func TestSelectSubsumptionPredicateAlternativesSharedPlaceholderRetainsResidual(
 		[]expressions.Quantifier{candidateQuantifier},
 		[]predicates.QueryPredicate{placeholder},
 	)
-	queryOne := selectSubsumptionPredicateTestComparison(
-		candidateAlias,
-		"x",
-		1,
-	)
-	queryTwo := selectSubsumptionPredicateTestComparison(
-		candidateAlias,
-		"x",
-		2,
-	)
 
-	alternatives := collectSelectSubsumptionPredicateTestAlternatives(
-		t,
-		[]predicates.QueryPredicate{queryOne, queryTwo},
-		[]predicates.QueryPredicate{queryOne, queryTwo},
-		candidateSelect,
-		EmptyAliasMap(),
-	)
-	if len(alternatives) != 2 {
-		t.Fatalf("alternatives = %d, want 2", len(alternatives))
-	}
-	for alternativeIndex, alternative := range alternatives {
-		wantLiteral := int64(alternativeIndex + 1)
-		if got := selectSubsumptionPredicateTestEqualityLiteral(
+	t.Run("two equalities: the first binds, the second is a residual", func(t *testing.T) {
+		queryOne := selectSubsumptionPredicateTestComparison(candidateAlias, "x", 1)
+		queryTwo := selectSubsumptionPredicateTestComparison(candidateAlias, "x", 2)
+		alternatives := collectSelectSubsumptionPredicateTestAlternatives(
 			t,
-			alternative.parameterBindings[parameterAlias],
-		); got != wantLiteral {
-			t.Fatalf(
-				"alternative %d bound literal = %d, want %d",
-				alternativeIndex,
-				got,
-				wantLiteral,
-			)
+			[]predicates.QueryPredicate{queryOne, queryTwo},
+			[]predicates.QueryPredicate{queryOne, queryTwo},
+			candidateSelect,
+			EmptyAliasMap(),
+		)
+		if len(alternatives) != 1 {
+			t.Fatalf("alternatives = %d, want 1 (one fold per placeholder)", len(alternatives))
 		}
-
-		selectedQuery := predicates.QueryPredicate(queryOne)
-		residualQuery := predicates.QueryPredicate(queryTwo)
-		if alternativeIndex == 1 {
-			selectedQuery, residualQuery = residualQuery, selectedQuery
+		alternative := alternatives[0]
+		if got := selectSubsumptionPredicateTestEqualityLiteral(
+			t, alternative.parameterBindings[parameterAlias],
+		); got != 1 {
+			t.Fatalf("bound literal = %d, want the first equality", got)
 		}
 		sargableMapping := selectSubsumptionPredicateTestMappingTo(
-			t,
-			alternative.predicateMap,
-			selectedQuery,
-			placeholder,
+			t, alternative.predicateMap, queryOne, placeholder,
 		)
 		compensation := sargableMapping.GetPredicateCompensation()
 		if compensation(
@@ -326,30 +309,58 @@ func TestSelectSubsumptionPredicateAlternativesSharedPlaceholderRetainsResidual(
 			},
 			nil,
 		).IsNeeded() {
-			t.Fatalf(
-				"alternative %d sargable mapping compensated despite a bound prefix",
-				alternativeIndex,
-			)
+			t.Fatal("sargable mapping compensated despite a bound prefix")
 		}
 		if !compensation(nil, nil, nil).IsNeeded() {
-			t.Fatalf(
-				"alternative %d sargable mapping did not reapply without a bound prefix",
-				alternativeIndex,
-			)
+			t.Fatal("sargable mapping did not reapply without a bound prefix")
 		}
-
-		residualMappings := alternative.predicateMap.Get(residualQuery)
+		residualMappings := alternative.predicateMap.Get(queryTwo)
 		if len(residualMappings) != 1 ||
-			!predicates.IsTautology(
-				residualMappings[0].GetCandidatePredicate(),
-			) ||
+			!predicates.IsTautology(residualMappings[0].GetCandidatePredicate()) ||
 			residualMappings[0].GetCandidatePredicate() == placeholder {
-			t.Fatalf(
-				"alternative %d did not retain the unselected query as a fresh residual",
-				alternativeIndex,
-			)
+			t.Fatal("the second equality must be a fresh residual, not a placeholder binding")
 		}
-	}
+	})
+
+	t.Run("two inequalities: one range carries both", func(t *testing.T) {
+		gt := predicates.NewComparisonPredicate(
+			selectSubsumptionTestField(candidateAlias, "x"),
+			predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(1)),
+		)
+		lt := predicates.NewComparisonPredicate(
+			selectSubsumptionTestField(candidateAlias, "x"),
+			predicates.NewLiteralComparison(predicates.ComparisonLessThan, int64(9)),
+		)
+		alternatives := collectSelectSubsumptionPredicateTestAlternatives(
+			t,
+			[]predicates.QueryPredicate{gt, lt},
+			[]predicates.QueryPredicate{gt, lt},
+			candidateSelect,
+			EmptyAliasMap(),
+		)
+		if len(alternatives) != 1 {
+			t.Fatalf("alternatives = %d, want 1", len(alternatives))
+		}
+		alternative := alternatives[0]
+		bound := alternative.parameterBindings[parameterAlias]
+		if bound == nil || !bound.IsInequality() {
+			t.Fatalf("binding = %#v, want an inequality range", bound)
+		}
+		comparisons := bound.GetInequalityComparisons()
+		if len(comparisons) != 2 ||
+			comparisons[0].Type != predicates.ComparisonGreaterThan ||
+			comparisons[1].Type != predicates.ComparisonLessThan {
+			t.Fatalf("range comparisons = %v, want [> 1, < 9]", comparisons)
+		}
+		gtMapping := selectSubsumptionPredicateTestMappingTo(t, alternative.predicateMap, gt, placeholder)
+		ltMapping := selectSubsumptionPredicateTestMappingTo(t, alternative.predicateMap, lt, placeholder)
+		if gtMapping.GetComparisonRange() != bound || ltMapping.GetComparisonRange() != bound {
+			t.Fatal("both members must carry the SAME merged range object — that is what makes them one fold group")
+		}
+		if alternative.predicateMap.Size() != 2 {
+			t.Fatalf("predicate map has %d mappings, want exactly the two members", alternative.predicateMap.Size())
+		}
+	})
 }
 
 func TestSelectSubsumptionPredicateAlternativesParameterComparisonBindsPlaceholder(
@@ -629,53 +640,53 @@ func TestSelectSubsumptionPredicateAlternativesMergeParameterBindingsChecked(
 	candidateAlias := values.NamedCorrelationIdentifier("candidate")
 	candidateQuantifier := expressions.NamedForEachQuantifier(candidateAlias, ref)
 	parameterAlias := values.NamedCorrelationIdentifier("shared_parameter")
-	placeholderValue := selectSubsumptionTestField(candidateAlias, "x")
-	placeholderOne := predicates.NewPlaceholder(parameterAlias, placeholderValue)
-	placeholderTwo := predicates.NewPlaceholder(parameterAlias, placeholderValue)
+	// Two placeholders over DIFFERENT columns that share one parameter alias:
+	// each is its own candidate group, so the product binds the alias twice,
+	// and the checked parameter merge decides whether the two bindings agree.
+	placeholderX := predicates.NewPlaceholder(parameterAlias, selectSubsumptionTestField(candidateAlias, "x"))
+	placeholderY := predicates.NewPlaceholder(parameterAlias, selectSubsumptionTestField(candidateAlias, "y"))
 	candidateSelect := selectSubsumptionPredicateTestSelect(
 		[]expressions.Quantifier{candidateQuantifier},
-		[]predicates.QueryPredicate{placeholderOne, placeholderTwo},
-	)
-	queryOne := selectSubsumptionPredicateTestComparison(
-		candidateAlias,
-		"x",
-		1,
-	)
-	queryTwo := selectSubsumptionPredicateTestComparison(
-		candidateAlias,
-		"x",
-		2,
+		[]predicates.QueryPredicate{placeholderX, placeholderY},
 	)
 
-	// The two candidate identities each have both query mappings, creating
-	// four raw products. Only the two products whose repeated parameter
-	// bindings agree may survive.
-	alternatives := collectSelectSubsumptionPredicateTestAlternatives(
+	agreeing := collectSelectSubsumptionPredicateTestAlternatives(
 		t,
-		[]predicates.QueryPredicate{queryOne, queryTwo},
-		[]predicates.QueryPredicate{queryOne, queryTwo},
+		[]predicates.QueryPredicate{
+			selectSubsumptionPredicateTestComparison(candidateAlias, "x", 1),
+			selectSubsumptionPredicateTestComparison(candidateAlias, "y", 1),
+		},
+		[]predicates.QueryPredicate{
+			selectSubsumptionPredicateTestComparison(candidateAlias, "x", 1),
+			selectSubsumptionPredicateTestComparison(candidateAlias, "y", 1),
+		},
 		candidateSelect,
 		EmptyAliasMap(),
 	)
-	if len(alternatives) != 2 {
-		t.Fatalf(
-			"checked parameter merge retained %d alternatives, want 2",
-			len(alternatives),
-		)
+	if len(agreeing) != 1 {
+		t.Fatalf("agreeing bindings retained %d alternatives, want 1", len(agreeing))
 	}
-	for alternativeIndex, alternative := range alternatives {
-		wantLiteral := int64(alternativeIndex + 1)
-		if got := selectSubsumptionPredicateTestEqualityLiteral(
-			t,
-			alternative.parameterBindings[parameterAlias],
-		); got != wantLiteral {
-			t.Fatalf(
-				"alternative %d literal = %d, want %d",
-				alternativeIndex,
-				got,
-				wantLiteral,
-			)
-		}
+	if got := selectSubsumptionPredicateTestEqualityLiteral(
+		t, agreeing[0].parameterBindings[parameterAlias],
+	); got != 1 {
+		t.Fatalf("agreeing literal = %d, want 1", got)
+	}
+
+	conflicting := collectSelectSubsumptionPredicateTestAlternatives(
+		t,
+		[]predicates.QueryPredicate{
+			selectSubsumptionPredicateTestComparison(candidateAlias, "x", 1),
+			selectSubsumptionPredicateTestComparison(candidateAlias, "y", 2),
+		},
+		[]predicates.QueryPredicate{
+			selectSubsumptionPredicateTestComparison(candidateAlias, "x", 1),
+			selectSubsumptionPredicateTestComparison(candidateAlias, "y", 2),
+		},
+		candidateSelect,
+		EmptyAliasMap(),
+	)
+	if len(conflicting) != 0 {
+		t.Fatalf("conflicting bindings of one alias retained %d alternatives, want 0", len(conflicting))
 	}
 }
 

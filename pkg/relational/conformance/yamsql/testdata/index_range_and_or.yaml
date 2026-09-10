@@ -44,9 +44,10 @@ tests:
       - [12, 20, 12]
       - [13, 20, 13]
 
-  # and_range_both_bounds
+  # and_range_both_bounds — one two-sided range scan, no residual (RFC-249)
   - query: SELECT * FROM t1 WHERE col1 >= 10 AND col1 <= 20 ORDER BY id
-    plan_contains: "PredicatesFilter(IndexScan(I1, [<>] COVERING)"
+    plan_contains: "IndexScan(I1, [<>])"
+    plan_not_contains: "PredicatesFilter"
     rows:
       - [1, 10, 1]
       - [2, 10, 2]

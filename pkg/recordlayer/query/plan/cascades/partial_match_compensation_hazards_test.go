@@ -902,12 +902,14 @@ func TestCompensate_PropagatesPrimaryKeyDistinctObligation(t *testing.T) {
 	}
 }
 
-// TestCompensate_PrefersTopLevelPredicateMappingBeforeLegacyFlatten pins the
-// representation seam between the general Select subsumption path and the
-// older single-source Filter adapter. General Select matching keys a mapping
-// by the original top-level predicate identity; flattening an AND before the
-// lookup asks for its children instead and silently drops the whole residual.
-func TestCompensate_PrefersTopLevelPredicateMappingBeforeLegacyFlatten(
+// TestCompensate_ConjunctsAreCompensatedByTheirOwnIdentity pins the
+// representation the compensator reads: a filter's predicate list IS its
+// conjunction (NewLogicalFilterExpression lifts a top-level AND, as Java's
+// SelectExpression constructor does), so every mapping is keyed by a conjunct
+// and looked up by that identity. A mapping keyed by the AND object the
+// caller built is never consulted — the AND is not a predicate of the
+// expression — and each mapped leaf is compensated exactly once.
+func TestCompensate_ConjunctsAreCompensatedByTheirOwnIdentity(
 	t *testing.T,
 ) {
 	t.Parallel()
@@ -934,95 +936,56 @@ func TestCompensate_PrefersTopLevelPredicateMappingBeforeLegacyFlatten(
 		)
 	}
 
-	t.Run("top-level identity wins", func(t *testing.T) {
-		builder := NewPredicateMultiMapBuilder()
-		putResidual(builder, topLevelAnd)
-		// Populate the legacy leaf keys too. Their presence makes the
-		// precedence assertion load-bearing: a compensator that flattens
-		// first would emit both leaves in addition to (or instead of) the AND.
-		putResidual(builder, left)
-		putResidual(builder, right)
+	builder := NewPredicateMultiMapBuilder()
+	// A mapping under the AND object is unreachable: the expression built
+	// from [And(left, right)] holds left and right, not the AND.
+	putResidual(builder, topLevelAnd)
+	putResidual(builder, left)
+	putResidual(builder, right)
 
-		pm := hazardScanPM(
-			t,
-			[]predicates.QueryPredicate{topLevelAnd},
-			builder.Build(),
-		)
-		compensation := pm.CompensateCompleteMatch(
-			nil,
-			values.NamedCorrelationIdentifier("candidate_top"),
-		)
-		forMatch, ok := compensation.(*ForMatchCompensation)
-		if !ok {
-			t.Fatalf(
-				"top-level AND compensation = %T, want *ForMatchCompensation",
-				compensation,
-			)
-		}
-		predicateCompensation := forMatch.GetPredicateCompensationMap()
-		if predicateCompensation.Len() != 1 {
-			t.Fatalf(
-				"predicate compensation count = %d, want only the top-level AND",
-				predicateCompensation.Len(),
-			)
-		}
-		if predicateCompensation.Get(topLevelAnd) == nil {
-			t.Fatal("top-level AND residual mapping was dropped by conjunct flattening")
-		}
-		if predicateCompensation.Get(left) != nil ||
-			predicateCompensation.Get(right) != nil {
-			t.Fatal("top-level mapping must win before the legacy conjunct fallback")
-		}
-		residuals, compensable := predicateCompensation.ApplyCompensations(nil)
-		if !compensable {
-			t.Fatal("compensation reported it could not be expressed")
-		}
-		if len(residuals) != 1 || residuals[0] != topLevelAnd {
-			t.Fatalf("residuals = %v, want the one original top-level AND", residuals)
-		}
-	})
+	pm := hazardScanPM(
+		t,
+		[]predicates.QueryPredicate{topLevelAnd},
+		builder.Build(),
+	)
+	if got := pm.GetQueryExpression().GetQuantifiers(); len(got) != 1 {
+		t.Fatalf("fixture quantifiers = %d, want 1", len(got))
+	}
+	filter, ok := pm.GetQueryExpression().(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("fixture query expression = %T, want a LogicalFilterExpression", pm.GetQueryExpression())
+	}
+	if preds := filter.GetPredicates(); len(preds) != 2 || preds[0] != left || preds[1] != right {
+		t.Fatalf("filter predicates = %v, want the two conjuncts lifted from the AND", preds)
+	}
 
-	t.Run("legacy leaf fallback remains complete", func(t *testing.T) {
-		builder := NewPredicateMultiMapBuilder()
-		putResidual(builder, left)
-		putResidual(builder, right)
-
-		pm := hazardScanPM(
-			t,
-			[]predicates.QueryPredicate{topLevelAnd},
-			builder.Build(),
+	compensation := pm.CompensateCompleteMatch(
+		nil,
+		values.NamedCorrelationIdentifier("candidate_top"),
+	)
+	forMatch, ok := compensation.(*ForMatchCompensation)
+	if !ok {
+		t.Fatalf("compensation = %T, want *ForMatchCompensation", compensation)
+	}
+	predicateCompensation := forMatch.GetPredicateCompensationMap()
+	if predicateCompensation.Len() != 2 {
+		t.Fatalf(
+			"predicate compensation count = %d, want both conjuncts",
+			predicateCompensation.Len(),
 		)
-		compensation := pm.CompensateCompleteMatch(
-			nil,
-			values.NamedCorrelationIdentifier("candidate_top"),
-		)
-		forMatch, ok := compensation.(*ForMatchCompensation)
-		if !ok {
-			t.Fatalf(
-				"legacy leaf compensation = %T, want *ForMatchCompensation",
-				compensation,
-			)
-		}
-		predicateCompensation := forMatch.GetPredicateCompensationMap()
-		if predicateCompensation.Len() != 2 {
-			t.Fatalf(
-				"predicate compensation count = %d, want both legacy leaves",
-				predicateCompensation.Len(),
-			)
-		}
-		if predicateCompensation.Get(topLevelAnd) != nil ||
-			predicateCompensation.Get(left) == nil ||
-			predicateCompensation.Get(right) == nil {
-			t.Fatal("legacy fallback must compensate each mapped leaf exactly once")
-		}
-		residuals, compensable := predicateCompensation.ApplyCompensations(nil)
-		if !compensable {
-			t.Fatal("compensation reported it could not be expressed")
-		}
-		if len(residuals) != 2 || residuals[0] != left || residuals[1] != right {
-			t.Fatalf("residuals = %v, want left and right once in order", residuals)
-		}
-	})
+	}
+	if predicateCompensation.Get(topLevelAnd) != nil ||
+		predicateCompensation.Get(left) == nil ||
+		predicateCompensation.Get(right) == nil {
+		t.Fatal("each conjunct must be compensated by its own identity, and the AND object not at all")
+	}
+	residuals, compensable := predicateCompensation.ApplyCompensations(nil)
+	if !compensable {
+		t.Fatal("compensation reported it could not be expressed")
+	}
+	if len(residuals) != 2 || residuals[0] != left || residuals[1] != right {
+		t.Fatalf("residuals = %v, want left and right once in order", residuals)
+	}
 }
 
 // TestNestPullUp_RootIsOnlyOwnedWhenNestingStartsAMatch pins which of the two

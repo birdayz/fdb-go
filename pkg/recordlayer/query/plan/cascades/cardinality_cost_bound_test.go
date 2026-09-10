@@ -251,7 +251,7 @@ func cardinalityEqualityRange(t testing.TB, literal any) *predicates.ComparisonR
 		Operand: cardinalityLiteral(t, literal),
 	}
 	merged := predicates.EmptyComparisonRange().Merge(&comparison)
-	if !merged.Ok {
+	if !merged.Complete() {
 		t.Fatal("failed to build cardinality equality range")
 	}
 	return merged.Range

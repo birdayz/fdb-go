@@ -21,7 +21,7 @@ func TestInJoinRule_OrderingAware_MatchesExplodeAlias(t *testing.T) {
 		Operand: inRuleQOV(explodeAlias, values.NotNullLong),
 	}
 	result := predicates.EmptyComparisonRange().Merge(&eqComp)
-	if !result.Ok || result.Range == nil {
+	if !result.Complete() || result.Range == nil {
 		t.Fatal("merge should succeed")
 	}
 
@@ -84,7 +84,7 @@ func TestInJoinRule_SortedClaimIsBackedByActuallySortedValues(t *testing.T) {
 		Operand: inRuleQOV(explodeAlias, values.NotNullLong),
 	}
 	result := predicates.EmptyComparisonRange().Merge(&eqComp)
-	if !result.Ok || result.Range == nil {
+	if !result.Complete() || result.Range == nil {
 		t.Fatal("merge should succeed")
 	}
 
@@ -171,7 +171,7 @@ func TestInJoinRule_OrderingAware_RichOrderingFromIndexScan(t *testing.T) {
 
 	eqComp := predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(42))
 	eqResult := predicates.EmptyComparisonRange().Merge(&eqComp)
-	if !eqResult.Ok || eqResult.Range == nil {
+	if !eqResult.Complete() || eqResult.Range == nil {
 		t.Fatal("equality range merge should succeed")
 	}
 

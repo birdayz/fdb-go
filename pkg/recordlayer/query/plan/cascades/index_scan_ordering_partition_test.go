@@ -109,7 +109,7 @@ func indexOrderingEqualityRange(t testing.TB, literal int64) *predicates.Compari
 		Operand: &values.ConstantValue{Value: literal, Typ: values.NotNullLong},
 	}
 	rangeResult := predicates.EmptyComparisonRange().Merge(comparison)
-	if !rangeResult.Ok {
+	if !rangeResult.Complete() {
 		t.Fatal("construct exact index equality range")
 	}
 	return rangeResult.Range

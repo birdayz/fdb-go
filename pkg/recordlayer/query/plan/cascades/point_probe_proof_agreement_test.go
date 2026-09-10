@@ -187,7 +187,7 @@ func TestUniqueIndexProofsAgreeOnNullableNullAndComparisonGaps(t *testing.T) {
 	rangeOf := func(comparison predicates.Comparison) *predicates.ComparisonRange {
 		t.Helper()
 		merged := predicates.EmptyComparisonRange().Merge(&comparison)
-		if !merged.Ok {
+		if !merged.Complete() {
 			t.Fatalf("failed to build %s range", comparison.Type.Symbol())
 		}
 		return merged.Range

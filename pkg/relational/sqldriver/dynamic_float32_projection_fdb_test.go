@@ -97,7 +97,7 @@ func TestFDB_DynamicFloat32IndexProjection(t *testing.T) {
 			Type:    comparisonType,
 			Operand: values.NewParameterValue(1),
 		})
-		if !merged.Ok {
+		if !merged.Complete() {
 			t.Fatalf("comparison range merge failed for %v", comparisonType)
 		}
 		return merged.Range

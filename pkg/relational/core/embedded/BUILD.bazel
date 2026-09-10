@@ -118,6 +118,7 @@ go_test(
         "cascades_generator_pagination_test.go",
         "closure_sparse_unique_candidate_test.go",
         "colref_split_test.go",
+        "conjunction_binding_test.go",
         "connection_recover_test.go",
         "continuation_option_test.go",
         "correlated_exists_classifier_test.go",
@@ -433,6 +434,7 @@ go_test(
         "equality_prefix_pins_per_coordinate_test.go",
         "plan_stress_shapes_bench_test.go",
         "aggregate_index_residual_test.go",
+        "conjunction_binding_test.go",
     ],
     deps = [
         "//gen",

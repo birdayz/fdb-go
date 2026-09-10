@@ -188,10 +188,12 @@ func TestRangeConstraints_AsComparisonRange(t *testing.T) {
 // TestRangeConstraints_AsComparisonRangeRefusesToWeaken pins the reason
 // AsComparisonRange reports failure rather than returning a range.
 //
-// Go's MergeResult carries no residual list, so a rejected merge has nowhere to
-// put the conjunct. The loop used to skip it: `x = 5 AND x > 7` came back as
-// `x = 5` — a WEAKER range than the input, with no signal — and a caller
-// filtering on that returns rows the constraints excluded.
+// The merge itself is total and reports `x > 7` as a residual of `x = 5 AND
+// x > 7`, but this signature has nowhere to hand a residual on, so it must
+// refuse rather than answer `x = 5` — a WEAKER range than the input, with no
+// signal — which a caller filtering on would turn into rows the constraints
+// excluded. (The loop once did exactly that: it skipped the rejected
+// conjunct.)
 func TestRangeConstraints_AsComparisonRangeRefusesToWeaken(t *testing.T) {
 	t.Parallel()
 

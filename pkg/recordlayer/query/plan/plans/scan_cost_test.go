@@ -13,7 +13,7 @@ func scanCostRange(t *testing.T, comparisonType predicates.ComparisonType, value
 	t.Helper()
 	comparison := predicates.NewLiteralComparison(comparisonType, value)
 	merge := predicates.EmptyComparisonRange().Merge(&comparison)
-	if !merge.Ok {
+	if !merge.Complete() {
 		t.Fatalf("failed to build %v comparison range", comparisonType)
 	}
 	return merge.Range

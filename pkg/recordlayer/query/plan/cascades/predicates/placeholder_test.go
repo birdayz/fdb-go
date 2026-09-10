@@ -48,7 +48,7 @@ func TestPlaceholder_WithRangeCreatesNewPlaceholder(t *testing.T) {
 	}
 	eqRange := EmptyComparisonRange()
 	result := eqRange.Merge(eqComp)
-	if !result.Ok {
+	if !result.Complete() {
 		t.Fatal("Merge failed unexpectedly")
 	}
 
@@ -92,7 +92,7 @@ func TestPlaceholder_IsConstraining(t *testing.T) {
 	}
 	eqRange := EmptyComparisonRange()
 	result := eqRange.Merge(eqComp)
-	if !result.Ok {
+	if !result.Complete() {
 		t.Fatal("Merge failed")
 	}
 	constrained := p.WithRange(result.Range)
@@ -214,7 +214,7 @@ func TestPlaceholder_GetCorrelatedTo_IncludesRangeComparands(t *testing.T) {
 				Operand: mustQOV(t, comparandAlias),
 			}
 			merged := EmptyComparisonRange().Merge(&comparison)
-			if !merged.Ok {
+			if !merged.Complete() {
 				t.Fatal("setup: comparison did not merge into an empty range")
 			}
 
@@ -253,11 +253,11 @@ func TestPlaceholder_GetCorrelatedTo_IncludesEveryInequalityComparand(t *testing
 		Operand: mustQOV(t, upperAlias),
 	}
 	merged := EmptyComparisonRange().Merge(&lower)
-	if !merged.Ok {
+	if !merged.Complete() {
 		t.Fatal("setup: lower comparison did not merge")
 	}
 	merged = merged.Range.Merge(&upper)
-	if !merged.Ok {
+	if !merged.Complete() {
 		t.Fatal("setup: upper comparison did not merge")
 	}
 

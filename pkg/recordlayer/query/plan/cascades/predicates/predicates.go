@@ -316,6 +316,39 @@ func NewAnd(preds ...QueryPredicate) *AndPredicate {
 
 func (p *AndPredicate) Children() []QueryPredicate { return p.SubPredicates }
 
+// FlattenConjunction lifts every top-level AndPredicate in preds into the
+// list, recursively, so the list IS the conjunction: `[And(a, And(b, c)), d]`
+// is `[a, b, c, d]`. An AND under an OR or a NOT is that node's child and is
+// left alone. Java's SelectExpression constructor applies this
+// (SelectExpression.partitionPredicates → flattenPredicate(AndPredicate.class)),
+// which is why a Java rule can read a Select's predicate list as its
+// conjuncts; the expression constructors here establish the same invariant.
+// Returns preds itself when nothing needed lifting, so an already-flat list
+// keeps its identity and a constructor call allocates nothing.
+func FlattenConjunction(preds []QueryPredicate) []QueryPredicate {
+	// A typed-nil *AndPredicate is not a conjunction to lift; it stays in the
+	// list for the consumers that fail closed on it.
+	needsLift := false
+	for _, p := range preds {
+		if and, isAnd := p.(*AndPredicate); isAnd && and != nil {
+			needsLift = true
+			break
+		}
+	}
+	if !needsLift {
+		return preds
+	}
+	out := make([]QueryPredicate, 0, len(preds))
+	for _, p := range preds {
+		if and, isAnd := p.(*AndPredicate); isAnd && and != nil {
+			out = append(out, FlattenConjunction(and.SubPredicates)...)
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
 // CountConjuncts returns the number of independent AND-conjuncts in preds,
 // flattening AndPredicate nodes (recursively, so a nested AND(AND(a,b),c)
 // counts as 3) — the same logical residual predicate SET produces the same

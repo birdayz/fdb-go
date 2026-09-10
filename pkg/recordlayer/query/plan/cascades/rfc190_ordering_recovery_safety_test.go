@@ -365,7 +365,7 @@ func TestRFC190OrderedFullScanAlternativesFinalPrimaryScanSafety(t *testing.T) {
 		comparison := predicates.NewLiteralComparison(
 			predicates.ComparisonEquals, int64(7))
 		merged := predicates.EmptyComparisonRange().Merge(&comparison)
-		if !merged.Ok {
+		if !merged.Complete() {
 			t.Fatal("failed to construct bounded-scan comparison")
 		}
 		boundedBase := mustRFC190RecoveryConstruct(plans.NewRecordQueryScanPlan(

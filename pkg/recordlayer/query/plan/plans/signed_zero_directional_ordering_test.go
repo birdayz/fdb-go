@@ -31,7 +31,7 @@ func signedZeroDirectionalRange(t *testing.T, literal any) *predicates.Compariso
 	t.Helper()
 	cmp := predicates.NewLiteralComparison(predicates.ComparisonEquals, literal)
 	res := predicates.EmptyComparisonRange().Merge(&cmp)
-	if !res.Ok {
+	if !res.Complete() {
 		t.Fatal("failed to build equality comparison range")
 	}
 	return res.Range

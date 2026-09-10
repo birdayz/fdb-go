@@ -52,11 +52,9 @@ func TestScanRangeEqualityIsADeliberateDivergenceFromJava(t *testing.T) {
 		ComparisonDistanceRankLessThan:     false,
 		ComparisonDistanceRankLessThanOrEq: false,
 
-		// Java's NONE arm. Go's Merge has no NONE concept — every non-exact-key
-		// type becomes an INEQUALITY rather than a residual — which is a separate
-		// divergence recorded in TODO.md under the MergeResult residual-list
-		// entry. This census covers the EQUALITY boundary only, and on that
-		// boundary these agree with Java.
+		// Java's NONE arm: not an exact key here either, and not an ordered
+		// bound — scanRangeComparisonType sends these to a residual, pinned by
+		// TestScanRangeComparisonType_NoneArmMatchesJava below.
 		ComparisonNotEquals:               false,
 		ComparisonIn:                      false,
 		ComparisonIsDistinctFrom:          false,
@@ -123,8 +121,8 @@ func TestScanRangeClassification_DistanceRankEqualsStaysATail(t *testing.T) {
 	} {
 		c := Comparison{Type: typ, Operand: values.LiteralValue(int64(3))}
 		res := EmptyComparisonRange().Merge(&c)
-		if !res.Ok || res.Range == nil {
-			t.Fatalf("%s: merging into an empty range must succeed, got ok=%v", typ.Symbol(), res.Ok)
+		if !res.Complete() || res.Range == nil {
+			t.Fatalf("%s: merging into an empty range must succeed, got ok=%v", typ.Symbol(), res.Complete())
 		}
 		if !res.Range.IsInequality() {
 			t.Errorf("%s built a %v range, want an INEQUALITY. For DISTANCE_RANK_EQUALS this "+
@@ -143,8 +141,68 @@ func TestScanRangeClassification_DistanceRankEqualsStaysATail(t *testing.T) {
 	} {
 		c := Comparison{Type: typ, Operand: values.LiteralValue(int64(3))}
 		res := EmptyComparisonRange().Merge(&c)
-		if !res.Ok || res.Range == nil || !res.Range.IsEquality() {
-			t.Errorf("%s must build an EQUALITY range; ok=%v", typ.Symbol(), res.Ok)
+		if !res.Complete() || res.Range == nil || !res.Range.IsEquality() {
+			t.Errorf("%s must build an EQUALITY range; ok=%v", typ.Symbol(), res.Complete())
 		}
+	}
+}
+
+// TestScanRangeComparisonType_NoneArmMatchesJava is the three-way census the
+// merge actually runs on: Java's ScanComparisons.getComparisonType
+// (EQUALITY / INEQUALITY / NONE), with the two deliberate Go differences the
+// equality census above documents. A NONE type never enters a range —
+// Merge hands it back as a residual — which is what makes Merge total.
+func TestScanRangeComparisonType_NoneArmMatchesJava(t *testing.T) {
+	t.Parallel()
+
+	want := map[ComparisonType]scanRangeComparisonKind{
+		ComparisonEquals:                   scanRangeEquality,
+		ComparisonIsNull:                   scanRangeEquality,
+		ComparisonNotDistinctFrom:          scanRangeEquality, // Go-only exact key
+		ComparisonLessThan:                 scanRangeInequality,
+		ComparisonLessThanOrEq:             scanRangeInequality,
+		ComparisonGreaterThan:              scanRangeInequality,
+		ComparisonGreaterThanEq:            scanRangeInequality,
+		ComparisonStartsWith:               scanRangeInequality,
+		ComparisonIsNotNull:                scanRangeInequality,
+		ComparisonSort:                     scanRangeInequality,
+		ComparisonDistanceRankEquals:       scanRangeInequality, // Java EQUALITY; Go bound, see the census above
+		ComparisonDistanceRankLessThan:     scanRangeInequality,
+		ComparisonDistanceRankLessThanOrEq: scanRangeInequality,
+		ComparisonNotEquals:                scanRangeNone,
+		ComparisonIn:                       scanRangeNone,
+		ComparisonIsDistinctFrom:           scanRangeNone,
+		ComparisonLike:                     scanRangeNone,
+		ComparisonTextContainsAll:          scanRangeNone,
+		ComparisonTextContainsAllWithin:    scanRangeNone,
+		ComparisonTextContainsAny:          scanRangeNone,
+		ComparisonTextContainsPhrase:       scanRangeNone,
+		ComparisonTextContainsPrefix:       scanRangeNone,
+		ComparisonTextContainsAllPrefixes:  scanRangeNone,
+		ComparisonTextContainsAnyPrefix:    scanRangeNone,
+	}
+	for c := ComparisonEquals; c <= ComparisonDistanceRankLessThanOrEq; c++ {
+		kind, listed := want[c]
+		if !listed {
+			t.Errorf("ComparisonType %d (%s) is not in this census", int(c), c.Symbol())
+			continue
+		}
+		if got := scanRangeComparisonType(c); got != kind {
+			t.Errorf("scanRangeComparisonType(%s) = %v, want %v", c.Symbol(), got, kind)
+		}
+		// The behavioural half: a NONE type offered to the empty range is a
+		// residual and the range stays empty; anything else enters it.
+		comparison := Comparison{Type: c, Operand: values.LiteralValue(int64(3))}
+		res := EmptyComparisonRange().Merge(&comparison)
+		if kind == scanRangeNone {
+			if res.Complete() || !res.Range.IsEmpty() || len(res.Residuals) != 1 || res.Residuals[0] != &comparison {
+				t.Errorf("%s: want residual and an untouched empty range, got %+v", c.Symbol(), res)
+			}
+		} else if !res.Complete() || res.Range.IsEmpty() {
+			t.Errorf("%s: want the comparison in the range, got %+v", c.Symbol(), res)
+		}
+	}
+	if len(want) != int(ComparisonDistanceRankLessThanOrEq)+1 {
+		t.Fatalf("census holds %d types, the enum spans %d", len(want), int(ComparisonDistanceRankLessThanOrEq)+1)
 	}
 }

@@ -2066,7 +2066,7 @@ func normalizeCorrelatedComparisonRanges(
 				}
 			}
 			merged := rebuilt.Merge(normalizedComparison)
-			if !merged.Ok {
+			if !merged.Complete() {
 				return nil, false, fmt.Errorf(
 					"comparison %d could not be rebuilt after exact source normalization", i)
 			}
@@ -4034,7 +4034,7 @@ func rebaseComparisonRange(cr *predicates.ComparisonRange, legAliases []string, 
 			changed = true
 		}
 		res := rebuilt.Merge(nc)
-		if !res.Ok {
+		if !res.Complete() {
 			return cr, false
 		}
 		rebuilt = res.Range
@@ -4361,7 +4361,7 @@ func correlatedExistsComparisonRange(
 		Operand: correlatedOperand,
 	}
 	mergeResult := predicates.EmptyComparisonRange().Merge(comparison)
-	return mergeResult.Range, mergeResult.Ok
+	return mergeResult.Range, mergeResult.Complete()
 }
 
 // tryExistsFlatMap implements an EXISTS subquery as a correlated FlatMap.

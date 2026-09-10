@@ -14,7 +14,7 @@ func pkOrderingEq(t *testing.T, v any) *predicates.ComparisonRange {
 	t.Helper()
 	cmp := predicates.NewLiteralComparison(predicates.ComparisonEquals, v)
 	res := predicates.EmptyComparisonRange().Merge(&cmp)
-	if !res.Ok {
+	if !res.Complete() {
 		t.Fatalf("failed to build equality range for %v", v)
 	}
 	return res.Range
@@ -25,7 +25,7 @@ func pkOrderingGT(t *testing.T, v any) *predicates.ComparisonRange {
 	t.Helper()
 	cmp := predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, v)
 	res := predicates.EmptyComparisonRange().Merge(&cmp)
-	if !res.Ok {
+	if !res.Complete() {
 		t.Fatalf("failed to build > range for %v", v)
 	}
 	return res.Range

@@ -24,7 +24,7 @@ func scanRangeTestComparison(
 	merged := predicates.EmptyComparisonRange().Merge(&predicates.Comparison{
 		Type: typ, Operand: operand,
 	})
-	if !merged.Ok {
+	if !merged.Complete() {
 		t.Fatalf("merge comparison %v failed", typ)
 	}
 	return merged.Range
@@ -1382,7 +1382,7 @@ func TestBindScanComparisonsToRangeSet_IntegerProjectedBoundsIntersectOrderIndep
 		rangeValue := predicates.EmptyComparisonRange()
 		for _, comparison := range comparisons {
 			merged := rangeValue.Merge(comparison)
-			if !merged.Ok {
+			if !merged.Complete() {
 				t.Fatalf("merge %v failed", comparison.Type)
 			}
 			rangeValue = merged.Range
@@ -1477,7 +1477,7 @@ func TestBindScanComparisonsToRangeSet_FloatingBoundsBindInAllInsertionOrders(t 
 		result := predicates.EmptyComparisonRange()
 		for _, candidate := range comparisons {
 			merged := result.Merge(candidate)
-			if !merged.Ok {
+			if !merged.Complete() {
 				t.Fatalf("merge %v failed", candidate.Type)
 			}
 			result = merged.Range
@@ -1724,7 +1724,7 @@ func TestBindScanComparisonsToRangeSet_StringBoundsIntersectOrderIndependently(t
 		result := predicates.EmptyComparisonRange()
 		for _, candidate := range comparisons {
 			merged := result.Merge(candidate)
-			if !merged.Ok {
+			if !merged.Complete() {
 				t.Fatalf("merge %v failed", candidate.Type)
 			}
 			result = merged.Range
@@ -1904,9 +1904,28 @@ func TestBindScanComparisonsToRangeSet_RejectsMalformedTailBeforeProjection(t *t
 		comparisonType := comparisonType
 		t.Run(fmt.Sprintf("unsupported_%v", comparisonType), func(t *testing.T) {
 			t.Parallel()
-			rangeWithFloat := scanRangeTestComparison(
-				t, comparisonType, values.LiteralValue(float64(1.5)),
-			)
+			// Two layers guard the executor's tail, and each type is pinned at
+			// the layer that holds it. A type Java's ScanComparisons sends to
+			// NONE (NOT_EQUALS, IN, LIKE, TEXT_*, IS DISTINCT FROM) never enters
+			// a ComparisonRange at all — Merge hands it back as a residual — so
+			// it cannot reach bindScanComparisonsToRangeSet through any plan;
+			// pin the refusal rather than the executor's arm it can no longer
+			// reach. SORT and the DISTANCE_RANK spellings DO enter a range as
+			// inequalities (the deliberate divergence isScanRangeEqualityType
+			// documents) and it is this binder's rejection that keeps a vector
+			// distance rank from binding as an ordinary tuple key.
+			comparison := &predicates.Comparison{
+				Type: comparisonType, Operand: values.LiteralValue(float64(1.5)),
+			}
+			merged := predicates.EmptyComparisonRange().Merge(comparison)
+			if !merged.Complete() {
+				if merged.Range == nil || !merged.Range.IsEmpty() ||
+					len(merged.Residuals) != 1 || merged.Residuals[0] != comparison {
+					t.Fatalf("%v: Merge must hand the comparison back as the sole residual, got %+v", comparisonType, merged)
+				}
+				return
+			}
+			rangeWithFloat := merged.Range
 			spec, err := bindScanComparisonsToRangeSet(
 				[]*predicates.ComparisonRange{rangeWithFloat},
 				[]values.Type{values.NotNullLong}, nil, false,

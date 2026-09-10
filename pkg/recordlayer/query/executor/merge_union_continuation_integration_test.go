@@ -36,7 +36,7 @@ func priceProbeIndexPlan(t *testing.T, bindingID values.CorrelationIdentifier) p
 		Type:    predicates.ComparisonEquals,
 		Operand: mustTestQOV(t, bindingID, values.NullableInt),
 	})
-	if !res.Ok {
+	if !res.Complete() {
 		t.Fatal("building the binding equality comparison range failed")
 	}
 	return mustExecutorConstruct(plans.NewRecordQueryIndexPlan(

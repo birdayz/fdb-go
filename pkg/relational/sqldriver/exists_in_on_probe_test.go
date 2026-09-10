@@ -54,13 +54,22 @@ func TestFDB_ExistsInOn_Probe(t *testing.T) {
 				"AND EXISTS (SELECT 1 FROM e WHERE e.c_id = c.id)")
 	})
 
-	// EXISTS in ON + EXISTS in WHERE together → two existential quantifiers on
-	// the same join level → also beyond the single-existential NLJ shape.
-	// Rejected cleanly by the buried-existential backstop.
-	t.Run("exists_in_on_plus_where_exists_rejected", func(t *testing.T) {
-		assertUnsupported(t, db, ctx,
+	// EXISTS in ON + EXISTS in WHERE together: both existentials are owned by
+	// the one flat Select the translator builds (translateJoinWithExists
+	// attaches the ON's existential quantifiers as well as the WHERE's) and
+	// the existential peel applies them one after the other. a JOIN c on
+	// a_id: (1,50),(2,51),(1,52); EXISTS d (d={1}) keeps a=1: (1,50),(1,52);
+	// EXISTS e (e.c_id=50) keeps (1,50). This fixture cannot tell a dropped
+	// ON-EXISTS from an applied one (d={1} admits the same rows); the arm
+	// that can is TestFDB_ExistsInOnPlusWhereExists below.
+	t.Run("exists_in_on_plus_where_exists", func(t *testing.T) {
+		got := scanPairs(t, db, ctx,
 			"SELECT a.id, c.id FROM a JOIN c ON c.a_id = a.id AND EXISTS (SELECT 1 FROM d WHERE d.id = a.id) "+
 				"WHERE EXISTS (SELECT 1 FROM e WHERE e.c_id = c.id)")
+		want := []string{"1|50"}
+		if !eqStrSlices(got, want) {
+			t.Errorf("EXISTS-in-ON + WHERE-EXISTS rows = %v, want %v", got, want)
+		}
 	})
 
 	// Uncorrelated EXISTS in ON: EXISTS(SELECT 1 FROM d) is always true (d
@@ -131,5 +140,66 @@ func sortStrings(s []string) {
 		for j := i; j > 0 && s[j-1] > s[j]; j-- {
 			s[j-1], s[j] = s[j], s[j-1]
 		}
+	}
+}
+
+// TestFDB_ExistsInOnPlusWhereExists pins, on data that can tell, that BOTH
+// existentials of `JOIN … ON … AND EXISTS(d) WHERE EXISTS(e)` are applied.
+// The translator used to attach only the WHERE's existential quantifier on
+// this shape, leaving the ON's `EXISTS(q$N)` marker referencing a quantifier
+// no Select owned; the buried-existential backstop happened to reject the
+// query while the ON predicate arrived as one AND, and once the Select
+// constructor lifted the conjunction the dangling marker reached the planner
+// and was dropped — every row the ON-EXISTS should have excluded came back.
+//
+// a={1,2,3}; c: 50→a1, 51→a2, 52→a1, 53→a2; d={2}; e: 900→c50, 901→c51.
+// Join pairs on a_id: (1,50),(2,51),(1,52),(2,53). EXISTS d (a.id ∈ {2}) keeps
+// (2,51),(2,53); EXISTS e (c.id ∈ {50,51}) keeps (2,51). Dropping the
+// ON-EXISTS would return (1,50) as well; dropping the WHERE-EXISTS would
+// return (2,53) as well.
+func TestFDB_ExistsInOnPlusWhereExists(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	setup := openTestDB(t, "/testdb_exists_on_where")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_exists_on_where")
+	mwjoMustExec(t, setup, ctx,
+		"CREATE SCHEMA TEMPLATE exists_on_where "+
+			"CREATE TABLE a (id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE c (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE d (id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE e (id BIGINT, c_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE INDEX c_a_id ON c (a_id) "+
+			"CREATE INDEX e_c_id ON e (c_id)")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_exists_on_where/s WITH TEMPLATE exists_on_where")
+	dsn := fmt.Sprintf("fdbsql:///testdb_exists_on_where?cluster_file=%s&schema=s", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	mwjoMustExec(t, db, ctx, "INSERT INTO a (id) VALUES (1), (2), (3)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO c (id, a_id) VALUES (50, 1), (51, 2), (52, 1), (53, 2)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO d (id) VALUES (2)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO e (id, c_id) VALUES (900, 50), (901, 51)")
+
+	for _, tc := range []struct {
+		name string
+		sql  string
+	}{
+		{"exists_in_on_plus_where_exists", "SELECT a.id, c.id FROM a JOIN c ON c.a_id = a.id AND EXISTS (SELECT 1 FROM d WHERE d.id = a.id) WHERE EXISTS (SELECT 1 FROM e WHERE e.c_id = c.id)"},
+		// Control: the same two existentials both in WHERE, which Java folds
+		// an inner join's ON into anyway.
+		{"both_exists_in_where", "SELECT a.id, c.id FROM a JOIN c ON c.a_id = a.id WHERE EXISTS (SELECT 1 FROM d WHERE d.id = a.id) AND EXISTS (SELECT 1 FROM e WHERE e.c_id = c.id)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := scanPairs(t, db, ctx, tc.sql)
+			want := []string{"2|51"}
+			if !eqStrSlices(got, want) {
+				t.Errorf("rows = %v, want %v\n  sql: %s", got, want, tc.sql)
+			}
+		})
 	}
 }

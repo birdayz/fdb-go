@@ -224,7 +224,7 @@ func rfc190EqualityRange(t *testing.T, literal any) *predicates.ComparisonRange 
 	t.Helper()
 	comparison := predicates.NewLiteralComparison(predicates.ComparisonEquals, literal)
 	merged := predicates.EmptyComparisonRange().Merge(&comparison)
-	if !merged.Ok {
+	if !merged.Complete() {
 		t.Fatal("failed to build equality comparison range")
 	}
 	return merged.Range

@@ -120,7 +120,7 @@ func preorderEqualityRange(t testing.TB, operand values.Value) *predicates.Compa
 	t.Helper()
 	comparison := &predicates.Comparison{Type: predicates.ComparisonEquals, Operand: operand}
 	merged := predicates.EmptyComparisonRange().Merge(comparison)
-	if !merged.Ok {
+	if !merged.Complete() {
 		t.Fatal("failed to create preorder equality comparison range")
 	}
 	return merged.Range
@@ -755,7 +755,7 @@ func cardinalityBoundaryCorpus(t testing.TB) []preorderCandidate {
 func rungEqualityRangeUnchecked(operand values.Value) *predicates.ComparisonRange {
 	comparison := &predicates.Comparison{Type: predicates.ComparisonEquals, Operand: operand}
 	merged := predicates.EmptyComparisonRange().Merge(comparison)
-	if !merged.Ok {
+	if !merged.Complete() {
 		panic("failed to create equality comparison range")
 	}
 	return merged.Range

@@ -105,7 +105,7 @@ func fkChainCorrelatedEq(t *testing.T, outerRT string, outerAlias values.Correla
 	operand := fkChainCorrelatedRef(t, outerRT, outerAlias, field)
 	cmp := predicates.Comparison{Type: predicates.ComparisonEquals, Operand: operand}
 	res := predicates.EmptyComparisonRange().Merge(&cmp)
-	if !res.Ok {
+	if !res.Complete() {
 		t.Fatalf("failed to build correlated eq range")
 	}
 	return res.Range
@@ -197,7 +197,7 @@ func fkChainFKProbeAgainst(t *testing.T, rt, idx string, outerLayout *values.Rec
 		Operand: fkChainField(outerLayout, outerAlias, "ID"),
 	}
 	rng := predicates.EmptyComparisonRange().Merge(&cmp)
-	if !rng.Ok {
+	if !rng.Complete() {
 		t.Fatalf("failed to build correlated eq range against %s", outerLayout.RecordName)
 	}
 	return fkChainProbeFromRange(rt, idx, rng.Range, fkChainIDPK(), false)
@@ -376,7 +376,7 @@ func fkChainCorrelatedNestedEq(t *testing.T, outerRT string, outerAlias values.C
 	}
 	cmp := predicates.Comparison{Type: predicates.ComparisonEquals, Operand: operand}
 	res := predicates.EmptyComparisonRange().Merge(&cmp)
-	if !res.Ok {
+	if !res.Complete() {
 		t.Fatalf("failed to build correlated nested eq range")
 	}
 	return res.Range
@@ -917,7 +917,7 @@ func TestFKChainCardinalityCap_DeclinesOnSameLeafNameDifferentDomain(t *testing.
 
 	cmp := predicates.Comparison{Type: predicates.ComparisonEquals, Operand: misdomained}
 	res := predicates.EmptyComparisonRange().Merge(&cmp)
-	if !res.Ok {
+	if !res.Complete() {
 		t.Fatal("failed to build the misdomained eq range")
 	}
 	inner := mustFKChain(plans.NewRecordQueryIndexPlan("t3_by_t2",
@@ -1015,7 +1015,7 @@ func TestFKChainCardinalityCap_DeclinesOnSameLayoutOtherCorrelation(t *testing.T
 
 	cmp := predicates.Comparison{Type: predicates.ComparisonEquals, Operand: selfBind}
 	res := predicates.EmptyComparisonRange().Merge(&cmp)
-	if !res.Ok {
+	if !res.Complete() {
 		t.Fatal("failed to build the self-correlated eq range")
 	}
 	inner := mustFKChain(plans.NewRecordQueryScanPlan([]string{"T2"}, fkChainRowType("T2"), false)).
@@ -1127,7 +1127,7 @@ func fkTypedEquality(
 	operand := fkChainField(layout, alias, field)
 	comparison := predicates.Comparison{Type: predicates.ComparisonEquals, Operand: operand}
 	merged := predicates.EmptyComparisonRange().Merge(&comparison)
-	if !merged.Ok {
+	if !merged.Complete() {
 		t.Fatal("failed to construct typed correlated equality")
 	}
 	return merged.Range

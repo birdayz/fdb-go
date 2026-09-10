@@ -256,7 +256,7 @@ func FuzzComparisonRange_MergeChain(f *testing.F) {
 			val := int64(ops[i+1])
 			c := predicates.NewLiteralComparison(cmpType, val)
 			res := r.Merge(&c)
-			if res.Ok {
+			if res.Complete() {
 				r = res.Range
 			}
 			if r.IsEquality() && r.GetEqualityComparison() == nil {

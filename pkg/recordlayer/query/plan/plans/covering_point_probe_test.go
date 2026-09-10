@@ -31,7 +31,7 @@ func pointProbeScan(t *testing.T, unique, bindAll bool) *RecordQueryIndexPlan {
 			Operand: &values.ConstantValue{Value: v, Typ: values.NullableLong},
 		}
 		mr := predicates.EmptyComparisonRange().Merge(&comp)
-		if !mr.Ok {
+		if !mr.Complete() {
 			t.Fatal("premise broken: could not build an equality comparison range")
 		}
 		return mr.Range

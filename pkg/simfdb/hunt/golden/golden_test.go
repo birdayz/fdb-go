@@ -342,6 +342,15 @@ func corpus() []Scenario {
 // (review the diff before committing). The capture is asserted deterministic first — a golden is
 // only meaningful if the same scenario yields identical bytes every run.
 //
+// RFC-249 REFRESH (a conjunction binds one range per column). One PLAN line
+// in orders moved and zero ROWS lines: `val IS NOT NULL AND val <= 150 ORDER BY
+// id` was `InMemorySort(Fetch(PredicatesFilter(IndexScan(IDX_VAL, [<>] COVERING),
+// [1 preds])))` — one bound in the scan, the other a residual re-checked over the
+// covering entry, then a fetch — and is now `InMemorySort(IndexScan(IDX_VAL,
+// [<>]))` with BOTH comparisons in the one scan range and no residual. The
+// bare IndexScan is record-resolving (class B above), so no partial record
+// escapes; the row block is byte-identical including order.
+//
 // WHY THESE BASELINES MOVED (RFC-232, exact physical row owners). The reviewed
 // refresh changes 34 PLAN lines across all six scenarios and zero ROWS, column
 // metadata, or datum lines. Three explain changes expose information the

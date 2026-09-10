@@ -19,7 +19,7 @@ func eqRange(t *testing.T, lit any) *predicates.ComparisonRange {
 		Type:    predicates.ComparisonEquals,
 		Operand: values.LiteralValue(lit),
 	})
-	if !res.Ok {
+	if !res.Complete() {
 		t.Fatalf("EmptyComparisonRange().Merge(= %v) failed", lit)
 	}
 	return res.Range

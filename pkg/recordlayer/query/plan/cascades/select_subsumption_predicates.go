@@ -19,10 +19,13 @@ type selectSubsumptionPredicateAlternativeBuilder func() (
 
 // selectSubsumptionPredicateCandidateGroup holds every query-predicate mapping
 // that can cover one candidate predicate. Candidate identity, rather than
-// semantic equality, defines a group.
+// semantic equality, defines a group. Each alternative is the list of
+// mappings the product selects for the candidate together: one mapping for a
+// non-placeholder candidate, and for a placeholder the members of ONE fold
+// (see selectSubsumptionFoldPlaceholderGroup).
 type selectSubsumptionPredicateCandidateGroup struct {
-	candidate predicates.QueryPredicate
-	mappings  []*PredicateMapping
+	candidate    predicates.QueryPredicate
+	alternatives [][]*PredicateMapping
 }
 
 // enumerateSelectSubsumptionPredicateAlternatives streams the predicate
@@ -31,11 +34,16 @@ type selectSubsumptionPredicateCandidateGroup struct {
 // Like Java SelectExpression.subsumedBy, the product is grouped by candidate
 // predicate identity: each filtering candidate must choose exactly one query
 // predicate that implies it, while one query predicate may cover several
-// distinct candidates. Go additionally completes every product with a fresh
-// TRUE residual mapping for each original query predicate that the selected
-// candidate mappings did not use. PartialMatch compensation ignores a query
-// predicate with no mapping, so this completion is required to preserve every
-// query-side filter.
+// distinct candidates. A placeholder candidate is the one exception, and it
+// is Java's own: Java folds every comparison on one column into a single
+// sargable before matching, so a placeholder sees one query predicate; Go
+// keeps one comparison per query predicate and folds the placeholder's
+// mappings into ONE alternative here (foldPlaceholderBindings), the members
+// sharing the merged range. Go additionally completes every product with a
+// fresh TRUE residual mapping for each original query predicate that the
+// selected candidate mappings did not use — the fold's non-members among
+// them. PartialMatch compensation ignores a query predicate with no mapping,
+// so this completion is required to preserve every query-side filter.
 //
 // Candidate groups and their mappings retain first-discovery order (query
 // order, then candidate order). visit receives a stable lazy builder and may
@@ -99,6 +107,7 @@ func enumerateSelectSubsumptionPredicateAlternatives(
 	}
 
 	groups := make([]selectSubsumptionPredicateCandidateGroup, 0)
+	groupMappings := make([][]*PredicateMapping, 0)
 	groupIndexes := make(map[string]int, len(candidatePredicates))
 	for queryIndex, translatedQueryPredicate := range translatedQueryPredicates {
 		seenCandidates := make(map[string]struct{}, len(candidatePredicates))
@@ -130,22 +139,26 @@ func enumerateSelectSubsumptionPredicateAlternatives(
 						candidate: candidatePredicate,
 					},
 				)
+				groupMappings = append(groupMappings, nil)
 			}
-			groups[groupIndex].mappings = append(
-				groups[groupIndex].mappings,
-				mapping,
-			)
+			groupMappings[groupIndex] = append(groupMappings[groupIndex], mapping)
 		}
 	}
+	for groupIndex := range groups {
+		groups[groupIndex].alternatives = selectSubsumptionGroupAlternatives(
+			groups[groupIndex].candidate,
+			groupMappings[groupIndex],
+		)
+	}
 
-	selectedMappings := make([]*PredicateMapping, len(groups))
+	selectedMappings := make([][]*PredicateMapping, len(groups))
 	var enumerate func(int) bool
 	enumerate = func(depth int) bool {
 		if depth == len(groups) {
-			mappingSnapshot := append(
-				[]*PredicateMapping(nil),
-				selectedMappings...,
-			)
+			var mappingSnapshot []*PredicateMapping
+			for _, selected := range selectedMappings {
+				mappingSnapshot = append(mappingSnapshot, selected...)
+			}
 			return visit(func() (
 				map[values.CorrelationIdentifier]*predicates.ComparisonRange,
 				*PredicateMultiMap,
@@ -160,8 +173,8 @@ func enumerateSelectSubsumptionPredicateAlternatives(
 			})
 		}
 
-		for _, mapping := range groups[depth].mappings {
-			selectedMappings[depth] = mapping
+		for _, alternative := range groups[depth].alternatives {
+			selectedMappings[depth] = alternative
 			if !enumerate(depth + 1) {
 				return false
 			}
@@ -170,6 +183,92 @@ func enumerateSelectSubsumptionPredicateAlternatives(
 		return true
 	}
 	return enumerate(0)
+}
+
+// selectSubsumptionGroupAlternatives turns one candidate's mappings into the
+// alternatives the product enumerates. A non-placeholder candidate offers
+// each mapping on its own, as Java's cross product does. A placeholder's
+// mappings are all sargable bindings of one column; they fold into ONE
+// alternative holding the members of the fold, each rebuilt over the merged
+// range — Java's single sargable per column. The non-members carry no
+// mapping and are completed as residuals by
+// buildSelectSubsumptionPredicateAlternative.
+func selectSubsumptionGroupAlternatives(
+	candidate predicates.QueryPredicate,
+	mappings []*PredicateMapping,
+) [][]*PredicateMapping {
+	oneEach := func() [][]*PredicateMapping {
+		alternatives := make([][]*PredicateMapping, 0, len(mappings))
+		for _, mapping := range mappings {
+			alternatives = append(alternatives, []*PredicateMapping{mapping})
+		}
+		return alternatives
+	}
+	placeholder, isPlaceholder := candidate.(*predicates.Placeholder)
+	if !isPlaceholder || placeholder == nil || len(mappings) < 2 {
+		return oneEach()
+	}
+
+	bound := make([]placeholderBinding, 0, len(mappings))
+	for _, mapping := range mappings {
+		cp, isComparison := mapping.GetTranslatedQueryPredicate().(*predicates.ComparisonPredicate)
+		comparisonRange := mapping.GetComparisonRange()
+		if !isComparison || cp == nil || comparisonRange == nil ||
+			len(comparisonRange.GetComparisons()) != 1 {
+			// Every placeholder mapping is built by
+			// selectSubsumptionPredicateImpliedMappingMaybe over exactly one
+			// bound comparison; a mapping shaped otherwise cannot be folded,
+			// and the group enumerates one mapping per alternative as the
+			// cross product always did.
+			return oneEach()
+		}
+		bound = append(bound, placeholderBinding{
+			pred:       mapping.GetOriginalQueryPredicate(),
+			cp:         cp,
+			comparison: comparisonRange.GetComparisons()[0],
+		})
+	}
+	merged, members := foldPlaceholderBindings(bound)
+	if len(members) == 0 {
+		return oneEach()
+	}
+	alternative := make([]*PredicateMapping, 0, len(members))
+	for _, member := range members {
+		alternative = append(alternative, selectSubsumptionSargableMapping(
+			member.pred,
+			member.cp,
+			placeholder,
+			merged,
+		))
+	}
+	return [][]*PredicateMapping{alternative}
+}
+
+// selectSubsumptionSargableMapping builds the mapping of one query
+// comparison onto a candidate placeholder over the given range: the
+// compensation re-applies the predicate unless the placeholder's alias is in
+// the scan prefix.
+func selectSubsumptionSargableMapping(
+	originalQueryPredicate predicates.QueryPredicate,
+	translatedQueryPredicate predicates.QueryPredicate,
+	placeholder *predicates.Placeholder,
+	comparisonRange *predicates.ComparisonRange,
+) *PredicateMapping {
+	parameterAlias := placeholder.GetParameterAlias()
+	return RegularMappingBuilder(
+		originalQueryPredicate,
+		translatedQueryPredicate,
+		placeholder,
+	).SetSargable(
+		parameterAlias,
+		comparisonRange,
+	).setKnownPredicateCompensation(
+		selectSubsumptionSargablePredicateCompensation(
+			originalQueryPredicate,
+			parameterAlias,
+		),
+		"select-sargable-prefix",
+	).Build()
 }
 
 // buildSelectSubsumptionPredicateAlternative completes and validates one
@@ -341,21 +440,12 @@ func selectSubsumptionPredicateImpliedMappingMaybe(
 			return nil, false
 		}
 
-		parameterAlias := placeholder.GetParameterAlias()
-		return RegularMappingBuilder(
+		return selectSubsumptionSargableMapping(
 			originalQueryPredicate,
 			translatedQueryPredicate,
-			candidatePredicate,
-		).SetSargable(
-			parameterAlias,
+			placeholder,
 			comparisonRange,
-		).setKnownPredicateCompensation(
-			selectSubsumptionSargablePredicateCompensation(
-				originalQueryPredicate,
-				parameterAlias,
-			),
-			"select-sargable-prefix",
-		).Build(), true
+		), true
 	}
 
 	if selectSubsumptionCandidatePredicateIsNonFiltering(
@@ -613,7 +703,7 @@ func bindSelectSubsumptionComparisonToPlaceholder(
 
 		comparison := orientation.comparison
 		mergeResult := predicates.EmptyComparisonRange().Merge(&comparison)
-		if mergeResult.Ok {
+		if mergeResult.Complete() {
 			return mergeResult.Range, true
 		}
 	}

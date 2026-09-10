@@ -53,7 +53,7 @@ func signedZeroEqualityRange(t testing.TB, literal any) *predicates.ComparisonRa
 	t.Helper()
 	comparison := predicates.NewLiteralComparison(predicates.ComparisonEquals, literal)
 	merged := predicates.EmptyComparisonRange().Merge(&comparison)
-	if !merged.Ok {
+	if !merged.Complete() {
 		t.Fatal("build signed-zero equality range")
 	}
 	return merged.Range

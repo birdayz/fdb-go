@@ -258,12 +258,16 @@ func TestDecorrelateValuesRule_AndPredicateTranslation(t *testing.T) {
 	if len(decorrelated.GetQuantifiers()) != 1 {
 		t.Fatalf("expected 1 quantifier, got %d", len(decorrelated.GetQuantifiers()))
 	}
-	// The AND predicate should have the constant substituted.
-	ap, ok := decorrelated.GetPredicates()[0].(*predicates.AndPredicate)
-	if !ok {
-		t.Fatalf("expected AndPredicate, got %T", decorrelated.GetPredicates()[0])
+	// The Select constructor lifts the AND into its predicate list (Java's
+	// SelectExpression.partitionPredicates); the first conjunct is the
+	// comparison that had the constant substituted.
+	if got := len(decorrelated.GetPredicates()); got != 2 {
+		t.Fatalf("expected the two conjuncts as top-level predicates, got %d", got)
 	}
-	cp := ap.SubPredicates[0].(*predicates.ComparisonPredicate)
+	cp, ok := decorrelated.GetPredicates()[0].(*predicates.ComparisonPredicate)
+	if !ok {
+		t.Fatalf("expected ComparisonPredicate, got %T", decorrelated.GetPredicates()[0])
+	}
 	cv, ok := cp.Comparison.Operand.(*values.ConstantValue)
 	if !ok {
 		t.Fatalf("expected ConstantValue after decorrelation, got %T", cp.Comparison.Operand)

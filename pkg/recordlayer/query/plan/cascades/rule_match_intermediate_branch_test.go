@@ -145,7 +145,7 @@ func matchIntermediateStructuralEqualityRange(
 		literal,
 	)
 	merged := predicates.EmptyComparisonRange().Merge(&comparison)
-	if !merged.Ok {
+	if !merged.Complete() {
 		t.Fatalf("failed to build equality range for %d", literal)
 	}
 	return merged.Range

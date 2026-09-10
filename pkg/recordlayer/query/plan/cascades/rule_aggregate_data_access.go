@@ -566,24 +566,37 @@ func partitionAggregatePredicates(
 		others = append(others, fp)
 	}
 
+	// Per column, the same fold the value index runs at binding time
+	// (foldPlaceholderBindings): an equality takes the range and the rest of
+	// the column's comparisons are residuals over the aggregate row; otherwise
+	// every distinct inequality accumulates. `a = 1 AND a > 0` binds `a = 1`
+	// with `a > 0` in bucket 2; `a = 1 AND a = 2` binds the first equality
+	// and re-applies the second, which reads no group.
 	folded := make(map[values.CorrelationIdentifier]*predicates.ComparisonRange)
+	columnResiduals := make([][]aggregateFilterPredicate, len(perColumn))
 	for idx, comparisons := range perColumn {
 		if len(comparisons) == 0 {
 			continue
 		}
-		cr := predicates.EmptyComparisonRange()
-		ok := true
+		bound := make([]placeholderBinding, 0, len(comparisons))
 		for _, fp := range comparisons {
 			cp := fp.pred.(*predicates.ComparisonPredicate)
-			result := cr.Merge(&cp.Comparison)
-			if !result.Ok {
-				ok = false
-				break
-			}
-			cr = result.Range
+			bound = append(bound, placeholderBinding{pred: fp.pred, cp: cp, comparison: &cp.Comparison})
 		}
-		if ok {
-			folded[cand.aliases[idx]] = cr
+		merged, members := foldPlaceholderBindings(bound)
+		if len(members) == 0 {
+			columnResiduals[idx] = comparisons
+			continue
+		}
+		folded[cand.aliases[idx]] = merged
+		carried := make(map[predicates.QueryPredicate]struct{}, len(members))
+		for _, m := range members {
+			carried[m.pred] = struct{}{}
+		}
+		for _, fp := range comparisons {
+			if _, isMember := carried[fp.pred]; !isMember {
+				columnResiduals[idx] = append(columnResiduals[idx], fp)
+			}
 		}
 	}
 	partition.scanPrefix = cand.ComputeBoundParameterPrefixMap(folded)
@@ -613,6 +626,9 @@ func partitionAggregatePredicates(
 	var residuals []aggregateFilterPredicate
 	for idx, comparisons := range perColumn {
 		if _, bound := partition.scanPrefix[cand.aliases[idx]]; bound {
+			// The column's range is in the run: only the comparisons the fold
+			// did not carry are residuals.
+			residuals = append(residuals, columnResiduals[idx]...)
 			continue
 		}
 		residuals = append(residuals, comparisons...)
@@ -943,12 +959,23 @@ type aggregateFilterPredicate struct {
 	input values.CorrelationIdentifier
 }
 
-// extractInnerFilterPredicates returns every predicate of the inner
-// Reference's Filter expressions, conjunctions flattened (`a = 'x' AND b = 'y'`
-// arrives as ONE AndPredicate; Java's SelectExpression holds its conjuncts as a
-// flat list), each with the alias of the filter's inner quantifier. The one
-// list partitionAggregatePredicates reads, so no second reader can disagree on
-// what a filter holds. Returns nil if no filter predicates are found.
+// extractInnerFilterPredicates returns the predicates of the inner
+// Reference's Filter members, each with the alias of the filter's inner
+// quantifier. The one list partitionAggregatePredicates reads, so no second
+// reader can disagree on what a filter holds. Returns nil if no filter
+// predicates are found.
+//
+// The Reference holds EQUIVALENT members, and several of them are filters:
+// the base-row filter over the scan and, once index matching has run, a
+// compensation filter over each index scan re-applying the conjuncts that
+// scan did not bind (`Filter([a > 0], IndexScan(IDX_A, [= 1]))` beside
+// `Filter([a = 1, a > 0], Scan)`). Their predicate sets are subsets of one
+// conjunction, so the union over members is that conjunction — read once
+// per distinct predicate. Without the dedup every compensation member
+// contributed its copy, the per-column fold made each copy a residual, and
+// `a = 1 AND a > 0 GROUP BY a` carried four residuals above the aggregate
+// scan and lost on cost to a full scan. Conjunctions arrive flat from the
+// filter constructor; flattenConjuncts stays for a hand-built list.
 func extractInnerFilterPredicates(ref *expressions.Reference) []aggregateFilterPredicate {
 	var result []aggregateFilterPredicate
 	for _, m := range ref.Members() {
@@ -958,6 +985,16 @@ func extractInnerFilterPredicates(ref *expressions.Reference) []aggregateFilterP
 		}
 		input := f.GetInner().GetAlias()
 		for _, p := range flattenConjuncts(f.GetPredicates()) {
+			dup := false
+			for _, existing := range result {
+				if existing.input == input && predicates.StructurallyEqual(existing.pred, p) {
+					dup = true
+					break
+				}
+			}
+			if dup {
+				continue
+			}
 			result = append(result, aggregateFilterPredicate{pred: p, input: input})
 		}
 	}

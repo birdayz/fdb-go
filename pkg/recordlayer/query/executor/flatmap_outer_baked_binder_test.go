@@ -532,7 +532,7 @@ func ojBakedCoveringScan(t *testing.T, baked values.Value) *plans.RecordQueryCov
 	t.Helper()
 	cmp := predicates.Comparison{Type: predicates.ComparisonEquals, Operand: baked}
 	merged := predicates.EmptyComparisonRange().Merge(&cmp)
-	if !merged.Ok {
+	if !merged.Complete() {
 		t.Fatalf("Merge(=) into the universe range failed: %+v", merged)
 	}
 	idx := mustExecutorConstruct(plans.NewRecordQueryIndexPlan(

@@ -97,14 +97,25 @@ func translatedHavingFor(t *testing.T, sql, ddl string) (*logical.LogicalAggrega
 		t.Fatalf("no translated HAVING filter over a GroupBy for %q", sql)
 	}
 	preds := having.GetPredicates()
-	if len(preds) != 1 || preds[0] == nil {
-		t.Fatalf("translated HAVING predicates = %v, want one", preds)
+	if len(preds) == 0 {
+		t.Fatalf("translated HAVING predicates = %v, want at least one", preds)
+	}
+	for _, pred := range preds {
+		if pred == nil {
+			t.Fatalf("translated HAVING predicates = %v, want no nil conjunct", preds)
+		}
+	}
+	// The filter constructor lifts a HAVING conjunction into its list; the
+	// callers walk one predicate, so hand them the conjunction back.
+	var pred predicates.QueryPredicate = preds[0]
+	if len(preds) > 1 {
+		pred = predicates.NewAnd(preds...)
 	}
 	owner, err := having.GetInner().RequireFlowedObjectValue()
 	if err != nil {
 		t.Fatalf("translated HAVING owner: %v", err)
 	}
-	return aggregate, preds[0], owner
+	return aggregate, pred, owner
 }
 
 // translatedSlots collects every aggregate-output FieldValue and checks the

@@ -206,23 +206,43 @@ func (e *BuriedExistentialPredicateError) Error() string {
 //
 // Returns nil when every existential predicate is in a directly-handled position
 // (the supported WHERE-EXISTS / NOT-EXISTS shapes, including alongside ordinary
-// non-existential conjuncts, multi-table inners, and projected EXISTS).
+// non-existential conjuncts, multi-table inners, and projected EXISTS) AND every
+// directly-handled existential names a quantifier its expression owns; a
+// dangling one returns *DanglingExistentialPredicateError (a buried one takes
+// precedence when both are present).
 func CheckBuriedExistentialPredicate(root *expressions.Reference) error {
 	if root == nil {
 		return nil
 	}
 	found := false
+	var dangling error
 	for _, m := range root.Members() {
 		expressions.Walk(m, func(e expressions.RelationalExpression) bool {
 			wp, ok := e.(expressions.RelationalExpressionWithPredicates)
 			if !ok {
 				return true
 			}
+			owned := make(map[values.CorrelationIdentifier]struct{}, len(e.GetQuantifiers()))
+			for _, q := range e.GetQuantifiers() {
+				owned[q.GetAlias()] = struct{}{}
+			}
 			for _, p := range wp.GetPredicates() {
-				if _, ok := predicates.IsExistentialPredicate(p); ok {
+				// A directly-handled existential must name a quantifier THIS
+				// expression owns. One that does not is dangling: the
+				// translator attached the marker without its subquery, and
+				// the planner, finding no quantifier to peel, drops the
+				// predicate — every row the EXISTS should have excluded comes
+				// back. Refuse it here, where the shape is still visible.
+				if alias, ok := predicates.IsExistentialPredicate(p); ok {
+					if _, isOwned := owned[alias]; !isOwned && dangling == nil {
+						dangling = &DanglingExistentialPredicateError{Alias: alias}
+					}
 					continue
 				}
-				if _, ok := predicates.IsNotExistentialPredicate(p); ok {
+				if alias, ok := predicates.IsNotExistentialPredicate(p); ok {
+					if _, isOwned := owned[alias]; !isOwned && dangling == nil {
+						dangling = &DanglingExistentialPredicateError{Alias: alias}
+					}
 					continue
 				}
 				// A buried existential survives in two forms: as an
@@ -250,7 +270,25 @@ func CheckBuriedExistentialPredicate(root *expressions.Reference) error {
 	if found {
 		return &BuriedExistentialPredicateError{}
 	}
-	return nil
+	return dangling
+}
+
+// DanglingExistentialPredicateError signals a translated plan tree whose
+// directly-handled existential predicate (`EXISTS(q)` / `NOT EXISTS(q)`)
+// names a quantifier the predicate-bearing expression does not own. Such a
+// marker has no subquery to peel into a semi-join; the NLJ rule finds no
+// existential quantifier for it and the predicate is dropped, so the query
+// returns every row the EXISTS should have excluded. It is a translator
+// defect by construction — translateJoinWithExists once attached only the
+// WHERE's existential quantifiers and left an ON-clause EXISTS marker
+// dangling — and the guard refuses the plan rather than let the planner
+// silently lose the predicate.
+type DanglingExistentialPredicateError struct {
+	Alias values.CorrelationIdentifier
+}
+
+func (e *DanglingExistentialPredicateError) Error() string {
+	return "EXISTS predicate references a subquery quantifier its query block does not own: " + e.Alias.Name()
 }
 
 // predicateContainsExistsValue reports whether any predicate in the tree rooted

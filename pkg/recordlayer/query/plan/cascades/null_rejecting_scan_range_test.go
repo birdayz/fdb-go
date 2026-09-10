@@ -16,7 +16,7 @@ func rangeOf(t *testing.T, comparisons ...predicates.Comparison) *predicates.Com
 	cr := predicates.EmptyComparisonRange()
 	for i := range comparisons {
 		result := cr.Merge(&comparisons[i])
-		if !result.Ok {
+		if !result.Complete() {
 			t.Fatalf("Merge(%v) refused; the fixture does not build the range under test",
 				comparisons[i].Type)
 		}
@@ -143,12 +143,24 @@ func TestNullRejectedByScanRange_MixedInequalityFailsClosed(t *testing.T) {
 		t.Fatalf("IS NOT NULL AND < 'm' must reject NULL, got %v", got[0])
 	}
 
-	refused := rangeOf(t,
-		predicates.NewLiteralComparison(predicates.ComparisonLessThan, "m"),
-		predicates.NewLiteralComparison(predicates.ComparisonIsDistinctFrom, "a"))
-	if got := nullRejectedByScanRange([]*predicates.ComparisonRange{refused}, 1); got[0] {
-		t.Fatal("an inequality range holding IS DISTINCT FROM — which admits NULL — " +
-			"must not be credited with rejecting NULL")
+	// A kind the allow-list does not carry cannot be built into a range any
+	// more: Merge is Java's total merge and hands a NONE-type comparison back
+	// as a residual, so the fail-closed arm moved one level up. Pin that the
+	// range under test is unbuildable — IS DISTINCT FROM never enters the
+	// scan range, so the executor never has to judge a range that admits
+	// NULL — and that the member the merge kept is judged exactly as the
+	// per-kind table says (`< 'm'` alone rejects NULL).
+	lt := predicates.NewLiteralComparison(predicates.ComparisonLessThan, "m")
+	distinct := predicates.NewLiteralComparison(predicates.ComparisonIsDistinctFrom, "a")
+	merged := predicates.MergeAll([]*predicates.Comparison{&lt, &distinct})
+	if merged.Complete() || len(merged.Residuals) != 1 || merged.Residuals[0] != &distinct {
+		t.Fatalf("IS DISTINCT FROM must be a residual of the merge, got %+v", merged)
+	}
+	if got := merged.Range.GetComparisons(); len(got) != 1 || got[0] != &lt {
+		t.Fatalf("the range must hold `< 'm'` alone, got %v", got)
+	}
+	if got := nullRejectedByScanRange([]*predicates.ComparisonRange{merged.Range}, 1); !got[0] {
+		t.Fatal("`< 'm'` alone rejects NULL")
 	}
 }
 

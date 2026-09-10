@@ -95,7 +95,7 @@ func identityTestComparisonRange(
 	result := predicates.EmptyComparisonRange()
 	for i := range comparisons {
 		merged := result.Merge(&comparisons[i])
-		if !merged.Ok {
+		if !merged.Complete() {
 			t.Fatalf("comparison %d did not form a range", i)
 		}
 		result = merged.Range

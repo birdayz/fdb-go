@@ -4941,19 +4941,30 @@ func (t *cascadesTranslator) buildExistentialJoinSelect(
 	allPreds = append(allPreds, splitNonExistsPredicates(f.Predicate)...)
 	allPreds = append(allPreds, extractExistsPredicates(f.Predicate)...)
 
+	//
+	// The join's own ON-clause EXISTS subqueries are attached here too: their
+	// markers ride in j.OnPredicate (appended above), so their existential
+	// quantifiers must be owned by this Select exactly as translateJoin owns
+	// them on the filter-less path. Without this an ON-EXISTS beside a
+	// WHERE-EXISTS left `EXISTS(q$N)` referencing a quantifier no Select owned
+	// — a dangling existential the planner dropped, returning rows the ON
+	// clause should have excluded. CheckBuriedExistentialPredicate refuses that
+	// shape (DanglingExistentialPredicateError) should it ever recur.
 	sourceAliases := []string{leftAlias, rightAlias}
-	for _, esq := range f.ExistsSubqueries {
-		subRef := t.translateSubqueryRef(esq.Plan)
-		if subRef == nil {
-			return nil
+	for _, esqs := range [][]logical.ExistsSubquery{j.OnExistsSubqueries, f.ExistsSubqueries} {
+		for _, esq := range esqs {
+			subRef := t.translateSubqueryRef(esq.Plan)
+			if subRef == nil {
+				return nil
+			}
+			existQ := expressions.NamedExistentialQuantifier(esq.Alias, subRef)
+			quantifiers = append(quantifiers, existQ)
+			innerCorrName, joinPred := t.existsInnerCorrelation(esq)
+			if joinPred != nil {
+				allPreds = append(allPreds, joinPred)
+			}
+			sourceAliases = append(sourceAliases, innerCorrName)
 		}
-		existQ := expressions.NamedExistentialQuantifier(esq.Alias, subRef)
-		quantifiers = append(quantifiers, existQ)
-		innerCorrName, joinPred := t.existsInnerCorrelation(esq)
-		if joinPred != nil {
-			allPreds = append(allPreds, joinPred)
-		}
-		sourceAliases = append(sourceAliases, innerCorrName)
 	}
 
 	// F2-LEFT: a LEFT-outer FROM join folds as a JoinLeftOuter select
@@ -8956,19 +8967,30 @@ func (t *cascadesTranslator) translateJoinWithExists(
 	// ordinal seed via downstreamLegWindows, not the exists inner's probe), so
 	// the minted-dup upper (QOV(Q$DUPn)) resolves positionally instead of serving
 	// NULLs off a name Datum that never had the binding-keyed column.
+	//
+	// The join's own ON-clause EXISTS subqueries are attached here too: their
+	// markers ride in j.OnPredicate (appended above), so their existential
+	// quantifiers must be owned by this Select exactly as translateJoin owns
+	// them on the filter-less path. Without this an ON-EXISTS beside a
+	// WHERE-EXISTS left `EXISTS(q$N)` referencing a quantifier no Select owned
+	// — a dangling existential the planner dropped, returning rows the ON
+	// clause should have excluded. CheckBuriedExistentialPredicate refuses that
+	// shape (DanglingExistentialPredicateError) should it ever recur.
 	sourceAliases := []string{leftAlias, rightAlias}
-	for _, esq := range f.ExistsSubqueries {
-		subRef := t.translateSubqueryRef(esq.Plan)
-		if subRef == nil {
-			return nil
+	for _, esqs := range [][]logical.ExistsSubquery{j.OnExistsSubqueries, f.ExistsSubqueries} {
+		for _, esq := range esqs {
+			subRef := t.translateSubqueryRef(esq.Plan)
+			if subRef == nil {
+				return nil
+			}
+			existQ := expressions.NamedExistentialQuantifier(esq.Alias, subRef)
+			quantifiers = append(quantifiers, existQ)
+			innerCorrName, joinPred := t.existsInnerCorrelation(esq)
+			if joinPred != nil {
+				allPreds = append(allPreds, joinPred)
+			}
+			sourceAliases = append(sourceAliases, innerCorrName)
 		}
-		existQ := expressions.NamedExistentialQuantifier(esq.Alias, subRef)
-		quantifiers = append(quantifiers, existQ)
-		innerCorrName, joinPred := t.existsInnerCorrelation(esq)
-		if joinPred != nil {
-			allPreds = append(allPreds, joinPred)
-		}
-		sourceAliases = append(sourceAliases, innerCorrName)
 	}
 
 	// The RV uses DECLARATION order (Java assembles the
