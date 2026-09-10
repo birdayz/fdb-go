@@ -400,7 +400,10 @@ func mergedKeyNamed(t testing.TB, o *properties.RichOrdering, name string) value
 // payload would make two different constants compare "nil == nil" and drop the
 // component; a leg carrying two bindings for it. Only the same comparison in
 // every leg, or the nil payload the implicit record-type component carries in
-// every leg, omits it.
+// every leg, omits it. A leg whose ordering does not mention the component at
+// all does not fix it either — that is legFixedComparison's loop falling
+// through — so it is compared (and, absent from the merged ordering too, it
+// cannot be offered and the partition declines).
 func TestPrimaryKeyComponentsToCompare_OmitsOnlyWhatEveryLegFixesAlike(t *testing.T) {
 	t.Parallel()
 
@@ -421,6 +424,13 @@ func TestPrimaryKeyComponentsToCompare_OmitsOnlyWhatEveryLegFixesAlike(t *testin
 	}
 	fixed := func(payload any) properties.OrderingBinding { return properties.FixedBinding(payload) }
 	sorted := properties.SortedBinding(properties.ProvidedSortOrderAscending)
+	// A leg that orders by ID alone: VERSION is absent from its ordering.
+	withoutVersion := properties.NewRichOrdering(
+		map[values.Value][]properties.OrderingBinding{
+			id: {properties.SortedBinding(properties.ProvidedSortOrderAscending)},
+		},
+		[]values.Value{id},
+		properties.NotDistinct())
 
 	for _, tc := range []struct {
 		name        string
@@ -435,6 +445,7 @@ func TestPrimaryKeyComponentsToCompare_OmitsOnlyWhatEveryLegFixesAlike(t *testin
 		{"unreadable payload in every leg: compared", []*properties.RichOrdering{leg(fixed("version = 1")), leg(fixed("version = 2"))}, true},
 		{"two bindings in one leg: compared", []*properties.RichOrdering{leg(fixed(eq(1))), leg(fixed(eq(1)), fixed(eq(1)))}, true},
 		{"typed nil comparison: compared", []*properties.RichOrdering{leg(fixed((*predicates.Comparison)(nil))), leg(fixed((*predicates.Comparison)(nil)))}, true},
+		{"absent from one leg's ordering: compared", []*properties.RichOrdering{leg(fixed(eq(1))), withoutVersion}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

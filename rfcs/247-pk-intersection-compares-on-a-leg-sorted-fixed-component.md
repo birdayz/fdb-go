@@ -210,7 +210,8 @@ enumeration).
     branch of `legFixedComparison`: same comparison everywhere and nil
     (implicit) everywhere omit; different comparisons, a sorted leg, an
     unreadable (string) payload in one or every leg, two bindings in a leg,
-    and a typed nil comparison all compare.
+    a typed nil comparison, and a leg whose ordering does not mention the
+    component at all (the loop's fall-through) all compare.
   * `TestIntersector_WidenedPartIgnoresItsRequestedDirection`:
     `[VERSION DESC, ID ASC]` and `[ID ASC, VERSION DESC]` over forward legs
     build the forward merge on `(ID, VERSION)`; `[ID DESC, VERSION ASC]`
@@ -320,9 +321,13 @@ directly: the main worktree checked out at the BASELINE commit read
 9.5 / 8.5 ms (fast), and then, with the CODE swapped across the trees —
 branch commit in the secondary worktree, baseline in the main one,
 interleaved — the branch read 8.3 / 9.6 ms and the baseline 11.3 / 8.5 ms.
-The slowness stayed with "main worktree at the branch commit" and did not
-follow the code. Below is that swapped, interleaved pair (load at each
-start 3.2 / 3.4 / 3.5 / 2.9), ratio = min(branch) / min(base):
+What the runs show is that the branch code, moved to the other tree, is not
+slow, while the baseline read 9.5 / 8.5 / 11.3 / 8.5 ms across its four
+main-worktree runs — within-side variance, not a localised configuration;
+why the four "main worktree at the branch commit" runs were 1.7–2.7x is not
+established, only that the code is not what moved. Below is that swapped,
+interleaved pair (load at each start 3.2 / 3.4 / 3.5 / 2.9), ratio =
+min(branch) / min(base):
 
 | query | rows | base | branch | ratio |
 |---|---|---|---|---|
@@ -382,5 +387,10 @@ SQL level. Also folded: the three-way test renamed to what it asserts
 measured reddened names with their populations; the EXPLAIN corpus stated
 with its population; the FDB pin's stale "declines most of the TI shapes"
 prose and its leg-order determinism cited; RFC-245's old symbol names
-annotated. The stress and fuzz figures are recorded above. @claude on the
-PR.
+annotated. The stress and fuzz figures are recorded above.
+
+Delta re-confirmation on the fold (`558b44205`): Graefe ACK; Torvalds ACK
+with two conditions, folded — the absent-from-a-leg branch of
+`legFixedComparison` was claimed in a comment and not driven (row added), and
+the stress attribution sentence overstated what the swap showed (rewritten
+to the readings). @claude on the PR.
