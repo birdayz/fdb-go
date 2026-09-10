@@ -8807,6 +8807,47 @@ Do not "fix" this by hand-deleting entries. That is what fails the hook.
 
 ---
 
+### [ ] STOP (owner): `gh-runner-drain-0` loses its FDB testcontainer 34–36 minutes into every long job — the CI race lane and Nightly Stress go red on that host only
+
+MEASURED 2026-09-10 across every `hetzner-fdb-vm` job of the last two days, by the `Machine name`
+in each job log:
+
+| job | host | started → container lost | outcome |
+|---|---|---|---|
+| CI race lane, master `64a737edd` | `gh-runner-drain-0` | 07:14:02 → 07:50:34 (36 min) | `sqldriver_test TIMEOUT in 3606.5s` |
+| Nightly Stress, master | `gh-runner-drain-0` | 09:09:25 → 09:43:39 (34 min) | `stress_test TIMEOUT in 3605.4s` |
+| CI race lane, PR #775 `f13d2d12b` | `gh-runner-drain-0` | 13:22:59 → 13:56:24 (34 min) | `sqldriver_test FAILED in 2678.2s` |
+| CI race lane, `bot/frl-pin-bump` 10:15 | `gh-runner-drain-0` | finished in 31 min | pass |
+| CI race lane, `#773` 09-08 22:41 | `gh-runner-drain-0` | finished in 32 min | pass |
+| CI race lane ×5 (09-09 06:57 … 09-10 06:33, incl. `#774`'s head `89ac807c6`) | `gh-runner-fdb` | — | pass |
+
+Every loss is the same line — `WARN fdbgo: connection to server failed address=172.16.0.3:4500` —
+followed by `open catalog store: failed to read store info: context deadline exceeded` on every
+query until the Bazel test timeout; no `DATA RACE` anywhere in any of the three logs. drain-0's
+two passes are exactly the jobs that FINISHED before the 34-minute mark; the identical content
+(`64a737edd` is the merge of `89ac807c6`) passed on `gh-runner-fdb` at 06:33 and died on drain-0 at
+07:14. Nothing was co-resident on drain-0 during any of the three deaths (Nightly Factory, Nightly
+Coverage and the Claude job all ran on `gh-runner-fdb`), and the sqldriver lane was already running
+~3x slower than its green duration BEFORE the loss, so the host is also starving the lane.
+
+This is the drain-0 HOST, not a change in this repo: something on it reaps the FDB container (or
+its `172.16.0.x` network) at a fixed ~34-minute mark — a container/network prune timer, an
+ephemeral-runner drain script, or an autoscaler lifetime. The two runners share the label
+`hetzner-fdb-vm`, so no workflow can steer a long lane away from drain-0, and the ci.yml race-lane
+comments ("the single self-hosted runner", the 7.6 GB memory discipline) predate the second host.
+Nobody here can read drain-0's docker/systemd/kernel logs, which is what settles the mechanism.
+
+Owner: inspect drain-0 for the 34-minute reaper (`docker events` around a loss, systemd timers,
+the runner's service unit / any `--ephemeral`-style wrapper), or drop it from the `hetzner-fdb-vm`
+label until it is understood. Until then, a race-lane or Nightly Stress failure whose log carries
+that `connection to server failed address=172.16.0.3:4500` line at the 34-minute mark is this
+entry, and a re-run that lands on `gh-runner-fdb` is the verification, not a fix.
+
+DONE when: a >34-minute FDB job passes on drain-0 (or drain-0 no longer carries the label), and
+the ci.yml race-lane comment names both hosts.
+
+---
+
 
 ---
 
