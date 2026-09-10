@@ -926,6 +926,7 @@ Confirmed via cross-engine probes. Go's correct behavior is pinned in Go-only po
 | `SELECT v = 0.0` vs `WHERE v = 0.0` on the same `-0.0` | Agree (both IEEE) | **Contradict each other** — see below |
 | UNION ALL outer ORDER BY | Deterministic sorted output | Intermittent ordering |
 | `WHERE pk_col = nonpk_col` | SQL-correct | `Missing binding` planner error |
+| PK-intersection whose legs fix DIFFERENT primary-key components (`PRIMARY KEY (pk1, pk2)`, indexes `(b, pk1)` and `(pk2)`, `WHERE b = 1 AND pk2 = 3`) | Declines the merge; single index + residual filter, correct rows | Intersects on `COMPARE BY (_.PK1)` and returns every `pk2 = 3` record regardless of `b` (`COUNT(*)` 4 for a 1-row answer) — see below |
 
 4.12.11.0 fixed three former entries, now removed from this table — they run as plain cross-engine
 equivalence in the corpus: PK literal-eq AND join predicate (`pk_literal_eq_in_join`) and 3-way join
@@ -939,6 +940,33 @@ corpus `bare_bool_where` (`WHERE flag`). The remaining `WHERE pk_col = nonpk_col
 fixed in 4.12: the corpus keeps that probe deliberately omitted (column-self-equality), so the live
 4.12.11.0 run neither confirms a fix nor pins the divergence — it is retained on the not-yet-fixed
 side per the corpus's omit comment.
+
+### PK-intersection comparison key: the soundness proof is per leg, not over the union of legs
+
+**Java** (`AbstractDataAccessRule.isCompatibleComparisonKey`, called from
+`WithPrimaryKeyDataAccessRule.createIntersectionAndCompensation`) accepts a comparison key when
+it contains every primary-key component that is not in `equalityBoundKeyValues` — the UNION of
+every leg's equality-bound matched ordering parts. A component fixed in ONE leg is thereby dropped
+from the requirement for ALL legs. Over `PRIMARY KEY (pk1, pk2)` with indexes `(b, pk1)` and
+`(pk2)`, `WHERE b = 1 AND pk2 = 3` merges the two covering scans on `(pk1)`: the `(pk2)` leg is a
+single record per pk1, but the `(b, pk1)` leg carries several records per pk1 differing only in
+pk2, so "equal comparison keys" no longer means "the same record" and the merge emits records the
+other leg never matched. Measured on 4.12.11.0
+(`conformance/pk_intersection_leg_bound_key_java_probe_test.go`): plan
+`COVERING(TI_PK2 [EQUALS …]) ∩ COVERING(TI_B_PK1 [EQUALS …]) COMPARE BY (_.PK1)`, four rows and
+`COUNT(*) = 4` where the answer is the single record `(3, 3)`. With an `ORDER BY` Java picks the
+covering scan + residual filter and is correct — that arm is the probe's control.
+
+**Go** (`intersector_primary_key.go`, `comparisonKeyIdentifiesRecordInEveryLeg`) requires the
+proof leg by leg: the comparison key must contain every primary-key component the LEG does not
+itself fix. Equivalent to subtracting the INTERSECTION of the legs' equality-bound sets, so a
+partition where every leg fixes the same component (indexes `(a, pk2)` and `(b, pk2)`, both
+bound on pk2) still intersects on `(pk1)`. Go used to port Java's union and returned the
+`(b, pk1)` leg's four records. Pinned by `TestFDB_PkIntersectionLegBoundComponent` (rows), the
+`intersector_leg_bound_pk_test.go` unit arms (decline / accept / three-way keeps the sound pair),
+corpus entry `pk_intersection_leg_bound_component_count` (`DivergenceJavaWrongRowsGoCorrect`), and
+`TestFDB_MetamorphicCompositePrimaryKey` (the composite-PK axis of the indexed/unindexed twin, which found it). Booked in
+TODO.md section 9 for the upstream report.
 
 ## Plan Architecture: Go collapses Java class hierarchies
 
