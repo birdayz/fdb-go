@@ -285,27 +285,59 @@ replacing the all-or-nothing column.
   (`visitSimpleTableBody`, `…_postBuild`), moving the ON's markers into the
   block's WHERE conjunction (FROM order first) and its subqueries onto the
   WHERE filter, synthesizing the filter directly above the join when the
-  block has no WHERE, and copying every node it touches. The walk is the
-  cluster `gatherInnerClusterLegs` flattens (INNER nodes; an OUTER join, a
-  lateral unnest or a non-join leg is a boundary), decided per join BEFORE
-  recursing so no child's lift is ever collected under an unlifted parent.
-  It refuses, with the WHERE's own wording, the two shapes that cannot lift
-  whole — an EXISTS under an OR (its marker would stay under the OR while its
-  quantifier moved: the dangling shape again) and a subquery with no marker
-  in conjunct position. A plan leaving the builder never carries an
+  block has no WHERE. The join cluster is COPIED (the tree is shared with the
+  generator's guards); the block's own filter and the shell above the join
+  are the builder's and are updated in place. The walk is every INNER join
+  reachable through INNER joins — an inner lateral unnest included: a comma
+  unnest is a cross join with the outer row's array, so its outer's
+  ON-EXISTS is the block's WHERE-EXISTS exactly as for any inner join, and
+  Java's fold has no unnest boundary either. An OUTER join is a boundary
+  where Java also stops (`collapseLeftSideOperators` wraps the pending side
+  in its own select): each inner cluster under it is filtered IN PLACE,
+  directly above itself — its rows filtered before the outer join preserves
+  or null-extends them, which is exactly what the inner join's ON did — for
+  the preserved and the null-supplying side alike (the WHERE would be wrong
+  for a RIGHT or FULL join's null-supplying cluster: the null-extended rows
+  must survive). The decision is made per join BEFORE recursing, so no
+  child's lift is ever collected under an unlifted parent. It refuses, with
+  the WHERE's own wording, the two shapes that cannot lift whole — an EXISTS
+  under an OR (its marker would stay under the OR while its quantifier
+  moved: the dangling shape again) and a subquery with no marker in
+  conjunct position. A plan leaving the builder never carries an
   `OnExistsSubqueries`; the translator asserts that in `translateJoin`
   (`0AF00 … reached the translator unfolded`) and every translator consumer
   of the spelling is deleted: the gate arm and `scanFamilyLegCteAware`, the
   projection-level lift and its cardinality-known ON rejection, the
   ON-attach halves of both existential flattens, `translateJoin`'s ON-exists
   arm, and the `OnExistsSubqueries` boundaries in the cluster, chained-unnest,
-  unnest-gather and clustered-scalar walks. Three former rejections became
+  unnest-gather and clustered-scalar walks.
+
+  The in-place filter is a leg shape the ordinal seed had never typed: a
+  `Filter(inner cluster)` as an OUTER box's leg. `ordinalEligible` already
+  admitted it (a filter is transparent to eligibility), but the seed's
+  layout sites — `ordinalLegType`'s buried-leg bounds, `legBinding`'s
+  `$BOX` mint, `legBakeWindow`, the buried bake windows of
+  `gatedJoinLegTypes` / `ordinalJoinSeedFields`, `ordinalLegColumns` —
+  classified a leg as a box only when the node IS a join, so the seed
+  declared the leg one opaque run under its rightmost leaf while the leg's
+  own select flowed the cluster's buried legs: two members of one reference
+  disagreeing on their result type (`MemberResultTypeDisagreementError`,
+  legs `[C 0 3]` vs `[A 0 1][C 1 2]`). `gatedLegBox` (the join beneath a
+  leg's filters) is now the one classification at all seven sites, and the
+  leg types exactly as the bare cluster did on master. Four former answers
+  are kept (LEFT, LEFT+WHERE, RIGHT, FULL over an inner cluster with
+  ON-EXISTS, rows identical to master), and five former rejections became
   answers, as in Java: two EXISTS in one ON, a cardinality-known EXISTS in
-  ON (substituted like the WHERE's), and every three-leg ON+WHERE shape;
-  EXISTS under OR in ON is now refused by the builder with the WHERE's 0A000
-  instead of the backstop's 0AF00. Mutation-checked: with the builder fold
-  disabled every ON-EXISTS arm in `TestFDB_ExistsInOn*` reddens through the
-  translator's assertion — a refusal, never wrong rows.
+  ON (substituted like the WHERE's), every three-leg ON+WHERE shape, the
+  cluster below a LEFT join followed by a further JOIN, and the cluster left
+  of a lateral unnest. EXISTS under OR in ON is now refused by the builder
+  with the WHERE's 0A000 instead of the backstop's 0AF00. Mutation-checked
+  twice: with the builder fold disabled every ON-EXISTS arm in
+  `TestFDB_ExistsInOn*` reddens through the translator's assertion — a
+  refusal, never wrong rows; with `gatedLegBox` reverted to join-only,
+  exactly the five outer-join arms of
+  `TestFDB_ExistsInOnBelowOuterJoinAndBesideUnnest` and the seed unit pin
+  redden while the unnest arms stay green.
 
 * *Criterion #6 read the root only.* `inPlanPenaltyRank` penalises an
   IN-plan whose bindings never became search arguments, and it read
@@ -420,22 +452,37 @@ is where the fold lives, not what it computes.
   the WHERE spelling (`exists_over_aggregate_fdb_test.go`
   `join_on_known_false_substituted`); EXISTS under OR in ON and in WHERE
   fail with the same 0A000 and the same message. Unit,
-  `embedded/on_exists_fold_test.go` (22 arms): the lift takes the root's, a
+  `embedded/on_exists_fold_test.go` (32 arms): the lift takes the root's, a
   nested join's and two EXISTS of one ON, in FROM order, keeps the other ON
   conjuncts, leaves an untyped nil when the ON was only the EXISTS, copies
-  every node on the path and shares untouched legs, stops at an OUTER join
-  and at a lateral unnest, refuses an EXISTS under OR and a subquery without
-  a conjunct marker (and the refusal propagates through a clean parent), and
-  is the identity with nothing to lift; the fold merges into the WHERE filter
-  ahead of its own conjuncts and subqueries, synthesizes the filter under a
-  shell and at the root, leaves a text-only WHERE alone, touches nothing
+  every node on the path and shares untouched legs, never lifts an OUTER
+  join's own ON-EXISTS, filters an inner cluster under an OUTER join in
+  place (nothing lifts PAST the outer join; the outer join and the root are
+  copied with their ONs intact), lifts THROUGH an inner lateral unnest,
+  refuses an EXISTS under OR and a subquery without a conjunct marker (and
+  the refusal propagates through a clean parent), and is the identity with
+  nothing to lift; the fold merges into the WHERE filter ahead of its own
+  conjuncts and subqueries, synthesizes the filter under a shell and at the
+  root, folds an OUTER root's legs in place with and without a WHERE (the
+  WHERE takes nothing), leaves a text-only WHERE alone, touches nothing
   without a lift, and propagates the refusal; and, driven through the SQL
-  builder (`TestOnExistsFold_NoJoinLeavesTheBuilderUnfolded`, 7 spellings
-  incl. ORDER BY/LIMIT with no WHERE), no join leaves the builder carrying
-  `OnExistsSubqueries` and the block's single WHERE filter carries every
-  existential with its marker in conjunct position. Plan,
-  `plan_harness_test.go` `join_on_known_false_substituted`: the ON and WHERE
-  spellings of a cardinality-known EXISTS plan to the same tree.
+  builder (`TestOnExistsFold_NoJoinLeavesTheBuilderUnfolded`, 12 spellings
+  incl. ORDER BY/LIMIT with no WHERE, below a LEFT join with and without a
+  WHERE and at three legs, and left of a lateral unnest), no join leaves the
+  builder carrying `OnExistsSubqueries` and the filter that took the lift
+  carries every existential with its marker in conjunct position. Rows,
+  `sqldriver/exists_in_on_probe_test.go`
+  (`TestFDB_ExistsInOnBelowOuterJoinAndBesideUnnest`, 9 arms): LEFT (with
+  the WHERE spelling as control), LEFT+WHERE, LEFT then JOIN, RIGHT and FULL
+  (the null-supplying cluster: the row the WHERE spelling would drop is
+  pinned present), and the cluster left of a lateral unnest with and without
+  a WHERE (control agrees). Unit, `query/gated_leg_box_test.go`: a filter
+  over a box is the box at every seed-layout site — same fields, same two
+  buried legs, same `C$BOX` binding, same bake window, same ordinal columns,
+  and the same buried bake windows under an OUTER box — and a scan, a
+  filtered scan and a projection are not. Plan, `plan_harness_test.go`
+  `join_on_known_false_substituted`: the ON and WHERE spellings of a
+  cardinality-known EXISTS plan to the same tree.
 * Unit, `cascades/in_plan_order_independence_test.go`: the wrapped
   unSARGed IN-plan ranks 1 and loses to the plain filter through the full
   chain with the "more IN-joins" rung pointing the other way; the wrapped
@@ -624,3 +671,15 @@ the two 3-second full scans, and they moved by ≤ 0.02 s.
   known-truth rejection deleted (the WHERE consumer substitutes), the binary
   ON+plain-WHERE spelling pinned in the builder-exit test and by
   `binary_on_exists_plus_where` rows. Delta re-confirmation: see below.
+- **Graefe, Torvalds and codex, third delta (the builder fold): all three
+  NAK on one finding** — the fold stopped at an OUTER join and at a lateral
+  unnest, so an inner cluster with an ON-EXISTS below a LEFT/RIGHT/FULL join
+  (which master answered, through the deleted translateJoin arm) or left of
+  a lateral unnest reached the translator's assertion; Java folds at the
+  outer-join operand too (`collapseLeftSideOperators`) and has no unnest
+  boundary; no builder-exit arm spelled an outer join. Torvalds' minor: the
+  RFC's "copies every node" was false for the block's filter and shell.
+  Folded as the in-place outer-join fold, the transparent unnest, the seed's
+  `gatedLegBox` classification, and the pins above; measured on master
+  first, so the four kept answers are pinned to master's rows and the two
+  new answers are named as gains. Delta re-confirmation: see below.

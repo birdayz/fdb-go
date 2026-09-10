@@ -51,10 +51,32 @@ func (t *cascadesTranslator) ordinalLegType(op logical.LogicalOperator) *values.
 	// layout authority (OrdinalSeedLegWindows) can emit per-buried-leg
 	// sub-windows — the serve-side twin of the predicate bake's buried
 	// windows (see addBuriedBakeWindows below).
-	if bj, isJoin := op.(*logical.LogicalJoin); isJoin {
+	if bj := gatedLegBox(op); bj != nil {
 		rt.Legs = t.buriedLegBounds(bj, 0)
 	}
 	return rt
+}
+
+// gatedLegBox is the join a gated leg IS, seen through the filters the
+// builder places directly above an inner cluster (an ON-clause EXISTS folded
+// in place under an OUTER join — embedded/on_exists_fold.go — is such a
+// filter). A filter adds no column and no source: the leg's row is the
+// cluster's concat and its buried legs are the cluster's, so every layout
+// site — the buried-leg bounds, the box binding, the bake windows — must
+// classify the leg by the join beneath, exactly as ordinalEligible already
+// admits it through the filter. nil when the leg is not a box (a scan, a
+// derived table, an unnest).
+func gatedLegBox(op logical.LogicalOperator) *logical.LogicalJoin {
+	for {
+		switch o := op.(type) {
+		case *logical.LogicalJoin:
+			return o
+		case *logical.LogicalFilter:
+			op = o.Input
+		default:
+			return nil
+		}
+	}
 }
 
 // buriedLegBounds walks a gated box leg's subtree recording each buried
@@ -69,7 +91,7 @@ func (t *cascadesTranslator) buriedLegBounds(j *logical.LogicalJoin, base int) [
 		if subTyp == nil {
 			return nil
 		}
-		if sj, isJ := sub.op.(*logical.LogicalJoin); isJ {
+		if sj := gatedLegBox(sub.op); sj != nil {
 			out = append(out, t.buriedLegBounds(sj, off)...)
 		} else if sub.binding != "" {
 			// A TEXT-BOUNDARY mint. The logical operator records its source's
@@ -232,6 +254,13 @@ func (t *cascadesTranslator) ordinalLegColumns(op logical.LogicalOperator) []val
 			fields = append(fields, cols...)
 		}
 		return fields
+	case *logical.LogicalFilter:
+		// A filter directly above a gated box (gatedLegBox) adds no column:
+		// the leg's row is the box's concat, typed by the join arm above.
+		if box := gatedLegBox(o); box != nil {
+			return t.ordinalLegColumns(box)
+		}
+		return t.legColumns(op)
 	default:
 		return t.legColumns(op)
 	}
@@ -349,7 +378,7 @@ func clusterLegOf(op logical.LogicalOperator, nullSupplying bool) clusterLeg {
 // sourceAlias. Applied ONLY in leg contexts (here and the gated quantifier
 // naming) — sourceBinding's non-leg consumers keep the leaf name.
 func legBinding(op logical.LogicalOperator) string {
-	if _, isJoin := op.(*logical.LogicalJoin); isJoin {
+	if gatedLegBox(op) != nil {
 		return sourceBinding(op) + "$BOX"
 	}
 	return sourceBinding(op)
@@ -482,8 +511,8 @@ type bakeLegType struct {
 // sub-leg's columns are underivable — the caller then omits the entry and the
 // references stay lazy (sound by the load-bearing lazy invariant).
 func (t *cascadesTranslator) legBakeWindow(op logical.LogicalOperator) (int, *values.RecordType) {
-	j, isJoin := op.(*logical.LogicalJoin)
-	if !isJoin {
+	j := gatedLegBox(op)
+	if j == nil {
 		return 0, t.ordinalLegType(op)
 	}
 	legs := t.legsOfGatedJoin(j)
@@ -529,7 +558,7 @@ func (t *cascadesTranslator) gatedJoinLegTypes(j *logical.LogicalJoin) map[strin
 		// the same registration the seed's own legTypes get in
 		// ordinalJoinSeedFields. Without it a WHERE conjunct naming a
 		// buried source stays lazy at the box select and grandchild-binds.
-		if bj, isJoin := leg.op.(*logical.LogicalJoin); isJoin {
+		if bj := gatedLegBox(leg.op); bj != nil {
 			t.addBuriedBakeWindows(bj, leg.binding, entry.typ, 0, legTypes)
 		}
 	}
@@ -708,7 +737,7 @@ func (t *cascadesTranslator) ordinalJoinSeedFields(legs []clusterLeg) ([]values.
 		// `(A⋈B) LEFT C`) as single-leg and leaves a grandchild-correlated
 		// lazy reference on the box select. Registered from the same
 		// not-null-extended row as the leg's own entry, for the same reason.
-		if bj, isJoin := leg.op.(*logical.LogicalJoin); isJoin {
+		if bj := gatedLegBox(leg.op); bj != nil {
 			t.addBuriedBakeWindows(bj, leg.binding, typ, 0, legTypes)
 		}
 		if leg.nullSupplying {
@@ -785,7 +814,7 @@ func (t *cascadesTranslator) addBuriedBakeWindows(j *logical.LogicalJoin, boxCor
 		if subTyp == nil {
 			return
 		}
-		if sj, isJ := sub.op.(*logical.LogicalJoin); isJ {
+		if sj := gatedLegBox(sub.op); sj != nil {
 			t.addBuriedBakeWindows(sj, boxCorr, boxTyp, off, legTypes)
 		} else if _, exists := legTypes[sub.binding]; !exists && sub.binding != "" {
 			legTypes[sub.binding] = bakeLegType{typ: boxTyp, leafOffset: off, leafTyp: subTyp, bakeCorr: boxCorr}

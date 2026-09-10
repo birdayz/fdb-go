@@ -301,3 +301,76 @@ func TestFDB_ExistsInOnPlusWhereExists(t *testing.T) {
 		})
 	}
 }
+
+// TestFDB_ExistsInOnBelowOuterJoinAndBesideUnnest pins the ON-EXISTS fold
+// at the two places it is NOT the block's WHERE. An inner cluster carrying
+// an ON-EXISTS below an OUTER join is filtered in place — directly above
+// itself, before the outer join preserves or null-extends its rows (Java's
+// collapseLeftSideOperators) — for every outer kind: LEFT (the cluster
+// preserved; the WHERE spelling is the control and agrees), RIGHT and FULL
+// (the cluster null-supplying; the WHERE spelling would drop the
+// null-extended rows, so the rows are pinned explicitly). An inner lateral
+// unnest is transparent: its outer's ON-EXISTS is the block's WHERE-EXISTS,
+// and the WHERE spelling is the control.
+//
+// a={1,2,3} with tags [10,11],[20],[30]; c: 50→a1, 51→a2, 52→a1, 53→a2;
+// d={2}; e: 900→c50, 901→c51. The cluster a⋈c∧∃d is (2,51),(2,53).
+func TestFDB_ExistsInOnBelowOuterJoinAndBesideUnnest(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	setup := openTestDB(t, "/testdb_exists_on_outer")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_exists_on_outer")
+	mwjoMustExec(t, setup, ctx,
+		"CREATE SCHEMA TEMPLATE exists_on_outer "+
+			"CREATE TABLE a (id BIGINT, tags BIGINT ARRAY, PRIMARY KEY (id)) "+
+			"CREATE TABLE c (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE d (id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE e (id BIGINT, c_id BIGINT, PRIMARY KEY (id)) "+
+			"CREATE INDEX c_a_id ON c (a_id) "+
+			"CREATE INDEX e_c_id ON e (c_id)")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_exists_on_outer/s WITH TEMPLATE exists_on_outer")
+	dsn := fmt.Sprintf("fdbsql:///testdb_exists_on_outer?cluster_file=%s&schema=s", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	mwjoMustExec(t, db, ctx, "INSERT INTO a (id, tags) VALUES (1, [10, 11]), (2, [20]), (3, [30])")
+	mwjoMustExec(t, db, ctx, "INSERT INTO c (id, a_id) VALUES (50, 1), (51, 2), (52, 1), (53, 2)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO d (id) VALUES (2)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO e (id, c_id) VALUES (900, 50), (901, 51)")
+
+	const existsD = " AND EXISTS (SELECT 1 FROM d WHERE d.id = a.id)"
+	const whereD = " WHERE EXISTS (SELECT 1 FROM d WHERE d.id = a.id)"
+	for _, tc := range []struct {
+		name string
+		sql  string
+		want []string
+	}{
+		// LEFT: the cluster is preserved; (2,53) has no e row and null-extends.
+		{"left_join", "SELECT a.id, c.id, e.id FROM a JOIN c ON c.a_id = a.id" + existsD + " LEFT JOIN e ON e.c_id = c.id", []string{"2|51|901", "2|53|NULL"}},
+		{"left_join_where_control", "SELECT a.id, c.id, e.id FROM a JOIN c ON c.a_id = a.id LEFT JOIN e ON e.c_id = c.id" + whereD, []string{"2|51|901", "2|53|NULL"}},
+		{"left_join_plus_where", "SELECT a.id, c.id, e.id FROM a JOIN c ON c.a_id = a.id" + existsD + " LEFT JOIN e ON e.c_id = c.id WHERE a.id > 0", []string{"2|51|901", "2|53|NULL"}},
+		{"left_join_then_inner_join", "SELECT a.id, c.id, e.id FROM a JOIN c ON c.a_id = a.id" + existsD + " LEFT JOIN e ON e.c_id = c.id JOIN d ON d.id = a.id", []string{"2|51|901", "2|53|NULL"}},
+		// RIGHT: the cluster is null-supplying; e=900 (→c50, a=1, excluded by
+		// the EXISTS) is preserved null-extended. Dropping the in-place filter
+		// would pair 900 with (1,50); lifting it to the WHERE would drop 900.
+		{"right_join", "SELECT a.id, c.id, e.id FROM a JOIN c ON c.a_id = a.id" + existsD + " RIGHT JOIN e ON e.c_id = c.id", []string{"2|51|901", "NULL|NULL|900"}},
+		// FULL: both sides preserved.
+		{"full_join", "SELECT a.id, c.id, e.id FROM a JOIN c ON c.a_id = a.id" + existsD + " FULL JOIN e ON e.c_id = c.id", []string{"2|51|901", "2|53|NULL", "NULL|NULL|900"}},
+		// Lateral unnest: transparent — the block's WHERE-EXISTS.
+		{"beside_unnest", "SELECT a.id, c.id, v FROM a JOIN c ON c.a_id = a.id" + existsD + ", a.tags AS v", []string{"2|51|20", "2|53|20"}},
+		{"beside_unnest_where_control", "SELECT a.id, c.id, v FROM a JOIN c ON c.a_id = a.id, a.tags AS v" + whereD, []string{"2|51|20", "2|53|20"}},
+		{"beside_unnest_plus_where", "SELECT a.id, c.id, v FROM a JOIN c ON c.a_id = a.id" + existsD + ", a.tags AS v WHERE a.id > 0", []string{"2|51|20", "2|53|20"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := scanTriples(t, db, ctx, tc.sql)
+			if !eqStrSlices(got, tc.want) {
+				t.Errorf("rows = %v, want %v\n  sql: %s", got, tc.want, tc.sql)
+			}
+		})
+	}
+}

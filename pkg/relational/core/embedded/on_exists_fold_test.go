@@ -150,7 +150,7 @@ func TestLiftClusterOnExists(t *testing.T) {
 		}
 	})
 
-	t.Run("stops_at_an_outer_join_and_at_a_lateral_unnest", func(t *testing.T) {
+	t.Run("an_outer_join_s_own_on_exists_never_lifts", func(t *testing.T) {
 		t.Parallel()
 		marker := onExistsFoldMarker(t, "q$d")
 		// An OUTER join carrying ON-EXISTS is rejected by the builder; were one
@@ -159,14 +159,76 @@ func TestLiftClusterOnExists(t *testing.T) {
 		outer.OnExistsSubqueries = []logical.ExistsSubquery{onExistsFoldSubquery("q$d")}
 		root := logical.NewJoinWithPredicate(outer, scan("E", "e"), logical.JoinInner, onExistsFoldCmp(t, "Y"))
 		if lifted, _, subqueries, err := liftClusterOnExists(root); err != nil || lifted != root || len(subqueries) != 0 {
-			t.Fatal("an ON-EXISTS below an OUTER join must not lift")
+			t.Fatal("an OUTER join's own ON-EXISTS must not lift")
 		}
 		if lifted, _, subqueries, err := liftClusterOnExists(outer); err != nil || lifted != outer || len(subqueries) != 0 {
 			t.Fatal("an OUTER root must not lift")
 		}
-		unnestJoin := onExistsFoldJoin(scan("A", "a"), &logical.LogicalUnnest{Segments: []string{"A", "ARR"}, Alias: "x"}, marker, onExistsFoldSubquery("q$d"))
-		if lifted, _, subqueries, err := liftClusterOnExists(unnestJoin); err != nil || lifted != unnestJoin || len(subqueries) != 0 {
-			t.Fatal("a lateral-unnest join is a cluster boundary and must not lift")
+	})
+
+	t.Run("an_inner_cluster_under_an_outer_join_is_filtered_in_place", func(t *testing.T) {
+		t.Parallel()
+		marker := onExistsFoldMarker(t, "q$d")
+		eq := onExistsFoldCmp(t, "X")
+		inner := onExistsFoldJoin(scan("A", "a"), scan("C", "c"), predicates.NewAnd(eq, marker), onExistsFoldSubquery("q$d"))
+		leftEq := onExistsFoldCmp(t, "Y")
+		left := logical.NewJoinWithPredicate(inner, scan("E", "e"), logical.JoinLeft, leftEq)
+		rootEq := onExistsFoldCmp(t, "Z")
+		root := logical.NewJoinWithPredicate(left, scan("G", "g"), logical.JoinInner, rootEq)
+
+		lifted, markers, subqueries, err := liftClusterOnExists(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(markers) != 0 || len(subqueries) != 0 {
+			t.Fatalf("nothing lifts PAST an OUTER join, got %d markers / %d subqueries", len(markers), len(subqueries))
+		}
+		if lifted == root || lifted.OnPredicate != predicates.QueryPredicate(rootEq) {
+			t.Fatal("the root is copied on the path with its ON intact")
+		}
+		liftedLeft, ok := lifted.Left.(*logical.LogicalJoin)
+		if !ok || liftedLeft == left || liftedLeft.Kind != logical.JoinLeft || liftedLeft.OnPredicate != predicates.QueryPredicate(leftEq) {
+			t.Fatal("the OUTER join is copied with its ON intact")
+		}
+		f, ok := liftedLeft.Left.(*logical.LogicalFilter)
+		if !ok {
+			t.Fatalf("the inner cluster under the OUTER join must be filtered in place, got %T", liftedLeft.Left)
+		}
+		if f.Predicate != predicates.QueryPredicate(marker) || len(f.ExistsSubqueries) != 1 {
+			t.Fatalf("the in-place filter must carry the marker and the subquery, got %v / %d", f.Predicate, len(f.ExistsSubqueries))
+		}
+		fj, ok := f.Input.(*logical.LogicalJoin)
+		if !ok || fj == inner || fj.OnPredicate != predicates.QueryPredicate(eq) || len(fj.OnExistsSubqueries) != 0 {
+			t.Fatal("the filtered cluster is the lifted copy keeping its equality alone")
+		}
+		if liftedLeft.Right != left.Right || lifted.Right != root.Right {
+			t.Fatal("untouched legs are shared")
+		}
+		if len(inner.OnExistsSubqueries) != 1 {
+			t.Fatal("liftClusterOnExists mutated the inner join")
+		}
+	})
+
+	t.Run("an_inner_lateral_unnest_is_transparent", func(t *testing.T) {
+		t.Parallel()
+		marker := onExistsFoldMarker(t, "q$d")
+		eq := onExistsFoldCmp(t, "X")
+		inner := onExistsFoldJoin(scan("A", "a"), scan("C", "c"), predicates.NewAnd(eq, marker), onExistsFoldSubquery("q$d"))
+		unnest := &logical.LogicalUnnest{Segments: []string{"A", "ARR"}, Alias: "x"}
+		unnestJoin := logical.NewJoinWithPredicate(inner, unnest, logical.JoinInner, nil)
+		lifted, markers, subqueries, err := liftClusterOnExists(unnestJoin)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(markers) != 1 || len(subqueries) != 1 {
+			t.Fatalf("the unnest's outer cluster lifts THROUGH the unnest join into the block, got %d/%d", len(markers), len(subqueries))
+		}
+		if lifted == unnestJoin || lifted.Right != logical.LogicalOperator(unnest) {
+			t.Fatal("the unnest join is copied on the path, the unnest itself shared")
+		}
+		lj, ok := lifted.Left.(*logical.LogicalJoin)
+		if !ok || lj == inner || lj.OnPredicate != predicates.QueryPredicate(eq) || len(lj.OnExistsSubqueries) != 0 {
+			t.Fatal("the outer cluster is the lifted copy")
 		}
 	})
 
@@ -311,6 +373,55 @@ func TestFoldInnerOnExistsIntoWhere(t *testing.T) {
 		}
 	})
 
+	t.Run("an_outer_root_folds_its_legs_in_place_with_and_without_a_where", func(t *testing.T) {
+		t.Parallel()
+		marker := onExistsFoldMarker(t, "q$d")
+		eq := onExistsFoldCmp(t, "X")
+		mk := func() *logical.LogicalJoin {
+			inner := onExistsFoldJoin(scan("A", "a"), scan("C", "c"), predicates.NewAnd(eq, marker), onExistsFoldSubquery("q$d"))
+			return logical.NewJoinWithPredicate(inner, scan("E", "e"), logical.JoinLeft, onExistsFoldCmp(t, "Y"))
+		}
+		// With a WHERE: the WHERE filter keeps its own predicate and gains
+		// nothing; the leg is filtered below the OUTER join.
+		left := mk()
+		whereEq := onExistsFoldCmp(t, "Z")
+		f := &logical.LogicalFilter{Input: left, Predicate: whereEq}
+		out, err := foldInnerOnExistsIntoWhere(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out != logical.LogicalOperator(f) || f.Predicate != predicates.QueryPredicate(whereEq) || len(f.ExistsSubqueries) != 0 {
+			t.Fatal("the WHERE above an OUTER join must not take the leg's lift")
+		}
+		foldedLeft, ok := f.Input.(*logical.LogicalJoin)
+		if !ok || foldedLeft == left {
+			t.Fatal("the OUTER join must be replaced by its folded copy")
+		}
+		legFilter, ok := foldedLeft.Left.(*logical.LogicalFilter)
+		if !ok || legFilter.Predicate != predicates.QueryPredicate(marker) || len(legFilter.ExistsSubqueries) != 1 {
+			t.Fatalf("the inner leg must be filtered in place, got %T", foldedLeft.Left)
+		}
+		// Without a WHERE, under a shell and at the root.
+		left = mk()
+		proj := logical.NewProject(left, []string{"a.id"}, []string{""})
+		if out, err := foldInnerOnExistsIntoWhere(proj); err != nil || out != logical.LogicalOperator(proj) {
+			t.Fatal("the shell stays the root")
+		}
+		if pl, ok := proj.Input.(*logical.LogicalJoin); !ok || pl == left || pl.Kind != logical.JoinLeft {
+			t.Fatal("the OUTER join under the shell must be replaced by its folded copy, not wrapped in a filter")
+		} else if _, ok := pl.Left.(*logical.LogicalFilter); !ok {
+			t.Fatal("the inner leg must be filtered in place")
+		}
+		left = mk()
+		out, err = foldInnerOnExistsIntoWhere(left)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rl, ok := out.(*logical.LogicalJoin); !ok || rl == left || rl.Kind != logical.JoinLeft {
+			t.Fatalf("a bare OUTER root must become its folded copy, got %T", out)
+		}
+	})
+
 	t.Run("no_join_or_nothing_to_lift_is_untouched", func(t *testing.T) {
 		t.Parallel()
 		f := &logical.LogicalFilter{Input: scan("A", "a"), Predicate: onExistsFoldCmp(t, "Y")}
@@ -343,7 +454,7 @@ func TestFoldInnerOnExistsIntoWhere(t *testing.T) {
 }
 
 const onExistsFoldDDL = `
-CREATE TABLE A (id BIGINT, PRIMARY KEY (id))
+CREATE TABLE A (id BIGINT, tags BIGINT ARRAY, PRIMARY KEY (id))
 CREATE TABLE C (id BIGINT, a_id BIGINT, PRIMARY KEY (id))
 CREATE TABLE D (id BIGINT, PRIMARY KEY (id))
 CREATE TABLE G (id BIGINT, c_id BIGINT, PRIMARY KEY (id))
@@ -353,10 +464,10 @@ CREATE TABLE H (id BIGINT, g_id BIGINT, PRIMARY KEY (id))
 // TestOnExistsFold_NoJoinLeavesTheBuilderUnfolded pins the builder-exit
 // invariant the translator asserts: whatever the spelling — binary or
 // three-leg, the EXISTS in the root's or the nested join's ON, with a WHERE,
-// with a WHERE-EXISTS, or with none, under ORDER BY / LIMIT — the logical
-// plan that leaves the builder has NO join carrying OnExistsSubqueries, and
-// the block's WHERE filter carries every existential with its marker in
-// conjunct position.
+// with a WHERE-EXISTS, or with none, under ORDER BY / LIMIT, below an OUTER
+// join, left of a lateral unnest — the logical plan that leaves the builder
+// has NO join carrying OnExistsSubqueries, and the filter that took the lift
+// carries every existential with its marker in conjunct position.
 func TestOnExistsFold_NoJoinLeavesTheBuilderUnfolded(t *testing.T) {
 	t.Parallel()
 	tmpl, err := buildSchemaTemplateFromDDL(onExistsFoldDDL)
@@ -368,17 +479,28 @@ func TestOnExistsFold_NoJoinLeavesTheBuilderUnfolded(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
 		sql           string
-		wantSubs      int
-		wantOnConj    int // non-EXISTS ON conjuncts left on the cluster's joins, summed
-		wantWhereConj int // conjuncts on the WHERE filter (markers + WHERE's own)
+		wantFilters   int // filters in the plan: the block's WHERE, plus one per inner cluster filtered in place under an OUTER join
+		wantSubs      int // existentials on the FIRST filter found (the block's WHERE, or the in-place one when there is no WHERE)
+		wantOnConj    int // non-EXISTS ON conjuncts left on the joins, summed
+		wantWhereConj int // conjuncts on that first filter (markers + the WHERE's own)
 	}{
-		{"binary_on_exists_no_where", "SELECT a.id FROM a JOIN c ON c.a_id = a.id" + existsD, 1, 1, 1},
-		{"binary_on_exists_plus_where", "SELECT a.id FROM a JOIN c ON c.a_id = a.id" + existsD + " WHERE a.id > 0", 1, 1, 2},
-		{"binary_on_exists_plus_where_exists", "SELECT a.id FROM a JOIN c ON c.a_id = a.id" + existsD + " WHERE EXISTS (SELECT 1 FROM g WHERE g.c_id = c.id)", 2, 1, 2},
-		{"binary_two_exists_in_on", "SELECT a.id FROM a JOIN c ON c.a_id = a.id" + existsD + " AND EXISTS (SELECT 1 FROM g WHERE g.c_id = c.id)", 2, 1, 2},
-		{"binary_on_only_exists", "SELECT a.id FROM a JOIN c ON EXISTS (SELECT 1 FROM d WHERE d.id = a.id)", 1, 0, 1},
-		{"threeway_root_on_exists_under_order_by_limit", "SELECT a.id FROM a JOIN c ON c.a_id = a.id JOIN g ON g.c_id = c.id" + existsD + " ORDER BY a.id LIMIT 5", 1, 2, 1},
-		{"threeway_nested_on_exists_plus_where_exists", "SELECT a.id FROM a JOIN c ON c.a_id = a.id" + existsD + " JOIN g ON g.c_id = c.id WHERE EXISTS (SELECT 1 FROM h WHERE h.g_id = g.id)", 2, 2, 2},
+		{"binary_on_exists_no_where", "SELECT a.id FROM a JOIN c ON c.a_id = a.id" + existsD, 1, 1, 1, 1},
+		{"binary_on_exists_plus_where", "SELECT a.id FROM a JOIN c ON c.a_id = a.id" + existsD + " WHERE a.id > 0", 1, 1, 1, 2},
+		{"binary_on_exists_plus_where_exists", "SELECT a.id FROM a JOIN c ON c.a_id = a.id" + existsD + " WHERE EXISTS (SELECT 1 FROM g WHERE g.c_id = c.id)", 1, 2, 1, 2},
+		{"binary_two_exists_in_on", "SELECT a.id FROM a JOIN c ON c.a_id = a.id" + existsD + " AND EXISTS (SELECT 1 FROM g WHERE g.c_id = c.id)", 1, 2, 1, 2},
+		{"binary_on_only_exists", "SELECT a.id FROM a JOIN c ON EXISTS (SELECT 1 FROM d WHERE d.id = a.id)", 1, 1, 0, 1},
+		{"threeway_root_on_exists_under_order_by_limit", "SELECT a.id FROM a JOIN c ON c.a_id = a.id JOIN g ON g.c_id = c.id" + existsD + " ORDER BY a.id LIMIT 5", 1, 1, 2, 1},
+		{"threeway_nested_on_exists_plus_where_exists", "SELECT a.id FROM a JOIN c ON c.a_id = a.id" + existsD + " JOIN g ON g.c_id = c.id WHERE EXISTS (SELECT 1 FROM h WHERE h.g_id = g.id)", 1, 2, 2, 2},
+		// An inner cluster with an ON-EXISTS below an OUTER join is filtered in
+		// place: no WHERE → the in-place filter is the only one; with a WHERE →
+		// two filters, and the block's WHERE takes nothing from the leg.
+		{"inner_on_exists_below_left_join_no_where", "SELECT a.id FROM a JOIN c ON c.a_id = a.id" + existsD + " LEFT JOIN g ON g.c_id = c.id", 1, 1, 2, 1},
+		{"inner_on_exists_below_left_join_plus_where", "SELECT a.id FROM a JOIN c ON c.a_id = a.id" + existsD + " LEFT JOIN g ON g.c_id = c.id WHERE a.id > 0", 2, 0, 2, 1},
+		{"threeway_inner_on_exists_below_left_join", "SELECT a.id FROM a JOIN c ON c.a_id = a.id" + existsD + " JOIN g ON g.c_id = c.id LEFT JOIN h ON h.g_id = g.id", 1, 1, 3, 1},
+		// An inner lateral unnest is transparent: its outer's ON-EXISTS is the
+		// block's WHERE-EXISTS.
+		{"on_exists_left_of_a_lateral_unnest", "SELECT a.id, v FROM a JOIN c ON c.a_id = a.id" + existsD + ", a.tags AS v", 1, 1, 1, 1},
+		{"on_exists_left_of_a_lateral_unnest_plus_where", "SELECT a.id, v FROM a JOIN c ON c.a_id = a.id" + existsD + ", a.tags AS v WHERE a.id > 0", 1, 1, 1, 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -419,12 +541,21 @@ func TestOnExistsFold_NoJoinLeavesTheBuilderUnfolded(t *testing.T) {
 			if joins == 0 {
 				t.Fatal("no join in the plan")
 			}
-			if len(filters) != 1 {
-				t.Fatalf("want exactly one filter (the block's WHERE), got %d:\n%s", len(filters), op.Explain(""))
+			if len(filters) != tc.wantFilters {
+				t.Fatalf("want %d filter(s), got %d:\n%s", tc.wantFilters, len(filters), op.Explain(""))
 			}
 			f := filters[0]
 			if _, overJoin := f.Input.(*logical.LogicalJoin); !overJoin {
-				t.Fatalf("the WHERE filter must sit directly over the join, got %T", f.Input)
+				t.Fatalf("a filter must sit directly over a join, got %T", f.Input)
+			}
+			for _, extra := range filters[1:] {
+				// The in-place filter under an OUTER join: over an inner join,
+				// carrying every existential of that cluster.
+				ej, overJoin := extra.Input.(*logical.LogicalJoin)
+				if !overJoin || ej.Kind != logical.JoinInner || len(extra.ExistsSubqueries) == 0 ||
+					len(extractExistsMarkers(extra.Predicate)) != len(extra.ExistsSubqueries) {
+					t.Fatalf("an in-place filter must sit over an inner cluster with its existentials and markers, got %T / %d subqueries / %v", extra.Input, len(extra.ExistsSubqueries), extra.Predicate)
+				}
 			}
 			if len(f.ExistsSubqueries) != tc.wantSubs {
 				t.Fatalf("filter carries %d existentials, want %d", len(f.ExistsSubqueries), tc.wantSubs)
