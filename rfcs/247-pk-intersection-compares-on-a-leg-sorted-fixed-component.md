@@ -285,8 +285,74 @@ enumeration).
   baseline — so this green says the directed gate declined none of the
   corpus's EXISTING primary-key intersections (every pk-intersection
   candidate now passes through it), not that it exercised the widening.
-* 1M stress comparison and planner fuzz at the implementation head,
-  recorded below.
+* Bazel-by-name at `558b44205`, `--nocache_test_results`: the 29
+  `TestIntersector_*` / `TestPrimaryKeyComponentsToCompare_*` top-level tests
+  in `//pkg/recordlayer/query/plan/cascades:cascades_test` all `--- PASS`;
+  the three new `properties_test` pins pass; `TestFDB_PkIntersectionLegBoundComponent`,
+  `TestFDB_MetamorphicCompositePrimaryKey` and its DML twin pass in
+  `//pkg/relational/sqldriver:sqldriver_test`; `just test` 92/92 on both
+  commits (pre-commit hook).
+* Planner fuzz at `558b44205`, 30s each: `FuzzPlanner_Determinism`
+  5,821,100 executions, PASS; `FuzzPlanner_PlanFullPipeline` 2,035,271
+  executions, PASS.
+
+### 1M stress comparison
+
+Baseline `64a737edd` (the merge-base on 2026-09-10; `origin/master` was at
+the same commit) versus `558b44205`, `TestFDB_Stress_1M` uncached, strictly
+sequential, on the same filesystem (`/home`, 99% used, 11G free after
+reclaiming the Go build cache), the changed files md5-checked after every
+sequence. Every run has 24 `=== RUN` lines and 24 passes; all 22 labelled
+readings agree on row counts across every run.
+
+The first two sequences (base, branch, base, branch and then branch, base,
+branch, base — baseline in a secondary worktree, the branch in the MAIN
+worktree) read the branch 1.7–2.7x slower on the first five point reads in
+all four of its runs, and the baseline slow in one of its four; the later,
+identically planned `PK needle` read 1.01–1.03 throughout, plans were
+identical on both sides (EXPLAIN lines in every log), and the committed
+planner-only benchmark (`embedded/plan_stress_shapes_bench_test.go`, 3×200
+per tree) agreed to within 1% on every shape (PK lookup 1.51 vs 1.55 ms,
+idx_customer eq 2.23 vs 2.24, idx_amount range 2.35 vs 2.37, GROUP BY
+1.72 vs 1.73, SUM 1.63 vs 1.64, IN-list 10.36 vs 10.38). That is not the
+position artefact RFC-246 measured, so the code and the tree were separated
+directly: the main worktree checked out at the BASELINE commit read
+9.5 / 8.5 ms (fast), and then, with the CODE swapped across the trees —
+branch commit in the secondary worktree, baseline in the main one,
+interleaved — the branch read 8.3 / 9.6 ms and the baseline 11.3 / 8.5 ms.
+The slowness stayed with "main worktree at the branch commit" and did not
+follow the code. Below is that swapped, interleaved pair (load at each
+start 3.2 / 3.4 / 3.5 / 2.9), ratio = min(branch) / min(base):
+
+| query | rows | base | branch | ratio |
+|---|---|---|---|---|
+| PK lookup id=0 / N/2 / N-1 | 1 | 8.5 / 8.4 / 7.0 ms | 8.3 / 8.3 / 6.2 ms | 0.98 / 1.00 / 0.88 |
+| idx_customer eq | 8 | 6.3 ms | 6.4 ms | 1.01 |
+| idx_amount range >9000 | 100017 | 189.7 ms | 197.5 ms | 1.04 |
+| idx_status count pending | 1 | 336.9 ms | 379.8 ms | 1.13 |
+| full scan filter amount>5000 | 1 | 550.8 ms | 549.9 ms | 1.00 |
+| GROUP BY status | 4 | 6.0 ms | 6.1 ms | 1.01 |
+| GROUP BY status COUNT only | 4 | 5.3 ms | 5.5 ms | 1.03 |
+| SUM by status (aggregate index) | 4 | 5.8 ms | 5.7 ms | 0.99 |
+| GROUP BY customer HAVING | 47271 | 727.4 ms | 627.2 ms | 0.86 |
+| JOIN 10 orders x customers | 10 | 29.9 ms | 28.4 ms | 0.95 |
+| ORDER BY PK (full) | 1000000 | 3833 ms | 3890 ms | 1.01 |
+| ORDER BY PK + index filter | 8 | 8.7 ms | 8.8 ms | 1.01 |
+| scan all rows ordered / wide | 1000000 | 3631 / 3896 ms | 3672 / 3927 ms | 1.01 / 1.01 |
+| IN-list 5 values | 46 | 18.9 ms | 19.3 ms | 1.02 |
+| PK needle id=999999 | 1 | 5.8 ms | 5.8 ms | 1.01 |
+| PK+filter needle id=500000 | 1 | 7.3 ms | 7.2 ms | 0.98 |
+| full scan sparse filter | 97 | 3341 ms | 3328 ms | 1.00 |
+| UPDATE by index / DELETE single row | 8 / 1 | 9.0 / 6.0 ms | 8.9 / 6.5 ms | 0.99 / 1.08 |
+
+`idx_status count pending` at 1.13 and `GROUP BY customer HAVING` at 0.86 are
+the two readings whose base runs differ from each other by more than the
+sides differ (336.9 vs 376.3 ms; 727.4 vs 793.2 ms). The workload has a
+single-component primary key, so no plan in it reaches the widened
+enumeration or the directed gate (the gate runs only inside
+`createPrimaryKeyIntersection`, which needs two matched accesses; every
+stress query has one); this is a no-change confirmation.
+
 
 ## Review
 
@@ -316,5 +382,5 @@ SQL level. Also folded: the three-way test renamed to what it asserts
 measured reddened names with their populations; the EXPLAIN corpus stated
 with its population; the FDB pin's stale "declines most of the TI shapes"
 prose and its leg-order determinism cited; RFC-245's old symbol names
-annotated. The stress and fuzz figures are the docs commit that follows.
-@claude on the PR.
+annotated. The stress and fuzz figures are recorded above. @claude on the
+PR.
