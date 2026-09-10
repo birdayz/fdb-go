@@ -212,3 +212,49 @@ func TestRecordQueryIndexPlan_HintRichOrdering_PinnedCoordinateAfterWidenedOneSt
 		t.Fatalf("storage-key completeness claimed with the PK suffix dropped")
 	}
 }
+
+// TestRecordQueryPredicatesFilterPlan_HintRichOrderingPassesBindingsThrough
+// (RFC-248): a predicate filter passes its input's RICH ordering through —
+// the FIXED binding of an equality-bound prefix included — as Java's
+// OrderingProperty.visitPredicatesFilterPlan does. Before, the memo found no
+// rich form on the filter and synthesised sorted-only bindings from the plain
+// ordering for the filter member's PropRichOrdering (sort elision delegates
+// through the filter and was never affected; no corpus plan changes either
+// way — this pin is what holds the property).
+func TestRecordQueryPredicatesFilterPlan_HintRichOrderingPassesBindingsThrough(t *testing.T) {
+	t.Parallel()
+	scan := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+		return NewRecordQueryIndexPlan("IDX", []*predicates.ComparisonRange{pkOrderingEq(t, int64(1))},
+			[]string{"T"}, indexOrderingLayout(), false)
+	}).
+		WithKeyComponentTypes(testPhysicalLongTypes(2)).
+		WithIndexMetadata([]string{"A", "B"}, []string{"ID"}, false).
+		WithPrimaryKeyComponentTypes(testPhysicalLongTypes(1))
+	inner := scan.HintRichOrdering()
+	if n := len(inner.GetKeys()); n != 3 {
+		t.Fatalf("index scan rich ordering has %d keys, want [A, B, ID]", n)
+	}
+	residual := &predicates.ComparisonPredicate{
+		Operand:    orderingColumnOfName(scan.GetResultValue(), scan.GetFlowedType(), "B"),
+		Comparison: predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(0)),
+	}
+	filter := mustChecked(t, func() (*RecordQueryPredicatesFilterPlan, error) {
+		return NewRecordQueryPredicatesFilterPlan(scan, []predicates.QueryPredicate{residual})
+	})
+	got := filter.HintRichOrdering()
+	if n := len(got.GetKeys()); n != 3 {
+		t.Fatalf("filter rich ordering has %d keys, want the scan's 3: the filter must pass its input's ordering through", n)
+	}
+	gotBindings := got.GetBindingMap()
+	innerBindings := inner.GetBindingMap()
+	for i, key := range got.GetKeys() {
+		want := innerBindings[inner.GetKeys()[i]]
+		have := gotBindings[key]
+		if len(have) != 1 || len(want) != 1 || have[0].IsFixed() != want[0].IsFixed() || have[0].GetSortOrder() != want[0].GetSortOrder() {
+			t.Fatalf("key %d binding %v, want the scan's %v", i, have, want)
+		}
+	}
+	if b := gotBindings[got.GetKeys()[0]]; !b[0].IsFixed() {
+		t.Fatal("A's FIXED binding did not survive the filter; ORDER BY a DESC over `a = 1 AND <residual>` would keep its sort")
+	}
+}

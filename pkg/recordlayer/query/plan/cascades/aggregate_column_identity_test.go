@@ -8,7 +8,8 @@ import (
 
 // TestAggColumnMatches_NestedShadowsTopLevel pins RFC-187 S4/S5/S8: the single
 // chokepoint every aggregate-index match site now routes through
-// (MatchesGroupBy, MatchesSingleAggregateOf, groupColEqualityIndex, the
+// (MatchesGroupBy, MatchesSingleAggregateOf, groupColComparisonIndex /
+// groupingColumnIndex, the
 // streaming-agg-from-index eligibility checks) compares a query grouping-key /
 // aggregate-operand against a declared aggregate-index column by full accessor
 // PATH — so a nested `addr.city` grouping key never matches a same-leaf-named

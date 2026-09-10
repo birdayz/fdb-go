@@ -98,6 +98,7 @@ go_test(
         "aggregate_index_min_null_edges_fdb_test.go",
         "aggregate_index_minmax_null_semantics_fdb_test.go",
         "aggregate_index_minmax_nullgroup_probe_test.go",
+        "aggregate_index_residual_fdb_test.go",
         "aggregate_index_signed_zero_range_set_fdb_test.go",
         "aggregate_index_sum_null_edges_fdb_test.go",
         "aggregate_index_sum_null_semantics_fdb_test.go",

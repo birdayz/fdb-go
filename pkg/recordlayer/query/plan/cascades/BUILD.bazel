@@ -438,6 +438,7 @@ go_test(
         "rfc232_optional_match_candidate_error_test.go",
         "rfc232_test_helpers_test.go",
         "rule_adjust_match_test.go",
+        "rule_aggregate_data_access_residual_test.go",
         "rule_aggregate_data_access_test.go",
         "rule_call_insert_atomicity_test.go",
         "rule_decorrelate_values_test.go",
@@ -1148,6 +1149,7 @@ go_test(
         "sort_elision_renamed_slot_test.go",
         "adjust_match_leaf_climb_test.go",
         "intersector_leg_bound_pk_test.go",
+        "rule_aggregate_data_access_residual_test.go",
     ],
     deps = [
         "//gen",
