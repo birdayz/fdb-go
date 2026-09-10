@@ -261,8 +261,64 @@ residual on the select-having row, decline on the input — and states that.
   this green says the partition declined none of the corpus's EXISTING
   aggregate-index plans (every one now passes through it), not that it
   exercised the residual.
-* Planner fuzz and the 1M stress comparison at the implementation head,
-  recorded below.
+* Bazel-by-name at `f215c3979`, `--nocache_test_results`: 20 partition
+  arms + 3 standalone unit tests (cascades), 22 embedded plan arms + the
+  unreachable-shape pin, `TestBugHunt_AggregateIndex*`, the plans pin,
+  `TestFDB_AggregateIndexResidual` all `--- PASS`; `just test` 92/92 on
+  both commits (pre-commit hook).
+* Planner fuzz at `f215c3979`, 30s each: `FuzzPlanner_Determinism`
+  5,839,063 executions, PASS; `FuzzPlanner_PlanFullPipeline` 2,052,302
+  executions, PASS.
+* Planner-only benchmark (`embedded/plan_stress_shapes_bench_test.go`,
+  3×200 per tree): `7e3d59a8b` vs `f215c3979` — IdxCustomerEq 2.22–2.26 vs
+  2.26–2.28 ms, GroupByStatus 1.71–1.73 vs 1.71–1.73, SumByStatus 1.59–1.62
+  vs 1.60–1.64, InList 10.26–10.76 vs 10.28–10.59: within 1% everywhere; the
+  aggregate shapes now pass through the partition with an empty filter and
+  it costs nothing measurable.
+
+### 1M stress comparison
+
+Baseline `7e3d59a8b` (the merge-base on 2026-09-10, master at the time) in
+the secondary worktree versus `f215c3979` in the main worktree,
+`TestFDB_Stress_1M` uncached, strictly sequential, both on `/home` (100%
+used, 7–8G free), the changed files md5-checked after every sequence, 24
+`=== RUN` lines and 24 passes per run, EXPLAIN lines identical between the
+sides, rows agreeing on all 22 readings in all six runs. Order: base,
+branch, base, branch, then branch, base; the second pair read BOTH sides
+slow on the point reads (base 16.8 ms, branch 19.5 ms on `PK lookup id=0`),
+the same environmental band RFC-246/247 recorded, so the table is min-of-3
+per side, ratio = min(branch) / min(base):
+
+| query | rows | base | branch | ratio |
+|---|---|---|---|---|
+| PK lookup id=0 / N/2 / N-1 | 1 | 8.4 / 8.3 / 6.2 ms | 8.4 / 8.7 / 6.3 ms | 1.00 / 1.05 / 1.03 |
+| idx_customer eq | 8 | 6.4 ms | 6.5 ms | 1.02 |
+| idx_amount range >9000 | 100017 | 188.9 ms | 192.5 ms | 1.02 |
+| idx_status count pending | 1 | 339.8 ms | 321.2 ms | 0.95 |
+| full scan filter amount>5000 | 1 | 550.4 ms | 543.4 ms | 0.99 |
+| GROUP BY status | 4 | 5.9 ms | 5.8 ms | 0.98 |
+| GROUP BY status COUNT only | 4 | 5.3 ms | 5.3 ms | 1.00 |
+| SUM by status (aggregate index) | 4 | 5.7 ms | 5.8 ms | 1.01 |
+| GROUP BY customer HAVING | 47271 | 622.8 ms | 587.0 ms | 0.94 |
+| JOIN 10 orders x customers | 10 | 35.4 ms | 19.9 ms | 0.56 |
+| ORDER BY PK (full) | 1000000 | 3837 ms | 3787 ms | 0.99 |
+| ORDER BY PK + index filter | 8 | 8.9 ms | 8.9 ms | 1.00 |
+| scan all rows ordered / wide | 1000000 | 3668 / 3928 ms | 3639 / 3911 ms | 0.99 / 1.00 |
+| IN-list 5 values | 46 | 18.8 ms | 18.8 ms | 1.00 |
+| PK needle id=999999 | 1 | 5.8 ms | 5.9 ms | 1.01 |
+| PK+filter needle id=500000 | 1 | 7.5 ms | 7.2 ms | 0.96 |
+| full scan sparse filter | 97 | 3355 ms | 3316 ms | 0.99 |
+| UPDATE by index / DELETE single row | 8 / 1 | 9.0 / 6.6 ms | 8.9 / 6.4 ms | 0.99 / 0.96 |
+
+The two aggregate-index rows are the ones this change touches and are the
+ones read most carefully: at min-of-2 they had read 1.59 (`SUM by status`,
+7.6 / 6.0 vs 9.5 / 13.6) and 1.24 (`HAVING`), the third pair read them at
+5.76 and 587 ms on the branch (1.01 / 0.94), and the planner-only benchmark
+above puts their planning cost within 1% — the workload has no WHERE under
+its GROUP BYs, so the partition sees an empty filter and yields the same
+plans (EXPLAIN identical). `JOIN 10` at 0.56 is that row's own bimodality
+(19.9–40.7 ms within each side across the six runs). This is a no-change
+confirmation.
 
 ## Review
 
