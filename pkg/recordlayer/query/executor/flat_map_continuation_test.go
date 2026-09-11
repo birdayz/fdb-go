@@ -1,6 +1,8 @@
 package executor
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"testing"
 
@@ -68,6 +70,64 @@ func TestFlatMapBuildContinuation_PairsPriorOuterWithInner(t *testing.T) {
 			t.Errorf("inner-exhausted must not encode an inner continuation, got %q", fmc.InnerContinuation)
 		}
 	})
+}
+
+// TestFlatMapInnerRowLimitPreservesContinuation exercises a real row-limited
+// child, not a scan/time-limit substitute. Java FlatMapPipelinedCursor advances
+// the outer only on SOURCE_EXHAUSTED; RETURN_LIMIT_REACHED must preserve this
+// outer row's unfinished inner stream too.
+func TestFlatMapInnerRowLimitPreservesContinuation(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	rows := []QueryResult{qr("id", int64(10)), qr("id", int64(20))}
+	inner := recordlayer.LimitRowsCursor(recordlayer.FromList(rows), 1)
+	first, err := inner.OnNext(ctx)
+	if err != nil || !first.HasNext() {
+		t.Fatalf("first limited inner row: %v, %v", first, err)
+	}
+	innerBytes, err := first.GetContinuation().ToBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &flatMapCursor{
+		outerCursor:            recordlayer.Empty[QueryResult](),
+		innerCursor:            inner,
+		currentOuter:           &QueryResult{PrimaryKey: tuple.Tuple{int64(7)}},
+		priorOuterContinuation: recordlayer.NewBytesContinuation([]byte("PRIOR")),
+		lastOuterContinuation:  recordlayer.NewBytesContinuation([]byte("AFTER")),
+	}
+	defer c.Close()
+	stop, err := c.OnNext(ctx)
+	if err != nil || stop.HasNext() || stop.GetNoNextReason() != recordlayer.ReturnLimitReached {
+		t.Fatalf("inner row cap must stop FlatMap without advancing the outer: result=%v err=%v", stop, err)
+	}
+	encoded, err := stop.GetContinuation().ToBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var continuation gen.FlatMapContinuation
+	if err := proto.Unmarshal(encoded, &continuation); err != nil {
+		t.Fatal(err)
+	}
+	if string(continuation.GetOuterContinuation()) != "PRIOR" ||
+		!bytes.Equal(continuation.GetInnerContinuation(), innerBytes) ||
+		!bytes.Equal(continuation.GetCheckValue(), tuple.Tuple{int64(7)}.Pack()) {
+		t.Fatalf("row-limited child lost its exact outer/inner checkpoint: %v", &continuation)
+	}
+	resumed := recordlayer.FromListWithContinuation(rows, continuation.GetInnerContinuation())
+	defer resumed.Close()
+	next, err := resumed.OnNext(ctx)
+	if err != nil || !next.HasNext() || fieldVal(t, next.GetValue(), "id") != 20 {
+		t.Fatalf("resume must yield the remaining inner row 20: result=%v err=%v", next, err)
+	}
+	again, err := c.OnNext(ctx)
+	if err != nil || again.HasNext() || again.GetNoNextReason() != recordlayer.ReturnLimitReached {
+		t.Fatalf("recall must replay the inner row-limit stop: result=%v err=%v", again, err)
+	}
+	againBytes, err := again.GetContinuation().ToBytes()
+	if err != nil || !bytes.Equal(encoded, againBytes) {
+		t.Fatalf("recall changed the checkpoint: got=%x want=%x err=%v", againBytes, encoded, err)
+	}
 }
 
 // encodeFailContinuation is a non-end continuation whose ToBytes always

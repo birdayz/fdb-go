@@ -10087,3 +10087,37 @@ this one).
   cluster; ON-EXISTS spellings fold to the WHERE form already). Query-engine gate. Pins: the
   reproducer above returns `(1,true),(2,…)` per the fixture on every shape; the interim typed
   decline, if landed first, names the shape.
+
+### RFC-250 — FlatMap inner returned-row-limit continuation (completed)
+
+- [x] Fix the executor's treatment of `ReturnLimitReached` as inner exhaustion.
+  Only `SourceExhausted` now advances the outer cursor, matching Java; every
+  other inner stop preserves its checkpoint. The real-FDB regression returned
+  only 3/6 of 9 rows before the fix at inner budgets 1/2, and all 9 after it.
+  Unit coverage also pins checkpoint fields and sticky no-next behavior.
+  This is an internal cursor-contract bug: ordinary SQL reachability was not
+  demonstrated. SQL LIMIT/OFFSET controls, including the existing unsupported
+  correlated-EXISTS OFFSET gate, are retained as tests rather than presented as
+  reproducers. Graefe and Torvalds ACKed RFC and source; Codex found no issues.
+  Final source: `just test` executed/passed 92/92 Bazel targets, both affected
+  targets passed uncached, and the existing FlatMap continuation fuzzer passed
+  4,985,804 executions over 15 seconds. Details and source identities:
+  `rfcs/250-flatmap-preserves-inner-row-limit-stops.md`.
+
+#### Stress test 1M baseline — RFC-250
+
+Measured baseline `0ebf8c7155544d2cd5e7908d10b74f1ca6910964` (merge-base at
+measurement time); after = that base plus production blob
+`230bfc5e1503ebe05f499949e3a7a26f1597dda4`. Both states used the same worktree,
+filesystem and Bazel output base. Four sequential uncached runs each executed
+24 RUN lines (parent + 23 query arms), with identical timed-row reports, the
+same 1M COUNT result, and identical emitted EXPLAIN texts. No speedup claim:
+load varied and this SQL workload does not establish reachability of the fix.
+
+| Source | Sample 1 | Sample 2 | Start load averages, 1/5/15 min |
+|---|---:|---:|---|
+| Baseline | 216.54 s | 199.90 s | 1.63/2.37/2.39; 6.52/6.82/4.54 |
+| After | 197.00 s | 198.06 s | 3.22/5.46/4.53; 3.88/4.74/4.43 |
+
+Per-query rows and durations, environment, commands, and caveats are recorded
+in RFC-250's completed stress comparison, not inferred from total time.

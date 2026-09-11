@@ -1,0 +1,207 @@
+# RFC-250: FlatMap preserves every non-exhausted inner stop
+
+Status: implemented; RFC and source reviews ACKed; verification complete.
+
+## Finding and scope
+
+At `0ebf8c715`, `flatMapCursor.OnNext` closes an inner cursor and advances the
+outer whenever its no-next reason is not out-of-band. This conflates
+`ReturnLimitReached` with `SourceExhausted`. A returned-row budget does not prove
+that the inner stream is exhausted; advancing loses its remaining rows and its
+continuation.
+
+`TestFlatMapInnerRowLimitPreservesContinuation` constructs the cursor's mid-inner
+state using a real `recordlayer.LimitRowsCursor` over two list rows. After the
+first row, FlatMap reports `SourceExhausted` instead of `ReturnLimitReached` and
+loses the second row's resume position. The new test ran and failed under
+uncached Bazel (`//pkg/recordlayer/query/executor:executor_test`), not just Go.
+
+This is a confirmed **internal cursor-contract bug**, not a demonstrated SQL
+wrong-answer defect. `executeFlatMap` clears request skip/row limits for both
+children; a semantic `RecordQueryLimitPlan` normally reports `SourceExhausted`
+when its window finishes. `TestLimitedJoinContinuation` pins scalar-subquery
+and derived-join LIMIT/OFFSET answers at six scanned-row budgets (unlimited,
+1, 2, 3, 4, 7). It also pins the existing typed rejection of correlated EXISTS
+with a positive data-dependent OFFSET: that input cannot exercise this cursor
+branch. No claim is made that these shapes reach the faulty row-limit arm.
+
+## Java reference and decision
+
+Read in full: `cursors/FlatMapPipelinedCursor.java`, `RowLimitedCursor.java`,
+`SkipCursor.java` under `fdb-record-layer/fdb-record-layer-core/src/main/java/`
+(tag 4.12.11.0).
+
+`FlatMapPipelinedCursor.PipelineQueueEntry.doesNotHaveReturnableResult` discards
+an inner only when `innerResult.getNoNextReason().isSourceExhausted()`.
+`nextResult` otherwise propagates the inner stop reason and `toContinuation`
+pairs the prior outer position with the inner position. The Go record-layer
+`flatMapCursor[T,V]` already uses this same distinction.
+
+Change the executor's inner-stop condition to `!reason.IsSourceExhausted()`.
+Keep the existing continuation construction and sticky terminal-result cache.
+This is the same algorithm as Java, not a new plan/rule/property or special
+case for one particular stop reason. Completed semantic LIMIT windows remain
+source-exhausted and still advance normally.
+
+Rejected alternatives:
+
+- Treat a returned-row limit as exhaustion: loses rows and contradicts Java.
+- Resume the inner immediately within this cursor instance: ignores the page
+  boundary and its budget; continuation resumption belongs to the caller.
+- Add a second condition naming just `ReturnLimitReached`: duplicates the
+  source-exhaustion distinction already represented by `NoNextReason`.
+- Change request propagation or SQL LIMIT semantics: unnecessary and much
+  broader than the defective classification.
+
+No stored keys, record/index bytes, or continuation schema change. Existing
+FlatMap continuation encoding carries the checkpoint that was being discarded.
+
+## RFC review
+
+Both virtual reviewers read the Java and Go stop/continuation paths before the
+production edit (Claude Sonnet, 2026-09-11):
+
+- Graefe: **ACK**, session `ae1a1659-ce01-464d-ab3a-088e9e3e2dba`.
+  Confirmed the source-exhaustion gate and the narrowly stated SQL reachability.
+- Torvalds: **ACK**, session `a7e3e80c-7cc0-48a2-b1e2-a7d43a682932`.
+  Confirmed the same distinction and required the planned real-FDB child-cap
+  regression before completion.
+
+The real-FDB regression was then run before the production edit. Under inner
+caps of 1 and 2 it returned `[1 1 1]` and `[1 2 1 2 1 2]`, respectively, instead
+of `[1 2 3 1 2 3 1 2 3]`. Both subtests ran and failed under uncached Bazel.
+The test explicitly overrides the normally cleared child request cap; its
+scope remains an internal executor contract, not ordinary SQL reachability.
+
+## Implementation review
+
+The production file's reviewed Git blob is
+`230bfc5e1503ebe05f499949e3a7a26f1597dda4` (baseline blob
+`8e60ff7287ce7c4f552eb03d00aaf0571a4aee9d`). The source and regression tests were
+frozen for the reviews and subsequent verification:
+
+- Graefe: **ACK**, session `cc9d9747-fc73-4b93-8d3c-2d3cd9701d65`.
+- Torvalds: **ACK**, session `59833c52-8fe9-40ea-8224-6d2b5378d37a`.
+- Codex: no findings; confirmed the stop classification, continuation handling,
+  tests, and Bazel wiring in a single uncommitted-change review.
+
+To distinguish the evidence precisely: the **unit regression and the two
+budget subtests of the real-FDB regression** failed on the old source and
+passed on the new source. The **SimFDB SQL controls passed on both sources**;
+the initial EXISTS probe failed because its expected result overlooked the
+existing unsupported-query gate, not because it exposed row loss. The final
+control asserts that typed rejection. None of these SQL controls is claimed as
+a reproducer of this bug.
+
+The executor target's `TestMain` calls `foundationdbtc.Run` with only the API
+version option; the underlying `GenericContainerRequest` has `Started: true`
+and no reuse option. All reported targeted Bazel executions disabled test
+result caching. Fast startup is not evidence of a mocked or skipped FDB test.
+
+## Verification requirements (fulfilled)
+
+1. Retain the originally failing row-limit regression and verify its checkpoint's outer
+   position, inner position, primary-key check value, resumed tail, and sticky
+   no-next replay.
+2. Exercise a genuinely row-limited FDB scan as the active inner and resume the
+   FlatMap from the emitted checkpoint to prove all remaining rows are delivered.
+3. Preserve natural inner exhaustion and scan/time/byte-limit handling; run the
+   existing FlatMap continuation and terminal-replay tests.
+4. Run the SQL LIMIT/OFFSET pagination controls above, the affected Bazel
+   targets uncached, and `just test`. Record source hashes for final runs.
+5. Measure the 1M stress target twice before and twice after, sequentially, with
+   both trees on the same filesystem with adequate free space. Report exact
+   source revisions, test populations, and limitations rather than calling this
+   a SQL performance improvement.
+6. Graefe + Torvalds RFC ACK before the production edit; joint implementation
+   review and codex review after the targeted regressions pass. Complete the
+   full-suite checks before handoff. No merge/push is requested.
+
+### Final-source execution results
+
+- `just test`: **92 of 92 Bazel test targets executed and passed**, including
+  the committed cross-engine factory corpus. Elapsed time was 1163.535 s;
+  this was a fresh output base, not a cached green. A temporary `bazelisk`
+  PATH wrapper added `--output_user_root=/var/tmp/query-hunt-bazel` to keep
+  builds off the nearly full `/home` filesystem; the recipe itself was unchanged.
+- A subsequent uncached full run of `//pkg/recordlayer/query/executor:executor_test`
+  and `//pkg/simfdb/hunt/sqlpage:sqlpage_test` passed. Its output included the
+  unit regression RUN line, both FDB budget subtest RUN lines and **2**
+  `FLATMAP-ROW-LIMIT` reports, plus **18** `LIMIT-CONTINUATION` reports (3 SQL
+  controls × 6 configured budgets). FDB returned all nine rows with respectively
+  six and three actual row-limit stops at budgets one and two.
+- `FuzzFlatMapContinuation` in `//pkg/recordlayer:recordlayer_test`: **4,985,804
+  executions in 15 seconds**, four workers, all five seed cases consumed, PASS.
+  This exercises the existing generic FlatMap continuation fuzzer, not a new
+  SQL reachability claim or a replacement for the executor regression.
+- The modified production Go file and all three modified/new Go test files
+  were MD5-checked unchanged before and after the full suite, the uncached
+  affected-target run, and fuzzing. `git diff --check` passed.
+
+### Completed 1M stress comparison (2026-09-11)
+
+Baseline is `0ebf8c7155544d2cd5e7908d10b74f1ca6910964`, the merge-base at
+measurement time. The after source is that same revision with only
+`pkg/recordlayer/query/executor/flat_map_cursor.go` replaced by reviewed blob
+`230bfc5e1503ebe05f499949e3a7a26f1597dda4`; the baseline file blob is
+`8e60ff7287ce7c4f552eb03d00aaf0571a4aee9d`. This identifies the measured engine
+by its content identity, since the after state was uncommitted when measured.
+
+Both source states ran sequentially in the same detached worktree under
+`/var/tmp`, on `/dev/nvme1n1p3` with 388–391 GiB available (56% used). The main
+checkout's `/home` filesystem was nearly full, so neither measured source state
+used it for the worktree or Bazel output. The same Bazel output base was reused
+between states, and the changed production file was MD5-checked after each run.
+
+Command, repeated twice per source state:
+
+```sh
+bazelisk --output_user_root=/var/tmp/query-hunt-bazel test \
+  //pkg/relational/sqldriver/stress:stress_test --nocache_test_results \
+  --test_output=all --test_arg='-test.run=^TestFDB_Stress_1M$'
+```
+
+| Source state | Sample | Test duration | Start load average (1/5/15 min) |
+|---|---:|---:|---|
+| Baseline | 1 | 216.54 s | 1.63 / 2.37 / 2.39 |
+| Baseline | 2 | 199.90 s | 6.52 / 6.82 / 4.54 |
+| After | 1 | 197.00 s | 3.22 / 5.46 / 4.53 |
+| After | 2 | 198.06 s | 3.88 / 4.74 / 4.43 |
+
+All four uncached runs passed. Each executed the identical **24 RUN lines
+(parent plus 23 query subtests)**. Their 22 timed result-row reports matched
+exactly; the remaining `full_scan_count` arm independently reported
+`COUNT(*) = 1000000 (expected 1000000)` in every run. All 11 emitted EXPLAIN
+texts also matched across the four runs.
+
+This is not evidence of a speedup: this SQL population does not demonstrate
+reachability of the changed arm, load varied, and the first baseline overlapped
+short targeted-regression builds/runs. The point-lookup samples were 6.22–18.64 ms
+(across the three `pk_lookup_*` queries and four runs), above the aspirational
+5 ms target on both states. The complete timed query population is recorded
+below so total-duration improvement cannot hide an individual movement.
+
+| Query | Rows | Before 1 | Before 2 | After 1 | After 2 |
+|---|---:|---:|---:|---:|---:|
+| pk_lookup_first | 1 | 8.718 ms | 11.485 ms | 10.770 ms | 18.401 ms |
+| pk_lookup_middle | 1 | 8.343 ms | 11.357 ms | 9.865 ms | 18.635 ms |
+| pk_lookup_last | 1 | 6.219 ms | 8.755 ms | 8.570 ms | 14.462 ms |
+| index_customer_eq | 8 | 6.357 ms | 6.875 ms | 6.925 ms | 19.173 ms |
+| index_amount_range | 100017 | 214.504 ms | 216.461 ms | 207.569 ms | 314.599 ms |
+| index_status_count | 1 | 491.167 ms | 480.304 ms | 482.734 ms | 375.810 ms |
+| full_scan_filter | 1 | 897.582 ms | 593.537 ms | 882.669 ms | 839.123 ms |
+| group_by_status | 4 | 6.972 ms | 6.851 ms | 12.517 ms | 13.646 ms |
+| group_by_status_count_only | 4 | 6.816 ms | 5.453 ms | 15.081 ms | 18.409 ms |
+| sum_by_status | 4 | 6.066 ms | 6.571 ms | 23.417 ms | 11.934 ms |
+| group_by_customer_having | 47271 | 684.886 ms | 808.857 ms | 726.601 ms | 778.835 ms |
+| join_10_outer | 10 | 21.175 ms | 41.496 ms | 36.963 ms | 23.845 ms |
+| order_by_pk_full | 1000000 | 4.344 s | 4.321 s | 4.227 s | 4.203 s |
+| order_by_pk_index_filter | 8 | 10.445 ms | 11.563 ms | 9.259 ms | 10.589 ms |
+| scan_all_narrow | 1000000 | 4.072 s | 4.347 s | 4.036 s | 4.025 s |
+| scan_all_wide | 1000000 | 4.377 s | 4.378 s | 4.257 s | 4.355 s |
+| in_list | 46 | 21.657 ms | 22.133 ms | 21.851 ms | 20.665 ms |
+| needle_in_haystack_pk | 1 | 6.526 ms | 6.803 ms | 5.988 ms | 6.904 ms |
+| needle_in_haystack_filter | 1 | 8.890 ms | 9.346 ms | 9.041 ms | 8.193 ms |
+| full_scan_sparse_filter | 97 | 3.659 s | 3.617 s | 3.607 s | 3.638 s |
+| update_by_index | 8 | 9.736 ms | 9.785 ms | 9.497 ms | 10.802 ms |
+| delete_single_row | 1 | 7.881 ms | 7.499 ms | 7.684 ms | 6.855 ms |

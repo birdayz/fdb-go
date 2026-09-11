@@ -81,6 +81,7 @@ go_test(
         "flat_map_continuation_test.go",
         "flat_map_inherit_outer_properties_test.go",
         "flat_map_resume_safety_test.go",
+        "flat_map_row_limit_integration_test.go",
         "flatmap_fold_leg_window_test.go",
         "flatmap_kept_armed_test.go",
         "flatmap_outer_baked_binder_test.go",
@@ -284,6 +285,7 @@ go_test(
         "type_filter_user_identifier_test.go",
         "unbounded_union_limit_integration_test.go",
         "union_read_budget_integration_test.go",
+        "flat_map_row_limit_integration_test.go",
     ],
     tags = ["resources:memory:400"],
     deps = [
