@@ -402,11 +402,14 @@ func TestFDB_ExistsInOnBelowOuterJoinAndBesideUnnest(t *testing.T) {
 		},
 		// The two further routes the gate's admission reaches: an unnest UNDER
 		// a WHERE-EXISTS over the box, and a CHAINED unnest over the box. Both
-		// pinned to master's rows.
+		// pinned to master's rows. The WHERE-EXISTS is one the ON does not
+		// imply (c2.id = c.id + 2 holds for c=50,51 and not for 52,53), so a
+		// dropped ON-EXISTS would show as the c=50 rows (50|900|10, 50|900|11)
+		// coming back.
 		{
 			"unnest_under_where_exists_over_full_box_with_filtered_leg",
-			"SELECT c.id, e.id, v FROM a JOIN c ON c.a_id = a.id" + existsD + " FULL JOIN e ON e.c_id = c.id, a.tags AS v WHERE EXISTS (SELECT 1 FROM d AS d2 WHERE d2.id = a.id)",
-			[]string{"51|901|20", "53|NULL|20"},
+			"SELECT c.id, e.id, v FROM a JOIN c ON c.a_id = a.id" + existsD + " FULL JOIN e ON e.c_id = c.id, a.tags AS v WHERE EXISTS (SELECT 1 FROM c AS c2 WHERE c2.id = c.id + 2)",
+			[]string{"51|901|20"},
 		},
 		{
 			"chained_unnest_over_full_box_with_filtered_leg",
@@ -439,12 +442,17 @@ func TestFDB_ExistsInOnBelowOuterJoinAndBesideUnnest(t *testing.T) {
 	})
 
 	// The projected-EXISTS fold (the only caller of classifySortSource) does
-	// not serve an OUTER join with a cluster leg — pinned as the typed refusal
-	// it is today, so the fold's sort source over a filtered leg is reached
-	// only once that shape is served, and this arm flips to rows then.
-	t.Run("projected_exists_over_left_box_refused", func(t *testing.T) {
+	// not serve an INNER cluster that contains an OUTER box — on master and
+	// here alike, with the ON-EXISTS, with its WHERE spelling, and with no
+	// EXISTS on the box at all (three probes, all `0AF00 … did not
+	// ordinalize`). The fold's sort source is therefore the one gatedLegBox
+	// consumer no served shape reaches; pinned as the typed refusal so the
+	// arm flips to rows — ORDER BY the buried c.id — once the fold serves it.
+	t.Run("projected_exists_over_inner_root_with_outer_box_refused", func(t *testing.T) {
 		assertUnsupported(t, db, ctx,
-			"SELECT a.id, c.id, EXISTS (SELECT 1 FROM e AS e2 WHERE e2.c_id = c.id) FROM a JOIN c ON c.a_id = a.id"+existsD+" LEFT JOIN e ON e.c_id = c.id ORDER BY c.id DESC")
+			"SELECT a.id, c.id, EXISTS (SELECT 1 FROM e AS e2 WHERE e2.c_id = c.id) FROM a JOIN c ON c.a_id = a.id"+existsD+" LEFT JOIN e ON e.c_id = c.id JOIN d AS d3 ON d3.id = a.id ORDER BY c.id DESC")
+		assertUnsupported(t, db, ctx,
+			"SELECT a.id, c.id, EXISTS (SELECT 1 FROM e AS e2 WHERE e2.c_id = c.id) FROM a JOIN c ON c.a_id = a.id LEFT JOIN e ON e.c_id = c.id JOIN d AS d3 ON d3.id = a.id ORDER BY c.id DESC")
 	})
 }
 

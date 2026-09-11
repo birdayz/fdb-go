@@ -478,9 +478,9 @@ is where the fold lives, not what it computes.
   builder carrying `OnExistsSubqueries` and the filter that took the lift
   carries every existential with its marker in conjunct position. Rows,
   `sqldriver/exists_in_on_probe_test.go`
-  (`TestFDB_ExistsInOnBelowOuterJoinAndBesideUnnest`, 19 arms — counted as
-  19 `--- PASS` lines of the Bazel run at the commit that added the last
-  seven, not from the source): LEFT (with
+  (`TestFDB_ExistsInOnBelowOuterJoinAndBesideUnnest`, 19 subtests — counted
+  as the 19 indented `--- PASS` lines of the Bazel run at the commit that
+  added the last seven, 20 with the parent; not from the source): LEFT (with
   the WHERE spelling as control), LEFT+WHERE, LEFT then JOIN, RIGHT and FULL
   (the null-supplying cluster: the row the WHERE spelling would drop is
   pinned present), the cluster left of a lateral unnest with and without a
@@ -491,9 +491,12 @@ is where the fold lives, not what it computes.
   WHERE control, FULL against master's rows), the two further routes the
   gate's admission reaches — an unnest under a WHERE-EXISTS over that FULL
   box and a chained unnest over it (both against master's rows, the chained
-  one with its no-EXISTS control) — and the projected-EXISTS fold over the
-  LEFT shape pinned as the typed refusal it is (the fold's sort source is the
-  one `gatedLegBox` consumer no served shape reaches yet). Unit,
+  one with its no-EXISTS control) — and the projected-EXISTS fold over an
+  INNER root containing the LEFT box, ORDER BY the buried column, pinned as
+  the typed refusal it is on master and here alike, with and without the
+  ON-EXISTS (the fold's sort source is the one `gatedLegBox` consumer no
+  served shape reaches: the fold does not serve an inner cluster containing
+  an outer box). Unit,
   `query/gated_leg_box_test.go`: a filter over a box is the box at every
   seed-layout site — same fields, same two buried legs, same `C$BOX`
   binding, same bake window, same ordinal columns, and the same buried bake
@@ -725,4 +728,17 @@ the two 3-second full scans, and they moved by ≤ 0.02 s.
   the arms are in and counted from the run, the two routes are measured
   against master and pinned, the projected-EXISTS shape is pinned as
   refused. Both enumerated every remaining leg-classification site and
-  found none. Delta re-confirmation: see below.
+  found none. Delta re-confirmation: Graefe **NAK** on the refusal arm —
+  its LEFT root never reaches the sort source (the fold gives up on an
+  OUTER root first), so it could never flip; the reaching shape is an INNER
+  root over the box. Probed on master and here with the ON-EXISTS, with the
+  WHERE spelling and with no EXISTS on the box: all three refused (`0AF00 …
+  did not ordinalize`), so the arm now pins that INNER-root shape, with and
+  without the ON-EXISTS. Torvalds **NAK** on the same arm and on the
+  unnest-under-WHERE-EXISTS arm, whose WHERE repeated the ON's EXISTS and so
+  could not see a dropped filter — it now uses an EXISTS the ON does not
+  imply (`c2.id = c.id + 2`), so a dropped ON-EXISTS shows as the c=50 rows
+  returning. Nit folded: 19 subtests, 20 `--- PASS` lines with the parent.
+  Mutation re-run on the finished test with the builder fold disabled: the
+  14 ON-EXISTS arms redden, the 3 WHERE controls, the no-EXISTS control and
+  the refusal arm stay green. Delta re-confirmation: see below.
