@@ -225,6 +225,31 @@ func TestReadmeTokenCommandNamesTheRealRepo(t *testing.T) {
 	}
 }
 
+// TestReadmeDistinguishesLegacySweepFromCorrectedGuard pins the incident evidence's
+// scope. The journal proves that the obsolete age-only timer fired and deleted the two
+// RowDiff containers; it does not yet prove a real firing of the newly deployed
+// worker-aware guard. Collapsing those observations made the README contradict itself.
+func TestReadmeDistinguishesLegacySweepFromCorrectedGuard(t *testing.T) {
+	t.Parallel()
+
+	readme, err := os.ReadFile("README.md")
+	if err != nil {
+		t.Fatalf("read README.md: %v", err)
+	}
+	body := strings.Join(strings.Fields(string(readme)), " ")
+	if strings.Contains(body, "neither has the timer been caught firing") {
+		t.Error("README still denies observing any timer firing even though the recorded journal proves the obsolete age-only sweep fired")
+	}
+	for _, want := range []string{
+		"The obsolete age-only timer was observed firing",
+		"The corrected worker-aware guard has not yet been observed making a real keep/remove decision",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("README does not distinguish the observed legacy sweep from the unobserved corrected guard; missing %q", want)
+		}
+	}
+}
+
 // TestFleetGoMatchesGoMod pins the runner's system Go to the toolchain the repo
 // actually builds with.
 //
