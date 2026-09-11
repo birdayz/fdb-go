@@ -448,7 +448,7 @@ func TestFDB_ExistsInOnBelowOuterJoinAndBesideUnnest(t *testing.T) {
 	// its sort source over this INNER root — through gatedLegBox into the
 	// filtered cluster — and the shape is then refused where the box's leg is
 	// translated enclosed (cluster_gate.go "enclosed in an inner-join cluster";
-	// the booked lift is TODO.md "retire the mutable inInnerCluster field").
+	// the booked lift is TODO.md "retire the mutable `inInnerCluster`").
 	// On master and here alike, with the ON-EXISTS, with its WHERE spelling,
 	// and with no EXISTS on the box at all: the same refusal. Pinned by REASON,
 	// not by code alone — a 0AF00 from the sort source itself would be the

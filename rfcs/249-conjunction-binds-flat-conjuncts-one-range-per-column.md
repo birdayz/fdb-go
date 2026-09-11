@@ -752,4 +752,13 @@ the two 3-second full scans, and they moved by ≤ 0.02 s.
   partial ACK — the refusal arm asserted the code only, so a 0AF00 from the
   sort source would have kept it green, and the WHERE-spelling probe was
   cited but not pinned: the arm now asserts the enclosed-leg reason and runs
-  all three spellings. Delta re-confirmation: see below.
+  all three spellings. Delta re-confirmation at `a569d19f8`: **Graefe ACK**
+  ("a JOIN input skips the translation at `:5097`, `classifySortSource` runs
+  at `:5147`, the legs are translated enclosed at `:4862` and `translateJoin`
+  refuses with the gate's reason — pinning by reason does tell the two
+  refusals apart; the reason string has one non-test source,
+  `cluster_gate.go:347`; zero hits for the five superseded phrasings across
+  tracked files, `gatedLegBox` in the RFC as the control") and **Torvalds
+  ACK** ("`classifySortSource` never returns an error, so a failure in the
+  sort source can't produce that text"); one nit folded (the TODO cite in
+  the arm's comment now carries the entry's backticks so it greps).
