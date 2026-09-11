@@ -762,3 +762,7 @@ the two 3-second full scans, and they moved by ≤ 0.02 s.
   ACK** ("`classifySortSource` never returns an error, so a failure in the
   sort source can't produce that text"); one nit folded (the TODO cite in
   the arm's comment now carries the entry's backticks so it greps).
+- **codex, final head (`bab861401`): "No actionable correctness
+  regressions were identified"** — its fourth run over the branch (the
+  first found the ON-EXISTS reach gap that became Decision part 4's
+  addendum; the second and third found nothing actionable).
