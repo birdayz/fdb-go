@@ -313,8 +313,9 @@ func TestFDB_ExistsInOnPlusWhereExists(t *testing.T) {
 // unnest is transparent: its outer's ON-EXISTS is the block's WHERE-EXISTS,
 // and the WHERE spelling is the control.
 //
-// a={1,2,3} with tags [10,11],[20],[30]; c: 50→a1, 51→a2, 52→a1, 53→a2;
-// d={2}; e: 900→c50, 901→c51. The cluster a⋈c∧∃d is (2,51),(2,53).
+// a={1,2,3} with tags [10,11],[20],[30] and nest [(k,[100])],[(k,[200])],
+// [(k,[300])]; c: 50→a1, 51→a2, 52→a1, 53→a2; d={2}; e: 900→c50, 901→c51.
+// The cluster a⋈c∧∃d is (2,51),(2,53).
 func TestFDB_ExistsInOnBelowOuterJoinAndBesideUnnest(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -325,7 +326,8 @@ func TestFDB_ExistsInOnBelowOuterJoinAndBesideUnnest(t *testing.T) {
 	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_exists_on_outer")
 	mwjoMustExec(t, setup, ctx,
 		"CREATE SCHEMA TEMPLATE exists_on_outer "+
-			"CREATE TABLE a (id BIGINT, tags BIGINT ARRAY, PRIMARY KEY (id)) "+
+			"CREATE TYPE AS STRUCT Sub (k BIGINT, subs BIGINT ARRAY) "+
+			"CREATE TABLE a (id BIGINT, tags BIGINT ARRAY, nest Sub ARRAY, PRIMARY KEY (id)) "+
 			"CREATE TABLE c (id BIGINT, a_id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE d (id BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE e (id BIGINT, c_id BIGINT, PRIMARY KEY (id)) "+
@@ -338,7 +340,7 @@ func TestFDB_ExistsInOnBelowOuterJoinAndBesideUnnest(t *testing.T) {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO a (id, tags) VALUES (1, [10, 11]), (2, [20]), (3, [30])")
+	mwjoMustExec(t, db, ctx, "INSERT INTO a (id, tags, nest) VALUES (1, [10, 11], [(1, [100])]), (2, [20], [(2, [200])]), (3, [30], [(3, [300])])")
 	mwjoMustExec(t, db, ctx, "INSERT INTO c (id, a_id) VALUES (50, 1), (51, 2), (52, 1), (53, 2)")
 	mwjoMustExec(t, db, ctx, "INSERT INTO d (id) VALUES (2)")
 	mwjoMustExec(t, db, ctx, "INSERT INTO e (id, c_id) VALUES (900, 50), (901, 51)")
@@ -379,6 +381,43 @@ func TestFDB_ExistsInOnBelowOuterJoinAndBesideUnnest(t *testing.T) {
 			"SELECT a.id, c.id, (SELECT COUNT(*) FROM d WHERE d.id = a.id) FROM a JOIN c ON c.a_id = a.id" + existsD + " LEFT JOIN e ON e.c_id = c.id",
 			[]string{"2|51|1", "2|53|1"},
 		},
+		// A lateral unnest over an OUTER box whose leg is the filtered cluster:
+		// the positional-box gate admits the filtered leg (it is windowed) and
+		// the rows match the WHERE spelling (LEFT) and master (FULL — the
+		// null-extended e=900 row has no a.tags to unnest, so it drops).
+		{
+			"unnest_over_left_box_with_filtered_leg",
+			"SELECT c.id, e.id, v FROM a JOIN c ON c.a_id = a.id" + existsD + " LEFT JOIN e ON e.c_id = c.id, a.tags AS v",
+			[]string{"51|901|20", "53|NULL|20"},
+		},
+		{
+			"unnest_over_left_box_where_control",
+			"SELECT c.id, e.id, v FROM a JOIN c ON c.a_id = a.id LEFT JOIN e ON e.c_id = c.id, a.tags AS v" + whereD,
+			[]string{"51|901|20", "53|NULL|20"},
+		},
+		{
+			"unnest_over_full_box_with_filtered_leg",
+			"SELECT c.id, e.id, v FROM a JOIN c ON c.a_id = a.id" + existsD + " FULL JOIN e ON e.c_id = c.id, a.tags AS v",
+			[]string{"51|901|20", "53|NULL|20"},
+		},
+		// The two further routes the gate's admission reaches: an unnest UNDER
+		// a WHERE-EXISTS over the box, and a CHAINED unnest over the box. Both
+		// pinned to master's rows.
+		{
+			"unnest_under_where_exists_over_full_box_with_filtered_leg",
+			"SELECT c.id, e.id, v FROM a JOIN c ON c.a_id = a.id" + existsD + " FULL JOIN e ON e.c_id = c.id, a.tags AS v WHERE EXISTS (SELECT 1 FROM d AS d2 WHERE d2.id = a.id)",
+			[]string{"51|901|20", "53|NULL|20"},
+		},
+		{
+			"chained_unnest_over_full_box_with_filtered_leg",
+			"SELECT c.id, e.id, y FROM a JOIN c ON c.a_id = a.id" + existsD + " FULL JOIN e ON e.c_id = c.id, a.nest AS x, x.subs AS y",
+			[]string{"51|901|200", "53|NULL|200"},
+		},
+		{
+			"chained_unnest_over_full_box_control",
+			"SELECT c.id, e.id, y FROM a JOIN c ON c.a_id = a.id FULL JOIN e ON e.c_id = c.id, a.nest AS x, x.subs AS y",
+			[]string{"50|900|100", "51|901|200", "52|NULL|100", "53|NULL|200"},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := scanTriples(t, db, ctx, tc.sql)
@@ -397,6 +436,15 @@ func TestFDB_ExistsInOnBelowOuterJoinAndBesideUnnest(t *testing.T) {
 		if !eqStrSlices(got, want) {
 			t.Errorf("rows in order = %v, want %v\n  sql: %s", got, want, q)
 		}
+	})
+
+	// The projected-EXISTS fold (the only caller of classifySortSource) does
+	// not serve an OUTER join with a cluster leg — pinned as the typed refusal
+	// it is today, so the fold's sort source over a filtered leg is reached
+	// only once that shape is served, and this arm flips to rows then.
+	t.Run("projected_exists_over_left_box_refused", func(t *testing.T) {
+		assertUnsupported(t, db, ctx,
+			"SELECT a.id, c.id, EXISTS (SELECT 1 FROM e AS e2 WHERE e2.c_id = c.id) FROM a JOIN c ON c.a_id = a.id"+existsD+" LEFT JOIN e ON e.c_id = c.id ORDER BY c.id DESC")
 	})
 }
 

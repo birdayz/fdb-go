@@ -478,15 +478,22 @@ is where the fold lives, not what it computes.
   builder carrying `OnExistsSubqueries` and the filter that took the lift
   carries every existential with its marker in conjunct position. Rows,
   `sqldriver/exists_in_on_probe_test.go`
-  (`TestFDB_ExistsInOnBelowOuterJoinAndBesideUnnest`, 15 arms): LEFT (with
+  (`TestFDB_ExistsInOnBelowOuterJoinAndBesideUnnest`, 19 arms — counted as
+  19 `--- PASS` lines of the Bazel run at the commit that added the last
+  seven, not from the source): LEFT (with
   the WHERE spelling as control), LEFT+WHERE, LEFT then JOIN, RIGHT and FULL
   (the null-supplying cluster: the row the WHERE spelling would drop is
   pinned present), the cluster left of a lateral unnest with and without a
   WHERE (control agrees), a star CTE over the LEFT shape reading the buried
   `a_id` / `c_id` by their SQL labels, a correlated scalar over a buried
-  source, ORDER BY a buried column in row order, and a lateral unnest over
-  a LEFT and a FULL box whose leg is the filtered cluster (LEFT against the
-  WHERE control, FULL against master's rows). Unit,
+  source, ORDER BY a buried column in row order, a lateral unnest over a
+  LEFT and a FULL box whose leg is the filtered cluster (LEFT against the
+  WHERE control, FULL against master's rows), the two further routes the
+  gate's admission reaches — an unnest under a WHERE-EXISTS over that FULL
+  box and a chained unnest over it (both against master's rows, the chained
+  one with its no-EXISTS control) — and the projected-EXISTS fold over the
+  LEFT shape pinned as the typed refusal it is (the fold's sort source is the
+  one `gatedLegBox` consumer no served shape reaches yet). Unit,
   `query/gated_leg_box_test.go`: a filter over a box is the box at every
   seed-layout site — same fields, same two buried legs, same `C$BOX`
   binding, same bake window, same ordinal columns, and the same buried bake
@@ -707,4 +714,15 @@ the two 3-second full scans, and they moved by ≤ 0.02 s.
   comments claiming "bounds only for a direct join" were stale. codex: no
   actionable issues. Folded: `gatedLegBox` at those three sites and in the
   positional-box gate, the four FDB arms and five unit arms above. Delta
-  re-confirmation: see below.
+  re-confirmation: Graefe and Torvalds **NAK** once more, both because the
+  RFC claimed the three unnest-over-box arms while the file held twelve: the
+  edit adding them had failed its match assertion and the next green was
+  read as covering them — the false-green face of an edit that never
+  landed, recorded here because it is exactly the shape this repo warns
+  about. Both also named the two further routes the gate's admission
+  reaches (an unnest under a WHERE-EXISTS, the chained-unnest spine) and
+  Graefe that the ORDER BY arm never reaches `classifySortSource`. Folded:
+  the arms are in and counted from the run, the two routes are measured
+  against master and pinned, the projected-EXISTS shape is pinned as
+  refused. Both enumerated every remaining leg-classification site and
+  found none. Delta re-confirmation: see below.
