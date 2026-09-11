@@ -3,7 +3,7 @@
   "rfc": "RFC-249",
   "date": "2026-09-10",
   "reason": "A conjunction binds every comparison on one column into ONE scan range (both bounds of a BETWEEN, no residual) and an IN beside other conjuncts explodes into an IN-join/IN-union; an unSARGed IN over an unindexed column is one filtered scan, not one scan per IN element. Plan shape only: renderings, schema, setup and frozen rows verified unchanged.",
-  "base_commit": "b6789c1a0",
+  "base_commit": "b6789c1a016f44813b63c203d64f2b863ee87f62",
   "before_census_sha256": "31f736031be26c2cd9af2cf30db17074573b59b8aac6db9746b7c5629bfce32e",
   "after_census_sha256": "c0d5e22caae91220d3aba1009ac512eccb8f1b366f0a9e7c7d874fdf04eddf1d",
   "before_tree_sha256": "3594d91abd536f3512c6d236163100cad077358461c4723f0fdf8cfc74f4e78b",
