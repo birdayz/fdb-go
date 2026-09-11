@@ -250,7 +250,7 @@ func TestCheckedLimitSum(t *testing.T) {
 
 func TestLogicalLimit_RejectsNegativeOffset(t *testing.T) {
 	t.Parallel()
-	for _, offset := range []int64{-1, math.MinInt64} {
+	for _, offset := range []int64{-1, -4, math.MinInt64} {
 		t.Run(fmt.Sprint(offset), func(t *testing.T) {
 			t.Parallel()
 			q := expressions.ForEachQuantifier(expressions.InitialOf(smallRewriteScan("T")))

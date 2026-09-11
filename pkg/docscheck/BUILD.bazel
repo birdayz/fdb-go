@@ -127,6 +127,7 @@ go_test(
         # keep: the production-status authority and the redirect that points at it
         # (B6, TestProductionStatusAuthority).
         "//:road-to-prod.md",
+        "//rfcs:250-flatmap-preserves-inner-row-limit-stops.md",
         "//rfcs:prod-readiness-go-client.md",
         "//docs/archive/reports-2026-03-09:snapshots",
         "//reports",

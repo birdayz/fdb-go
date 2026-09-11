@@ -10098,10 +10098,14 @@ this one).
   This is an internal cursor-contract bug: ordinary SQL reachability was not
   demonstrated. SQL LIMIT/OFFSET controls, including the existing unsupported
   correlated-EXISTS OFFSET gate, are retained as tests rather than presented as
-  reproducers. Graefe and Torvalds ACKed RFC and source; Codex found no issues.
-  Final source: `just test` executed/passed 92/92 Bazel targets, both affected
-  targets passed uncached, and the existing FlatMap continuation fuzzer passed
-  4,985,804 executions over 15 seconds. Details and source identities:
+  reproducers. Graefe and Torvalds ACKed the original RFC and source; its Codex
+  review found no issues. Pre-amendment FlatMap source: a fresh output-base
+  `just test` executed/passed 92/92 Bazel targets, both original affected targets
+  passed uncached, and the existing FlatMap continuation fuzzer passed 4,985,804
+  executions over 15 seconds. Final amended source: `just test` passed 92/92 Bazel
+  targets (45 executed, 47 cached); both amendment-affected targets passed in full
+  uncached, and active LIMIT fuzzing passed 570,641 general and 202,730 UNION
+  executions over 15 seconds each. Details and source identities:
   `rfcs/250-flatmap-preserves-inner-row-limit-stops.md`.
 
 #### Stress test 1M baseline — RFC-250

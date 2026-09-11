@@ -1,6 +1,6 @@
 # RFC-250: FlatMap preserves every non-exhausted inner stop
 
-Status: implemented; RFC and source reviews ACKed; verification complete.
+Status: implemented; original RFC and source reviews ACKed; merge-gate repairs under final verification.
 
 ## Finding and scope
 
@@ -117,9 +117,10 @@ result caching. Fast startup is not evidence of a mocked or skipped FDB test.
    review and codex review after the targeted regressions pass. Complete the
    full-suite checks before handoff. No merge/push is requested.
 
-### Final-source execution results
+### Pre-amendment FlatMap execution results
 
-- `just test`: **92 of 92 Bazel test targets executed and passed**, including
+- Before the later nightly-triggered cardinality amendment, `just test`: **92 of
+  92 Bazel test targets executed and passed**, including
   the committed cross-engine factory corpus. Elapsed time was 1163.535 s;
   this was a fresh output base, not a cached green. A temporary `bazelisk`
   PATH wrapper added `--output_user_root=/var/tmp/query-hunt-bazel` to keep
@@ -222,19 +223,126 @@ change repairs the nightly nets:
   configurations. **The underlying CI FDB container exit remains under
   investigation; fixing its error reporter does not fix that exit.**
 - Engine-fuzz run **34581554992**: `FuzzPlanCacheScope_Injective` ran 29,283,265
-  iterations then failed with `context deadline exceeded` at its 90-second
-  boundary. `FuzzPlanner_LimitOverUnion_NoPanic` panicked during fixture
-  construction on offset -4 (saved input `1788cc2b9ac05503`). Both still need
-  root-cause closure and regression verification.
+  iterations then reported `context deadline exceeded` at its 90-second
+  boundary. The complete log shows `cmd/fuzzrun` already classified this as
+  the Go coordinator cancellation race (golang/go#72104), with its existing
+  positive-shape classifier and regression tests; it was not the failure
+  that reddened this job. `FuzzPlanner_LimitOverUnion_NoPanic` did redden it:
+  the harness panicked on a correctly returned `InvalidLimitOffsetError`
+  before planning began. Its exact saved input (`1788cc2b9ac05503`) is
+  limit 10, offset -4, byte 0, verified against the corpus SHA-256 prefix.
+  That seed is now in `f.Add` and reproduced the panic under uncached Bazel.
+  Both offset-bearing topology fuzzers now mask the sign bit to generate
+  valid offsets, preserving every nonnegative input and safely mapping
+  `MinInt64`. Negative-offset rejection remains independently asserted by
+  `TestLogicalLimit_RejectsNegativeOffset`, including -4. No planner or
+  constructor behavior is changed by that fixture repair. The exact seed now
+  passes, and `FuzzPlanner_Limit_NoPanic` completed 572,561 executions in 15
+  seconds. Active fuzzing of the UNION property then exposed a second, genuine
+  planner defect with input `(limit=0, offset=-8, branches=0)`: after masking,
+  the valid offset is `MaxInt64-7`; limit pushdown gives both UNION legs that
+  finite maximum, and `UnionCardinalities` wraps their sum negative before
+  `OfCardinality` panics. This exact seed is retained alongside a direct
+  cardinality regression.
+
+  The corresponding Java `CardinalitiesProperty.CardinalitiesVisitor` was read
+  in full. Its `unionCardinalities` also adds raw `long` values and would throw
+  through `Cardinality.ofCardinality` on overflow. Go already closes that Java
+  boundary defect for multiplication: `Cardinality.Times` maps an
+  unrepresentable bound to unknown, because unknown conservatively weakens a
+  proof while wraparound, saturation, or a panic does not. Apply the identical
+  policy to addition: add `Cardinality.Plus`, return unknown when either operand
+  is unknown or their nonnegative sum exceeds `MaxInt64`, and make both UNION
+  bound channels use it. A direct primitive test covers known/unknown operands
+  in both orders, zero, the representable `MaxInt64` boundary, and overflow in
+  both orders. The UNION regression separately pins a representable `MaxInt64`
+  boundary, overflow of only the maximum (the exact fuzz topology), and overflow
+  of both minimum and maximum. Skipping limit pushdown only for
+  `LIMIT 0` was rejected because it hides this seed while leaving any two large
+  finite UNION legs able to panic; wrapping, saturating an upper bound, and
+  recovering the panic are unsound. This RFC amendment requires Graefe and
+  Torvalds ACK before the production edit, then exact-seed replay, both active
+  topology fuzzers, uncached affected suites, `just test`, and a fresh 2-before /
+  2-after 1M stress comparison.
+
+  The amendment received both required pre-production reviews (Claude Sonnet,
+  2026-09-11): Graefe **ACK**, session
+  `4cdbed8a-c3c1-461d-ac54-83e59a50b373`; Torvalds **ACK**, session
+  `788c7f07-84cd-4714-b61f-895251bf303a`, conditional on the direct `Plus`
+  primitive test described above. That test was added before the production edit.
+
+  Verification of the amendment is non-vacuous. Before `Plus` existed, the
+  direct UNION test ran under uncached Bazel and panicked in `OfCardinality` on
+  the exact max-only-overflow arm. After the production edit, the primitive and
+  UNION tests passed, and all nine retained UNION topology seeds passed. Both
+  affected targets then passed in full under uncached Bazel. Fresh active fuzz
+  runs passed 570,641 general LIMIT executions and 202,730 UNION executions in
+  15 seconds each, after consuming respectively all 11 and all 9 seed inputs.
+
+  The required fresh 1M comparison used one worktree on `/dev/nvme1n1p3`
+  (57% used), sequentially before and after. Baseline was
+  `0ebf8c7155544d2cd5e7908d10b74f1ca6910964`; the after state was that revision
+  with only the two PR production blobs applied: FlatMap
+  `230bfc5e1503ebe05f499949e3a7a26f1597dda4` (baseline
+  `8e60ff7287ce7c4f552eb03d00aaf0571a4aee9d`) and cardinality
+  `02966a7a8d19566f480b7eeb50daff30515015be` (baseline
+  `7f3bdfeb17ab9c9d4e022d5e267f606485445d03`).
+
+  | Source | Sample | Test duration | Start load average (1/5/15 min) |
+  |---|---:|---:|---|
+  | Before | 1 | 202.23 s | 9.33 / 7.45 / 4.58 |
+  | Before | 2 | 198.32 s | 2.72 / 5.89 / 4.95 |
+  | After | 1 | 198.21 s | 5.04 / 5.21 / 4.84 |
+  | After | 2 | 198.03 s | 3.94 / 4.55 / 4.65 |
+
+  Every run had 24 RUN lines, 22 timed result reports, the independent 1M
+  `COUNT(*)` assertion, and 11 EXPLAIN lines. Normalized row signatures were
+  byte-identical across all four logs (SHA-256
+  `f0c64f51135738fb51b434deea91a4a6baef982e0a3e899275078f1d1c222f29`), as
+  were EXPLAIN texts (`48ffbbf33c31a7f9696cdbfd4aced3afe3a2591578794df47b86711e76230ccb`).
+  The durations do not support a performance-change claim; point lookups were
+  6.09–18.24 ms on both source states, above the aspirational 5 ms threshold.
+  The first run's completed output initially tripped the verification wrapper
+  because it searched for `rows=` rather than the harness's actual `N rows`
+  spelling; the corrected parser found exactly 22 reports in that retained log,
+  and then verified the same population in all four logs.
+
+  The repository-wide `just test` then passed all 92 targets in 824.879 seconds:
+  45 executed in that invocation and 47 were served from Bazel's cache. This is
+  not substituted for the uncached affected-target runs above. MD5 verification
+  after the suite confirmed that all seven changed planner/fuzz/stress Go files
+  matched the bytes hashed before it began.
 - RowDiff run **34562900341**: both sweeps lost the FDB connection, exhausted
   their consecutive-INFRA guard, and fell below the seed floor. The downloaded
   forensic artifact is `rowdiff-fdb-forensics` from that run. No wrong-row
   mismatch was reported in the measured prefixes; the incomplete sweeps are
-  not a clean engine verdict.
+  not a clean engine verdict. Read-only SSH inspection established that both
+  runners still had the obsolete age-only sweep, not the corrected script
+  already in `infra/cloud-init.yaml`. The `gh-runner-fdb` journal confirms:
+
+  ```text
+  Sep 11 05:13:29 killing orphan FDB container 452337ebd901 (foundationdb/foundationdb:7.3.77, running 2106s)
+  Sep 11 05:55:21 killing orphan FDB container 6705fe762b67 (foundationdb/foundationdb:7.3.77, running 1909s)
+  ```
+
+  These IDs and times match the RowDiff forensic artifact's disappearances.
+  The existing `//infra:infra_test` passed uncached, including
+  `TestOrphanFDBSweepScript`. The template's rendered script was then
+  atomically deployed to both runners; both installed SHA-256 hashes were
+  `b0bd6ed8b60646f7aba78df93f2fef9b72d60aa99849094bf9510b2a4c5b70a5`.
+  Both sweep timers remained active and both original `Runner.Worker` PIDs
+  survived unchanged. This closes the deployment defect, not the incomplete
+  RowDiff run: a new genuine sweep is still required. Deployment mechanics
+  and future update obligations are recorded in `infra/README.md`.
 - Factory run **34574477084** and Coverage run **34572810594** were interrupted
   by runner shutdown. The later stress job's kernel log identifies an OOM
   kill of the factory process (PID 2391708, about 7 GiB anonymous RSS). Coverage
   stopped during its race phase and did not publish a fresh heartbeat.
+- PR CI run **34613512453**: the Bazel suite and race lane passed, but the
+  separate `tools/bazelscaleset` module failed
+  `TestAdoptedRunnerWatchdogReclaims`: after 10 seconds its terminal watchdog
+  had not reclaimed the adopted zombie runner. This new failure is under
+  investigation; a passed Bazel suite does not cover this module's gate.
 - Reconcile run **34604652455** identifies the stale Coverage heartbeat and
   missing required checks on open PRs #486, #579, #745, and #747. Those PRs
   are not authorized merge targets of this task; their owner decisions must

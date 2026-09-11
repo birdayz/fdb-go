@@ -505,6 +505,38 @@ func TestREADMEDoesNotAdvertiseInSubquery(t *testing.T) {
 	}
 }
 
+// TestRFC250VerificationResultsNameTheirSourceState pins the distinction between
+// the original FlatMap-only verification and the later cardinality amendment. The
+// original fresh-output-base run executed all 92 targets, but it predates the amendment;
+// the final amended run passed the same 92-target suite with 45 executed and 47 cached.
+// Calling the first run "final" erases which bytes it actually exercised.
+func TestRFC250VerificationResultsNameTheirSourceState(t *testing.T) {
+	t.Parallel()
+	root := repoRoot(t)
+	rfc := readDoc(t, root, "rfcs/250-flatmap-preserves-inner-row-limit-stops.md")
+	todo := readDoc(t, root, "TODO.md")
+
+	for path, body := range map[string]string{
+		"rfcs/250-flatmap-preserves-inner-row-limit-stops.md": rfc,
+		"TODO.md": todo,
+	} {
+		body = strings.Join(strings.Fields(body), " ")
+		if strings.Contains(body, "Final-source execution results") ||
+			strings.Contains(body, "Final source: `just test` executed/passed 92/92") {
+			t.Errorf("%s labels RFC-250's pre-amendment 92-target execution as final; name the source state and separately report the final amended run", path)
+		}
+	}
+	if !strings.Contains(rfc, "### Pre-amendment FlatMap execution results") {
+		t.Error("RFC-250 no longer labels the original 92-target run as pre-amendment; the chronology is ambiguous")
+	}
+	// Markdown line wrapping is presentation, not evidence scope; collapse it before
+	// checking the required chronology sentence.
+	normalizedTODO := strings.Join(strings.Fields(todo), " ")
+	if !strings.Contains(normalizedTODO, "Final amended source: `just test` passed 92/92 Bazel targets (45 executed, 47 cached)") {
+		t.Error("TODO.md no longer records the final amended RFC-250 suite population separately from the pre-amendment run")
+	}
+}
+
 // TestStaleReportsArchived: the six 2026-03-09 audit snapshots must live under
 // docs/archive/ (not reports/), with the archive's superseded-snapshot header present.
 func TestStaleReportsArchived(t *testing.T) {

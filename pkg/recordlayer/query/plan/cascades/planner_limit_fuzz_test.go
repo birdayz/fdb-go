@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"math"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -55,8 +56,19 @@ func FuzzPlanner_Limit_NoPanic(f *testing.F) {
 	f.Add(int64(5), int64(10), int64(3), int64(0), false, false)
 	f.Add(int64(0), int64(0), int64(0), int64(0), false, false)
 	f.Add(int64(-1), int64(20), int64(-1), int64(5), true, false)
+	f.Add(int64(10), int64(-4), int64(5), int64(0), false, false)
+	f.Add(int64(10), int64(-4), int64(5), int64(0), true, true)
+	f.Add(int64(10), int64(0), int64(5), int64(-4), true, true)
+	f.Add(int64(10), int64(math.MinInt64), int64(5), int64(math.MinInt64), true, true)
+	f.Add(int64(math.MaxInt64), int64(math.MaxInt64), int64(math.MaxInt64), int64(math.MaxInt64), true, true)
 
 	f.Fuzz(func(t *testing.T, outerLimit, outerOffset, innerLimit, innerOffset int64, addProjection, nestLimits bool) {
+		// Generate valid planner fixtures, preserving every nonnegative offset.
+		// Masking the sign bit also handles MinInt64 without abs overflow.
+		// The constructor's rejection contract is pinned separately by
+		// TestLogicalLimit_RejectsNegativeOffset.
+		outerOffset &= math.MaxInt64
+		innerOffset &= math.MaxInt64
 		scan := mustFullUnorderedScan(t, []string{"T"}, plannerLimitFuzzRowType())
 		scanRef := expressions.InitialOf(scan)
 		scanQ := expressions.ForEachQuantifier(scanRef)
@@ -174,8 +186,17 @@ func FuzzPlanner_LimitOverUnion_NoPanic(f *testing.F) {
 	f.Add(int64(0), int64(0), uint8(2))
 	f.Add(int64(-1), int64(0), uint8(4))
 	f.Add(int64(1), int64(100), uint8(2))
+	// Exact input from the nightly crasher 1788cc2b9ac05503.
+	f.Add(int64(10), int64(-4), uint8(0))
+	// Exact input found after the negative-offset fixture repair exposed the
+	// planner to large valid offsets.
+	f.Add(int64(0), int64(-8), uint8(0))
+	f.Add(int64(10), int64(math.MinInt64), uint8(0))
+	f.Add(int64(math.MaxInt64), int64(math.MaxInt64), uint8(0))
 
 	f.Fuzz(func(t *testing.T, limit, offset int64, branches uint8) {
+		// This property exercises valid LIMIT topologies, not constructor rejection.
+		offset &= math.MaxInt64
 		numBranches := int(branches%4) + 2
 		qs := make([]expressions.Quantifier, numBranches)
 		for i := range qs {
