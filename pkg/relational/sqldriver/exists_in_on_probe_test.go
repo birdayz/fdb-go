@@ -10,7 +10,10 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/api"
 )
 
 func TestFDB_ExistsInOn_Probe(t *testing.T) {
@@ -441,18 +444,34 @@ func TestFDB_ExistsInOnBelowOuterJoinAndBesideUnnest(t *testing.T) {
 		}
 	})
 
-	// The projected-EXISTS fold (the only caller of classifySortSource) does
-	// not serve an INNER cluster that contains an OUTER box — on master and
-	// here alike, with the ON-EXISTS, with its WHERE spelling, and with no
-	// EXISTS on the box at all (three probes, all `0AF00 … did not
-	// ordinalize`). The fold's sort source is therefore the one gatedLegBox
-	// consumer no served shape reaches; pinned as the typed refusal so the
-	// arm flips to rows — ORDER BY the buried c.id — once the fold serves it.
+	// The projected-EXISTS fold (the only caller of classifySortSource) runs
+	// its sort source over this INNER root — through gatedLegBox into the
+	// filtered cluster — and the shape is then refused where the box's leg is
+	// translated enclosed (cluster_gate.go "enclosed in an inner-join cluster";
+	// the booked lift is TODO.md "retire the mutable inInnerCluster field").
+	// On master and here alike, with the ON-EXISTS, with its WHERE spelling,
+	// and with no EXISTS on the box at all: the same refusal. Pinned by REASON,
+	// not by code alone — a 0AF00 from the sort source itself would be the
+	// regression this arm exists to catch — so it flips to rows (ORDER BY the
+	// buried c.id) once the enclosed leg ordinalizes.
 	t.Run("projected_exists_over_inner_root_with_outer_box_refused", func(t *testing.T) {
-		assertUnsupported(t, db, ctx,
-			"SELECT a.id, c.id, EXISTS (SELECT 1 FROM e AS e2 WHERE e2.c_id = c.id) FROM a JOIN c ON c.a_id = a.id"+existsD+" LEFT JOIN e ON e.c_id = c.id JOIN d AS d3 ON d3.id = a.id ORDER BY c.id DESC")
-		assertUnsupported(t, db, ctx,
-			"SELECT a.id, c.id, EXISTS (SELECT 1 FROM e AS e2 WHERE e2.c_id = c.id) FROM a JOIN c ON c.a_id = a.id LEFT JOIN e ON e.c_id = c.id JOIN d AS d3 ON d3.id = a.id ORDER BY c.id DESC")
+		const projected = "SELECT a.id, c.id, EXISTS (SELECT 1 FROM e AS e2 WHERE e2.c_id = c.id) FROM a JOIN c ON c.a_id = a.id"
+		const tail = " LEFT JOIN e ON e.c_id = c.id JOIN d AS d3 ON d3.id = a.id ORDER BY c.id DESC"
+		for _, q := range []string{
+			projected + existsD + tail,
+			projected + tail,
+			projected + " LEFT JOIN e ON e.c_id = c.id JOIN d AS d3 ON d3.id = a.id" + whereD + " ORDER BY c.id DESC",
+		} {
+			rows, qErr := db.QueryContext(ctx, q)
+			if qErr == nil {
+				rows.Close()
+				t.Fatalf("planned; want the enclosed-leg refusal\n  sql: %s", q)
+			}
+			requireSQLSTATE(t, qErr, api.ErrCodeUnsupportedQuery)
+			if !strings.Contains(qErr.Error(), "did not ordinalize (enclosed in an inner-join cluster") {
+				t.Fatalf("refused for another reason: %v\n  sql: %s", qErr, q)
+			}
+		}
 	})
 }
 

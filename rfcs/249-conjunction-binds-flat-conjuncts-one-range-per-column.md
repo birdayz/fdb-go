@@ -491,12 +491,15 @@ is where the fold lives, not what it computes.
   WHERE control, FULL against master's rows), the two further routes the
   gate's admission reaches — an unnest under a WHERE-EXISTS over that FULL
   box and a chained unnest over it (both against master's rows, the chained
-  one with its no-EXISTS control) — and the projected-EXISTS fold over an
-  INNER root containing the LEFT box, ORDER BY the buried column, pinned as
-  the typed refusal it is on master and here alike, with and without the
-  ON-EXISTS (the fold's sort source is the one `gatedLegBox` consumer no
-  served shape reaches: the fold does not serve an inner cluster containing
-  an outer box). Unit,
+  one with its no-EXISTS control; the WHERE-EXISTS arm's query was run on
+  master too) — and the projected-EXISTS fold over an INNER root containing
+  the LEFT box, ORDER BY the buried column, pinned BY REASON as the refusal
+  it is on master and here alike, with the ON-EXISTS, with its WHERE
+  spelling and with no EXISTS on the box: the fold's sort source does run
+  over that root (through `gatedLegBox` into the filtered cluster), and the
+  shape is then refused where the box's leg is translated enclosed
+  (`0AF00 … did not ordinalize (enclosed in an inner-join cluster …)`), so a
+  0AF00 from the sort source itself would fail the arm. Unit,
   `query/gated_leg_box_test.go`: a filter over a box is the box at every
   seed-layout site — same fields, same two buried legs, same `C$BOX`
   binding, same bake window, same ordinal columns, and the same buried bake
@@ -729,16 +732,24 @@ the two 3-second full scans, and they moved by ≤ 0.02 s.
   against master and pinned, the projected-EXISTS shape is pinned as
   refused. Both enumerated every remaining leg-classification site and
   found none. Delta re-confirmation: Graefe **NAK** on the refusal arm —
-  its LEFT root never reaches the sort source (the fold gives up on an
-  OUTER root first), so it could never flip; the reaching shape is an INNER
-  root over the box. Probed on master and here with the ON-EXISTS, with the
-  WHERE spelling and with no EXISTS on the box: all three refused (`0AF00 …
-  did not ordinalize`), so the arm now pins that INNER-root shape, with and
-  without the ON-EXISTS. Torvalds **NAK** on the same arm and on the
+  its LEFT root takes the sort source's non-INNER branch and the fold then
+  declines (`:5158`), so the `gatedLegBox` walk never ran and the arm could
+  never flip; the reaching shape is an INNER root over the box. Probed on
+  master and here with the ON-EXISTS, with the WHERE spelling and with no
+  EXISTS on the box: all three refused (`0AF00 … did not ordinalize
+  (enclosed in an inner-join cluster …)` — the box's leg translated
+  enclosed, after the sort source ran), so the arm now pins that INNER-root
+  shape, all three spellings, by reason. Torvalds **NAK** on the same arm and on the
   unnest-under-WHERE-EXISTS arm, whose WHERE repeated the ON's EXISTS and so
   could not see a dropped filter — it now uses an EXISTS the ON does not
   imply (`c2.id = c.id + 2`), so a dropped ON-EXISTS shows as the c=50 rows
   returning. Nit folded: 19 subtests, 20 `--- PASS` lines with the parent.
   Mutation re-run on the finished test with the builder fold disabled: the
   14 ON-EXISTS arms redden, the 3 WHERE controls, the no-EXISTS control and
-  the refusal arm stay green. Delta re-confirmation: see below.
+  the refusal arm stay green. Delta re-confirmation: Graefe ACK on the
+  substance with two wording fixes (a LEFT root DOES reach the sort source —
+  folded above; the WHERE-EXISTS query is now run on master); Torvalds
+  partial ACK — the refusal arm asserted the code only, so a 0AF00 from the
+  sort source would have kept it green, and the WHERE-spelling probe was
+  cited but not pinned: the arm now asserts the enclosed-leg reason and runs
+  all three spellings. Delta re-confirmation: see below.
