@@ -313,24 +313,13 @@ func (p *PartialMatchImpl) compensate(
 			}
 		}
 
-		for _, topLevelPredicate := range pp.GetPredicates() {
-			// Prefer the original predicate identity when it is mapped
-			// directly. Select subsumption and the legacy Filter-to-Select
-			// adapter both flatten ANDs into leaf mappings, so fall back to
-			// those conjunct identities below.
-			if mappings := predicateMap.Get(topLevelPredicate); len(mappings) > 0 {
-				compensatePredicate(topLevelPredicate, mappings)
-				continue
-			}
-
-			// A mapped top-level AND has no entry under the parent node. Visit
-			// its leaves so every residual conjunct reaches compensation.
-			for _, conjunct := range flattenConjuncts(
-				[]predicates.QueryPredicate{topLevelPredicate},
-			) {
-				if mappings := predicateMap.Get(conjunct); len(mappings) > 0 {
-					compensatePredicate(conjunct, mappings)
-				}
+		// The predicate list is the conjunction — the Filter and Select
+		// constructors lift every top-level AND (Java's
+		// SelectExpression.partitionPredicates) — so each conjunct is mapped
+		// and looked up by its own identity.
+		for _, conjunct := range pp.GetPredicates() {
+			if mappings := predicateMap.Get(conjunct); len(mappings) > 0 {
+				compensatePredicate(conjunct, mappings)
 			}
 		}
 	}

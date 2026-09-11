@@ -801,10 +801,13 @@ type LogicalJoin struct {
 	OnText      string
 	OnPredicate any // predicates.QueryPredicate when set
 	// OnExistsSubqueries carries EXISTS subqueries lifted from the ON clause
-	// (RFC-154 §5). The cascades translator turns each into an existential
-	// quantifier on the join's SelectExpression, so the NLJ rule's
-	// the existential peel path builds the semi-join. Only populated for
-	// INNER joins (OUTER EXISTS-in-ON is deferred — RFC-154 §5.2b).
+	// (RFC-154 §5) BETWEEN two builder steps only: upgradeJoinOnPredicates
+	// parks them here and the block's last step, foldInnerOnExistsIntoWhere,
+	// moves them into the block's WHERE filter (an inner join's ON is a WHERE
+	// conjunct — Java's QueryVisitor folds it there). A join reaching the
+	// translator never carries one; the translator asserts that. Only ever
+	// populated for INNER joins (OUTER EXISTS-in-ON is rejected — RFC-154
+	// §5.2b).
 	OnExistsSubqueries []ExistsSubquery
 }
 

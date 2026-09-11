@@ -244,7 +244,7 @@ func matchIntermediateWithCandidate(
 		matchSingleSourceAgainstSelect(
 			call,
 			qe,
-			flattenConjuncts(qe.GetPredicates()),
+			qe.GetPredicates(),
 			cs,
 			candidate,
 			candidateRef,
@@ -388,13 +388,13 @@ func matchSelectSubsumption(
 					if !ok {
 						return true
 					}
-					originalPredicates, ok := selectSubsumptionFlattenConjunctsMaybe(
+					originalPredicates, ok := selectSubsumptionPredicatesWellFormedMaybe(
 						querySelect.GetPredicates(),
 					)
 					if !ok {
 						return true
 					}
-					translatedPredicates, ok = selectSubsumptionFlattenConjunctsMaybe(
+					translatedPredicates, ok = selectSubsumptionPredicatesWellFormedMaybe(
 						translatedPredicates,
 					)
 					if !ok ||
@@ -1001,7 +1001,14 @@ func matchSingleSourceAgainstSelect(
 			return
 		}
 
-		matched := false
+		// Every unmatched query comparison that binds this placeholder folds
+		// into ONE range (foldPlaceholderBindings — Java's sargable, spelled
+		// over Go's one-comparison-per-predicate leaves): `a >= 2 AND a < 5`
+		// is one two-sided range, not a bound plus a residual, and
+		// `a = 1 AND a > 0` binds the equality with `a > 0` re-applied as a
+		// filter. The comparisons that do not fit are left unmatched and
+		// become residuals below.
+		var bound []placeholderBinding
 		for _, queryPred := range queryPreds {
 			cp, ok := queryPred.(*predicates.ComparisonPredicate)
 			if !ok {
@@ -1032,20 +1039,28 @@ func matchSingleSourceAgainstSelect(
 			if rng == nil {
 				continue
 			}
+			bound = append(bound, placeholderBinding{
+				pred:       queryPred,
+				cp:         cp,
+				comparison: rng.GetComparisons()[0],
+			})
+		}
 
-			paramBindings[ph.GetParameterAlias()] = rng
-			matched = true
-			matchedQueryPreds[queryPred] = true
+		merged, members := foldPlaceholderBindings(bound)
+		if len(members) == 0 {
+			// Unbound Placeholder — index column is unconstrained.
+			paramBindings[ph.GetParameterAlias()] = predicates.EmptyComparisonRange()
+			continue
+		}
+		paramBindings[ph.GetParameterAlias()] = merged
+		for _, member := range members {
+			matchedQueryPreds[member.pred] = true
 			// Defer the sargable mapping until after the scan prefix is known
 			// (see reconciliation below): a binding the candidate cannot consume
 			// into its prefix must become a residual, not a dropped sargable.
-			pendingSargables = append(pendingSargables, pendingSargable{ph: ph, cp: cp, rng: rng})
-			break
-		}
-
-		if !matched {
-			// Unbound Placeholder — index column is unconstrained.
-			paramBindings[ph.GetParameterAlias()] = predicates.EmptyComparisonRange()
+			// Every member carries the SAME merged range, which is what lets
+			// the predicate map admit them as one fold group.
+			pendingSargables = append(pendingSargables, pendingSargable{ph: ph, cp: member.cp, rng: merged})
 		}
 	}
 
@@ -1301,7 +1316,7 @@ func bindOrientedComparison(
 		}
 		comparison := orient.comparison
 		mr := predicates.EmptyComparisonRange().Merge(&comparison)
-		if !mr.Ok {
+		if !mr.Complete() {
 			continue
 		}
 		return mr.Range
@@ -1452,21 +1467,6 @@ func columnPathListsMatch(a, b []values.Value) bool {
 		}
 	}
 	return true
-}
-
-// flattenConjuncts recursively expands AndPredicates into their
-// constituent conjuncts. [AND(a, b), c] → [a, b, c]. Non-AND
-// predicates pass through unchanged.
-func flattenConjuncts(preds []predicates.QueryPredicate) []predicates.QueryPredicate {
-	var result []predicates.QueryPredicate
-	for _, p := range preds {
-		if and, ok := p.(*predicates.AndPredicate); ok {
-			result = append(result, flattenConjuncts(and.SubPredicates)...)
-		} else {
-			result = append(result, p)
-		}
-	}
-	return result
 }
 
 var _ ExpressionRule = (*MatchIntermediateRule)(nil)

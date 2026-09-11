@@ -118,7 +118,7 @@ func (t *cascadesTranslator) buildClusterPullUp(j *logical.LogicalJoin) *cluster
 	var addLegs func(legs []clusterLeg, nullSupplying bool) bool
 	addLegs = func(legs []clusterLeg, nullSupplying bool) bool {
 		for _, leg := range legs {
-			if bj, isJoin := leg.op.(*logical.LogicalJoin); isJoin {
+			if bj := gatedLegBox(leg.op); bj != nil {
 				if !addLegs(t.legsOfGatedJoin(bj), nullSupplying || leg.nullSupplying) {
 					return false
 				}
@@ -231,9 +231,6 @@ func rebuildInnerWithValues(op logical.LogicalOperator, fn func(values.Value) va
 	case *logical.LogicalScan:
 		return o, true
 	case *logical.LogicalJoin:
-		if len(o.OnExistsSubqueries) > 0 {
-			return nil, false
-		}
 		l, ok := rebuildInnerWithValues(o.Left, fn)
 		if !ok {
 			return nil, false

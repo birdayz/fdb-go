@@ -4941,19 +4941,26 @@ func (t *cascadesTranslator) buildExistentialJoinSelect(
 	allPreds = append(allPreds, splitNonExistsPredicates(f.Predicate)...)
 	allPreds = append(allPreds, extractExistsPredicates(f.Predicate)...)
 
+	// Every existential of the block is on the filter: an inner join's
+	// ON-clause EXISTS was folded into the WHERE by the builder
+	// (embedded/on_exists_fold.go), so a Select owning a marker always owns
+	// its quantifier; CheckBuriedExistentialPredicate refuses a dangling one
+	// (DanglingExistentialPredicateError) should a marker ever arrive alone.
 	sourceAliases := []string{leftAlias, rightAlias}
-	for _, esq := range f.ExistsSubqueries {
-		subRef := t.translateSubqueryRef(esq.Plan)
-		if subRef == nil {
-			return nil
+	{
+		for _, esq := range f.ExistsSubqueries {
+			subRef := t.translateSubqueryRef(esq.Plan)
+			if subRef == nil {
+				return nil
+			}
+			existQ := expressions.NamedExistentialQuantifier(esq.Alias, subRef)
+			quantifiers = append(quantifiers, existQ)
+			innerCorrName, joinPred := t.existsInnerCorrelation(esq)
+			if joinPred != nil {
+				allPreds = append(allPreds, joinPred)
+			}
+			sourceAliases = append(sourceAliases, innerCorrName)
 		}
-		existQ := expressions.NamedExistentialQuantifier(esq.Alias, subRef)
-		quantifiers = append(quantifiers, existQ)
-		innerCorrName, joinPred := t.existsInnerCorrelation(esq)
-		if joinPred != nil {
-			allPreds = append(allPreds, joinPred)
-		}
-		sourceAliases = append(sourceAliases, innerCorrName)
 	}
 
 	// F2-LEFT: a LEFT-outer FROM join folds as a JoinLeftOuter select
@@ -5387,7 +5394,7 @@ func (t *cascadesTranslator) classifySortSource(input logical.LogicalOperator) s
 		var legTypes []*values.RecordType
 		var collect func(op logical.LogicalOperator)
 		collect = func(op logical.LogicalOperator) {
-			if cj, isJ := op.(*logical.LogicalJoin); isJ {
+			if cj := gatedLegBox(op); cj != nil {
 				collect(cj.Left)
 				collect(cj.Right)
 				return
@@ -7174,52 +7181,6 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 		return nil
 	}
 
-	// ON-clause EXISTS is translated through a separate existential-join path,
-	// not translateFilter's known-truth substitution. Until that consumer can
-	// replace its ON marker with the constant, reject rather than raw-semi-join
-	// the fallback plan and lose aggregate/pagination cardinality.
-	if join, ok := p.Input.(*logical.LogicalJoin); ok &&
-		hasKnownExistsTruth(join.OnExistsSubqueries) {
-		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
-			"a cardinality-known EXISTS in a JOIN ON clause is not yet supported"))
-		return nil
-	}
-
-	// An INNER join carrying an ON-clause EXISTS is
-	// SEMANTICALLY IDENTICAL to WHERE-EXISTS — Java folds every inner-join ON
-	// predicate into the WHERE of one SelectExpression (QueryVisitor.visitSimpleTable
-	// conjoins inner-join expressions into the WHERE), so `JOIN e ON e.c_id = c.id
-	// AND EXISTS(sub)` plans as the same correlated semi-join over the flattened
-	// a⋈c⋈e cluster. Go's ON-EXISTS lift already builds the ExistentialValuePredicate
-	// marker into join.OnPredicate and the subquery into join.OnExistsSubqueries;
-	// synthesize the equivalent WHERE-EXISTS filter here so the projection routes
-	// through the ORDINAL gather (translateExistsOverGatheredCluster) instead of the
-	// name-model ON-exists semi-join (translateJoin's OnExistsSubqueries arm). The
-	// non-EXISTS ON conjuncts stay on the join (SARG'd by the cluster machinery, as
-	// they are for an equivalent WHERE-EXISTS query); only the existential marker is
-	// lifted into the filter. Fail-open: a non-foldable shape (arity<=2, dup-alias,
-	// ungated, or the gather declining) falls through to today's name-model path.
-	if join, ok := p.Input.(*logical.LogicalJoin); ok && join.Kind == logical.JoinInner &&
-		len(join.OnExistsSubqueries) > 0 && len(p.CorrelatedScalarSubqueries) == 0 {
-		if onPred, isPred := join.OnPredicate.(predicates.QueryPredicate); isPred {
-			if markers := extractExistsPredicates(onPred); len(markers) > 0 {
-				joinCopy := *join
-				joinCopy.OnPredicate = andOf(splitNonExistsPredicates(onPred))
-				joinCopy.OnExistsSubqueries = nil
-				synthFilter := &logical.LogicalFilter{
-					Input:            &joinCopy,
-					Predicate:        andOf(markers),
-					ExistsSubqueries: join.OnExistsSubqueries,
-				}
-				if t.existsFoldableGatheredCluster(synthFilter) {
-					if sel := t.translateProjectOverExistsFilter(p, synthFilter, nil); sel != nil {
-						return sel
-					}
-				}
-			}
-		}
-	}
-
 	// RFC-141 Phase 2: a projection over a filter that carries existential
 	// subqueries, where the projection itself references a projected EXISTS,
 	// folds INTO the existential SelectExpression's result value — so the
@@ -8539,6 +8500,17 @@ func aggregateFunctionByName(name string) (expressions.AggregateFunction, bool) 
 }
 
 func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.RelationalExpression {
+	// An inner join's ON-clause EXISTS is a WHERE-EXISTS and the builder folds
+	// it into the block's filter before the plan leaves it
+	// (embedded/on_exists_fold.go); a join still carrying one is a builder
+	// invariant broken, refused here rather than planned without its
+	// quantifier.
+	if len(j.OnExistsSubqueries) > 0 {
+		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
+			"a JOIN ON clause EXISTS reached the translator unfolded (%d subqueries); the builder folds it into the WHERE",
+			len(j.OnExistsSubqueries)))
+		return nil
+	}
 	// For RIGHT JOIN, swap branches and treat as LEFT JOIN. The NLJ
 	// executor iterates the "outer" (left) and for each unmatched row
 	// emits NULLs for the inner (right) columns. Swapping makes the
@@ -8673,20 +8645,7 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 	var preds []predicates.QueryPredicate
 	if j.OnPredicate != nil {
 		if qp, ok := j.OnPredicate.(predicates.QueryPredicate); ok {
-			// When the ON clause carries EXISTS subqueries (RFC-154 §5), flatten a
-			// top-level AND so the ExistentialValuePredicate becomes its OWN
-			// top-level conjunct — the directly-handled semi-join shape
-			// CheckBuriedExistentialPredicate requires and the existential peel
-			// routes (a single And(equi, EXISTS) predicate reads as a BURIED
-			// existential and is rejected). Mirrors translateJoinWithExists's flatten
-			// of the WHERE predicate. Non-EXISTS joins keep the single predicate
-			// (the conjunctive SelectExpression predicate list is semantically the
-			// same; this avoids touching the heavily-tested plain-join shape).
-			if and, ok := qp.(*predicates.AndPredicate); ok && len(j.OnExistsSubqueries) > 0 {
-				preds = append(preds, and.SubPredicates...)
-			} else {
-				preds = []predicates.QueryPredicate{qp}
-			}
+			preds = []predicates.QueryPredicate{qp}
 		}
 	}
 
@@ -8747,38 +8706,6 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 
 	quantifiers := []expressions.Quantifier{leftQ, rightQ}
 	sourceAliases := []string{leftAlias, rightAlias}
-
-	// EXISTS in the ON clause (RFC-154 §5): attach each lifted EXISTS subquery as
-	// an existential quantifier + its correlation predicate, producing a
-	// 2-ForEach-+-Existential SelectExpression that the NLJ rule's
-	// the existential peel path lowers to a semi-join. Only populated for
-	// INNER joins (upgradeJoinOnPredicates rejects OUTER EXISTS-in-ON), so the
-	// joinType passed below is JoinInner and the existential semantics match
-	// EXISTS-in-WHERE-over-a-join (translateJoinWithExists).
-	// Defensive polarity guard for the ON-lift path: a flagged esq under a
-	// negated ON marker would outer-route an outer-only conjunct into
-	// anti-join semantics (same law as the WHERE sites).
-	if onPred, ok := j.OnPredicate.(predicates.QueryPredicate); ok && t.declineNegatedOuterOnlyEsq(onPred, j.OnExistsSubqueries) {
-		return nil
-	}
-	if hasKnownExistsTruth(j.OnExistsSubqueries) {
-		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
-			"a cardinality-known EXISTS in a JOIN ON clause is not yet supported"))
-		return nil
-	}
-	for _, esq := range j.OnExistsSubqueries {
-		subRef := t.translateSubqueryRef(esq.Plan)
-		if subRef == nil {
-			return nil
-		}
-		existQ := expressions.NamedExistentialQuantifier(esq.Alias, subRef)
-		quantifiers = append(quantifiers, existQ)
-		innerCorrName, joinPred := t.existsInnerCorrelation(esq)
-		if joinPred != nil {
-			preds = append(preds, joinPred)
-		}
-		sourceAliases = append(sourceAliases, innerCorrName)
-	}
 
 	return t.exactSelectWithJoinType(
 		resultValue,
@@ -8956,19 +8883,26 @@ func (t *cascadesTranslator) translateJoinWithExists(
 	// ordinal seed via downstreamLegWindows, not the exists inner's probe), so
 	// the minted-dup upper (QOV(Q$DUPn)) resolves positionally instead of serving
 	// NULLs off a name Datum that never had the binding-keyed column.
+	// Every existential of the block is on the filter: an inner join's
+	// ON-clause EXISTS was folded into the WHERE by the builder
+	// (embedded/on_exists_fold.go), so a Select owning a marker always owns
+	// its quantifier; CheckBuriedExistentialPredicate refuses a dangling one
+	// (DanglingExistentialPredicateError) should a marker ever arrive alone.
 	sourceAliases := []string{leftAlias, rightAlias}
-	for _, esq := range f.ExistsSubqueries {
-		subRef := t.translateSubqueryRef(esq.Plan)
-		if subRef == nil {
-			return nil
+	{
+		for _, esq := range f.ExistsSubqueries {
+			subRef := t.translateSubqueryRef(esq.Plan)
+			if subRef == nil {
+				return nil
+			}
+			existQ := expressions.NamedExistentialQuantifier(esq.Alias, subRef)
+			quantifiers = append(quantifiers, existQ)
+			innerCorrName, joinPred := t.existsInnerCorrelation(esq)
+			if joinPred != nil {
+				allPreds = append(allPreds, joinPred)
+			}
+			sourceAliases = append(sourceAliases, innerCorrName)
 		}
-		existQ := expressions.NamedExistentialQuantifier(esq.Alias, subRef)
-		quantifiers = append(quantifiers, existQ)
-		innerCorrName, joinPred := t.existsInnerCorrelation(esq)
-		if joinPred != nil {
-			allPreds = append(allPreds, joinPred)
-		}
-		sourceAliases = append(sourceAliases, innerCorrName)
 	}
 
 	// The RV uses DECLARATION order (Java assembles the

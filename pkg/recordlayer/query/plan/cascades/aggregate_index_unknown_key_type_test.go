@@ -58,7 +58,7 @@ func TestAggregateCandidateWithUnknownGroupingTypeDeclinesEveryBindingFailClosed
 		empty := predicates.EmptyComparisonRange()
 		cmp := predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(5))
 		res := empty.Merge(&cmp)
-		if !res.Ok {
+		if !res.Complete() {
 			t.Fatal("Empty + EQUALS must merge; the binding below would otherwise be empty " +
 				"and skipped by the guard for the WRONG reason")
 		}

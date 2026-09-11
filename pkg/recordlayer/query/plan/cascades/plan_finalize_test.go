@@ -182,7 +182,7 @@ func sentinelRange(t *testing.T, s values.Value) *predicates.ComparisonRange {
 	t.Helper()
 	cmp := predicates.Comparison{Type: predicates.ComparisonEquals, Operand: s}
 	res := predicates.EmptyComparisonRange().Merge(&cmp)
-	if !res.Ok {
+	if !res.Complete() {
 		t.Fatalf("could not build an equality ComparisonRange around the sentinel")
 	}
 	return res.Range

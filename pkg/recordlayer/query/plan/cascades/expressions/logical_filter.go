@@ -31,14 +31,22 @@ type LogicalFilterExpression struct {
 
 // NewLogicalFilterExpression constructs a LogicalFilter wrapping
 // `inner` and filtering by the AND of `queryPredicates`. The
-// predicates list is copied defensively.
+// predicates list is copied defensively and FLATTENED: every top-level
+// AndPredicate is lifted into the list, so GetPredicates IS the
+// conjunction and a rule reading it sees each conjunct — the invariant
+// Java's SelectExpression constructor establishes
+// (SelectExpression.partitionPredicates). This expression is the SQL
+// layer's stand-in for that Select over one quantifier, and the rules that
+// read its list conjunct by conjunct (InComparisonToExplodeRule among them)
+// rely on the invariant rather than lifting for themselves.
 func NewLogicalFilterExpression(queryPredicates []predicates.QueryPredicate, inner Quantifier) (*LogicalFilterExpression, error) {
 	resultValue, err := requireFlowedResult("LogicalFilterExpression", inner)
 	if err != nil {
 		return nil, err
 	}
-	copied := make([]predicates.QueryPredicate, len(queryPredicates))
-	copy(copied, queryPredicates)
+	flat := predicates.FlattenConjunction(queryPredicates)
+	copied := make([]predicates.QueryPredicate, len(flat))
+	copy(copied, flat)
 	return &LogicalFilterExpression{
 		queryPredicates: copied,
 		inner:           inner,

@@ -69,7 +69,11 @@ CREATE TABLE CUST (id BIGINT, b STRING, region STRING, PRIMARY KEY (id))`
 		{"leading_inequality_sum_companion", "SELECT a, b, c, SUM(v) FROM t WHERE a > 'm' GROUP BY a, b, c", true, 1, -1, false},
 		{"range_then_equality", "SELECT a, b, c, COUNT(*) FROM t WHERE a > 'm' AND b = 'y' GROUP BY a, b, c", true, 1, 1, false},
 		{"two_bounds_fold_to_one_range", "SELECT a, b, c, COUNT(*) FROM t WHERE a > 'm' AND a < 'z' GROUP BY a, b, c", true, 1, -1, false},
-		{"contradictory_equalities_are_residual", "SELECT a, b, c, COUNT(*) FROM t WHERE a = 'x' AND a = 'y' GROUP BY a, b, c", true, 0, 2, false},
+		// The first equality binds the scan and the second is re-applied above
+		// it (Java's merge keeps the range and residualises the incoming
+		// equality); the residual reads no group and the query is empty.
+		{"contradictory_equalities_bind_the_first", "SELECT a, b, c, COUNT(*) FROM t WHERE a = 'x' AND a = 'y' GROUP BY a, b, c", true, 1, 1, false},
+		{"equality_beside_inequality_binds_the_equality", "SELECT a, b, c, COUNT(*) FROM t WHERE a = 'x' AND a > 'm' GROUP BY a, b, c", true, 1, 1, false},
 		{"is_null_residual", "SELECT a, b, c, COUNT(*) FROM t WHERE b IS NULL GROUP BY a, b, c", true, 0, 1, false},
 		{"in_list_residual", "SELECT a, b, c, COUNT(*) FROM t WHERE b IN ('x', 'y') GROUP BY a, b, c", true, 0, 1, false},
 		{"column_to_column_residual", "SELECT a, b, c, COUNT(*) FROM t WHERE a = b GROUP BY a, b, c", true, 0, 1, false},

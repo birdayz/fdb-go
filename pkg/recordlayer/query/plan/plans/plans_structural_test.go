@@ -20,7 +20,7 @@ func TestRecordQueryScanPlan_WithPrimaryKey_PreservesComparisons(t *testing.T) {
 	t.Parallel()
 	cmp := predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(7))
 	res := predicates.EmptyComparisonRange().Merge(&cmp)
-	if !res.Ok {
+	if !res.Complete() {
 		t.Fatal("failed to build equality range")
 	}
 	scan := mustChecked(t, func() (*RecordQueryScanPlan, error) {

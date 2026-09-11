@@ -176,7 +176,7 @@ func TestEqualityBoundPrefixKeysAlsoCarryIdentity(t *testing.T) {
 	layout := providerLayout()
 	cmp := predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(7))
 	eq := predicates.EmptyComparisonRange().Merge(&cmp)
-	if !eq.Ok {
+	if !eq.Complete() {
 		t.Fatalf("test setup: could not build an equality comparison range")
 	}
 	plan := mustChecked(t, func() (*RecordQueryIndexPlan, error) {

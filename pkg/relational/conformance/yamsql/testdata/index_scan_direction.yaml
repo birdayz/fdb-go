@@ -82,7 +82,7 @@ tests:
   # independently elide Fetch(PredicatesFilter(Covering)); disabling BOTH
   # restores that fetch and fails this positive RFC-220 covering pin.
   - query: SELECT id, ts FROM events WHERE ts BETWEEN 100 AND 200 ORDER BY ts
-    plan_contains: "Project([_current.ID#0, _current.TS#1], PredicatesFilter(IndexScan(IDX_TS, [<>] COVERING), [1 preds]))"
+    plan_contains: "Project([_current.ID#0, _current.TS#1], IndexScan(IDX_TS, [<>] COVERING))"
     plan_not_contains: "InMemorySort"
     rows:
       - [1, 100]

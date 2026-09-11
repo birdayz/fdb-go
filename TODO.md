@@ -5038,73 +5038,28 @@ Cascades matching change — needs its own RFC and the Graefe gate.
 
 ### ComparisonRange.MergeResult drops Java's residual LIST, so callers fail closed
 
-STOP-level, needs the query-engine gate: this is an architectural change to the
-matching infrastructure, so it needs an RFC with a Graefe + Torvalds ACK before
-implementation, not a drive-by fix. Recording it here with the measurements in
-hand rather than starting the port unreviewed.
+**Mostly closed by RFC-249** (`rfcs/249-conjunction-binds-flat-conjuncts-one-range-per-column.md`).
+`ComparisonRange.Merge` is now Java's TOTAL merge: `MergeResult{Range, Residuals}`, `Ok` is gone,
+every arm of `ComparisonRange.java:358-400` is ported and pinned (`TestComparisonRange_MergeIsTotal`),
+NONE-type comparisons come back as residuals instead of entering the range as inequalities
+(`TestScanRangeComparisonType_NoneArmMatchesJava`), `MergeRange`/`MergeAll` port the two overloads,
+and the residuals ARE carried where a conjunction on one column binds one placeholder
+(`foldPlaceholderBindings`, both match paths and the aggregate partition): `a >= 2 AND a < 5` is one
+two-sided scan range, `a = 1 AND a > 0` binds the equality and re-applies the inequality. The original
+entry's table and reachability measurement are superseded by that RFC.
 
-**The divergence.** Java's `ComparisonRange.merge(Comparison)` is TOTAL — it
-never fails. Its `MergeResult` carries a range plus a residual LIST, and the rule
-is that equality always wins and nothing is ever dropped:
+**What remains open** is the CROSS-QUANTIFIER case only: `mergeComparisonRanges`
+(`match_info_merge.go`) merges the ranges two CHILD BRANCHES bound to one alias, through `MergeRange`,
+and still fails closed on a non-empty residual list because a PartialMatch has no channel for a filter
+predicate that belongs to a sibling branch. `tryMergeParameterBindings` turns that into a lost match —
+the index candidate Java would keep (equality seek plus a residual filter) is not produced for that
+shape. Wrong plans, never wrong rows. Pinned in
+`TestMergeComparisonRanges_EqualityInequalityRejectsUnlikeJava`, which now also asserts the merge
+produced exactly Java's range and residuals, so the rejection is visibly a carrying problem.
 
-| case | Java | Go |
-|---|---|---|
-| NONE-type (NOT_EQUALS, IN, LIKE, TEXT_*, IS_DISTINCT_FROM) | residual, range untouched | pushed into the range as an INEQUALITY |
-| Equality + INEQUALITY | keeps the equality range, residualises the inequality | `Ok=false`, `Range=nil` |
-| Equality + EQUALITY (different) | keeps the range, residualises the incoming | `Ok=false`, `Range=nil` |
-| Inequality + INEQUALITY (duplicate) | dedups (`inequalityComparisons.contains`) | appends the duplicate |
-| Inequality + EQUALITY | becomes Equality(new), old inequalities residual | `Ok=false`, `Range=nil` |
-
-Go's `predicates.MergeResult` has `Ok bool` and a SINGLE `Residual`, and no
-caller in the tree reads `Residual` at all — so the residual channel exists in
-name only. Callers therefore fail closed where Java pushes the equality down and
-keeps the rest as a filter — with ONE exception this entry originally got wrong.
-`AsComparisonRange` SKIPPED the rejected conjunct instead of failing, so
-`x = 5 AND x > 7` converted to `x = 5`: weaker than its input, silently. Fixed —
-it now returns `(nil, false)` — but the sweeping "every caller fails closed" was
-false as written, and the review that caught it was reading the code rather than
-this entry. `mergeComparisonRanges` states the gap in
-its own comment: "equality/inequality is not representable by ComparisonRange
-without a residual." That is the standing admission that the residual list is
-the real answer.
-
-**Consequence.** `tryMergeParameterBindings` turns a rejection into a LOST
-MATCH: where two child branches bind the same parameter alias with an equality
-and an inequality, the index candidate Java would keep — an equality seek plus a
-residual filter — is not produced at all. Wrong plans, never wrong rows; the
-rejected predicate is not silently dropped on any live path.
-
-**Reachability, measured, not assumed.** Instrumented all three arms of
-`Merge` and ran 10940 tests (cascades + relational/core + plan/plans, `-count=1
--v`, stderr captured to a file because `go test` swallows it for passing
-packages):
-
-- 202 hits on the Empty arm. The only NONE-type to reach it was
-  TEXT_CONTAINS_ALL, 3 times, all from the `textRange` helper in
-  `f21_comparand_identity_test.go` deliberately building a text range — no
-  planner path.
-- 19 hits on the non-empty arms, every one from `ComparisonRange`'s own unit
-  tests plus `TestNullRejectedByScanRange_*`.
-
-So all five divergences are LATENT today. That is a reason to fix them before
-something reaches them, not a reason to leave them: the arms are untested
-precisely because nothing exercises them.
-
-**Pinned meanwhile.** `mergeComparisonRanges` had NO test of any kind. It now
-has `match_info_merge_ranges_test.go`: the agreeing arms, plus
-`TestMergeComparisonRanges_EqualityInequalityRejectsUnlikeJava`, which pins the
-three rejecting arms and says in its failure message that closing the divergence
-means REPLACING it with an assertion that the equality survives and the rest
-comes back as a residual — never deleting it. The dedup claim in that file is
-mutation-verified: disabling the dedup loop makes the overlapping union report 3
-comparisons instead of 2.
-
-- [ ] Write the RFC for porting Java's total `MergeResult` (range + residual
-  list) and threading residuals through `PredicateMapping`/`MatchInfo` so a
-  partial match can carry them as filter predicates. Get the Graefe + Torvalds
-  ACK on the RFC, then implement, then the impl lap. The shape-only port (change
-  the struct, keep every caller failing closed when residuals are non-empty) is
-  NOT worth landing alone — it ships the API churn without the plans.
+- [ ] Thread cross-quantifier residuals through `PredicateMapping`/`MatchInfo` so a partial match
+  can carry them as filter predicates (the remaining scope; the merge algebra and the same-quantifier
+  fold are done). Query-engine gate: RFC with Graefe + Torvalds ACK, then implement, then the impl lap.
 
 ---
 
@@ -10074,3 +10029,61 @@ work. RFC-244 records the measurements, executable fingerprints, reproduction
 commands and limitations. Point lookups exceed the aspirational <5 ms target
 on both trees. The evidence delta received Graefe/Torvalds ACK; this closes
 the timing measurement requirement, not GitHub CI or merge authorization.
+
+### NestedLoopJoinCost ties the two orders of a materialized join, so predicate order picks the winner
+
+Found while classifying RFC-249's EXPLAIN corpus diff. `properties.NestedLoopJoinCost` is
+symmetric in outer and inner (`outer.CPU + inner.CPU + outerCard*innerCard*…`: the materialized
+NLJ reads each side once), so for a two-way join whose legs cost alike the two join orders tie on
+every rung down to arrival order in the memo, and arrival order follows the WHERE clause's
+conjunct order. Reproducer, on master `b6789c1a0` and on the RFC-249 head alike:
+
+```
+SELECT o.id, s.shipped_count FROM orders o,
+  (SELECT customer_id, COUNT(*) AS shipped_count FROM orders WHERE status = 'shipped' GROUP BY customer_id) AS s
+WHERE o.customer_id = s.customer_id AND o.status = 'pending' ORDER BY o.id
+```
+
+plans `NestedLoopJoin(…, Scan(ORDERS), Project(StreamingAgg(…)))` and, with the two WHERE conjuncts
+swapped, `NestedLoopJoin(…, Project(StreamingAgg(…)), Scan(ORDERS))` — same cost, different tree.
+Deterministic, never wrong rows; the plan depends on the spelling of an equivalent predicate.
+Java's `PlanningCostModel` ends in a plan-hash tie-break, and Go's does too, but only after the
+join-ordering rung, which compares the two concrete costs and returns 0 here. The finding is that
+the formula cannot distinguish the orders at all for a materialized join: the right discriminator
+is the per-outer-row cost of the inner (the buffer is iterated once per outer row, so the smaller
+side should drive), which the formula's `outerCard*innerCard*FilterCPU` term charges identically
+both ways.
+
+- [ ] Give `NestedLoopJoinCost` an order-sensitive term (or make the join-ordering rung break the
+  tie on the outer cardinality) so a materialized join's order is chosen by cost, not by which
+  conjunct came first. Query-engine gate. Pin: the reproducer plans the same tree under both
+  conjunct orders.
+
+### A projected EXISTS beside a WHERE-EXISTS fails opaquely ("Cascades planner could not plan query")
+
+Found while closing RFC-249's ON-EXISTS reach gap. Independent of joins and of the ON clause: the
+single-table form fails the same way. Reproducer, identical on master `b6789c1a0` and on the
+RFC-249 head (`sqldriver` fixture: `a(id)`, `c(id, a_id)`, `d(id)`):
+
+```
+SELECT a.id, EXISTS (SELECT 1 FROM c WHERE c.a_id = a.id) FROM a
+  WHERE EXISTS (SELECT 1 FROM d WHERE d.id = a.id)
+```
+
+`0AF00: Cascades planner could not plan query` — the opaque failure, not a typed decline. Each half
+works alone (projected EXISTS with no WHERE; WHERE-EXISTS with no projected EXISTS), and two
+WHERE-EXISTS together work over one table and over a three-leg cluster. The projected-EXISTS fold
+(RFC-141 Phase 2, `translateProjectOverExistsFilter` → `buildExistentialSelect`) builds one
+Select carrying BOTH existential quantifiers with the projection's `ExistsValue` as the result
+value, and no implementation rule yields a plan for a select whose result value reads one
+existential while a predicate reads another. Java answers this (one SelectExpression, its
+`exists(q1)` evaluated in the RETURN while `exists(q2)` filters). The fix is a capability — the
+existential peel handling a projected `ExistsValue` alongside a second existential quantifier —
+and needs its own RFC and Graefe lap; until then the shape must at least decline TYPED
+(`findUnfoldableProjectedExists` is the guard that names the shape today, and it does not see
+this one).
+
+- [ ] Plan a projected EXISTS beside a WHERE-EXISTS (single table, binary join, three-leg
+  cluster; ON-EXISTS spellings fold to the WHERE form already). Query-engine gate. Pins: the
+  reproducer above returns `(1,true),(2,…)` per the fixture on every shape; the interim typed
+  decline, if landed first, names the shape.

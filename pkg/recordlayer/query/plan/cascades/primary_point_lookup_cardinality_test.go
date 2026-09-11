@@ -35,7 +35,7 @@ func primaryPointEq(t testing.TB, value int64) *predicates.ComparisonRange {
 		Operand: &values.ConstantValue{Value: value, Typ: values.NotNullLong},
 	}
 	merged := predicates.EmptyComparisonRange().Merge(&comparison)
-	if !merged.Ok {
+	if !merged.Complete() {
 		t.Fatal("construct primary-point equality range")
 	}
 	return merged.Range

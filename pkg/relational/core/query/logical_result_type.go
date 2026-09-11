@@ -384,9 +384,11 @@ func exactLogicalLegLabels(
 	md *recordlayer.RecordMetaData,
 	env cteRows,
 ) ([]string, error) {
-	// A nested join leg recurses so its own legs stay unqualified too.
-	if _, nested := op.(*logical.LogicalJoin); nested {
-		return exactLogicalOutputLabels(op, md, env)
+	// A nested join leg recurses so its own legs stay unqualified too — seen
+	// through the filter the builder places directly above an inner cluster
+	// under an OUTER join (gatedLegBox): the filter adds no column.
+	if nested := gatedLegBox(op); nested != nil {
+		return exactLogicalOutputLabels(nested, md, env)
 	}
 	typ, err := exactLogicalResultType(op, md, env)
 	if err != nil {

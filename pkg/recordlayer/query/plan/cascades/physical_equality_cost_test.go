@@ -68,7 +68,7 @@ func TestPhysicalEqualityScanLikeCost_DynamicAndOverflowRemainFinite(t *testing.
 	dynamic := &values.ParameterValue{Ordinal: 1, Typ: values.NotNullDouble}
 	comparison := predicates.Comparison{Type: predicates.ComparisonEquals, Operand: dynamic}
 	merged := predicates.EmptyComparisonRange().Merge(&comparison)
-	if !merged.Ok {
+	if !merged.Complete() {
 		t.Fatal("failed to build dynamic equality")
 	}
 	comps := []*predicates.ComparisonRange{merged.Range, pkGateEq(t, int64(5))}

@@ -66,7 +66,7 @@ func validateSelectSubsumptionMapping(
 		len(mapping) == 0 {
 		return nil, false
 	}
-	queryPredicates, ok := selectSubsumptionFlattenConjunctsMaybe(
+	queryPredicates, ok := selectSubsumptionPredicatesWellFormedMaybe(
 		querySelect.GetPredicates(),
 	)
 	if !ok {
@@ -409,36 +409,23 @@ func selectSubsumptionUnmatchedLocalCorrelationsValid(
 	return true
 }
 
-// selectSubsumptionFlattenConjunctsMaybe flattens only AND. OR/NOT remain
-// ownership boundaries, so an existential nested under either is not mistaken
-// for a direct conjunct. Malformed typed-nil predicate trees fail closed.
-func selectSubsumptionFlattenConjunctsMaybe(
+// selectSubsumptionPredicatesWellFormedMaybe returns the predicate list the
+// subsumption route may reason over, or false when a predicate tree is
+// malformed (a typed-nil node anywhere in it) — the fail-closed preflight.
+// The list is a Select's own conjunction: the constructors lift every
+// top-level AND, so no flattening happens here, and OR/NOT stay ownership
+// boundaries — an existential nested under either is never a direct
+// conjunct.
+func selectSubsumptionPredicatesWellFormedMaybe(
 	queryPredicates []predicates.QueryPredicate,
 ) ([]predicates.QueryPredicate, bool) {
-	result := make([]predicates.QueryPredicate, 0, len(queryPredicates))
-	var flatten func(predicates.QueryPredicate) bool
-	flatten = func(queryPredicate predicates.QueryPredicate) bool {
+	for _, queryPredicate := range queryPredicates {
 		if selectSubsumptionPredicateIsNil(queryPredicate) ||
 			!selectSubsumptionPredicateTreeWellFormed(queryPredicate) {
-			return false
-		}
-		if andPredicate, ok := queryPredicate.(*predicates.AndPredicate); ok {
-			for _, child := range andPredicate.SubPredicates {
-				if !flatten(child) {
-					return false
-				}
-			}
-			return true
-		}
-		result = append(result, queryPredicate)
-		return true
-	}
-	for _, queryPredicate := range queryPredicates {
-		if !flatten(queryPredicate) {
 			return nil, false
 		}
 	}
-	return result, true
+	return queryPredicates, true
 }
 
 func selectSubsumptionPredicateTreeWellFormed(

@@ -85,7 +85,7 @@ func inMemorySortGT(t testing.TB, value int64) *predicates.ComparisonRange {
 	t.Helper()
 	comparison := predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, value)
 	merged := predicates.EmptyComparisonRange().Merge(&comparison)
-	if !merged.Ok {
+	if !merged.Complete() {
 		t.Fatalf("build comparison range for %d", value)
 	}
 	return merged.Range

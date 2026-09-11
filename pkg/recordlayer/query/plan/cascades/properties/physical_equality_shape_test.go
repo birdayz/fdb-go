@@ -12,7 +12,7 @@ func physicalShapeEquality(t *testing.T, operand values.Value) *predicates.Compa
 	t.Helper()
 	comparison := predicates.Comparison{Type: predicates.ComparisonEquals, Operand: operand}
 	merged := predicates.EmptyComparisonRange().Merge(&comparison)
-	if !merged.Ok {
+	if !merged.Complete() {
 		t.Fatal("failed to build equality range")
 	}
 	return merged.Range
@@ -95,7 +95,7 @@ func TestPhysicalEqualityShape_IsNullIsOnePhysicalKey(t *testing.T) {
 	t.Parallel()
 	comparison := predicates.Comparison{Type: predicates.ComparisonIsNull}
 	merged := predicates.EmptyComparisonRange().Merge(&comparison)
-	if !merged.Ok {
+	if !merged.Complete() {
 		t.Fatal("failed to build IS NULL range")
 	}
 	shape := PhysicalEqualityShapeForComparisons(
@@ -113,7 +113,7 @@ func TestPhysicalEqualityShape_NullSafeEqualityWithNullIsOnePhysicalKey(t *testi
 		Type: predicates.ComparisonNotDistinctFrom, Operand: values.LiteralValue(nil),
 	}
 	merged := predicates.EmptyComparisonRange().Merge(&comparison)
-	if !merged.Ok {
+	if !merged.Complete() {
 		t.Fatal("failed to build IS NOT DISTINCT FROM NULL range")
 	}
 	shape := PhysicalEqualityShapeForComparisons(
@@ -130,7 +130,7 @@ func TestProvenFullEqualityMultiplicity_UniqueNullSemantics(t *testing.T) {
 	rangeOf := func(comparison predicates.Comparison) *predicates.ComparisonRange {
 		t.Helper()
 		merged := predicates.EmptyComparisonRange().Merge(&comparison)
-		if !merged.Ok {
+		if !merged.Complete() {
 			t.Fatalf("failed to build %s range", comparison.Type.Symbol())
 		}
 		return merged.Range
@@ -411,7 +411,7 @@ func TestPhysicalOrderingPrefixLength_FloatRelaxationIsTerminal(t *testing.T) {
 		t.Helper()
 		comparison := predicates.NewLiteralComparison(predicates.ComparisonLessThan, float64(0))
 		merged := predicates.EmptyComparisonRange().Merge(&comparison)
-		if !merged.Ok {
+		if !merged.Complete() {
 			t.Fatal("failed to build a one-sided float inequality")
 		}
 		return merged.Range
@@ -420,12 +420,12 @@ func TestPhysicalOrderingPrefixLength_FloatRelaxationIsTerminal(t *testing.T) {
 		t.Helper()
 		low := predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, float64(-8))
 		merged := predicates.EmptyComparisonRange().Merge(&low)
-		if !merged.Ok {
+		if !merged.Complete() {
 			t.Fatal("failed to build the lower bound")
 		}
 		high := predicates.NewLiteralComparison(predicates.ComparisonLessThan, float64(8))
 		merged = merged.Range.Merge(&high)
-		if !merged.Ok {
+		if !merged.Complete() {
 			t.Fatal("failed to build the upper bound")
 		}
 		return merged.Range
@@ -476,14 +476,14 @@ func TestPhysicalOrderingPrefixLength_FloatNaNCongruence(t *testing.T) {
 	inequality := func(literal any) *predicates.ComparisonRange {
 		comparison := predicates.NewLiteralComparison(predicates.ComparisonLessThan, literal)
 		merged := predicates.EmptyComparisonRange().Merge(&comparison)
-		if !merged.Ok {
+		if !merged.Complete() {
 			t.Fatal("failed to build inequality")
 		}
 		return merged.Range
 	}
 	isNullComparison := predicates.Comparison{Type: predicates.ComparisonIsNull}
 	isNull := predicates.EmptyComparisonRange().Merge(&isNullComparison)
-	if !isNull.Ok {
+	if !isNull.Complete() {
 		t.Fatal("failed to build IS NULL range")
 	}
 

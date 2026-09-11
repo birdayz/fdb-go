@@ -567,7 +567,7 @@ func buildStatusActiveIndexScan(t *testing.T, cand MatchCandidate) expressions.R
 	}
 	cmp := predicates.NewLiteralComparison(predicates.ComparisonEquals, "active")
 	res := predicates.EmptyComparisonRange().Merge(&cmp)
-	if !res.Ok {
+	if !res.Complete() {
 		t.Fatal("failed to build equality comparison range")
 	}
 	bindings := map[values.CorrelationIdentifier]*predicates.ComparisonRange{aliases[0]: res.Range}
@@ -718,7 +718,7 @@ func TestPlanner_RequestedEqualityKeyDoesNotDoubleCountStrictCoverage(t *testing
 
 	comparison := predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1))
 	merged := predicates.EmptyComparisonRange().Merge(&comparison)
-	if !merged.Ok {
+	if !merged.Complete() {
 		t.Fatal("failed to construct the fixed A comparison range")
 	}
 	layout := distinctnessProbeLayout(values.NotNullLong)

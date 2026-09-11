@@ -627,7 +627,7 @@ func gatherLegsWithBuriedUnnest(j *logical.LogicalJoin) (plainLegs []logical.Log
 			return
 		}
 		nj, isJoin := op.(*logical.LogicalJoin)
-		if !isJoin || nj.Kind != logical.JoinInner || len(nj.OnExistsSubqueries) > 0 {
+		if !isJoin || nj.Kind != logical.JoinInner {
 			plainLegs = append(plainLegs, op)
 			return
 		}
@@ -676,7 +676,7 @@ func gatherLegsWithBuriedUnnest(j *logical.LogicalJoin) (plainLegs []logical.Log
 // FROM position) — observable only via SELECT-*-over-multi-source, which
 // cannot plan today (a known follow-on fix, not yet implemented).
 func (t *cascadesTranslator) rotateEnclosedUnnest(j *logical.LogicalJoin) (rebuilt *logical.LogicalJoin, u *logical.LogicalUnnest, elementType values.Type, fieldName string, unnestPos int, ok bool) {
-	if t.md == nil || j.Kind != logical.JoinInner || len(j.OnExistsSubqueries) > 0 {
+	if t.md == nil || j.Kind != logical.JoinInner {
 		return nil, nil, nil, "", 0, false
 	}
 	if _, rootUnnest := j.Right.(*logical.LogicalUnnest); rootUnnest {

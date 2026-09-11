@@ -57,7 +57,7 @@ ROWS(1) cols=[ID]:
   [5]
 
 === SELECT id FROM t WHERE val IS NOT NULL AND val <= 150 ORDER BY id
-PLAN: Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], Fetch(PredicatesFilter(IndexScan(IDX_VAL, [<>] COVERING), [1 preds]))))
+PLAN: Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], IndexScan(IDX_VAL, [<>])))
 ROWS(4) cols=[ID]:
   [1]
   [3]

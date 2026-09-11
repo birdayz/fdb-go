@@ -13,7 +13,7 @@ func scanLikeEq(t testing.TB, value int64) *predicates.ComparisonRange {
 	t.Helper()
 	comparison := predicates.NewLiteralComparison(predicates.ComparisonEquals, value)
 	merged := predicates.EmptyComparisonRange().Merge(&comparison)
-	if !merged.Ok {
+	if !merged.Complete() {
 		t.Fatalf("build equality range for %d", value)
 	}
 	return merged.Range

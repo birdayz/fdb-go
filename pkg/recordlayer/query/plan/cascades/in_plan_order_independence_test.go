@@ -49,9 +49,10 @@ type inCorpusSpec struct {
 	//
 	//	inJoin      — RecordQueryInJoinPlan (single binding)
 	//	inUnion     — RecordQueryInUnionPlan (one or two bindings)
-	//	wrappedIn   — Map over an InJoin: an IN plan the ROOT-only rung does
-	//	              NOT see, so it is a "non-IN plan" as far as criterion #6
-	//	              is concerned while still carrying inJoinCount
+	//	wrappedIn   — Map over an InJoin: an IN plan below the root. The rung
+	//	              reads the whole tree (inPlanPenaltyRank), so a wrapped
+	//	              unSARGed IN is penalised exactly as a root one — pinned by
+	//	              TestCostModel_WrappedUnsargedInPlanLosesToThePlainFilter
 	//	plain       — no IN operator anywhere
 	//	primaryScan — a primary RecordQueryScanPlan leaf instead of an index
 	//	              leaf, so the primary-vs-index rung directly below the IN
@@ -121,7 +122,7 @@ func inPlanEqualityRange(t testing.TB, operand values.Value) *predicates.Compari
 		Type:    predicates.ComparisonEquals,
 		Operand: operand,
 	})
-	if !result.Ok || result.Range == nil {
+	if !result.Complete() || result.Range == nil {
 		t.Fatalf("build IN-plan equality range for %v", operand)
 	}
 	return result.Range
@@ -715,4 +716,44 @@ func TestOptimizeGroup_InPlanWinnerIsInsertionOrderIndependent(t *testing.T) {
 	if want := "idx_group_sarged_cheap"; !strings.Contains(baseline, want) {
 		t.Fatalf("winner %q does not scan %s; the IN penalty did not decide", baseline, want)
 	}
+}
+
+// TestCostModel_WrappedUnsargedInPlanLosesToThePlainFilter pins criterion #6
+// as a property of the WHOLE plan tree. The production shape is
+// `Project(InJoin(Filter(Scan)))` against `Project(Filter(Scan))` — Go's
+// per-ordering winners let both children of the projection survive, so the
+// two meet one level above the IN-plan. A root-only reading of the rung saw
+// two Projects, tied, and the "more IN-joins wins" rung below handed the win
+// to the IN-join: `v IN (1, 2)` over an unindexed column scanned the table
+// once per IN element. The wrapped SARGed IN-plan keeps its standing: it is
+// unpenalised, so it falls through to the later rungs, where the "more
+// IN-joins" rung prefers it over the plain filter as Java's does.
+func TestCostModel_WrappedUnsargedInPlanLosesToThePlainFilter(t *testing.T) {
+	t.Parallel()
+
+	leaf := func(name string, ranges []*predicates.ComparisonRange) plans.RecordQueryPlan {
+		return inPlanIndex(t, name, ranges)
+	}
+	plain := inPlanMap(t, leaf("idx_wrapped_plain", nil))
+	wrappedUnsarged := inPlanMap(t, inPlanJoin(t, leaf("idx_wrapped_unsarged", nil), "wrapped_bind"))
+	sargedRange := inPlanEqualityRange(t, inPlanBinding(t, "wrapped_sarged_bind"))
+	wrappedSarged := inPlanMap(t, inPlanJoin(t,
+		leaf("idx_wrapped_sarged", []*predicates.ComparisonRange{sargedRange}), "wrapped_sarged_bind"))
+
+	if got := inPlanPenaltyRank(plain); got != 0 {
+		t.Fatalf("plain rank = %d, want 0", got)
+	}
+	if got := inPlanPenaltyRank(wrappedUnsarged); got != 1 {
+		t.Fatalf("wrapped unSARGed rank = %d, want 1: the rung must read below the projection", got)
+	}
+	if got := inPlanPenaltyRank(wrappedSarged); got != 0 {
+		t.Fatalf("wrapped SARGed rank = %d, want 0", got)
+	}
+	// Precondition for the adversary: the rung below (more IN-joins wins)
+	// points the other way, so a penalty-blind comparator prefers the IN-join.
+	if concretePlanCounts(wrappedUnsarged, nil).inJoinCount <= concretePlanCounts(plain, nil).inJoinCount {
+		t.Fatal("adversary missing: the wrapped IN-join must carry more IN-joins than the plain plan")
+	}
+	assertInPlanStrictPreference(t, PlanningCostModelLess, plain, wrappedUnsarged)
+	assertInPlanStrictPreference(t, PlanningCostModelLess, wrappedSarged, plain)
 }

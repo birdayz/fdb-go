@@ -184,7 +184,7 @@ func TestPrimaryScanMatchCandidateReportsKeyOrder(t *testing.T) {
 
 	eqComparison := predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(7))
 	equality := predicates.EmptyComparisonRange().Merge(&eqComparison)
-	if !equality.Ok {
+	if !equality.Complete() {
 		t.Fatal("fixture: equality range did not merge")
 	}
 	matchInfo := NewRegularMatchInfo(
@@ -430,7 +430,7 @@ func mixedDirectionInLikeSelect(
 		Operand: explodeValue,
 	}
 	merged := predicates.EmptyComparisonRange().Merge(&comparison)
-	if !merged.Ok {
+	if !merged.Complete() {
 		t.Fatal("fixture: equality range did not merge")
 	}
 	rowType := descendingInUnionRowType("TBL")
@@ -561,7 +561,7 @@ func mixedDirectionDistinctUnion(
 	leg := func(literal int64) *expressions.Reference {
 		comparison := predicates.NewLiteralComparison(predicates.ComparisonEquals, literal)
 		merged := predicates.EmptyComparisonRange().Merge(&comparison)
-		if !merged.Ok {
+		if !merged.Complete() {
 			t.Fatal("fixture: equality range did not merge")
 		}
 		scan := descendingInUnionScan(t, []string{"T"}, rowType, false).
@@ -618,7 +618,7 @@ func TestDistinctUnionMergedOrderingCarriesNoEqualityBoundKeys(t *testing.T) {
 	legOrdering := func(literal int64) *properties.RichOrdering {
 		comparison := predicates.NewLiteralComparison(predicates.ComparisonEquals, literal)
 		merged := predicates.EmptyComparisonRange().Merge(&comparison)
-		if !merged.Ok {
+		if !merged.Complete() {
 			t.Fatal("fixture: equality range did not merge")
 		}
 		scan := descendingInUnionScan(t, []string{"T"}, rowType, false).

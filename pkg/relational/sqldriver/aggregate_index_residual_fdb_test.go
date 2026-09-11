@@ -70,6 +70,10 @@ func TestFDB_AggregateIndexResidual(t *testing.T) {
 		{"SELECT a, b, c, COUNT(*) FROM t WHERE a = c GROUP BY a, b, c ORDER BY a, b", true},
 		{"SELECT a, b, c, SUM(v) FROM t WHERE b = 'q' OR c = 'm' GROUP BY a, b, c ORDER BY a, b, c", true},
 		{"SELECT a, b, c, COUNT(*) FROM t WHERE a = 'x' AND a = 'y' GROUP BY a, b, c", true},
+		// An equality beside an inequality on the leading key: the equality
+		// binds, the inequality is a residual over the group key.
+		{"SELECT a, b, c, COUNT(*) FROM t WHERE a = 'x' AND a > 'm' GROUP BY a, b, c ORDER BY b, c", true},
+		{"SELECT a, b, c, SUM(v) FROM t WHERE a > 'm' AND a = 'y' GROUP BY a, b, c ORDER BY b, c", true},
 		{"SELECT a, b, c, COUNT(*) FROM t WHERE a = 'x' AND c = 'z' GROUP BY a, b, c ORDER BY a DESC, b", true},
 		{"SELECT d, a, COUNT(*) FROM t WHERE d > 1.0 GROUP BY d, a ORDER BY d, a", true},
 		{"SELECT a, b, c, COUNT(*) FROM t WHERE b = 'p' GROUP BY a, b, c HAVING COUNT(*) > 1 ORDER BY a, c", true},

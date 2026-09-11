@@ -1328,7 +1328,7 @@ shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
 === between.yaml#0
 sql:   SELECT id FROM t WHERE v BETWEEN 5 AND 15
-plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))
+plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [2 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
@@ -1346,13 +1346,13 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === between.yaml#3
 sql:   SELECT id FROM t WHERE v BETWEEN NULL AND 50
-plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))
+plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [2 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === between.yaml#4
 sql:   SELECT id FROM t WHERE v BETWEEN 15 AND 5
-plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))
+plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [2 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
@@ -1364,25 +1364,25 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === between.yaml#6
 sql:   SELECT id FROM t WHERE v BETWEEN 10 AND 10
-plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))
+plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [2 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === between.yaml#7
 sql:   SELECT id FROM t WHERE v BETWEEN (2+3) AND (10*2) ORDER BY id
-plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))
+plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [2 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === between.yaml#8
 sql:   SELECT id FROM t WHERE v BETWEEN (SELECT MIN(v) FROM t) AND (SELECT MAX(v) FROM t) ORDER BY id
-plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))
+plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [2 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === between.yaml#9
 sql:   SELECT id FROM t WHERE v BETWEEN (SELECT MIN(v) FROM t WHERE v >= 5) AND (SELECT MAX(v) FROM t WHERE v <= 15) ORDER BY id
-plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))
+plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [2 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
@@ -1400,20 +1400,20 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === between.yaml#13
 sql:   SELECT id FROM t WHERE v BETWEEN 4 AND 6.2
-plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))
+plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [2 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === between.yaml#14
 sql:   SELECT COUNT(*) FROM t WHERE 4.5 BETWEEN 4 AND 6
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(T), [1 preds])))
+plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(T), [2 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === between.yaml#15
 sql:   SELECT COUNT(*) FROM t WHERE 2+2 BETWEEN 1+1 AND 3+3
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(T), [1 preds])))
+plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(T), [2 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
@@ -1427,19 +1427,19 @@ shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === between_edge_cases.yaml#0
 sql:   SELECT id FROM t WHERE val BETWEEN 20 AND 40 ORDER BY id
-plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))
+plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [2 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === between_edge_cases.yaml#1
 sql:   SELECT id FROM t WHERE val BETWEEN 30 AND 30
-plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))
+plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [2 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === between_edge_cases.yaml#2
 sql:   SELECT id FROM t WHERE val BETWEEN 40 AND 20
-plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))
+plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [2 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
@@ -1451,7 +1451,7 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === between_edge_cases.yaml#4
 sql:   SELECT id FROM t WHERE name BETWEEN 'beta' AND 'delta' ORDER BY id
-plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))
+plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [2 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
@@ -1469,7 +1469,7 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === between_java.yaml#2
 sql:   SELECT COUNT(*) FROM t1 WHERE col2 BETWEEN 4 AND 3
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [1 preds])))
+plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [2 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
@@ -1495,15 +1495,13 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === between_java.yaml#6
 sql:   SELECT id FROM t1 WHERE col1 BETWEEN 10 AND 10 ORDER BY id
-plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], Fetch(PredicatesFilter(IndexScan(I1, [<>] COVERING), [1 preds]))))
+plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], IndexScan(I1, [<>])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFetchFromPartialRecordPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryCoveringIndexPlan
+shape:     RecordQueryIndexPlan
 === between_java.yaml#7
 sql:   SELECT id FROM t1 WHERE col1 + 5 BETWEEN 10 AND 20 ORDER BY id
-plan:  Project([_current.ID#0], PredicatesFilter(Scan(T1), [1 preds]))
+plan:  Project([_current.ID#0], PredicatesFilter(Scan(T1), [2 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
@@ -1521,41 +1519,41 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === between_java.yaml#10
 sql:   SELECT id FROM t1 WHERE col2 BETWEEN 4.1 AND 6 ORDER BY id
-plan:  Project([_current.ID#0], PredicatesFilter(Scan(T1), [1 preds]))
+plan:  Project([_current.ID#0], PredicatesFilter(Scan(T1), [2 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === between_java.yaml#11
 sql:   SELECT COUNT(*) FROM t1 WHERE 4 BETWEEN 1 AND 10
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [1 preds])))
+plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [2 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === between_java.yaml#12
 sql:   SELECT COUNT(*) FROM t1 WHERE 4 BETWEEN 5 AND 10
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [1 preds])))
+plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [2 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === between_java.yaml#13
 sql:   SELECT COUNT(*) FROM t1 WHERE 2+2 BETWEEN 1+1 AND 3+3
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [1 preds])))
+plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [2 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === between_java.yaml#14
 sql:   SELECT COUNT(*) FROM t1 WHERE null BETWEEN 1 AND 2
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [1 preds])))
+plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [2 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === between_java.yaml#15
 sql:   SELECT COUNT(*) FROM t1 WHERE col2 BETWEEN null AND 10
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [1 preds])))
+plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(T1), [2 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
@@ -1618,13 +1616,13 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === boolean.yaml#4
 sql:   SELECT lb.* FROM lb WHERE b IS TRUE
-plan:  Project([_current.A#0, _current.B#1], PredicatesFilter(Scan(LB), [1 preds]))
+plan:  Project([_current.A#0, _current.B#1], PredicatesFilter(Scan(LB), [2 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === boolean.yaml#5
 sql:   SELECT lb.* FROM lb WHERE b IS FALSE
-plan:  Project([_current.A#0, _current.B#1], PredicatesFilter(Scan(LB), [1 preds]))
+plan:  Project([_current.A#0, _current.B#1], PredicatesFilter(Scan(LB), [2 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
@@ -1782,13 +1780,13 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === boolean_3vl_java.yaml#4
 sql:   SELECT a FROM lb WHERE b IS TRUE
-plan:  Project([_current.A#0], PredicatesFilter(Scan(LB), [1 preds]))
+plan:  Project([_current.A#0], PredicatesFilter(Scan(LB), [2 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === boolean_3vl_java.yaml#5
 sql:   SELECT a FROM lb WHERE b IS FALSE
-plan:  Project([_current.A#0], PredicatesFilter(Scan(LB), [1 preds]))
+plan:  Project([_current.A#0], PredicatesFilter(Scan(LB), [2 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
@@ -1907,7 +1905,7 @@ shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
 === bug_hunt_probes.yaml#10
 sql:   SELECT id FROM t WHERE (n > 5) AND (s IS NULL) ORDER BY id
-plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))
+plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [2 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
@@ -2785,7 +2783,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === composite_pk_java.yaml#3
 sql:   SELECT year, month, day FROM events WHERE year >= 2024 AND year <= 2024 AND month >= 2 ORDER BY year, month, day
-plan:  Project([_current.YEAR#0, _current.MONTH#1, _current.DAY#2], PredicatesFilter(Scan(EVENTS, [<>]), [2 preds]))
+plan:  Project([_current.YEAR#0, _current.MONTH#1, _current.DAY#2], PredicatesFilter(Scan(EVENTS, [<>]), [1 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
@@ -3348,16 +3346,14 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryCoveringIndexPlan
 === covering_index_pushdown.yaml#3
 sql:   SELECT id, v FROM t WHERE v >= 20 AND v < 40 ORDER BY v
-plan:  Project([_current.ID#0, _current.V#3], PredicatesFilter(IndexScan(IDX_V, [<>] COVERING), [1 preds]))
+plan:  Project([_current.ID#0, _current.V#3], IndexScan(IDX_V, [<>] COVERING))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryCoveringIndexPlan
+shape:   RecordQueryCoveringIndexPlan
 === covering_index_pushdown.yaml#4
 sql:   SELECT id, v FROM t WHERE v BETWEEN 20 AND 30 ORDER BY v
-plan:  Project([_current.ID#0, _current.V#3], PredicatesFilter(IndexScan(IDX_V, [<>] COVERING), [1 preds]))
+plan:  Project([_current.ID#0, _current.V#3], IndexScan(IDX_V, [<>] COVERING))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryCoveringIndexPlan
+shape:   RecordQueryCoveringIndexPlan
 === covering_index_pushdown.yaml#5
 sql:   SELECT id FROM t WHERE v > 25 ORDER BY id
 plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], IndexScan(IDX_V, [<>])))
@@ -3386,12 +3382,10 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryCoveringIndexPlan
 === covering_index_pushdown.yaml#10
 sql:   SELECT id FROM tb WHERE payload >= x'cafe' AND payload < x'feed' ORDER BY id
-plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], Fetch(PredicatesFilter(IndexScan(IDX_PAYLOAD, [<>] COVERING), [1 preds]))))
+plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], IndexScan(IDX_PAYLOAD, [<>])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFetchFromPartialRecordPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryCoveringIndexPlan
+shape:     RecordQueryIndexPlan
 === covering_index_pushdown.yaml#11
 sql:   SELECT a, b, c FROM kvw WHERE b = 20 ORDER BY a, c
 plan:  Project([_current.A#0, _current.B#1, _current.C#2], IndexScan(KVW_B, [=] COVERING))
@@ -3436,10 +3430,9 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryCoveringIndexPlan
 === covering_index_pushdown.yaml#19
 sql:   SELECT a, b FROM kvw WHERE a = 1 AND b BETWEEN 15 AND 25
-plan:  Project([_current.A#0, _current.B#1], PredicatesFilter(Scan(KVW, [=, <>]), [1 preds]))
+plan:  Project([_current.A#0, _current.B#1], Scan(KVW, [=, <>]))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:   RecordQueryScanPlan
 === covering_index_pushdown.yaml#20
 sql:   SELECT id FROM t WHERE v > 1000
 plan:  Project([_current.ID#0], IndexScan(IDX_V, [<>] COVERING))
@@ -4784,14 +4777,14 @@ shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === datetime_column_types.yaml#8
 sql:   SELECT COUNT(*) FROM Events WHERE ts BETWEEN '2024-01-01 00:00:00' AND '2024-03-15 10:30:00'
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(EVENTS), [1 preds])))
+plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(EVENTS), [2 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === datetime_column_types.yaml#9
 sql:   SELECT COUNT(*) FROM Events WHERE d BETWEEN '2024-02-01' AND '2024-12-31'
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(EVENTS), [1 preds])))
+plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(EVENTS), [2 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
@@ -4920,12 +4913,11 @@ sql:   SELECT COUNT(DISTINCT d) FROM Events
 plan:  <PLAN-ERROR: 0AF00: DISTINCT aggregates are not supported>
 === datetime_column_types.yaml#34
 sql:   SELECT COUNT(*) FROM Events WHERE d IN ('2024-03-15', '2024-06-20')
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], InJoin(PredicatesFilter(Scan(EVENTS), [1 preds]), binding)))
+plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(EVENTS), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
-shape:     RecordQueryInJoinPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryScanPlan
 === datetime_column_types.yaml#35
 sql:   SELECT d, COUNT(*) FROM Events WHERE d IS NOT NULL GROUP BY d HAVING COUNT(*) >= 1
 plan:  Project([_current.D#0, _current.COUNT(*)#1], PredicatesFilter(StreamingAgg(keys=[_current.D#1], InMemorySort([_current.D#1 ASC], PredicatesFilter(Scan(EVENTS), [1 preds]))), [1 preds]))
@@ -5009,7 +5001,7 @@ shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === datetime_edge_pins.yaml#6
 sql:   SELECT COUNT(*) FROM ev WHERE d < 'zzzz' AND d IS NOT NULL
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(EV), [1 preds])))
+plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(EV), [2 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
@@ -5528,16 +5520,16 @@ shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === derived_table_patterns_java.yaml#5
 sql:   SELECT o.id, s.shipped_count FROM orders o, (SELECT customer_id, COUNT(*) AS shipped_count FROM orders WHERE status = 'shipped' GROUP BY customer_id) AS s WHERE o.customer_id = s.customer_id AND o.status = 'pending' ORDER BY o.id
-plan:  Project([_current.ID#0, _current.SHIPPED_COUNT#5], InMemorySort([_current.ID#0 ASC], NestedLoopJoin(INNER, [1 preds], Scan(ORDERS), Project([_current.CUSTOMER_ID#0, _current.COUNT(*)#1], StreamingAgg(keys=[_current.CUSTOMER_ID#1], InMemorySort([_current.CUSTOMER_ID#1 ASC], PredicatesFilter(Scan(ORDERS), [1 preds])))))))
+plan:  Project([_current.ID#0, _current.SHIPPED_COUNT#5], InMemorySort([_current.ID#0 ASC], NestedLoopJoin(INNER, [2 preds], Project([_current.CUSTOMER_ID#0, _current.COUNT(*)#1], StreamingAgg(keys=[_current.CUSTOMER_ID#1], InMemorySort([_current.CUSTOMER_ID#1 ASC], PredicatesFilter(Scan(ORDERS), [1 preds])))), Scan(ORDERS))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryNestedLoopJoinPlan
-shape:       RecordQueryScanPlan
 shape:       RecordQueryProjectionPlan
 shape:         RecordQueryStreamingAggregationPlan
 shape:           RecordQueryInMemorySortPlan
 shape:             RecordQueryPredicatesFilterPlan
 shape:               RecordQueryScanPlan
+shape:       RecordQueryScanPlan
 === derived_table_patterns_java.yaml#6
 sql:   SELECT * FROM (SELECT id, amount * 2 AS double_amt FROM orders WHERE id <= 3) AS d ORDER BY id
 plan:  Project([_current.ID#0, (_current.AMOUNT#2 * 2)], Scan(ORDERS, [<>]))
@@ -6152,7 +6144,7 @@ shape:           RecordQueryScanPlan
 shape:           RecordQueryScanPlan
 === e2e_ecommerce.yaml#3
 sql:   SELECT c.name FROM customers c WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id AND o.status = 'shipped') ORDER BY c.name
-plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(CUSTOMERS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(ORDERS), [1 preds])), [1 preds]))))
+plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(CUSTOMERS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(ORDERS), [2 preds])), [1 preds]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
@@ -6420,11 +6412,10 @@ shape:         RecordQueryProjectionPlan
 shape:           RecordQueryScanPlan
 === empty_result_edge_cases_java.yaml#6
 sql:   SELECT id FROM t WHERE val IN (100, 200, 300)
-plan:  Project([_current.ID#0], InJoin(PredicatesFilter(Scan(T), [1 preds]), binding))
+plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInJoinPlan
-shape:     RecordQueryPredicatesFilterPlan
-shape:       RecordQueryScanPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
 === empty_result_edge_cases_java.yaml#7
 sql:   SELECT id FROM t WHERE id = 999 UNION ALL SELECT id FROM t WHERE cat = 'A' ORDER BY id
 plan:  InMemorySort([_current.ID#0 ASC], UnorderedUnion(Project([_current.ID#0], Scan(T, [=])), Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))))
@@ -6746,7 +6737,7 @@ shape:           RecordQueryPredicatesFilterPlan
 shape:             RecordQueryScanPlan
 === exists_subquery_java.yaml#2
 sql:   SELECT name FROM customers c WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id AND o.amount > 200) ORDER BY name
-plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(CUSTOMERS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(ORDERS), [1 preds])), [1 preds]))))
+plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(CUSTOMERS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(ORDERS), [2 preds])), [1 preds]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
@@ -6757,7 +6748,7 @@ shape:           RecordQueryPredicatesFilterPlan
 shape:             RecordQueryScanPlan
 === exists_subquery_java.yaml#3
 sql:   SELECT name FROM customers c WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id AND o.amount >= 200) ORDER BY name
-plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(CUSTOMERS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(ORDERS), [1 preds])), [1 preds]))))
+plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(CUSTOMERS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(ORDERS), [2 preds])), [1 preds]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
@@ -6958,7 +6949,7 @@ shape:         RecordQueryScanPlan
 shape:         RecordQueryScanPlan
 === flatmap_join_pagination.yaml#3
 sql:   SELECT p.id FROM parents p WHERE EXISTS (SELECT 1 FROM children c WHERE c.parent_id = p.id AND c.label = 'child_1') ORDER BY p.id
-plan:  Project([_current.ID#0], FlatMap(outer=Scan(PARENTS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(CHILDREN), [1 preds])), [1 preds])))
+plan:  Project([_current.ID#0], FlatMap(outer=Scan(PARENTS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(CHILDREN), [2 preds])), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryFlatMapPlan
 shape:     RecordQueryScanPlan
@@ -7193,7 +7184,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === float_column.yaml#6
 sql:   SELECT COUNT(*) FROM Measurements WHERE temp BETWEEN 30 AND 100
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(MEASUREMENTS), [1 preds])))
+plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(MEASUREMENTS), [2 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
@@ -7458,7 +7449,7 @@ shape:       RecordQueryInMemorySortPlan
 shape:         RecordQueryScanPlan
 === group_by_having_complex.yaml#2
 sql:   SELECT rep, SUM(amount), COUNT(*) FROM sales GROUP BY rep HAVING SUM(amount) > 100 AND COUNT(*) >= 2 ORDER BY rep
-plan:  Project([_current.REP#0, _current.SUM(AMOUNT)#1, _current.COUNT(*)#2], PredicatesFilter(StreamingAgg(keys=[_current.REP#1], InMemorySort([_current.REP#1 ASC], Scan(SALES))), [1 preds]))
+plan:  Project([_current.REP#0, _current.SUM(AMOUNT)#1, _current.COUNT(*)#2], PredicatesFilter(StreamingAgg(keys=[_current.REP#1], InMemorySort([_current.REP#1 ASC], Scan(SALES))), [2 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryStreamingAggregationPlan
@@ -7511,7 +7502,7 @@ shape:       RecordQueryInMemorySortPlan
 shape:         RecordQueryScanPlan
 === group_by_having_java.yaml#5
 sql:   SELECT product, SUM(amount), COUNT(*) FROM sales GROUP BY product HAVING SUM(amount) > 200 AND COUNT(*) >= 3 ORDER BY product
-plan:  Project([_current.PRODUCT#0, _current.SUM(AMOUNT)#1, _current.COUNT(*)#2], PredicatesFilter(StreamingAgg(keys=[_current.PRODUCT#2], InMemorySort([_current.PRODUCT#2 ASC], Scan(SALES))), [1 preds]))
+plan:  Project([_current.PRODUCT#0, _current.SUM(AMOUNT)#1, _current.COUNT(*)#2], PredicatesFilter(StreamingAgg(keys=[_current.PRODUCT#2], InMemorySort([_current.PRODUCT#2 ASC], Scan(SALES))), [2 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryStreamingAggregationPlan
@@ -8034,7 +8025,7 @@ shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryScanPlan
 === having.yaml#20
 sql:   SELECT grp, SUM(v) FROM t GROUP BY grp HAVING grp = 'b' AND SUM(v) > 30
-plan:  Project([_current.GRP#0, _current.SUM(V)#1], PredicatesFilter(StreamingAgg(keys=[_current.GRP#1], InMemorySort([_current.GRP#1 ASC], Scan(T))), [1 preds]))
+plan:  Project([_current.GRP#0, _current.SUM(V)#1], PredicatesFilter(StreamingAgg(keys=[_current.GRP#1], InMemorySort([_current.GRP#1 ASC], Scan(T))), [2 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryStreamingAggregationPlan
@@ -8067,7 +8058,7 @@ shape:       RecordQueryInMemorySortPlan
 shape:         RecordQueryScanPlan
 === having_avg.yaml#1
 sql:   SELECT subject, COUNT(*), AVG(score) FROM scores GROUP BY subject HAVING COUNT(*) >= 2 AND AVG(score) > 80 ORDER BY subject
-plan:  Project([_current.SUBJECT#0, _current.COUNT(*)#1, _current.AVG(SCORE)#2], PredicatesFilter(StreamingAgg(keys=[_current.SUBJECT#1], InMemorySort([_current.SUBJECT#1 ASC], Scan(SCORES))), [1 preds]))
+plan:  Project([_current.SUBJECT#0, _current.COUNT(*)#1, _current.AVG(SCORE)#2], PredicatesFilter(StreamingAgg(keys=[_current.SUBJECT#1], InMemorySort([_current.SUBJECT#1 ASC], Scan(SCORES))), [2 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryStreamingAggregationPlan
@@ -8115,11 +8106,12 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === in_expression_types.yaml#5
 sql:   SELECT name FROM items WHERE id IN (1, 2, 3, 4) AND price > 15 ORDER BY name
-plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], PredicatesFilter(Scan(ITEMS), [1 preds])))
+plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], InJoin(PredicatesFilter(Scan(ITEMS, [=]), [1 preds]), binding ASC)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryPredicatesFilterPlan
-shape:       RecordQueryScanPlan
+shape:     RecordQueryInJoinPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryScanPlan
 === in_list_advanced.yaml#0
 sql:   SELECT a, b FROM ta WHERE b IN (1 + 0, 3 + 0, 5, 7) ORDER BY a
 plan:  Project([_current.A#0, _current.B#1], PredicatesFilter(Scan(TA), [1 preds]))
@@ -8134,11 +8126,10 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === in_list_advanced.yaml#2
 sql:   SELECT a, b FROM ta WHERE b IN (10, 33, 66)
-plan:  Project([_current.A#0, _current.B#1], InJoin(PredicatesFilter(Scan(TA), [1 preds]), binding))
+plan:  Project([_current.A#0, _current.B#1], PredicatesFilter(Scan(TA), [1 preds]))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInJoinPlan
-shape:     RecordQueryPredicatesFilterPlan
-shape:       RecordQueryScanPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
 === in_list_advanced.yaml#3
 sql:   SELECT a, b FROM ta WHERE b IN (1, 1, 1, 1)
 plan:  Project([_current.A#0, _current.B#1], PredicatesFilter(Scan(TA), [1 preds]))
@@ -8197,19 +8188,19 @@ shape:     RecordQueryInJoinPlan
 shape:       RecordQueryScanPlan
 === in_list_comprehensive.yaml#3
 sql:   SELECT name FROM emp WHERE dept IN ('Eng', 'HR') ORDER BY name
-plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], InJoin(PredicatesFilter(Scan(EMP), [1 preds]), binding)))
-shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryInJoinPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryScanPlan
-=== in_list_comprehensive.yaml#4
-sql:   SELECT name FROM emp WHERE id IN (1, 2, 3, 5) AND salary > 100 ORDER BY name
 plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], PredicatesFilter(Scan(EMP), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
+=== in_list_comprehensive.yaml#4
+sql:   SELECT name FROM emp WHERE id IN (1, 2, 3, 5) AND salary > 100 ORDER BY name
+plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], InJoin(PredicatesFilter(Scan(EMP, [=]), [1 preds]), binding ASC)))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryInJoinPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryScanPlan
 === in_list_comprehensive.yaml#5
 sql:   SELECT name FROM emp WHERE id NOT IN (1, 2, 3) ORDER BY name
 plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], PredicatesFilter(Scan(EMP), [1 preds])))
@@ -8260,9 +8251,9 @@ shape:   RecordQueryInJoinPlan
 shape:     RecordQueryCoveringIndexPlan
 === in_list_index_plan.yaml#5
 sql:   SELECT id, name FROM items WHERE category IN ('books', 'electronics') AND price > 50 ORDER BY id
-plan:  Project([_current.ID#0, _current.NAME#2], InMemorySort([_current.ID#0 ASC], PredicatesFilter(IndexScan(IDX_PRICE, [<>]), [1 preds])))
+plan:  Project([_current.ID#0, _current.NAME#2], InUnion(PredicatesFilter(IndexScan(IDX_CATEGORY, [=]), [1 preds]), bindings=1, ASC))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
+shape:   RecordQueryInUnionPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryIndexPlan
 === in_list_null.yaml#0 expect-error=42809
@@ -8273,11 +8264,10 @@ sql:   SELECT id FROM t WHERE v NOT IN (2, NULL)
 plan:  <PLAN-ERROR: 42809: NULL values are not allowed in the IN list>
 === in_list_null.yaml#2
 sql:   SELECT id FROM t WHERE v IN (1, 3)
-plan:  Project([_current.ID#0], InJoin(PredicatesFilter(Scan(T), [1 preds]), binding))
+plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInJoinPlan
-shape:     RecordQueryPredicatesFilterPlan
-shape:       RecordQueryScanPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
 === in_list_null.yaml#3 expect-error=42601
 sql:   SELECT id FROM t WHERE v IN ()
 plan:  <PLAN-ERROR: parse SQL: 42601: syntax error: SELECT id FROM t WHERE v IN () ^^>
@@ -8327,17 +8317,18 @@ shape:     RecordQueryInUnionPlan
 shape:       RecordQueryScanPlan
 === in_list_pushdown.yaml#8
 sql:   SELECT id FROM t WHERE id IN (1, 3, 5) AND v > 20 ORDER BY id
-plan:  Project([_current.ID#0], InUnion(PredicatesFilter(Scan(T), [2 preds]), bindings=1, ASC))
+plan:  Project([_current.ID#0], InUnion(PredicatesFilter(Scan(T, [=]), [1 preds]), bindings=1, ASC))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInUnionPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === in_list_pushdown.yaml#9
 sql:   SELECT id FROM t WHERE id IN (1, 2, 3) AND name LIKE 'tw%'
-plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))
+plan:  Project([_current.ID#0], InJoin(PredicatesFilter(Scan(T, [=]), [1 preds]), binding ASC))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:   RecordQueryInJoinPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryScanPlan
 === in_list_pushdown.yaml#10
 sql:   SELECT id FROM t WHERE id NOT IN (1, 2, 3) ORDER BY id
 plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))
@@ -8404,45 +8395,41 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === in_list_pushdown.yaml#23
 sql:   SELECT a, b, c FROM kvw WHERE a = 1 AND b IN (10, 20) ORDER BY b, c
-plan:  Project([_current.A#0, _current.B#1, _current.C#2], PredicatesFilter(Scan(KVW, [=]), [1 preds]))
+plan:  Project([_current.A#0, _current.B#1, _current.C#2], InUnion(Scan(KVW, [=, =]), bindings=1, ASC))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryPredicatesFilterPlan
+shape:   RecordQueryInUnionPlan
 shape:     RecordQueryScanPlan
 === in_list_pushdown.yaml#24
 sql:   SELECT a, b, c FROM kvw WHERE a = 1 AND b IN (10, 30) AND c = 100
-plan:  Project([_current.A#0, _current.B#1, _current.C#2], InJoin(PredicatesFilter(Scan(KVW, [=]), [2 preds]), binding))
+plan:  Project([_current.A#0, _current.B#1, _current.C#2], InJoin(Scan(KVW, [=, =, =]), binding ASC))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInJoinPlan
-shape:     RecordQueryPredicatesFilterPlan
-shape:       RecordQueryScanPlan
+shape:     RecordQueryScanPlan
 === in_list_pushdown.yaml#25
 sql:   SELECT a, b, c FROM kvw WHERE a = 1 AND b = 20 AND c IN (100, 200) ORDER BY c
-plan:  Project([_current.A#0, _current.B#1, _current.C#2], PredicatesFilter(Scan(KVW, [=, =]), [1 preds]))
+plan:  Project([_current.A#0, _current.B#1, _current.C#2], InUnion(Scan(KVW, [=, =, =]), bindings=1, ASC))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryPredicatesFilterPlan
+shape:   RecordQueryInUnionPlan
 shape:     RecordQueryScanPlan
 === in_list_pushdown.yaml#26
 sql:   SELECT a, b, c FROM kvw WHERE b IN (10, 30)
-plan:  Project([_current.A#0, _current.B#1, _current.C#2], InJoin(PredicatesFilter(Scan(KVW), [1 preds]), binding))
+plan:  Project([_current.A#0, _current.B#1, _current.C#2], PredicatesFilter(Scan(KVW), [1 preds]))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInJoinPlan
-shape:     RecordQueryPredicatesFilterPlan
-shape:       RecordQueryScanPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
 === in_list_pushdown.yaml#27
 sql:   SELECT a, b, c FROM kvw WHERE a = 1 AND b IN (10, 20) AND c = 999
-plan:  Project([_current.A#0, _current.B#1, _current.C#2], InJoin(PredicatesFilter(Scan(KVW, [=]), [2 preds]), binding))
+plan:  Project([_current.A#0, _current.B#1, _current.C#2], InJoin(Scan(KVW, [=, =, =]), binding ASC))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInJoinPlan
-shape:     RecordQueryPredicatesFilterPlan
-shape:       RecordQueryScanPlan
+shape:     RecordQueryScanPlan
 === in_list_pushdown.yaml#28
 sql:   UPDATE kvw SET v = v + 10000 WHERE a = 1 AND b IN (10, 20)
-plan:  Update(KVW, [1 transforms], UnorderedPrimaryKeyDistinct(InJoin(PredicatesFilter(Scan(KVW, [=]), [1 preds]), binding)))
+plan:  Update(KVW, [1 transforms], UnorderedPrimaryKeyDistinct(InJoin(Scan(KVW, [=, =]), binding ASC)))
 shape: RecordQueryUpdatePlan
 shape:   RecordQueryUnorderedPrimaryKeyDistinctPlan
 shape:     RecordQueryInJoinPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryScanPlan
+shape:       RecordQueryScanPlan
 === in_list_pushdown.yaml#29
 sql:   SELECT b, v FROM kvw WHERE a = 1 ORDER BY b
 plan:  Project([_current.B#1, _current.V#3], Scan(KVW, [=]))
@@ -8455,11 +8442,10 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === in_list_pushdown.yaml#31
 sql:   DELETE FROM kvw WHERE a = 1 AND b IN (10, 20)
-plan:  Delete(KVW, InJoin(PredicatesFilter(Scan(KVW, [=]), [1 preds]), binding))
+plan:  Delete(KVW, InJoin(Scan(KVW, [=, =]), binding ASC))
 shape: RecordQueryDeletePlan
 shape:   RecordQueryInJoinPlan
-shape:     RecordQueryPredicatesFilterPlan
-shape:       RecordQueryScanPlan
+shape:     RecordQueryScanPlan
 === in_list_pushdown.yaml#32
 sql:   SELECT COUNT(*) FROM kvw WHERE a = 1
 plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(KVW, [=])))
@@ -8474,19 +8460,16 @@ shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
 === in_list_pushdown.yaml#34
 sql:   SELECT id, region, plan FROM tp WHERE region = 'us' AND plan IN ('pro', 'free') ORDER BY id
-plan:  Project([_current.ID#0, _current.REGION#1, _current.PLAN#2], InMemorySort([_current.ID#0 ASC], Fetch(InJoin(PredicatesFilter(IndexScan(IDX_REGION_PLAN, [=, *] COVERING), [1 preds]), binding))))
+plan:  Project([_current.ID#0, _current.REGION#1, _current.PLAN#2], InUnion(IndexScan(IDX_REGION_PLAN, [=, =]), bindings=1, ASC))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFetchFromPartialRecordPlan
-shape:       RecordQueryInJoinPlan
-shape:         RecordQueryPredicatesFilterPlan
-shape:           RecordQueryCoveringIndexPlan
+shape:   RecordQueryInUnionPlan
+shape:     RecordQueryIndexPlan
 === in_list_pushdown.yaml#35
 sql:   SELECT id FROM tp WHERE plan = 'pro' AND region IN ('us', 'eu') ORDER BY id
-plan:  Project([_current.ID#0], PredicatesFilter(Scan(TP), [1 preds]))
+plan:  Project([_current.ID#0], InUnion(IndexScan(IDX_REGION_PLAN, [=, =]), bindings=1, ASC))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:   RecordQueryInUnionPlan
+shape:     RecordQueryIndexPlan
 === in_list_pushdown.yaml#36
 sql:   SELECT id, status FROM t2 WHERE status IN ('active', 'deleted') ORDER BY id
 plan:  Project([_current.ID#0, _current.STATUS#1], InUnion(IndexScan(IDX_T2_STATUS, [=]), bindings=1, ASC))
@@ -8505,10 +8488,11 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryCoveringIndexPlan
 === in_list_pushdown.yaml#39
 sql:   SELECT id FROM t2 WHERE status IN ('active', 'archived') AND v > 10 ORDER BY id
-plan:  Project([_current.ID#0], PredicatesFilter(Scan(T2), [1 preds]))
+plan:  Project([_current.ID#0], InUnion(PredicatesFilter(IndexScan(IDX_T2_STATUS, [=]), [1 preds]), bindings=1, ASC))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:   RecordQueryInUnionPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryIndexPlan
 === in_list_pushdown.yaml#40
 sql:   SELECT id FROM t2 WHERE status IN ('nonexistent', 'alsonone')
 plan:  Project([_current.ID#0], InJoin(IndexScan(IDX_T2_STATUS, [=] COVERING), binding ASC))
@@ -8745,10 +8729,11 @@ shape:   RecordQueryInUnionPlan
 shape:     RecordQueryIndexPlan
 === in_plan_winner_stability.yaml#7
 sql:   SELECT id FROM t WHERE val IN (200, 400, 600) AND cat IN (20, 40) ORDER BY val
-plan:  Project([_current.ID#0], PredicatesFilter(IndexScan(IDX_VAL, [*]), [2 preds]))
+plan:  Project([_current.ID#0], InUnion(PredicatesFilter(IndexScan(IDX_VAL, [=]), [1 preds]), bindings=1, ASC))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryIndexPlan
+shape:   RecordQueryInUnionPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryIndexPlan
 === in_plan_winner_stability.yaml#8
 sql:   SELECT id FROM t WHERE cat IN (999, 998) ORDER BY id
 plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))
@@ -8842,11 +8827,9 @@ plan:  IndexScan(I1, [=])
 shape: RecordQueryIndexPlan
 === index_range_and_or.yaml#1
 sql:   SELECT * FROM t1 WHERE col1 >= 10 AND col1 <= 20 ORDER BY id
-plan:  InMemorySort([_current.ID#0 ASC], Fetch(PredicatesFilter(IndexScan(I1, [<>] COVERING), [1 preds])))
+plan:  InMemorySort([_current.ID#0 ASC], IndexScan(I1, [<>]))
 shape: RecordQueryInMemorySortPlan
-shape:   RecordQueryFetchFromPartialRecordPlan
-shape:     RecordQueryPredicatesFilterPlan
-shape:       RecordQueryCoveringIndexPlan
+shape:   RecordQueryIndexPlan
 === index_range_and_or.yaml#2
 sql:   SELECT * FROM t1 WHERE col1 >= 15 ORDER BY id
 plan:  InMemorySort([_current.ID#0 ASC], IndexScan(I1, [<>]))
@@ -8896,20 +8879,16 @@ plan:  IndexScan(I1, [=])
 shape: RecordQueryIndexPlan
 === index_range_predicates_java.yaml#1
 sql:   SELECT id FROM t1 WHERE col1 >= 10 AND col1 <= 20 ORDER BY id
-plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], Fetch(PredicatesFilter(IndexScan(I1, [<>] COVERING), [1 preds]))))
+plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], IndexScan(I1, [<>])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFetchFromPartialRecordPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryCoveringIndexPlan
+shape:     RecordQueryIndexPlan
 === index_range_predicates_java.yaml#2
 sql:   SELECT id FROM t1 WHERE col1 > 10 AND col1 < 30 ORDER BY id
-plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], Fetch(PredicatesFilter(IndexScan(I1, [<>] COVERING), [1 preds]))))
+plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], IndexScan(I1, [<>])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFetchFromPartialRecordPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryCoveringIndexPlan
+shape:     RecordQueryIndexPlan
 === index_range_predicates_java.yaml#3
 sql:   SELECT id FROM t1 WHERE col1 = 20 OR col1 = 20 ORDER BY id
 plan:  Project([_current.ID#0], PredicatesFilter(Scan(T1), [1 preds]))
@@ -8918,10 +8897,9 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === index_range_predicates_java.yaml#4
 sql:   SELECT id FROM t1 WHERE col1 = 20 AND col1 = 20 ORDER BY id
-plan:  Project([_current.ID#0], PredicatesFilter(IndexScan(I1, [=] COVERING), [1 preds]))
+plan:  Project([_current.ID#0], IndexScan(I1, [=] COVERING))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryCoveringIndexPlan
+shape:   RecordQueryCoveringIndexPlan
 === index_range_predicates_java.yaml#5
 sql:   SELECT id FROM t1 WHERE col1 = 10 OR col1 = 30 ORDER BY id
 plan:  Project([_current.ID#0], PredicatesFilter(Scan(T1), [1 preds]))
@@ -8930,7 +8908,7 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === index_range_predicates_java.yaml#6
 sql:   SELECT id FROM t1 WHERE (col1 = 20 OR col1 = 10) AND (col1 = 20 OR col1 = 10) ORDER BY id
-plan:  Project([_current.ID#0], PredicatesFilter(Scan(T1), [2 preds]))
+plan:  Project([_current.ID#0], PredicatesFilter(Scan(T1), [1 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
@@ -8978,10 +8956,9 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryCoveringIndexPlan
 === index_scan_direction.yaml#5
 sql:   SELECT id, ts FROM events WHERE ts BETWEEN 100 AND 200 ORDER BY ts
-plan:  Project([_current.ID#0, _current.TS#1], PredicatesFilter(IndexScan(IDX_TS, [<>] COVERING), [1 preds]))
+plan:  Project([_current.ID#0, _current.TS#1], IndexScan(IDX_TS, [<>] COVERING))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryCoveringIndexPlan
+shape:   RecordQueryCoveringIndexPlan
 === index_scan_direction.yaml#6
 sql:   SELECT COUNT(*) FROM events WHERE category = 'login'
 plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], IndexScan(IDX_CATEGORY, [=] COVERING)))
@@ -9355,7 +9332,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === integer_column_types.yaml#11
 sql:   SELECT val FROM t_int WHERE val BETWEEN 0 AND 100 ORDER BY val
-plan:  Project([_current.VAL#1], InMemorySort([_current.VAL#1 ASC], PredicatesFilter(Scan(T_INT), [1 preds])))
+plan:  Project([_current.VAL#1], InMemorySort([_current.VAL#1 ASC], PredicatesFilter(Scan(T_INT), [2 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryPredicatesFilterPlan
@@ -9639,7 +9616,7 @@ shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryScanPlan
 === java_alignment_probes.yaml#4
 sql:   SELECT col1, SUM(col2) FROM t1 GROUP BY col1 HAVING col1 >= 20 AND SUM(col2) > 400 ORDER BY col1
-plan:  Project([_current.COL1#0, _current.SUM(COL2)#1], PredicatesFilter(StreamingAgg(keys=[_current.COL1#1], InMemorySort([_current.COL1#1 ASC], Scan(T1))), [1 preds]))
+plan:  Project([_current.COL1#0, _current.SUM(COL2)#1], PredicatesFilter(StreamingAgg(keys=[_current.COL1#1], InMemorySort([_current.COL1#1 ASC], Scan(T1))), [2 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryStreamingAggregationPlan
@@ -9935,7 +9912,7 @@ shape:       RecordQueryScanPlan
 shape:       RecordQueryScanPlan
 === join_complex_patterns.yaml#5
 sql:   SELECT p.id, c.id FROM items p, items c WHERE c.parent_id = p.id AND c.price + p.price > 250 ORDER BY c.id
-plan:  Project([_current.ID#0, _current.ID#4], InMemorySort([_current.ID#4 ASC], NestedLoopJoin(INNER, [1 preds], Scan(ITEMS), Scan(ITEMS))))
+plan:  Project([_current.ID#0, _current.ID#4], InMemorySort([_current.ID#4 ASC], NestedLoopJoin(INNER, [2 preds], Scan(ITEMS), Scan(ITEMS))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryNestedLoopJoinPlan
@@ -10974,13 +10951,13 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === like_prefix_pushdown.yaml#8
 sql:   SELECT name FROM t WHERE name LIKE 'a%' AND v > 10 ORDER BY name
-plan:  Project([_current.NAME#0], PredicatesFilter(Scan(T), [1 preds]))
+plan:  Project([_current.NAME#0], PredicatesFilter(Scan(T), [2 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === like_prefix_pushdown.yaml#9
 sql:   SELECT name FROM t WHERE name LIKE 'b%' AND tag = 'fruit'
-plan:  Project([_current.NAME#0], PredicatesFilter(Scan(T), [1 preds]))
+plan:  Project([_current.NAME#0], PredicatesFilter(Scan(T), [2 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
@@ -11335,7 +11312,7 @@ shape:   RecordQueryProjectionPlan
 shape:     RecordQueryScanPlan
 === limit_one_over_wide_filter.yaml#0
 sql:   SELECT c0 FROM wide WHERE c0 = 0 AND c1 = 0 AND c2 = 0 AND c3 = 0 AND c4 = 0 AND c5 = 0 AND c6 = 0 AND c7 = 0 AND c8 = 0 AND c9 = 0 AND c10 = 0 AND c11 = 0 AND c12 = 0 AND c13 = 0 AND c14 = 0 AND c15 = 0 AND c16 = 0 AND c17 = 0 AND c18 = 0 AND c19 = 0 AND c20 = 0 AND c21 = 0 AND c22 = 0 AND c23 = 0 LIMIT 1
-plan:  Limit(1, Project([_current.C0#1], PredicatesFilter(Scan(WIDE), [1 preds])))
+plan:  Limit(1, Project([_current.C0#1], PredicatesFilter(Scan(WIDE), [24 preds])))
 shape: RecordQueryLimitPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryPredicatesFilterPlan
@@ -11476,11 +11453,10 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === mixed_type_equality.yaml#4
 sql:   SELECT id FROM t WHERE n IN (5, 10)
-plan:  Project([_current.ID#0], InJoin(PredicatesFilter(Scan(T), [1 preds]), binding))
+plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryInJoinPlan
-shape:     RecordQueryPredicatesFilterPlan
-shape:       RecordQueryScanPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
 === multi_column_index_java.yaml#0
 sql:   SELECT id FROM orders WHERE customer_id = 1 AND status = 'shipped' ORDER BY id
 plan:  Project([_current.ID#0], IndexScan(IDX_CUST_STATUS, [=, =] COVERING))
@@ -11598,7 +11574,7 @@ shape:     RecordQueryStreamingAggregationPlan
 shape:       RecordQueryIndexPlan
 === multi_feature_integer.yaml#1
 sql:   SELECT name FROM products WHERE price > (SELECT MIN(price) FROM products WHERE category = 1) AND category = 2 ORDER BY price
-plan:  Project([_current.NAME#3], InMemorySort([_current.PRICE#2 ASC], PredicatesFilter(Scan(PRODUCTS), [1 preds])))
+plan:  Project([_current.NAME#3], InMemorySort([_current.PRICE#2 ASC], PredicatesFilter(Scan(PRODUCTS), [2 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryPredicatesFilterPlan
@@ -11875,7 +11851,7 @@ shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryScanPlan
 === multiple_where_predicates.yaml#0
 sql:   SELECT name FROM products WHERE category = 'A' AND price > 60 AND stock > 0 ORDER BY name
-plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], PredicatesFilter(Scan(PRODUCTS), [1 preds])))
+plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], PredicatesFilter(Scan(PRODUCTS), [3 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryPredicatesFilterPlan
@@ -11889,14 +11865,14 @@ shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === multiple_where_predicates.yaml#2
 sql:   SELECT name FROM products WHERE (category = 'A' OR category = 'B') AND price >= 100 AND stock > 0 ORDER BY name
-plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], PredicatesFilter(Scan(PRODUCTS), [1 preds])))
+plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], PredicatesFilter(Scan(PRODUCTS), [3 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === multiple_where_predicates.yaml#3
 sql:   SELECT name FROM products WHERE category IN ('A', 'B') AND price BETWEEN 50 AND 200 AND stock > 10 AND name LIKE 'W%' ORDER BY name
-plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], PredicatesFilter(Scan(PRODUCTS), [1 preds])))
+plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], PredicatesFilter(Scan(PRODUCTS), [5 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryPredicatesFilterPlan
@@ -12639,7 +12615,7 @@ shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryScanPlan
 === normalized_exists_predicates.yaml#0
 sql:   SELECT id FROM products WHERE EXISTS ( SELECT 1 FROM reviews WHERE reviews.product_id = products.id AND (reviews.rating >= 4 OR reviews.rating = 1) ) ORDER BY id
-plan:  Project([_current.ID#0], FlatMap(outer=Scan(PRODUCTS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(REVIEWS), [1 preds])), [1 preds])))
+plan:  Project([_current.ID#0], FlatMap(outer=Scan(PRODUCTS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(REVIEWS), [2 preds])), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryFlatMapPlan
 shape:     RecordQueryScanPlan
@@ -12860,7 +12836,7 @@ sql:   SELECT id, NULLIF(a, 10) FROM t ORDER BY id
 plan:  <PLAN-ERROR: 0AF00: Unsupported operator NULLIF>
 === null_in_expressions.yaml#3
 sql:   SELECT COUNT(*) FROM t WHERE a IS NULL AND b IS NULL
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(T), [1 preds])))
+plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(T), [2 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryPredicatesFilterPlan
@@ -13470,10 +13446,9 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === order_by_elimination.yaml#26
 sql:   SELECT id FROM t WHERE id > 1 AND id < 5 ORDER BY id DESC
-plan:  Project([_current.ID#0], PredicatesFilter(Scan(T, [<>]) REVERSE, [1 preds]))
+plan:  Project([_current.ID#0], Scan(T, [<>]) REVERSE)
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:   RecordQueryScanPlan
 === order_by_elimination.yaml#27
 sql:   SELECT a, b FROM ab WHERE a = 1 AND b > 10 ORDER BY a DESC, b DESC
 plan:  Project([_current.A#0, _current.B#1], Scan(AB, [=, <>]) REVERSE)
@@ -14182,16 +14157,14 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === pk_pushdown.yaml#12
 sql:   SELECT id FROM t WHERE id >= 2 AND id <= 3 ORDER BY id
-plan:  Project([_current.ID#0], PredicatesFilter(Scan(T, [<>]), [1 preds]))
+plan:  Project([_current.ID#0], Scan(T, [<>]))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:   RecordQueryScanPlan
 === pk_pushdown.yaml#13
 sql:   SELECT id FROM t WHERE id > 1 AND id < 4 ORDER BY id
-plan:  Project([_current.ID#0], PredicatesFilter(Scan(T, [<>]), [1 preds]))
+plan:  Project([_current.ID#0], Scan(T, [<>]))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:   RecordQueryScanPlan
 === pk_pushdown.yaml#14
 sql:   SELECT id FROM t WHERE id >= 2 AND name = 'gamma'
 plan:  Project([_current.ID#0], PredicatesFilter(Scan(T, [<>]), [1 preds]))
@@ -14200,10 +14173,9 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === pk_pushdown.yaml#15
 sql:   SELECT id FROM t WHERE id > 10 AND id < 5
-plan:  Project([_current.ID#0], PredicatesFilter(Scan(T, [<>]), [1 preds]))
+plan:  Project([_current.ID#0], Scan(T, [<>]))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:   RecordQueryScanPlan
 === pk_pushdown.yaml#16
 sql:   SELECT id FROM t WHERE id = 2 AND id > 5
 plan:  Project([_current.ID#0], PredicatesFilter(Scan(T, [=]), [1 preds]))
@@ -14270,10 +14242,9 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === pk_pushdown.yaml#28
 sql:   SELECT v FROM kv WHERE k = 'a' AND g >= 1 AND g <= 1
-plan:  Project([_current.V#2], PredicatesFilter(Scan(KV, [=, <>]), [1 preds]))
+plan:  Project([_current.V#2], Scan(KV, [=, <>]))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:   RecordQueryScanPlan
 === pk_pushdown.yaml#29
 sql:   SELECT g, v FROM kv WHERE k = 'a' AND g > 1 ORDER BY g
 plan:  Project([_current.G#1, _current.V#2], Scan(KV, [=, <>]))
@@ -14291,11 +14262,10 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === pk_pushdown.yaml#32
 sql:   SELECT v FROM kv WHERE k = 'b' AND g >= 1 AND g <= 2 ORDER BY v
-plan:  Project([_current.V#2], InMemorySort([_current.V#2 ASC], PredicatesFilter(Scan(KV, [=, <>]), [1 preds])))
+plan:  Project([_current.V#2], InMemorySort([_current.V#2 ASC], Scan(KV, [=, <>])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryPredicatesFilterPlan
-shape:       RecordQueryScanPlan
+shape:     RecordQueryScanPlan
 === pk_pushdown.yaml#33 expect-error=42804
 sql:   SELECT v FROM kv WHERE k = 'a' AND g = 'notanumber'
 plan:  <PLAN-ERROR: 42804: The operands of a comparison operator are not compatible.>
@@ -14477,10 +14447,9 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === pk_pushdown.yaml#67
 sql:   SELECT k FROM kv WHERE k >= 'a' AND k < 'b' ORDER BY k, g
-plan:  Project([_current.K#0], PredicatesFilter(Scan(KV, [<>]), [1 preds]))
+plan:  Project([_current.K#0], Scan(KV, [<>]))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:   RecordQueryScanPlan
 === pk_pushdown.yaml#68
 sql:   SELECT region, bucket, tag FROM kvw WHERE region = 'us' AND bucket > 1 ORDER BY region, bucket, tag
 plan:  Project([_current.REGION#0, _current.BUCKET#1, _current.TAG#2], Scan(KVW, [=, <>]))
@@ -14542,25 +14511,22 @@ shape: RecordQueryDeletePlan
 shape:   RecordQueryScanPlan
 === pk_pushdown.yaml#80
 sql:   SELECT id FROM t WHERE id BETWEEN 2 AND 4 ORDER BY id
-plan:  Project([_current.ID#0], PredicatesFilter(Scan(T, [<>]), [1 preds]))
+plan:  Project([_current.ID#0], Scan(T, [<>]))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:   RecordQueryScanPlan
 === pk_pushdown.yaml#81
 sql:   SELECT id FROM t WHERE id BETWEEN 3 AND 3
-plan:  Project([_current.ID#0], PredicatesFilter(Scan(T, [<>]), [1 preds]))
+plan:  Project([_current.ID#0], Scan(T, [<>]))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:   RecordQueryScanPlan
 === pk_pushdown.yaml#82
 sql:   SELECT id FROM t WHERE id BETWEEN 10 AND 5
-plan:  Project([_current.ID#0], PredicatesFilter(Scan(T, [<>]), [1 preds]))
+plan:  Project([_current.ID#0], Scan(T, [<>]))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:   RecordQueryScanPlan
 === pk_pushdown.yaml#83
 sql:   SELECT id FROM t WHERE id BETWEEN 1 AND 5 AND name <> 'gamma' ORDER BY id
-plan:  Project([_current.ID#0], PredicatesFilter(Scan(T, [<>]), [2 preds]))
+plan:  Project([_current.ID#0], PredicatesFilter(Scan(T, [<>]), [1 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
@@ -14577,30 +14543,26 @@ shape: RecordQueryDeletePlan
 shape:   RecordQueryScanPlan
 === pk_pushdown.yaml#87
 sql:   SELECT k, g FROM kv WHERE k = 'a' AND g BETWEEN 1 AND 2 ORDER BY g
-plan:  Project([_current.K#0, _current.G#1], PredicatesFilter(Scan(KV, [=, <>]), [1 preds]))
+plan:  Project([_current.K#0, _current.G#1], Scan(KV, [=, <>]))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:   RecordQueryScanPlan
 === pk_pushdown.yaml#88
 sql:   SELECT k FROM kv WHERE k BETWEEN 'a' AND 'a' ORDER BY g
-plan:  Project([_current.K#0], InMemorySort([_current.G#1 ASC], PredicatesFilter(Scan(KV, [<>]), [1 preds])))
+plan:  Project([_current.K#0], InMemorySort([_current.G#1 ASC], Scan(KV, [<>])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryPredicatesFilterPlan
-shape:       RecordQueryScanPlan
+shape:     RecordQueryScanPlan
 === pk_pushdown.yaml#89
 sql:   UPDATE t SET v = 0 WHERE id BETWEEN 2 AND 4
-plan:  Update(T, [1 transforms], UnorderedPrimaryKeyDistinct(PredicatesFilter(Scan(T, [<>]), [1 preds])))
+plan:  Update(T, [1 transforms], UnorderedPrimaryKeyDistinct(Scan(T, [<>])))
 shape: RecordQueryUpdatePlan
 shape:   RecordQueryUnorderedPrimaryKeyDistinctPlan
-shape:     RecordQueryPredicatesFilterPlan
-shape:       RecordQueryScanPlan
+shape:     RecordQueryScanPlan
 === pk_pushdown.yaml#90
 sql:   SELECT id, v FROM t WHERE id BETWEEN 2 AND 4 ORDER BY id
-plan:  Project([_current.ID#0, _current.V#2], PredicatesFilter(Scan(T, [<>]), [1 preds]))
+plan:  Project([_current.ID#0, _current.V#2], Scan(T, [<>]))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:   RecordQueryScanPlan
 === pk_pushdown.yaml#91
 sql:   SELECT v FROM t WHERE id = 1
 plan:  Project([_current.V#2], Scan(T, [=]))
@@ -14608,10 +14570,9 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === pk_pushdown.yaml#92
 sql:   DELETE FROM t WHERE id BETWEEN 2 AND 4
-plan:  Delete(T, PredicatesFilter(Scan(T, [<>]), [1 preds]))
+plan:  Delete(T, Scan(T, [<>]))
 shape: RecordQueryDeletePlan
-shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:   RecordQueryScanPlan
 === pk_pushdown.yaml#93
 sql:   SELECT id FROM t ORDER BY id
 plan:  Project([_current.ID#0], Scan(T))
@@ -14655,10 +14616,9 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === pk_range_scan.yaml#5
 sql:   SELECT id FROM t WHERE id BETWEEN 3 AND 7 ORDER BY id
-plan:  Project([_current.ID#0], PredicatesFilter(Scan(T, [<>]), [1 preds]))
+plan:  Project([_current.ID#0], Scan(T, [<>]))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+shape:   RecordQueryScanPlan
 === pk_range_scan.yaml#6
 sql:   SELECT id, val FROM t WHERE id > 5 AND val > 'g' ORDER BY id
 plan:  Project([_current.ID#0, _current.VAL#1], PredicatesFilter(Scan(T, [<>]), [1 preds]))
@@ -16074,13 +16034,13 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === scalar_subquery_advanced.yaml#3
 sql:   SELECT id FROM t WHERE id = 5 AND (SELECT v FROM t WHERE id = 5) IS NULL
-plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))
+plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [2 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === scalar_subquery_advanced.yaml#4
 sql:   SELECT id FROM t WHERE v BETWEEN (SELECT MIN(v) FROM t) AND (SELECT MAX(v) FROM t) ORDER BY id
-plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))
+plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [2 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
@@ -16480,26 +16440,21 @@ shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryIndexPlan
 === secondary_index_pushdown.yaml#31
 sql:   SELECT id FROM t WHERE v > 20 AND v < 40 ORDER BY id
-plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], Fetch(PredicatesFilter(IndexScan(IDX_V, [<>] COVERING), [1 preds]))))
+plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], IndexScan(IDX_V, [<>])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFetchFromPartialRecordPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryCoveringIndexPlan
+shape:     RecordQueryIndexPlan
 === secondary_index_pushdown.yaml#32
 sql:   SELECT id FROM t WHERE v >= 10 AND v <= 30 ORDER BY id
-plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], Fetch(PredicatesFilter(IndexScan(IDX_V, [<>] COVERING), [1 preds]))))
+plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], IndexScan(IDX_V, [<>])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFetchFromPartialRecordPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryCoveringIndexPlan
+shape:     RecordQueryIndexPlan
 === secondary_index_pushdown.yaml#33
 sql:   SELECT id FROM t WHERE v > 100 AND v < 200
-plan:  Project([_current.ID#0], PredicatesFilter(IndexScan(IDX_V, [<>] COVERING), [1 preds]))
+plan:  Project([_current.ID#0], IndexScan(IDX_V, [<>] COVERING))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryCoveringIndexPlan
+shape:   RecordQueryCoveringIndexPlan
 === secondary_index_pushdown.yaml#34
 sql:   SELECT id FROM t WHERE v >= 20 AND id <> 3 ORDER BY id
 plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], Fetch(PredicatesFilter(IndexScan(IDX_V, [<>] COVERING), [1 preds]))))
@@ -16566,12 +16521,10 @@ shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryIndexPlan
 === secondary_index_pushdown.yaml#46
 sql:   SELECT id FROM t2 WHERE region = 'us' AND plan >= 'a' AND plan <= 'b' ORDER BY id
-plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], Fetch(PredicatesFilter(IndexScan(IDX_REGION_PLAN, [=, <>] COVERING), [1 preds]))))
+plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], IndexScan(IDX_REGION_PLAN, [=, <>])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFetchFromPartialRecordPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryCoveringIndexPlan
+shape:     RecordQueryIndexPlan
 === secondary_index_pushdown.yaml#47
 sql:   SELECT id FROM t2 WHERE region = 'eu' AND plan < 'c'
 plan:  Project([_current.ID#0], IndexScan(IDX_REGION_PLAN, [=, <>] COVERING))
@@ -16651,12 +16604,10 @@ shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryCoveringIndexPlan
 === secondary_index_pushdown.yaml#61
 sql:   SELECT id FROM t2 WHERE region >= 'eu' AND region <= 'us' ORDER BY id
-plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], Fetch(PredicatesFilter(IndexScan(IDX_REGION_PLAN, [<>, *] COVERING), [1 preds]))))
+plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], IndexScan(IDX_REGION_PLAN, [<>, *])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFetchFromPartialRecordPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryCoveringIndexPlan
+shape:     RecordQueryIndexPlan
 === secondary_index_pushdown.yaml#62
 sql:   UPDATE t2 SET amount = 555 WHERE region < 'eu'
 plan:  Update(T2, [1 transforms], Fetch(UnorderedPrimaryKeyDistinct(IndexScan(IDX_REGION_PLAN, [<>, *] COVERING))))
@@ -16681,15 +16632,13 @@ shape: RecordQueryDeletePlan
 shape:   RecordQueryScanPlan
 === secondary_index_pushdown.yaml#67
 sql:   SELECT id FROM t WHERE v BETWEEN 20 AND 40 ORDER BY id
-plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], Fetch(PredicatesFilter(IndexScan(IDX_V, [<>] COVERING), [1 preds]))))
+plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], IndexScan(IDX_V, [<>])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFetchFromPartialRecordPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryCoveringIndexPlan
+shape:     RecordQueryIndexPlan
 === secondary_index_pushdown.yaml#68
 sql:   SELECT id FROM t WHERE v BETWEEN 10 AND 40 AND id <> 3 ORDER BY id
-plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], Fetch(PredicatesFilter(IndexScan(IDX_V, [<>] COVERING), [2 preds]))))
+plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], Fetch(PredicatesFilter(IndexScan(IDX_V, [<>] COVERING), [1 preds]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFetchFromPartialRecordPlan
@@ -16708,20 +16657,16 @@ shape: RecordQueryDeletePlan
 shape:   RecordQueryScanPlan
 === secondary_index_pushdown.yaml#72
 sql:   SELECT id FROM t2 WHERE region = 'us' AND plan BETWEEN 'a' AND 'b' ORDER BY id
-plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], Fetch(PredicatesFilter(IndexScan(IDX_REGION_PLAN, [=, <>] COVERING), [1 preds]))))
+plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], IndexScan(IDX_REGION_PLAN, [=, <>])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFetchFromPartialRecordPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryCoveringIndexPlan
+shape:     RecordQueryIndexPlan
 === secondary_index_pushdown.yaml#73
 sql:   SELECT id FROM t2 WHERE region BETWEEN 'a' AND 'f' ORDER BY id
-plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], Fetch(PredicatesFilter(IndexScan(IDX_REGION_PLAN, [<>, *] COVERING), [1 preds]))))
+plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], IndexScan(IDX_REGION_PLAN, [<>, *])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFetchFromPartialRecordPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryCoveringIndexPlan
+shape:     RecordQueryIndexPlan
 === secondary_index_pushdown.yaml#74
 sql:   DELETE FROM t
 plan:  Delete(T, Scan(T))
@@ -16734,10 +16679,9 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryCoveringIndexPlan
 === secondary_index_pushdown.yaml#76
 sql:   SELECT id FROM t WHERE v BETWEEN 1 AND 100
-plan:  Project([_current.ID#0], PredicatesFilter(IndexScan(IDX_V, [<>] COVERING), [1 preds]))
+plan:  Project([_current.ID#0], IndexScan(IDX_V, [<>] COVERING))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryCoveringIndexPlan
+shape:   RecordQueryCoveringIndexPlan
 === secondary_index_pushdown.yaml#78
 sql:   SELECT id FROM t WHERE v >= 10 ORDER BY id
 plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], IndexScan(IDX_V, [<>])))
@@ -16781,12 +16725,11 @@ shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === select_count_where.yaml#2
 sql:   SELECT COUNT(*) FROM events WHERE kind IN ('error', 'warn')
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], InJoin(PredicatesFilter(Scan(EVENTS), [1 preds]), binding)))
+plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(EVENTS), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
-shape:     RecordQueryInJoinPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryScanPlan
 === select_count_where.yaml#3
 sql:   SELECT COUNT(*) FROM events WHERE kind LIKE 'e%'
 plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(EVENTS), [1 preds])))
@@ -17342,7 +17285,7 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === string_functions_java.yaml#9
 sql:   SELECT UPPER(SUBSTRING(val, 1, 1)) AS first_char, COUNT(*) FROM texts WHERE val IS NOT NULL AND LENGTH(val) > 0 GROUP BY first_char ORDER BY first_char
-plan:  Project([_current.UPPER(SUBSTRING(TEXTS.VAL, 1, 1))#0, _current.COUNT(*)#1], StreamingAgg(keys=[UPPER(SUBSTRING(_current.VAL#1, 1, 1))], InMemorySort([UPPER(SUBSTRING(_current.VAL#1, 1, 1)) ASC], PredicatesFilter(Scan(TEXTS), [1 preds]))))
+plan:  Project([_current.UPPER(SUBSTRING(TEXTS.VAL, 1, 1))#0, _current.COUNT(*)#1], StreamingAgg(keys=[UPPER(SUBSTRING(_current.VAL#1, 1, 1))], InMemorySort([UPPER(SUBSTRING(_current.VAL#1, 1, 1)) ASC], PredicatesFilter(Scan(TEXTS), [2 preds]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
@@ -17364,7 +17307,7 @@ shape:           RecordQueryPredicatesFilterPlan
 shape:             RecordQueryScanPlan
 === subquery_exists_complex.yaml#1
 sql:   SELECT d.name FROM departments d WHERE NOT EXISTS ( SELECT 1 FROM employees e WHERE e.dept_id = d.id AND e.salary > 100 ) ORDER BY d.name
-plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(DEPARTMENTS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(EMPLOYEES), [1 preds])), [1 preds]))))
+plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(DEPARTMENTS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(EMPLOYEES), [2 preds])), [1 preds]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
@@ -18469,7 +18412,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === update_correlated_exists.yaml#0
 sql:   UPDATE accounts SET tier = 'premium' WHERE EXISTS ( SELECT 1 FROM transactions t WHERE t.account_id = accounts.id AND t.amount > 300 )
-plan:  Update(ACCOUNTS, [1 transforms], UnorderedPrimaryKeyDistinct(FlatMap(outer=Scan(ACCOUNTS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(TRANSACTIONS), [1 preds])), [1 preds]))))
+plan:  Update(ACCOUNTS, [1 transforms], UnorderedPrimaryKeyDistinct(FlatMap(outer=Scan(ACCOUNTS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(TRANSACTIONS), [2 preds])), [1 preds]))))
 shape: RecordQueryUpdatePlan
 shape:   RecordQueryUnorderedPrimaryKeyDistinctPlan
 shape:     RecordQueryFlatMapPlan
@@ -18606,7 +18549,7 @@ shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
 === update_delete_where_java.yaml#6
 sql:   DELETE FROM inventory WHERE price BETWEEN 20 AND 30
-plan:  Delete(INVENTORY, PredicatesFilter(Scan(INVENTORY), [1 preds]))
+plan:  Delete(INVENTORY, PredicatesFilter(Scan(INVENTORY), [2 preds]))
 shape: RecordQueryDeletePlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
@@ -18852,7 +18795,7 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === where_complex_predicates.yaml#1
 sql:   SELECT id FROM t WHERE a > 20 AND (b = 'x' OR b = 'z') ORDER BY id
-plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))
+plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [2 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
@@ -18864,13 +18807,13 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === where_complex_predicates.yaml#3
 sql:   SELECT id FROM t WHERE a >= 20 AND b = 'y' AND c < 300 ORDER BY id
-plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))
+plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [3 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === where_complex_predicates.yaml#4
 sql:   SELECT id FROM t WHERE a BETWEEN 20 AND 40 ORDER BY id
-plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))
+plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [2 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
@@ -18900,19 +18843,19 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === where_is_null_is_not_null.yaml#4
 sql:   SELECT id FROM t WHERE a IS NULL AND b IS NOT NULL ORDER BY id
-plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))
+plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [2 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === where_is_null_is_not_null.yaml#5
 sql:   SELECT id FROM t WHERE a IS NULL AND b IS NULL AND c IS NULL
-plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))
+plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [3 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === where_is_null_is_not_null.yaml#6
 sql:   SELECT id FROM t WHERE a IS NOT NULL AND b IS NOT NULL AND c IS NOT NULL ORDER BY id
-plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))
+plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [3 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
@@ -18996,7 +18939,7 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === where_or_optimization.yaml#3
 sql:   SELECT id FROM t WHERE (status = 'open' OR status = 'pending') AND priority >= 3 ORDER BY id
-plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))
+plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [2 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan

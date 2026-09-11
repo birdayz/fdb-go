@@ -16,7 +16,7 @@ func plannerDynamicEquality(t *testing.T, typ values.Type) *predicates.Compariso
 		Operand: &values.ParameterValue{Ordinal: 1, Typ: typ},
 	}
 	merged := predicates.EmptyComparisonRange().Merge(&comparison)
-	if !merged.Ok {
+	if !merged.Complete() {
 		t.Fatal("failed to build dynamic equality")
 	}
 	return merged.Range
@@ -147,7 +147,7 @@ func TestUniqueIndexCardinality_NullableKeysUseNullsDistinctSemantics(t *testing
 	rangeOf := func(comparison predicates.Comparison) *predicates.ComparisonRange {
 		t.Helper()
 		merged := predicates.EmptyComparisonRange().Merge(&comparison)
-		if !merged.Ok {
+		if !merged.Complete() {
 			t.Fatalf("failed to build %s range", comparison.Type.Symbol())
 		}
 		return merged.Range

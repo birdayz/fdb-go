@@ -164,16 +164,19 @@ func (t *cascadesTranslator) boxGatesFresh(input logical.LogicalOperator) bool {
 // seed must NOT build. It peels the row-shape-preserving wrappers the gate
 // treats as TRANSPARENT (LogicalFilter, and a LogicalProject without
 // correlated-scalar subqueries, mirroring ordinalEligible/clusterArity), then:
-//   - a DIRECT INNER-cluster join → FALSE (admitted): the positional seed concats
-//     its buried leaves (ordinalLegType records the [Start,Width) bounds for a
-//     direct LogicalJoin) and the executor resolves a buried ref by window
-//     (verified — both buried leaves disambiguate).
+//   - an INNER-cluster join, direct or under FILTERS → FALSE (admitted): the
+//     positional seed concats its buried leaves (ordinalLegType records the
+//     [Start,Width) bounds through gatedLegBox, which peels filters — the
+//     builder places one directly above an inner cluster under an OUTER join
+//     when it folds that cluster's ON-clause EXISTS in place) and the executor
+//     resolves a buried ref by window (verified — both buried leaves
+//     disambiguate).
 //   - a DIRECT OUTER box (LEFT/RIGHT/FULL) → TRUE (excluded): its own slice.
-//   - a WRAPPED join (reached by peeling) → TRUE (excluded): ordinalLegType
-//     records buried bounds ONLY for a DIRECT LogicalJoin leg, so a wrapped inner
-//     cluster would build positional WITHOUT its buried windows (a buried ref
-//     unrebased → malformed). Also SQL-unreachable (a JOIN-bodied derived table
-//     is a LogicalCTE / loud-rejected, not a transparent wrapper) — defensive.
+//   - a PROJECT-wrapped join (reached by peeling a projection) → TRUE
+//     (excluded): gatedLegBox peels filters only, so a projected inner cluster
+//     would build positional WITHOUT its buried windows (a buried ref unrebased
+//     → malformed). Also SQL-unreachable (a JOIN-bodied derived table is a
+//     LogicalCTE / loud-rejected, not a transparent wrapper) — defensive.
 //   - a scan / OPAQUE box (aggregate/union/sort/CTE), wrapped or not → FALSE:
 //     its output is its own flat single-namespace row, safely windowed.
 //
@@ -181,33 +184,35 @@ func (t *cascadesTranslator) boxGatesFresh(input logical.LogicalOperator) bool {
 // INNER cluster (`((A LEFT B) JOIN C) FULL OUTER D`) ordinalizes CORRECTLY (the
 // machinery recurses — legsOfGatedJoin marks the null-supplying leg, the executor
 // null-supplies through the positional build; verified), so this must NOT be
-// tightened into a recursive exclusion. Only a WRAPPED join is excluded, because
-// the wrapper (not the join's depth) is what strips the buried-leg metadata.
+// tightened into a recursive exclusion. Only a PROJECT-wrapped join is excluded,
+// because that wrapper (not the join's depth, and not a filter) is what strips
+// the buried-leg metadata.
 func legExposesBuriedOuterBox(op logical.LogicalOperator) bool {
 	peeled := false
 	for {
 		switch o := op.(type) {
 		case *logical.LogicalJoin:
 			if peeled {
-				return true // a WRAPPED join at the top — no buried windows recorded
+				return true // a PROJECT-wrapped join at the top — no buried windows recorded
 			}
 			if o.Kind != logical.JoinInner {
 				return true // a direct OUTER box — its own slice
 			}
-			// A direct INNER cluster is admitted, BUT a WRAPPED join buried
-			// ANYWHERE inside it is excluded: buriedLegBounds records windows only
-			// for a DIRECT LogicalJoin leg, so `(Filter(A JOIN B) JOIN C)` would
-			// build positional without windows for A/B → a buried ref malforms. A
-			// BARE nested join (any kind, any depth) IS windowed (buriedLegBounds
-			// recurses through direct joins) and stays admitted — a nested OUTER
-			// box inside an INNER cluster ordinalizes correctly (verified).
+			// An INNER cluster is admitted, BUT a PROJECT-wrapped join buried
+			// ANYWHERE inside it is excluded: buriedLegBounds records windows
+			// through filters only (gatedLegBox), so `(Project(A JOIN B) JOIN C)`
+			// would build positional without windows for A/B → a buried ref
+			// malforms. A nested join under filters or bare (any kind, any depth)
+			// IS windowed (buriedLegBounds recurses through gatedLegBox) and stays
+			// admitted — a nested OUTER box inside an INNER cluster ordinalizes
+			// correctly (verified).
 			return hasWrappedBuriedJoin(o.Left) || hasWrappedBuriedJoin(o.Right)
 		case *logical.LogicalFilter:
 			if len(o.CorrelatedScalarSubqueries) > 0 {
 				return false
 			}
+			// A filter is transparent to the layout (gatedLegBox), not a wrapper.
 			op = o.Input
-			peeled = true
 		case *logical.LogicalProject:
 			if len(o.CorrelatedScalarSubqueries) > 0 {
 				return false
@@ -221,12 +226,13 @@ func legExposesBuriedOuterBox(op logical.LogicalOperator) bool {
 }
 
 // hasWrappedBuriedJoin reports whether op contains a join reached by peeling a
-// transparent wrapper (Filter / non-scalar Project) — at op itself or buried
-// inside a bare nested join. buriedLegBounds records positional windows only for
-// a DIRECT LogicalJoin leg, so a WRAPPED join anywhere in a box leg's subtree
-// would build positional without its buried leaves' windows (malformed). A bare
-// join is recursed THROUGH (its own leaves ARE windowed) looking for a wrapped
-// join deeper. A CORRELATED-scalar Project stops the walk (ineligible upstream).
+// non-scalar Project — at op itself or buried inside a nested join.
+// buriedLegBounds records positional windows through gatedLegBox, which peels
+// FILTERS only, so a PROJECT-wrapped join anywhere in a box leg's subtree would
+// build positional without its buried leaves' windows (malformed). A join that
+// is bare or under filters is recursed THROUGH (its own leaves ARE windowed)
+// looking for a projected join deeper. A CORRELATED-scalar Project or Filter
+// stops the walk (ineligible upstream).
 func hasWrappedBuriedJoin(op logical.LogicalOperator) bool {
 	var walk func(op logical.LogicalOperator, wrapped bool) bool
 	walk = func(op logical.LogicalOperator, wrapped bool) bool {
@@ -240,7 +246,7 @@ func hasWrappedBuriedJoin(op logical.LogicalOperator) bool {
 			if len(o.CorrelatedScalarSubqueries) > 0 {
 				return false
 			}
-			return walk(o.Input, true)
+			return walk(o.Input, wrapped)
 		case *logical.LogicalProject:
 			if len(o.CorrelatedScalarSubqueries) > 0 {
 				return false
@@ -253,87 +259,12 @@ func hasWrappedBuriedJoin(op logical.LogicalOperator) bool {
 	return walk(op, false)
 }
 
-// scanFamilyLegCteAware reports whether op is a single base-table SCAN
-// (through filters), resolving a CTE-name scan THROUGH cteScope to its body.
-// This is the cteScope-AWARE root-cause counterpart of the plain (syntactic,
-// cteScope-blind) isScanFamilyLeg: a CTE whose body is a JOIN or an OPAQUE BOX
-// (aggregate/union/sort/distinct/limit) is NOT scan-family — it flows a merged
-// or multi-source row the 2-way EXISTS-in-ON ordinal seed is unverified over.
-// A cteExprScope name (recursive-CTE self-reference / temp-table scan) is a
-// pre-translated opaque reference → not scan-family (conservative). The body
-// is walked under inCTEDefiningScope — the SAME cteShadowStack mechanism
-// translateScan/legColumns use — so a SAME-NAMED scan inside the body resolves
-// to the OUTER shadowed binding (not the base table), keeping classification
-// in lockstep with translation (a plain delete-during-walk would diverge:
-// `WITH c AS (SELECT * FROM c)` shadowing an outer join/box would misresolve
-// the inner c to the base table and over-gate).
-func (t *cascadesTranslator) scanFamilyLegCteAware(op logical.LogicalOperator) bool {
-	for {
-		switch n := op.(type) {
-		case *logical.LogicalScan:
-			key := strings.ToUpper(n.Table)
-			if _, ok := t.cteExprScope[key]; ok {
-				return false
-			}
-			if body, ok := t.cteScope[key]; ok {
-				var r bool
-				t.inCTEDefiningScope(key, body, func() {
-					r = t.scanFamilyLegCteAware(body)
-				})
-				return r
-			}
-			return true
-		case *logical.LogicalFilter:
-			op = n.Input
-		default:
-			return false
-		}
-	}
-}
-
 func (t *cascadesTranslator) ordinalWedgeGateDecide(j *logical.LogicalJoin) wedgeGateDecision {
 	if _, isUnnest := j.Right.(*logical.LogicalUnnest); isUnnest {
 		// Lateral unnest lowers to FlatMap-over-Explode with dotted-prefix
 		// bipartition machinery (RFC-142) via its own dedicated translation
 		// path (translateUnnestJoin) — never through this binary-join gate.
 		return wedgeGateDecision{Arity: arityPoison, Reason: "lateral unnest join (handled by its own dedicated translation path)"}
-	}
-	if len(j.OnExistsSubqueries) > 0 {
-		// A BARE 2-way NON-ENCLOSED INNER EXISTS-in-ON gates
-		// ordinal. Both legs must be a single SCAN SOURCE (through filters),
-		// tested by scanFamilyLegCteAware — the SINGLE root-cause predicate that
-		// resolves a CTE-name scan THROUGH cteScope and checks the BODY, so it
-		// excludes at once: a FULL/aggregate/union/sort box (not a scan → a
-		// buried join = the index-matching wall, a null-drain, or an opaque
-		// merged row the 2-leg seed is unverified over), an N-way join leg (not
-		// a scan), a CTE-backed join AND a CTE-backed opaque box (the scan
-		// resolves to a non-scan body). A scan-scan 2-way seeds
-		// [ForEach, ForEach, Existential], which the existential peel's
-		// 2-leg arm plans ordinal AND index-neutral (the existential already
-		// drops even a 2-way join to a plain NLJ on the name model, so no index
-		// is lost — EXPLAIN-verified); the translateJoin binary arm builds the
-		// ordinal seed and attaches the existentials unchanged. The poison STAYS
-		// for an ENCLOSED or N-WAY EXISTS-in-ON (the existential would ride into
-		// the ≥3-quantifier partition machinery, or hit the buried-inner-box
-		// index-matching wall — the booked ordinal-fold-over-index-matched-box
-		// prerequisite) and for any non-scan leg.
-		// DUPLICATE ALIAS: two legs sharing a SQL alias get a parser-minted
-		// Q$DUPn binding on the later leg (mintedBindingLeg finds it). The gated
-		// arm here RETURNS EARLY, before the pairwise dup-binding poison check below,
-		// so without this guard a dup-alias EXISTS-in-ON would gate and the
-		// 2-leg fold would LOSE the minted binding → serve NULLs (silent wrong;
-		// the name model loud-declines it). Keep dup-alias poisoned here so it
-		// falls to that loud decline (base behaviour).
-		if j.Kind == logical.JoinInner && !t.inInnerCluster &&
-			t.scanFamilyLegCteAware(j.Left) && t.scanFamilyLegCteAware(j.Right) &&
-			mintedBindingLeg(j.Left, j.Right) == "" {
-			return wedgeGateDecision{Gated: true, Arity: 2, Reason: "bare 2-way non-enclosed EXISTS-in-ON (scan legs; 2-leg ordinal fold)"}
-		}
-		// The seed select carries existential quantifiers; if it merges, they
-		// ride along and land the merged select in the ≥3-quantifier
-		// partition machinery. Stays name-model (the existential seeds own
-		// this path).
-		return wedgeGateDecision{Arity: arityPoison, Reason: "existential quantifiers on the join select"}
 	}
 	// PAIRWISE dup check over the kind-aware leg list, keyed by the BINDING
 	// correlation: duplicate SQL aliases with
@@ -592,7 +523,7 @@ func (t *cascadesTranslator) derivedBodyOpaqueOrdinalLeg(body logical.LogicalOpe
 // positional read. Conditions:
 //   - plain filters only above the join (a subquery-carrying WHERE routes the
 //     body through the EXISTS/scalar dispatches — different seeds);
-//   - a bare INNER comma unnest join (no ON, no ON-EXISTS) with an AS or AT
+//   - a bare INNER comma unnest join (no ON) with an AS or AT
 //     binding and a segment path (`t.arr`, `t.rec.arr`);
 //   - a SINGLE-SOURCE, single-alias outer (clusterArity 1 — excludes the
 //     merge-opaque FULL box, which is also arity 1 but multi-alias) bound to a
@@ -647,7 +578,7 @@ func (t *cascadesTranslator) derivedBodyStarOrdinalLeg(body logical.LogicalOpera
 		op = f.Input
 	}
 	j, isJ := op.(*logical.LogicalJoin)
-	if !isJ || j.Kind != logical.JoinInner || len(j.OnExistsSubqueries) > 0 || j.OnPredicate != nil {
+	if !isJ || j.Kind != logical.JoinInner || j.OnPredicate != nil {
 		return nil, false
 	}
 	u, isU := j.Right.(*logical.LogicalUnnest)
@@ -865,9 +796,6 @@ func (t *cascadesTranslator) clusterArity(op logical.LogicalOperator) int {
 	switch o := op.(type) {
 	case *logical.LogicalJoin:
 		if _, isUnnest := o.Right.(*logical.LogicalUnnest); isUnnest {
-			return arityPoison
-		}
-		if len(o.OnExistsSubqueries) > 0 {
 			return arityPoison
 		}
 		if o.Kind == logical.JoinFull {

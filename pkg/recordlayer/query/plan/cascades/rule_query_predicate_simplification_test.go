@@ -232,14 +232,15 @@ func TestQueryPredicateSimplification_AndPredicate(t *testing.T) {
 	}
 
 	result := yielded[0].(*expressions.SelectExpression)
-	// The AND predicate should have its first child simplified.
-	ap, ok := result.GetPredicates()[0].(*predicates.AndPredicate)
-	if !ok {
-		t.Fatalf("expected AndPredicate, got %T", result.GetPredicates()[0])
+	// The Select constructor lifts the AND into its predicate list (Java's
+	// SelectExpression.partitionPredicates), so the conjuncts are top-level
+	// and the first one is the simplified comparison.
+	if got := len(result.GetPredicates()); got != 2 {
+		t.Fatalf("expected the two conjuncts as top-level predicates, got %d: %v", got, result.GetPredicates())
 	}
-	cp, ok := ap.SubPredicates[0].(*predicates.ComparisonPredicate)
+	cp, ok := result.GetPredicates()[0].(*predicates.ComparisonPredicate)
 	if !ok {
-		t.Fatalf("expected ComparisonPredicate, got %T", ap.SubPredicates[0])
+		t.Fatalf("expected ComparisonPredicate, got %T", result.GetPredicates()[0])
 	}
 	cv, ok := cp.Comparison.Operand.(*values.ConstantValue)
 	if !ok {

@@ -87,7 +87,7 @@ func diagnosticEqualityRange(t *testing.T, literal any) *predicates.ComparisonRa
 	t.Helper()
 	comparison := predicates.NewLiteralComparison(predicates.ComparisonEquals, literal)
 	merged := predicates.EmptyComparisonRange().Merge(&comparison)
-	if !merged.Ok {
+	if !merged.Complete() {
 		t.Fatal("failed to construct equality comparison range")
 	}
 	return merged.Range

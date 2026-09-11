@@ -455,7 +455,7 @@ func TestImplementInJoinRule_WithIndexScanInner(t *testing.T) {
 	t.Parallel()
 	eqComp := predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1))
 	eqResult := predicates.EmptyComparisonRange().Merge(&eqComp)
-	if !eqResult.Ok || eqResult.Range == nil {
+	if !eqResult.Complete() || eqResult.Range == nil {
 		t.Fatal("equality range merge should succeed")
 	}
 	indexPlan := mustInRuleConstruct(plans.NewRecordQueryIndexPlan(
@@ -529,7 +529,7 @@ func TestImplementInJoinRule_SortedClaimComesFromAHomogeneousPartition(t *testin
 		Type:    predicates.ComparisonEquals,
 		Operand: inRuleQOV(explodeAlias, values.NotNullLong),
 	})
-	if !equality.Ok || equality.Range == nil {
+	if !equality.Complete() || equality.Range == nil {
 		t.Fatal("fixture: construct the exact IN-binding equality range")
 	}
 	index := func(ranges []*predicates.ComparisonRange) *plans.RecordQueryIndexPlan {

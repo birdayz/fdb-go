@@ -115,33 +115,25 @@ func (r *RangeConstraints) GetCorrelatedTo() map[values.CorrelationIdentifier]st
 // matching infrastructure that uses ComparisonRange.
 //
 // It returns false when the constraints cannot be expressed as ONE
-// ComparisonRange. Go's MergeResult carries no residual list — unlike Java's,
-// which returns a range plus the comparisons that did not fit — so a rejected
-// merge has nowhere to put the conjunct, and the previous `if merged.Ok`
-// silently dropped it: `x = 5 AND x > 7` came back as `x = 5`, a WEAKER range
-// than the input, with no signal. A caller filtering on that would return rows
-// the constraints excluded.
+// ComparisonRange: the merge is total and reports what did not fit as
+// residuals (Java's asMergedComparisonRange returns the range plus that list),
+// but this signature has nowhere to hand them on, so `x = 5 AND x > 7` is
+// refused rather than answered with the WEAKER `x = 5` — a caller filtering on
+// the weaker range would return rows the constraints excluded. A caller that
+// can carry residuals should call MergeAll on GetComparisons directly.
 //
-// LATENT, and said so deliberately: this function has no non-test callers today,
-// so no query was returning those rows. It is fixed rather than filed because
-// the shape is one line and the next caller inherits the honest signature —
-// but the sentence above is a description of what the defect WOULD do, not a
-// report of production breakage, and the difference matters for anyone reading
-// this while triaging a real one.
-//
-// Reporting the failure is the honest conversion while the residual list is
-// missing; see the ComparisonRange.MergeResult entry in TODO.md for the port
-// that would let the leftover comparisons be carried instead of refused.
+// LATENT, and said so deliberately: this function has no non-test callers.
 func (r *RangeConstraints) AsComparisonRange() (*ComparisonRange, bool) {
-	result := EmptyComparisonRange()
-	for _, c := range r.GetComparisons() {
-		merged := result.Merge(&c)
-		if !merged.Ok {
-			return nil, false
-		}
-		result = merged.Range
+	comparisons := r.GetComparisons()
+	ptrs := make([]*Comparison, len(comparisons))
+	for i := range comparisons {
+		ptrs[i] = &comparisons[i]
 	}
-	return result, true
+	merged := MergeAll(ptrs)
+	if !merged.Complete() {
+		return nil, false
+	}
+	return merged.Range, true
 }
 
 // RangeConstraintsBuilder builds a RangeConstraints incrementally.

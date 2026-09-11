@@ -45,7 +45,7 @@ func pkGateComparison(t *testing.T, comparisonType predicates.ComparisonType, v 
 	t.Helper()
 	cmp := predicates.NewLiteralComparison(comparisonType, v)
 	res := predicates.EmptyComparisonRange().Merge(&cmp)
-	if !res.Ok {
+	if !res.Complete() {
 		t.Fatalf("failed to build %v range", comparisonType)
 	}
 	return res.Range

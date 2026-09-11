@@ -677,22 +677,45 @@ func (b *PredicateMultiMapBuilder) PutAllMappings(
 	return modified
 }
 
-// checkConflicts verifies that no candidate predicate appears in
-// mappings for more than one query predicate. Returns false if a
-// conflict is detected. Uses identity (pointer) equality for
-// candidate predicates, matching Java's Sets.newIdentityHashSet().
+// checkConflicts verifies that no candidate predicate is claimed by more
+// than one query predicate — Java's PredicateMultiMap.checkConflicts, keyed
+// by candidate identity — with ONE admitted shape Java never needs: a FOLD
+// GROUP. Java folds every comparison on one column into a single sargable
+// before matching, so one placeholder is only ever mapped by one query
+// predicate. Go keeps one comparison per query predicate and folds at
+// binding time (foldPlaceholderBindings), so the members of one fold are
+// several query predicates mapping one placeholder, each carrying the SAME
+// parameter alias and the SAME (pointer-identical) merged range. That shape
+// is Java's one sargable spelled over Go's leaves and is admitted; two
+// mappings of one candidate that differ in alias or range are still a
+// conflict. Returns false on a conflict.
 func (b *PredicateMultiMapBuilder) checkConflicts() bool {
-	seen := make(map[string]struct{})
+	seen := make(map[string]*PredicateMapping)
 	for _, entry := range b.entries {
 		for _, mapping := range entry.mappings {
 			key := predicateKey(mapping.GetCandidatePredicate())
-			if _, exists := seen[key]; exists {
+			first, exists := seen[key]
+			if !exists {
+				seen[key] = mapping
+				continue
+			}
+			if !mappingsFormFoldGroup(first, mapping) {
 				return false
 			}
-			seen[key] = struct{}{}
 		}
 	}
 	return true
+}
+
+// mappingsFormFoldGroup reports whether two mappings of one candidate
+// placeholder are members of the same fold: both sargable on the same
+// parameter alias with the same merged range object.
+func mappingsFormFoldGroup(a, b *PredicateMapping) bool {
+	if a.parameterAlias == nil || b.parameterAlias == nil ||
+		*a.parameterAlias != *b.parameterAlias {
+		return false
+	}
+	return a.comparisonRange != nil && a.comparisonRange == b.comparisonRange
 }
 
 // Build constructs the PredicateMultiMap. Panics if there are

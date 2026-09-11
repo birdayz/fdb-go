@@ -96,21 +96,22 @@ func TestMergeComparisonRanges_AgreeingAndEmptyArms(t *testing.T) {
 // symmetric case keeps the equality range and residualises the inequality.
 // Equality always wins, and nothing is ever dropped.
 //
-// Go cannot express that. predicates.MergeResult carries `Ok bool` and a single
-// `Residual`, where Java carries a residual LIST, and no caller in the tree
-// reads Residual at all. So mergeComparisonRanges rejects instead, and
-// tryMergeParameterBindings turns the rejection into a lost match: the index
-// candidate that Java would keep — an equality seek plus a residual filter —
-// is not produced.
-//
-// mergeComparisonRanges says as much in its own comment ("equality/inequality
-// is not representable by ComparisonRange without a residual"), which is the
-// admission that the residual list is the real answer.
+// Go's merge IS that total merge now (predicates.MergeResult carries the
+// residual list, and the same-quantifier fold — foldPlaceholderBindings —
+// carries those residuals as filter predicates). What remains divergent is
+// THIS caller: mergeComparisonRanges merges the ranges two CHILD BRANCHES
+// bound to one alias, and a PartialMatch has no channel for a residual that
+// belongs to a sibling branch, so it fails closed on a non-empty residual list
+// and tryMergeParameterBindings turns that into a lost match — the index
+// candidate Java would keep (an equality seek plus a residual filter) is not
+// produced for the cross-quantifier case. The arms below assert the rejection
+// AND that the underlying merge produced exactly Java's range and residuals,
+// so the rejection is visibly a carrying problem, not a merging one.
 //
 // WHEN THAT IS FIXED, this test must be REPLACED, not deleted: assert that the
 // merge SUCCEEDS, that the surviving range is the EQUALITY, and that the
-// inequality comes back as a residual. A green from deleting it would mean the
-// arm went untested again.
+// inequality comes back as a residual carried by the match. A green from
+// deleting it would mean the arm went untested again.
 func TestMergeComparisonRanges_EqualityInequalityRejectsUnlikeJava(t *testing.T) {
 	t.Parallel()
 
@@ -119,21 +120,23 @@ func TestMergeComparisonRanges_EqualityInequalityRejectsUnlikeJava(t *testing.T)
 	gt5 := predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(5))
 
 	for _, tc := range []struct {
-		name        string
-		left, right *predicates.ComparisonRange
-		java        string
+		name         string
+		left, right  *predicates.ComparisonRange
+		java         string
+		wantRange    *predicates.Comparison
+		wantResidual *predicates.Comparison
 	}{
 		{
 			"equality then inequality", rangeOf(t, eq7), rangeOf(t, gt5),
-			"keeps the equality range and residualises > 5",
+			"keeps the equality range and residualises > 5", &eq7, &gt5,
 		},
 		{
 			"inequality then equality", rangeOf(t, gt5), rangeOf(t, eq7),
-			"replaces the range with the equality and residualises > 5",
+			"replaces the range with the equality and residualises > 5", &eq7, &gt5,
 		},
 		{
 			"conflicting equalities", rangeOf(t, eq7), rangeOf(t, eq8),
-			"keeps the first equality range and residualises the second",
+			"keeps the first equality range and residualises the second", &eq7, &eq8,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -141,12 +144,22 @@ func TestMergeComparisonRanges_EqualityInequalityRejectsUnlikeJava(t *testing.T)
 			merged, ok := mergeComparisonRanges(tc.left, tc.right)
 			if ok {
 				t.Fatalf("this arm is expected to REJECT today; it now returns ok=true with "+
-					"range %v. If the residual port landed, replace this test with one asserting "+
-					"the equality survives and the rest comes back as a residual — do not delete "+
-					"it. Java %s.", merged, tc.java)
+					"range %v. If residuals are now carried across quantifier boundaries, "+
+					"replace this test with one asserting the equality survives and the rest "+
+					"comes back as a residual — do not delete it. Java %s.", merged, tc.java)
 			}
 			if merged != nil {
 				t.Errorf("a rejecting merge must return a nil range, got %v", merged)
+			}
+			// The merge itself is Java's: the equality wins and the other
+			// comparison is the residual this caller cannot carry.
+			total := tc.left.MergeRange(tc.right)
+			got := total.Range.GetComparisons()
+			if !total.Range.IsEquality() || len(got) != 1 || !comparisonsEqual(got[0], tc.wantRange) {
+				t.Fatalf("MergeRange range = %v, want the equality %v", got, tc.wantRange.Operand)
+			}
+			if len(total.Residuals) != 1 || !comparisonsEqual(total.Residuals[0], tc.wantResidual) {
+				t.Fatalf("MergeRange residuals = %v, want exactly %v", total.Residuals, tc.wantResidual.Operand)
 			}
 		})
 	}

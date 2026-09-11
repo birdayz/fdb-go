@@ -129,7 +129,7 @@ func rungEqualityRange(t *testing.T, operand values.Value) *predicates.Compariso
 		Operand: operand,
 	}
 	merged := predicates.EmptyComparisonRange().Merge(comparison)
-	if !merged.Ok {
+	if !merged.Complete() {
 		t.Fatal("failed to create equality comparison range")
 	}
 	return merged.Range
@@ -854,7 +854,7 @@ func makeScalarFallbackCandidates(
 	)
 	rangeComparison := predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(1))
 	merged := predicates.EmptyComparisonRange().Merge(&rangeComparison)
-	if !merged.Ok {
+	if !merged.Complete() {
 		t.Fatal("failed to create range comparison")
 	}
 	costlier = rungIndex(

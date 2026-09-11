@@ -247,7 +247,7 @@ func TestNormalizeCorrelatedScanComparisonPlan(t *testing.T) {
 		Type: predicates.ComparisonEquals, Operand: logicalID,
 	}
 	merged := predicates.EmptyComparisonRange().Merge(equality)
-	if !merged.Ok {
+	if !merged.Complete() {
 		t.Fatal("construct correlated comparison range")
 	}
 	ranges := []*predicates.ComparisonRange{merged.Range}

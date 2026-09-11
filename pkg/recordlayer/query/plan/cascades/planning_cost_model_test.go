@@ -344,7 +344,7 @@ func TestCompareInPlan_SargedBeatsUnsarged(t *testing.T) {
 	}
 	eqRangeEmpty := predicates.EmptyComparisonRange()
 	mergeResult := eqRangeEmpty.Merge(&eqComp)
-	if !mergeResult.Ok {
+	if !mergeResult.Complete() {
 		t.Fatal("failed to merge equality comparison into empty range")
 	}
 	eqRange := mergeResult.Range
@@ -452,7 +452,7 @@ func TestCollectSargedAliases_IntersectionIsSetIntersection(t *testing.T) {
 			}
 			cr := predicates.EmptyComparisonRange()
 			mr := cr.Merge(&comp)
-			if !mr.Ok {
+			if !mr.Complete() {
 				t.Fatalf("failed to merge equality for alias %s", alias)
 			}
 			ranges[i] = mr.Range
@@ -699,7 +699,7 @@ func TestPlanningCostModel_CoveringEqualityIndexPreferredOverPrimaryScan(t *test
 	comp := predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: int64(42), Typ: values.NullableLong}}
 	cr := predicates.EmptyComparisonRange()
 	mr := cr.Merge(&comp)
-	if !mr.Ok {
+	if !mr.Complete() {
 		t.Fatal("failed to merge equality comparison")
 	}
 	// The cost-model walks the CONCRETE plan tree (RFC-069 phantom-child fix) and
@@ -740,7 +740,7 @@ func TestPlanningCostModel_EqualityIndexBeatsFullScan(t *testing.T) {
 	comp := predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: int64(42), Typ: values.NullableLong}}
 	cr := predicates.EmptyComparisonRange()
 	mr := cr.Merge(&comp)
-	if !mr.Ok {
+	if !mr.Complete() {
 		t.Fatal("failed to merge equality comparison")
 	}
 	// The cost model now uses PROVABLE max-cardinality (Java's CardinalitiesProperty,

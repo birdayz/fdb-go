@@ -100,7 +100,7 @@ func TestIntegration_OrphanIndexEntry_RaisesStorageError(t *testing.T) {
 			Type:    predicates.ComparisonEquals,
 			Operand: &values.ConstantValue{Value: int64(100), Typ: values.NotNullLong},
 		})
-		if !merged.Ok {
+		if !merged.Complete() {
 			t.Fatal("build equality range failed")
 		}
 

@@ -118,7 +118,7 @@ func mkComparisonRange(t *testing.T, typ predicates.ComparisonType) *predicates.
 		Operand: operand,
 	}
 	mr := predicates.EmptyComparisonRange().Merge(&comp)
-	if !mr.Ok {
+	if !mr.Complete() {
 		t.Fatalf("failed to merge %v comparison into an empty range", typ)
 	}
 	return mr.Range

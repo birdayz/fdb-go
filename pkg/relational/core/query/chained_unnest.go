@@ -450,7 +450,7 @@ func (t *cascadesTranslator) chainedSpineWalk(op logical.LogicalOperator) (links
 	bottomOuterBox := false
 	if t.clusterArity(cur) != 1 {
 		bj, isJoin := cur.(*logical.LogicalJoin)
-		if !isJoin || len(bj.OnExistsSubqueries) > 0 || !t.gatesAsFreshCluster(bj) {
+		if !isJoin || !t.gatesAsFreshCluster(bj) {
 			return nil, false, false
 		}
 		switch bj.Kind {
@@ -528,7 +528,7 @@ type chainedSpineLink struct {
 // chained walk does NOT admit — so a shape the ordinal path cannot serve
 // keeps today's name-model translation instead of trading it for a decline.
 func (t *cascadesTranslator) rotateBuriedChainedSpine(j *logical.LogicalJoin) (*logical.LogicalJoin, bool) {
-	if t.md == nil || j.Kind != logical.JoinInner || len(j.OnExistsSubqueries) > 0 ||
+	if t.md == nil || j.Kind != logical.JoinInner ||
 		j.OnPredicate != nil || j.OnText != "" {
 		return nil, false
 	}
@@ -550,7 +550,7 @@ func (t *cascadesTranslator) rotateBuriedChainedSpine(j *logical.LogicalJoin) (*
 			spineTop = lj
 			break
 		}
-		if lj.Kind != logical.JoinInner || len(lj.OnExistsSubqueries) > 0 ||
+		if lj.Kind != logical.JoinInner ||
 			lj.OnPredicate != nil || lj.OnText != "" {
 			return nil, false
 		}
@@ -565,7 +565,7 @@ func (t *cascadesTranslator) rotateBuriedChainedSpine(j *logical.LogicalJoin) (*
 			bottom = sj
 			break
 		}
-		if sj.Kind != logical.JoinInner || len(sj.OnExistsSubqueries) > 0 ||
+		if sj.Kind != logical.JoinInner ||
 			sj.OnPredicate != nil || sj.OnText != "" || len(un.Segments) < 2 {
 			return nil, false
 		}

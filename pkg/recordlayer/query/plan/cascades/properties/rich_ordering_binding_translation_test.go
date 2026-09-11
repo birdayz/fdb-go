@@ -284,7 +284,7 @@ func TestRichOrderingPullUpCollapsesDirectionalBindings(t *testing.T) {
 		Operand: comparand,
 	}
 	merged := predicates.EmptyComparisonRange().Merge(&comparison)
-	if !merged.Ok {
+	if !merged.Complete() {
 		t.Fatal("failed to build equality comparison range")
 	}
 	ordering := NewRichOrdering(
@@ -384,7 +384,7 @@ func bindingTranslationOrdering(
 		Operand: comparand,
 	}
 	merged := predicates.EmptyComparisonRange().Merge(&comparison)
-	if !merged.Ok {
+	if !merged.Complete() {
 		t.Fatal("failed to build equality comparison range")
 	}
 	return NewRichOrdering(

@@ -26,7 +26,7 @@ func costFormulaRange(t *testing.T, comparisonType predicates.ComparisonType) *p
 	t.Helper()
 	comparison := predicates.NewLiteralComparison(comparisonType, int64(7))
 	merge := predicates.EmptyComparisonRange().Merge(&comparison)
-	if !merge.Ok {
+	if !merge.Complete() {
 		t.Fatalf("failed to build %v comparison range", comparisonType)
 	}
 	return merge.Range

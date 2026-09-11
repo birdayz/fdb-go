@@ -102,7 +102,7 @@ func eqIndexScan(t *testing.T, lit int64) *plans.RecordQueryIndexPlan {
 		Type:    predicates.ComparisonEquals,
 		Operand: &values.ConstantValue{Value: lit, Typ: values.NotNullLong},
 	})
-	if !res.Ok {
+	if !res.Complete() {
 		t.Fatalf("merge failed for = %v", lit)
 	}
 	rowType := values.NewRecordType("IndexRow", false, []values.Field{

@@ -57,7 +57,7 @@ func TestImplementInUnionRuleSeparatesFixedAndDirectionalRichOrderings(t *testin
 		Type:    predicates.ComparisonEquals,
 		Operand: inRuleQOV(explodeAlias, values.NotNullLong),
 	})
-	if !equality.Ok || equality.Range == nil {
+	if !equality.Complete() || equality.Range == nil {
 		t.Fatal("construct exact IN-binding equality range")
 	}
 
@@ -259,7 +259,7 @@ func TestAdjustBindingsForInUnion_PromotesExplodeAlias(t *testing.T) {
 		Operand: inRuleQOV(explodeAlias, values.NotNullLong),
 	}
 	result := predicates.EmptyComparisonRange().Merge(&eqComp)
-	if !result.Ok || result.Range == nil {
+	if !result.Complete() || result.Range == nil {
 		t.Fatal("merge should succeed")
 	}
 	eqRange := result.Range
@@ -327,7 +327,7 @@ func TestAdjustBindingsForInUnionPreservesFixedPrefixIndependence(t *testing.T) 
 		Type:    predicates.ComparisonEquals,
 		Operand: inRuleQOV(explodeAlias, values.NotNullLong),
 	})
-	if !equality.Ok || equality.Range == nil {
+	if !equality.Complete() || equality.Range == nil {
 		t.Fatal("construct exact IN-binding equality range")
 	}
 

@@ -85,7 +85,7 @@ func richEqualityRange(t *testing.T, literal any) *predicates.ComparisonRange {
 	t.Helper()
 	cmp := predicates.NewLiteralComparison(predicates.ComparisonEquals, literal)
 	res := predicates.EmptyComparisonRange().Merge(&cmp)
-	if !res.Ok {
+	if !res.Complete() {
 		t.Fatal("failed to build equality comparison range")
 	}
 	return res.Range
@@ -159,7 +159,7 @@ func nonEqualityRange(t *testing.T, literal any) *predicates.ComparisonRange {
 	t.Helper()
 	cmp := predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, literal)
 	res := predicates.EmptyComparisonRange().Merge(&cmp)
-	if !res.Ok {
+	if !res.Complete() {
 		t.Fatal("failed to build non-equality comparison range")
 	}
 	return res.Range

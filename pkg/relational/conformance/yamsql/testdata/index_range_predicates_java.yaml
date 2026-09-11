@@ -37,9 +37,10 @@ tests:
       - [9, 20, 9]
       - [10, 20, 10]
 
-  # AND range: col1 >= 10 AND col1 <= 20 → combined range scan
+  # AND range: col1 >= 10 AND col1 <= 20 → ONE two-sided range scan, no residual (RFC-249)
   - query: SELECT id FROM t1 WHERE col1 >= 10 AND col1 <= 20 ORDER BY id
-    plan_contains: "PredicatesFilter(IndexScan(I1, [<>] COVERING)"
+    plan_contains: "IndexScan(I1, [<>])"
+    plan_not_contains: "PredicatesFilter"
     rows:
       - [1]
       - [2]
@@ -52,9 +53,10 @@ tests:
       - [9]
       - [10]
 
-  # Strict range: col1 > 10 AND col1 < 30
+  # Strict range: col1 > 10 AND col1 < 30 → one two-sided range scan
   - query: SELECT id FROM t1 WHERE col1 > 10 AND col1 < 30 ORDER BY id
-    plan_contains: "PredicatesFilter(IndexScan(I1, [<>] COVERING)"
+    plan_contains: "IndexScan(I1, [<>])"
+    plan_not_contains: "PredicatesFilter"
     rows:
       - [6]
       - [7]
@@ -73,9 +75,10 @@ tests:
       - [9]
       - [10]
 
-  # Duplicate AND: col1 = 20 AND col1 = 20 → single equality
+  # Duplicate AND: col1 = 20 AND col1 = 20 → single equality, the duplicate re-applies nothing
   - query: SELECT id FROM t1 WHERE col1 = 20 AND col1 = 20 ORDER BY id
-    plan_contains: "PredicatesFilter(IndexScan(I1, [=] COVERING)"
+    plan_contains: "Project([_current.ID#0], IndexScan(I1, [=] COVERING))"
+    plan_not_contains: "PredicatesFilter"
     rows:
       - [6]
       - [7]
@@ -97,9 +100,9 @@ tests:
       - [12]
       - [13]
 
-  # Complex: (OR) AND (OR) → should still work correctly
+  # Complex: (OR) AND (OR) → the two identical conjuncts dedup to one residual
   - query: SELECT id FROM t1 WHERE (col1 = 20 OR col1 = 10) AND (col1 = 20 OR col1 = 10) ORDER BY id
-    plan_contains: "PredicatesFilter(Scan(T1), [2 preds])"
+    plan_contains: "PredicatesFilter(Scan(T1), [1 preds])"
     plan_not_contains: "IndexScan"
     rows:
       - [1]

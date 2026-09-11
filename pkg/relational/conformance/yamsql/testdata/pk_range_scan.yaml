@@ -50,9 +50,9 @@ tests:
       - [2]
       - [3]
 
-  # PK range: BETWEEN
+  # PK range: BETWEEN — both bounds are the scan range, no residual (RFC-249)
   - query: SELECT id FROM t WHERE id BETWEEN 3 AND 7 ORDER BY id
-    plan_contains: "PredicatesFilter(Scan(T, [<>])"
+    plan_contains: "Project([_current.ID#0], Scan(T, [<>]))"
     plan_not_contains: "InMemorySort"
     rows:
       - [3]

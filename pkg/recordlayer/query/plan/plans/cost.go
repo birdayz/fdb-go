@@ -775,7 +775,7 @@ func logicalEqualityAtMostOnePhysicalKey(
 	physicalType values.Type,
 ) bool {
 	merged := predicates.EmptyComparisonRange().Merge(&comparison)
-	return merged.Ok && properties.LogicalEqualityAtMostOnePhysicalKey(
+	return merged.Complete() && properties.LogicalEqualityAtMostOnePhysicalKey(
 		merged.Range, physicalType,
 	)
 }

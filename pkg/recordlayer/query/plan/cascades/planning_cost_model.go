@@ -870,17 +870,54 @@ func compareInPlan(a, b expressions.RelationalExpression, _, _ expressionCounts)
 	return intCompare(inPlanPenaltyRank(a), inPlanPenaltyRank(b))
 }
 
-// inPlanPenaltyRank is criterion #6's rank: 1 for an IN-plan whose bindings
-// never became search arguments, 0 for everything else — a non-IN plan and a
-// SARGed IN-plan are equally unpenalised, and both fall through to the
-// remaining rungs, which is what Java's Javadoc means by a SARGed in-plan
-// causing "the remainder of the tie-breaking code to be used".
+// inPlanPenaltyRank is criterion #6's rank: 1 for a plan holding an IN-plan
+// whose bindings never became search arguments, 0 for everything else — a
+// plan without IN-plans and one whose IN-plans all SARGed are equally
+// unpenalised, and both fall through to the remaining rungs, which is what
+// Java's Javadoc means by a SARGed in-plan causing "the remainder of the
+// tie-breaking code to be used".
+//
+// Java reads the ROOT only (PlanningCostModel.isInPlan on the compared
+// expression), and that is enough there because the exploded Select is
+// yielded into the SAME reference as the un-exploded one, so an InJoin meets
+// its filter-only sibling at that reference's root. Go's per-ordering winner
+// partitions let both survive that reference — the InJoin advertises the
+// IN-binding order the filter cannot — so the two meet again one level up, as
+// `Project(InJoin(...))` against `Project(Filter(...))`, where a root-only
+// read sees two Projects and the "more IN-joins wins" rung below then picks
+// the InJoin: `v IN (1, 2)` over an unindexed v scanned the table once per
+// IN element. The property Java's rung states is tree-wide — "avoid plans
+// generated out of an IN-transformation that wasn't able to translate the
+// rewritten equality into a SARG" — so the walk is: every IN-plan node in the
+// tree, each judged against the search arguments beneath IT.
 func inPlanPenaltyRank(e expressions.RelationalExpression) int {
-	penalty, isInPlan := compareInOperator(e)
-	if !isInPlan {
+	if ph, ok := e.(physicalPlanExpression); ok {
+		if plan := ph.GetRecordQueryPlan(); plan != nil {
+			return inPlanPenaltyRankOfPlan(plan)
+		}
+	}
+	penalty, _ := compareInOperator(e)
+	return penalty
+}
+
+func inPlanPenaltyRankOfPlan(p plans.RecordQueryPlan) int {
+	if p == nil {
 		return 0
 	}
-	return penalty
+	if penalty, isInPlan := compareInOperator(p); isInPlan && penalty != 0 {
+		return penalty
+	}
+	for _, child := range p.GetChildren() {
+		if inPlanPenaltyRankOfPlan(child) != 0 {
+			return 1
+		}
+	}
+	// The two wrappers whose GetChildren is nil because they hold their
+	// input as a FIELD — RecordQueryCoveringIndexPlan and
+	// RecordQueryAggregateIndexPlan — both wrap an index scan leaf, so no
+	// IN-plan can exist beneath them for this walk to miss. A fetch is not
+	// one of them: it returns its inner as a child and is walked.
+	return 0
 }
 
 // compareInOperator returns (penalty, applicable). applicable=false means the
@@ -2657,7 +2694,7 @@ func predicatesFilterIsFullPKPointProbe(pl *plans.RecordQueryPredicatesFilterPla
 		atMostOne := false
 		for _, comparison := range comparisons {
 			merged := predicates.EmptyComparisonRange().Merge(&comparison)
-			if merged.Ok && properties.LogicalEqualityAtMostOnePhysicalKey(
+			if merged.Complete() && properties.LogicalEqualityAtMostOnePhysicalKey(
 				merged.Range, physicalType,
 			) {
 				atMostOne = true

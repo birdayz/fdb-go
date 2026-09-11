@@ -809,7 +809,7 @@ func TestIntegration_IndexScan(t *testing.T) {
 			Operand: values.LiteralValue(int64(100)),
 		}
 		res := eqRange.Merge(comp)
-		if !res.Ok {
+		if !res.Complete() {
 			t.Fatal("merge failed")
 		}
 
@@ -1162,7 +1162,7 @@ func TestIntegration_IndexScan_Equality(t *testing.T) {
 			Operand: values.LiteralValue(int64(77)),
 		}
 		res := eqRange.Merge(comp)
-		if !res.Ok {
+		if !res.Complete() {
 			t.Fatal("merge failed")
 		}
 
@@ -1226,14 +1226,14 @@ func TestIntegration_IndexScan_BoundedRange(t *testing.T) {
 			Type:    predicates.ComparisonGreaterThanEq,
 			Operand: values.LiteralValue(int64(50)),
 		})
-		if !lowRes.Ok {
+		if !lowRes.Complete() {
 			t.Fatal("merge low failed")
 		}
 		highRes := lowRes.Range.Merge(&predicates.Comparison{
 			Type:    predicates.ComparisonLessThan,
 			Operand: values.LiteralValue(int64(150)),
 		})
-		if !highRes.Ok {
+		if !highRes.Complete() {
 			t.Fatal("merge high failed")
 		}
 
@@ -1911,7 +1911,7 @@ func TestIntegration_ParameterBinding_IndexScan(t *testing.T) {
 			Type:    predicates.ComparisonGreaterThanEq,
 			Operand: values.NewParameterValue(1),
 		})
-		if !res.Ok {
+		if !res.Complete() {
 			t.Fatal("merge failed")
 		}
 
@@ -3275,7 +3275,7 @@ func TestIntegration_IndexScan_EqualityRange(t *testing.T) {
 			Operand: values.LiteralValue(int64(100)),
 		}
 		res := eqRange.Merge(comp)
-		if !res.Ok {
+		if !res.Complete() {
 			t.Fatal("merge failed")
 		}
 

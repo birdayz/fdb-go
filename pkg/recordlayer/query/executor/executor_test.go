@@ -936,13 +936,13 @@ func TestScanComparisonsToTupleRange_EqualityOnly(t *testing.T) {
 	t.Parallel()
 	eq1 := predicates.EmptyComparisonRange()
 	res := eq1.Merge(&predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue("alice")})
-	if !res.Ok {
+	if !res.Complete() {
 		t.Fatal("merge failed")
 	}
 
 	eq2 := predicates.EmptyComparisonRange()
 	res2 := eq2.Merge(&predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(42))})
-	if !res2.Ok {
+	if !res2.Complete() {
 		t.Fatal("merge2 failed")
 	}
 
@@ -979,19 +979,19 @@ func TestScanComparisonsToTupleRange_EqualityPlusInequality(t *testing.T) {
 
 	eq := predicates.EmptyComparisonRange()
 	res := eq.Merge(&predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue("users")})
-	if !res.Ok {
+	if !res.Complete() {
 		t.Fatal("merge eq failed")
 	}
 
 	ineq := predicates.EmptyComparisonRange()
 	gt := &predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: values.LiteralValue(int64(10))}
 	res2 := ineq.Merge(gt)
-	if !res2.Ok {
+	if !res2.Complete() {
 		t.Fatal("merge gt failed")
 	}
 	lt := &predicates.Comparison{Type: predicates.ComparisonLessThan, Operand: values.LiteralValue(int64(100))}
 	res3 := res2.Range.Merge(lt)
-	if !res3.Ok {
+	if !res3.Complete() {
 		t.Fatal("merge lt failed")
 	}
 
@@ -1029,7 +1029,7 @@ func TestScanComparisonsToTupleRange_InequalityOnly(t *testing.T) {
 	ineq := predicates.EmptyComparisonRange()
 	gte := &predicates.Comparison{Type: predicates.ComparisonGreaterThanEq, Operand: values.LiteralValue(int64(5))}
 	res := ineq.Merge(gte)
-	if !res.Ok {
+	if !res.Complete() {
 		t.Fatal("merge gte failed")
 	}
 
@@ -1066,7 +1066,7 @@ func TestScanComparisonsToTupleRange_EmptyRangeStops(t *testing.T) {
 
 	eq := predicates.EmptyComparisonRange()
 	res := eq.Merge(&predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue("x")})
-	if !res.Ok {
+	if !res.Complete() {
 		t.Fatal("merge failed")
 	}
 
@@ -1101,7 +1101,7 @@ func TestScanComparisonsToTupleRange_LessThanOnly(t *testing.T) {
 	ineq := predicates.EmptyComparisonRange()
 	lt := &predicates.Comparison{Type: predicates.ComparisonLessThanOrEq, Operand: values.LiteralValue(int64(50))}
 	res := ineq.Merge(lt)
-	if !res.Ok {
+	if !res.Complete() {
 		t.Fatal("merge lte failed")
 	}
 
@@ -1150,7 +1150,7 @@ func TestScanComparisonsToTupleRange_StartsWith(t *testing.T) {
 
 	ineq := predicates.EmptyComparisonRange()
 	res := ineq.Merge(&predicates.Comparison{Type: predicates.ComparisonStartsWith, Operand: values.LiteralValue("abc")})
-	if !res.Ok {
+	if !res.Complete() {
 		t.Fatal("merge STARTS_WITH failed")
 	}
 
@@ -1191,13 +1191,13 @@ func TestScanComparisonsToTupleRange_EqualityPlusStartsWith(t *testing.T) {
 
 	eq := predicates.EmptyComparisonRange()
 	resEq := eq.Merge(&predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(7))})
-	if !resEq.Ok {
+	if !resEq.Complete() {
 		t.Fatal("merge eq failed")
 	}
 
 	ineq := predicates.EmptyComparisonRange()
 	resSw := ineq.Merge(&predicates.Comparison{Type: predicates.ComparisonStartsWith, Operand: values.LiteralValue("abc")})
-	if !resSw.Ok {
+	if !resSw.Complete() {
 		t.Fatal("merge STARTS_WITH failed")
 	}
 
@@ -1245,11 +1245,11 @@ func TestScanComparisonsToTupleRange_StartsWithPlusInequality_Loud(t *testing.T)
 	// One inequality ComparisonRange carrying BOTH comparisons on the same column.
 	ineq := predicates.EmptyComparisonRange()
 	resSw := ineq.Merge(&predicates.Comparison{Type: predicates.ComparisonStartsWith, Operand: values.LiteralValue("abc")})
-	if !resSw.Ok {
+	if !resSw.Complete() {
 		t.Fatal("merge STARTS_WITH failed")
 	}
 	resBoth := resSw.Range.Merge(&predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: values.LiteralValue("abd")})
-	if !resBoth.Ok {
+	if !resBoth.Complete() {
 		t.Fatal("merge STARTS_WITH + GREATER_THAN failed")
 	}
 	if got := len(resBoth.Range.GetInequalityComparisons()); got != 2 {
@@ -1276,7 +1276,7 @@ func TestParameterBinding_ScanComparison(t *testing.T) {
 	param1 := values.NewParameterValue(1)
 	cr := predicates.EmptyComparisonRange()
 	res := cr.Merge(&predicates.Comparison{Type: predicates.ComparisonEquals, Operand: param1})
-	if !res.Ok {
+	if !res.Complete() {
 		t.Fatal("merge failed")
 	}
 
@@ -2371,7 +2371,7 @@ func eqRange(val any) *predicates.ComparisonRange {
 	r := predicates.EmptyComparisonRange()
 	c := predicates.NewLiteralComparison(predicates.ComparisonEquals, val)
 	res := r.Merge(&c)
-	if !res.Ok {
+	if !res.Complete() {
 		panic("merge failed for equality")
 	}
 	return res.Range
@@ -2381,7 +2381,7 @@ func ineqRange(comps ...predicates.Comparison) *predicates.ComparisonRange {
 	r := predicates.EmptyComparisonRange()
 	for i := range comps {
 		res := r.Merge(&comps[i])
-		if !res.Ok {
+		if !res.Complete() {
 			panic("merge failed for inequality")
 		}
 		r = res.Range

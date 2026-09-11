@@ -1183,11 +1183,6 @@ func TestPlanHarness_CorrelatedExistsAggregatePagination(t *testing.T) {
 				"SELECT COUNT(*) FROM customers WHERE customers.id = orders.customer_id LIMIT 1 OFFSET 1) " +
 				"FROM orders",
 		},
-		{
-			name: "join_on_known_truth",
-			sql: "SELECT orders.id FROM orders JOIN customers ON customers.id = orders.customer_id AND EXISTS (" +
-				"SELECT COUNT(*) FROM customers AS c2 WHERE c2.id = orders.customer_id LIMIT 1 OFFSET 1)",
-		},
 	} {
 		test := test
 		t.Run(test.name+"_typed_decline", func(t *testing.T) {
@@ -1201,6 +1196,31 @@ func TestPlanHarness_CorrelatedExistsAggregatePagination(t *testing.T) {
 			}
 		})
 	}
+
+	// An inner join's ON-clause EXISTS is a WHERE-EXISTS (the builder folds it
+	// into the WHERE), so a cardinality-known one is substituted exactly as
+	// the WHERE spelling is: the two spellings plan to the same tree, and
+	// neither builds an existential probe (the FlatMap present is the join's
+	// own nested loop, not a semi-join).
+	t.Run("join_on_known_false_substituted", func(t *testing.T) {
+		const existsKnownFalse = "EXISTS (SELECT COUNT(*) FROM customers AS c2 WHERE c2.id = orders.customer_id LIMIT 1 OFFSET 1)"
+		onPlan, err := PlanQueryForTest(
+			"SELECT orders.id FROM orders JOIN customers ON customers.id = orders.customer_id AND "+existsKnownFalse,
+			multiTableSchema, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wherePlan, err := PlanQueryForTest(
+			"SELECT orders.id FROM orders JOIN customers ON customers.id = orders.customer_id WHERE "+existsKnownFalse,
+			multiTableSchema, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if onPlan != wherePlan {
+			t.Fatalf("ON-EXISTS and WHERE-EXISTS must plan identically:\n  on:    %s\n  where: %s", onPlan, wherePlan)
+		}
+		assertPlanNotContains(t, onPlan, "FirstOrDefault")
+	})
 }
 
 // --- DISTINCT ---

@@ -40,14 +40,27 @@ func TestEvaluatePredicateComplexity_AndPredicate(t *testing.T) {
 	scan := mustFullUnorderedScanExpression(t, []string{"T"}, propertyTestFlowedType())
 	ref := expressions.InitialOf(scan)
 	inner := expressions.ForEachQuantifier(ref)
-	// AND(a, b, c) has diameter 3 (width at root level).
+	// A top-level AND(a, b, c) is lifted into the filter's predicate list by
+	// its constructor (Java's SelectExpression does the same), so the property
+	// sees three leaves of diameter 1 — Java's PredicateComplexityProperty
+	// also takes the max over getPredicates(), never the width of the list.
 	a := predicates.NewConstantPredicate(predicates.TriTrue)
 	b := predicates.NewConstantPredicate(predicates.TriFalse)
 	c := predicates.NewConstantPredicate(predicates.TriTrue)
 	and := predicates.NewAnd(a, b, c)
 	filter := mustLogicalFilterExpression(t, []predicates.QueryPredicate{and}, inner)
-	if got := EvaluatePredicateComplexity(filter); got != 3 {
-		t.Fatalf("EvaluatePredicateComplexity(AND of 3) = %d, want 3", got)
+	if got := len(filter.GetPredicates()); got != 3 {
+		t.Fatalf("filter holds %d predicates, want the three lifted conjuncts", got)
+	}
+	if got := EvaluatePredicateComplexity(filter); got != 1 {
+		t.Fatalf("EvaluatePredicateComplexity(lifted AND of 3) = %d, want 1", got)
+	}
+	// The same AND under an OR is not lifted and keeps its width of 3.
+	nested := mustLogicalFilterExpression(t, []predicates.QueryPredicate{
+		predicates.NewOr(predicates.NewAnd(a, b, c), predicates.NewConstantPredicate(predicates.TriTrue)),
+	}, inner)
+	if got := EvaluatePredicateComplexity(nested); got != 3 {
+		t.Fatalf("EvaluatePredicateComplexity(OR(AND of 3, d)) = %d, want 3", got)
 	}
 }
 

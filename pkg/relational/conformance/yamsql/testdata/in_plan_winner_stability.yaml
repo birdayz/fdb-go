@@ -103,14 +103,14 @@ tests:
     rows:
       - [2]
       - [4]
-  # Two IN predicates, one over the indexed column and one not. NOTHING SARGs
-  # here: the plan takes an UNBOUNDED scan of IDX_VAL (`[*]` — no comparison
-  # pushed into the scan) to serve the ORDER BY, and BOTH IN predicates survive
-  # as residual filters, one below the fetch and one above it. Pinned on the
-  # unbounded marker so a future improvement that actually SARGs `val` surfaces
-  # as a golden diff instead of passing silently.
+  # Two IN predicates, one over the indexed column and one not. The indexed
+  # IN SARGs `val` through an IN-union that serves the ORDER BY (RFC-249: an
+  # IN beside another conjunct reaches the explode rule); the unindexed IN
+  # survives as a residual filter under it. This used to take an UNBOUNDED
+  # scan of IDX_VAL with both INs as residuals, because the explode rule read
+  # only the top-level predicate list and the WHERE arrived as one AND.
   - query: SELECT id FROM t WHERE val IN (200, 400, 600) AND cat IN (20, 40) ORDER BY val
-    plan_contains: "IndexScan(IDX_VAL, [*])"
+    plan_contains: "InUnion(PredicatesFilter(IndexScan(IDX_VAL, [=]), [1 preds])"
     rows:
       - [2]
       - [4]

@@ -222,3 +222,45 @@ func TestNormalizeCNF_DistributeOrOverAnd(t *testing.T) {
 		t.Fatalf("expected 2 AND children, got %d", len(and.SubPredicates))
 	}
 }
+
+// TestNormalizePredicatesRule_DoesNotRefireOnALiftedConjunction pins the
+// fixpoint the Select constructor's conjunction lift relies on: a Select built
+// from [And(a, And(b, c))] holds [a, b, c], that list is already in CNF, and
+// the rule reports no change — so lifting at construction cannot make the
+// rule re-yield the same expression. The control below shows the same rule
+// still fires on a Select whose list is NOT in CNF.
+func TestNormalizePredicatesRule_DoesNotRefireOnALiftedConjunction(t *testing.T) {
+	t.Parallel()
+
+	scan := filterRuleScan("T")
+	forEachQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+	forEachRoot := mustFilterConstruct(forEachQ.RequireFlowedObjectValue())
+
+	lifted := mustFilterConstruct(expressions.NewSelectExpression(
+		forEachRoot,
+		[]expressions.Quantifier{forEachQ},
+		[]predicates.QueryPredicate{predicates.NewAnd(
+			predAt(forEachRoot, "a"),
+			predicates.NewAnd(predAt(forEachRoot, "b"), predAt(forEachRoot, "c")),
+		)},
+	))
+	if got := len(lifted.GetPredicates()); got != 3 {
+		t.Fatalf("constructor lifted %d predicates, want 3", got)
+	}
+	if yielded := fireFilterRule(t, NewNormalizePredicatesRule(), expressions.InitialOf(lifted)); len(yielded) != 0 {
+		t.Fatalf("NormalizePredicatesRule re-fired on a lifted conjunction, yielding %d expression(s): %v", len(yielded), yielded)
+	}
+
+	// Control: a disjunction over a conjunction is not in CNF and does fire.
+	notCNF := mustFilterConstruct(expressions.NewSelectExpression(
+		forEachRoot,
+		[]expressions.Quantifier{forEachQ},
+		[]predicates.QueryPredicate{predicates.NewOr(
+			predAt(forEachRoot, "a"),
+			predicates.NewAnd(predAt(forEachRoot, "b"), predAt(forEachRoot, "c")),
+		)},
+	))
+	if yielded := fireFilterRule(t, NewNormalizePredicatesRule(), expressions.InitialOf(notCNF)); len(yielded) == 0 {
+		t.Fatal("control: NormalizePredicatesRule must fire on OR(a, AND(b, c))")
+	}
+}
