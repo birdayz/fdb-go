@@ -118,7 +118,7 @@ func (t *cascadesTranslator) buildClusterPullUp(j *logical.LogicalJoin) *cluster
 	var addLegs func(legs []clusterLeg, nullSupplying bool) bool
 	addLegs = func(legs []clusterLeg, nullSupplying bool) bool {
 		for _, leg := range legs {
-			if bj, isJoin := leg.op.(*logical.LogicalJoin); isJoin {
+			if bj := gatedLegBox(leg.op); bj != nil {
 				if !addLegs(t.legsOfGatedJoin(bj), nullSupplying || leg.nullSupplying) {
 					return false
 				}

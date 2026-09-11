@@ -323,7 +323,13 @@ replacing the all-or-nothing column.
   own select flowed the cluster's buried legs: two members of one reference
   disagreeing on their result type (`MemberResultTypeDisagreementError`,
   legs `[C 0 3]` vs `[A 0 1][C 1 2]`). `gatedLegBox` (the join beneath a
-  leg's filters) is now the one classification at all seven sites, and the
+  leg's filters) is now the one classification at every site that asks
+  whether a leg is a box — the seven seed-layout sites, the clustered-scalar
+  pull-up's spans, the exact output labels a star CTE publishes, the
+  projected-EXISTS sort source, and the positional-box gate
+  (`legExposesBuriedOuterBox` / `hasWrappedBuriedJoin`, whose exclusion of
+  a "wrapped" join was there because the bounds were not recorded through a
+  wrapper; a FILTER is now transparent and a PROJECT still wraps) — and the
   leg types exactly as the bare cluster did on master. Four former answers
   are kept (LEFT, LEFT+WHERE, RIGHT, FULL over an inner cluster with
   ON-EXISTS, rows identical to master), and five former rejections became
@@ -472,15 +478,25 @@ is where the fold lives, not what it computes.
   builder carrying `OnExistsSubqueries` and the filter that took the lift
   carries every existential with its marker in conjunct position. Rows,
   `sqldriver/exists_in_on_probe_test.go`
-  (`TestFDB_ExistsInOnBelowOuterJoinAndBesideUnnest`, 9 arms): LEFT (with
+  (`TestFDB_ExistsInOnBelowOuterJoinAndBesideUnnest`, 15 arms): LEFT (with
   the WHERE spelling as control), LEFT+WHERE, LEFT then JOIN, RIGHT and FULL
   (the null-supplying cluster: the row the WHERE spelling would drop is
-  pinned present), and the cluster left of a lateral unnest with and without
-  a WHERE (control agrees). Unit, `query/gated_leg_box_test.go`: a filter
-  over a box is the box at every seed-layout site — same fields, same two
-  buried legs, same `C$BOX` binding, same bake window, same ordinal columns,
-  and the same buried bake windows under an OUTER box — and a scan, a
-  filtered scan and a projection are not. Plan, `plan_harness_test.go`
+  pinned present), the cluster left of a lateral unnest with and without a
+  WHERE (control agrees), a star CTE over the LEFT shape reading the buried
+  `a_id` / `c_id` by their SQL labels, a correlated scalar over a buried
+  source, ORDER BY a buried column in row order, and a lateral unnest over
+  a LEFT and a FULL box whose leg is the filtered cluster (LEFT against the
+  WHERE control, FULL against master's rows). Unit,
+  `query/gated_leg_box_test.go`: a filter over a box is the box at every
+  seed-layout site — same fields, same two buried legs, same `C$BOX`
+  binding, same bake window, same ordinal columns, and the same buried bake
+  windows under an OUTER box — and a scan, a filtered scan and a projection
+  are not; the clustered-scalar pull-up spans the buried legs (never the box
+  mint), the exact leg labels are the cluster's unqualified labels, the sort
+  source collects the buried bindings, and the positional-box gate admits a
+  filtered cluster leg while still excluding a projected one (the existing
+  `TestBoxGatePredicates` arms move with it: filtered-inner admitted,
+  projected-inner and filtered-OUTER excluded). Plan, `plan_harness_test.go`
   `join_on_known_false_substituted`: the ON and WHERE spellings of a
   cardinality-known EXISTS plan to the same tree.
 * Unit, `cascades/in_plan_order_independence_test.go`: the wrapped
@@ -682,4 +698,13 @@ the two 3-second full scans, and they moved by ≤ 0.02 s.
   Folded as the in-place outer-join fold, the transparent unnest, the seed's
   `gatedLegBox` classification, and the pins above; measured on master
   first, so the four kept answers are pinned to master's rows and the two
-  new answers are named as gains. Delta re-confirmation: see below.
+  new answers are named as gains. Delta re-confirmation: Graefe and Torvalds
+  **NAK** again, both on the same finding — the see-through stopped at the
+  seed: `buildClusterPullUp`, `exactLogicalLegLabels` and
+  `classifySortSource` still classified a leg by node type, so a correlated
+  scalar over a buried source declined and a star CTE over the shape gave
+  42703 (both measured against master, which answered them); the gate
+  comments claiming "bounds only for a direct join" were stale. codex: no
+  actionable issues. Folded: `gatedLegBox` at those three sites and in the
+  positional-box gate, the four FDB arms and five unit arms above. Delta
+  re-confirmation: see below.

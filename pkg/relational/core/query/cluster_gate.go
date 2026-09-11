@@ -164,16 +164,19 @@ func (t *cascadesTranslator) boxGatesFresh(input logical.LogicalOperator) bool {
 // seed must NOT build. It peels the row-shape-preserving wrappers the gate
 // treats as TRANSPARENT (LogicalFilter, and a LogicalProject without
 // correlated-scalar subqueries, mirroring ordinalEligible/clusterArity), then:
-//   - a DIRECT INNER-cluster join → FALSE (admitted): the positional seed concats
-//     its buried leaves (ordinalLegType records the [Start,Width) bounds for a
-//     direct LogicalJoin) and the executor resolves a buried ref by window
-//     (verified — both buried leaves disambiguate).
+//   - an INNER-cluster join, direct or under FILTERS → FALSE (admitted): the
+//     positional seed concats its buried leaves (ordinalLegType records the
+//     [Start,Width) bounds through gatedLegBox, which peels filters — the
+//     builder places one directly above an inner cluster under an OUTER join
+//     when it folds that cluster's ON-clause EXISTS in place) and the executor
+//     resolves a buried ref by window (verified — both buried leaves
+//     disambiguate).
 //   - a DIRECT OUTER box (LEFT/RIGHT/FULL) → TRUE (excluded): its own slice.
-//   - a WRAPPED join (reached by peeling) → TRUE (excluded): ordinalLegType
-//     records buried bounds ONLY for a DIRECT LogicalJoin leg, so a wrapped inner
-//     cluster would build positional WITHOUT its buried windows (a buried ref
-//     unrebased → malformed). Also SQL-unreachable (a JOIN-bodied derived table
-//     is a LogicalCTE / loud-rejected, not a transparent wrapper) — defensive.
+//   - a PROJECT-wrapped join (reached by peeling a projection) → TRUE
+//     (excluded): gatedLegBox peels filters only, so a projected inner cluster
+//     would build positional WITHOUT its buried windows (a buried ref unrebased
+//     → malformed). Also SQL-unreachable (a JOIN-bodied derived table is a
+//     LogicalCTE / loud-rejected, not a transparent wrapper) — defensive.
 //   - a scan / OPAQUE box (aggregate/union/sort/CTE), wrapped or not → FALSE:
 //     its output is its own flat single-namespace row, safely windowed.
 //
@@ -181,33 +184,35 @@ func (t *cascadesTranslator) boxGatesFresh(input logical.LogicalOperator) bool {
 // INNER cluster (`((A LEFT B) JOIN C) FULL OUTER D`) ordinalizes CORRECTLY (the
 // machinery recurses — legsOfGatedJoin marks the null-supplying leg, the executor
 // null-supplies through the positional build; verified), so this must NOT be
-// tightened into a recursive exclusion. Only a WRAPPED join is excluded, because
-// the wrapper (not the join's depth) is what strips the buried-leg metadata.
+// tightened into a recursive exclusion. Only a PROJECT-wrapped join is excluded,
+// because that wrapper (not the join's depth, and not a filter) is what strips
+// the buried-leg metadata.
 func legExposesBuriedOuterBox(op logical.LogicalOperator) bool {
 	peeled := false
 	for {
 		switch o := op.(type) {
 		case *logical.LogicalJoin:
 			if peeled {
-				return true // a WRAPPED join at the top — no buried windows recorded
+				return true // a PROJECT-wrapped join at the top — no buried windows recorded
 			}
 			if o.Kind != logical.JoinInner {
 				return true // a direct OUTER box — its own slice
 			}
-			// A direct INNER cluster is admitted, BUT a WRAPPED join buried
-			// ANYWHERE inside it is excluded: buriedLegBounds records windows only
-			// for a DIRECT LogicalJoin leg, so `(Filter(A JOIN B) JOIN C)` would
-			// build positional without windows for A/B → a buried ref malforms. A
-			// BARE nested join (any kind, any depth) IS windowed (buriedLegBounds
-			// recurses through direct joins) and stays admitted — a nested OUTER
-			// box inside an INNER cluster ordinalizes correctly (verified).
+			// An INNER cluster is admitted, BUT a PROJECT-wrapped join buried
+			// ANYWHERE inside it is excluded: buriedLegBounds records windows
+			// through filters only (gatedLegBox), so `(Project(A JOIN B) JOIN C)`
+			// would build positional without windows for A/B → a buried ref
+			// malforms. A nested join under filters or bare (any kind, any depth)
+			// IS windowed (buriedLegBounds recurses through gatedLegBox) and stays
+			// admitted — a nested OUTER box inside an INNER cluster ordinalizes
+			// correctly (verified).
 			return hasWrappedBuriedJoin(o.Left) || hasWrappedBuriedJoin(o.Right)
 		case *logical.LogicalFilter:
 			if len(o.CorrelatedScalarSubqueries) > 0 {
 				return false
 			}
+			// A filter is transparent to the layout (gatedLegBox), not a wrapper.
 			op = o.Input
-			peeled = true
 		case *logical.LogicalProject:
 			if len(o.CorrelatedScalarSubqueries) > 0 {
 				return false
@@ -221,12 +226,13 @@ func legExposesBuriedOuterBox(op logical.LogicalOperator) bool {
 }
 
 // hasWrappedBuriedJoin reports whether op contains a join reached by peeling a
-// transparent wrapper (Filter / non-scalar Project) — at op itself or buried
-// inside a bare nested join. buriedLegBounds records positional windows only for
-// a DIRECT LogicalJoin leg, so a WRAPPED join anywhere in a box leg's subtree
-// would build positional without its buried leaves' windows (malformed). A bare
-// join is recursed THROUGH (its own leaves ARE windowed) looking for a wrapped
-// join deeper. A CORRELATED-scalar Project stops the walk (ineligible upstream).
+// non-scalar Project — at op itself or buried inside a nested join.
+// buriedLegBounds records positional windows through gatedLegBox, which peels
+// FILTERS only, so a PROJECT-wrapped join anywhere in a box leg's subtree would
+// build positional without its buried leaves' windows (malformed). A join that
+// is bare or under filters is recursed THROUGH (its own leaves ARE windowed)
+// looking for a projected join deeper. A CORRELATED-scalar Project or Filter
+// stops the walk (ineligible upstream).
 func hasWrappedBuriedJoin(op logical.LogicalOperator) bool {
 	var walk func(op logical.LogicalOperator, wrapped bool) bool
 	walk = func(op logical.LogicalOperator, wrapped bool) bool {
@@ -240,7 +246,7 @@ func hasWrappedBuriedJoin(op logical.LogicalOperator) bool {
 			if len(o.CorrelatedScalarSubqueries) > 0 {
 				return false
 			}
-			return walk(o.Input, true)
+			return walk(o.Input, wrapped)
 		case *logical.LogicalProject:
 			if len(o.CorrelatedScalarSubqueries) > 0 {
 				return false

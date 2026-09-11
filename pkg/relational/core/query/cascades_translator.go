@@ -5394,7 +5394,7 @@ func (t *cascadesTranslator) classifySortSource(input logical.LogicalOperator) s
 		var legTypes []*values.RecordType
 		var collect func(op logical.LogicalOperator)
 		collect = func(op logical.LogicalOperator) {
-			if cj, isJ := op.(*logical.LogicalJoin); isJ {
+			if cj := gatedLegBox(op); cj != nil {
 				collect(cj.Left)
 				collect(cj.Right)
 				return

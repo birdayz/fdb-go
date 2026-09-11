@@ -347,10 +347,14 @@ func TestBoxGatePredicates(t *testing.T) {
 	}
 
 	// EXCLUDED buried-OUTER-box legs: a DIRECT outer box (nested-FULL), and any
-	// WRAPPED join (Filter/Project over a join) — ordinalLegType records buried
-	// bounds only for a DIRECT LogicalJoin leg, so a wrapped inner cluster would
-	// build positional without its buried windows. The wrapper-peel remembers it
-	// peeled: a wrapped join is excluded regardless of kind.
+	// PROJECT-wrapped join — buried bounds are recorded through gatedLegBox,
+	// which peels FILTERS only, so a projected inner cluster would build
+	// positional without its buried windows. The wrapper-peel remembers it
+	// peeled a projection: a projected join is excluded regardless of kind. A
+	// FILTER over a join is transparent (the builder places one directly above
+	// an inner cluster under an OUTER join when it folds that cluster's
+	// ON-clause EXISTS in place; the leg is windowed exactly as the bare
+	// cluster) — admitted, and a filtered OUTER box is still its own slice.
 	leftBox := func() logical.LogicalOperator {
 		return logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinLeft, "")
 	}
@@ -364,21 +368,35 @@ func TestBoxGatePredicates(t *testing.T) {
 		{"nested-FULL (direct outer)", logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinFull, "")},
 		{"Filter(LEFT-box)", logical.NewFilter(leftBox(), "1 = 1")},
 		{"Project(LEFT-box)", logical.NewProject(leftBox(), []string{"order_id"}, []string{""})},
-		{"Filter(INNER-cluster)", logical.NewFilter(innerCluster(), "1 = 1")}, // wrapped join, no buried windows
 		{"Project(INNER-cluster)", logical.NewProject(innerCluster(), []string{"order_id"}, []string{""})},
-		// A WRAPPED join buried INSIDE an admitted INNER cluster —
-		// `(Filter(A JOIN B) JOIN C) FULL OUTER D`. The top leg is a direct INNER
-		// cluster (admitted by kind), but its Filter-wrapped sub-join gets no
-		// buried windows → excluded by the recursive hasWrappedBuriedJoin walk. A
+		// A PROJECTED join buried INSIDE an admitted INNER cluster —
+		// `(Project(A JOIN B) JOIN C) FULL OUTER D`. The top leg is a direct INNER
+		// cluster (admitted by kind), but its projected sub-join gets no buried
+		// windows → excluded by the recursive hasWrappedBuriedJoin walk. A
 		// shallow (non-recursive) INNER admit would wrongly let this build positional.
-		{"wrapped-join-in-INNER", logical.NewJoin(logical.NewFilter(innerCluster(), "1 = 1"), scan("TypedRecord", "e"), logical.JoinInner, "")},
+		{"projected-join-in-INNER", logical.NewJoin(logical.NewProject(innerCluster(), []string{"order_id"}, []string{""}), scan("TypedRecord", "e"), logical.JoinInner, "")},
 	} {
 		box := logical.NewJoin(tc.leg, scan("TypedRecord", "d"), logical.JoinFull, "")
 		if tr.boxGatesFresh(box) {
-			t.Errorf("boxGatesFresh(%s FULL OUTER scan) = true, want false — a wrapped join / direct outer box is not windowed here", tc.name)
+			t.Errorf("boxGatesFresh(%s FULL OUTER scan) = true, want false — a projected join / direct outer box is not windowed here", tc.name)
 		}
 		if tr.boxOuterBuildsPositional(box) {
 			t.Errorf("boxOuterBuildsPositional(%s FULL OUTER scan) = true, want false", tc.name)
+		}
+	}
+	for _, tc := range []struct {
+		name string
+		leg  logical.LogicalOperator
+	}{
+		{"Filter(INNER-cluster)", logical.NewFilter(innerCluster(), "1 = 1")},
+		{"filtered-join-in-INNER", logical.NewJoin(logical.NewFilter(innerCluster(), "1 = 1"), scan("TypedRecord", "e"), logical.JoinInner, "")},
+	} {
+		box := logical.NewJoin(tc.leg, scan("TypedRecord", "d"), logical.JoinFull, "")
+		if !tr.boxGatesFresh(box) {
+			t.Errorf("boxGatesFresh(%s FULL OUTER scan) = false, want true — a filtered inner cluster is windowed through gatedLegBox", tc.name)
+		}
+		if !tr.boxOuterBuildsPositional(box) {
+			t.Errorf("boxOuterBuildsPositional(%s FULL OUTER scan) = false, want true", tc.name)
 		}
 	}
 }

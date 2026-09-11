@@ -365,6 +365,20 @@ func TestFDB_ExistsInOnBelowOuterJoinAndBesideUnnest(t *testing.T) {
 		{"beside_unnest", "SELECT a.id, c.id, v FROM a JOIN c ON c.a_id = a.id" + existsD + ", a.tags AS v", []string{"2|51|20", "2|53|20"}},
 		{"beside_unnest_where_control", "SELECT a.id, c.id, v FROM a JOIN c ON c.a_id = a.id, a.tags AS v" + whereD, []string{"2|51|20", "2|53|20"}},
 		{"beside_unnest_plus_where", "SELECT a.id, c.id, v FROM a JOIN c ON c.a_id = a.id" + existsD + ", a.tags AS v WHERE a.id > 0", []string{"2|51|20", "2|53|20"}},
+		// The in-place filter is a leg shape every layout site must classify as
+		// the cluster beneath it (gatedLegBox): a star CTE over the shape
+		// labels the buried columns by their SQL names (a_id, c_id), and a
+		// correlated scalar over a buried source resolves through the box.
+		{
+			"left_join_star_cte_buried_labels",
+			"WITH w AS (SELECT * FROM a JOIN c ON c.a_id = a.id" + existsD + " LEFT JOIN e ON e.c_id = c.id) SELECT w.a_id, w.c_id, 0 FROM w",
+			[]string{"2|51|0", "2|NULL|0"},
+		},
+		{
+			"left_join_correlated_scalar_over_buried_source",
+			"SELECT a.id, c.id, (SELECT COUNT(*) FROM d WHERE d.id = a.id) FROM a JOIN c ON c.a_id = a.id" + existsD + " LEFT JOIN e ON e.c_id = c.id",
+			[]string{"2|51|1", "2|53|1"},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := scanTriples(t, db, ctx, tc.sql)
@@ -373,4 +387,44 @@ func TestFDB_ExistsInOnBelowOuterJoinAndBesideUnnest(t *testing.T) {
 			}
 		})
 	}
+
+	// ORDER BY a column buried in the filtered cluster attributes to its leg:
+	// c.id descending puts (2,53) before (2,51).
+	t.Run("left_join_order_by_buried_column", func(t *testing.T) {
+		q := "SELECT a.id, c.id, e.id FROM a JOIN c ON c.a_id = a.id" + existsD + " LEFT JOIN e ON e.c_id = c.id ORDER BY c.id DESC"
+		got := scanTriplesInOrder(t, db, ctx, q)
+		want := []string{"2|53|NULL", "2|51|901"}
+		if !eqStrSlices(got, want) {
+			t.Errorf("rows in order = %v, want %v\n  sql: %s", got, want, q)
+		}
+	})
+}
+
+// scanTriplesInOrder is scanTriples without the sort: the rows as the query
+// returned them.
+func scanTriplesInOrder(t *testing.T, db *sql.DB, ctx context.Context, q string) []string {
+	t.Helper()
+	rows, err := db.QueryContext(ctx, q)
+	if err != nil {
+		t.Fatalf("query %q: %v", q, err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var x, y, z sql.NullInt64
+		if err := rows.Scan(&x, &y, &z); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		r := func(v sql.NullInt64) string {
+			if !v.Valid {
+				return "NULL"
+			}
+			return fmt.Sprintf("%d", v.Int64)
+		}
+		out = append(out, r(x)+"|"+r(y)+"|"+r(z))
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err: %v", err)
+	}
+	return out
 }
