@@ -91,7 +91,9 @@ func TestGatedLegBox_FilterOverBoxIsTheBox(t *testing.T) {
 // OUTER join: each must see the cluster, not one opaque leg.
 func TestGatedLegBox_ConsumersSeeThroughTheFilter(t *testing.T) {
 	t.Parallel()
-	tr := newGateTranslator(t)
+	// A translator carries mutable enclosure state (inInnerCluster), so each
+	// parallel subtest builds its own; sharing one across them is a data race
+	// between ordinalLegColumns and gatesAsFreshCluster.
 	existential, err := predicates.NewExistentialAlias(values.NamedCorrelationIdentifier("q$e"), values.NullableLong)
 	if err != nil {
 		t.Fatal(err)
@@ -108,6 +110,7 @@ func TestGatedLegBox_ConsumersSeeThroughTheFilter(t *testing.T) {
 
 	t.Run("cluster_pull_up_spans_the_buried_legs", func(t *testing.T) {
 		t.Parallel()
+		tr := newGateTranslator(t)
 		box, _, outerFiltered := mk()
 		outerBare := logical.NewJoinWithPredicate(box, scan("TypedRecord", "tr"), logical.JoinLeft, nil)
 		bare := tr.buildClusterPullUp(outerBare)
@@ -130,6 +133,7 @@ func TestGatedLegBox_ConsumersSeeThroughTheFilter(t *testing.T) {
 
 	t.Run("exact_leg_labels_are_the_cluster_s_unqualified_labels", func(t *testing.T) {
 		t.Parallel()
+		tr := newGateTranslator(t)
 		box, filtered, _ := mk()
 		bare, err := exactLogicalLegLabels(box, tr.md, nil)
 		if err != nil {
@@ -151,6 +155,7 @@ func TestGatedLegBox_ConsumersSeeThroughTheFilter(t *testing.T) {
 
 	t.Run("sort_source_collects_the_buried_bindings", func(t *testing.T) {
 		t.Parallel()
+		tr := newGateTranslator(t)
 		box, _, outerFiltered := mk()
 		outerBare := logical.NewJoinWithPredicate(box, scan("TypedRecord", "tr"), logical.JoinLeft, nil)
 		rootBare := inner(outerBare, scan("Order", "o2"))
@@ -167,6 +172,7 @@ func TestGatedLegBox_ConsumersSeeThroughTheFilter(t *testing.T) {
 
 	t.Run("positional_box_gate_admits_a_filtered_cluster_leg_and_still_excludes_a_projected_one", func(t *testing.T) {
 		t.Parallel()
+		tr := newGateTranslator(t)
 		box, filtered, _ := mk()
 		full := logical.NewJoinWithPredicate(filtered, scan("TypedRecord", "tr"), logical.JoinFull, nil)
 		if !tr.boxGatesFresh(full) {
