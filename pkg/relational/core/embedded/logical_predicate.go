@@ -3615,6 +3615,13 @@ func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.Re
 
 	op := buildLogicalPlanForSelect(sq)
 	if op == nil || md == nil || sq == nil {
+		// Returned WITHOUT the ON-EXISTS fold (_postBuild) — sound only because
+		// the fold has nothing to do here: the one producer of a parked
+		// ON-EXISTS, upgradeJoinOnPredicates, runs inside _postBuild and needs
+		// the catalog, so a plan built with no md never carries one. Should a
+		// producer ever run before this point, route this return through the
+		// fold too; the translator's translateJoin assertion refuses an unfolded
+		// join rather than planning it without its quantifier.
 		return op, nil
 	}
 	// Java's generateAccess resolves a FROM identifier table-first at EVERY
