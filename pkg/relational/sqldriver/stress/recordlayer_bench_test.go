@@ -53,7 +53,7 @@ func TestFDB_SQLParallelConnections(t *testing.T) {
 			chunkSize := (n + cfg.workers - 1) / cfg.workers
 
 			var wg sync.WaitGroup
-			var firstErr atomic.Value
+			var firstErr firstStressError
 
 			for w := range cfg.workers {
 				wStart := w * chunkSize
@@ -70,7 +70,7 @@ func TestFDB_SQLParallelConnections(t *testing.T) {
 					dsn := fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=main", dbPath, clusterFilePath)
 					workerDB, openErr := sql.Open("fdbsql", dsn)
 					if openErr != nil {
-						firstErr.CompareAndSwap(nil, openErr)
+						firstErr.Record(openErr)
 						return
 					}
 					defer workerDB.Close()
@@ -87,7 +87,7 @@ func TestFDB_SQLParallelConnections(t *testing.T) {
 						}
 						stmt := fmt.Sprintf("INSERT INTO items VALUES %s", strings.Join(rows, ", "))
 						if _, execErr := workerDB.ExecContext(context.Background(), stmt); execErr != nil {
-							firstErr.CompareAndSwap(nil, execErr)
+							firstErr.Record(execErr)
 							return
 						}
 						totalWritten.Add(int64(end - offset))

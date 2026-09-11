@@ -58,7 +58,7 @@ func TestFDB_RawIngestBench(t *testing.T) {
 			chunkSize := (n + cfg.workers - 1) / cfg.workers
 
 			var wg sync.WaitGroup
-			var firstErr atomic.Value
+			var firstErr firstStressError
 
 			for w := range cfg.workers {
 				wStart := w * chunkSize
@@ -86,7 +86,7 @@ func TestFDB_RawIngestBench(t *testing.T) {
 							tx.Set(key, val)
 						}
 						if commitErr := tx.Commit(ctx); commitErr != nil {
-							firstErr.CompareAndSwap(nil, commitErr)
+							firstErr.Record(commitErr)
 							return
 						}
 						totalWritten.Add(int64(end - offset))
@@ -154,7 +154,7 @@ func TestFDB_RawReadScaling(t *testing.T) {
 			start := time.Now()
 			var totalRead atomic.Int64
 			var wg sync.WaitGroup
-			var firstErr atomic.Value
+			var firstErr firstStressError
 
 			for w := range workers {
 				wStart := w * chunkSize
@@ -185,7 +185,7 @@ func TestFDB_RawReadScaling(t *testing.T) {
 								// off and resets the tx; retry the same key. Non-retryable, or
 								// readCtx expired (a permanently-behind SS) → fatal, bounded.
 								if onErr := tx.OnError(readCtx, getErr); onErr != nil {
-									firstErr.CompareAndSwap(nil, getErr)
+									firstErr.Record(getErr)
 									return
 								}
 								continue // tx reset by OnError; retry key i with a fresh read version
@@ -250,7 +250,7 @@ func TestFDB_SaveRecordBatchScaling(t *testing.T) {
 			start := time.Now()
 			var totalWritten atomic.Int64
 			var wg sync.WaitGroup
-			var firstErr atomic.Value
+			var firstErr firstStressError
 
 			for w := range workers {
 				wStart := w * chunkSize
@@ -288,7 +288,7 @@ func TestFDB_SaveRecordBatchScaling(t *testing.T) {
 							return nil, err
 						})
 						if runErr != nil {
-							firstErr.CompareAndSwap(nil, runErr)
+							firstErr.Record(runErr)
 							return
 						}
 						totalWritten.Add(int64(end - offset))
@@ -347,7 +347,7 @@ func TestFDB_SaveRecordPerRowScaling(t *testing.T) {
 			var openNanos, saveNanos, commitNanos atomic.Int64
 			var retryCount atomic.Int64
 			var wg sync.WaitGroup
-			var firstErr atomic.Value
+			var firstErr firstStressError
 
 			for w := range workers {
 				wStart := w * chunkSize
@@ -393,7 +393,7 @@ func TestFDB_SaveRecordPerRowScaling(t *testing.T) {
 						})
 						commitNanos.Add(time.Since(t0).Nanoseconds())
 						if runErr != nil {
-							firstErr.CompareAndSwap(nil, runErr)
+							firstErr.Record(runErr)
 							return
 						}
 						totalWritten.Add(int64(end - offset))
@@ -485,7 +485,7 @@ func TestFDB_SaveRecordConcurrentVsBatch(t *testing.T) {
 			fn: func(store *recordlayer.FDBRecordStore, offset, end int) error {
 				sem := make(chan struct{}, n)
 				var wg sync.WaitGroup
-				var firstErr atomic.Value
+				var firstErr firstStressError
 				for i := offset; i < end; i++ {
 					if v := firstErr.Load(); v != nil {
 						break
@@ -496,13 +496,13 @@ func TestFDB_SaveRecordConcurrentVsBatch(t *testing.T) {
 						defer func() { <-sem; wg.Done() }()
 						msg := &gen.Order{OrderId: protopkg.Int64(int64(id)), Price: protopkg.Int32(int32(id * 7))}
 						if _, err := store.SaveRecord(msg); err != nil {
-							firstErr.CompareAndSwap(nil, err)
+							firstErr.Record(err)
 						}
 					}(i)
 				}
 				wg.Wait()
 				if v := firstErr.Load(); v != nil {
-					return v.(error)
+					return v
 				}
 				return nil
 			},

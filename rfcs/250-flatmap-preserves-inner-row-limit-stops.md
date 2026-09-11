@@ -205,3 +205,41 @@ below so total-duration improvement cannot hide an individual movement.
 | full_scan_sparse_filter | 97 | 3.659 s | 3.617 s | 3.607 s | 3.638 s |
 | update_by_index | 8 | 9.736 ms | 9.785 ms | 9.497 ms | 10.802 ms |
 | delete_single_row | 1 | 7.881 ms | 7.499 ms | 7.684 ms | 6.855 ms |
+
+## Merge-gate nightly triage (2026-09-11)
+
+PR #780 exposed red nightly results at baseline `0ebf8c715`, independently of
+its passing local suite. These are a merge hold, not a claim that the FlatMap
+change repairs the nightly nets:
+
+- Stress run **34581663684**: the FDB container exited with code 1 and
+  `oomkilled=false`. The concurrent benchmark error collector then panicked:
+  `atomic.Value.CompareAndSwap(nil, err)` rejects differing concrete error
+  types even when the slot is already occupied. The shared test-only
+  `firstStressError` now uses `atomic.Pointer[error]`; both benchmark files use
+  it. The mixed-type unit regression failed on the old holder and passed on
+  the new one, along with the concurrent case and all seven raw-ingest
+  configurations. **The underlying CI FDB container exit remains under
+  investigation; fixing its error reporter does not fix that exit.**
+- Engine-fuzz run **34581554992**: `FuzzPlanCacheScope_Injective` ran 29,283,265
+  iterations then failed with `context deadline exceeded` at its 90-second
+  boundary. `FuzzPlanner_LimitOverUnion_NoPanic` panicked during fixture
+  construction on offset -4 (saved input `1788cc2b9ac05503`). Both still need
+  root-cause closure and regression verification.
+- RowDiff run **34562900341**: both sweeps lost the FDB connection, exhausted
+  their consecutive-INFRA guard, and fell below the seed floor. The downloaded
+  forensic artifact is `rowdiff-fdb-forensics` from that run. No wrong-row
+  mismatch was reported in the measured prefixes; the incomplete sweeps are
+  not a clean engine verdict.
+- Factory run **34574477084** and Coverage run **34572810594** were interrupted
+  by runner shutdown. The later stress job's kernel log identifies an OOM
+  kill of the factory process (PID 2391708, about 7 GiB anonymous RSS). Coverage
+  stopped during its race phase and did not publish a fresh heartbeat.
+- Reconcile run **34604652455** identifies the stale Coverage heartbeat and
+  missing required checks on open PRs #486, #579, #745, and #747. Those PRs
+  are not authorized merge targets of this task; their owner decisions must
+  not be silently substituted by merging or closing them here.
+
+Run URLs are `https://github.com/birdayz/fdb-go/actions/runs/<run ID>`. This
+section records the live investigation so the findings cannot disappear
+behind the completed FlatMap checkbox.
