@@ -351,3 +351,28 @@ change repairs the nightly nets:
 Run URLs are `https://github.com/birdayz/fdb-go/actions/runs/<run ID>`. This
 section records the live investigation so the findings cannot disappear
 behind the completed FlatMap checkbox.
+
+### Standalone-module stdout diagnostic correction
+
+The failing PR step was `GOWORK=off go test ./... -count=1`, not `-race`.
+Its watchdog timeout remains unexplained: repetitions of the whole module,
+including the original host with Go 1.26.6, have not reproduced that timeout.
+The original log contains no adoption, liveness, or signal diagnostics;
+a transient `/proc` miss or ignored pidfile write is a hypothesis, not an
+established cause, and no speculative lifecycle change is included here.
+The watchdog regression now verifies its pidfile setup, retains adoption and
+signal logs through cleanup, and prints tracked-runner and `/proc` state on
+a timeout. One waiter owns child reaping; cleanup joins it and the watchers.
+
+An isolated replay without a package argument exposed a separate deterministic
+failure: after the watchdog test passed, `TestMain` reported the parent `go`
+process as a leaked child. Go streams its own stdout to the test binary in
+this invocation mode (`cmd/go/internal/test/test.go`, `streamOutput`). The
+scanner now excludes the live ancestor chain and ignores regular-file/terminal
+outputs, which have no pipe EOF to obstruct. Subprocess regressions run an
+actual test and its `TestMain` with shared file and shared pipe outputs; both
+failed before the fix. Independent tests retain detection of a child writer
+and rejection of a pipe reader and regular-file holder. Removing each of the
+ancestor, file-mode, and writable-descriptor filters independently reddened
+its corresponding regression. This repairs the diagnostic, not the original
+watchdog timeout, and the latter remains a merge hold.

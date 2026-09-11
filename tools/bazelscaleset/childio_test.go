@@ -2,8 +2,10 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -186,15 +188,26 @@ type stdoutHolder struct {
 	fd   string
 }
 
-// processesHoldingOurStdout returns every OTHER process holding this binary's
-// stdout open for writing.
-//
-// Only writable descriptors count. A pipe's two ends share one inode, so cmd/go
-// — which holds the read end of exactly this pipe — matches on the link target
-// and must be excluded by its open mode; /proc/<pid>/fdinfo's low two flag bits
-// are O_RDONLY(0) for it and O_WRONLY(1) for an inherited stdout.
+// processesHoldingOurStdout detects surviving writers to this binary's output
+// pipe. Files and terminals have no EOF wait to obstruct. Ancestors are not
+// survivors: plain `go test` streams its own stdout to the test binary, so the
+// parent's writable descriptor can legitimately name the same pipe.
 func processesHoldingOurStdout() ([]stdoutHolder, error) {
-	mine, err := os.Readlink("/proc/self/fd/1")
+	return processesHoldingOutput(os.Stdout)
+}
+
+// Only writable descriptors count. A pipe's two ends share one inode, so cmd/go
+// — which holds the read end in buffered mode — must also be excluded by open
+// mode; fdinfo's low two flag bits distinguish a reader from an inherited writer.
+func processesHoldingOutput(output *os.File) ([]stdoutHolder, error) {
+	info, err := output.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeNamedPipe == 0 {
+		return nil, nil
+	}
+	mine, err := os.Readlink(fmt.Sprintf("/proc/self/fd/%d", output.Fd()))
 	if err != nil {
 		return nil, err
 	}
@@ -202,11 +215,14 @@ func processesHoldingOurStdout() ([]stdoutHolder, error) {
 	if err != nil {
 		return nil, err
 	}
-	self := os.Getpid()
+	ancestors, err := stdoutAncestors()
+	if err != nil {
+		return nil, err
+	}
 	var found []stdoutHolder
 	for _, e := range ents {
 		pid, err := strconv.Atoi(e.Name())
-		if err != nil || pid == self {
+		if err != nil || ancestors[pid] {
 			continue
 		}
 		fds, err := os.ReadDir(filepath.Join("/proc", e.Name(), "fd"))
@@ -227,6 +243,31 @@ func processesHoldingOurStdout() ([]stdoutHolder, error) {
 		}
 	}
 	return found, nil
+}
+
+// stdoutAncestors includes this process and its live parent chain. Parent IDs
+// come from stat rather than comm: a process named "go" can itself be a leaked
+// child, while an ancestor's name says nothing about whether its fd is inherited.
+func stdoutAncestors() (map[int]bool, error) {
+	ancestors := make(map[int]bool)
+	for pid := os.Getpid(); pid > 0 && !ancestors[pid]; {
+		ancestors[pid] = true
+		data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+		if err != nil {
+			return nil, err
+		}
+		// comm may contain parentheses and spaces; ppid follows the state field.
+		rparen := strings.LastIndexByte(string(data), ')')
+		fields := strings.Fields(string(data)[rparen+1:])
+		if rparen < 0 || len(fields) < 2 {
+			return nil, fmt.Errorf("invalid /proc/%d/stat: %q", pid, data)
+		}
+		pid, err = strconv.Atoi(fields[1])
+		if err != nil {
+			return nil, err
+		}
+	}
+	return ancestors, nil
 }
 
 func fdIsWritable(pid int, fd string) bool {
@@ -250,17 +291,21 @@ func fdIsWritable(pid int, fd string) bool {
 	return false
 }
 
-// TestStdoutHolderDetectorSeesAnInheritedStdout proves the at-exit detector in
-// TestMain actually detects — a guard that cannot see the thing it guards
-// against reports green forever. A child deliberately given this binary's
-// stdout must be found, and must stop being found once it is gone.
+// TestStdoutHolderDetectorSeesAnInheritedStdout proves the at-exit scanner
+// detects a child holding an output pipe, even if the suite's own output is
+// redirected to a file. The child must stop being reported once it is gone.
 func TestStdoutHolderDetectorSeesAnInheritedStdout(t *testing.T) {
 	t.Parallel()
 
-	// A single process, not a shell wrapping one: Wait then reaps the only holder,
-	// so this test cannot itself leave a straggler for TestMain to trip over.
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reader.Close(); _ = writer.Close() })
+	// A single process, not a shell wrapping one: Wait then reaps the only holder.
+	// Use a private pipe even when this suite's own stdout is a file or terminal.
 	cmd := exec.Command("sleep", "30")
-	cmd.Stdout = os.Stdout // exactly what startLocal used to hard-wire
+	cmd.Stdout = writer
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
@@ -268,19 +313,19 @@ func TestStdoutHolderDetectorSeesAnInheritedStdout(t *testing.T) {
 	pid := cmd.Process.Pid
 	t.Cleanup(func() { _ = syscall.Kill(-pid, syscall.SIGKILL); _, _ = cmd.Process.Wait() })
 
-	holders, err := processesHoldingOurStdout()
+	holders, err := processesHoldingOutput(writer)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !slicesContainsPID(holders, pid) {
-		t.Fatalf("detector missed pid %d, which was handed this binary's stdout; holders=%v", pid, holders)
+		t.Fatalf("detector missed pid %d, which was handed the private output pipe; holders=%v", pid, holders)
 	}
 
 	_ = syscall.Kill(-pid, syscall.SIGKILL)
 	_, _ = cmd.Process.Wait()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		holders, err = processesHoldingOurStdout()
+		holders, err = processesHoldingOutput(writer)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -294,12 +339,122 @@ func TestStdoutHolderDetectorSeesAnInheritedStdout(t *testing.T) {
 	}
 }
 
+func TestStdoutHolderDetectorIgnoresNonblockingHolders(t *testing.T) {
+	t.Parallel()
+
+	for _, pipe := range []bool{false, true} {
+		t.Run(fmt.Sprintf("pipe=%t", pipe), func(t *testing.T) {
+			t.Parallel()
+			var output *os.File
+			fd := 1
+			cmd := exec.Command("sleep", "30")
+			if pipe {
+				reader, writer, err := os.Pipe()
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = reader.Close(); _ = writer.Close() })
+				output = writer
+				cmd.ExtraFiles = []*os.File{reader}
+				fd = 3 // a reader cannot prevent EOF on this pipe
+			} else {
+				file, err := os.CreateTemp(t.TempDir(), "output")
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = file.Close() })
+				output, cmd.Stdout = file, file
+			}
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+			mine, err := os.Readlink(fmt.Sprintf("/proc/self/fd/%d", output.Fd()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			target, err := os.Readlink(fmt.Sprintf("/proc/%d/fd/%d", cmd.Process.Pid, fd))
+			if err != nil || target != mine {
+				t.Fatalf("child does not hold the expected output: target=%q want=%q err=%v", target, mine, err)
+			}
+			holders, err := processesHoldingOutput(output)
+			if err != nil || len(holders) != 0 {
+				t.Fatalf("nonblocking descriptor reported as a leaked writer: holders=%v err=%v", holders, err)
+			}
+		})
+	}
+}
+
+// TestStdoutHolderDetectorAcceptsInheritedOutput runs TestMain with the same
+// writable output held by its parent. Plain `go test` in the current directory
+// streams output this way; its own descriptor is not a leaked child.
+func TestStdoutHolderDetectorAcceptsInheritedOutput(t *testing.T) {
+	t.Parallel()
+
+	for _, pipe := range []bool{false, true} {
+		t.Run(fmt.Sprintf("pipe=%t", pipe), func(t *testing.T) {
+			t.Parallel()
+			binary, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			output, err := os.CreateTemp(t.TempDir(), "output")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = output.Close() })
+			dest := output
+			var copied chan error
+			if pipe {
+				reader, writer, err := os.Pipe()
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = reader.Close(); _ = writer.Close() })
+				dest = writer
+				copied = make(chan error, 1)
+				go func() {
+					_, err := io.Copy(output, reader)
+					copied <- err
+				}()
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, binary, "-test.run=^TestConfigLabels$", "-test.v")
+			cmd.Stdout, cmd.Stderr = dest, dest
+			runErr := cmd.Run()
+			if pipe {
+				_ = dest.Close()
+				select {
+				case err := <-copied:
+					if err != nil {
+						t.Fatal(err)
+					}
+				case <-ctx.Done():
+					t.Fatal("child output did not close after the child exited")
+				}
+			}
+			body, err := os.ReadFile(output.Name())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if runErr != nil {
+				t.Fatalf("TestMain rejected output inherited from the parent: %v\n%s", runErr, body)
+			}
+			if !strings.Contains(string(body), "--- PASS: TestConfigLabels") {
+				t.Fatalf("child test did not execute successfully:\n%s", body)
+			}
+		})
+	}
+}
+
 func slicesContainsPID(hs []stdoutHolder, pid int) bool {
 	return slices.ContainsFunc(hs, func(h stdoutHolder) bool { return h.pid == pid })
 }
 
-// TestMain fails the package if any process still holds this binary's stdout
-// once the tests are done — the exact condition behind "Test I/O incomplete".
+// TestMain fails the package if a non-ancestor process still holds this binary's
+// output pipe for writing once the tests are done. Ancestors sharing streamed
+// output, regular files, and terminals are not evidence of "Test I/O incomplete".
 //
 // This is a net, not a pin: it fires only when a straggler actually survives,
 // which is what the two invariant tests above exist to prevent. Its value is
@@ -322,8 +477,8 @@ func TestMain(m *testing.M) {
 			fmt.Fprintf(os.Stderr, "leaked child: pid %d (%s) still holds this test binary's "+
 				"stdout on fd %s after all tests finished\n", h.pid, h.comm, h.fd)
 		}
-		fmt.Fprintf(os.Stderr, "%d process(es) outlived the tests holding this binary's stdout; "+
-			"cmd/go will now block until its WaitDelay expires and report \"Test I/O incomplete\". "+
+		fmt.Fprintf(os.Stderr, "%d process(es) outlived the tests holding this binary's output pipe; "+
+			"a buffered cmd/go reader can block until its WaitDelay expires and report \"Test I/O incomplete\". "+
 			"A launcher must not hand a long-lived child os.Stdout, and a cleanup must wait for "+
 			"the process group to be gone rather than merely signalling it.\n", len(holders))
 		if code == 0 {
