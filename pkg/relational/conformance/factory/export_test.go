@@ -47,3 +47,6 @@ func TLPEligibleForTest(q rowdiff.Query) bool { return tlpEligible(q) }
 func CheckPartitionForTest(unfiltered, pos, neg, unknown [][]any) string {
 	return checkPartition(unfiltered, pos, neg, unknown)
 }
+
+// LoadedFamilyCountForTest reports parsed family documents retained by a batch.
+func LoadedFamilyCountForTest(b *Batch) int { return len(b.families) }

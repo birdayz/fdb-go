@@ -220,6 +220,15 @@ func TestWithProcessCount_Invalid(t *testing.T) {
 	}
 }
 
+// TestDefaultOptions_DisablesKAIO pins the fixture-wide workaround without
+// requiring Docker. Container tests prove the selected backend's behavior.
+func TestDefaultOptions_DisablesKAIO(t *testing.T) {
+	t.Parallel()
+	if got := defaultOptions().knobs["disable_posix_kernel_aio"]; got != "1" {
+		t.Fatalf("disable_posix_kernel_aio default = %q, want 1", got)
+	}
+}
+
 // TestWithKnob_InvalidName verifies knob name validation.
 func TestWithKnob_InvalidName(t *testing.T) {
 	t.Parallel()

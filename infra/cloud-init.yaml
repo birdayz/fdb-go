@@ -215,8 +215,11 @@ write_files:
       if [ "$(systemctl is-enabled "$UNIT" 2>/dev/null)" = "masked" ]; then
         exit 0
       fi
-      # Dead process -> restart (Restart=always usually beats us; this is the backstop).
       if ! systemctl is-active --quiet "$UNIT"; then
+        if pgrep -f '[R]unner.Worker' >/dev/null; then
+          echo "$UNIT not active, but Runner.Worker is still active; deferring restart"
+          exit 0
+        fi
         echo "$UNIT not active, restarting"
         systemctl restart "$UNIT"
         exit 0
@@ -583,7 +586,7 @@ runcmd:
       # listener comes up beside a masked Docker and fails every job it claims. Requires=
       # also means the watchdog's restart re-runs the gate instead of routing around it.
       install -d "/etc/systemd/system/$RUNNER_UNIT.d"
-      printf '[Unit]\nRequires=ci-docker-gate.service\nAfter=ci-docker-gate.service\n' \
+      printf '[Unit]\nRequires=ci-docker-gate.service\nAfter=ci-docker-gate.service\n\n[Service]\nOOMPolicy=continue\nKillMode=process\n' \
         > "/etc/systemd/system/$RUNNER_UNIT.d/ci-docker-gate.conf"
       systemctl daemon-reload
       ( cd "$RUNNER_DIR" && ./svc.sh start )

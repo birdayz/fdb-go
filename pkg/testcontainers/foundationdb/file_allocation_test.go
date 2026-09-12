@@ -81,38 +81,54 @@ func TestRun_InterruptedFileAllocation(t *testing.T) {
 // this, revisit the workaround rather than silently retaining a stale default.
 func TestRun_KAIOOverride(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
+	for _, onDisk := range []bool{false, true} {
+		name := "tmpfs"
+		if onDisk {
+			name = "disk"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
 
-	var serverLog []byte
-	var logErr error
-	captureLog := func(ctx context.Context, ctr testcontainers.Container) error {
-		reader, err := ctr.Logs(ctx)
-		if err != nil {
-			logErr = err
-			return err
-		}
-		defer reader.Close()
-		serverLog, logErr = io.ReadAll(reader)
-		return logErr
+			var serverLog []byte
+			var logErr error
+			captureLog := func(ctx context.Context, ctr testcontainers.Container) error {
+				reader, err := ctr.Logs(ctx)
+				if err != nil {
+					logErr = err
+					return err
+				}
+				defer reader.Close()
+				serverLog, logErr = io.ReadAll(reader)
+				return logErr
+			}
+			// One attempt suffices for the negative control; do not retry a server
+			// deliberately configured to exercise the upstream failure.
+			opts := []testcontainers.ContainerCustomizer{
+				WithKnob("disable_posix_kernel_aio", "0"),
+				withInterruptedFallocate(),
+				testcontainers.WithLifecycleHooks(testcontainers.ContainerLifecycleHooks{
+					PreTerminates: []testcontainers.ContainerHook{captureLog},
+				}),
+			}
+			if onDisk {
+				opts = append(opts, WithDataOnDisk())
+			}
+			container, err := runOnce(ctx, "", opts...)
+			if container != nil {
+				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cleanupCancel()
+				if err := container.Terminate(cleanupCtx); err != nil {
+					t.Errorf("terminate: %v", err)
+				}
+			}
+			if err == nil || ctx.Err() != nil || logErr != nil || !strings.Contains(string(serverLog), "Fatal Error: Disk i/o operation failed") {
+				t.Fatalf("KAIO override did not reproduce the upstream failure: run=%v context=%v logs=%v\n%s", err, ctx.Err(), logErr, serverLog)
+			}
+			t.Log("FDB-EINTR: explicit KAIO override reproduced the fatal allocation error")
+		})
 	}
-	// One attempt suffices for the negative control; do not retry a server
-	// deliberately configured to exercise the upstream failure.
-	container, err := runOnce(ctx, "", WithKnob("disable_posix_kernel_aio", "0"),
-		withInterruptedFallocate(), testcontainers.WithLifecycleHooks(testcontainers.ContainerLifecycleHooks{
-			PreTerminates: []testcontainers.ContainerHook{captureLog},
-		}))
-	if container != nil {
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cleanupCancel()
-		if err := container.Terminate(cleanupCtx); err != nil {
-			t.Errorf("terminate: %v", err)
-		}
-	}
-	if err == nil || ctx.Err() != nil || logErr != nil || !strings.Contains(string(serverLog), "Fatal Error: Disk i/o operation failed") {
-		t.Fatalf("KAIO override did not reproduce the upstream failure: run=%v context=%v logs=%v\n%s", err, ctx.Err(), logErr, serverLog)
-	}
-	t.Log("FDB-EINTR: explicit KAIO override reproduced the fatal allocation error")
 }
 
 func withInterruptedFallocate() testcontainers.ContainerCustomizer {

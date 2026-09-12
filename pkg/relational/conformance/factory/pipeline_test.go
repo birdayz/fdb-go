@@ -308,3 +308,36 @@ func contains(hay, needle string) bool {
 	}
 	return false
 }
+
+// TestNewBatchLoadsExistingFamiliesLazily pins the memory dimension that made
+// the nightly generator retain every parsed scenario for the whole run.
+func TestNewBatchLoadsExistingFamiliesLazily(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	seed, err := factory.NewBatch(dir, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const single = "shape=single;idx=A;proj=star;where=cmp.eq;order=none"
+	const join = "shape=join2.inner;idx=A;proj=star;where=cmp.eq;order=none"
+	if _, err := seed.Offer(blessedOutcome(t, "fc_lazy_single", single, "aaaaaaaaaaaaaaaa")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := seed.Offer(blessedOutcome(t, "fc_lazy_join", join, "bbbbbbbbbbbbbbbb")); err != nil {
+		t.Fatal(err)
+	}
+
+	batch, err := factory.NewBatch(dir, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := factory.LoadedFamilyCountForTest(batch); got != 0 {
+		t.Fatalf("NewBatch retained %d parsed existing families, want 0", got)
+	}
+	if _, err := batch.Offer(blessedOutcome(t, "fc_lazy_append", single, "cccccccccccccccc")); err != nil {
+		t.Fatal(err)
+	}
+	if got := factory.LoadedFamilyCountForTest(batch); got != 1 {
+		t.Fatalf("after one append retained %d parsed families, want only the touched family", got)
+	}
+}

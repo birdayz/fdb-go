@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 )
 
@@ -45,11 +46,40 @@ type Census struct {
 // agrees with the producer by construction and would stay green through a
 // batch that wrote nothing to disk.
 func ComputeCensus(scenarios []*Scenario) Census {
-	c := Census{
+	c := newCensus()
+	addToCensus(&c, scenarios)
+	return c
+}
+
+// ComputeCensusDir measures a corpus one family file at a time. A generated
+// corpus can contain thousands of parsed YAML scenarios; retaining every
+// family simultaneously makes the generation lane's final verification use
+// memory proportional to the entire corpus rather than its largest file.
+func ComputeCensusDir(dir string) (Census, error) {
+	c := newCensus()
+	matches, err := filepath.Glob(filepath.Join(dir, "*.yamsql"))
+	if err != nil {
+		return c, err
+	}
+	for _, path := range matches {
+		file, err := Load(path)
+		if err != nil {
+			return c, err
+		}
+		addToCensus(&c, file.Scenarios)
+	}
+	return c, nil
+}
+
+func newCensus() Census {
+	return Census{
 		ByFeature:     map[string]int{},
 		ByBlessing:    map[string]int{},
 		ByKeyBlessing: map[string]string{},
 	}
+}
+
+func addToCensus(c *Census, scenarios []*Scenario) {
 	for _, s := range scenarios {
 		c.Scenarios++
 		c.Tests += len(s.Doc.Tests)
@@ -57,7 +87,6 @@ func ComputeCensus(scenarios []*Scenario) Census {
 		c.ByBlessing[string(s.Header.Blessing)]++
 		c.ByKeyBlessing[s.Header.DedupKey] = string(s.Header.Blessing)
 	}
-	return c
 }
 
 // LoadCensus reads a committed census baseline.

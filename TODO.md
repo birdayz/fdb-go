@@ -10152,3 +10152,28 @@ in RFC-250's completed stress comparison, not inferred from total time.
   artifact identities and the exact UTC interval are recorded in RFC-250. This
   closes the corrected-timer observation hold, not the separate Factory memory
   growth, Coverage runner OOM, or historical watchdog timeout.
+
+### RFC-250 unresolved final merge holds
+
+- [x] Re-measure the fixture-only KAIO-to-EIO point-lookup shift with at least
+  three sequential samples per source state. Nine PK lookups per backend were
+  5.01–18.99 ms under KAIO and 5.92–9.08 ms under EIO; all six runs executed
+  24 RUN lines and passed. The earlier monotone shift did not reproduce. Exact
+  source/patch identities, totals, and the no-speedup caveat are in RFC-250.
+- [x] Repair the Factory batch's measured live-heap retention. Nightly run
+  34680445556 was OOM-killed at 7.4 GiB RSS. The identical 400-seed/1,000-commit
+  probe retained 2,969 MiB before; lazy family retention plus streaming census
+  reduced the final and maximum live heap to 1,532 MiB with identical manifest
+  counts (2,127 generated/executed, 1,000 committed, 9,150 census scenarios).
+  `TestNewBatchLoadsExistingFamiliesLazily` pins zero retained existing families
+  and one retained family after an append.
+- [x] Repair the classic Actions runner's OOM lifecycle. Coverage run
+  34679494723 lost `Runner.Listener`; the installed unit had `OOMPolicy=stop`,
+  `KillMode=process`, and `Restart=no`. The classic unit drop-in now sets
+  `OOMPolicy=continue` and pins `KillMode=process`; its watchdog defers listener
+  restart while the surviving `Runner.Worker` finishes, preventing a second
+  concurrent claim. `infra/link_ci_volume_test.sh` pins both coupled arms and
+  the self-match-safe worker probe.
+- [ ] Reproduce and root-cause the historical
+  `TestAdoptedRunnerWatchdogReclaims` timeout from CI run 34613512453. Later
+  passes and added diagnostics do not explain or fix the original timeout.

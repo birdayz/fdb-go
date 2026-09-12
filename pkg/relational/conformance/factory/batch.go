@@ -124,7 +124,6 @@ func NewBatch(dir string, quota int) (*Batch, error) {
 				return nil, fmt.Errorf("existing corpus already holds scenario %s twice (dedup keys %s, %s)", sc.Header.Name, prev, sc.Header.DedupKey)
 			}
 			b.names[sc.Header.Name] = sc.Header.DedupKey
-			b.families[f.Family] = append(b.families[f.Family], sc)
 		}
 	}
 	return b, nil
@@ -194,8 +193,20 @@ func (b *Batch) Offer(o Outcome) (string, error) {
 
 	family := factorycorpus.FamilyOf(o.Header.FeatureVector)
 	path := filepath.Join(b.Dir, factorycorpus.FamilyFileName(family))
+	familyEntries, loaded := b.families[family]
+	if !loaded {
+		if _, err := os.Stat(path); err == nil {
+			existing, err := factorycorpus.Load(path)
+			if err != nil {
+				return "", fmt.Errorf("load family %s for append: %w", family, err)
+			}
+			familyEntries = existing.Scenarios
+		} else if !os.IsNotExist(err) {
+			return "", fmt.Errorf("stat family %s: %w", family, err)
+		}
+	}
 	entry := &factorycorpus.Scenario{Path: path, Header: o.Header, Doc: o.Scenario}
-	entries := append(append([]*factorycorpus.Scenario{}, b.families[family]...), entry)
+	entries := append(append([]*factorycorpus.Scenario{}, familyEntries...), entry)
 	data, err := factorycorpus.MarshalFamily(entries)
 	if err != nil {
 		return "", fmt.Errorf("marshal family %s: %w", family, err)
@@ -265,11 +276,11 @@ func (b *Batch) Finish(seedStart, seeds uint64, date, blessingMode string) (Mani
 	b.manifest.Quota = b.Quota
 	b.manifest.BlessingMode = blessingMode
 	b.manifest.DedupPoints = len(b.seen)
-	files, err := factorycorpus.LoadDir(b.Dir)
+	census, err := factorycorpus.ComputeCensusDir(b.Dir)
 	if err != nil {
 		return b.manifest, err
 	}
-	b.manifest.Census = factorycorpus.ComputeCensus(files)
+	b.manifest.Census = census
 	return b.manifest, nil
 }
 

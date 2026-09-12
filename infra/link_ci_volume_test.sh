@@ -383,4 +383,21 @@ case "$(printf '%s\n' "$classic" | grep -v '^ *#')" in
   *) ok "classic mode configures no heartbeat arm (deliberate — see infra/README.md)" ;;
 esac
 
+# 24. A classic listener OOM must not make systemd stop the in-flight worker.
+#     Both properties are required: OOMPolicy preserves the sibling, and
+#     KillMode prevents a later listener operation from killing its process group.
+case "$classic" in
+  *'OOMPolicy=continue'*'KillMode=process'*) ok "classic runner preserves an in-flight worker when its listener is OOM-killed" ;;
+  *) bad "classic runner drop-in lacks OOMPolicy=continue + KillMode=process" ;;
+esac
+
+# 25. The watchdog must defer a dead-listener restart while that preserved worker
+#     exists. The bracketed pgrep spelling is load-bearing: an unbracketed
+#     `pgrep -f Runner.Worker` matches its own argv and defers forever.
+watchdog=$(sed -n '/path: \/usr\/local\/bin\/runner-watchdog.sh/,/^  - path:/p' infra/cloud-init.yaml)
+case "$watchdog" in
+  *"pgrep -f '[R]unner.Worker'"*'deferring restart'*) ok "watchdog defers listener restart only while a worker survives" ;;
+  *) bad "watchdog does not guard dead-listener restart with a self-match-safe worker probe" ;;
+esac
+
 [ "$fail" = 0 ] && echo "ALL OK" || { echo "FAILURES"; exit 1; }

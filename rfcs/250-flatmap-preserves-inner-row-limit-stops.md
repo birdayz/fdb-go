@@ -345,8 +345,8 @@ change repairs the nightly nets:
   the last-inspect and RowDiff-output artifact SHA-256 values are respectively
   `c2986889bbec626b526ee2cd1569618681a64806385997ac405381b35696738c`
   and `0514b754a43231d2dc65d0dded64220ffb941736d16e99ae5855303561301259`.
-  This observed keep decision closes the corrected-timer hold; it does not
-  explain the separate Factory memory growth or Coverage runner OOM below.
+  This observed keep decision closes the corrected-timer hold. The separate
+  Factory and Coverage OOM causes are resolved below.
 - Factory run **34574477084** and Coverage run **34572810594** were interrupted
   by runner shutdown. The later stress job's kernel log identifies an OOM
   kill of the factory process (PID 2391708, about 7 GiB anonymous RSS). Coverage
@@ -364,6 +364,23 @@ change repairs the nightly nets:
 Run URLs are `https://github.com/birdayz/fdb-go/actions/runs/<run ID>`. This
 section records the live investigation so the findings cannot disappear
 behind the completed FlatMap checkbox.
+
+The Factory OOM was eager corpus retention, not corpus execution: `NewBatch`
+kept all 437 parsed family files for the whole generation run, and `Finish`
+loaded the complete corpus again for its census. The repair seeds dedup/name
+indexes one family at a time, loads only families a batch appends, and computes
+the census one family at a time. Identical 400-seed/1,000-commit probes reduced
+maximum live heap from 2,969 MiB to 1,532 MiB while preserving all manifest
+counts (2,127 generated/executed, 1,000 committed, 9,150 census scenarios).
+`TestNewBatchLoadsExistingFamiliesLazily` pins the missing memory dimension.
+
+Coverage run **34679494723** exposed a separate classic-runner lifecycle bug:
+the kernel selected `Runner.Listener`, while the installed unit's
+`OOMPolicy=stop` stopped the service and its `Restart=no` left it dead. Classic
+mode now installs `OOMPolicy=continue` with `KillMode=process`; if the listener
+dies while `Runner.Worker` survives, the watchdog waits for that worker rather
+than starting a second listener that can claim a concurrent job. The infra
+shell suite pins both coupled arms and its self-match-safe process probe.
 
 ### Standalone-module stdout diagnostic correction
 
@@ -479,9 +496,20 @@ All four uncached invocations executed 24 RUN lines and passed. Each emitted
 EXPLAIN texts. Normalized rows were byte-identical (SHA-256
 `f0c64f51135738fb51b434deea91a4a6baef982e0a3e899275078f1d1c222f29`),
 as were plans (`48ffbbf33c31a7f9696cdbfd4aced3afe3a2591578794df47b86711e76230ccb`).
-This supports no speedup claim: load differed, one after `ORDER BY PK` sample
-was 7.87 s while the other three were 4.20–4.22 s, and point lookups remained
-above the aspirational 5 ms threshold in every state (9.17–12.52 ms before,
-13.70–46.28 ms after). Total duration and result/plan identity show no broad
-regression, but they do not bound individual latency; the complete logs are
-retained with the PR evidence.
+This supports no speedup claim: one after `ORDER BY PK` sample was 7.87 s
+while the other three were 4.20–4.22 s. It also exposes an unexplained,
+monotone point-lookup shift: every after sample (13.70–46.28 ms) was slower
+than every before sample (9.17–12.52 ms), despite lower starting load in the
+after runs, and every sample exceeded the aspirational 5 ms threshold. Of the
+three changed production blobs, the fixture's KAIO-to-EIO switch is the one
+with a plausible server-I/O mechanism. Total duration and result/plan identity
+do not bound this individual latency. A fixture-only follow-up at the same
+base, with three sequential samples per backend, did not reproduce the shift:
+three PK lookups per sample were 5.01–18.99 ms under KAIO and 5.92–9.08 ms
+under EIO. All six runs executed 24 RUN lines and passed; total durations were
+181.37–189.92 s under KAIO and 169.45–170.12 s under EIO. This closes the
+latency hold without claiming a speedup: the KAIO range contains one whole
+slower sample, and three samples do not price throughput. The options-only
+patch SHA-256 was
+`0b5def0950bd18d862614557463d2b47079c5e0fe03d27c4901e2de4bb8bde05`.
+The complete logs are retained with the PR evidence.

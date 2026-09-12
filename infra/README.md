@@ -123,12 +123,14 @@ FDB the tests run against).
 
 ## Self-healing (cloud-init)
 
-- **`runner-watchdog`** (every 10 min): restarts `WATCH_UNIT` when it is **not active**, and
-  nothing else. It reads `/etc/runner-watchdog.conf`, which the mode branch writes — no
-  config, no action (hardcoding a unit name once burned `NRestarts` of 1143/94/4115/2141 on
-  a binary that was never installed). It skips a **masked** unit, because a mask is a
-  deliberate "never run this here" and a watchdog that restarts through one defeats the
-  enforcement.
+- **`runner-watchdog`** (every 10 min): restarts `WATCH_UNIT` when it is **not active**.
+  A classic runner is the exception while `Runner.Worker` is still alive: its unit pins
+  `OOMPolicy=continue` and `KillMode=process`, so a listener OOM leaves the in-flight job
+  running, and the watchdog waits for that worker instead of starting a second listener
+  beside it. It reads `/etc/runner-watchdog.conf`, which the mode branch writes — no config,
+  no action (hardcoding a unit name once burned `NRestarts` of 1143/94/4115/2141 on a binary
+  that was never installed). It skips a **masked** unit, because a mask is a deliberate
+  "never run this here" and a watchdog that restarts through one defeats the enforcement.
 - **`orphan-fdb-sweep`** (every 5 min): kills FDB testcontainers running > 30 min that were
   started BEFORE the running job's `Runner.Worker` (orphans whose parent test died), and pins
   Ryuk's OOM score so the kernel reaps it last. The start-time comparison is load-bearing and
