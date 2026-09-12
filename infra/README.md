@@ -398,12 +398,14 @@ way and proves nothing — which is what the first draft of that case did, and i
 Note what that does and does not establish: the arms prove the guard's LOGIC with stubs. The
 obsolete age-only timer was observed firing: the runner journal records both RowDiff container
 deletions, and read-only inspection observed the active workers as `Runner.Worker` processes.
-The corrected worker-aware guard was then exercised during RowDiff run 34673258982: the run
-completed all 15,000 seeds over 4h42m while its FDB container stayed live, and the sweep service
-started 40 times, including 35 starts after that container crossed the 1800-second threshold,
-with zero kill decisions. The earlier observed removals prove the unchanged image-name
-enumeration found these tagged containers on this runner; completion with the same container
-still live therefore records the corrected guard's keep rather than an empty enumeration.
+The corrected worker-aware guard was then exercised during RowDiff run 34673258982. Its deep
+sweep executed 12,396 of 15,000 seeds within the normal 3h30 budget, and that sweep's FDB
+container stayed live until normal teardown while the sweep service started 40 times, including
+35 starts after the container crossed the 1800-second threshold, with zero kill decisions. A
+later paging sweep used a second container. The earlier observed removals prove the unchanged
+image-name enumeration found these tagged containers on this runner; the deep-sweep container's
+survival until normal teardown therefore records the corrected guard's keep rather than an
+empty enumeration.
 Future over-age keeps emit `keeping live FDB container`, so the journal directly records the
 protective branch; the stub arms pin that message as well as removal of an older orphan and a
 workerless old container.

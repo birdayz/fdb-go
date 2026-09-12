@@ -10144,10 +10144,12 @@ in RFC-250's completed stress comparison, not inferred from total time.
 ### RFC-250 post-deployment orphan-sweeper observation
 
 - [x] Verify the worker-aware orphan-FDB sweeper against a real long-running lane.
-  RowDiff run 34673258982 completed all 15,000 seeds on `gh-runner-drain-0`.
-  While its FDB container was live, the sweep service started 40 times, including
-  35 starts after the 30-minute threshold, and logged zero kill decisions. Both
-  heartbeat sweeps succeeded. The retained journal SHA-256 is
+  RowDiff run 34673258982 succeeded on `gh-runner-drain-0`: its deep sweep
+  executed 12,396 of 15,000 seeds within the normal 3h30 budget, and its paging
+  sweep executed 932 of 5,000 with a second FDB container. The deep-sweep
+  container remained live until normal teardown while the sweep service started
+  40 times, including 35 starts after the 30-minute threshold, and logged zero
+  kill decisions. The retained journal SHA-256 is
   `e9e4fcef288f3a231db9013730695ab89e5bb18ec1cd2004c21808a275c00022`;
   artifact identities and the exact UTC interval are recorded in RFC-250. This
   closes the corrected-timer observation hold. The Factory and Coverage OOM

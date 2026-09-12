@@ -244,8 +244,10 @@ func TestReadmeDistinguishesLegacySweepFromCorrectedGuard(t *testing.T) {
 	for _, want := range []string{
 		"The obsolete age-only timer was observed firing",
 		"The corrected worker-aware guard was then exercised during RowDiff run 34673258982",
-		"completed all 15,000 seeds over 4h42m while its FDB container stayed live",
-		"including 35 starts after that container crossed the 1800-second threshold",
+		"executed 12,396 of 15,000 seeds within the normal 3h30 budget",
+		"container stayed live until normal teardown",
+		"including 35 starts after the container crossed the 1800-second threshold",
+		"A later paging sweep used a second container",
 		"with zero kill decisions",
 		"Future over-age keeps emit `keeping live FDB container`",
 	} {

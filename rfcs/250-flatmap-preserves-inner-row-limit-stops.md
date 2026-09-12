@@ -334,12 +334,14 @@ change repairs the nightly nets:
   survived unchanged. Deployment mechanics and future update obligations are
   recorded in `infra/README.md`.
 
-  Post-deployment RowDiff run **34673258982** then completed all 15,000 seeds
-  successfully on `gh-runner-drain-0` from 2026-09-12T04:32:11Z through
-  09:14:07Z. During its live-FDB interval, the worker-aware sweep service
-  started 40 times, including 35 starts after the 30-minute age threshold,
-  and logged zero `killing orphan FDB container` decisions. Both heartbeat
-  sweeps reported `sweep_outcome=success` and `paging_outcome=success`.
+  Post-deployment RowDiff run **34673258982** succeeded on
+  `gh-runner-drain-0` from 2026-09-12T04:32:11Z through 09:14:07Z. Its deep
+  sweep executed 12,396 of 15,000 seeds within the normal 3h30 budget; its
+  later paging sweep used a second FDB container and executed 932 of 5,000
+  seeds within the normal 1h10 budget. The deep-sweep container remained live
+  until normal teardown while the worker-aware sweep service started 40 times,
+  including 35 starts after the 30-minute age threshold, and logged zero
+  `killing orphan FDB container` decisions.
   The retained sweeper journal SHA-256 is
   `e9e4fcef288f3a231db9013730695ab89e5bb18ec1cd2004c21808a275c00022`;
   the last-inspect and RowDiff-output artifact SHA-256 values are respectively
