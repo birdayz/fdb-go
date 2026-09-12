@@ -308,3 +308,65 @@ func contains(hay, needle string) bool {
 	}
 	return false
 }
+
+// TestNewBatchLoadsExistingFamiliesLazily pins the memory dimension that made
+// the nightly generator retain every parsed scenario for the whole run.
+func TestNewBatchLoadsExistingFamiliesLazily(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	seed, err := factory.NewBatch(dir, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const single = "shape=single;idx=A;proj=star;where=cmp.eq;order=none"
+	const join = "shape=join2.inner;idx=A;proj=star;where=cmp.eq;order=none"
+	if _, err := seed.Offer(blessedOutcome(t, "fc_lazy_single", single, "aaaaaaaaaaaaaaaa")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := seed.Offer(blessedOutcome(t, "fc_lazy_join", join, "bbbbbbbbbbbbbbbb")); err != nil {
+		t.Fatal(err)
+	}
+
+	detached, err := factory.BatchIndexStringsDetachedForTest(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !detached {
+		t.Fatal("NewBatch indexes retain header strings backed by a complete parsed family")
+	}
+	batch, err := factory.NewBatch(dir, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := factory.LoadedFamilyCountForTest(batch); got != 0 {
+		t.Fatalf("NewBatch retained %d parsed existing families, want 0", got)
+	}
+	if _, err := batch.Offer(blessedOutcome(t, "fc_lazy_append", single, "cccccccccccccccc")); err != nil {
+		t.Fatal(err)
+	}
+	if got := factory.LoadedFamilyCountForTest(batch); got != 1 {
+		t.Fatalf("after one append retained %d parsed families, want only the touched family", got)
+	}
+	family, err := factorycorpus.Load(filepath.Join(dir, factorycorpus.FamilyFileName(factorycorpus.FamilyOf(single))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]bool{}
+	for _, scenario := range family.Scenarios {
+		names[scenario.Header.Name] = true
+	}
+	if len(names) != 2 || !names["fc_lazy_single"] || !names["fc_lazy_append"] {
+		t.Fatalf("cross-batch append did not preserve the existing family: names = %v", names)
+	}
+}
+
+func TestFinishRejectsAnEmptyCorpus(t *testing.T) {
+	t.Parallel()
+	batch, err := factory.NewBatch(t.TempDir(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := batch.Finish(1, 1, "2026-09-12", "test"); err == nil {
+		t.Fatal("Finish accepted a corpus with no committed scenarios")
+	}
+}

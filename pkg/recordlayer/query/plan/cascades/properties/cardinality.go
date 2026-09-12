@@ -5,8 +5,9 @@
 // bound (known int64 or unknown); Cardinalities is a min/max pair.
 //
 // The merge helpers (IntersectCardinalities, UnionCardinalities,
-// WeakenCardinalities) match Java's visitor-private methods exactly,
-// including their unknown-handling semantics.
+// WeakenCardinalities) match Java's visitor-private methods for representable
+// arithmetic. Unrepresentable arithmetic conservatively becomes unknown rather
+// than allowing Java's unchecked long arithmetic to wrap and throw.
 //
 // This file also retains the old EstimateCardinality helpers that wrap
 // the Cost-walk. The new Cardinalities type is a SEPARATE property
@@ -77,6 +78,21 @@ func (c Cardinality) Times(other Cardinality) Cardinality {
 		return UnknownCardinality()
 	}
 	return MultiplyCardinality(c.value, other)
+}
+
+// Plus adds two cardinalities. If either is unknown, the result is unknown.
+// An unrepresentable sum conservatively becomes unknown rather than wrapping.
+// Java's union visitor performs unchecked long addition and then throws in
+// ofCardinality when the wrapped value is negative; weakening the bound follows
+// the same boundary policy as Times and keeps derived planner properties total.
+func (c Cardinality) Plus(other Cardinality) Cardinality {
+	if c.IsUnknown() || other.IsUnknown() {
+		return UnknownCardinality()
+	}
+	if c.value > math.MaxInt64-other.value {
+		return UnknownCardinality()
+	}
+	return OfCardinality(c.value + other.value)
 }
 
 // MultiplyCardinality multiplies an exact non-negative factor by one
@@ -235,8 +251,10 @@ func IntersectCardinalities(items []Cardinalities) Cardinalities {
 }
 
 // UnionCardinalities merges cardinalities for a union operation.
-// Min and max are sums of known components; unknown propagates.
-// Matches Java's CardinalitiesVisitor.unionCardinalities().
+// Min and max are sums of known components; unknown propagates. Representable
+// sums match Java's CardinalitiesVisitor.unionCardinalities(). Plus deliberately
+// weakens overflowing sums to unknown instead of inheriting Java's unchecked
+// long-addition failure.
 func UnionCardinalities(items []Cardinalities) Cardinalities {
 	if len(items) == 0 {
 		return UnknownMaxCardinality()
@@ -247,21 +265,11 @@ func UnionCardinalities(items []Cardinalities) Cardinalities {
 
 	for _, c := range items[1:] {
 		if !minCard.IsUnknown() {
-			curMin := c.GetMinCardinality()
-			if curMin.IsUnknown() {
-				minCard = UnknownCardinality()
-			} else {
-				minCard = OfCardinality(minCard.Value() + curMin.Value())
-			}
+			minCard = minCard.Plus(c.GetMinCardinality())
 		}
 
 		if !maxCard.IsUnknown() {
-			curMax := c.GetMaxCardinality()
-			if curMax.IsUnknown() {
-				maxCard = UnknownCardinality()
-			} else {
-				maxCard = OfCardinality(maxCard.Value() + curMax.Value())
-			}
+			maxCard = maxCard.Plus(c.GetMaxCardinality())
 		}
 	}
 

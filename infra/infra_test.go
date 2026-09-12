@@ -225,6 +225,38 @@ func TestReadmeTokenCommandNamesTheRealRepo(t *testing.T) {
 	}
 }
 
+// TestReadmeDistinguishesLegacySweepFromCorrectedGuard pins the incident evidence's
+// scope. One journal proves the obsolete age-only timer deleted two RowDiff containers;
+// the later deployment journal proves the worker-aware guard kept the live replacement
+// after it crossed the same age threshold. Collapsing those observations made the README
+// contradict itself.
+func TestReadmeDistinguishesLegacySweepFromCorrectedGuard(t *testing.T) {
+	t.Parallel()
+
+	readme, err := os.ReadFile("README.md")
+	if err != nil {
+		t.Fatalf("read README.md: %v", err)
+	}
+	body := strings.Join(strings.Fields(string(readme)), " ")
+	if strings.Contains(body, "neither has the timer been caught firing") {
+		t.Error("README still denies observing any timer firing even though the recorded journal proves the obsolete age-only sweep fired")
+	}
+	for _, want := range []string{
+		"The obsolete age-only timer was observed firing",
+		"The corrected worker-aware guard was then exercised during RowDiff run 34673258982",
+		"executed 12,396 of 15,000 seeds within the normal 3h30 budget",
+		"container stayed live until normal teardown",
+		"including 35 starts after the container crossed the 1800-second threshold",
+		"later paging sweep used a second container and executed 932 of 5,000 seeds within its normal 1h10 budget",
+		"with zero kill decisions",
+		"Future over-age keeps emit `keeping live FDB container`",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("README does not distinguish the observed legacy removal from the corrected guard's observed keep decision; missing %q", want)
+		}
+	}
+}
+
 // TestFleetGoMatchesGoMod pins the runner's system Go to the toolchain the repo
 // actually builds with.
 //

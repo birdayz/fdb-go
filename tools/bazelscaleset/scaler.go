@@ -532,6 +532,7 @@ func (s *Scaler) watchTerminal(r *runner) {
 	defer ticker.Stop()
 
 	var terminalAt time.Time
+	killIssued := false
 	termCh := r.terminal
 	for {
 		select {
@@ -556,14 +557,20 @@ func (s *Scaler) watchTerminal(r *runner) {
 				terminalAt = time.Now()
 			}
 			if time.Since(terminalAt) > s.jobTerminalGrace {
-				s.logger.Warn("job terminal on GitHub but runner still alive past grace; killing and reclaiming slot",
-					slog.String("name", r.name),
-					slog.String("jobId", r.jobID),
-					slog.Int("slot", r.slot.index),
-					slog.String("host", r.slot.host),
-					slog.Duration("grace", s.jobTerminalGrace))
+				if !killIssued {
+					s.logger.Warn("job terminal on GitHub but runner still alive past grace; killing and reclaiming slot",
+						slog.String("name", r.name),
+						slog.String("jobId", r.jobID),
+						slog.Int("slot", r.slot.index),
+						slog.String("host", r.slot.host),
+						slog.Duration("grace", s.jobTerminalGrace))
+					killIssued = true
+				}
+				// Signal delivery is a request, not proof that the runner is gone.
+				// Repeat until wait observes process death and closes done; otherwise
+				// one failed remote command or interrupted local syscall leaves the
+				// terminal runner occupying its slot forever.
 				r.proc.signal(syscall.SIGKILL)
-				return // wait() reaps and frees the slot
 			}
 		}
 	}

@@ -180,17 +180,15 @@ func runOnce(ctx context.Context, img string, opts ...testcontainers.ContainerCu
 		req.Tmpfs = map[string]string{"/var/fdb/data": ""}
 	}
 
-	// When knobs are set, override the entrypoint to patch the startup script.
-	// sed inserts knob args into the fdbserver command line before exec'ing
-	// the original script. This passes --knob_NAME=VALUE to fdbserver.
-	if len(cfg.knobs) > 0 {
-		var knobArgs string
-		for name, value := range cfg.knobs {
-			knobArgs += fmt.Sprintf(" --knob_%s=%s", name, value)
-		}
-		sedCmd := fmt.Sprintf(`sed -i 's|^fdbserver |fdbserver%s |' /var/fdb/scripts/fdb.bash && exec /var/fdb/scripts/fdb.bash`, knobArgs)
-		req.Entrypoint = []string{"/usr/bin/tini", "-g", "--", "/bin/bash", "-c", sedCmd}
+	// The fixture-wide file-I/O backend default means every server has at least
+	// one knob. Override the entrypoint to insert all knob arguments into the
+	// fdbserver command line before executing the original startup script.
+	var knobArgs string
+	for name, value := range cfg.knobs {
+		knobArgs += fmt.Sprintf(" --knob_%s=%s", name, value)
 	}
+	sedCmd := fmt.Sprintf(`sed -i 's|^fdbserver |fdbserver%s |' /var/fdb/scripts/fdb.bash && exec /var/fdb/scripts/fdb.bash`, knobArgs)
+	req.Entrypoint = []string{"/usr/bin/tini", "-g", "--", "/bin/bash", "-c", sedCmd}
 
 	// Attach to custom network if provided.
 	if cfg.network != nil {

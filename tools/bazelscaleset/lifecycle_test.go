@@ -325,24 +325,55 @@ func TestAdoptedRunnerWatchdogReclaims(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	logFile, err := os.Create(filepath.Join(t.TempDir(), "adoption.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = logFile.Close() })
+	logger := slog.New(slog.NewTextHandler(logFile, nil))
+
 	stray := startStrayRunner(t, pool.all[0].runnerDir)
 	pid := stray.Process.Pid
-	t.Cleanup(func() { _ = syscall.Kill(-pid, syscall.SIGKILL); _, _ = stray.Process.Wait() })
-	writeRunnerPID(discardLogger(), pool.all[0].path, pid, "bazelscaleset-s0-99-2")
+	// A direct child remains a zombie until reaped. Give Wait a single owner;
+	// both the assertion and failure cleanup observe its completion channel.
+	done := make(chan struct{})
+	go func() { _ = stray.Wait(); close(done) }()
+	var s *Scaler
+	t.Cleanup(func() {
+		_ = syscall.Kill(-pid, syscall.SIGKILL)
+		<-done
+		if s != nil {
+			s.wg.Wait()
+		}
+		// Retain the decision trail even on a plain, non-verbose CI failure.
+		body, err := os.ReadFile(logFile.Name())
+		if err != nil {
+			t.Error(err)
+		} else {
+			t.Logf("adoption/watchdog trace:\n%s", body)
+		}
+	})
+	const name = "bazelscaleset-s0-99-2"
+	writeRunnerPID(logger, pool.all[0].path, pid, name)
+	data, err := os.ReadFile(filepath.Join(pool.all[0].path, runnerPIDFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if savedPID, savedName := parseRunnerPIDFile(data); savedPID != pid || savedName != name {
+		t.Fatalf("runner pidfile did not record the fixture: %q", data)
+	}
 
-	s := newAdoptScaler(t, &fakeScalerClient{runnerExists: false}, pool, wb, base) // record gone
+	s = newAdoptScaler(t, &fakeScalerClient{runnerExists: false}, pool, wb, base) // record gone
+	s.logger = logger
 	s.jobTerminalGrace = 150 * time.Millisecond
 	s.terminalPoll = 40 * time.Millisecond
 	s.adoptOrReapStrayRunners()
 
-	// The stray is a direct child of this test: it stays a zombie (which still
-	// answers kill(pid, 0)) until reaped, so death is observed via Wait.
-	done := make(chan struct{})
-	go func() { _, _ = stray.Process.Wait(); close(done) }()
 	select {
 	case <-done:
 	case <-time.After(10 * time.Second):
-		t.Fatal("terminal watchdog did not reclaim the adopted zombie runner")
+		t.Fatalf("terminal watchdog did not reclaim the adopted zombie runner: tracked=%d pgid=%d cmdline=%q signal0=%v",
+			s.count(), procPGID(pid), procCmdline(pid), syscall.Kill(pid, 0))
 	}
 	waitFor(t, 10*time.Second, slotFree(pool))
 }

@@ -215,8 +215,11 @@ write_files:
       if [ "$(systemctl is-enabled "$UNIT" 2>/dev/null)" = "masked" ]; then
         exit 0
       fi
-      # Dead process -> restart (Restart=always usually beats us; this is the backstop).
       if ! systemctl is-active --quiet "$UNIT"; then
+        if [ "$${WATCH_DEFER_WHILE_WORKER:-0}" = 1 ] && pgrep -f '[R]unner.Worker' >/dev/null; then
+          echo "$UNIT not active, but Runner.Worker is still active; deferring restart"
+          exit 0
+        fi
         echo "$UNIT not active, restarting"
         systemctl restart "$UNIT"
         exit 0
@@ -259,16 +262,10 @@ write_files:
       [Install]
       WantedBy=timers.target
 
-  # Orphan-FDB-container sweep: under memory pressure the OOM-killer takes testcontainers'
-  # ~14 MB Ryuk reaper out first, and the FDB containers it would have reaped become
-  # orphans leaking ~700 MB RSS each. See `automemory/project_hetzner_runner_fdbserver_leak.md`.
   - path: /usr/local/bin/orphan-fdb-sweep.sh
     permissions: "0755"
     content: |
       #!/bin/bash
-      # Match by IMAGE NAME, not `--filter ancestor=foundationdb/foundationdb`: an
-      # untagged ancestor filter matches no `:7.3.77`-tagged container, which made this
-      # whole sweep a silent exit-0 no-op for weeks.
       set -uo pipefail
       now=$(date -u +%s)
       # Job start, 0 idle. LOAD-BEARING: -x, etimes, fail-closed. See README.
@@ -290,9 +287,12 @@ write_files:
             started=$(docker inspect -f '{{.State.StartedAt}}' "$id" 2>/dev/null || true)
             [ -z "$${started:-}" ] && continue
             sepoch=$(date -u -d "$started" +%s 2>/dev/null || echo "$now")
-            # Newer than the worker: live. Older: orphan.
-            [ "$wstart" -gt 0 ] && [ "$sepoch" -ge "$wstart" ] && continue
             age=$(( now - sepoch ))
+            # Newer than the worker: live. Older: orphan.
+            if [ "$wstart" -gt 0 ] && [ "$sepoch" -ge "$wstart" ]; then
+              [ "$age" -gt 1800 ] && echo "keeping live FDB container $id ($image, running $${age}s; newer than worker)"
+              continue
+            fi
             if [ "$age" -gt 1800 ]; then
               echo "killing orphan FDB container $id ($image, running $${age}s)"
               # -v is load-bearing: without it every orphan kill strands a volume.
@@ -577,13 +577,13 @@ runcmd:
       # starting it: the gate binding and the watchdog config both need the name.
       RUNNER_UNIT=$(systemctl list-unit-files --no-legend 'actions.runner.*.service' | awk '{print $1}' | head -1)
       [ -n "$RUNNER_UNIT" ] || { echo "::error::classic runner service unit not found after svc.sh install"; exit 1; }
-      printf 'WATCH_UNIT=%s\n' "$RUNNER_UNIT" > /etc/runner-watchdog.conf
+      printf 'WATCH_UNIT=%s\nWATCH_DEFER_WHILE_WORKER=1\n' "$RUNNER_UNIT" > /etc/runner-watchdog.conf
       # A box whose CI volume did not come back must leave the pool, not serve from it.
       # svc.sh's unit depends on nothing but network-online.target, so without this the
       # listener comes up beside a masked Docker and fails every job it claims. Requires=
       # also means the watchdog's restart re-runs the gate instead of routing around it.
       install -d "/etc/systemd/system/$RUNNER_UNIT.d"
-      printf '[Unit]\nRequires=ci-docker-gate.service\nAfter=ci-docker-gate.service\n' \
+      printf '[Unit]\nRequires=ci-docker-gate.service\nAfter=ci-docker-gate.service\n\n[Service]\nOOMPolicy=continue\nKillMode=process\n' \
         > "/etc/systemd/system/$RUNNER_UNIT.d/ci-docker-gate.conf"
       systemctl daemon-reload
       ( cd "$RUNNER_DIR" && ./svc.sh start )

@@ -29,8 +29,10 @@ go_test(
     srcs = [
         "distinct_continuation_test.go",
         "injoin_continuation_test.go",
+        "limited_join_continuation_test.go",
         "sqlpage_test.go",
         "unionall_continuation_test.go",
     ],
     embed = [":sqlpage"],
+    deps = ["//pkg/relational/api"],
 )

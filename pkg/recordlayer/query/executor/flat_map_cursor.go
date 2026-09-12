@@ -333,16 +333,17 @@ func (c *flatMapCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorRes
 				cont := c.buildContinuation(result.GetContinuation())
 				return recordlayer.NewResultWithValue(outputRow, cont), nil
 			}
-			// Inner exhausted for this outer row — close and advance outer.
+			// Inner stopped. Only source exhaustion may advance the outer row.
 			reason := result.GetNoNextReason()
 			innerCont := result.GetContinuation()
 			c.innerCursor.Close()
 			c.innerCursor = nil
 
-			if reason.IsOutOfBand() {
-				// Inner hit a scan/time/byte limit — serialize
-				// FlatMapContinuation with current outer + inner
-				// position so the next page resumes correctly.
+			if !reason.IsSourceExhausted() {
+				// A returned-row cap, like a scan/time/byte limit, leaves
+				// the inner unfinished. Preserve its position with the
+				// current outer rather than silently dropping its tail
+				// (Java FlatMapPipelinedCursor's source-exhaustion gate).
 				cont := c.buildContinuation(innerCont)
 				res := recordlayer.NewResultNoNext[QueryResult](reason, cont)
 				c.lastNoNext = &res
@@ -874,7 +875,7 @@ func (c *flatMapCursor) withInheritedOuterProperties(outerRow, result QueryResul
 // buildContinuation creates a FlatMapContinuation proto. The decision is purely
 // on the inner cursor's state (matching Java FlatMapPipelinedCursor.toByteString,
 // :413-430): if the inner has a resumable position (not END) — a value emit or an
-// inner out-of-band stop mid-row — encode the prior outer position + inner
+// inner limit stop mid-row — encode the prior outer position + inner
 // position so resume continues THIS outer's inner. If the inner is exhausted
 // (END), encode the advanced outer position with no inner (next outer on resume).
 func (c *flatMapCursor) buildContinuation(innerCont recordlayer.RecordCursorContinuation) recordlayer.RecordCursorContinuation {
@@ -889,7 +890,7 @@ func (c *flatMapCursor) buildContinuation(innerCont recordlayer.RecordCursorCont
 	// check value is written ONLY in the mid-inner branch (alongside the inner
 	// continuation) — never in the advanced-outer branch. The decision is purely
 	// whether the inner has a resumable position:
-	//   - inner NOT exhausted (a value emit mid-inner, or an inner out-of-band
+	//   - inner NOT exhausted (a value emit mid-inner, or an inner limit
 	//     stop): encode (priorOuter, checkValue, inner) so resume re-opens THIS
 	//     outer, validates the check value, and continues its inner after the last
 	//     row. Encoding the ADVANCED outer position here (as a prior Go-only

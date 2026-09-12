@@ -10087,3 +10087,102 @@ this one).
   cluster; ON-EXISTS spellings fold to the WHERE form already). Query-engine gate. Pins: the
   reproducer above returns `(1,true),(2,…)` per the fixture on every shape; the interim typed
   decline, if landed first, names the shape.
+
+### RFC-250 — FlatMap inner returned-row-limit continuation (completed)
+
+- [x] Fix the executor's treatment of `ReturnLimitReached` as inner exhaustion.
+  Only `SourceExhausted` now advances the outer cursor, matching Java; every
+  other inner stop preserves its checkpoint. The real-FDB regression returned
+  only 3/6 of 9 rows before the fix at inner budgets 1/2, and all 9 after it.
+  Unit coverage also pins checkpoint fields and sticky no-next behavior.
+  This is an internal cursor-contract bug: ordinary SQL reachability was not
+  demonstrated. SQL LIMIT/OFFSET controls, including the existing unsupported
+  correlated-EXISTS OFFSET gate, are retained as tests rather than presented as
+  reproducers. Graefe and Torvalds ACKed the original RFC and source; its Codex
+  review found no issues. Pre-amendment FlatMap source: a fresh output-base
+  `just test` executed/passed 92/92 Bazel targets, both original affected targets
+  passed uncached, and the existing FlatMap continuation fuzzer passed 4,985,804
+  executions over 15 seconds. Final amended source: `just test` passed 92/92 Bazel
+  targets (45 executed, 47 cached); both amendment-affected targets passed in full
+  uncached, and active LIMIT fuzzing passed 570,641 general and 202,730 UNION
+  executions over 15 seconds each. Details and source identities:
+  `rfcs/250-flatmap-preserves-inner-row-limit-stops.md`.
+
+#### Stress test 1M baseline — RFC-250
+
+Measured baseline `0ebf8c7155544d2cd5e7908d10b74f1ca6910964` (merge-base at
+measurement time); after = that base plus production blob
+`230bfc5e1503ebe05f499949e3a7a26f1597dda4`. Both states used the same worktree,
+filesystem and Bazel output base. Four sequential uncached runs each executed
+24 RUN lines (parent + 23 query arms), with identical timed-row reports, the
+same 1M COUNT result, and identical emitted EXPLAIN texts. No speedup claim:
+load varied and this SQL workload does not establish reachability of the fix.
+
+| Source | Sample 1 | Sample 2 | Start load averages, 1/5/15 min |
+|---|---:|---:|---|
+| Baseline | 216.54 s | 199.90 s | 1.63/2.37/2.39; 6.52/6.82/4.54 |
+| After | 197.00 s | 198.06 s | 3.22/5.46/4.53; 3.88/4.74/4.43 |
+
+Per-query rows and durations, environment, commands, and caveats are recorded
+in RFC-250's completed stress comparison, not inferred from total time.
+
+### RFC-250 final-head FDB allocation repair
+
+- [x] Preserve and root-cause the final-head CI database exit instead of rerunning it away.
+  Run 34646187827's retained FDB 7.3.77 trace shows `fallocate` returning EINTR
+  in `AsyncFileKAIO::truncate`, which maps every error except EOPNOTSUPP directly
+  to fatal `io_error`. Fixture servers now use FDB's supported EIO backend;
+  explicit KAIO selection remains available. A real-container seccomp regression
+  proves the injected EINTR is active, commits and reads back on tmpfs and disk
+  under EIO, and reproduces the fatal error under explicit KAIO. Both affected
+  Bazel targets passed uncached (51 container-module RUN events; all 8,150
+  factory scenarios), as did two-before/two-after 1M comparisons with identical
+  row and EXPLAIN signatures. Upstream: apple/foundationdb#14041. Full evidence,
+  source identities, limitations, and reviews are in RFC-250. This specific fix
+  does not claim to explain the older nightly interruptions.
+
+### RFC-250 post-deployment orphan-sweeper observation
+
+- [x] Verify the worker-aware orphan-FDB sweeper against a real long-running lane.
+  RowDiff run 34673258982 succeeded on `gh-runner-drain-0`: its deep sweep
+  executed 12,396 of 15,000 seeds within the normal 3h30 budget, and its paging
+  sweep executed 932 of 5,000 with a second FDB container. The deep-sweep
+  container remained live until normal teardown while the sweep service started
+  40 times, including 35 starts after the 30-minute threshold, and logged zero
+  kill decisions. The retained journal SHA-256 is
+  `e9e4fcef288f3a231db9013730695ab89e5bb18ec1cd2004c21808a275c00022`;
+  artifact identities and the exact UTC interval are recorded in RFC-250. This
+  closes the corrected-timer observation hold. The Factory and Coverage OOM
+  causes and the historical watchdog lifecycle defect are closed below.
+
+### RFC-250 unresolved final merge holds
+
+- [x] Re-measure the fixture-only KAIO-to-EIO point-lookup shift with at least
+  three sequential samples per source state. Nine PK lookups per backend were
+  5.01–18.99 ms under KAIO and 5.92–9.08 ms under EIO; all six runs executed
+  24 RUN lines and passed. The earlier monotone shift did not reproduce. Exact
+  source/patch identities, totals, and the no-speedup caveat are in RFC-250.
+- [x] Repair the Factory batch's measured live-heap retention. Nightly run
+  34680445556 was OOM-killed at 7.4 GiB RSS. The identical 400-seed/1,000-commit
+  probe retained 2,969 MiB before; lazy family retention plus streaming census
+  reduced the final and maximum live heap to 1,499 MiB with identical manifest
+  counts (2,127 generated/executed, 1,000 committed, 9,150 census scenarios).
+  The regression pins detached index strings, zero retained existing families,
+  preservation of the old scenario across a lazy cross-batch append, and one
+  retained family after that append; streaming census tests pin empty-corpus
+  rejection, cross-family uniqueness, and parity with the full loader.
+- [x] Repair the classic Actions runner's OOM lifecycle. Coverage run
+  34679494723 lost `Runner.Listener`; the installed unit had `OOMPolicy=stop`,
+  `KillMode=process`, and `Restart=no`. The classic unit drop-in now sets
+  `OOMPolicy=continue` and pins `KillMode=process`; its watchdog defers listener
+  restart while the surviving `Runner.Worker` finishes, preventing a second
+  concurrent claim. `infra/link_ci_volume_test.sh` pins both coupled arms and
+  the self-match-safe worker probe.
+- [x] Repair the historical `TestAdoptedRunnerWatchdogReclaims` failure class
+  from CI run 34613512453. The original log cannot identify which individual
+  signal delivery failed, but the lifecycle defect was concrete: the terminal
+  watchdog issued one fire-and-forget SIGKILL and exited without observing
+  death. It now retries until the wait path closes `done`. A synthetic probe
+  requires two kill requests before reporting death; restoring one-shot behavior
+  makes that regression fail after one RUN. It and the original adopted-runner
+  test passed 100 repetitions together.

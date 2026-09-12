@@ -123,12 +123,14 @@ FDB the tests run against).
 
 ## Self-healing (cloud-init)
 
-- **`runner-watchdog`** (every 10 min): restarts `WATCH_UNIT` when it is **not active**, and
-  nothing else. It reads `/etc/runner-watchdog.conf`, which the mode branch writes — no
-  config, no action (hardcoding a unit name once burned `NRestarts` of 1143/94/4115/2141 on
-  a binary that was never installed). It skips a **masked** unit, because a mask is a
-  deliberate "never run this here" and a watchdog that restarts through one defeats the
-  enforcement.
+- **`runner-watchdog`** (every 10 min): restarts `WATCH_UNIT` when it is **not active**.
+  A classic runner is the exception while `Runner.Worker` is still alive: its unit pins
+  `OOMPolicy=continue` and `KillMode=process`, so a listener OOM leaves the in-flight job
+  running, and the watchdog waits for that worker instead of starting a second listener
+  beside it. It reads `/etc/runner-watchdog.conf`, which the mode branch writes — no config,
+  no action (hardcoding a unit name once burned `NRestarts` of 1143/94/4115/2141 on a binary
+  that was never installed). It skips a **masked** unit, because a mask is a deliberate
+  "never run this here" and a watchdog that restarts through one defeats the enforcement.
 - **`orphan-fdb-sweep`** (every 5 min): kills FDB testcontainers running > 30 min that were
   started BEFORE the running job's `Runner.Worker` (orphans whose parent test died), and pins
   Ryuk's OOM score so the kernel reaps it last. The start-time comparison is load-bearing and
@@ -321,7 +323,9 @@ it.
 **The fix** compares each container's start time against the running `Runner.Worker`'s. A
 container newer than the worker belongs to the job in flight, so its age says nothing about
 whether it is abandoned; one OLDER than the worker is an orphan from a previous job and stays
-eligible.
+eligible. Enumeration matches the image name from `docker ps`; it must not use Docker's
+`ancestor=foundationdb/foundationdb` filter, because that untagged ancestor silently matched no
+`:7.3.77` containers on this fleet. The shell suite rejects any such filter argument.
 
 The first version of this fix was a blanket "skip everything while a job runs", which is the
 rule the retired scaler's own sweeper had (*"runs only when no runner is active on that box, so
@@ -391,15 +395,30 @@ Arm A carries the detail that makes it worth having: the container is over the a
 so the sweep WOULD remove it without the guard. A fixture under the threshold passes either
 way and proves nothing — which is what the first draft of that case did, and it failed.
 
-Note what that does and does not establish: the arms prove the guard's LOGIC with stubs. That a
-real worker's `comm` is `Runner.Worker` rests on the tarball's packaging, not on
-an observation from one of these boxes, and neither has the timer been caught firing —
-`journalctl -u orphan-fdb-sweep.service` around one of the recorded death timestamps would turn
-the inference into an observation.
+Note what that does and does not establish: the arms prove the guard's LOGIC with stubs. The
+obsolete age-only timer was observed firing: the runner journal records both RowDiff container
+deletions, and read-only inspection observed the active workers as `Runner.Worker` processes.
+The corrected worker-aware guard was then exercised during RowDiff run 34673258982. Its deep
+sweep executed 12,396 of 15,000 seeds within the normal 3h30 budget, and that sweep's FDB
+container stayed live until normal teardown while the sweep service started 40 times, including
+35 starts after the container crossed the 1800-second threshold, with zero kill decisions. A
+later paging sweep used a second container and executed 932 of 5,000 seeds within its normal
+1h10 budget. The earlier observed removals prove the unchanged
+image-name enumeration found these tagged containers on this runner; the deep-sweep container's
+survival until normal teardown therefore records the corrected guard's keep rather than an
+empty enumeration.
+Future over-age keeps emit `keeping live FDB container`, so the journal directly records the
+protective branch; the stub arms pin that message as well as removal of an older orphan and a
+workerless old container.
 
-**Deployment, and it is the remaining owner action:** `cloud-init` is `PER_INSTANCE`, so this
-fixes boxes provisioned from here on. The live fleet keeps the old script until re-provisioned
-or until the file is edited in place.
+**Deployment:** `cloud-init` is `PER_INSTANCE`; changing this template does not update
+existing boxes. On 2026-09-11 the corrected script was deployed atomically to both
+`gh-runner-fdb` and `gh-runner-drain-0`, without restarting their active workers.
+Their deployed SHA-256 matched the rendered template:
+`b0bd6ed8b60646f7aba78df93f2fef9b72d60aa99849094bf9510b2a4c5b70a5`.
+The runner journal also confirmed both deletions in RowDiff run 34562900341;
+see [RFC-250's nightly triage](../rfcs/250-flatmap-preserves-inner-row-limit-stops.md#merge-gate-nightly-triage-2026-09-11).
+Future template changes still require an explicit deployment to existing boxes.
 
 **Budget note:** this guard fits with about one line of `user_data` budget to spare. No figure
 is given here on purpose: it has been wrong twice, once because a later trim in the same round

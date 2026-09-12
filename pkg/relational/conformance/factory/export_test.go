@@ -3,7 +3,9 @@ package factory
 import (
 	"context"
 	"database/sql"
+	"unsafe"
 
+	"fdb.dev/pkg/relational/conformance/factorycorpus"
 	"fdb.dev/pkg/relational/conformance/rowdiff"
 )
 
@@ -46,4 +48,33 @@ func TLPEligibleForTest(q rowdiff.Query) bool { return tlpEligible(q) }
 // real run cannot produce on demand.
 func CheckPartitionForTest(unfiltered, pos, neg, unknown [][]any) string {
 	return checkPartition(unfiltered, pos, neg, unknown)
+}
+
+// LoadedFamilyCountForTest reports parsed family documents retained by a batch.
+func LoadedFamilyCountForTest(b *Batch) int { return len(b.families) }
+
+// BatchIndexStringsDetachedForTest verifies that the compact indexes do not
+// retain a loaded family's whole source buffer through substring backing data.
+func BatchIndexStringsDetachedForTest(dir string) (bool, error) {
+	var loaded *factorycorpus.Scenario
+	batch, err := newBatch(dir, 1, func(path string) (*factorycorpus.FamilyFile, error) {
+		family, err := factorycorpus.Load(path)
+		if err == nil && loaded == nil && len(family.Scenarios) > 0 {
+			loaded = family.Scenarios[0]
+		}
+		return family, err
+	})
+	if err != nil {
+		return false, err
+	}
+	if loaded == nil {
+		return false, nil
+	}
+	for name, key := range batch.names {
+		if name == loaded.Header.Name {
+			return unsafe.StringData(name) != unsafe.StringData(loaded.Header.Name) &&
+				unsafe.StringData(key) != unsafe.StringData(loaded.Header.DedupKey), nil
+		}
+	}
+	return false, nil
 }

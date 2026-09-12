@@ -1,6 +1,7 @@
 package properties
 
 import (
+	"math"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -119,6 +120,40 @@ func TestCardinalityTimes_Zero(t *testing.T) {
 	}
 	if result.Value() != 0 {
 		t.Fatalf("expected 0, got %d", result.Value())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Cardinality.Plus tests
+// ---------------------------------------------------------------------------
+
+func TestCardinalityPlus(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name        string
+		left, right Cardinality
+		want        int64
+		wantUnknown bool
+	}{
+		{name: "known_known", left: OfCardinality(3), right: OfCardinality(5), want: 8},
+		{name: "known_unknown", left: OfCardinality(3), right: UnknownCardinality(), wantUnknown: true},
+		{name: "unknown_known", left: UnknownCardinality(), right: OfCardinality(5), wantUnknown: true},
+		{name: "unknown_unknown", left: UnknownCardinality(), right: UnknownCardinality(), wantUnknown: true},
+		{name: "zero", left: OfCardinality(0), right: OfCardinality(100), want: 100},
+		{name: "representable_boundary", left: OfCardinality(math.MaxInt64 - 1), right: OfCardinality(1), want: math.MaxInt64},
+		{name: "overflow", left: OfCardinality(math.MaxInt64), right: OfCardinality(1), wantUnknown: true},
+		{name: "overflow_reverse", left: OfCardinality(1), right: OfCardinality(math.MaxInt64), wantUnknown: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got := test.left.Plus(test.right)
+			if got.IsUnknown() != test.wantUnknown {
+				t.Fatalf("unknown = %v, want %v", got.IsUnknown(), test.wantUnknown)
+			}
+			if !test.wantUnknown {
+				assertKnown(t, got, test.want)
+			}
+		})
 	}
 }
 
@@ -454,6 +489,61 @@ func TestUnionCardinalities_Three(t *testing.T) {
 	result := UnionCardinalities([]Cardinalities{a, b, c})
 	assertKnown(t, result.GetMinCardinality(), 6)
 	assertKnown(t, result.GetMaxCardinality(), 60)
+}
+
+func TestUnionCardinalities_UnrepresentableSumBecomesUnknown(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name           string
+		items          []Cardinalities
+		wantMin        int64
+		wantMinUnknown bool
+		wantMax        int64
+		wantMaxUnknown bool
+	}{
+		{
+			name: "exact_fuzz_shape_overflows_only_maximum",
+			items: []Cardinalities{
+				{Min: OfCardinality(0), Max: OfCardinality(math.MaxInt64 - 7)},
+				{Min: OfCardinality(0), Max: OfCardinality(math.MaxInt64 - 7)},
+			},
+			wantMin:        0,
+			wantMaxUnknown: true,
+		},
+		{
+			name: "minimum_and_maximum_overflow",
+			items: []Cardinalities{
+				{Min: OfCardinality(math.MaxInt64), Max: OfCardinality(math.MaxInt64)},
+				ExactlyOne(),
+			},
+			wantMinUnknown: true,
+			wantMaxUnknown: true,
+		},
+		{
+			name: "representable_boundary_stays_known",
+			items: []Cardinalities{
+				{Min: OfCardinality(math.MaxInt64 - 1), Max: OfCardinality(math.MaxInt64 - 1)},
+				ExactlyOne(),
+			},
+			wantMin: math.MaxInt64,
+			wantMax: math.MaxInt64,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			result := UnionCardinalities(test.items)
+			if got := result.GetMinCardinality(); got.IsUnknown() != test.wantMinUnknown {
+				t.Fatalf("minimum unknown = %v, want %v", got.IsUnknown(), test.wantMinUnknown)
+			} else if !test.wantMinUnknown {
+				assertKnown(t, got, test.wantMin)
+			}
+			if got := result.GetMaxCardinality(); got.IsUnknown() != test.wantMaxUnknown {
+				t.Fatalf("maximum unknown = %v, want %v", got.IsUnknown(), test.wantMaxUnknown)
+			} else if !test.wantMaxUnknown {
+				assertKnown(t, got, test.wantMax)
+			}
+		})
+	}
 }
 
 // ---------------------------------------------------------------------------
