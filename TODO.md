@@ -10125,3 +10125,30 @@ load varied and this SQL workload does not establish reachability of the fix.
 
 Per-query rows and durations, environment, commands, and caveats are recorded
 in RFC-250's completed stress comparison, not inferred from total time.
+
+### RFC-250 final-head FDB allocation repair
+
+- [x] Preserve and root-cause the final-head CI database exit instead of rerunning it away.
+  Run 34646187827's retained FDB 7.3.77 trace shows `fallocate` returning EINTR
+  in `AsyncFileKAIO::truncate`, which maps every error except EOPNOTSUPP directly
+  to fatal `io_error`. Fixture servers now use FDB's supported EIO backend;
+  explicit KAIO selection remains available. A real-container seccomp regression
+  proves the injected EINTR is active, commits and reads back on tmpfs and disk
+  under EIO, and reproduces the fatal error under explicit KAIO. Both affected
+  Bazel targets passed uncached (51 container-module RUN events; all 8,150
+  factory scenarios), as did two-before/two-after 1M comparisons with identical
+  row and EXPLAIN signatures. Upstream: apple/foundationdb#14041. Full evidence,
+  source identities, limitations, and reviews are in RFC-250. This specific fix
+  does not claim to explain the older watchdog timeout or nightly interruptions.
+
+### RFC-250 post-deployment orphan-sweeper observation
+
+- [x] Verify the worker-aware orphan-FDB sweeper against a real long-running lane.
+  RowDiff run 34673258982 completed all 15,000 seeds on `gh-runner-drain-0`.
+  While its FDB container was live, the sweep service started 40 times, including
+  35 starts after the 30-minute threshold, and logged zero kill decisions. Both
+  heartbeat sweeps succeeded. The retained journal SHA-256 is
+  `e9e4fcef288f3a231db9013730695ab89e5bb18ec1cd2004c21808a275c00022`;
+  artifact identities and the exact UTC interval are recorded in RFC-250. This
+  closes the corrected-timer observation hold, not the separate Factory memory
+  growth, Coverage runner OOM, or historical watchdog timeout.

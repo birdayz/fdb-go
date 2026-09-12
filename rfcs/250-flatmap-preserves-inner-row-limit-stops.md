@@ -331,9 +331,22 @@ change repairs the nightly nets:
   atomically deployed to both runners; both installed SHA-256 hashes were
   `b0bd6ed8b60646f7aba78df93f2fef9b72d60aa99849094bf9510b2a4c5b70a5`.
   Both sweep timers remained active and both original `Runner.Worker` PIDs
-  survived unchanged. This closes the deployment defect, not the incomplete
-  RowDiff run: a new genuine sweep is still required. Deployment mechanics
-  and future update obligations are recorded in `infra/README.md`.
+  survived unchanged. Deployment mechanics and future update obligations are
+  recorded in `infra/README.md`.
+
+  Post-deployment RowDiff run **34673258982** then completed all 15,000 seeds
+  successfully on `gh-runner-drain-0` from 2026-09-12T04:32:11Z through
+  09:14:07Z. During its live-FDB interval, the worker-aware sweep service
+  started 40 times, including 35 starts after the 30-minute age threshold,
+  and logged zero `killing orphan FDB container` decisions. Both heartbeat
+  sweeps reported `sweep_outcome=success` and `paging_outcome=success`.
+  The retained sweeper journal SHA-256 is
+  `e9e4fcef288f3a231db9013730695ab89e5bb18ec1cd2004c21808a275c00022`;
+  the last-inspect and RowDiff-output artifact SHA-256 values are respectively
+  `c2986889bbec626b526ee2cd1569618681a64806385997ac405381b35696738c`
+  and `0514b754a43231d2dc65d0dded64220ffb941736d16e99ae5855303561301259`.
+  This observed keep decision closes the corrected-timer hold; it does not
+  explain the separate Factory memory growth or Coverage runner OOM below.
 - Factory run **34574477084** and Coverage run **34572810594** were interrupted
   by runner shutdown. The later stress job's kernel log identifies an OOM
   kill of the factory process (PID 2391708, about 7 GiB anonymous RSS). Coverage
@@ -376,3 +389,99 @@ and rejection of a pipe reader and regular-file holder. Removing each of the
 ancestor, file-mode, and writable-descriptor filters independently reddened
 its corresponding regression. This repairs the diagnostic, not the original
 watchdog timeout, and the latter remains a merge hold.
+
+### FDB file-allocation failure captured in final-head CI
+
+CI run **34646187827**, head `6499b924a6f3b439ea85497ad06d574bdcd49940`,
+lost the full factory-corpus container `ce0fab07265f` at
+2026-09-11T21:07:05Z, 72 seconds after startup. Docker recorded exit code 1,
+`OOMKilled=false`, and no container kill event. The retained server trace
+contains `AsyncFileKAIOAllocateError`, `UnixErrorCode=4` (`EINTR`), for
+`/var/fdb/data/logqueue-...-1.fdq`, followed by `RDQPushAndCommitError`,
+`SharedTLogFailed`, and `StopAfterError` (`io_error`, 1510). Stdout says
+`Fatal Error: Disk i/o operation failed`. The test then cascaded through
+scenario deadlines against the dead database. After copying Docker state,
+events, stdout, trace, and test output, the investigator sent SIGQUIT to this
+specific test process to stop the cascade and collect its goroutine dump.
+That intervention is not the cause of the earlier server exit. The standalone
+runner-module step subsequently passed; this does not explain its older timeout.
+
+Reference: FoundationDB tag 7.3.77, commit
+`3ea44ce1d9003ad095e408039e1f755c319c4dfb`, matching the image's build label.
+Read `fdbrpc/include/fdbrpc/AsyncFileKAIO.actor.h`,
+`AsyncFileEIO.actor.h`, and `fdbrpc/Net2FileSystem.cpp`. KAIO's `truncate`
+returns `io_error()` on every failed `fallocate` except `EOPNOTSUPP`;
+it does not retry `EINTR`. EIO instead dispatches `eio_ftruncate` to its
+worker pool. `DISABLE_POSIX_KERNEL_AIO=1` selects that supported backend.
+The trace establishes the errno and fatal propagation, not which signal
+interrupted the syscall. No claim is made that this alone explains the older
+nightly stress exit, Factory OOM, Coverage interruption, or watchdog timeout.
+
+Decision: default the Go test-container module to
+`WithKnob("disable_posix_kernel_aio", "1")` for both tmpfs and on-disk data.
+Keep explicit knob overrides available for callers testing KAIO itself.
+This is a documented upstream workaround at the disposable server boundary,
+not a Go client retry or a swallowed error. It changes no stored/wire bytes
+and does not disable durability. Increasing a timeout, recreating an in-use
+database, or disabling the server's profiling signals would hide symptoms
+rather than remove the faulty allocation route.
+
+The permanent Linux regression `TestRun_InterruptedFileAllocation` runs real
+FDB with a container-local seccomp rule returning `EINTR` from `fallocate`.
+It requires successful initialization and a committed value read-back on both
+tmpfs and disk, plus a real `fallocate` command that proves the errno injection
+is active. Required evidence: uncached Bazel red/green, full container-module
+and factory-corpus targets, the full suite, and fresh final-head CI/reviews.
+The earlier stress comparison predates this fixture-backend change and must
+not be represented as measuring it.
+
+Upstream report: [apple/foundationdb#14041](https://github.com/apple/foundationdb/issues/14041).
+The pre-production design received Graefe ACK
+(`41560737-1d5a-4f5b-8593-a87654c20528`) and Torvalds ACK
+(`f86c062c-3e6a-4c00-a31a-ea9c65e4083b`), requiring the explicit override
+regression and the full container/factory targets before merge. The default
+flip then passed the targeted uncached Bazel run: both filesystem cases
+logged their active fault control and committed read-back, and
+`TestRun_KAIOOverride` reproduced the fatal allocation error with knob 0.
+Before the default flip, both filesystem cases actually executed and failed
+initialization under uncached Bazel. These are fault-injection results, not a
+claim that every outstanding nightly failure has been explained.
+
+### Sequential stress comparison including the EIO fixture default
+
+The required comparison was repeated after the fixture-backend change; the
+older table above does not measure it. Both states were built in the same
+worktree and Bazel output root on `/dev/nvme1n1p3` (57% used at the start).
+The baseline was `0ebf8c7155544d2cd5e7908d10b74f1ca6910964`. The after state
+was that exact revision plus only these production blobs:
+
+- FlatMap: `230bfc5e1503ebe05f499949e3a7a26f1597dda4` (before
+  `8e60ff7287ce7c4f552eb03d00aaf0571a4aee9d`)
+- cardinality: `02966a7a8d19566f480b7eeb50daff30515015be` (before
+  `7f3bdfeb17ab9c9d4e022d5e267f606485445d03`)
+- test-container defaults: `dfc0d1c6d42e2197ce4733146fc53ffb647fae5e`
+  (before `79916394c9aab0300aedd3a95f9acfe912b7fd2e`)
+
+The three-file patch SHA-256 was
+`7340bdc1616961b185700344f2b073de168cec94b62de760ebcfcc1c98586717`.
+Each file was MD5-checked after each run. Two baseline runs completed before
+the two after runs; no test or container pipeline overlapped them.
+
+| State | Sample | Test duration | Start load average (1/5/15 min) |
+|---|---:|---:|---|
+| Before | 1 | 198.97 s | 8.12 / 9.88 / 5.68 |
+| Before | 2 | 198.18 s | 4.64 / 8.42 / 6.38 |
+| After | 1 | 191.99 s | 3.16 / 5.91 / 5.80 |
+| After | 2 | 188.32 s | 3.24 / 4.57 / 5.28 |
+
+All four uncached invocations executed 24 RUN lines and passed. Each emitted
+22 timed row reports, the independent `COUNT(*) = 1000000` assertion, and 11
+EXPLAIN texts. Normalized rows were byte-identical (SHA-256
+`f0c64f51135738fb51b434deea91a4a6baef982e0a3e899275078f1d1c222f29`),
+as were plans (`48ffbbf33c31a7f9696cdbfd4aced3afe3a2591578794df47b86711e76230ccb`).
+This supports no speedup claim: load differed, one after `ORDER BY PK` sample
+was 7.87 s while the other three were 4.20–4.22 s, and point lookups remained
+above the aspirational 5 ms threshold in every state (9.17–12.52 ms before,
+13.70–46.28 ms after). Total duration and result/plan identity show no broad
+regression, but they do not bound individual latency; the complete logs are
+retained with the PR evidence.

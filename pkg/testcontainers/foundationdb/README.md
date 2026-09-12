@@ -79,6 +79,20 @@ foundationdbtc.WithStartupTimeout(2 * time.Minute)
 testcontainers.WithEnv(map[string]string{"KEY": "VALUE"})
 ```
 
+## File I/O backend
+
+Fixture servers default to `--knob_disable_posix_kernel_aio=1` (FDB's supported
+EIO backend) on both tmpfs and disk. FoundationDB 7.3.77's KAIO file-growth path
+turns an interrupted `fallocate` into a fatal disk error instead of retrying;
+EIO grows files with `eio_ftruncate` and avoids that path. This does not disable
+sync/durability or change the client protocol or stored formats. The evidence
+and syscall-injection regression are recorded in
+[RFC-250](../../../rfcs/250-flatmap-preserves-inner-row-limit-stops.md#fdb-file-allocation-failure-captured-in-final-head-ci).
+
+Callers specifically exercising KAIO can override the default with
+`foundationdbtc.WithKnob("disable_posix_kernel_aio", "0")`. That opt-in retains
+the upstream failure behavior until the server is upgraded or fixed.
+
 ## Multi-Container Setup
 
 For tests that need multiple containers on the same network (e.g., binding tester):

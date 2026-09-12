@@ -40,6 +40,12 @@ func defaultOptions() options {
 		autoInit:       true,
 		startupTimeout: 60 * time.Second,
 		processCount:   1,
+		// FDB 7.3.77's AsyncFileKAIO::truncate treats fallocate EINTR as a
+		// fatal io_error. Use its supported EIO backend, which grows files
+		// via eio_ftruncate instead, for both tmpfs and disk fixtures.
+		// Explicit WithKnob overrides remain available for KAIO tests.
+		// See RFC-250's file-allocation failure analysis and regression.
+		knobs: map[string]string{"disable_posix_kernel_aio": "1"},
 	}
 }
 
