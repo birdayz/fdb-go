@@ -21,6 +21,55 @@ import (
 // the local worker kept the ONLY slot occupied until it was manually killed at
 // ~10:19 — 4+ hours of a wedged CI with the supervisor reporting a busy slot.
 
+type signalProbeProc struct {
+	signals chan syscall.Signal
+}
+
+func (p *signalProbeProc) pid() int    { return 1 }
+func (p *signalProbeProc) wait() error { return nil }
+func (p *signalProbeProc) signal(sig syscall.Signal) {
+	p.signals <- sig
+}
+
+func TestTerminalWatchdogSignalsUntilProcessDeath(t *testing.T) {
+	t.Parallel()
+	proc := &signalProbeProc{signals: make(chan syscall.Signal, 2)}
+	terminal := make(chan struct{})
+	close(terminal)
+	r := &runner{
+		name:     "retry-signal",
+		proc:     proc,
+		slot:     &slot{},
+		terminal: terminal,
+		done:     make(chan struct{}),
+	}
+	s := &Scaler{
+		logger:           discardLogger(),
+		jobTerminalGrace: time.Millisecond,
+		terminalPoll:     time.Millisecond,
+	}
+	s.wg.Add(1)
+	go s.watchTerminal(r)
+	for want := 1; want <= 2; want++ {
+		select {
+		case sig := <-proc.signals:
+			if sig != syscall.SIGKILL {
+				t.Fatalf("signal %d was %s, want SIGKILL", want, sig)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("terminal watchdog issued only %d SIGKILL request(s); one failed delivery can strand the runner", want-1)
+		}
+	}
+	close(r.done)
+	waited := make(chan struct{})
+	go func() { s.wg.Wait(); close(waited) }()
+	select {
+	case <-waited:
+	case <-time.After(time.Second):
+		t.Fatal("terminal watchdog did not stop after process death")
+	}
+}
+
 // hangingTemplateRunner is a template whose run.sh blocks forever, modelling a
 // wedged Runner.Worker.
 func hangingTemplateRunner(t *testing.T) string {

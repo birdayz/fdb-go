@@ -1,6 +1,9 @@
 package factorycorpus
 
-import "unsafe"
+import (
+	"fmt"
+	"unsafe"
+)
 
 // StreamingIndexStringsDetachedForTest verifies the exact directory path's
 // uniqueness indexes do not retain a parsed family's source-buffer substrings.
@@ -15,6 +18,9 @@ func StreamingIndexStringsDetachedForTest(dir string) (bool, error) {
 	})
 	if err != nil {
 		return false, err
+	}
+	if len(loaded) == 0 || len(names) != len(loaded) || len(keys) != len(loaded) {
+		return false, fmt.Errorf("streaming uniqueness-index test population is incomplete: scenarios=%d names=%d keys=%d", len(loaded), len(names), len(keys))
 	}
 	for _, scenario := range loaded {
 		for name := range names {
