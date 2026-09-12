@@ -243,9 +243,11 @@ func TestReadmeDistinguishesLegacySweepFromCorrectedGuard(t *testing.T) {
 	}
 	for _, want := range []string{
 		"The obsolete age-only timer was observed firing",
-		"The corrected worker-aware guard was then observed during RowDiff run 34673258982",
-		"including 35 starts after the live FDB container crossed the 1800-second threshold",
-		"made zero kill decisions",
+		"The corrected worker-aware guard was then exercised during RowDiff run 34673258982",
+		"completed all 15,000 seeds over 4h42m while its FDB container stayed live",
+		"including 35 starts after that container crossed the 1800-second threshold",
+		"with zero kill decisions",
+		"Future over-age keeps emit `keeping live FDB container`",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("README does not distinguish the observed legacy removal from the corrected guard's observed keep decision; missing %q", want)

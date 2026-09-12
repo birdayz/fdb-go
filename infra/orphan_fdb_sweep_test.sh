@@ -131,7 +131,7 @@ echo "orphan-fdb-sweep:"
 #    container is under the threshold would pass without the guard and prove
 #    nothing; the first draft of this case had exactly that shape reversed and
 #    failed, which is the case earning its keep before it was ever committed.
-run_case "live container, started after the worker" 3600 7200 survived
+run_case "live container, started after the worker" 3600 7200 survived "keeping live FDB container"
 # B: an orphan from a PREVIOUS job, while a job runs. The blanket skip stranded
 #    this one for the whole lane; the start-time comparison sweeps it.
 run_case "orphan, started before the worker"        3600  600 removed
