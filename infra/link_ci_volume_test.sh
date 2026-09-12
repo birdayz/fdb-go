@@ -396,8 +396,17 @@ esac
 #     `pgrep -f Runner.Worker` matches its own argv and defers forever.
 watchdog=$(sed -n '/path: \/usr\/local\/bin\/runner-watchdog.sh/,/^  - path:/p' infra/cloud-init.yaml)
 case "$watchdog" in
-  *"pgrep -f '[R]unner.Worker'"*'deferring restart'*) ok "watchdog defers listener restart only while a worker survives" ;;
-  *) bad "watchdog does not guard dead-listener restart with a self-match-safe worker probe" ;;
+  *'WATCH_DEFER_WHILE_WORKER:-0'*"pgrep -f '[R]unner.Worker'"*'deferring restart'*) ok "watchdog defers listener restart only while a configured classic worker survives" ;;
+  *) bad "watchdog does not guard configured dead-listener restart with a self-match-safe worker probe" ;;
+esac
+case "$classic" in
+  *'WATCH_DEFER_WHILE_WORKER=1'*) ok "classic mode opts into worker-aware restart deferral" ;;
+  *) bad "classic mode does not opt into worker-aware restart deferral" ;;
+esac
+scaleset=$(sed -n '/# bazelscaleset (RFC-155)/,/^    fi$/p' infra/cloud-init.yaml)
+case "$scaleset" in
+  *WATCH_DEFER_WHILE_WORKER=*) bad "scale-set mode opts into classic worker deferral and blocks runner adoption" ;;
+  *) ok "scale-set watchdog remains free to restart and adopt a surviving runner" ;;
 esac
 
 [ "$fail" = 0 ] && echo "ALL OK" || { echo "FAILURES"; exit 1; }

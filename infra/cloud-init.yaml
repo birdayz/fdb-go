@@ -216,7 +216,7 @@ write_files:
         exit 0
       fi
       if ! systemctl is-active --quiet "$UNIT"; then
-        if pgrep -f '[R]unner.Worker' >/dev/null; then
+        if [ "$${WATCH_DEFER_WHILE_WORKER:-0}" = 1 ] && pgrep -f '[R]unner.Worker' >/dev/null; then
           echo "$UNIT not active, but Runner.Worker is still active; deferring restart"
           exit 0
         fi
@@ -580,7 +580,7 @@ runcmd:
       # starting it: the gate binding and the watchdog config both need the name.
       RUNNER_UNIT=$(systemctl list-unit-files --no-legend 'actions.runner.*.service' | awk '{print $1}' | head -1)
       [ -n "$RUNNER_UNIT" ] || { echo "::error::classic runner service unit not found after svc.sh install"; exit 1; }
-      printf 'WATCH_UNIT=%s\n' "$RUNNER_UNIT" > /etc/runner-watchdog.conf
+      printf 'WATCH_UNIT=%s\nWATCH_DEFER_WHILE_WORKER=1\n' "$RUNNER_UNIT" > /etc/runner-watchdog.conf
       # A box whose CI volume did not come back must leave the pool, not serve from it.
       # svc.sh's unit depends on nothing but network-online.target, so without this the
       # listener comes up beside a masked Docker and fails every job it claims. Requires=

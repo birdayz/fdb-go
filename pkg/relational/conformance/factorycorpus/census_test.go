@@ -1,9 +1,13 @@
 package factorycorpus_test
 
 import (
+	"os"
+	"path/filepath"
+	"reflect"
 	"testing"
 
 	"fdb.dev/pkg/relational/conformance/factorycorpus"
+	"fdb.dev/pkg/relational/conformance/yamsql"
 )
 
 // TestCorpusLoads walks every committed file through the loader CI uses.
@@ -203,5 +207,67 @@ func TestRatchetDetectsEveryShrinkDirection(t *testing.T) {
 	})
 	if shrinks := factorycorpus.CheckRatchet(base, grown); len(shrinks) != 0 {
 		t.Fatalf("CheckRatchet reported a shrink for a corpus that only grew: %v", shrinks)
+	}
+}
+
+func TestComputeCensusDirMatchesLoadedCorpus(t *testing.T) {
+	t.Parallel()
+	loaded := factorycorpus.ComputeCensus(loadCorpus(t))
+	streamed, err := factorycorpus.ComputeCensusDir(factorycorpus.TestdataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(streamed, loaded) {
+		t.Fatalf("streamed census differs from LoadDir census: streamed=%+v loaded=%+v", streamed, loaded)
+	}
+}
+
+func TestComputeCensusDirRejectsEmptyCorpus(t *testing.T) {
+	t.Parallel()
+	if _, err := factorycorpus.ComputeCensusDir(t.TempDir()); err == nil {
+		t.Fatal("empty corpus returned a successful vacuous census")
+	}
+}
+
+func TestComputeCensusDirRejectsCrossFamilyDuplicates(t *testing.T) {
+	t.Parallel()
+	for _, duplicate := range []string{"name", "dedup-key"} {
+		duplicate := duplicate
+		t.Run(duplicate, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			a := censusScenario("fc_census_a", "shape=single;idx=A;proj=star;where=cmp.eq;order=none", "aaaaaaaaaaaaaaaa")
+			b := censusScenario("fc_census_b", "shape=join2.inner;idx=A;proj=star;where=cmp.eq;order=none", "bbbbbbbbbbbbbbbb")
+			if duplicate == "name" {
+				b.Header.Name, b.Doc.Name = a.Header.Name, a.Doc.Name
+			} else {
+				b.Header.DedupKey = a.Header.DedupKey
+			}
+			writeCensusFamily(t, dir, a)
+			writeCensusFamily(t, dir, b)
+			if _, err := factorycorpus.ComputeCensusDir(dir); err == nil {
+				t.Fatalf("cross-family duplicate %s returned a successful census", duplicate)
+			}
+		})
+	}
+}
+
+func censusScenario(name, featureVector, shape string) *factorycorpus.Scenario {
+	return &factorycorpus.Scenario{
+		Header: factorycorpus.Header{Name: name, Generator: "test", Seed: 1, Date: "2026-09-12", Blessing: factorycorpus.BlessingMetamorphic, Oracles: []string{"test"}, FeatureVector: featureVector, PlanShape: shape, DedupKey: factorycorpus.DedupKeyOf(featureVector, shape)},
+		Doc:    &yamsql.Scenario{Name: name, SchemaTemplate: "CREATE TABLE t (id BIGINT, PRIMARY KEY (id))", Setup: []string{"INSERT INTO t VALUES (1)"}, Tests: []yamsql.Test{{Query: "SELECT id FROM t", Columns: []string{"ID"}, Rows: [][]any{{int64(1)}}}}},
+	}
+}
+
+func writeCensusFamily(t *testing.T, dir string, scenario *factorycorpus.Scenario) {
+	t.Helper()
+	path := filepath.Join(dir, factorycorpus.FamilyFileName(factorycorpus.FamilyOf(scenario.Header.FeatureVector)))
+	scenario.Path = path
+	data, err := factorycorpus.MarshalFamily([]*factorycorpus.Scenario{scenario})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

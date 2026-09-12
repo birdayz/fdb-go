@@ -10150,8 +10150,8 @@ in RFC-250's completed stress comparison, not inferred from total time.
   heartbeat sweeps succeeded. The retained journal SHA-256 is
   `e9e4fcef288f3a231db9013730695ab89e5bb18ec1cd2004c21808a275c00022`;
   artifact identities and the exact UTC interval are recorded in RFC-250. This
-  closes the corrected-timer observation hold, not the separate Factory memory
-  growth, Coverage runner OOM, or historical watchdog timeout.
+  closes the corrected-timer observation hold. The Factory and Coverage OOM
+  causes are closed below; the historical watchdog timeout remains open.
 
 ### RFC-250 unresolved final merge holds
 
@@ -10165,8 +10165,10 @@ in RFC-250's completed stress comparison, not inferred from total time.
   probe retained 2,969 MiB before; lazy family retention plus streaming census
   reduced the final and maximum live heap to 1,532 MiB with identical manifest
   counts (2,127 generated/executed, 1,000 committed, 9,150 census scenarios).
-  `TestNewBatchLoadsExistingFamiliesLazily` pins zero retained existing families
-  and one retained family after an append.
+  The regression pins detached index strings, zero retained existing families,
+  preservation of the old scenario across a lazy cross-batch append, and one
+  retained family after that append; streaming census tests pin empty-corpus
+  rejection, cross-family uniqueness, and parity with the full loader.
 - [x] Repair the classic Actions runner's OOM lifecycle. Coverage run
   34679494723 lost `Runner.Listener`; the installed unit had `OOMPolicy=stop`,
   `KillMode=process`, and `Restart=no`. The classic unit drop-in now sets

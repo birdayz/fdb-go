@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"fdb.dev/pkg/relational/conformance/factorycorpus"
 )
@@ -119,14 +120,19 @@ func NewBatch(dir string, quota int) (*Batch, error) {
 			if prev, dup := b.seen[sc.Header.DedupKey]; dup {
 				return nil, fmt.Errorf("existing corpus already holds two scenarios at dedup key %s (%s, %s)", sc.Header.DedupKey, prev, id)
 			}
-			b.seen[sc.Header.DedupKey] = id
+			name, dedupKey := detachedHeaderStrings(sc)
+			b.seen[dedupKey] = id
 			if prev, dup := b.names[sc.Header.Name]; dup {
 				return nil, fmt.Errorf("existing corpus already holds scenario %s twice (dedup keys %s, %s)", sc.Header.Name, prev, sc.Header.DedupKey)
 			}
-			b.names[sc.Header.Name] = sc.Header.DedupKey
+			b.names[name] = dedupKey
 		}
 	}
 	return b, nil
+}
+
+func detachedHeaderStrings(scenario *factorycorpus.Scenario) (string, string) {
+	return strings.Clone(scenario.Header.Name), strings.Clone(scenario.Header.DedupKey)
 }
 
 // Full reports whether the quota is reached.

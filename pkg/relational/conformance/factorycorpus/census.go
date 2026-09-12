@@ -59,12 +59,30 @@ func ComputeCensusDir(dir string) (Census, error) {
 	c := newCensus()
 	matches, err := filepath.Glob(filepath.Join(dir, "*.yamsql"))
 	if err != nil {
-		return c, err
+		return c, fmt.Errorf("glob %s: %w", dir, err)
 	}
+	if len(matches) == 0 {
+		return c, fmt.Errorf("no *.yamsql under %s: a corpus gate over an empty corpus passes vacuously", dir)
+	}
+	sort.Strings(matches)
+	seenKey := map[string]string{}
+	seenName := map[string]string{}
 	for _, path := range matches {
 		file, err := Load(path)
 		if err != nil {
 			return c, err
+		}
+		for _, scenario := range file.Scenarios {
+			id := path + "#" + scenario.Header.Name
+			if previous, duplicate := seenName[scenario.Header.Name]; duplicate {
+				return c, fmt.Errorf("%s and %s both commit scenario %s", previous, id, scenario.Header.Name)
+			}
+			seenName[scenario.Header.Name] = id
+			if previous, duplicate := seenKey[scenario.Header.DedupKey]; duplicate {
+				return c, fmt.Errorf("%s and %s share dedup key %s: the corpus is committing the same (feature vector, plan shape) point twice, which is volume without coverage",
+					previous, id, scenario.Header.DedupKey)
+			}
+			seenKey[scenario.Header.DedupKey] = id
 		}
 		addToCensus(&c, file.Scenarios)
 	}

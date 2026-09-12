@@ -368,11 +368,15 @@ behind the completed FlatMap checkbox.
 The Factory OOM was eager corpus retention, not corpus execution: `NewBatch`
 kept all 437 parsed family files for the whole generation run, and `Finish`
 loaded the complete corpus again for its census. The repair seeds dedup/name
-indexes one family at a time, loads only families a batch appends, and computes
-the census one family at a time. Identical 400-seed/1,000-commit probes reduced
-maximum live heap from 2,969 MiB to 1,532 MiB while preserving all manifest
-counts (2,127 generated/executed, 1,000 committed, 9,150 census scenarios).
-`TestNewBatchLoadsExistingFamiliesLazily` pins the missing memory dimension.
+indexes one family at a time with detached strings, loads only families a
+batch appends, and computes the census one family at a time while preserving
+empty-corpus and cross-family uniqueness guards. Identical 400-seed/1,000-commit
+probes reduced maximum live heap from 2,969 MiB to 1,532 MiB while preserving
+all manifest counts (2,127 generated/executed, 1,000 committed, 9,150 census
+scenarios). Regressions pin detached backing storage, preservation across a
+lazy cross-batch append, streaming/full-loader census parity, empty-corpus
+rejection, and both cross-family duplicate classes. Mutating away either lazy
+load or string detachment reddens the exact regression after one RUN event.
 
 Coverage run **34679494723** exposed a separate classic-runner lifecycle bug:
 the kernel selected `Runner.Listener`, while the installed unit's

@@ -3,7 +3,9 @@ package factory
 import (
 	"context"
 	"database/sql"
+	"unsafe"
 
+	"fdb.dev/pkg/relational/conformance/factorycorpus"
 	"fdb.dev/pkg/relational/conformance/rowdiff"
 )
 
@@ -50,3 +52,11 @@ func CheckPartitionForTest(unfiltered, pos, neg, unknown [][]any) string {
 
 // LoadedFamilyCountForTest reports parsed family documents retained by a batch.
 func LoadedFamilyCountForTest(b *Batch) int { return len(b.families) }
+
+// BatchIndexStringsDetachedForTest verifies that the compact indexes do not
+// retain a loaded family's whole source buffer through substring backing data.
+func BatchIndexStringsDetachedForTest(scenario *factorycorpus.Scenario) bool {
+	name, key := detachedHeaderStrings(scenario)
+	return unsafe.StringData(name) != unsafe.StringData(scenario.Header.Name) &&
+		unsafe.StringData(key) != unsafe.StringData(scenario.Header.DedupKey)
+}

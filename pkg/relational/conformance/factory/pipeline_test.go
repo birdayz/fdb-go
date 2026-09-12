@@ -327,9 +327,16 @@ func TestNewBatchLoadsExistingFamiliesLazily(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	priorFamily, err := factorycorpus.Load(filepath.Join(dir, factorycorpus.FamilyFileName(factorycorpus.FamilyOf(single))))
+	if err != nil {
+		t.Fatal(err)
+	}
 	batch, err := factory.NewBatch(dir, 10)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !factory.BatchIndexStringsDetachedForTest(priorFamily.Scenarios[0]) {
+		t.Fatal("NewBatch indexes retain header strings backed by a complete parsed family")
 	}
 	if got := factory.LoadedFamilyCountForTest(batch); got != 0 {
 		t.Fatalf("NewBatch retained %d parsed existing families, want 0", got)
@@ -339,5 +346,16 @@ func TestNewBatchLoadsExistingFamiliesLazily(t *testing.T) {
 	}
 	if got := factory.LoadedFamilyCountForTest(batch); got != 1 {
 		t.Fatalf("after one append retained %d parsed families, want only the touched family", got)
+	}
+	family, err := factorycorpus.Load(filepath.Join(dir, factorycorpus.FamilyFileName(factorycorpus.FamilyOf(single))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]bool{}
+	for _, scenario := range family.Scenarios {
+		names[scenario.Header.Name] = true
+	}
+	if len(names) != 2 || !names["fc_lazy_single"] || !names["fc_lazy_append"] {
+		t.Fatalf("cross-batch append did not preserve the existing family: names = %v", names)
 	}
 }
