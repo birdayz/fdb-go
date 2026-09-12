@@ -323,7 +323,9 @@ it.
 **The fix** compares each container's start time against the running `Runner.Worker`'s. A
 container newer than the worker belongs to the job in flight, so its age says nothing about
 whether it is abandoned; one OLDER than the worker is an orphan from a previous job and stays
-eligible.
+eligible. Enumeration matches the image name from `docker ps`; it must not use Docker's
+`ancestor=foundationdb/foundationdb` filter, because that untagged ancestor silently matched no
+`:7.3.77` containers on this fleet. The shell suite rejects any such filter argument.
 
 The first version of this fix was a blanket "skip everything while a job runs", which is the
 rule the retired scaler's own sweeper had (*"runs only when no runner is active on that box, so
@@ -399,10 +401,12 @@ deletions, and read-only inspection observed the active workers as `Runner.Worke
 The corrected worker-aware guard was then exercised during RowDiff run 34673258982: the run
 completed all 15,000 seeds over 4h42m while its FDB container stayed live, and the sweep service
 started 40 times, including 35 starts after that container crossed the 1800-second threshold,
-with zero kill decisions. Completion with the same container still live distinguishes the keep
-from a silent no-op sweep. Future over-age keeps emit `keeping live FDB container`, so the
-journal directly records the protective branch; the stub arms pin that message as well as
-removal of an older orphan and a workerless old container.
+with zero kill decisions. The earlier observed removals prove the unchanged image-name
+enumeration found these tagged containers on this runner; completion with the same container
+still live therefore records the corrected guard's keep rather than an empty enumeration.
+Future over-age keeps emit `keeping live FDB container`, so the journal directly records the
+protective branch; the stub arms pin that message as well as removal of an older orphan and a
+workerless old container.
 
 **Deployment:** `cloud-init` is `PER_INSTANCE`; changing this template does not update
 existing boxes. On 2026-09-11 the corrected script was deployed atomically to both

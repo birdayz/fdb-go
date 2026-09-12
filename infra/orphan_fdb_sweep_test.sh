@@ -65,7 +65,8 @@ cat > "$BIN/docker" <<'STUB'
 #!/bin/bash
 case "$1" in
   ps)
-    # `--format '{{.ID}} {{.Image}}'` — one container, id c1.
+    # Exact production enumeration: adding an ancestor filter can silently match no tagged images.
+    [ "$#" -eq 3 ] && [ "$2" = --format ] || exit 2
     echo "c1 foundationdb/foundationdb:7.3.77"
     ;;
   inspect)
