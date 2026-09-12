@@ -223,6 +223,19 @@ func TestComputeCensusDirMatchesLoadedCorpus(t *testing.T) {
 	}
 }
 
+func TestComputeCensusDirDetachesUniquenessIndexes(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeCensusFamily(t, dir, censusScenario("fc_streaming_index_detached", "shape=single;idx=A;proj=star;where=cmp.eq;order=none", "eeeeeeeeeeeeeeee"))
+	detached, err := factorycorpus.StreamingIndexStringsDetachedForTest(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !detached {
+		t.Fatal("streaming census uniqueness index retains a parsed family's backing data")
+	}
+}
+
 func TestComputeCensusDirRejectsEmptyCorpus(t *testing.T) {
 	t.Parallel()
 	if _, err := factorycorpus.ComputeCensusDir(t.TempDir()); err == nil {
@@ -277,6 +290,9 @@ func TestComputeCensusDetachesRetainedStrings(t *testing.T) {
 	t.Parallel()
 	scenario := censusScenario("fc_census_detached", "shape=single;idx=A;proj=star;where=cmp.eq;order=none", "dddddddddddddddd")
 	census := factorycorpus.ComputeCensus([]*factorycorpus.Scenario{scenario})
+	if census.Scenarios != 1 || len(census.ByFeature) != 1 || len(census.ByKeyBlessing) != 1 {
+		t.Fatalf("census did not retain the scenario under test: %+v", census)
+	}
 	for featureVector := range census.ByFeature {
 		if unsafe.StringData(featureVector) == unsafe.StringData(scenario.Header.FeatureVector) {
 			t.Fatal("census feature-vector key retains the parsed scenario's backing data")

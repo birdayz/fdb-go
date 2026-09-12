@@ -57,37 +57,42 @@ func ComputeCensus(scenarios []*Scenario) Census {
 // family simultaneously makes the generation lane's final verification use
 // memory proportional to the entire corpus rather than its largest file.
 func ComputeCensusDir(dir string) (Census, error) {
+	census, _, _, err := computeCensusDir(dir, Load)
+	return census, err
+}
+
+func computeCensusDir(dir string, load func(string) (*FamilyFile, error)) (Census, map[string]string, map[string]string, error) {
 	c := newCensus()
 	matches, err := filepath.Glob(filepath.Join(dir, "*.yamsql"))
 	if err != nil {
-		return c, fmt.Errorf("glob %s: %w", dir, err)
+		return c, nil, nil, fmt.Errorf("glob %s: %w", dir, err)
 	}
 	if len(matches) == 0 {
-		return c, fmt.Errorf("no *.yamsql under %s: a corpus gate over an empty corpus passes vacuously", dir)
+		return c, nil, nil, fmt.Errorf("no *.yamsql under %s: a corpus gate over an empty corpus passes vacuously", dir)
 	}
 	sort.Strings(matches)
 	seenKey := map[string]string{}
 	seenName := map[string]string{}
 	for _, path := range matches {
-		file, err := Load(path)
+		file, err := load(path)
 		if err != nil {
-			return c, err
+			return c, nil, nil, err
 		}
 		for _, scenario := range file.Scenarios {
 			id := path + "#" + scenario.Header.Name
 			if previous, duplicate := seenName[scenario.Header.Name]; duplicate {
-				return c, fmt.Errorf("%s and %s both commit scenario %s", previous, id, scenario.Header.Name)
+				return c, nil, nil, fmt.Errorf("%s and %s both commit scenario %s", previous, id, scenario.Header.Name)
 			}
 			seenName[strings.Clone(scenario.Header.Name)] = id
 			if previous, duplicate := seenKey[scenario.Header.DedupKey]; duplicate {
-				return c, fmt.Errorf("%s and %s share dedup key %s: the corpus is committing the same (feature vector, plan shape) point twice, which is volume without coverage",
+				return c, nil, nil, fmt.Errorf("%s and %s share dedup key %s: the corpus is committing the same (feature vector, plan shape) point twice, which is volume without coverage",
 					previous, id, scenario.Header.DedupKey)
 			}
 			seenKey[strings.Clone(scenario.Header.DedupKey)] = id
 		}
 		addToCensus(&c, file.Scenarios)
 	}
-	return c, nil
+	return c, seenName, seenKey, nil
 }
 
 func newCensus() Census {

@@ -461,6 +461,38 @@ func slicesContainsPID(hs []stdoutHolder, pid int) bool {
 // diagnostic. Without it the failure arrives 60 seconds later as a WaitDelay
 // expiry that names neither the process nor the test, which is how this cost
 // several people a full cycle each.
+func checkForLeakedStdoutHolders(code int, find func() ([]stdoutHolder, error)) int {
+	holders, err := find()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "checking for processes holding this test binary's stdout: %v\n", err)
+		return 1
+	}
+	if len(holders) == 0 {
+		return code
+	}
+	for _, h := range holders {
+		fmt.Fprintf(os.Stderr, "leaked child: pid %d (%s) still holds this test binary's "+
+			"stdout on fd %s after all tests finished\n", h.pid, h.comm, h.fd)
+	}
+	fmt.Fprintf(os.Stderr, "%d process(es) outlived the tests holding this binary's output pipe; "+
+		"a buffered cmd/go reader can block until its WaitDelay expires and report \"Test I/O incomplete\". "+
+		"A launcher must not hand a long-lived child os.Stdout, and a cleanup must wait for "+
+		"the process group to be gone rather than merely signalling it.\n", len(holders))
+	if code == 0 {
+		return 1
+	}
+	return code
+}
+
+func TestStdoutHolderCheckFailsOnInspectionError(t *testing.T) {
+	t.Parallel()
+	if got := checkForLeakedStdoutHolders(0, func() ([]stdoutHolder, error) {
+		return nil, errors.New("injected /proc failure")
+	}); got != 1 {
+		t.Fatalf("stdout holder inspection error returned exit code %d, want 1", got)
+	}
+}
+
 func TestMain(m *testing.M) {
 	// Before m.Run, and therefore before this process forks for the first time:
 	// the shared fake ssh binaries must be fully written and closed while no
@@ -472,18 +504,5 @@ func TestMain(m *testing.M) {
 	}
 	code := m.Run()
 	_ = os.RemoveAll(fakeSSHDir)
-	if holders, err := processesHoldingOurStdout(); err == nil && len(holders) > 0 {
-		for _, h := range holders {
-			fmt.Fprintf(os.Stderr, "leaked child: pid %d (%s) still holds this test binary's "+
-				"stdout on fd %s after all tests finished\n", h.pid, h.comm, h.fd)
-		}
-		fmt.Fprintf(os.Stderr, "%d process(es) outlived the tests holding this binary's output pipe; "+
-			"a buffered cmd/go reader can block until its WaitDelay expires and report \"Test I/O incomplete\". "+
-			"A launcher must not hand a long-lived child os.Stdout, and a cleanup must wait for "+
-			"the process group to be gone rather than merely signalling it.\n", len(holders))
-		if code == 0 {
-			code = 1
-		}
-	}
-	os.Exit(code)
+	os.Exit(checkForLeakedStdoutHolders(code, processesHoldingOurStdout))
 }
