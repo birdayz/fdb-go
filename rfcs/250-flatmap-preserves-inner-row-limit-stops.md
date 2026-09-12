@@ -396,8 +396,8 @@ and returned without observing process death, while the package's teardown path
 already treats signal delivery and observed death as separate states. The
 watchdog now remains live and repeats SIGKILL on its poll interval until the
 process wait path closes `done`; one failed local syscall or remote command can
-no longer strand the runner. A synthetic process drops the first request and
-requires the second, so restoring the one-shot return runs that regression once
+no longer strand the runner. A synthetic probe requires two kill requests
+before reporting death, so restoring the one-shot return runs that regression once
 and fails it once. The original adopted-runner test and the new retry pin passed
 100 repetitions together. The regression also verifies its pidfile setup,
 retains adoption and signal logs through cleanup, and prints tracked-runner and

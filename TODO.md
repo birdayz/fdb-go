@@ -10180,7 +10180,7 @@ in RFC-250's completed stress comparison, not inferred from total time.
   from CI run 34613512453. The original log cannot identify which individual
   signal delivery failed, but the lifecycle defect was concrete: the terminal
   watchdog issued one fire-and-forget SIGKILL and exited without observing
-  death. It now retries until the wait path closes `done`. A synthetic process
-  drops the first request and requires the second; restoring one-shot behavior
+  death. It now retries until the wait path closes `done`. A synthetic probe
+  requires two kill requests before reporting death; restoring one-shot behavior
   makes that regression fail after one RUN. It and the original adopted-runner
   test passed 100 repetitions together.
