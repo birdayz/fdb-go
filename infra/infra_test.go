@@ -247,7 +247,7 @@ func TestReadmeDistinguishesLegacySweepFromCorrectedGuard(t *testing.T) {
 		"executed 12,396 of 15,000 seeds within the normal 3h30 budget",
 		"container stayed live until normal teardown",
 		"including 35 starts after the container crossed the 1800-second threshold",
-		"A later paging sweep used a second container",
+		"later paging sweep used a second container and executed 932 of 5,000 seeds within its normal 1h10 budget",
 		"with zero kill decisions",
 		"Future over-age keeps emit `keeping live FDB container`",
 	} {

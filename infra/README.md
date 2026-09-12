@@ -402,7 +402,8 @@ The corrected worker-aware guard was then exercised during RowDiff run 346732589
 sweep executed 12,396 of 15,000 seeds within the normal 3h30 budget, and that sweep's FDB
 container stayed live until normal teardown while the sweep service started 40 times, including
 35 starts after the container crossed the 1800-second threshold, with zero kill decisions. A
-later paging sweep used a second container. The earlier observed removals prove the unchanged
+later paging sweep used a second container and executed 932 of 5,000 seeds within its normal
+1h10 budget. The earlier observed removals prove the unchanged
 image-name enumeration found these tagged containers on this runner; the deep-sweep container's
 survival until normal teardown therefore records the corrected guard's keep rather than an
 empty enumeration.
