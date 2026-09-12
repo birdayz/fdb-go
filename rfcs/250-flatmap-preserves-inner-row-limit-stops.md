@@ -354,8 +354,8 @@ change repairs the nightly nets:
 - PR CI run **34613512453**: the Bazel suite and race lane passed, but the
   separate `tools/bazelscaleset` module failed
   `TestAdoptedRunnerWatchdogReclaims`: after 10 seconds its terminal watchdog
-  had not reclaimed the adopted zombie runner. This new failure is under
-  investigation; a passed Bazel suite does not cover this module's gate.
+  had not reclaimed the adopted zombie runner. The repair and regression are
+  recorded below; a passed Bazel suite does not cover this module's gate.
 - Reconcile run **34604652455** identifies the stale Coverage heartbeat and
   missing required checks on open PRs #486, #579, #745, and #747. Those PRs
   are not authorized merge targets of this task; their owner decisions must
@@ -389,14 +389,20 @@ shell suite pins both coupled arms and its self-match-safe process probe.
 ### Standalone-module stdout diagnostic correction
 
 The failing PR step was `GOWORK=off go test ./... -count=1`, not `-race`.
-Its watchdog timeout remains unexplained: repetitions of the whole module,
-including the original host with Go 1.26.6, have not reproduced that timeout.
-The original log contains no adoption, liveness, or signal diagnostics;
-a transient `/proc` miss or ignored pidfile write is a hypothesis, not an
-established cause, and no speculative lifecycle change is included here.
-The watchdog regression now verifies its pidfile setup, retains adoption and
-signal logs through cleanup, and prints tracked-runner and `/proc` state on
-a timeout. One waiter owns child reaping; cleanup joins it and the watchers.
+The original log contains no adoption, liveness, or signal diagnostics, so it
+cannot identify which individual signal delivery failed. The lifecycle defect
+is nevertheless concrete: `watchTerminal` issued one fire-and-forget SIGKILL
+and returned without observing process death, while the package's teardown path
+already treats signal delivery and observed death as separate states. The
+watchdog now remains live and repeats SIGKILL on its poll interval until the
+process wait path closes `done`; one failed local syscall or remote command can
+no longer strand the runner. A synthetic process drops the first request and
+requires the second, so restoring the one-shot return runs that regression once
+and fails it once. The original adopted-runner test and the new retry pin passed
+100 repetitions together. The regression also verifies its pidfile setup,
+retains adoption and signal logs through cleanup, and prints tracked-runner and
+`/proc` state on timeout. One waiter owns child reaping; cleanup joins it and
+the watchers.
 
 An isolated replay without a package argument exposed a separate deterministic
 failure: after the watchdog test passed, `TestMain` reported the parent `go`
@@ -408,8 +414,8 @@ actual test and its `TestMain` with shared file and shared pipe outputs; both
 failed before the fix. Independent tests retain detection of a child writer
 and rejection of a pipe reader and regular-file holder. Removing each of the
 ancestor, file-mode, and writable-descriptor filters independently reddened
-its corresponding regression. This repairs the diagnostic, not the original
-watchdog timeout, and the latter remains a merge hold.
+its corresponding regression. This repairs the diagnostic independently of the
+verified-death watchdog repair above.
 
 ### FDB file-allocation failure captured in final-head CI
 
@@ -436,7 +442,7 @@ it does not retry `EINTR`. EIO instead dispatches `eio_ftruncate` to its
 worker pool. `DISABLE_POSIX_KERNEL_AIO=1` selects that supported backend.
 The trace establishes the errno and fatal propagation, not which signal
 interrupted the syscall. No claim is made that this alone explains the older
-nightly stress exit, Factory OOM, Coverage interruption, or watchdog timeout.
+nightly stress exit, Factory OOM, or Coverage interruption.
 
 Decision: default the Go test-container module to
 `WithKnob("disable_posix_kernel_aio", "1")` for both tmpfs and on-disk data.

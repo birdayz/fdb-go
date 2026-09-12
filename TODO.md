@@ -10139,7 +10139,7 @@ in RFC-250's completed stress comparison, not inferred from total time.
   factory scenarios), as did two-before/two-after 1M comparisons with identical
   row and EXPLAIN signatures. Upstream: apple/foundationdb#14041. Full evidence,
   source identities, limitations, and reviews are in RFC-250. This specific fix
-  does not claim to explain the older watchdog timeout or nightly interruptions.
+  does not claim to explain the older nightly interruptions.
 
 ### RFC-250 post-deployment orphan-sweeper observation
 
@@ -10151,7 +10151,7 @@ in RFC-250's completed stress comparison, not inferred from total time.
   `e9e4fcef288f3a231db9013730695ab89e5bb18ec1cd2004c21808a275c00022`;
   artifact identities and the exact UTC interval are recorded in RFC-250. This
   closes the corrected-timer observation hold. The Factory and Coverage OOM
-  causes are closed below; the historical watchdog timeout remains open.
+  causes and the historical watchdog lifecycle defect are closed below.
 
 ### RFC-250 unresolved final merge holds
 
@@ -10176,6 +10176,11 @@ in RFC-250's completed stress comparison, not inferred from total time.
   restart while the surviving `Runner.Worker` finishes, preventing a second
   concurrent claim. `infra/link_ci_volume_test.sh` pins both coupled arms and
   the self-match-safe worker probe.
-- [ ] Reproduce and root-cause the historical
-  `TestAdoptedRunnerWatchdogReclaims` timeout from CI run 34613512453. Later
-  passes and added diagnostics do not explain or fix the original timeout.
+- [x] Repair the historical `TestAdoptedRunnerWatchdogReclaims` failure class
+  from CI run 34613512453. The original log cannot identify which individual
+  signal delivery failed, but the lifecycle defect was concrete: the terminal
+  watchdog issued one fire-and-forget SIGKILL and exited without observing
+  death. It now retries until the wait path closes `done`. A synthetic process
+  drops the first request and requires the second; restoring one-shot behavior
+  makes that regression fail after one RUN. It and the original adopted-runner
+  test passed 100 repetitions together.
