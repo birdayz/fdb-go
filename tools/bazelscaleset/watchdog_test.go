@@ -28,7 +28,10 @@ type signalProbeProc struct {
 func (p *signalProbeProc) pid() int    { return 1 }
 func (p *signalProbeProc) wait() error { return nil }
 func (p *signalProbeProc) signal(sig syscall.Signal) {
-	p.signals <- sig
+	select {
+	case p.signals <- sig:
+	default:
+	}
 }
 
 func TestTerminalWatchdogSignalsUntilProcessDeath(t *testing.T) {
@@ -45,6 +48,7 @@ func TestTerminalWatchdogSignalsUntilProcessDeath(t *testing.T) {
 	}
 	s := &Scaler{
 		logger:           discardLogger(),
+		client:           &fakeScalerClient{},
 		jobTerminalGrace: time.Millisecond,
 		terminalPoll:     time.Millisecond,
 	}
