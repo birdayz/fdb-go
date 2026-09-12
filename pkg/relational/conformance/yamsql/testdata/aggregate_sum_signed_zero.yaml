@@ -1,0 +1,25 @@
+# Java NumericAggregationValue seeds SUM_D/AVG_D from the first non-NULL
+# partial, not +0. StreamGrouping distinguishes signed zeros using message
+# equality. Losing the sign therefore merges two downstream groups into one.
+# Row counts make this discriminating even though the YAML numeric comparator
+# itself equates -0.0 and +0.0; direct sign-bit assertions live in
+# TestFDB_AggregateSignedZero.
+name: aggregate_sum_signed_zero
+schema_template: |
+  CREATE TABLE t (id BIGINT, g BIGINT, d DOUBLE, PRIMARY KEY (id))
+  CREATE INDEX t_gid_d ON t (g, id, d)
+setup:
+  - INSERT INTO t VALUES (1, 1, NULL), (2, 1, -0.0), (3, 1, -0.0), (4, 2, 0.0), (5, 2, -0.0)
+tests:
+  - query: SELECT s, COUNT(*) FROM (SELECT SUM(d) AS s FROM t GROUP BY g) a GROUP BY s
+    plan_contains: StreamingAgg
+    unordered: true
+    rows:
+      - [-0.0, 1]
+      - [0.0, 1]
+  - query: SELECT s, COUNT(*) FROM (SELECT AVG(d) AS s FROM t GROUP BY g) a GROUP BY s
+    plan_contains: StreamingAgg
+    unordered: true
+    rows:
+      - [-0.0, 1]
+      - [0.0, 1]
