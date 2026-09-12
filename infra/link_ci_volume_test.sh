@@ -404,6 +404,11 @@ case "$classic" in
   *) bad "classic mode does not opt into worker-aware restart deferral" ;;
 esac
 scaleset=$(sed -n '/# bazelscaleset (RFC-155)/,/^    fi$/p' infra/cloud-init.yaml)
+[ -n "$scaleset" ] || bad "scale-set branch extraction is empty"
+case "$scaleset" in
+  *bazelscaleset.service*) ok "scale-set branch extraction reaches the supervisor configuration" ;;
+  *) bad "scale-set branch extraction missed its positive control" ;;
+esac
 case "$scaleset" in
   *WATCH_DEFER_WHILE_WORKER=*) bad "scale-set mode opts into classic worker deferral and blocks runner adoption" ;;
   *) ok "scale-set watchdog remains free to restart and adopt a surviving runner" ;;

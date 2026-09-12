@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 // Census is the measured state of the committed corpus: RFC-201 §8's
@@ -77,12 +78,12 @@ func ComputeCensusDir(dir string) (Census, error) {
 			if previous, duplicate := seenName[scenario.Header.Name]; duplicate {
 				return c, fmt.Errorf("%s and %s both commit scenario %s", previous, id, scenario.Header.Name)
 			}
-			seenName[scenario.Header.Name] = id
+			seenName[strings.Clone(scenario.Header.Name)] = id
 			if previous, duplicate := seenKey[scenario.Header.DedupKey]; duplicate {
 				return c, fmt.Errorf("%s and %s share dedup key %s: the corpus is committing the same (feature vector, plan shape) point twice, which is volume without coverage",
 					previous, id, scenario.Header.DedupKey)
 			}
-			seenKey[scenario.Header.DedupKey] = id
+			seenKey[strings.Clone(scenario.Header.DedupKey)] = id
 		}
 		addToCensus(&c, file.Scenarios)
 	}
@@ -101,9 +102,12 @@ func addToCensus(c *Census, scenarios []*Scenario) {
 	for _, s := range scenarios {
 		c.Scenarios++
 		c.Tests += len(s.Doc.Tests)
-		c.ByFeature[s.Header.FeatureVector]++
-		c.ByBlessing[string(s.Header.Blessing)]++
-		c.ByKeyBlessing[s.Header.DedupKey] = string(s.Header.Blessing)
+		featureVector := strings.Clone(s.Header.FeatureVector)
+		blessing := strings.Clone(string(s.Header.Blessing))
+		dedupKey := strings.Clone(s.Header.DedupKey)
+		c.ByFeature[featureVector]++
+		c.ByBlessing[blessing]++
+		c.ByKeyBlessing[dedupKey] = blessing
 	}
 }
 

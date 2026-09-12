@@ -95,6 +95,10 @@ type Batch struct {
 // shapes the last run already covered, and a year of nightlies would produce
 // one night's coverage a hundred times over.
 func NewBatch(dir string, quota int) (*Batch, error) {
+	return newBatch(dir, quota, factorycorpus.Load)
+}
+
+func newBatch(dir string, quota int, load func(string) (*factorycorpus.FamilyFile, error)) (*Batch, error) {
 	b := &Batch{
 		Dir: dir, Quota: quota,
 		seen:     map[string]string{},
@@ -111,7 +115,7 @@ func NewBatch(dir string, quota int) (*Batch, error) {
 		return nil, err
 	}
 	for _, m := range matches {
-		f, err := factorycorpus.Load(m)
+		f, err := load(m)
 		if err != nil {
 			return nil, fmt.Errorf("existing corpus file %s: %w", m, err)
 		}
@@ -120,19 +124,20 @@ func NewBatch(dir string, quota int) (*Batch, error) {
 			if prev, dup := b.seen[sc.Header.DedupKey]; dup {
 				return nil, fmt.Errorf("existing corpus already holds two scenarios at dedup key %s (%s, %s)", sc.Header.DedupKey, prev, id)
 			}
-			name, dedupKey := detachedHeaderStrings(sc)
-			b.seen[dedupKey] = id
 			if prev, dup := b.names[sc.Header.Name]; dup {
 				return nil, fmt.Errorf("existing corpus already holds scenario %s twice (dedup keys %s, %s)", sc.Header.Name, prev, sc.Header.DedupKey)
 			}
-			b.names[name] = dedupKey
+			b.seedScenario(sc, id)
 		}
 	}
 	return b, nil
 }
 
-func detachedHeaderStrings(scenario *factorycorpus.Scenario) (string, string) {
-	return strings.Clone(scenario.Header.Name), strings.Clone(scenario.Header.DedupKey)
+func (b *Batch) seedScenario(scenario *factorycorpus.Scenario, id string) {
+	name := strings.Clone(scenario.Header.Name)
+	dedupKey := strings.Clone(scenario.Header.DedupKey)
+	b.seen[dedupKey] = id
+	b.names[name] = dedupKey
 }
 
 // Full reports whether the quota is reached.

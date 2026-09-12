@@ -371,7 +371,7 @@ loaded the complete corpus again for its census. The repair seeds dedup/name
 indexes one family at a time with detached strings, loads only families a
 batch appends, and computes the census one family at a time while preserving
 empty-corpus and cross-family uniqueness guards. Identical 400-seed/1,000-commit
-probes reduced maximum live heap from 2,969 MiB to 1,532 MiB while preserving
+probes reduced maximum live heap from 2,969 MiB to 1,499 MiB while preserving
 all manifest counts (2,127 generated/executed, 1,000 committed, 9,150 census
 scenarios). Regressions pin detached backing storage, preservation across a
 lazy cross-batch append, streaming/full-loader census parity, empty-corpus

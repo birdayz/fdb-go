@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"unsafe"
 
 	"fdb.dev/pkg/relational/conformance/factorycorpus"
 	"fdb.dev/pkg/relational/conformance/yamsql"
@@ -269,5 +270,24 @@ func writeCensusFamily(t *testing.T, dir string, scenario *factorycorpus.Scenari
 	}
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestComputeCensusDetachesRetainedStrings(t *testing.T) {
+	t.Parallel()
+	scenario := censusScenario("fc_census_detached", "shape=single;idx=A;proj=star;where=cmp.eq;order=none", "dddddddddddddddd")
+	census := factorycorpus.ComputeCensus([]*factorycorpus.Scenario{scenario})
+	for featureVector := range census.ByFeature {
+		if unsafe.StringData(featureVector) == unsafe.StringData(scenario.Header.FeatureVector) {
+			t.Fatal("census feature-vector key retains the parsed scenario's backing data")
+		}
+	}
+	for dedupKey, blessing := range census.ByKeyBlessing {
+		if unsafe.StringData(dedupKey) == unsafe.StringData(scenario.Header.DedupKey) {
+			t.Fatal("census dedup-key retains the parsed scenario's backing data")
+		}
+		if unsafe.StringData(blessing) == unsafe.StringData(string(scenario.Header.Blessing)) {
+			t.Fatal("census blessing value retains the parsed scenario's backing data")
+		}
 	}
 }

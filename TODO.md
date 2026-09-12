@@ -10163,7 +10163,7 @@ in RFC-250's completed stress comparison, not inferred from total time.
 - [x] Repair the Factory batch's measured live-heap retention. Nightly run
   34680445556 was OOM-killed at 7.4 GiB RSS. The identical 400-seed/1,000-commit
   probe retained 2,969 MiB before; lazy family retention plus streaming census
-  reduced the final and maximum live heap to 1,532 MiB with identical manifest
+  reduced the final and maximum live heap to 1,499 MiB with identical manifest
   counts (2,127 generated/executed, 1,000 committed, 9,150 census scenarios).
   The regression pins detached index strings, zero retained existing families,
   preservation of the old scenario across a lazy cross-batch append, and one

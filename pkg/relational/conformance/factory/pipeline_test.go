@@ -327,16 +327,16 @@ func TestNewBatchLoadsExistingFamiliesLazily(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	priorFamily, err := factorycorpus.Load(filepath.Join(dir, factorycorpus.FamilyFileName(factorycorpus.FamilyOf(single))))
+	detached, err := factory.BatchIndexStringsDetachedForTest(dir)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !detached {
+		t.Fatal("NewBatch indexes retain header strings backed by a complete parsed family")
 	}
 	batch, err := factory.NewBatch(dir, 10)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if !factory.BatchIndexStringsDetachedForTest(priorFamily.Scenarios[0]) {
-		t.Fatal("NewBatch indexes retain header strings backed by a complete parsed family")
 	}
 	if got := factory.LoadedFamilyCountForTest(batch); got != 0 {
 		t.Fatalf("NewBatch retained %d parsed existing families, want 0", got)
@@ -357,5 +357,16 @@ func TestNewBatchLoadsExistingFamiliesLazily(t *testing.T) {
 	}
 	if len(names) != 2 || !names["fc_lazy_single"] || !names["fc_lazy_append"] {
 		t.Fatalf("cross-batch append did not preserve the existing family: names = %v", names)
+	}
+}
+
+func TestFinishRejectsAnEmptyCorpus(t *testing.T) {
+	t.Parallel()
+	batch, err := factory.NewBatch(t.TempDir(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := batch.Finish(1, 1, "2026-09-12", "test"); err == nil {
+		t.Fatal("Finish accepted a corpus with no committed scenarios")
 	}
 }
