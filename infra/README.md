@@ -396,8 +396,11 @@ way and proves nothing — which is what the first draft of that case did, and i
 Note what that does and does not establish: the arms prove the guard's LOGIC with stubs. The
 obsolete age-only timer was observed firing: the runner journal records both RowDiff container
 deletions, and read-only inspection observed the active workers as `Runner.Worker` processes.
-The corrected worker-aware guard has not yet been observed making a real keep/remove decision;
-a fresh RowDiff run spanning a timer firing is required to establish that deployment behavior.
+The corrected worker-aware guard was then observed during RowDiff run 34673258982: its service
+started 40 times, including 35 starts after the live FDB container crossed the 1800-second
+threshold, made zero kill decisions, and reported successful heartbeat and paging sweeps. That
+is a real keep decision for the live worker's container; the stub arms separately pin removal
+of an older orphan and a workerless old container.
 
 **Deployment:** `cloud-init` is `PER_INSTANCE`; changing this template does not update
 existing boxes. On 2026-09-11 the corrected script was deployed atomically to both

@@ -226,9 +226,10 @@ func TestReadmeTokenCommandNamesTheRealRepo(t *testing.T) {
 }
 
 // TestReadmeDistinguishesLegacySweepFromCorrectedGuard pins the incident evidence's
-// scope. The journal proves that the obsolete age-only timer fired and deleted the two
-// RowDiff containers; it does not yet prove a real firing of the newly deployed
-// worker-aware guard. Collapsing those observations made the README contradict itself.
+// scope. One journal proves the obsolete age-only timer deleted two RowDiff containers;
+// the later deployment journal proves the worker-aware guard kept the live replacement
+// after it crossed the same age threshold. Collapsing those observations made the README
+// contradict itself.
 func TestReadmeDistinguishesLegacySweepFromCorrectedGuard(t *testing.T) {
 	t.Parallel()
 
@@ -242,10 +243,12 @@ func TestReadmeDistinguishesLegacySweepFromCorrectedGuard(t *testing.T) {
 	}
 	for _, want := range []string{
 		"The obsolete age-only timer was observed firing",
-		"The corrected worker-aware guard has not yet been observed making a real keep/remove decision",
+		"The corrected worker-aware guard was then observed during RowDiff run 34673258982",
+		"including 35 starts after the live FDB container crossed the 1800-second threshold",
+		"made zero kill decisions",
 	} {
 		if !strings.Contains(body, want) {
-			t.Errorf("README does not distinguish the observed legacy sweep from the unobserved corrected guard; missing %q", want)
+			t.Errorf("README does not distinguish the observed legacy removal from the corrected guard's observed keep decision; missing %q", want)
 		}
 	}
 }
