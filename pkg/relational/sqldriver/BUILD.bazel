@@ -111,6 +111,7 @@ go_test(
         "aggregate_output_slot_recorded_fdb_test.go",
         "aggregate_over_join_ordinal_fdb_test.go",
         "aggregate_over_mixed_nesting_outer_join_fdb_test.go",
+        "aggregate_signed_zero_fdb_test.go",
         "ambiguous_column_probe_test.go",
         "ambiguous_column_ref_rejected_fdb_test.go",
         "ambiguous_column_star_test.go",

@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=372 queries=2783 dml=172 non_query=109 plan_errors=303 unexpected_errors=4
+# files=373 queries=2785 dml=172 non_query=109 plan_errors=303 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -954,6 +954,26 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
 shape:       RecordQueryScanPlan
+=== aggregate_sum_signed_zero.yaml#0
+sql:   SELECT s, COUNT(*) FROM (SELECT SUM(d) AS s FROM t GROUP BY g) a GROUP BY s
+plan:  Project([_current.S#0, _current.COUNT(*)#1], StreamingAgg(keys=[_current.S#0], InMemorySort([_current.S#0 ASC], Project([_current.SUM(D)#1], StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(T)))))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryInMemorySortPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryStreamingAggregationPlan
+shape:           RecordQueryInMemorySortPlan
+shape:             RecordQueryScanPlan
+=== aggregate_sum_signed_zero.yaml#1
+sql:   SELECT s, COUNT(*) FROM (SELECT AVG(d) AS s FROM t GROUP BY g) a GROUP BY s
+plan:  Project([_current.S#0, _current.COUNT(*)#1], StreamingAgg(keys=[_current.S#0], InMemorySort([_current.S#0 ASC], Project([_current.AVG(D)#1], StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(T)))))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryInMemorySortPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryStreamingAggregationPlan
+shape:           RecordQueryInMemorySortPlan
+shape:             RecordQueryScanPlan
 === aggregate_with_null_groups.yaml#0
 sql:   SELECT region, COUNT(*), SUM(amount) FROM t GROUP BY region ORDER BY region
 plan:  Project([_current.REGION#0, _current.COUNT(*)#1, _current.SUM(AMOUNT)#2], StreamingAgg(keys=[_current.REGION#1], InMemorySort([_current.REGION#1 ASC], Scan(T))))
