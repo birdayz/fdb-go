@@ -10186,3 +10186,40 @@ in RFC-250's completed stress comparison, not inferred from total time.
   requires two kill requests before reporting death; restoring one-shot behavior
   makes that regression fail after one RUN. It and the original adopted-runner
   test passed 100 repetitions together.
+
+### RFC-251 — SUM/AVG preserve their first non-NULL negative zero (completed)
+
+- [x] Fix the streaming numeric accumulator's artificial positive-zero seed.
+  It now adopts its first non-NULL value, matching Java Cascades'
+  `NumericAggregationValue.NumericAccumulator`. Before the fix, SUM/AVG over
+  negative zeros returned positive zero; grouping those aggregate outputs
+  merged two distinct zero groups into one. The retained unit regression
+  checks 54 function/input/continuation-split cases, and real-FDB SQL coverage
+  checks DOUBLE/FLOAT, scalar/grouped aggregation and four scan budgets.
+  Both new yamsql queries failed before and pass after. Graefe/Torvalds ACKed
+  the RFC and implementation; independent Codex review found no issues.
+  `just test`: 92/92 targets passed (final run: 2 executed, 90 cached after
+  correcting the new scenarios' missing EXPLAIN golden entries; preceding
+  uncached run: all 92 executed, with that golden as its sole failure).
+  Source hashes, exact evidence populations and limitations:
+  `rfcs/251-sum-avg-adopt-first-non-null-value.md`.
+
+#### Stress test 1M baseline — RFC-251
+
+Before = `0a55930f65828b12e1ab1de1c3c56d2f7c11d489`, the merge-base at
+measurement time (2026-09-12). After = that base with only executor
+`streaming_cursors.go` changed to blob
+`21290e07d205e24d37ab1842801a9ad7aa702414`. Both states ran sequentially in the
+same `/var/tmp` worktree/filesystem and reused one Bazel output base.
+
+| Source | Test time 1 | Test time 2 | Start load averages (1/5/15 min), samples 1; 2 |
+|---|---:|---:|---|
+| Before | 192.22 s | 192.33 s | 5.87/3.44/2.90; 4.09/3.97/3.25 |
+| After | 191.34 s | 191.26 s | 2.38/3.51/3.25; 4.14/3.92/3.46 |
+
+Each uncached sample passed and emitted 24 RUN events (parent plus 23 query
+arms), identical counts for 22 timed queries plus the 1M COUNT assertion,
+and identical text for 11 emitted EXPLAINs. No speedup claim: individual
+query timings moved in both directions, and the emitted aggregate-index
+plans do not measure the changed streaming-SUM path. The RFC records every
+timed query's row count and both before/after durations, not just totals.

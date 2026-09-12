@@ -715,7 +715,13 @@ func (c *aggregateCursor) accumulateRow(row QueryResult) error {
 				return fmt.Errorf("cannot aggregate non-numeric value of type %T", val)
 			}
 			num := toFloat64(val)
-			gs.sums[i] += num
+			// Java's NumericAccumulator adopts its first non-NULL partial.
+			// Adding an artificial +0 first would erase a -0 operand's sign.
+			if gs.counts[i] == 1 {
+				gs.sums[i] = num
+			} else {
+				gs.sums[i] += num
+			}
 			if intVal, ok := val.(int64); ok {
 				s := gs.sumsI[i] + intVal
 				if agg.OperandIntType == values.TypeCodeInt {

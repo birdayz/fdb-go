@@ -1,0 +1,20 @@
+# NumericAggregationValue.NumericAccumulator adopts the first non-NULL partial.
+# Adding an artificial +0.0 first erases -0.0 from both SUM and AVG. Grouping
+# the aggregate results exposes that loss as one group instead of two, without
+# relying on the harness's numeric equality (which equates the signed zeros).
+name: aggregate_signed_zero
+schema_template: |
+  CREATE TABLE t (id BIGINT, g BIGINT, v DOUBLE, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1,1,NULL),(2,1,-0.0),(3,1,-0.0),(4,2,0.0),(5,2,0.0)
+tests:
+  - query: SELECT s, COUNT(*) FROM (SELECT SUM(v) AS s FROM t GROUP BY g) q GROUP BY s ORDER BY s
+    plan_contains: StreamingAgg
+    rows:
+      - [-0.0, 1]
+      - [0.0, 1]
+  - query: SELECT a, COUNT(*) FROM (SELECT AVG(v) AS a FROM t GROUP BY g) q GROUP BY a ORDER BY a
+    plan_contains: StreamingAgg
+    rows:
+      - [-0.0, 1]
+      - [0.0, 1]

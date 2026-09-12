@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=372 queries=2783 dml=172 non_query=109 plan_errors=303 unexpected_errors=4
+# files=373 queries=2785 dml=172 non_query=109 plan_errors=303 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -941,6 +941,28 @@ shape:     RecordQueryProjectionPlan
 shape:       RecordQueryInMemorySortPlan
 shape:         RecordQueryStreamingAggregationPlan
 shape:           RecordQueryScanPlan
+=== aggregate_signed_zero.yaml#0
+sql:   SELECT s, COUNT(*) FROM (SELECT SUM(v) AS s FROM t GROUP BY g) q GROUP BY s ORDER BY s
+plan:  Project([_current.S#0, _current.COUNT(*)#1], InMemorySort([_current.S#0 ASC], StreamingAgg(keys=[_current.S#0], InMemorySort([_current.S#0 ASC], Project([_current.SUM(V)#1], StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(T))))))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryStreamingAggregationPlan
+shape:       RecordQueryInMemorySortPlan
+shape:         RecordQueryProjectionPlan
+shape:           RecordQueryStreamingAggregationPlan
+shape:             RecordQueryInMemorySortPlan
+shape:               RecordQueryScanPlan
+=== aggregate_signed_zero.yaml#1
+sql:   SELECT a, COUNT(*) FROM (SELECT AVG(v) AS a FROM t GROUP BY g) q GROUP BY a ORDER BY a
+plan:  Project([_current.A#0, _current.COUNT(*)#1], InMemorySort([_current.A#0 ASC], StreamingAgg(keys=[_current.A#0], InMemorySort([_current.A#0 ASC], Project([_current.AVG(V)#1], StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(T))))))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryStreamingAggregationPlan
+shape:       RecordQueryInMemorySortPlan
+shape:         RecordQueryProjectionPlan
+shape:           RecordQueryStreamingAggregationPlan
+shape:             RecordQueryInMemorySortPlan
+shape:               RecordQueryScanPlan
 === aggregate_sum_large.yaml#0
 sql:   SELECT SUM(val) FROM t
 plan:  Project([_current.SUM(VAL)#0], StreamingAgg(keys=[], Scan(T)))

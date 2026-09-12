@@ -23,11 +23,11 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**372 scenarios · 3064 query/assertion cases** across 18 feature areas — 2684 supported, 115 unsupported-feature pins, 265 error-path pins.
+**373 scenarios · 3066 query/assertion cases** across 18 feature areas — 2686 supported, 115 unsupported-feature pins, 265 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
-| Aggregates & GROUP BY | 53 | 345 | 312 | 19 | 14 |
+| Aggregates & GROUP BY | 54 | 347 | 314 | 19 | 14 |
 | Joins | 66 | 313 | 296 | 2 | 15 |
 | Subqueries (EXISTS / IN / scalar) | 46 | 313 | 258 | 35 | 20 |
 | CTEs | 14 | 179 | 137 | 7 | 35 |
@@ -45,7 +45,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
 | Other | 38 | 329 | 291 | 12 | 26 |
-| **Total** | **372** | **3064** | **2684** | **115** | **265** |
+| **Total** | **373** | **3066** | **2686** | **115** | **265** |
 
 ## Aggregates & GROUP BY
 
@@ -71,6 +71,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `aggregate_null_edge` | 7 | 7 | 0 | 0 | Aggregate NULL edge cases |
 | `aggregate_nulls` | 9 | 9 | 0 | 0 | SQL-spec aggregate NULL semantics hardened in swingshift-35 (c370213e): |
 | `aggregate_order_by_java` | 19 | 19 | 0 | 0 | Aggregate queries with ORDER BY. |
+| `aggregate_signed_zero` | 2 | 2 | 0 | 0 | NumericAggregationValue.NumericAccumulator adopts the first non-NULL partial. |
 | `aggregate_sum_large` | 2 | 2 | 0 | 0 | SUM with large values |
 | `aggregate_with_null_groups` | 2 | 2 | 0 | 0 | Aggregates with NULL in group keys |
 | `avg` | 3 | 3 | 0 | 0 | AVG over BIGINT returns DOUBLE (float) — matches Java's |
