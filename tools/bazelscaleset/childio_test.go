@@ -452,7 +452,7 @@ func slicesContainsPID(hs []stdoutHolder, pid int) bool {
 	return slices.ContainsFunc(hs, func(h stdoutHolder) bool { return h.pid == pid })
 }
 
-// TestMain fails the package if a non-ancestor process still holds this binary's
+// checkForLeakedStdoutHolders fails the package if a non-ancestor process still holds this binary's
 // output pipe for writing once the tests are done. Ancestors sharing streamed
 // output, regular files, and terminals are not evidence of "Test I/O incomplete".
 //
@@ -493,6 +493,7 @@ func TestStdoutHolderCheckFailsOnInspectionError(t *testing.T) {
 	}
 }
 
+// TestMain installs the shared fake binaries and runs the process-leak net.
 func TestMain(m *testing.M) {
 	// Before m.Run, and therefore before this process forks for the first time:
 	// the shared fake ssh binaries must be fully written and closed while no

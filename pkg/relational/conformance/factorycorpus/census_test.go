@@ -1,6 +1,7 @@
 package factorycorpus_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -240,6 +241,20 @@ func TestComputeCensusDirRejectsEmptyCorpus(t *testing.T) {
 	t.Parallel()
 	if _, err := factorycorpus.ComputeCensusDir(t.TempDir()); err == nil {
 		t.Fatal("empty corpus returned a successful vacuous census")
+	}
+}
+
+func TestComputeCensusDirRejectsScenarioEmptyFamily(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	family := factorycorpus.FamilyOf("shape=single;idx=A;proj=star;where=cmp.eq;order=none")
+	path := filepath.Join(dir, factorycorpus.FamilyFileName(family))
+	data := []byte(fmt.Sprintf("# format-version: %d\n# family: %s\n", factorycorpus.FormatVersion, family))
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := factorycorpus.ComputeCensusDir(dir); err == nil {
+		t.Fatal("scenario-empty family returned a successful vacuous census")
 	}
 }
 

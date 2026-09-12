@@ -92,6 +92,9 @@ func computeCensusDir(dir string, load func(string) (*FamilyFile, error)) (Censu
 		}
 		addToCensus(&c, file.Scenarios)
 	}
+	if c.Scenarios == 0 {
+		return c, nil, nil, fmt.Errorf("no scenarios under %s: a corpus gate over an empty corpus passes vacuously", dir)
+	}
 	return c, seenName, seenKey, nil
 }
 
