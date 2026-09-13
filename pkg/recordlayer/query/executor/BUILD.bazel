@@ -49,6 +49,7 @@ go_test(
     srcs = [
         "agg_continuation_group_key_rederive_test.go",
         "aggregate_avg_precision_test.go",
+        "aggregate_float_precision_test.go",
         "aggregate_output_slot_identity_test.go",
         "aggregate_sum_initial_state_test.go",
         "bench_proto_test.go",
@@ -288,6 +289,7 @@ go_test(
         "union_read_budget_integration_test.go",
         "flat_map_row_limit_integration_test.go",
         "aggregate_sum_initial_state_test.go",
+        "aggregate_float_precision_test.go",
     ],
     tags = ["resources:memory:400"],
     deps = [

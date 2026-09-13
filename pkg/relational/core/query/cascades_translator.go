@@ -8357,10 +8357,9 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 				}
 			}
 		}
-		// Static integer WIDTH of the operand (SUM_I vs SUM_L): the operand's
-		// own static type first (Java's encapsulate rule), the proto-faithful
-		// input columns as the untyped-carrier fallback. INTEGER (TYPE_INT32)
-		// → int32 overflow in the executor.
+		// Carry the operand's static numeric width (Java's encapsulate rule):
+		// INTEGER selects int32 overflow, FLOAT selects float32 accumulation.
+		// The resolved operand is the authority; no input-column fallback.
 		spec.OperandIntType = aggregateOperandIntType(spec.Operand, aggInputFields)
 		aggSpecs = append(aggSpecs, spec)
 	}
@@ -8433,8 +8432,8 @@ func aggregateRejectsNonNumericOperand(fn expressions.AggregateFunction) bool {
 	return false
 }
 
-// aggregateOperandIntType returns the operand's STATIC integer width for the
-// int32-vs-int64 SUM/AVG overflow decision.
+// aggregateOperandIntType returns the operand's static numeric TypeCode for
+// SUM/AVG accumulation: integer overflow width and FLOAT-vs-DOUBLE precision.
 //
 // The AUTHORITY is the operand's own static result type — Java's exact rule:
 // NumericAggregationValue.encapsulate keys the operator map on
@@ -8449,22 +8448,6 @@ func aggregateRejectsNonNumericOperand(fn expressions.AggregateFunction) bool {
 // stamps columnCascadesType on the reference itself. Trusting the static type
 // here is the same trust the plan-time numeric-operand gate above already
 // extends to it.
-//
-// The ORDINAL fallback below serves the one population without a static type:
-// a minted bare-column carrier (Typ Unknown — the catalog pass did not run, or
-// resolution declined). It is keyed off the proto-faithful input record type,
-// identified by ORDINAL in inputFields' layout, never by display name
-// (RFC-197). Two lists meet there and they are derived SEPARATELY — the
-// operand was baked against the translated expression's output columns, while
-// inputFields comes from the logical input's leg columns — so the ordinal is
-// only usable if the two describe the same layout. That is not assumed:
-// OrdinalIn is given inputFields' own ordinal domain and answers only when the
-// operand's baked domain IS that layout; a reference from some other layout,
-// or with a non-zero correlation (inputFields describes the aggregate input's
-// OWN row), declines and keeps the int64 SUM_L domain — the direction that
-// cannot manufacture a wrong overflow
-// (TestFDB_AggregateOperandWidthDeclinesForeignLayout pins a BIGINT join sum
-// answering, not 22003).
 func aggregateOperandIntType(operand values.Value, _ []values.Field) values.TypeCode {
 	if operand != nil {
 		if ot := operand.Type(); ot != nil {

@@ -10255,3 +10255,75 @@ timed-query population follows, rather than only the total test duration.
 | full scan sparse filter | 97 | 3.743125096s | 3.792858591s | 3.793666214s | 3.652868292s |
 | UPDATE by index | 8 | 10.761305ms | 9.859779ms | 9.714235ms | 9.01483ms |
 | DELETE single row | 1 | 6.970203ms | 6.493441ms | 7.548171ms | 8.384155ms |
+
+#### Stress test 1M baseline — RFC-252 FLOAT aggregate precision (2026-09-13)
+
+- [x] **Evaluated SUM(FLOAT)/AVG(FLOAT) accumulate in DOUBLE and return wrong
+  values.** Fixed by selecting the carried static FLOAT type before the runtime
+  integer branch, rounding each addition in float32, and widening the rounded
+  partial into the existing double continuation slot. The unit matrix and real-FDB
+  scalar/grouped CAST/CASE queries fail on the old arithmetic and pass after the
+  fix. The yamsql scenario `aggregate_float_precision.yaml` also passes both
+  queries. Details, reference and review trail:
+  `rfcs/252-float-aggregates-round-at-operand-width.md`.
+
+Baseline: `35b293e7f301d3aede9464687251bbf3420e5514`, the merge-base when measured
+on 2026-09-13. After: that exact revision with only
+`pkg/recordlayer/query/executor/streaming_cursors.go` replaced by blob
+`b75b2393656567b6c2c2b5884a88d045d38aa3ee` (before blob
+`db1459188bfd7865caf7ce0649713a51255ff2c0`). The other production-source edits in
+this change are comments. Both measured states ran sequentially, twice each,
+in `/var/tmp/query-hunt-252/compare`, with Bazel output under
+`/var/tmp/query-hunt-bazel`, on `/dev/nvme1n1p3` at 58% used; `/home` was 98%
+used and was not either side's working/output filesystem. Each source MD5 was
+checked unchanged after each run. No task-owned test pipelines overlapped the
+four measurements.
+
+Command, twice per source state:
+
+```sh
+bazelisk --output_user_root=/var/tmp/query-hunt-bazel test \
+  //pkg/relational/sqldriver/stress:stress_test --nocache_test_results \
+  --test_output=all --test_arg='-test.run=^TestFDB_Stress_1M$'
+```
+
+All four uncached runs passed, each with **24 RUN lines** (parent plus 23
+subtests), **22 timed query-row reports**, **11 EXPLAIN texts**, and the
+independent `COUNT(*) = 1000000` assertion. Test names, query/row-count pairs,
+and EXPLAIN texts were identical across all four runs. This is not a speedup
+or bounded-regression claim: aggregate-index timing samples increased, while
+many scan timings decreased; point lookups exceeded the aspirational 5 ms
+threshold in both states. The full timed-query population follows so those
+observations remain visible instead of being hidden by total duration.
+
+| State/sample | Duration | Start load (1/5/15 min) |
+|---|---:|---|
+| before-1 | 171.42s | 5.06, 2.82, 1.89 |
+| before-2 | 170.42s | 3.28, 3.99, 2.68 |
+| after-1 | 170.68s | 2.08, 2.58, 2.61 |
+| after-2 | 170.89s | 2.62, 2.68, 2.65 |
+
+| Query | Rows | Before 1 | Before 2 | After 1 | After 2 |
+|---|---:|---:|---:|---:|---:|
+| PK lookup id=0 | 1 | 8.22676ms | 8.207324ms | 8.199448ms | 8.692421ms |
+| PK lookup id=N/2 | 1 | 8.194028ms | 9.52494ms | 8.311109ms | 8.356475ms |
+| PK lookup id=N-1 | 1 | 5.006928ms | 6.03692ms | 5.07089ms | 6.249121ms |
+| idx_customer eq | 8 | 6.517902ms | 6.526939ms | 6.635383ms | 6.410578ms |
+| idx_amount range >9000 | 100017 | 195.37701ms | 267.142829ms | 195.793841ms | 194.220958ms |
+| idx_status count pending | 1 | 438.227609ms | 400.869769ms | 471.151731ms | 367.430429ms |
+| full scan filter amount>5000 | 1 | 871.989463ms | 577.223318ms | 784.974212ms | 745.588739ms |
+| GROUP BY status | 4 | 5.887297ms | 5.862449ms | 13.920108ms | 12.69179ms |
+| GROUP BY status COUNT only | 4 | 5.339338ms | 5.295376ms | 24.697821ms | 11.357281ms |
+| SUM by status (aggregate index) | 4 | 5.666138ms | 5.58299ms | 21.003772ms | 22.191502ms |
+| GROUP BY customer HAVING | 47271 | 609.76495ms | 841.135854ms | 587.339953ms | 681.072994ms |
+| JOIN 10 orders x customers | 10 | 23.359339ms | 40.203217ms | 20.635974ms | 19.727402ms |
+| ORDER BY PK (full) | 1000000 | 3.937723851s | 3.904834133s | 3.904580478s | 3.851716073s |
+| ORDER BY PK + index filter | 8 | 9.180818ms | 9.628416ms | 8.635474ms | 8.781279ms |
+| scan all rows ordered | 1000000 | 3.760045286s | 3.784228515s | 3.719614243s | 3.723920166s |
+| scan all rows wide | 1000000 | 4.04789181s | 4.048396052s | 3.942874881s | 3.953918899s |
+| IN-list 5 values | 46 | 20.238764ms | 20.155175ms | 19.339929ms | 18.82933ms |
+| PK needle id=999999 | 1 | 5.911643ms | 5.850357ms | 5.872698ms | 5.825539ms |
+| PK+filter needle id=500000 | 1 | 7.419771ms | 7.941179ms | 7.432424ms | 7.150811ms |
+| full scan sparse filter | 97 | 3.409289608s | 3.424878262s | 3.358438209s | 3.36492034s |
+| UPDATE by index | 8 | 9.184615ms | 9.152304ms | 10.635875ms | 8.97595ms |
+| DELETE single row | 1 | 6.545114ms | 6.592924ms | 7.054418ms | 6.250955ms |

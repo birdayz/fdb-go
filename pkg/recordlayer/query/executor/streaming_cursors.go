@@ -714,6 +714,20 @@ func (c *aggregateCursor) accumulateRow(row QueryResult) error {
 			if !isNumeric(val) {
 				return fmt.Errorf("cannot aggregate non-numeric value of type %T", val)
 			}
+			if agg.OperandIntType == values.TypeCodeFloat {
+				// Java SUM_F / AVG_F add at the operand's static FLOAT width,
+				// even though stored FLOAT values arrive as float64. Widen the
+				// rounded partial exactly into the existing continuation slot;
+				// AVG widens before division, not before accumulation.
+				num, _ := asFloat32(val) // isNumeric admits precisely these carriers.
+				if gs.counts[i] == 1 {
+					gs.sums[i] = float64(num)
+				} else {
+					gs.sums[i] = float64(float32(gs.sums[i]) + num)
+				}
+				gs.allInt[i] = false
+				continue
+			}
 			num := toFloat64(val)
 			// Java NumericAccumulator seeds from the first non-NULL partial.
 			// Adding it to an implicit +0 would change SUM/AVG(-0) to +0.
@@ -872,11 +886,13 @@ func asFloat64(x any) (float64, bool) {
 	return 0, false
 }
 
-// asFloat32 promotes a numeric aggregate operand to float32 for the FLOAT lane
-// (Java's (float) promotion; the float64-present case never reaches here — the
-// DOUBLE lane claims it first).
+// asFloat32 converts a numeric aggregate operand to the FLOAT lane. Stored
+// FLOATs arrive as float64; integers convert directly to avoid double rounding
+// through float64. MIN/MAX choose their widest runtime lane before calling it.
 func asFloat32(x any) (float32, bool) {
 	switch n := x.(type) {
+	case float64:
+		return float32(n), true
 	case float32:
 		return n, true
 	case int64:
