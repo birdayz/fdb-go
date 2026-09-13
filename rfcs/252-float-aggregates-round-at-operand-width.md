@@ -1,6 +1,6 @@
 # RFC-252: FLOAT aggregates round at the operand width
 
-Status: implemented and locally verified; design and implementation reviews ACKed. No push or merge requested.
+Status: implemented and locally verified; design and implementation reviews ACKed. Submitted for merge at the owner's request.
 
 ## Measured defect
 
@@ -75,7 +75,7 @@ It does not address pre-existing cross-engine aggregate-token layout differences
   plus sort and failed the fixture's no-sort requirement, before checking rows;
   no optimizer change or weakened ordering assertion was used to resolve it.
 - Graefe and Torvalds design ACK before production edits; joint implementation
-  review plus Codex at completion. No push or merge requested.
+  review plus Codex at completion; PR review and required CI before merge.
 - Gazelle, module tidy, affected full Bazel targets uncached, aggregate codec
   fuzzing, and `just test`. Hash source/tests before and after final verification.
 - Sequential 1M stress twice per source state, both states in the same
