@@ -1,0 +1,16 @@
+# Java SUM_F/AVG_F round each addition in float, then AVG widens the rounded
+# sum to double before division. Rounding only at finalization is too late.
+name: aggregate_float_precision
+schema_template: |
+  CREATE TABLE t (id BIGINT, g BIGINT, f FLOAT, d DOUBLE, PRIMARY KEY (g, id))
+setup:
+  - INSERT INTO t VALUES (1, 1, CAST(16777216 AS FLOAT), 16777216.0), (2, 1, CAST(1 AS FLOAT), 1.0), (3, 1, CAST(-16777216 AS FLOAT), -16777216.0)
+tests:
+  - query: SELECT SUM(f), AVG(f), SUM(d), SUM(CAST(f AS DOUBLE)) FROM t
+    plan_contains: StreamingAgg
+    rows:
+      - [0.0, 0.0, 1.0, 1.0]
+  - query: SELECT g, SUM(f), AVG(f), SUM(d), SUM(CAST(f AS DOUBLE)) FROM t GROUP BY g ORDER BY g
+    plan_contains: StreamingAgg
+    rows:
+      - [1, 0.0, 0.0, 1.0, 1.0]

@@ -71,17 +71,14 @@ type AggregateSpec struct {
 	// field is published unedited, so a producer that folds shows up as a folded
 	// column name rather than as nothing.
 	OperandName string
-	// OperandIntType is the operand's STATIC integer width at plan time, used by
-	// the SUM/AVG accumulator to pick int32 vs int64 overflow semantics — Java's
-	// NumericAggregationValue selects SUM_I (Math.addExact on int, int32 overflow,
-	// result INT) vs SUM_L (int64 overflow, result LONG) from the operand's static
-	// TypeCode. values.TypeCodeInt means the operand is statically a SQL INTEGER
-	// (proto TYPE_INT32) → int32 overflow; any other value (including the zero
-	// TypeCodeUnknown) keeps the int64 (SUM_L) domain. This is a SEPARATE field
-	// rather than a read of Operand.Type() at execution time because a minted
-	// bare-column operand carries no static type — the translator answers from
-	// the operand's own resolved type when it states one (Java's encapsulate
-	// rule) and from the proto-faithful input record type otherwise.
+	// OperandIntType carries the operand's static numeric TypeCode at plan time.
+	// The legacy field name is retained for source compatibility. SUM/AVG use
+	// TypeCodeInt for Java's int32 overflow semantics and TypeCodeFloat for
+	// float32 accumulation; LONG and DOUBLE retain their respective widths.
+	// The translator copies Operand.Type().Code(), matching Java's operator
+	// selection in NumericAggregationValue.encapsulate, so execution needs no
+	// per-row type derivation. TypeCodeUnknown retains the legacy runtime-carrier
+	// dispatch with int64 overflow checks; resolved SQL operands state their code.
 	OperandIntType values.TypeCode
 }
 

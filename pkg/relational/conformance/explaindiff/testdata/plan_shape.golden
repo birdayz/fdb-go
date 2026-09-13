@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=373 queries=2785 dml=172 non_query=109 plan_errors=303 unexpected_errors=4
+# files=374 queries=2787 dml=172 non_query=109 plan_errors=303 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -497,6 +497,18 @@ shape:       RecordQueryScanPlan
 === aggregate_expressions_java.yaml#6
 sql:   SELECT SUM(qty), SUM(unit_price), SUM(qty * unit_price), SUM(discount) FROM line_items
 plan:  Project([_current.SUM(QTY)#0, _current.SUM(UNIT_PRICE)#1, _current.SUM(QTY*UNIT_PRICE)#2, _current.SUM(DISCOUNT)#3], StreamingAgg(keys=[], Scan(LINE_ITEMS)))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryScanPlan
+=== aggregate_float_precision.yaml#0
+sql:   SELECT SUM(f), AVG(f), SUM(d), SUM(CAST(f AS DOUBLE)) FROM t
+plan:  Project([_current.SUM(F)#0, _current.AVG(F)#1, _current.SUM(D)#2, _current.SUM(CAST(FASDOUBLE))#3], StreamingAgg(keys=[], Scan(T)))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryScanPlan
+=== aggregate_float_precision.yaml#1
+sql:   SELECT g, SUM(f), AVG(f), SUM(d), SUM(CAST(f AS DOUBLE)) FROM t GROUP BY g ORDER BY g
+plan:  Project([_current.G#0, _current.SUM(F)#1, _current.AVG(F)#2, _current.SUM(D)#3, _current.SUM(CAST(FASDOUBLE))#4], StreamingAgg(keys=[_current.G#1], Scan(T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan

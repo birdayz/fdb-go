@@ -23,11 +23,11 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**373 scenarios · 3066 query/assertion cases** across 18 feature areas — 2686 supported, 115 unsupported-feature pins, 265 error-path pins.
+**374 scenarios · 3068 query/assertion cases** across 18 feature areas — 2688 supported, 115 unsupported-feature pins, 265 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
-| Aggregates & GROUP BY | 54 | 347 | 314 | 19 | 14 |
+| Aggregates & GROUP BY | 55 | 349 | 316 | 19 | 14 |
 | Joins | 66 | 313 | 296 | 2 | 15 |
 | Subqueries (EXISTS / IN / scalar) | 46 | 313 | 258 | 35 | 20 |
 | CTEs | 14 | 179 | 137 | 7 | 35 |
@@ -45,7 +45,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
 | Other | 38 | 329 | 291 | 12 | 26 |
-| **Total** | **373** | **3066** | **2686** | **115** | **265** |
+| **Total** | **374** | **3068** | **2688** | **115** | **265** |
 
 ## Aggregates & GROUP BY
 
@@ -59,6 +59,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `aggregate_expr` | 21 | 19 | 2 | 0 | Aggregate functions accept arbitrary expressions as their argument |
 | `aggregate_expression_select` | 16 | 16 | 0 | 0 | SELECT-list expressions that wrap aggregate function calls — |
 | `aggregate_expressions_java` | 7 | 7 | 0 | 0 | Aggregates over expressions. |
+| `aggregate_float_precision` | 2 | 2 | 0 | 0 | Java SUM_F/AVG_F round each addition in float, then AVG widens the rounded |
 | `aggregate_index_as_select_composite` | 4 | 4 | 0 | 0 | RFC-202 S3: aggregate AS-SELECT |
 | `aggregate_index_count_not_null` | 6 | 6 | 0 | 0 | COUNT(col) aggregate index with NULLs |
 | `aggregate_index_count_star` | 2 | 2 | 0 | 0 | COUNT(*) aggregate index correctness |
