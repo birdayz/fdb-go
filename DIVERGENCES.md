@@ -2598,3 +2598,21 @@ owned leg above the join, where Java's per-quantifier rule can push them. There
 is no uniquely referenced leg to choose in this specialized rule. This is a
 conservative admission difference, not different SQL semantics or a second
 execution pipeline. The generic Select rule remains Java-shaped.
+
+### ChainedCursor encoding failures (intentional error-path difference)
+
+Java's `ChainedCursor.onNext` advances `lastValue` before
+`RecordCursorResult.withNextValue` validates the continuation. A missing encoder
+or an encoder returning null fails that result; calling `onNext` again can then
+advance past the generated value that was never emitted.
+
+Go's `chainedCursor.continuationErr` in `pkg/recordlayer/chained_cursor.go`
+deliberately latches a `ContinuationEncodeError` instead. Library callers receive
+an explicit error rather than a panic, and retrying cannot invoke a stateful
+generator again and silently skip an un-emitted value. Generator errors retain
+Java's non-latched behavior; an exhausted generator never needs an encoding.
+
+This changes only invalid-encoding error handling, not valid continuation bytes,
+record formats, or index formats. `TestChainedCursorNilEncode` pins rejection and
+single generator invocation both directly and through Concat, and
+`TestChainedCursorEmptyWithNilEncode` pins the exhausted-generator control.
