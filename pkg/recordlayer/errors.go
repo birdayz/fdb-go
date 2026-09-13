@@ -241,10 +241,12 @@ func (e *RecordDeserializationError) Unwrap() error {
 }
 
 // ContinuationParseError is returned when continuation bytes fail to parse as
-// their wrapper proto. Matches Java's RecordCoreException("error parsing continuation")
-// with the "raw_bytes" log info key (e.g. OrElseCursor's constructor,
-// RecordCursor.fromList): a corrupt continuation is a caller error and must
-// surface, never be silently treated as a fresh start.
+// their wrapper proto or cursor-specific encoding. For proto wrappers, it matches
+// Java's RecordCoreException("error parsing continuation") with the "raw_bytes"
+// log info key (e.g. OrElseCursor's constructor, RecordCursor.fromList).
+// Chained's bool-returning decoder cannot supply an underlying error, so Cause
+// describes its rejection instead; Java propagates the decoder's exception.
+// A corrupt continuation must surface, never silently become a fresh start.
 //
 // Message overrides the default "error parsing continuation" text for the Java
 // classes whose RecordCoreException wording differs (ConcatCursor uses
@@ -266,6 +268,18 @@ func (e *ContinuationParseError) Error() string {
 
 func (e *ContinuationParseError) Unwrap() error {
 	return e.Cause
+}
+
+// ContinuationEncodeError reports a value whose encoder cannot supply a
+// resumable continuation. Java requires a non-null ChainedCursor encoder and
+// RecordCursorResult.withNextValue throws RecordCoreException if its encoding
+// represents the end. Go reports these failures as errors rather than panics.
+type ContinuationEncodeError struct {
+	Message string
+}
+
+func (e *ContinuationEncodeError) Error() string {
+	return e.Message
 }
 
 // KeyExpressionError is returned when a key expression evaluation fails.

@@ -3,6 +3,7 @@ package recordlayer
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync/atomic"
 	"testing"
 )
@@ -37,7 +38,7 @@ func (c *oobStopCursor[T]) Close() error { return nil }
 func (c *oobStopCursor[T]) IsClosed() bool { return false }
 
 // endContValueCursor returns values where every value's continuation is StartContinuation.
-// This simulates cursors that don't support continuations (like ChainedCursor with nil encode).
+// This deliberately supplies no position; Chained rejects a missing encoder.
 type endContValueCursor[T any] struct {
 	items []T
 	pos   int
@@ -232,13 +233,13 @@ func TestBugBounty3Cursor_AutoContinuingWouldInfiniteLoop(t *testing.T) {
 // When it is AND we're on the second cursor, it returns EndContinuation (meaning
 // "iteration is done"). This is used for both value results and stop results.
 //
-// If the second cursor returns values with EndContinuation (like ChainedCursor
-// with nil encode), the FIRST such value gets a wrapped EndContinuation.
+// If the second cursor returns values with EndContinuation, the FIRST such
+// value gets a wrapped EndContinuation.
 // AsListWithContinuation sees this end continuation and considers pagination done.
 // But there may be more values in the second cursor that are never retrieved.
 //
-// More concretely: ConcatCursors with a ChainedCursor (nil encode) as the second
-// cursor will lose all values after the first one if paginated with continuations.
+// Chained cannot produce this shape: a missing encoder fails rather than
+// returning a value with an unusable continuation.
 //
 // Fix: wrapContinuation should not return EndContinuation for VALUE results.
 // Only return EndContinuation when the source is truly exhausted (no-next result
@@ -249,7 +250,7 @@ func TestBugBounty3Cursor_ConcatLosesDataWithEndContInnerCursor(t *testing.T) {
 	ctx := context.Background()
 
 	// First cursor: normal list
-	// Second cursor: returns 3 values with EndContinuation (like ChainedCursor nil encode)
+	// Second cursor deliberately supplies no resumable position.
 	concat := ConcatCursors(
 		func(_ []byte) RecordCursor[int] { return FromList([]int{1, 2}) },
 		func(_ []byte) RecordCursor[int] { return newEndContValueCursor([]int{10, 20, 30}) },
@@ -294,7 +295,7 @@ func TestBugBounty3Cursor_ConcatLosesDataWithEndContInnerCursor(t *testing.T) {
 	}
 
 	// KNOWN LIMITATION (matches Java): When the second cursor returns values with
-	// EndContinuation (e.g., ChainedCursor with nil encode), ConcatCursors' wrapped
+	// EndContinuation, ConcatCursors' wrapped
 	// continuation has isEnd=true. Java's ConcatCursorContinuation has the same logic:
 	//   isEnd = secondCursor && nextResult.getContinuation().isEnd()
 	// This means pagination stops early — remaining values from the second cursor are lost.
@@ -319,7 +320,7 @@ func TestBugBounty3Cursor_ConcatLosesDataWithEndContInnerCursor(t *testing.T) {
 // values with EndContinuation (not truly exhausted, just no continuation available),
 // the flatmap skips all remaining inner values on resume.
 //
-// This is data loss when used with cursors like ChainedCursor(nil encode) as inner.
+// Chained rejects a missing encoder; this fixture supplies no position explicitly.
 //
 // Fix: The continuation should record the outer position BEFORE the current value
 // plus a flag that the inner continuation is unavailable, so on resume it restarts
@@ -336,7 +337,7 @@ func TestBugBounty3Cursor_FlatMapLosesDataWithEndContInnerCursor(t *testing.T) {
 	}
 	makeInner := func(outer int, cont []byte) RecordCursor[int] {
 		// Inner cursor produces 3 values with EndContinuation
-		// (simulates ChainedCursor with nil encode)
+		// The fixture deliberately supplies no position.
 		return newEndContValueCursor([]int{outer * 10, outer*10 + 1, outer*10 + 2})
 	}
 
@@ -382,28 +383,17 @@ func TestBugBounty3Cursor_FlatMapLosesDataWithEndContInnerCursor(t *testing.T) {
 	}
 }
 
-// === BUG #5: ChainedCursor with nil encode produces values with EndContinuation,
-//             making it incompatible with ConcatCursors/FlatMap pagination ===
-//
-// File: chained_cursor.go:67-72
-// Severity: $100 (incorrect behavior / incompatible with combinators)
-//
-// ChainedCursor with nil encode returns EndContinuation for every value.
-// This makes it unusable with any parent cursor combinator that uses
-// continuation.IsEnd() to detect inner cursor exhaustion (ConcatCursors,
-// FlatMapPipelined). The issue is that EndContinuation is overloaded to mean
-// both "I have no continuation" and "iteration is truly done."
-//
-// Fix: Return a non-end marker continuation (e.g., BytesContinuation with
-// a special sentinel) instead of EndContinuation for values from cursors
-// that don't support continuations.
+// A Chained cursor used inside Concat must carry its actual position across
+// every page boundary. Neither an end marker nor a start marker can stand in
+// for that position. TestChainedCursorNilEncode pins rejection of a missing
+// encoder, including through Concat; this test pins the resumable codec.
 
 func TestBugBounty3Cursor_ChainedCursorEndContBreaksConcatPagination(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	// ChainedCursor with nil encode produces 1, 2, 3
-	chainedFactory := func(_ []byte) RecordCursor[int64] {
+	// ChainedCursor produces 1, 2, 3, resuming after the encoded value.
+	chainedFactory := func(cont []byte) RecordCursor[int64] {
 		return Chained[int64](
 			func(prev *int64) (*int64, error) {
 				var next int64
@@ -416,7 +406,7 @@ func TestBugBounty3Cursor_ChainedCursorEndContBreaksConcatPagination(t *testing.
 				}
 				return &next, nil
 			},
-			nil, nil, nil, // nil encode/decode
+			encodeInt64, decodeInt64, cont,
 		)
 	}
 
@@ -435,7 +425,7 @@ func TestBugBounty3Cursor_ChainedCursorEndContBreaksConcatPagination(t *testing.
 		t.Fatal(err)
 	}
 	expected := []int64{100, 1, 2, 3}
-	if len(allResults) != len(expected) {
+	if !slices.Equal(allResults, expected) {
 		t.Fatalf("full scan: got %v, want %v", allResults, expected)
 	}
 
@@ -461,14 +451,8 @@ func TestBugBounty3Cursor_ChainedCursorEndContBreaksConcatPagination(t *testing.
 		cont = nextCont
 	}
 
-	// KNOWN LIMITATION (matches Java): ChainedCursor with nil encode returns
-	// EndContinuation for values, which ConcatCursors treats as "second cursor done".
-	// Java's ConcatCursorContinuation.isEnd = secondCursor && inner.isEnd() — same logic.
-	// Real usage: ChainedCursor always has encode/decode functions when used with combinators.
-	if len(allPaged) < len(expected) {
-		t.Logf("Known limitation (matches Java): ChainedCursor(nil encode) + ConcatCursors.\n"+
-			"Full scan: %v (%d), Paginated: %v (%d). EndContinuation on values → pagination stops early.",
-			allResults, len(allResults), allPaged, len(allPaged))
+	if !slices.Equal(allPaged, expected) {
+		t.Fatalf("paginated scan: got %v, want %v; chained continuation lost its position", allPaged, expected)
 	}
 }
 

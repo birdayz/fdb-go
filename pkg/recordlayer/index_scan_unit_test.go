@@ -663,7 +663,7 @@ var _ = Describe("Index Scan Unit Tests", func() {
 					v := counter
 					return &v, nil
 				},
-				nil, nil, nil,
+				func(v int) []byte { return []byte{byte(v)} }, nil, nil,
 			)
 
 			// First call should return a value.
