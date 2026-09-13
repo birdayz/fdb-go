@@ -24,7 +24,8 @@ type chainedCursor[T any] struct {
 	lastNoNext *RecordCursorResult[T]
 	// Java advances lastValue before rejecting an end token, so retrying after
 	// an encoding failure can skip the un-emitted value. Go deliberately latches
-	// that error rather than invoking a stateful generator again.
+	// that error rather than invoking a stateful generator again. See
+	// DIVERGENCES.md, "ChainedCursor encoding failures".
 	continuationErr error
 }
 

@@ -7,6 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+
+	"fdb.dev/gen"
+	"google.golang.org/protobuf/proto"
 )
 
 func encodeInt64(v int64) []byte {
@@ -196,45 +199,64 @@ func TestChainedCursorRejectsUndecodableContinuation(t *testing.T) {
 	t.Parallel()
 	for _, missingDecoder := range []bool{false, true} {
 		for _, raw := range [][]byte{{}, {0xff}} {
-			t.Run(fmt.Sprintf("missing_decoder=%v/bytes=%x", missingDecoder, raw), func(t *testing.T) {
-				t.Parallel()
-				generatorCalls, decoderCalls := 0, 0
-				decode := func([]byte) (int, bool) {
-					decoderCalls++
-					return 99, false
-				}
-				if missingDecoder {
-					decode = nil
-				}
-				cursor := Chained(
-					func(prev *int) (*int, error) {
-						generatorCalls++
-						v := 1
-						return &v, nil
-					},
-					func(v int) []byte { return []byte{byte(v)} }, decode, raw,
-				)
-				ctx := context.Background()
-				result, err := cursor.OnNext(ctx)
-				if err == nil || result.HasNext() {
-					t.Fatalf("undecodable continuation must fail, not silently restart: hasNext=%v, err=%v", result.HasNext(), err)
-				}
-				var parseErr *ContinuationParseError
-				if !errors.As(err, &parseErr) || !bytes.Equal(parseErr.RawBytes, raw) || parseErr.Cause == nil {
-					t.Fatalf("want ContinuationParseError carrying bytes and cause, got %T: %v", err, err)
-				}
-				requireLatched(t, ctx, cursor, err)
-				if generatorCalls != 0 {
-					t.Fatalf("invalid continuation invoked generator %d times", generatorCalls)
-				}
-				wantDecoderCalls := 1
-				if missingDecoder {
-					wantDecoderCalls = 0
-				}
-				if decoderCalls != wantDecoderCalls {
-					t.Fatalf("decoder called %d times, want %d", decoderCalls, wantDecoderCalls)
-				}
-			})
+			for _, concat := range []bool{false, true} {
+				t.Run(fmt.Sprintf("missing_decoder=%v/bytes=%x/concat=%v", missingDecoder, raw, concat), func(t *testing.T) {
+					t.Parallel()
+					generatorCalls, decoderCalls := 0, 0
+					decode := func([]byte) (int, bool) {
+						decoderCalls++
+						return 99, false
+					}
+					if missingDecoder {
+						decode = nil
+					}
+					factory := func(cont []byte) RecordCursor[int] {
+						return Chained(
+							func(prev *int) (*int, error) {
+								generatorCalls++
+								v := 1
+								return &v, nil
+							},
+							func(v int) []byte { return []byte{byte(v)} }, decode, cont,
+						)
+					}
+					var cursor RecordCursor[int]
+					if concat {
+						wrapped, err := (&gen.ConcatContinuation{Second: proto.Bool(true), Continuation: raw}).MarshalVT()
+						if err != nil {
+							t.Fatal(err)
+						}
+						cursor = ConcatCursors(
+							func([]byte) RecordCursor[int] {
+								t.Fatal("continuation points at the second cursor; must not restart the first")
+								return Empty[int]()
+							}, factory, wrapped,
+						)
+					} else {
+						cursor = factory(raw)
+					}
+					ctx := context.Background()
+					result, err := cursor.OnNext(ctx)
+					if err == nil || result.HasNext() {
+						t.Fatalf("undecodable continuation must fail, not silently restart: hasNext=%v, err=%v", result.HasNext(), err)
+					}
+					var parseErr *ContinuationParseError
+					if !errors.As(err, &parseErr) || parseErr.RawBytes == nil || !bytes.Equal(parseErr.RawBytes, raw) || parseErr.Cause == nil {
+						t.Fatalf("want ContinuationParseError carrying bytes and cause, got %T: %v", err, err)
+					}
+					requireLatched(t, ctx, cursor, err)
+					if generatorCalls != 0 {
+						t.Fatalf("invalid continuation invoked generator %d times", generatorCalls)
+					}
+					wantDecoderCalls := 1
+					if missingDecoder {
+						wantDecoderCalls = 0
+					}
+					if decoderCalls != wantDecoderCalls {
+						t.Fatalf("decoder called %d times, want %d", decoderCalls, wantDecoderCalls)
+					}
+				})
+			}
 		}
 	}
 }
