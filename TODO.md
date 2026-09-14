@@ -10773,3 +10773,22 @@ Bazel yamsql target. Regenerate with
   The corpus migration removes ignored empty DML rows assertions; loader and direct
   Run regressions prevent their return. RFC-255 records the exact mutation edits and
   a reproducible, locale-pinned tested-population hash.
+
+### Query-grind skill and next numeric consumer campaign (2026-09-14)
+
+Entry point: `.claude/skills/query-grind/SKILL.md`. Continue QSC-01–QSC-07 on the
+current branch; do not create a branch per batch. The skill requires existing-harness
+reuse, independent author/challenger roles, witnessed execution, mutation-verified
+assertions and immediate reproduce/minimize/fix/pin on a finding.
+
+Next active slice: numeric/type transport into CAST and integer consumers. Start by
+checking Java CastValue's exact conversion/overflow contract and current Go casts,
+then author targeted inputs through existing yamsql typed args/stored columns.
+Candidate axes: decimal literal versus driver-text-transport versus stored DOUBLE;
+BIGINT/INTEGER casts; signed zeros, half-integer rounding and representable range
+boundaries. No cells are credited yet. Explicit integer output/metadata and negative
+SQLSTATE contracts need independent expected answers; equality between two cast routes
+alone is not proof. The next action is a focused author batch plus an independent
+coverage/oracle audit, followed by challenger review and real-FDB replay. The existing
+RFC-255 envelope remains unchanged; any new generator or envelope mechanism needs its
+own scoped design gate.
