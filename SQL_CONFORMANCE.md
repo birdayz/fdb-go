@@ -27,7 +27,7 @@ Java fdb-relational **4.12.11.0** vs Go implementation vs ANSI SQL standard.
 | GREATEST / LEAST | Y | Y | Y | |
 | CARDINALITY (array length, `ln`) | Y | Y | Y | Added in Java 4.12 (scalar fn + index support); Go ports both (RFC-143) |
 | String functions (UPPER etc.) | N | Ext | Y | Go extension (RFC-087): UPPER/LOWER/SUBSTRING/TRIM/CONCAT/REPLACE/POSITION/REVERSE/`*_LENGTH` (`string_functions.yaml`, `trim_concat.yaml`). Java has no function-catalog entry and rejects; read-side only, zero wire impact |
-| Math functions (ABS etc.) | N | Ext | Y | Go extension: ABS/MOD/FLOOR/CEIL(ING)/ROUND/SQRT (`numeric_functions.yaml`), with typed error channels (ABS(MinInt64)→22003, MOD(x,0)→22012, SQRT(<0)→22023). Java rejects |
+| Math functions (ABS etc.) | N | Ext | Y | Go extension: ABS/MOD/FLOOR/CEIL(ING)/ROUND/SQRT (`numeric_functions.yaml`), with typed error channels (ABS(MinInt64)→22003, integral MOD(x,0)→22012; floating MOD(x,0)→NaN (RFC-253), SQRT(<0)→22023). Java rejects |
 | CURRENT_TIMESTAMP / CURRENT_DATE | N | Ext | Y | Go extension: proper TIMESTAMP/DATE types, comparisons, CAST |
 | Date-part functions (YEAR etc.) | N | Ext | Y | Go extension: YEAR/MONTH/DAY/HOUR/MINUTE/SECOND/DAYOFWEEK/DAYOFYEAR |
 

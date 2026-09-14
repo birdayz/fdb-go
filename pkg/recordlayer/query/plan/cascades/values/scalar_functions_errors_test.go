@@ -82,11 +82,9 @@ func TestEvalScalarFunction_ErrorEdges(t *testing.T) {
 		}
 	}
 
-	// MOD by zero (int and float paths) → 22012.
+	// Integral MOD by zero → 22012.
 	for _, args := range [][]any{
 		{int64(5), int64(0)},
-		{float64(5), float64(0)},
-		{int64(5), float64(0)}, // mixed → float path
 	} {
 		v, err := evalScalarFunction("MOD", args)
 		if v != nil || err == nil {
@@ -95,6 +93,21 @@ func TestEvalScalarFunction_ErrorEdges(t *testing.T) {
 		var divZero *ArithmeticDivisionByZeroError
 		if !errors.As(err, &divZero) {
 			t.Fatalf("MOD(%v): got %T, want *ArithmeticDivisionByZeroError", args, err)
+		}
+	}
+
+	// Floating MOD follows the infix remainder operator, including NaN for
+	// zero divisors. These direct callers have no static type metadata.
+	for _, args := range [][]any{
+		{float64(5), float64(0)},
+		{int64(5), float64(0)},
+		{float64(5), int64(0)},
+		{float32(5), float32(0)},
+	} {
+		v, err := evalScalarFunction("MOD", args)
+		f, ok := v.(float64)
+		if err != nil || !ok || !math.IsNaN(f) {
+			t.Fatalf("MOD(%v): got (%v, %v), want NaN without an error", args, v, err)
 		}
 	}
 

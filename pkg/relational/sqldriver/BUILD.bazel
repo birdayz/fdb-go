@@ -421,6 +421,7 @@ go_test(
         "metamorphic_sweep_rewrites_fdb_test.go",
         "metamorphic_sweep_shapeequiv_fdb_test.go",
         "metamorphic_twin_test.go",
+        "mod_float_zero_fdb_test.go",
         "modulo_division_probe_test.go",
         "mt_catalog_scope_fdb_test.go",
         "mt_ddl_scope_fdb_test.go",

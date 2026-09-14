@@ -4,12 +4,13 @@
 # SQRT / POWER / POW / SIGN / PI / EXP / LN / LOG.
 #
 # These are a Go-only read-side extension (RFC-087): Java's
-# BuiltInFunction registry has no entries for them, so fdb-relational
-# 4.11.1.0 rejects the function-call form ("Unsupported operator <NAME>").
+# SQL function catalog has no entries for them, so fdb-relational
+# rejects the function-call form ("Unsupported operator <NAME>").
 # Go gates the family in IsCascadesSafeScalarFunction and evaluates it on
 # the Cascades values path — zero wire impact. The rows below pin the Go
-# semantics (standard SQL/MySQL-compatible). Error edges stay on the
-# typed-error channel: ABS(MinInt64)→22003, MOD(x,0)→22012, SQRT(<0)→22023.
+# semantics. MOD() follows the infix remainder operator (RFC-253). Error edges
+# stay on the typed-error channel: ABS(MinInt64)→22003, integral MOD(x,0)→22012,
+# SQRT(<0)→22023. Floating MOD(x,0) yields NaN.
 name: numeric_functions
 schema_template: |
   CREATE TABLE t (id BIGINT, v DOUBLE, n BIGINT, f FLOAT, PRIMARY KEY (id))

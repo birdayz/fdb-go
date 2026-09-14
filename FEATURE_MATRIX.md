@@ -23,7 +23,7 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**374 scenarios · 3068 query/assertion cases** across 18 feature areas — 2688 supported, 115 unsupported-feature pins, 265 error-path pins.
+**375 scenarios · 3071 query/assertion cases** across 18 feature areas — 2690 supported, 115 unsupported-feature pins, 266 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
@@ -44,8 +44,8 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Keys & primary keys | 5 | 133 | 128 | 0 | 5 |
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
-| Other | 38 | 329 | 291 | 12 | 26 |
-| **Total** | **374** | **3068** | **2688** | **115** | **265** |
+| Other | 39 | 332 | 293 | 12 | 27 |
+| **Total** | **375** | **3071** | **2690** | **115** | **266** |
 
 ## Aggregates & GROUP BY
 
@@ -494,6 +494,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `java_alignment_probes` | 14 | 14 | 0 | 0 | Probes derived from Java's yamsql test suite to verify Go matches |
 | `min_max_string` | 3 | 0 | 3 | 0 | MIN/MAX on string columns is REJECTED |
 | `mixed_agg_nonagg` | 4 | 4 | 0 | 0 | Mixed aggregate and non-aggregate expressions |
+| `mod_float_zero` | 3 | 2 | 0 | 1 | Go's MOD() function follows the infix remainder operator. |
 | `multi_feature` | 3 | 3 | 0 | 0 | End-to-end scenario chaining several features at once: CTE + WHERE + |
 | `multi_feature_integer` | 11 | 11 | 0 | 0 | Integration tests combining multiple SQL features against INTEGER (INT32) |
 | `multi_operator_pipeline` | 6 | 6 | 0 | 0 | Tests that exercise multiple Cascades operators working together |
