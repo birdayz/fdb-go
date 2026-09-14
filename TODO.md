@@ -10459,3 +10459,268 @@ correctness fixes, regression tests and review decisions.
   BIGINT index access. Design/implementation reviews ACKed; 92-target uncached
   suite, repeated/race regressions, unguided fuzzing and million-row stress
   passed. Details: `rfcs/254-scalar-floating-results-preserve-type-and-sign.md`.
+
+## 12. Query-engine semantic coverage — eliminate unknown and untested combinations
+
+**Mandate.** Make the EXISTING query-engine safety net comprehensive over an explicit,
+versioned semantic coverage space. Do not equate more SQL files, more seeds, line coverage,
+or a green suite with having tested the relevant combinations. Use LLMs/subagents to
+systematically discover and fill the gaps, not merely to produce more examples resembling
+what already passes. This is correctness work; this section's append-only placement after
+reference material does not make it lower priority than performance or feature expansion.
+Existing live correctness failures still take precedence and are fixed when encountered.
+
+**Decision and scope.** Extend the existing harnesses, generators, corpus formats and CI
+lanes; do not build a parallel SQL test framework, a second production query engine, or
+port an external SQL suite as this workstream's foundation. Java remains authoritative
+for the shared surface; Go-only extensions need explicit contracts and independent
+oracles. Preserve wire compatibility. This plan operationalizes the adversarial-generation
+and oracle work in `rfcs/199-deterministic-simulation-testing.md` and the existing factory,
+rather than assuming that those mechanisms being present establishes semantic coverage.
+The motivating type/sign and test-oracle failures are recorded in
+`rfcs/254-scalar-floating-results-preserve-type-and-sign.md`.
+
+**What "eliminate" means.** SQL expressions, schemas and operation histories are unbounded.
+Define the required envelope explicitly: supported features/types, boundary-value classes,
+producer/consumer combinations, expression and query nesting, join width, dataset shapes,
+and execution modes. Within that envelope, every required combination must be classified
+and have executable evidence of the specified contract; an unknown, untested, unreachable
+in practice, or oracle-less combination is OPEN work, not coverage. Outside-envelope
+combinations remain visible, and the envelope expands as features and risk knowledge grow.
+Pairwise sampling is useful exploration but must NEVER be reported as full Cartesian or
+higher-order coverage. Neither LLM confidence nor repeated agreement between two engine
+paths establishes that both paths are correct.
+
+### Existing integration homes — extend these, do not duplicate them
+
+| Home | Role in this workstream |
+|---|---|
+| `pkg/relational/conformance/yamsql` | SQL/driver scenarios, explicit expected outcomes, typed/boundary assertions and durable regressions |
+| `pkg/relational/conformance/factory` and `factorycorpus`, `cmd/factory-run` | Candidate generation/admission, alternate-plan and partition checks, Java comparison where applicable, corpus identity and promotion |
+| `pkg/relational/conformance/rowdiff` | Independent model comparison, query/projection combinations and paged real-FDB execution |
+| `pkg/simfdb/hunt/sqlhunt` | Small independent models and stateful SQL workloads over SimFDB |
+| `pkg/simfdb/hunt/metamorphic`, `cmd/dst-generate` | Structured hand-written/LLM-generated query families and reproducible equivalence checks |
+| `pkg/relational/conformance/explaindiff` and `plandiff` | Observed plan diversity, plan contracts and shared-surface cross-engine evidence |
+| `pkg/relational/sqldriver` integration tests and Cascades value/rule tests | Actual binding/metadata/storage boundaries and focused regressions below SQL |
+| Existing nightly factory, rowdiff, oracle, fuzz and coverage workflows | Exploration, full corpus replay, mutation evidence and coverage reconciliation |
+
+**Execution.** Stable work IDs below are the handover/PR references. Start at QSC-01;
+then complete the numeric/type-transport vertical slice through QSC-02–QSC-07 before
+widening to the remaining families. Build the necessary assertion, oracle, generator,
+mutation proof and CI pin together for each slice; do not build disconnected infrastructure
+and mark it done. QSC-09's preserve/reduce/fix loop applies from the FIRST finding, and
+QSC-10's executable gates apply from the FIRST promoted case. Harness architecture and
+any engine changes use the existing RFC and milestone-level query-engine review gates.
+All items below are planning work, not claims of capabilities already implemented.
+
+- [ ] **QSC-01 — Inventory contracts and make the coverage denominator executable.**
+  **Start here.** Audit actual assertion, normalization and generation paths in the homes
+  above, not only their descriptions. Inventory the supported catalog/typed operators,
+  type conversions, predicates, relational operators, result metadata and driver APIs;
+  map existing scenarios to the contracts they REALLY verify. Derive feature inventories
+  from typed registrations/structures where possible, not substring detection on SQL.
+  Define a machine-readable, versioned contract/combination manifest alongside the existing
+  corpus metadata. Each required cell names its domain assumptions, input axes, applicable
+  oracle(s), comparison policy, execution witness and owning regression IDs. Track
+  `unclassified`, `missing-input-path`, `missing-oracle`, `not-exercised`, `validated`, and
+  deliberately unsupported/rejected cases separately. Only a demonstrated impossibility
+  removes an inadmissible cross-product cell; missing harness machinery does not.
+  Known unsupported SQL must have an explicit negative error contract, not a silent skip.
+  Report required, applicable, exercised and validated populations separately, with the
+  manifest revision and exclusions. Audit existing tests without deleting or downgrading
+  their current protections. **DONE:** a reproducible report exposes concrete holes,
+  new supported registrations require classification, and unit pins catch an omitted
+  feature, an unexecuted cell and an unjustified denominator reduction.
+
+- [ ] **QSC-02 — Preserve the distinctions assertions currently erase.**
+  **Depends on QSC-01's initial contract inventory.** Extend existing comparison paths
+  and strict scenario schemas with explicit policies for numerical value, SQL result type,
+  driver carrier, representation, NULL, row multiplicity, ordering and error code/class.
+  Separate declared SQL type from transport carrier: they are not interchangeable.
+  Add lossless fixture/expectation encoding for boundary values, typed bound parameters,
+  and query/exec arguments, including signed zero and relevant non-finite bit patterns;
+  execute them through actual QueryContext/ExecContext binding rather than substituting
+  literals in the test itself. Assert column names/types where they are the contract.
+  Test the fixture decoder, matcher AND reporting path; unknown fields and unsupported
+  assertion modes must fail loudly. Preserve numeric comparison where that is intentional;
+  never globally impose bitwise float equality or globally relax to a tolerance. NaN payload,
+  FLOAT precision, collation and ordering policies require an explicit semantic basis.
+  Unordered output is a multiset, not a set; ordered/tie-sensitive checks need a defined
+  order or an explicit permitted-outcome contract. **DONE:** +0/-0, integer/whole DOUBLE,
+  NULL/value, changed multiplicity, wrong metadata and wrong errors each independently
+  fail their appropriate assertions, and those assertions run under Bazel against real SQL.
+
+- [ ] **QSC-03 — Assign independent oracles and validate equivalence assumptions.**
+  **Depends on QSC-01; deliver per vertical slice with QSC-02.** Map every contract to an
+  authority: pinned Java behavior for the shared surface, documented Go-extension semantics,
+  a small independent model, or a justified algebraic law with explicit preconditions.
+  Extend rowdiff/sqlhunt's focused models rather than building a second general SQL engine.
+  Reference calculations and expected-value normalization must not call the production
+  evaluator/cast/comparator that they are meant to check. Add direct expected results to
+  expose common-mode failures that folded/runtime or indexed/full-scan equality cannot see.
+  Validate proposed relations on adversarial small domains before admission: three-valued
+  logic, duplicates, empty inputs, overflow, non-finite values and ordering ties as applicable.
+  Floating-point reassociation, reordered aggregates and changed evaluation/error order are
+  NOT automatically valid equivalences. Engine agreement, a golden captured from Go, or
+  agreement among LLMs is not an independent correctness proof. Goldens retain their useful
+  characterization role without being credited as independent oracles. **DONE:** every
+  validated cell names a tested oracle and its limitations; deliberately false relations
+  are rejected, and a shared wrong answer cannot satisfy the slice's whole oracle set.
+
+- [ ] **QSC-04 — Mutation-validate the safety net, not just the implementation.**
+  **Depends on the slice's QSC-02/QSC-03 assertions.** Maintain representative semantic
+  mutations: erase zero sign, coerce a whole DOUBLE to integer, collapse UNKNOWN/NULL
+  incorrectly, alter duplicate multiplicity, admit a broad scan as a point lookup,
+  lose correlation, mishandle an empty aggregate, or drop/repeat a continuation-boundary row.
+  Include assertion/normalizer mutations as well as engine mutations. Run in isolated
+  worktrees; verify the mutation actually applied and compiled, the intended test executed
+  and detected the changed semantic outcome, and restoration passes on the recorded source.
+  A build failure, timeout, infrastructure error, absent test or unrelated failing assertion
+  is NOT a killed semantic mutant. Keep positive controls and independent negative controls
+  for each assertion arm; equality of two results sharing a derivation is insufficient.
+  Surviving required mutants identify an OPEN oracle/coverage hole and are fixed before
+  widening that slice. **DONE:** a durable mutant-to-contract-to-test map and reproducible
+  red/green runs demonstrate detection, with non-empty populations and no auto-waivers.
+
+- [ ] **QSC-05 — Generate combinations from the manifest, then verify actual reach.**
+  **Depends on QSC-01 and the slice's validated oracle.** Extend existing factory/rowdiff
+  generation with typed, deterministic expansion of the axes below. Use exhaustive bounded
+  enumeration for tractable critical domains, covering arrays for broader interactions,
+  and targeted higher-order combinations for known failure mechanisms. Record which
+  technique and interaction strength each scope actually covers. Retain random fuzzing
+  beside structured generation; neither replaces the other. Preserve type, sign, NULL,
+  alias/nesting, argument transport and execution-mode distinctions in corpus identity:
+  normalization/dedup must not merge the cases this plan exists to separate.
+  Credit cells from executed evidence, not requested configuration or LLM-supplied labels.
+  A second-plan claim requires different actual plans; point-lookup claims require bounds
+  and residual-filter checks; paging requires an actual continuation; a cache case needs
+  evidence of reuse/invalidation; an aggregate-index case must actually execute that path.
+  Add negative controls for every witness. **DONE:** deterministic expansion/replay and
+  dedup tests preserve the semantic axes, and reports distinguish generated, admitted,
+  planned, executed, witnessed and oracle-validated combinations.
+
+  Required axes to instantiate, not merely list in a report:
+
+  | Axis | Coverage obligations |
+  |---|---|
+  | Domains/types | Each supported scalar and nested type; typed/untyped NULL; ±0; finite fractions/whole floats; NaN/Infinity admission; precision, integer and conversion boundaries; Unicode/empty strings/bytes; temporal boundaries |
+  | Producers | Literal, real bound argument, stored field, CAST/promotion, scalar expression, aggregate output, scalar subquery, derived/unnested field |
+  | Consumers | Projection/metadata, arithmetic/cast, WHERE/HAVING, join predicate, GROUP BY, DISTINCT/set operation, ORDER BY, limit/offset admission, DML assignment/index maintenance |
+  | Relational shapes | Empty/single/multiple rows, duplicate-heavy/all-NULL/mixed data; correlated and uncorrelated subqueries; joins/outer joins; composite keys; nested and repeated aliases |
+  | Execution routes | Constant-folded versus row-dependent; available alternative access/join/aggregate plans; covering/fetch; cold/reused/invalidated cache; one-shot/paged/cancelled execution |
+  | State transitions | Query/Exec/Prepare entry points, successive differently typed/signed binds, writes followed by reads, transaction boundaries, rollback/retry and metadata/index changes |
+
+- [ ] **QSC-06 — Use LLMs/subagents as gap-directed scenario authors.**
+  **Depends on QSC-01's manifest and QSC-05's execution feedback; start with the numeric
+  slice, not an unconstrained SQL-generation campaign.** Extend the existing dst-generation
+  and factory authoring loop. A coordinator selects explicit missing cells/interactions
+  and supplies the relevant grammar/catalog, contracts, boundary fixtures, existing cases
+  and oracle limitations. Delegate focused batches to subagents by semantic interaction,
+  not arbitrary file counts: e.g. nested NULLs × outer joins × predicates, or whole DOUBLE
+  binds × integer consumers × cache reuse. Have a separate challenger seek counterexamples
+  to proposed relations and missing preconditions. Parallelize read-only research/candidate
+  generation; one integration owner serializes shared code/manifest edits and resolves findings.
+  Agents emit validated structured scenario INPUTS in the existing formats (extended by
+  QSC-02 where needed): DDL, exact data/bindings, statement sequences, target contract/cell
+  IDs, relation IDs/preconditions, intended path and provenance. They do not fabricate
+  physical plans, run generated shell commands, edit expected outputs to match Go, or
+  bless their own candidates. Proposed expected answers/relations remain untrusted until
+  QSC-03's executable checks and semantic review establish their basis.
+  Persist exact candidate inputs and corpus/generator/model/prompt revisions; the LLM
+  generation itself is nondeterministic, so a seed alone is not a replay artifact.
+  Feed executed-path gaps, rejected assumptions, surviving mutants and minimized findings
+  back into the next batch. Admission errors remain classified evidence, not erased cases;
+  valid supported SQL that fails is a finding, not "the LLM generated bad SQL."
+  **DONE:** a campaign fills previously named cells with witnessed, oracle-backed cases;
+  a malformed candidate, false relation and unavailable oracle cannot be promoted; replay
+  of the admitted corpus works without an LLM, credentials or network model access.
+
+- [ ] **QSC-07 — Close semantic families and their interactions end-to-end.**
+  **Uses QSC-02–QSC-06; finish each slice before the next.** Instantiate the manifest,
+  oracles and generated combinations in this order, always including producer/consumer
+  boundaries rather than testing each operator only in isolation:
+  1. Numeric/scalar/type transport: FLOAT versus DOUBLE versus integers, coercion/CAST,
+     domain/error handling, signed zero, precision/overflow and bound-parameter admission;
+     fold/runtime/storage variants. Include floats in NON-final composite DISTINCT/group/
+     sort positions and sequential sign/type changes on the same connection.
+  2. NULL/Boolean/empty-input semantics: TRUE/FALSE/UNKNOWN, nullable comparisons, IN/NOT IN,
+     EXISTS and scalar-subquery cardinality, empty versus all-NULL aggregates, HAVING,
+     DISTINCT and duplicate multiplicities.
+  3. Relational composition: inner/outer/semi/anti behavior where supported, correlated
+     AND uncorrelated subqueries, predicate pushdown/null extension, composite joins,
+     aggregate/DISTINCT/order/limit interactions and alternative real access paths.
+  4. Names and nested values: quoted/case-sensitive identifiers, alias shadowing, same-name
+     fields, derived tables, STRUCT/ARRAY/UNNEST, nested NULL/empty values, column metadata
+     and ordinal/type propagation across joins and projections.
+  5. Other registered domains and consumers: string/byte/Unicode behavior, collation and
+     temporal semantics; INSERT/UPDATE/DELETE, constraints and secondary/aggregate index
+     consistency after writes. Negative syntax/type/admission cases are part of each slice.
+  **DONE per slice:** every required cell in its declared envelope is validated (or has a
+  source-justified unsupported contract with an executed rejection pin), representative
+  semantic mutants are killed, and minimized real-SQL regressions pass the existing Bazel
+  targets. An empty required population or unbuilt harness capability prevents completion.
+
+- [ ] **QSC-08 — Cross the same contracts with lifecycle and stateful execution.**
+  **Uses validated families from QSC-07; lifecycle witnesses are established in QSC-05.**
+  Reuse existing stateful SQL/model, paging and real-FDB integration facilities. Exercise
+  literal/parameter/Prepare entry points; cold/warm/replanned caches; repeated binds with
+  different values and types; index/schema changes; DML followed by SELECT; autocommit and
+  explicit transaction boundaries; rollback, cancellation and retry/commit-unknown behavior
+  according to the documented transaction contract. Force continuation boundaries around
+  duplicates, groups, joins, filters and ordered limits, including empty intermediate pages;
+  require actual stop/resume evidence and compare with an independent expected population,
+  not only another possibly wrong engine path. Use SimFDB's supported deterministic controls
+  for exploration and real FDB for boundary/transaction fidelity. Record simulation limits;
+  do not claim schedules or transport effects that the simulator does not model. Known
+  engine defects exposed here are fixed, not re-blessed as expected answers.
+  **DONE:** applicable semantic cells have witnessed lifecycle counterparts, final rows/
+  metadata/errors and write effects match their contracts, and failure/retry paths were
+  explicitly exercised rather than left to chance.
+
+- [ ] **QSC-09 — Preserve, minimize, fix and promote every genuine finding.**
+  **Applies from the first candidate execution; not gated on later phases.** Extend the
+  existing finding artifacts/promotion path with the contract/cell ID, source revision,
+  exact schema/data/typed bindings/statement sequence, oracle policy/provenance, observed
+  plans/path witnesses, backend/configuration, error and replay command. Classify engine
+  defect, oracle defect/false relation, invalid candidate and infrastructure failure;
+  only adjudicated successful cases earn validation credit. Reduce failures structurally
+  while retaining the failing dimension (e.g. composite-key position, NULL placement,
+  correlation, parameter type or continuation boundary), then amplify the neighboring
+  combinations. Fix discovered defects immediately and retain regression inputs plus the
+  independent corrected expectation; never drop a failing candidate to make promotion green.
+  All load-bearing probes, including negative reachability results, become persistent tests.
+  **DONE:** end-to-end exercises prove replay, reduction without losing the defect, repair
+  and promotion; a mismatch cannot disappear through dedup, rejection or golden re-blessing.
+
+- [ ] **QSC-10 — Make completeness and detector health executable CI gates.**
+  **Starts with the first promoted slice; extend existing workflows and ledgers.** PR/normal
+  Bazel targets replay the committed regression corpus and the deterministic required-cell
+  checks; LLM availability is never a prerequisite. Existing nightly lanes explore additional
+  combinations, run broader model/real-FDB checks and the semantic mutation set, and publish
+  additions/findings with explicit source/envelope identities. Missing oracle/backend,
+  malformed or partial output, zero executed tests, unchanged "alternate" plans and required
+  unwitnessed paths are incomplete/failed verification, never success. Counters are attributed
+  to individual contract/cell IDs; include expected populations and guard both dead channels
+  and forbidden revival. Test every census/gate arm with explicit state. Corpus dedup or
+  retirement cannot reduce required coverage or oracle strength without a reviewed semantic
+  reason and replacement evidence. Include new files/data in Bazel inputs, run uncached
+  when claiming fresh execution, verify filters/run counts and source hashes, and retain
+  full output before summarizing it. Profile runtime and schedule work using measured cost,
+  not case counts; contain exploration with explicit resource limits without silently
+  dropping mandatory replay. **DONE:** missing-case, weakened-oracle and never-ran mutations
+  fail CI, and new supported features cannot merge unclassified/untested in this manifest.
+
+- [ ] **QSC-11 — Audit closure and keep the envelope expanding.**
+  **Depends on QSC-01–QSC-10 for the declared release envelope.** Give a challenger the
+  coverage report, supported feature inventory and known bug history, and require attempts
+  to identify omitted axes, mislabeled reachability, false equivalences and common-mode
+  oracle failures—not another count of green tests. Audit both modeled and unmodeled
+  combinations; no status may disappear solely because a generator cannot produce it.
+  Repair any discovered gap/bug and retain the proof. Publish scope and remaining outside-
+  envelope classes alongside required/applicable/exercised/validated counts and representative
+  mutation results, all tied to the tested revision. **DONE:** no unclassified, missing-input,
+  missing-oracle or untested REQUIRED cells remain; all declared critical interaction
+  strengths have actual evidence; the independent challenge is resolved; normal Bazel and
+  required real-FDB/replay/mutation gates pass. This is a claim about the named envelope,
+  never a claim that all possible SQL is proven correct. Every feature addition or new bug
+  mechanism extends the envelope and reopens the corresponding obligations automatically.
