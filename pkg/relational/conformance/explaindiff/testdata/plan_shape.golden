@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=375 queries=2790 dml=172 non_query=109 plan_errors=303 unexpected_errors=4
+# files=376 queries=2795 dml=172 non_query=109 plan_errors=303 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -16023,6 +16023,36 @@ plan:  Project([_current.COALESCE(VALS.INT_COL, 0)#0, _current.COUNT(*)#1], Stre
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
+shape:       RecordQueryScanPlan
+=== scalar_signed_zero.yaml#0
+sql:   SELECT CAST(1.0 / FLOOR(z) AS STRING), CAST(1.0 / CEIL(d) AS STRING), CAST(1.0 / CEILING(f) AS STRING), CAST(1.0 / ROUND(d) AS STRING), CAST(1.0 / POWER(z, 3) AS STRING), CAST(1.0 / POW(f, 3) AS STRING) FROM t WHERE id = 1
+plan:  Project([CAST((1 / FLOOR(_current.Z#1)) AS STRING), CAST((1 / CEIL(_current.D#3)) AS STRING), CAST((1 / CEILING(_current.F#2)) AS STRING), CAST((1 / ROUND(_current.D#3)) AS STRING), CAST((1 / POWER(_current.Z#1, 3)) AS STRING), CAST((1 / POW(_current.F#2, 3)) AS STRING)], Scan(T, [=]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryScanPlan
+=== scalar_signed_zero.yaml#1
+sql:   SELECT CAST(1.0 / ROUND(d, -1) AS STRING), CAST(1.0 / ROUND(-0.001, 2) AS STRING), CAST(1.0 / POWER(-0.0, 2) AS STRING) FROM t WHERE id = 1
+plan:  Project([CAST((1 / ROUND(_current.D#3, -1)) AS STRING), CAST((1 / ROUND(-0.001, 2)) AS STRING), CAST((1 / POWER(-0, 2)) AS STRING)], Scan(T, [=]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryScanPlan
+=== scalar_signed_zero.yaml#2
+sql:   SELECT FLOOR(d), CEIL(0.25), ROUND(-0.5), POWER(-2.0, 3), CAST(FLOOR(z) AS BIGINT), ROUND(CAST(NULL AS DOUBLE)) FROM t WHERE id = 1
+plan:  Project([FLOOR(_current.D#3), CEIL(0.25), ROUND(-0.5), POWER(-2, 3), CAST(FLOOR(_current.Z#1) AS BIGINT), ROUND(CAST(NULL AS DOUBLE))], Scan(T, [=]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryScanPlan
+=== scalar_signed_zero.yaml#3
+sql:   SELECT CAST(1.0 / s AS STRING), COUNT(*) FROM (SELECT CEIL(d) AS s FROM t) a GROUP BY s
+plan:  Project([CAST((1 / _current.S#0) AS STRING), _current.COUNT(*)#1], StreamingAgg(keys=[_current.S#0], InMemorySort([_current.S#0 ASC], Project([CEIL(_current.D#3)], Scan(T)))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryInMemorySortPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryScanPlan
+=== scalar_signed_zero.yaml#4
+sql:   SELECT CAST(1.0 / s AS STRING) FROM (SELECT DISTINCT CEIL(d) AS s FROM t) a
+plan:  Project([CAST((1 / _current.S#0) AS STRING)], Distinct(Project([CEIL(_current.D#3)], Scan(T))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryDistinctPlan
+shape:     RecordQueryProjectionPlan
 shape:       RecordQueryScanPlan
 === scalar_subquery.yaml#0
 sql:   SELECT (SELECT MAX(v) FROM t) FROM t WHERE id = 1

@@ -23,7 +23,7 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**375 scenarios · 3071 query/assertion cases** across 18 feature areas — 2690 supported, 115 unsupported-feature pins, 266 error-path pins.
+**376 scenarios · 3076 query/assertion cases** across 18 feature areas — 2695 supported, 115 unsupported-feature pins, 266 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
@@ -44,8 +44,8 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Keys & primary keys | 5 | 133 | 128 | 0 | 5 |
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
-| Other | 39 | 332 | 293 | 12 | 27 |
-| **Total** | **375** | **3071** | **2690** | **115** | **266** |
+| Other | 40 | 337 | 298 | 12 | 27 |
+| **Total** | **376** | **3076** | **2695** | **115** | **266** |
 
 ## Aggregates & GROUP BY
 
@@ -506,6 +506,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `quoted_identifier_labels` | 40 | 37 | 1 | 2 | THE RESULT-SET LABEL IS WHERE THE USER SEES THE NAME, so it is the one |
 | `quoted_identifier_pins` | 4 | 4 | 0 | 0 | quoted-identifier shapes that must keep |
 | `repeated_output_names` | 14 | 14 | 0 | 0 | A repeated output name is reported as the user spelled it, once per column, |
+| `scalar_signed_zero` | 5 | 5 | 0 | 0 | Reciprocal strings distinguish -0 from +0 without relying on numeric equality. |
 | `select_no_from` | 6 | 0 | 6 | 0 | FROM-less SELECT — fdb-relational 4.11.1.0's QueryVisitor.visitSimpleTable |
 | `select_star_single_table` | 4 | 4 | 0 | 0 | SELECT * from single table |
 | `set_op_fetch_pushdown` | 2 | 2 | 0 | 0 | set operations push below the fetch |

@@ -43,27 +43,27 @@ func TestEvalScalarFunction_FloorCeilRound(t *testing.T) {
 	t.Parallel()
 	got, errEv0 := evalScalarFunction("FLOOR", []any{float64(2.7)})
 	require.NoError(t, errEv0)
-	if got != int64(2) {
+	if got != float64(2) {
 		t.Fatalf("FLOOR(2.7): got %v", got)
 	}
 	got, errEv1 := evalScalarFunction("CEIL", []any{float64(2.1)})
 	require.NoError(t, errEv1)
-	if got != int64(3) {
+	if got != float64(3) {
 		t.Fatalf("CEIL(2.1): got %v", got)
 	}
 	got, errEv2 := evalScalarFunction("CEILING", []any{float64(-1.2)})
 	require.NoError(t, errEv2)
-	if got != int64(-1) {
+	if got != float64(-1) {
 		t.Fatalf("CEILING(-1.2): got %v", got)
 	}
 	got, errEv3 := evalScalarFunction("ROUND", []any{float64(2.5)})
 	require.NoError(t, errEv3)
-	if got != int64(3) {
+	if got != float64(3) {
 		t.Fatalf("ROUND(2.5): got %v", got)
 	}
 	got, errEv4 := evalScalarFunction("ROUND", []any{float64(2.49)})
 	require.NoError(t, errEv4)
-	if got != int64(2) {
+	if got != float64(2) {
 		t.Fatalf("ROUND(2.49): got %v", got)
 	}
 	// ROUND(x, decimals) — float result when fractional part remains.
@@ -139,7 +139,7 @@ func TestRoundFloat64DecimalPlaces(t *testing.T) {
 
 	got, err := evalScalarFunction("ROUND", []any{float64(-2.5)})
 	require.NoError(t, err)
-	require.Equal(t, int64(-3), got)
+	require.Equal(t, float64(-3), got)
 }
 
 func TestEvalScalarFunction_SqrtPower(t *testing.T) {
@@ -156,16 +156,16 @@ func TestEvalScalarFunction_SqrtPower(t *testing.T) {
 	}
 	// SQRT(-1) → InvalidArgumentError is pinned on the error channel in
 	// TestEvalScalarFunction_ErrorEdges.
-	// POWER with int result.
+	// POWER stays DOUBLE even with integral operands and result.
 	got, errEv2 := evalScalarFunction("POWER", []any{int64(2), int64(3)})
 	require.NoError(t, errEv2)
-	if got != int64(8) {
+	if got != float64(8) {
 		t.Fatalf("POWER(2,3): got %v", got)
 	}
 	// POW alias.
 	got, errEv3 := evalScalarFunction("POW", []any{int64(2), int64(10)})
 	require.NoError(t, errEv3)
-	if got != int64(1024) {
+	if got != float64(1024) {
 		t.Fatalf("POW(2,10): got %v", got)
 	}
 	// POWER with float result.
@@ -371,7 +371,7 @@ func TestSimplifyValue_FoldsExtendedScalars(t *testing.T) {
 			"FLOOR",
 			NewScalarFunctionValue("FLOOR", TypeUnknown,
 				&ConstantValue{Value: float64(3.9), Typ: NullableDouble}),
-			int64(3),
+			float64(3),
 		},
 		{
 			"COALESCE picks first non-null",

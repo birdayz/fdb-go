@@ -10385,3 +10385,77 @@ it does not isolate scalar remainder evaluation cost.
 | full scan sparse filter | 97 | 3.256885513s | 3.259881222s | 3.24556748s | 3.260419357s |
 | UPDATE by index | 8 | 8.967232ms | 9.063364ms | 8.589099ms | 9.258655ms |
 | DELETE single row | 1 | 6.427363ms | 6.383369ms | 6.42126ms | 6.431717ms |
+
+### Stress test 1M baseline — RFC-254 floating type/sign preservation
+
+Baseline commit `ed3504f7e410d8e2a4f4c46fd7b4c72fd0484869` was the merge-base
+on 2026-09-14, tree `08bf79181cc59462abe052791ad9ed5cd115424b`.
+Patched comparison tree `f1c3e266fe10deb1f3b121ffc536ca07c1b86119` is that
+commit plus production blobs `values.go=443ff87ed7a8c739a8838238ea8099507807af1d`
+and `utilities.go=0465c0d9cd5b2039821a8738a1f17225b3a5d0e8`. Both states used
+one comparison worktree and output base on `/var/tmp` (59% full), not the
+nearly-full `/home` filesystem. Compiler, stress fixture and flags unchanged;
+source/tree hashes checked before and after each run.
+
+Command, sequentially twice per state and then twice on the restored baseline:
+
+```sh
+bazelisk --output_base=/var/tmp/query-hunt-254/bazel test \
+  //pkg/relational/sqldriver/stress:stress_test --nocache_test_results \
+  --test_arg='-test.run=^TestFDB_Stress_1M$' --test_timeout=900
+```
+
+All six runs passed: each had 24 RUN lines (parent + 23 subtests), 100,000
+customers and 1,000,000 orders; the 11 emitted EXPLAIN strings and all 22
+timed query row counts matched across runs, and COUNT(*) verified 1,000,000.
+The restored-baseline controls were necessary: aggregate timings rose on the
+patched runs, but also on the original source when restored. These samples
+do not establish a code-induced speedup or regression; the table keeps the
+variation visible instead of treating a confound as a bounded error term.
+Use the restored-baseline columns, not the earlier Before columns, as the
+contemporaneous controls; the earlier samples are retained to show the drift.
+
+| Run | Total test duration | Load before (1/5/15m) | Load after (1/5/15m) |
+|---|---:|---|---|
+| before-1 | 167.31s | 1.79, 1.67, 1.55 | 3.69, 3.75, 2.55 |
+| before-2 | 167.75s | 3.69, 3.75, 2.55 | 2.99, 3.55, 2.69 |
+| after-1 | 167.94s | 1.74, 4.59, 7.11 | 3.60, 4.25, 6.52 |
+| after-2 | 168.11s | 3.60, 4.25, 6.52 | 3.72, 4.15, 6.10 |
+| control-1 | 168.03s | 2.39, 3.69, 5.81 | 3.18, 3.91, 5.55 |
+| control-2 | 168.26s | 3.18, 3.91, 5.55 | 3.44, 3.66, 5.17 |
+
+| Query | Rows | Before 1 | Before 2 | After 1 | After 2 | Restored baseline 1 | Restored baseline 2 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| PK lookup id=0 | 1 | 15.340811ms | 15.234931ms | 8.380453ms | 15.688913ms | 8.394559ms | 9.044089ms |
+| PK lookup id=N/2 | 1 | 24.092507ms | 25.864815ms | 8.372097ms | 25.201622ms | 8.467748ms | 8.609526ms |
+| PK lookup id=N-1 | 1 | 22.828141ms | 22.394409ms | 5.153818ms | 19.248449ms | 5.110334ms | 5.472611ms |
+| idx_customer eq | 8 | 20.474621ms | 19.885454ms | 6.506913ms | 20.170747ms | 6.388507ms | 6.448099ms |
+| idx_amount range >9000 | 100017 | 323.500322ms | 345.779352ms | 192.159676ms | 326.144745ms | 185.83715ms | 189.393032ms |
+| idx_status count pending | 1 | 311.466156ms | 314.868644ms | 467.465297ms | 317.253265ms | 458.068186ms | 457.050109ms |
+| full scan filter amount>5000 | 1 | 533.442494ms | 535.448927ms | 727.943995ms | 605.837466ms | 715.856511ms | 746.719781ms |
+| GROUP BY status | 4 | 5.811283ms | 6.090112ms | 14.010274ms | 20.428365ms | 21.252566ms | 19.403972ms |
+| GROUP BY status COUNT only | 4 | 5.331714ms | 5.568392ms | 12.72107ms | 12.717562ms | 11.916593ms | 12.488627ms |
+| SUM by status (aggregate index) | 4 | 5.745147ms | 5.854475ms | 21.041329ms | 13.965336ms | 12.987552ms | 12.588476ms |
+| GROUP BY customer HAVING | 47271 | 815.113857ms | 847.490014ms | 617.077141ms | 759.992067ms | 611.882771ms | 598.584204ms |
+| JOIN 10 orders x customers | 10 | 19.924538ms | 22.658169ms | 19.704365ms | 22.17199ms | 19.536274ms | 20.23139ms |
+| ORDER BY PK (full) | 1000000 | 3.717173503s | 3.753375407s | 3.822408272s | 3.824847636s | 3.820873783s | 3.838834259s |
+| ORDER BY PK + index filter | 8 | 8.681883ms | 8.759389ms | 8.739915ms | 9.572923ms | 9.264797ms | 9.987517ms |
+| scan all rows ordered | 1000000 | 3.595204996s | 3.627403843s | 3.592694483s | 3.614238907s | 3.600544563s | 3.606034977s |
+| scan all rows wide | 1000000 | 3.869295674s | 3.861477867s | 3.881131061s | 3.853377193s | 3.845770145s | 3.867525626s |
+| IN-list 5 values | 46 | 22.382206ms | 20.364141ms | 18.885743ms | 18.817393ms | 19.383634ms | 21.149169ms |
+| PK needle id=999999 | 1 | 5.784071ms | 5.725419ms | 5.80395ms | 5.82007ms | 5.671338ms | 6.337069ms |
+| PK+filter needle id=500000 | 1 | 7.575526ms | 7.438417ms | 7.279216ms | 7.402249ms | 7.282061ms | 8.47454ms |
+| full scan sparse filter | 97 | 3.252493168s | 3.248308275s | 3.317105703s | 3.301384921s | 3.285604874s | 3.299271668s |
+| UPDATE by index | 8 | 8.905707ms | 8.922218ms | 9.216768ms | 8.797743ms | 9.364817ms | 9.136735ms |
+| DELETE single row | 1 | 6.252158ms | 6.471253ms | 6.986972ms | 6.277387ms | 6.439593ms | 6.876852ms |
+
+See `rfcs/254-scalar-floating-results-preserve-type-and-sign.md` for the
+correctness fixes, regression tests and review decisions.
+
+- [x] **RFC-254 correctness hunt:** preserve signed zero through scalar rounding/
+  POWER and constant folding; preserve finite DOUBLE parameter type and bits
+  through SQL text transport. Regression coverage includes real-FDB arithmetic,
+  storage, GROUP BY/DISTINCT, integer-position admission and bounded secondary
+  BIGINT index access. Design/implementation reviews ACKed; 92-target uncached
+  suite, repeated/race regressions, unguided fuzzing and million-row stress
+  passed. Details: `rfcs/254-scalar-floating-results-preserve-type-and-sign.md`.

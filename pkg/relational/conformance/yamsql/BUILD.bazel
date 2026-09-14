@@ -54,6 +54,7 @@ go_test(
         "mod_float_zero_test.go",
         "runner_report_test.go",
         "runner_test.go",
+        "scalar_signed_zero_test.go",
         "yamsql_test.go",
     ],
     data = glob(["testdata/**"]) + [

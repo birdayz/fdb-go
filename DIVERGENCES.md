@@ -1555,11 +1555,23 @@ guard must not be "fixed" back toward Java.
 The plan-time promotion and cast-pair gates exempt UNKNOWN-typed
 operands, which includes bound parameters on the exported
 PlanRecordQueryWithMetadata path (the SQL driver substitutes `?` as
-text, so driver-reachable binds arrive STRING-typed and take the
-STRING arms). Java types parameters by inference and gates them too;
-Go's parameter-inference arc would close this — until then a
-LONG-bound parameter through the exported path evaluates leniently
-where Java rejects at plan time.
+text, so driver-reachable string binds arrive STRING-typed and take the
+STRING arms; other binds take their rendered literal's type). Java types
+parameters by inference and gates them too; Go's parameter-inference arc
+would close this — until then a LONG-bound parameter through the exported
+path evaluates leniently where Java rejects at plan time.
+
+RFC-254 (`rfcs/254-scalar-floating-results-preserve-type-and-sign.md`) repairs
+the SQL driver's finite DOUBLE transport: exponent literals preserve both
+type and bits instead of `%g` turning whole doubles into integers. The
+executor has WithParams/BindParameter, but the driver does not use them;
+switching channels also changes statement-global ordinals, cache typing,
+literal-dependent plans and DDL/view parameter admission. Remaining concrete
+text-channel limits: only the documented renderable NaN bit patterns are
+admitted (other payloads are rejected); midnight time.Time is rendered as a
+date-only string, whereas other times include the time; integer parameters
+retain integer-literal interpretation, including ORDER BY positions. The
+RFC's SQL tests pin floating parameters as constants rather than positions.
 
 ## REWRITING prune: virtual (designation) vs Java's physical prune (RFC-186)
 

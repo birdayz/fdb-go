@@ -49,7 +49,7 @@ func TestSubstituteParams(t *testing.T) {
 			name:  "float64",
 			query: "INSERT INTO t VALUES (?)",
 			args:  []driver.NamedValue{nv(1, float64(3.14))},
-			want:  "INSERT INTO t VALUES (3.14)",
+			want:  "INSERT INTO t VALUES (3.14e+00)",
 		},
 		{
 			name:  "string escaping",

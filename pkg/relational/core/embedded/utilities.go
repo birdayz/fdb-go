@@ -207,7 +207,7 @@ func substituteParams(query string, args []driver.NamedValue) (string, error) {
 		case int64:
 			fmt.Fprintf(&b, "%d", val)
 		case float64:
-			// NaN and ±Infinity have no BARE literal form — "%g" renders them
+			// NaN and ±Infinity have no BARE literal form — Go formats them
 			// as NaN/+Inf/-Inf, which the parser reads as identifiers and
 			// rejects with a confusing 42601. They do have a CAST form, and it
 			// is the same one on both sides of the port: 'NaN', 'Infinity' and
@@ -240,9 +240,10 @@ func substituteParams(query string, args []driver.NamedValue) (string, error) {
 				// That is the defect this whole item was fixing, one level
 				// down: a write whose stored value depends on which syntax
 				// carried it. Preserving arbitrary bits is not possible here —
-				// parameters reach the engine only as interpolated SQL TEXT
-				// (substituteParams is the sole channel; there is no typed
-				// parameter path), and no literal in this grammar denotes an
+				// the SQL driver passes parameters only as interpolated SQL
+				// TEXT, not through the executor's typed bindings (see the
+				// bound-parameter entry in DIVERGENCES.md and RFC-254), and no
+				// literal in this grammar denotes an
 				// arbitrary double bit pattern. Arithmetic reaches ±Infinity
 				// and one negative NaN, not a payload.
 				//
@@ -276,9 +277,11 @@ func substituteParams(query string, args []driver.NamedValue) (string, error) {
 			case math.IsInf(val, -1):
 				b.WriteString("CAST('-Infinity' AS DOUBLE)")
 			default:
-				// %g with no precision is the shortest representation that
-				// round-trips, so every finite double survives exactly.
-				fmt.Fprintf(&b, "%g", val)
+				// Exponent syntax preserves DOUBLE's type as well as its bits.
+				// %g renders whole doubles as integer literals: -0 loses its
+				// sign, and 3 / 2 selects integer division. Precision -1 keeps
+				// every finite value exact, including subnormals and -0.
+				b.WriteString(strconv.FormatFloat(val, 'e', -1, 64))
 			}
 		case string:
 			// Escape single quotes by doubling them.

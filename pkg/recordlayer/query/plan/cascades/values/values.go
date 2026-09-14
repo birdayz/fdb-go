@@ -2874,11 +2874,8 @@ func evalScalarFunction(name string, args []any) (any, error) {
 				result = roundFloat64DecimalPlaces(f, decimals)
 			}
 		}
-		// Preserve the compact direct-evaluator carrier. ScalarFunctionValue
-		// converts it to the declared FLOAT/DOUBLE carrier at its boundary.
-		if result == math.Trunc(result) && float64FitsInt64(result) {
-			return int64(result), nil
-		}
+		// Keep floating inputs floating: an integer carrier would erase -0
+		// before declared-type coercion or constant folding can preserve it.
 		return result, nil
 	case scalarFunctionPi:
 		// Zero-argument constant.
@@ -2914,9 +2911,6 @@ func evalScalarFunction(name string, args []any) (any, error) {
 		result := math.Pow(base, exp)
 		if math.IsNaN(result) || math.IsInf(result, 0) {
 			return nil, nil
-		}
-		if result == math.Trunc(result) && float64FitsInt64(result) {
-			return int64(result), nil
 		}
 		return result, nil
 	case scalarFunctionCoalesce:

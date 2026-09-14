@@ -148,6 +148,7 @@ go_test(
         "explain_no_silent_degrade_test.go",
         "float_order_by_sort_retention_test.go",
         "float_ordering_claim_plan_test.go",
+        "float_parameter_test.go",
         "group_count_companion_ddl_test.go",
         "group_existence_cost_decision_test.go",
         "group_key_pull_up_guard_test.go",
@@ -439,6 +440,7 @@ go_test(
         "conjunction_binding_test.go",
         "on_exists_fold.go",
         "on_exists_fold_test.go",
+        "float_parameter_test.go",
     ],
     deps = [
         "//gen",
