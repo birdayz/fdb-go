@@ -3,21 +3,29 @@ package sqldriver_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"fdb.dev/pkg/relational/api"
 )
 
+// Each repetition needs distinct catalog objects in the suite's shared FDB.
+var modFixtureID atomic.Uint64
+
 // Go's MOD() function follows the infix remainder operator: approximate
 // numeric operands yield NaN for a zero divisor, not an integer 22012 error.
 func TestFDB_ModFloatZero(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_modfloatzero", "modfloatzero",
+	name := fmt.Sprintf("modfloatzero_%d", modFixtureID.Add(1))
+	db := setupErrorTestDB(t, "/testdb_"+name, name,
 		"CREATE TABLE t (id BIGINT, n BIGINT, f FLOAT, d DOUBLE, PRIMARY KEY (id))")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	t.Cleanup(cancel)
+	// Cancel setup before parallel children resume: their deadlines must start
+	// after t.Parallel returns, not while they wait for the suite's run slots.
+	defer cancel()
 	mwjoMustExec(t, db, ctx, "INSERT INTO t VALUES (1, 7, CAST(7 AS FLOAT), 7.0)")
 	for _, expr := range []string{"-0.0", "CAST(-0.0 AS FLOAT)"} {
 		var got float64
@@ -59,6 +67,8 @@ func TestFDB_ModFloatZero(t *testing.T) {
 	} {
 		t.Run(expr, func(t *testing.T) {
 			t.Parallel()
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
 			var got float64
 			if err := db.QueryRowContext(ctx, "SELECT "+expr+" FROM t WHERE id = 1").Scan(&got); err != nil {
 				t.Fatalf("%s: %v; want NaN without an error", expr, err)
@@ -86,6 +96,8 @@ func TestFDB_ModFloatZero(t *testing.T) {
 	} {
 		t.Run(tc.expr, func(t *testing.T) {
 			t.Parallel()
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
 			var got any
 			if err := db.QueryRowContext(ctx, "SELECT "+tc.expr+" FROM t WHERE id = 1").Scan(&got); err != nil {
 				t.Fatal(err)
@@ -103,6 +115,8 @@ func TestFDB_ModFloatZero(t *testing.T) {
 	for _, expr := range []string{"MOD(n, 0)", "MOD(CAST(n AS INTEGER), CAST(0 AS INTEGER))", "n % 0"} {
 		t.Run(expr, func(t *testing.T) {
 			t.Parallel()
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
 			var got any
 			err := db.QueryRowContext(ctx, "SELECT "+expr+" FROM t WHERE id = 1").Scan(&got)
 			var sqlErr *api.Error
@@ -115,11 +129,12 @@ func TestFDB_ModFloatZero(t *testing.T) {
 
 func TestFDB_ModFunctionIndexRemainsRejected(t *testing.T) {
 	t.Parallel()
-	db := setupErrorTestDB(t, "/testdb_modindexboundary", "modindexboundary",
+	name := fmt.Sprintf("modindexboundary_%d", modFixtureID.Add(1))
+	db := setupErrorTestDB(t, "/testdb_"+name, name,
 		"CREATE TABLE t (id BIGINT, n BIGINT, PRIMARY KEY (id))")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	_, err := db.ExecContext(ctx, `CREATE SCHEMA TEMPLATE modindexfunction
+	_, err := db.ExecContext(ctx, `CREATE SCHEMA TEMPLATE `+name+`_function
 		CREATE TABLE t (id BIGINT, n BIGINT, PRIMARY KEY (id))
 		CREATE INDEX i_mod AS SELECT MOD(n, 3) FROM t`)
 	var sqlErr *api.Error
@@ -127,7 +142,7 @@ func TestFDB_ModFunctionIndexRemainsRejected(t *testing.T) {
 		sqlErr.Message != "unable to construct expression" {
 		t.Fatalf("MOD() index: %v; want unsupported operation, not new persisted index-expression admission", err)
 	}
-	mwjoMustExec(t, db, ctx, `CREATE SCHEMA TEMPLATE modindexoperator
+	mwjoMustExec(t, db, ctx, `CREATE SCHEMA TEMPLATE `+name+`_operator
 		CREATE TABLE t (id BIGINT, n BIGINT, PRIMARY KEY (id))
 		CREATE INDEX i_mod AS SELECT n % 3 FROM t`)
 }

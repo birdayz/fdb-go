@@ -159,3 +159,30 @@ loads, command and interpretation limits are in TODO.md section 11,
 “Stress test 1M baseline — RFC-253 scalar remainder evaluation”. No performance
 improvement is claimed from that correctness fixture. Temporary comparison
 worktree removed; local verification logs remain in `/var/tmp/query-hunt-253`.
+
+### CI race-lane follow-up: parallel test context ownership
+
+PR #784's first race lane exposed a test-lifetime defect, not an arithmetic
+mismatch: all 28 parallel `TestFDB_ModFloatZero` children reused the parent's
+one-minute setup context. That deadline could expire while the children waited
+for the suite's parallel execution slots. The lane reported 28 immediate
+`context deadline exceeded` failures when they resumed.
+
+Each child now creates and defers cancellation of its own one-minute context
+**after** `t.Parallel()` returns. The setup context is deliberately canceled by
+the parent's defer before the children resume, making accidental reuse fail
+deterministically even without a slow runner. With only the parent cancellation
+change applied, the exact 28 children failed locally with `context canceled`;
+this regression guard survives in the test instead of relying on wall-clock
+sleeps or extending the deadline. Production arithmetic is unchanged.
+
+The repeated race run also exposed fixed catalog names surviving across
+`-test.count` repetitions in the shared FDB. These two tests now allocate
+per-invocation database and schema-template names using an atomic sequence;
+this preserves parallel safety and lets the exact integration tests repeat
+in one process, rather than hiding the collision by launching fresh processes.
+
+The corrected tests passed under Bazel with race instrumentation,
+`-test.count=20` and `-test.parallel=1`: 600 modulo RUN lines (30 per
+repetition), no failures. Both deadline ownership and catalog-name reuse were
+exercised in that run. The cancellation sentinel remains enabled.
