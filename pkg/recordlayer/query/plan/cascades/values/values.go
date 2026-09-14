@@ -2699,7 +2699,7 @@ func DependsOnStatementClock(v Value) bool {
 // executor maps it to a SQLSTATE:
 //
 //   - ABS(MinInt64)             → *ArithmeticOverflowError       (22003)
-//   - MOD(x, 0)                 → *ArithmeticDivisionByZeroError (22012)
+//   - integral MOD(x, 0)        → *ArithmeticDivisionByZeroError (22012)
 //   - SQRT(negative)            → *InvalidArgumentError          (22023)
 //   - GREATEST/LEAST mixed type → *ScalarTypeMismatchError       (22000)
 //
@@ -3081,29 +3081,24 @@ func evalScalarFunction(name string, args []any) (any, error) {
 		}
 		return nil, nil
 	case scalarFunctionMod:
-		// MOD(a, b) — int64%int64 stays int64, mixed promotes to float64
-		// via math.Mod. Division-by-zero errors with 22012
-		// DIVISION_BY_ZERO.
+		// MOD() is a Go function spelling for the infix remainder operator.
+		// Keep the scalar API's argument admission, but share arithmetic
+		// evaluation so zero divisors raise 22012 only in the integral lane.
 		if len(args) != 2 || args[0] == nil || args[1] == nil {
 			return nil, nil
 		}
-		ai, aIsInt := args[0].(int64)
-		bi, bIsInt := args[1].(int64)
+		ai, aIsInt := toInt64ForArith(args[0])
+		bi, bIsInt := toInt64ForArith(args[1])
+		op := ArithmeticValue{Op: OpMod}
 		if aIsInt && bIsInt {
-			if bi == 0 {
-				return nil, &ArithmeticDivisionByZeroError{}
-			}
-			return ai % bi, nil
+			return op.evaluateOperands(ai, bi)
 		}
 		af, _, aok := ToFloat64(args[0])
 		bf, _, bok := ToFloat64(args[1])
 		if !aok || !bok {
 			return nil, nil
 		}
-		if bf == 0 {
-			return nil, &ArithmeticDivisionByZeroError{}
-		}
-		return math.Mod(af, bf), nil
+		return op.evaluateOperands(af, bf)
 	case scalarFunctionIfNull:
 		// IFNULL(a, b) — `a` if non-null, else `b`. 2-arg COALESCE alias
 		// (MySQL/SQLite spelling).
@@ -3690,6 +3685,13 @@ func (a *ArithmeticValue) Evaluate(evalCtx any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	return a.evaluateOperands(l, r)
+}
+
+// evaluateOperands shares the arithmetic operator implementation with scalar
+// function spellings. Child types still select the static lanes; absent children
+// select the runtime lanes for operands already promoted by the scalar catalog.
+func (a *ArithmeticValue) evaluateOperands(l, r any) (any, error) {
 	if l == nil || r == nil {
 		return nil, nil
 	}
@@ -4024,6 +4026,10 @@ func toInt64ForArith(v any) (int64, bool) {
 	case int:
 		return int64(n), true
 	case int32:
+		return int64(n), true
+	case int16:
+		return int64(n), true
+	case int8:
 		return int64(n), true
 	case uint64:
 		// The tuple layer decodes positive integers above math.MaxInt64 as

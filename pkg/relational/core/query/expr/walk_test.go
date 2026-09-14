@@ -1350,8 +1350,8 @@ func TestWalkExpression_IntegerDivOperator(t *testing.T) {
 
 // MOD operator — walker produces an ArithmeticValue with Op=OpMod
 // for both `a % b` and `a MOD b` syntactic forms. Eval returns
-// truncated-toward-zero modulo (Go's `%`); MOD by zero returns nil
-// (NULL-at-Value-layer).
+// truncated-toward-zero modulo (Go's `%`); integral MOD by zero errors,
+// while floating MOD by zero returns NaN.
 func TestWalkExpression_ModuloOperator(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)

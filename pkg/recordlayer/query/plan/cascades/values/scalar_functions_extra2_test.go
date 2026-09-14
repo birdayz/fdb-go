@@ -68,8 +68,8 @@ func TestEvalScalarFunction_MOD(t *testing.T) {
 		{"mixed promotes to float", []any{int64(7), float64(2.5)}, float64(2)},
 		{"nil declines", []any{nil, int64(1)}, nil},
 		{"non-numeric declines", []any{"a", int64(1)}, nil},
-		// MOD by zero (int and float) → ArithmeticDivisionByZeroError is
-		// pinned on the error channel in TestEvalScalarFunction_ErrorEdges.
+		// Integral MOD by zero errors; floating MOD by zero yields NaN.
+		// Both are pinned in TestEvalScalarFunction_ErrorEdges.
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -219,7 +219,7 @@ Per-row scalar eval; no planning, no wire change. Plan-time gate is a map lookup
 ## Test plan
 
 - New `*_fdb_test.go` (sqldriver, CI): each restored function over a column arg →
-  correct rows; NULL-arg → NULL; **error edges** ABS `MinInt64`→22003, MOD/0→22012,
+  correct rows; NULL-arg → NULL; **error edges** ABS `MinInt64`→22003, integral MOD/0→22012 (floating MOD/0→NaN; RFC-253),
   SQRT<0→22023 (proves the error channel, not decline-to-nil).
 - Un-skipped `TestYamsqlConformance` before/after: the ~34 scalar scenarios flip
   green; **no previously-passing scenario regresses** (the 137+7+7 re-points cover

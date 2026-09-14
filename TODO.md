@@ -10327,3 +10327,61 @@ observations remain visible instead of being hidden by total duration.
 | full scan sparse filter | 97 | 3.409289608s | 3.424878262s | 3.358438209s | 3.36492034s |
 | UPDATE by index | 8 | 9.184615ms | 9.152304ms | 10.635875ms | 8.97595ms |
 | DELETE single row | 1 | 6.545114ms | 6.592924ms | 7.054418ms | 6.250955ms |
+
+### Stress test 1M baseline — RFC-253 scalar remainder evaluation
+
+Baseline: `7a7d61cde03be64ff3825df24ff699caec880b4f`, the merge-base used for this run.
+Patched state: that same commit plus `values.go` blob `98b29581a04c61e6d0a8503d0ea6bbd7d4e48504`
+(and the catalog documentation correction). Original values.go blob:
+`701a9a53283c02a7a6046c99e2c6d40379cebbf6`. Both sides used the same
+`/var/tmp/query-hunt-253/compare` worktree and `/var/tmp/query-hunt-253/bazel`
+output base on the root filesystem, rather than comparing the nearly-full
+`/home` filesystem with `/var/tmp`. The Go module/compiler and stress fixture
+were unchanged. Source MD5 was identical before/after each execution.
+
+Command on each state, twice sequentially, with complete output captured:
+```sh
+bazelisk --output_base=/var/tmp/query-hunt-253/bazel test //pkg/relational/sqldriver/stress:stress_test --test_arg='-test.run=^TestFDB_Stress_1M$' --nocache_test_results --test_output=all
+```
+
+All four runs passed, each with 24 RUN lines (parent plus 23 subtests),
+100000 customers and 1000000 orders. The 22 timed-query populations and row
+counts below matched exactly. The separate full_scan_count subtest returned
+1000000; its whole-subtest durations were 3.18s, 3.11s, 3.20s, 3.03s in column order.
+These are measurements, not a speedup claim: timings moved in both directions,
+including aggregate-index queries that contain no arithmetic operator in their
+EXPLAIN trees. No plan rules or cost formulas changed, and the corpus golden
+added only the new MOD scenario. This fixture validates correctness at scale;
+it does not isolate scalar remainder evaluation cost.
+
+| State/sample | Duration | Start load (1/5/15 min) |
+|---|---:|---|
+| before-1 | 167.21s | 0.73, 1.34, 1.18 |
+| before-2 | 167.68s | 3.64, 3.67, 2.30 |
+| after-1 | 167.87s | 1.95, 4.82, 4.14 |
+| after-2 | 168.05s | 3.20, 3.98, 3.93 |
+
+| Query | Rows | Before 1 | Before 2 | After 1 | After 2 |
+|---|---:|---:|---:|---:|---:|
+| PK lookup id=0 | 1 | 16.033605ms | 14.285194ms | 14.92017ms | 8.349904ms |
+| PK lookup id=N/2 | 1 | 24.341679ms | 22.948179ms | 25.867439ms | 8.597783ms |
+| PK lookup id=N-1 | 1 | 19.737399ms | 20.706514ms | 12.146733ms | 5.946649ms |
+| idx_customer eq | 8 | 20.065881ms | 20.030925ms | 34.094844ms | 6.413133ms |
+| idx_amount range >9000 | 100017 | 281.272006ms | 318.216338ms | 326.75991ms | 187.289398ms |
+| idx_status count pending | 1 | 318.821478ms | 310.398221ms | 309.897188ms | 445.655669ms |
+| full scan filter amount>5000 | 1 | 538.352127ms | 533.954953ms | 670.589277ms | 722.506764ms |
+| GROUP BY status | 4 | 5.817387ms | 5.816636ms | 13.574268ms | 13.025132ms |
+| GROUP BY status COUNT only | 4 | 5.130186ms | 5.473105ms | 13.245395ms | 20.812751ms |
+| SUM by status (aggregate index) | 4 | 5.560822ms | 5.578925ms | 11.367355ms | 20.614384ms |
+| GROUP BY customer HAVING | 47271 | 768.938194ms | 795.509473ms | 665.808385ms | 618.445636ms |
+| JOIN 10 orders x customers | 10 | 41.917664ms | 31.543557ms | 19.893115ms | 21.463654ms |
+| ORDER BY PK (full) | 1000000 | 3.755905005s | 3.80420283s | 3.753203371s | 3.83251472s |
+| ORDER BY PK + index filter | 8 | 8.762745ms | 8.930032ms | 9.277404ms | 8.963025ms |
+| scan all rows ordered | 1000000 | 3.619842887s | 3.606766825s | 3.584650536s | 3.600976127s |
+| scan all rows wide | 1000000 | 3.863213314s | 3.860621443s | 3.828872401s | 3.835038301s |
+| IN-list 5 values | 46 | 18.758494ms | 20.163977ms | 18.925741ms | 19.001167ms |
+| PK needle id=999999 | 1 | 5.611157ms | 5.682762ms | 5.653625ms | 5.757921ms |
+| PK+filter needle id=500000 | 1 | 7.328158ms | 7.355761ms | 7.146976ms | 7.375607ms |
+| full scan sparse filter | 97 | 3.256885513s | 3.259881222s | 3.24556748s | 3.260419357s |
+| UPDATE by index | 8 | 8.967232ms | 9.063364ms | 8.589099ms | 9.258655ms |
+| DELETE single row | 1 | 6.427363ms | 6.383369ms | 6.42126ms | 6.431717ms |

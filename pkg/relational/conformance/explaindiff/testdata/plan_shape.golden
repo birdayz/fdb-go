@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=374 queries=2787 dml=172 non_query=109 plan_errors=303 unexpected_errors=4
+# files=375 queries=2790 dml=172 non_query=109 plan_errors=303 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -11489,6 +11489,21 @@ plan:  Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
+=== mod_float_zero.yaml#0
+sql:   SELECT CAST(MOD(d, 0.0) AS STRING), CAST(MOD(f, CAST(-0.0 AS FLOAT)) AS STRING), CAST(MOD(n, 0.0) AS STRING), CAST(d % 0.0 AS STRING) FROM t
+plan:  Project([CAST(MOD(_current.D#3, 0) AS STRING), CAST(MOD(_current.F#2, CAST(-0 AS FLOAT)) AS STRING), CAST(MOD(_current.N#1, 0) AS STRING), CAST((_current.D#3 % 0) AS STRING)], Scan(T))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryScanPlan
+=== mod_float_zero.yaml#1
+sql:   SELECT MOD(n, 3), MOD(d, 2.5), MOD(CAST(NULL AS DOUBLE), 0.0) FROM t
+plan:  Project([MOD(_current.N#1, 3), MOD(_current.D#3, 2.5), MOD(CAST(NULL AS DOUBLE), 0)], Scan(T))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryScanPlan
+=== mod_float_zero.yaml#2 expect-error=22012
+sql:   SELECT MOD(n, 0) FROM t
+plan:  Project([MOD(_current.N#1, 0)], Scan(T))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryScanPlan
 === multi_column_index_java.yaml#0
 sql:   SELECT id FROM orders WHERE customer_id = 1 AND status = 'shipped' ORDER BY id
 plan:  Project([_current.ID#0], IndexScan(IDX_CUST_STATUS, [=, =] COVERING))

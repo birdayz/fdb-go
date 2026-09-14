@@ -12413,3 +12413,22 @@ identity, and impossible propagating through union only. The reproducer that
 pinned the broken answers is deleted, as its own failure message instructed, and
 the UnionCompensations-only guard on the associativity and permutation subtests
 is removed so both folds are held to them.
+
+### [x] RFC-253: scalar remainder zero and native-integer correctness
+
+`MOD(7.0, 0.0)` incorrectly raised 22012 while infix `%` returned NaN.
+Scalar MOD now delegates to the same evaluated arithmetic implementation;
+FLOAT operand rounding, integer zero errors, NULLs and signed zeros are pinned.
+Review additionally exposed native `MOD(int64(9007199254740993), int32(2))`
+returning 0 through double conversion. Shared lossless integer admission fixes
+it, including native small integer carriers in the arithmetic helper.
+
+Unit, real-FDB and yamsql reproducers were seen red and then green. The Java
+probe pins the actual extension boundary: Java accepts `%`, rejects MOD(),
+and the Go extension follows infix semantics. Index-function admission is
+unchanged and tested. Graefe/Torvalds design and implementation ACKs plus Codex
+final no-findings review are recorded in `rfcs/253-floating-modulo-zero-is-nan.md`.
+Final verification: four affected targets uncached, all 92 `just test` targets,
+15s arithmetic fuzz (13,549,406 executions), and sequential 1M stress twice per
+state. Source identities and complete stress results live in TODO.md section
+11 under “Stress test 1M baseline — RFC-253 scalar remainder evaluation”.

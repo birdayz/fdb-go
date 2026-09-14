@@ -1,0 +1,16 @@
+# Go's MOD() function follows the infix remainder operator.
+# Render NaN as STRING because the YAML row comparator uses numeric equality.
+name: mod_float_zero
+schema_template: |
+  CREATE TABLE t (id BIGINT, n BIGINT, f FLOAT, d DOUBLE, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, 7, CAST(7 AS FLOAT), 7.0)
+tests:
+  - query: SELECT CAST(MOD(d, 0.0) AS STRING), CAST(MOD(f, CAST(-0.0 AS FLOAT)) AS STRING), CAST(MOD(n, 0.0) AS STRING), CAST(d % 0.0 AS STRING) FROM t
+    rows:
+      - ['NaN', 'NaN', 'NaN', 'NaN']
+  - query: SELECT MOD(n, 3), MOD(d, 2.5), MOD(CAST(NULL AS DOUBLE), 0.0) FROM t
+    rows:
+      - [1, 2.0, null]
+  - query: SELECT MOD(n, 0) FROM t
+    error: '22012'

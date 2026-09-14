@@ -51,6 +51,7 @@ go_test(
         "diff_struct_test.go",
         "featurematrix_test.go",
         "load_strict_test.go",
+        "mod_float_zero_test.go",
         "runner_report_test.go",
         "runner_test.go",
         "yamsql_test.go",

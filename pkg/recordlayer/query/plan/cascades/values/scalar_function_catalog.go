@@ -353,8 +353,10 @@ func commonNumericArguments(
 //
 // Java defines none of these functions (fdb-relational ships a deliberately
 // small scalar subset: COALESCE/GREATEST/LEAST/date-part), so there is no port
-// to match and CockroachDB is the reference for Go-only extensions. CRDB's
-// `length` returns `types.Int`, and CRDB's `types.Int` is Width: 64
+// to match and CockroachDB is the reference for these Go-only return widths.
+// MOD() instead follows this dialect's infix remainder operator (Java's MOD
+// physical operators); Java's SQL catalog exposes `%`, not the function spelling.
+// CRDB's `length` returns `types.Int`, and CRDB's `types.Int` is Width: 64
 // (pkg/sql/types/types.go — int8 OID; its 32-bit type is a separate `Int4`).
 // So 64-bit is exactly what the reference engine returns, and narrowing these
 // to INT would diverge from it while gaining nothing.
