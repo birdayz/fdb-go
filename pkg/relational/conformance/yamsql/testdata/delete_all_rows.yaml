@@ -15,7 +15,6 @@ tests:
   # DELETE with always-true condition
   - query: DELETE FROM t WHERE id > 0
     ansi: [E101-04]
-    rows: []
   - query: SELECT COUNT(*) FROM t
     rows:
       - [0]
@@ -26,7 +25,6 @@ tests:
 
   # Re-insert works
   - query: INSERT INTO t VALUES (10, 'new')
-    rows: []
   - query: SELECT * FROM t
     rows:
       - [10, "new"]

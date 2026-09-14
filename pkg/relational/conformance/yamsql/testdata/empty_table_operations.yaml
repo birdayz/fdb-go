@@ -49,11 +49,9 @@ tests:
 
   # DELETE from empty table — no-op
   - query: DELETE FROM empty_t WHERE id > 0
-    rows: []
 
   # INSERT into empty table then verify
   - query: INSERT INTO empty_t VALUES (1, 100)
-    rows: []
   - query: SELECT * FROM empty_t
     rows:
       - [1, 100]

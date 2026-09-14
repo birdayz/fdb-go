@@ -10724,3 +10724,52 @@ All items below are planning work, not claims of capabilities already implemente
   required real-FDB/replay/mutation gates pass. This is a claim about the named envelope,
   never a claim that all possible SQL is proven correct. Every feature addition or new bug
   mechanism extends the envelope and reopens the corresponding obligations automatically.
+
+### RFC-255 — QSC numeric envelope implementation (2026-09-14)
+
+Partial delivery toward QSC-01/02/03/04/05/07; the broad QSC items remain unchecked.
+`rfcs/255-executable-semantic-coverage-envelope.md` records the design and omissions.
+The executable manifest is `pkg/relational/conformance/yamsql/testdata/semantic/numeric-v1.json`;
+its generated `numeric-v1.yaml` is replayed by `TestNumericEnvelopeFDB` in the existing
+Bazel yamsql target. Regenerate with
+`go test ./pkg/relational/conformance/yamsql -run '^TestNumericEnvelopeArtifact$' -update-numeric-envelope`.
+
+- Observed real-FDB envelope: **90/90 math cells**, **15/15 producer prerequisites**,
+  **105 statements**, 6 scalar spellings × 5 DOUBLE inputs × 3 producers, projection only.
+  Inputs: −0, +0, −0.25, +0.25, 3.0. Literal decimal-point syntax is distinct from
+  driver-text-transport's exponent syntax; stored columns are the third producer.
+  All math cells assert input and output carrier/bits plus DOUBLE metadata. Hand-derived
+  exact answers are independent of production math calls; a literal 90-ID list pins
+  the denominator. Typed ANTLR witnesses check projection shape, exact function spelling
+  (including aliases), argument source, literal bits and exponent three before credit.
+- The live catalog snapshot contains **58 names at this measurement**: 6 in this envelope,
+  52 unclassified, reported by name. This is not catalog-wide completeness: FLOAT/int,
+  nonfinite inputs, ties and other fraction magnitudes, nesting/other consumers, executor
+  WithParams, caches, continuation and transaction lifecycle are outside the envelope.
+- yamsql now supports strict tagged args/exact rows, typed multisets, SQL metadata and
+  per-statement private execution evidence. Validation rejects ignored assertions in
+  programmatic Run calls as well as YAML. Two existing NOT NULL scenarios had ignored
+  message assertions; they now use checked `error_message` fields.
+- Applied, compiled, failing, restored mutants: zero-sign comparison; query argument
+  forwarding; EXPLAIN argument forwarding; ROUND dispatch redirected to CEIL; manifest
+  denominator removal. At the 90-cell envelope, ROUND→CEIL failed exactly the three
+  ROUND/positive-quarter producer cells. EXPLAIN pins `Project([(3 / 2)]`, not merely Scan.
+  Exact mutant edits, observed failures and tested-tree hash are recorded durably in
+  RFC-255, "Measured mutation evidence".
+- Fuzzing the codec round trip found yaml.v3 drops one newline when encoding a string
+  consisting only of newlines. Scalar encoding now uses explicitly quoted payloads;
+  newline-only strings are permanent unit/fuzz seeds. The restored all-kind codec and
+  ordered/multiset fuzz run passed **1,250,386 unguided executions in 15 seconds**;
+  Bazel explicitly reports no coverage instrumentation, so this is not guided coverage.
+  Invalid UTF-8 string payloads are rejected; arbitrary bytes use the bytes tag.
+  The independent float-bit target also passed **14,094,619 unguided executions**
+  in 15 seconds.
+- Final verification: both affected Bazel targets executed uncached and passed.
+  Final `just test`: **92 targets passing (3 executed, 89 cached)**; tested source
+  hashes remained unchanged. The earlier 200-second command timeout was not counted
+  as a successful run. Graefe and Torvalds ACKed the implementation; Codex's three
+  implementation findings are fixed with regression tests. The shared report cannot
+  credit invalid witnesses or panic on appended/removed/duplicate/unknown cells.
+  The corpus migration removes ignored empty DML rows assertions; loader and direct
+  Run regressions prevent their return. RFC-255 records the exact mutation edits and
+  a reproducible, locale-pinned tested-population hash.

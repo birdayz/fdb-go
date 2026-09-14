@@ -15,7 +15,6 @@ tests:
         WHEN balance > 0 THEN 'basic'
         ELSE 'overdrawn'
       END
-    rows: []
   - query: SELECT name, status FROM accounts ORDER BY id
     rows:
       - ["Alice", "premium"]
@@ -25,7 +24,6 @@ tests:
 
   # DELETE with WHERE on computed condition
   - query: DELETE FROM accounts WHERE balance <= 0
-    rows: []
   - query: SELECT name FROM accounts ORDER BY name
     rows:
       - ["Alice"]
@@ -33,7 +31,6 @@ tests:
 
   # UPDATE with arithmetic expression
   - query: UPDATE accounts SET balance = balance * 2 WHERE name = 'Alice'
-    rows: []
   - query: SELECT name, balance FROM accounts WHERE name = 'Alice'
     rows:
       - ["Alice", 2000]

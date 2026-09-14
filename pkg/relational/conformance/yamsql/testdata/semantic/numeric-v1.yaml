@@ -1,0 +1,1179 @@
+name: numeric-v1
+schema_template: CREATE TABLE numbers (id BIGINT, x DOUBLE, PRIMARY KEY (id))
+setup:
+    - INSERT INTO numbers VALUES (1, -0.0)
+    - INSERT INTO numbers VALUES (2, 0.0)
+    - INSERT INTO numbers VALUES (3, -0.25)
+    - INSERT INTO numbers VALUES (4, 0.25)
+    - INSERT INTO numbers VALUES (5, 3.0)
+tests:
+    - id: producer/literal/negative-zero
+      query: SELECT -0.0 FROM numbers WHERE id = 1
+      exact_rows:
+        - - "kind": "float64"
+            "value": "8000000000000000"
+      column_types:
+        - DOUBLE
+    - id: FLOOR/literal/negative-zero
+      query: SELECT -0.0, FLOOR(-0.0) FROM numbers WHERE id = 1
+      exact_rows:
+        - - "kind": "float64"
+            "value": "8000000000000000"
+          - "kind": "float64"
+            "value": "8000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: CEIL/literal/negative-zero
+      query: SELECT -0.0, CEIL(-0.0) FROM numbers WHERE id = 1
+      exact_rows:
+        - - "kind": "float64"
+            "value": "8000000000000000"
+          - "kind": "float64"
+            "value": "8000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: CEILING/literal/negative-zero
+      query: SELECT -0.0, CEILING(-0.0) FROM numbers WHERE id = 1
+      exact_rows:
+        - - "kind": "float64"
+            "value": "8000000000000000"
+          - "kind": "float64"
+            "value": "8000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: ROUND/literal/negative-zero
+      query: SELECT -0.0, ROUND(-0.0) FROM numbers WHERE id = 1
+      exact_rows:
+        - - "kind": "float64"
+            "value": "8000000000000000"
+          - "kind": "float64"
+            "value": "8000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: POWER/literal/negative-zero
+      query: SELECT -0.0, POWER(-0.0, 3) FROM numbers WHERE id = 1
+      exact_rows:
+        - - "kind": "float64"
+            "value": "8000000000000000"
+          - "kind": "float64"
+            "value": "8000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: POW/literal/negative-zero
+      query: SELECT -0.0, POW(-0.0, 3) FROM numbers WHERE id = 1
+      exact_rows:
+        - - "kind": "float64"
+            "value": "8000000000000000"
+          - "kind": "float64"
+            "value": "8000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: producer/literal/positive-zero
+      query: SELECT 0.0 FROM numbers WHERE id = 2
+      exact_rows:
+        - - "kind": "float64"
+            "value": "0000000000000000"
+      column_types:
+        - DOUBLE
+    - id: FLOOR/literal/positive-zero
+      query: SELECT 0.0, FLOOR(0.0) FROM numbers WHERE id = 2
+      exact_rows:
+        - - "kind": "float64"
+            "value": "0000000000000000"
+          - "kind": "float64"
+            "value": "0000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: CEIL/literal/positive-zero
+      query: SELECT 0.0, CEIL(0.0) FROM numbers WHERE id = 2
+      exact_rows:
+        - - "kind": "float64"
+            "value": "0000000000000000"
+          - "kind": "float64"
+            "value": "0000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: CEILING/literal/positive-zero
+      query: SELECT 0.0, CEILING(0.0) FROM numbers WHERE id = 2
+      exact_rows:
+        - - "kind": "float64"
+            "value": "0000000000000000"
+          - "kind": "float64"
+            "value": "0000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: ROUND/literal/positive-zero
+      query: SELECT 0.0, ROUND(0.0) FROM numbers WHERE id = 2
+      exact_rows:
+        - - "kind": "float64"
+            "value": "0000000000000000"
+          - "kind": "float64"
+            "value": "0000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: POWER/literal/positive-zero
+      query: SELECT 0.0, POWER(0.0, 3) FROM numbers WHERE id = 2
+      exact_rows:
+        - - "kind": "float64"
+            "value": "0000000000000000"
+          - "kind": "float64"
+            "value": "0000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: POW/literal/positive-zero
+      query: SELECT 0.0, POW(0.0, 3) FROM numbers WHERE id = 2
+      exact_rows:
+        - - "kind": "float64"
+            "value": "0000000000000000"
+          - "kind": "float64"
+            "value": "0000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: producer/literal/negative-quarter
+      query: SELECT -0.25 FROM numbers WHERE id = 3
+      exact_rows:
+        - - "kind": "float64"
+            "value": "bfd0000000000000"
+      column_types:
+        - DOUBLE
+    - id: FLOOR/literal/negative-quarter
+      query: SELECT -0.25, FLOOR(-0.25) FROM numbers WHERE id = 3
+      exact_rows:
+        - - "kind": "float64"
+            "value": "bfd0000000000000"
+          - "kind": "float64"
+            "value": "bff0000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: CEIL/literal/negative-quarter
+      query: SELECT -0.25, CEIL(-0.25) FROM numbers WHERE id = 3
+      exact_rows:
+        - - "kind": "float64"
+            "value": "bfd0000000000000"
+          - "kind": "float64"
+            "value": "8000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: CEILING/literal/negative-quarter
+      query: SELECT -0.25, CEILING(-0.25) FROM numbers WHERE id = 3
+      exact_rows:
+        - - "kind": "float64"
+            "value": "bfd0000000000000"
+          - "kind": "float64"
+            "value": "8000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: ROUND/literal/negative-quarter
+      query: SELECT -0.25, ROUND(-0.25) FROM numbers WHERE id = 3
+      exact_rows:
+        - - "kind": "float64"
+            "value": "bfd0000000000000"
+          - "kind": "float64"
+            "value": "8000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: POWER/literal/negative-quarter
+      query: SELECT -0.25, POWER(-0.25, 3) FROM numbers WHERE id = 3
+      exact_rows:
+        - - "kind": "float64"
+            "value": "bfd0000000000000"
+          - "kind": "float64"
+            "value": "bf90000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: POW/literal/negative-quarter
+      query: SELECT -0.25, POW(-0.25, 3) FROM numbers WHERE id = 3
+      exact_rows:
+        - - "kind": "float64"
+            "value": "bfd0000000000000"
+          - "kind": "float64"
+            "value": "bf90000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: producer/literal/positive-quarter
+      query: SELECT 0.25 FROM numbers WHERE id = 4
+      exact_rows:
+        - - "kind": "float64"
+            "value": "3fd0000000000000"
+      column_types:
+        - DOUBLE
+    - id: FLOOR/literal/positive-quarter
+      query: SELECT 0.25, FLOOR(0.25) FROM numbers WHERE id = 4
+      exact_rows:
+        - - "kind": "float64"
+            "value": "3fd0000000000000"
+          - "kind": "float64"
+            "value": "0000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: CEIL/literal/positive-quarter
+      query: SELECT 0.25, CEIL(0.25) FROM numbers WHERE id = 4
+      exact_rows:
+        - - "kind": "float64"
+            "value": "3fd0000000000000"
+          - "kind": "float64"
+            "value": "3ff0000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: CEILING/literal/positive-quarter
+      query: SELECT 0.25, CEILING(0.25) FROM numbers WHERE id = 4
+      exact_rows:
+        - - "kind": "float64"
+            "value": "3fd0000000000000"
+          - "kind": "float64"
+            "value": "3ff0000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: ROUND/literal/positive-quarter
+      query: SELECT 0.25, ROUND(0.25) FROM numbers WHERE id = 4
+      exact_rows:
+        - - "kind": "float64"
+            "value": "3fd0000000000000"
+          - "kind": "float64"
+            "value": "0000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: POWER/literal/positive-quarter
+      query: SELECT 0.25, POWER(0.25, 3) FROM numbers WHERE id = 4
+      exact_rows:
+        - - "kind": "float64"
+            "value": "3fd0000000000000"
+          - "kind": "float64"
+            "value": "3f90000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: POW/literal/positive-quarter
+      query: SELECT 0.25, POW(0.25, 3) FROM numbers WHERE id = 4
+      exact_rows:
+        - - "kind": "float64"
+            "value": "3fd0000000000000"
+          - "kind": "float64"
+            "value": "3f90000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: producer/literal/whole-three
+      query: SELECT 3.0 FROM numbers WHERE id = 5
+      exact_rows:
+        - - "kind": "float64"
+            "value": "4008000000000000"
+      column_types:
+        - DOUBLE
+    - id: FLOOR/literal/whole-three
+      query: SELECT 3.0, FLOOR(3.0) FROM numbers WHERE id = 5
+      exact_rows:
+        - - "kind": "float64"
+            "value": "4008000000000000"
+          - "kind": "float64"
+            "value": "4008000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: CEIL/literal/whole-three
+      query: SELECT 3.0, CEIL(3.0) FROM numbers WHERE id = 5
+      exact_rows:
+        - - "kind": "float64"
+            "value": "4008000000000000"
+          - "kind": "float64"
+            "value": "4008000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: CEILING/literal/whole-three
+      query: SELECT 3.0, CEILING(3.0) FROM numbers WHERE id = 5
+      exact_rows:
+        - - "kind": "float64"
+            "value": "4008000000000000"
+          - "kind": "float64"
+            "value": "4008000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: ROUND/literal/whole-three
+      query: SELECT 3.0, ROUND(3.0) FROM numbers WHERE id = 5
+      exact_rows:
+        - - "kind": "float64"
+            "value": "4008000000000000"
+          - "kind": "float64"
+            "value": "4008000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: POWER/literal/whole-three
+      query: SELECT 3.0, POWER(3.0, 3) FROM numbers WHERE id = 5
+      exact_rows:
+        - - "kind": "float64"
+            "value": "4008000000000000"
+          - "kind": "float64"
+            "value": "403b000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: POW/literal/whole-three
+      query: SELECT 3.0, POW(3.0, 3) FROM numbers WHERE id = 5
+      exact_rows:
+        - - "kind": "float64"
+            "value": "4008000000000000"
+          - "kind": "float64"
+            "value": "403b000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: producer/driver-text-transport/negative-zero
+      query: SELECT ? FROM numbers WHERE id = 1
+      args:
+        - "kind": "float64"
+          "value": "8000000000000000"
+      exact_rows:
+        - - "kind": "float64"
+            "value": "8000000000000000"
+      column_types:
+        - DOUBLE
+    - id: FLOOR/driver-text-transport/negative-zero
+      query: SELECT ?, FLOOR(?) FROM numbers WHERE id = 1
+      args:
+        - "kind": "float64"
+          "value": "8000000000000000"
+        - "kind": "float64"
+          "value": "8000000000000000"
+      exact_rows:
+        - - "kind": "float64"
+            "value": "8000000000000000"
+          - "kind": "float64"
+            "value": "8000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: CEIL/driver-text-transport/negative-zero
+      query: SELECT ?, CEIL(?) FROM numbers WHERE id = 1
+      args:
+        - "kind": "float64"
+          "value": "8000000000000000"
+        - "kind": "float64"
+          "value": "8000000000000000"
+      exact_rows:
+        - - "kind": "float64"
+            "value": "8000000000000000"
+          - "kind": "float64"
+            "value": "8000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: CEILING/driver-text-transport/negative-zero
+      query: SELECT ?, CEILING(?) FROM numbers WHERE id = 1
+      args:
+        - "kind": "float64"
+          "value": "8000000000000000"
+        - "kind": "float64"
+          "value": "8000000000000000"
+      exact_rows:
+        - - "kind": "float64"
+            "value": "8000000000000000"
+          - "kind": "float64"
+            "value": "8000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: ROUND/driver-text-transport/negative-zero
+      query: SELECT ?, ROUND(?) FROM numbers WHERE id = 1
+      args:
+        - "kind": "float64"
+          "value": "8000000000000000"
+        - "kind": "float64"
+          "value": "8000000000000000"
+      exact_rows:
+        - - "kind": "float64"
+            "value": "8000000000000000"
+          - "kind": "float64"
+            "value": "8000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: POWER/driver-text-transport/negative-zero
+      query: SELECT ?, POWER(?, 3) FROM numbers WHERE id = 1
+      args:
+        - "kind": "float64"
+          "value": "8000000000000000"
+        - "kind": "float64"
+          "value": "8000000000000000"
+      exact_rows:
+        - - "kind": "float64"
+            "value": "8000000000000000"
+          - "kind": "float64"
+            "value": "8000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: POW/driver-text-transport/negative-zero
+      query: SELECT ?, POW(?, 3) FROM numbers WHERE id = 1
+      args:
+        - "kind": "float64"
+          "value": "8000000000000000"
+        - "kind": "float64"
+          "value": "8000000000000000"
+      exact_rows:
+        - - "kind": "float64"
+            "value": "8000000000000000"
+          - "kind": "float64"
+            "value": "8000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: producer/driver-text-transport/positive-zero
+      query: SELECT ? FROM numbers WHERE id = 2
+      args:
+        - "kind": "float64"
+          "value": "0000000000000000"
+      exact_rows:
+        - - "kind": "float64"
+            "value": "0000000000000000"
+      column_types:
+        - DOUBLE
+    - id: FLOOR/driver-text-transport/positive-zero
+      query: SELECT ?, FLOOR(?) FROM numbers WHERE id = 2
+      args:
+        - "kind": "float64"
+          "value": "0000000000000000"
+        - "kind": "float64"
+          "value": "0000000000000000"
+      exact_rows:
+        - - "kind": "float64"
+            "value": "0000000000000000"
+          - "kind": "float64"
+            "value": "0000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: CEIL/driver-text-transport/positive-zero
+      query: SELECT ?, CEIL(?) FROM numbers WHERE id = 2
+      args:
+        - "kind": "float64"
+          "value": "0000000000000000"
+        - "kind": "float64"
+          "value": "0000000000000000"
+      exact_rows:
+        - - "kind": "float64"
+            "value": "0000000000000000"
+          - "kind": "float64"
+            "value": "0000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: CEILING/driver-text-transport/positive-zero
+      query: SELECT ?, CEILING(?) FROM numbers WHERE id = 2
+      args:
+        - "kind": "float64"
+          "value": "0000000000000000"
+        - "kind": "float64"
+          "value": "0000000000000000"
+      exact_rows:
+        - - "kind": "float64"
+            "value": "0000000000000000"
+          - "kind": "float64"
+            "value": "0000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: ROUND/driver-text-transport/positive-zero
+      query: SELECT ?, ROUND(?) FROM numbers WHERE id = 2
+      args:
+        - "kind": "float64"
+          "value": "0000000000000000"
+        - "kind": "float64"
+          "value": "0000000000000000"
+      exact_rows:
+        - - "kind": "float64"
+            "value": "0000000000000000"
+          - "kind": "float64"
+            "value": "0000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: POWER/driver-text-transport/positive-zero
+      query: SELECT ?, POWER(?, 3) FROM numbers WHERE id = 2
+      args:
+        - "kind": "float64"
+          "value": "0000000000000000"
+        - "kind": "float64"
+          "value": "0000000000000000"
+      exact_rows:
+        - - "kind": "float64"
+            "value": "0000000000000000"
+          - "kind": "float64"
+            "value": "0000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: POW/driver-text-transport/positive-zero
+      query: SELECT ?, POW(?, 3) FROM numbers WHERE id = 2
+      args:
+        - "kind": "float64"
+          "value": "0000000000000000"
+        - "kind": "float64"
+          "value": "0000000000000000"
+      exact_rows:
+        - - "kind": "float64"
+            "value": "0000000000000000"
+          - "kind": "float64"
+            "value": "0000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: producer/driver-text-transport/negative-quarter
+      query: SELECT ? FROM numbers WHERE id = 3
+      args:
+        - "kind": "float64"
+          "value": "bfd0000000000000"
+      exact_rows:
+        - - "kind": "float64"
+            "value": "bfd0000000000000"
+      column_types:
+        - DOUBLE
+    - id: FLOOR/driver-text-transport/negative-quarter
+      query: SELECT ?, FLOOR(?) FROM numbers WHERE id = 3
+      args:
+        - "kind": "float64"
+          "value": "bfd0000000000000"
+        - "kind": "float64"
+          "value": "bfd0000000000000"
+      exact_rows:
+        - - "kind": "float64"
+            "value": "bfd0000000000000"
+          - "kind": "float64"
+            "value": "bff0000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: CEIL/driver-text-transport/negative-quarter
+      query: SELECT ?, CEIL(?) FROM numbers WHERE id = 3
+      args:
+        - "kind": "float64"
+          "value": "bfd0000000000000"
+        - "kind": "float64"
+          "value": "bfd0000000000000"
+      exact_rows:
+        - - "kind": "float64"
+            "value": "bfd0000000000000"
+          - "kind": "float64"
+            "value": "8000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: CEILING/driver-text-transport/negative-quarter
+      query: SELECT ?, CEILING(?) FROM numbers WHERE id = 3
+      args:
+        - "kind": "float64"
+          "value": "bfd0000000000000"
+        - "kind": "float64"
+          "value": "bfd0000000000000"
+      exact_rows:
+        - - "kind": "float64"
+            "value": "bfd0000000000000"
+          - "kind": "float64"
+            "value": "8000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: ROUND/driver-text-transport/negative-quarter
+      query: SELECT ?, ROUND(?) FROM numbers WHERE id = 3
+      args:
+        - "kind": "float64"
+          "value": "bfd0000000000000"
+        - "kind": "float64"
+          "value": "bfd0000000000000"
+      exact_rows:
+        - - "kind": "float64"
+            "value": "bfd0000000000000"
+          - "kind": "float64"
+            "value": "8000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: POWER/driver-text-transport/negative-quarter
+      query: SELECT ?, POWER(?, 3) FROM numbers WHERE id = 3
+      args:
+        - "kind": "float64"
+          "value": "bfd0000000000000"
+        - "kind": "float64"
+          "value": "bfd0000000000000"
+      exact_rows:
+        - - "kind": "float64"
+            "value": "bfd0000000000000"
+          - "kind": "float64"
+            "value": "bf90000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: POW/driver-text-transport/negative-quarter
+      query: SELECT ?, POW(?, 3) FROM numbers WHERE id = 3
+      args:
+        - "kind": "float64"
+          "value": "bfd0000000000000"
+        - "kind": "float64"
+          "value": "bfd0000000000000"
+      exact_rows:
+        - - "kind": "float64"
+            "value": "bfd0000000000000"
+          - "kind": "float64"
+            "value": "bf90000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: producer/driver-text-transport/positive-quarter
+      query: SELECT ? FROM numbers WHERE id = 4
+      args:
+        - "kind": "float64"
+          "value": "3fd0000000000000"
+      exact_rows:
+        - - "kind": "float64"
+            "value": "3fd0000000000000"
+      column_types:
+        - DOUBLE
+    - id: FLOOR/driver-text-transport/positive-quarter
+      query: SELECT ?, FLOOR(?) FROM numbers WHERE id = 4
+      args:
+        - "kind": "float64"
+          "value": "3fd0000000000000"
+        - "kind": "float64"
+          "value": "3fd0000000000000"
+      exact_rows:
+        - - "kind": "float64"
+            "value": "3fd0000000000000"
+          - "kind": "float64"
+            "value": "0000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: CEIL/driver-text-transport/positive-quarter
+      query: SELECT ?, CEIL(?) FROM numbers WHERE id = 4
+      args:
+        - "kind": "float64"
+          "value": "3fd0000000000000"
+        - "kind": "float64"
+          "value": "3fd0000000000000"
+      exact_rows:
+        - - "kind": "float64"
+            "value": "3fd0000000000000"
+          - "kind": "float64"
+            "value": "3ff0000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: CEILING/driver-text-transport/positive-quarter
+      query: SELECT ?, CEILING(?) FROM numbers WHERE id = 4
+      args:
+        - "kind": "float64"
+          "value": "3fd0000000000000"
+        - "kind": "float64"
+          "value": "3fd0000000000000"
+      exact_rows:
+        - - "kind": "float64"
+            "value": "3fd0000000000000"
+          - "kind": "float64"
+            "value": "3ff0000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: ROUND/driver-text-transport/positive-quarter
+      query: SELECT ?, ROUND(?) FROM numbers WHERE id = 4
+      args:
+        - "kind": "float64"
+          "value": "3fd0000000000000"
+        - "kind": "float64"
+          "value": "3fd0000000000000"
+      exact_rows:
+        - - "kind": "float64"
+            "value": "3fd0000000000000"
+          - "kind": "float64"
+            "value": "0000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: POWER/driver-text-transport/positive-quarter
+      query: SELECT ?, POWER(?, 3) FROM numbers WHERE id = 4
+      args:
+        - "kind": "float64"
+          "value": "3fd0000000000000"
+        - "kind": "float64"
+          "value": "3fd0000000000000"
+      exact_rows:
+        - - "kind": "float64"
+            "value": "3fd0000000000000"
+          - "kind": "float64"
+            "value": "3f90000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: POW/driver-text-transport/positive-quarter
+      query: SELECT ?, POW(?, 3) FROM numbers WHERE id = 4
+      args:
+        - "kind": "float64"
+          "value": "3fd0000000000000"
+        - "kind": "float64"
+          "value": "3fd0000000000000"
+      exact_rows:
+        - - "kind": "float64"
+            "value": "3fd0000000000000"
+          - "kind": "float64"
+            "value": "3f90000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: producer/driver-text-transport/whole-three
+      query: SELECT ? FROM numbers WHERE id = 5
+      args:
+        - "kind": "float64"
+          "value": "4008000000000000"
+      exact_rows:
+        - - "kind": "float64"
+            "value": "4008000000000000"
+      column_types:
+        - DOUBLE
+    - id: FLOOR/driver-text-transport/whole-three
+      query: SELECT ?, FLOOR(?) FROM numbers WHERE id = 5
+      args:
+        - "kind": "float64"
+          "value": "4008000000000000"
+        - "kind": "float64"
+          "value": "4008000000000000"
+      exact_rows:
+        - - "kind": "float64"
+            "value": "4008000000000000"
+          - "kind": "float64"
+            "value": "4008000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: CEIL/driver-text-transport/whole-three
+      query: SELECT ?, CEIL(?) FROM numbers WHERE id = 5
+      args:
+        - "kind": "float64"
+          "value": "4008000000000000"
+        - "kind": "float64"
+          "value": "4008000000000000"
+      exact_rows:
+        - - "kind": "float64"
+            "value": "4008000000000000"
+          - "kind": "float64"
+            "value": "4008000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: CEILING/driver-text-transport/whole-three
+      query: SELECT ?, CEILING(?) FROM numbers WHERE id = 5
+      args:
+        - "kind": "float64"
+          "value": "4008000000000000"
+        - "kind": "float64"
+          "value": "4008000000000000"
+      exact_rows:
+        - - "kind": "float64"
+            "value": "4008000000000000"
+          - "kind": "float64"
+            "value": "4008000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: ROUND/driver-text-transport/whole-three
+      query: SELECT ?, ROUND(?) FROM numbers WHERE id = 5
+      args:
+        - "kind": "float64"
+          "value": "4008000000000000"
+        - "kind": "float64"
+          "value": "4008000000000000"
+      exact_rows:
+        - - "kind": "float64"
+            "value": "4008000000000000"
+          - "kind": "float64"
+            "value": "4008000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: POWER/driver-text-transport/whole-three
+      query: SELECT ?, POWER(?, 3) FROM numbers WHERE id = 5
+      args:
+        - "kind": "float64"
+          "value": "4008000000000000"
+        - "kind": "float64"
+          "value": "4008000000000000"
+      exact_rows:
+        - - "kind": "float64"
+            "value": "4008000000000000"
+          - "kind": "float64"
+            "value": "403b000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: POW/driver-text-transport/whole-three
+      query: SELECT ?, POW(?, 3) FROM numbers WHERE id = 5
+      args:
+        - "kind": "float64"
+          "value": "4008000000000000"
+        - "kind": "float64"
+          "value": "4008000000000000"
+      exact_rows:
+        - - "kind": "float64"
+            "value": "4008000000000000"
+          - "kind": "float64"
+            "value": "403b000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: producer/stored-column/negative-zero
+      query: SELECT x FROM numbers WHERE id = 1
+      exact_rows:
+        - - "kind": "float64"
+            "value": "8000000000000000"
+      column_types:
+        - DOUBLE
+    - id: FLOOR/stored-column/negative-zero
+      query: SELECT x, FLOOR(x) FROM numbers WHERE id = 1
+      exact_rows:
+        - - "kind": "float64"
+            "value": "8000000000000000"
+          - "kind": "float64"
+            "value": "8000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: CEIL/stored-column/negative-zero
+      query: SELECT x, CEIL(x) FROM numbers WHERE id = 1
+      exact_rows:
+        - - "kind": "float64"
+            "value": "8000000000000000"
+          - "kind": "float64"
+            "value": "8000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: CEILING/stored-column/negative-zero
+      query: SELECT x, CEILING(x) FROM numbers WHERE id = 1
+      exact_rows:
+        - - "kind": "float64"
+            "value": "8000000000000000"
+          - "kind": "float64"
+            "value": "8000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: ROUND/stored-column/negative-zero
+      query: SELECT x, ROUND(x) FROM numbers WHERE id = 1
+      exact_rows:
+        - - "kind": "float64"
+            "value": "8000000000000000"
+          - "kind": "float64"
+            "value": "8000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: POWER/stored-column/negative-zero
+      query: SELECT x, POWER(x, 3) FROM numbers WHERE id = 1
+      exact_rows:
+        - - "kind": "float64"
+            "value": "8000000000000000"
+          - "kind": "float64"
+            "value": "8000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: POW/stored-column/negative-zero
+      query: SELECT x, POW(x, 3) FROM numbers WHERE id = 1
+      exact_rows:
+        - - "kind": "float64"
+            "value": "8000000000000000"
+          - "kind": "float64"
+            "value": "8000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: producer/stored-column/positive-zero
+      query: SELECT x FROM numbers WHERE id = 2
+      exact_rows:
+        - - "kind": "float64"
+            "value": "0000000000000000"
+      column_types:
+        - DOUBLE
+    - id: FLOOR/stored-column/positive-zero
+      query: SELECT x, FLOOR(x) FROM numbers WHERE id = 2
+      exact_rows:
+        - - "kind": "float64"
+            "value": "0000000000000000"
+          - "kind": "float64"
+            "value": "0000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: CEIL/stored-column/positive-zero
+      query: SELECT x, CEIL(x) FROM numbers WHERE id = 2
+      exact_rows:
+        - - "kind": "float64"
+            "value": "0000000000000000"
+          - "kind": "float64"
+            "value": "0000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: CEILING/stored-column/positive-zero
+      query: SELECT x, CEILING(x) FROM numbers WHERE id = 2
+      exact_rows:
+        - - "kind": "float64"
+            "value": "0000000000000000"
+          - "kind": "float64"
+            "value": "0000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: ROUND/stored-column/positive-zero
+      query: SELECT x, ROUND(x) FROM numbers WHERE id = 2
+      exact_rows:
+        - - "kind": "float64"
+            "value": "0000000000000000"
+          - "kind": "float64"
+            "value": "0000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: POWER/stored-column/positive-zero
+      query: SELECT x, POWER(x, 3) FROM numbers WHERE id = 2
+      exact_rows:
+        - - "kind": "float64"
+            "value": "0000000000000000"
+          - "kind": "float64"
+            "value": "0000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: POW/stored-column/positive-zero
+      query: SELECT x, POW(x, 3) FROM numbers WHERE id = 2
+      exact_rows:
+        - - "kind": "float64"
+            "value": "0000000000000000"
+          - "kind": "float64"
+            "value": "0000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: producer/stored-column/negative-quarter
+      query: SELECT x FROM numbers WHERE id = 3
+      exact_rows:
+        - - "kind": "float64"
+            "value": "bfd0000000000000"
+      column_types:
+        - DOUBLE
+    - id: FLOOR/stored-column/negative-quarter
+      query: SELECT x, FLOOR(x) FROM numbers WHERE id = 3
+      exact_rows:
+        - - "kind": "float64"
+            "value": "bfd0000000000000"
+          - "kind": "float64"
+            "value": "bff0000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: CEIL/stored-column/negative-quarter
+      query: SELECT x, CEIL(x) FROM numbers WHERE id = 3
+      exact_rows:
+        - - "kind": "float64"
+            "value": "bfd0000000000000"
+          - "kind": "float64"
+            "value": "8000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: CEILING/stored-column/negative-quarter
+      query: SELECT x, CEILING(x) FROM numbers WHERE id = 3
+      exact_rows:
+        - - "kind": "float64"
+            "value": "bfd0000000000000"
+          - "kind": "float64"
+            "value": "8000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: ROUND/stored-column/negative-quarter
+      query: SELECT x, ROUND(x) FROM numbers WHERE id = 3
+      exact_rows:
+        - - "kind": "float64"
+            "value": "bfd0000000000000"
+          - "kind": "float64"
+            "value": "8000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: POWER/stored-column/negative-quarter
+      query: SELECT x, POWER(x, 3) FROM numbers WHERE id = 3
+      exact_rows:
+        - - "kind": "float64"
+            "value": "bfd0000000000000"
+          - "kind": "float64"
+            "value": "bf90000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: POW/stored-column/negative-quarter
+      query: SELECT x, POW(x, 3) FROM numbers WHERE id = 3
+      exact_rows:
+        - - "kind": "float64"
+            "value": "bfd0000000000000"
+          - "kind": "float64"
+            "value": "bf90000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: producer/stored-column/positive-quarter
+      query: SELECT x FROM numbers WHERE id = 4
+      exact_rows:
+        - - "kind": "float64"
+            "value": "3fd0000000000000"
+      column_types:
+        - DOUBLE
+    - id: FLOOR/stored-column/positive-quarter
+      query: SELECT x, FLOOR(x) FROM numbers WHERE id = 4
+      exact_rows:
+        - - "kind": "float64"
+            "value": "3fd0000000000000"
+          - "kind": "float64"
+            "value": "0000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: CEIL/stored-column/positive-quarter
+      query: SELECT x, CEIL(x) FROM numbers WHERE id = 4
+      exact_rows:
+        - - "kind": "float64"
+            "value": "3fd0000000000000"
+          - "kind": "float64"
+            "value": "3ff0000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: CEILING/stored-column/positive-quarter
+      query: SELECT x, CEILING(x) FROM numbers WHERE id = 4
+      exact_rows:
+        - - "kind": "float64"
+            "value": "3fd0000000000000"
+          - "kind": "float64"
+            "value": "3ff0000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: ROUND/stored-column/positive-quarter
+      query: SELECT x, ROUND(x) FROM numbers WHERE id = 4
+      exact_rows:
+        - - "kind": "float64"
+            "value": "3fd0000000000000"
+          - "kind": "float64"
+            "value": "0000000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: POWER/stored-column/positive-quarter
+      query: SELECT x, POWER(x, 3) FROM numbers WHERE id = 4
+      exact_rows:
+        - - "kind": "float64"
+            "value": "3fd0000000000000"
+          - "kind": "float64"
+            "value": "3f90000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: POW/stored-column/positive-quarter
+      query: SELECT x, POW(x, 3) FROM numbers WHERE id = 4
+      exact_rows:
+        - - "kind": "float64"
+            "value": "3fd0000000000000"
+          - "kind": "float64"
+            "value": "3f90000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: producer/stored-column/whole-three
+      query: SELECT x FROM numbers WHERE id = 5
+      exact_rows:
+        - - "kind": "float64"
+            "value": "4008000000000000"
+      column_types:
+        - DOUBLE
+    - id: FLOOR/stored-column/whole-three
+      query: SELECT x, FLOOR(x) FROM numbers WHERE id = 5
+      exact_rows:
+        - - "kind": "float64"
+            "value": "4008000000000000"
+          - "kind": "float64"
+            "value": "4008000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: CEIL/stored-column/whole-three
+      query: SELECT x, CEIL(x) FROM numbers WHERE id = 5
+      exact_rows:
+        - - "kind": "float64"
+            "value": "4008000000000000"
+          - "kind": "float64"
+            "value": "4008000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: CEILING/stored-column/whole-three
+      query: SELECT x, CEILING(x) FROM numbers WHERE id = 5
+      exact_rows:
+        - - "kind": "float64"
+            "value": "4008000000000000"
+          - "kind": "float64"
+            "value": "4008000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: ROUND/stored-column/whole-three
+      query: SELECT x, ROUND(x) FROM numbers WHERE id = 5
+      exact_rows:
+        - - "kind": "float64"
+            "value": "4008000000000000"
+          - "kind": "float64"
+            "value": "4008000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: POWER/stored-column/whole-three
+      query: SELECT x, POWER(x, 3) FROM numbers WHERE id = 5
+      exact_rows:
+        - - "kind": "float64"
+            "value": "4008000000000000"
+          - "kind": "float64"
+            "value": "403b000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE
+    - id: POW/stored-column/whole-three
+      query: SELECT x, POW(x, 3) FROM numbers WHERE id = 5
+      exact_rows:
+        - - "kind": "float64"
+            "value": "4008000000000000"
+          - "kind": "float64"
+            "value": "403b000000000000"
+      column_types:
+        - DOUBLE
+        - DOUBLE

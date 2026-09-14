@@ -10,21 +10,18 @@ tests:
   # Single row INSERT
   - query: INSERT INTO t VALUES (1, 'Alice', 100)
     ansi: [E101-01]
-    rows: []
   - query: SELECT COUNT(*) FROM t
     rows:
       - [1]
 
   # Multi-row INSERT
   - query: INSERT INTO t VALUES (2, 'Bob', 200), (3, 'Charlie', 300)
-    rows: []
   - query: SELECT COUNT(*) FROM t
     rows:
       - [3]
 
   # INSERT with expression
   - query: INSERT INTO t VALUES (4, 'Dave', 100 + 200 + 300)
-    rows: []
   - query: SELECT val FROM t WHERE id = 4
     rows:
       - [600]

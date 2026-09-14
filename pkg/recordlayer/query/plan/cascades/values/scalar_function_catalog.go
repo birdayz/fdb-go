@@ -1,5 +1,7 @@
 package values
 
+import "sort"
+
 // scalarFunctionOperator is the evaluator dispatch key stored in the scalar
 // function catalog. Aliases share an operator, so adding or removing a spelling
 // changes evaluator reachability and planner metadata together.
@@ -609,4 +611,15 @@ func LookupLegacyMapScalarFunction(name string) (LegacyMapScalarFunction, bool) 
 func IsCascadesSafeScalarFunction(name string) bool {
 	definition, ok := scalarFunctionDefinitionFor(name)
 	return ok && definition.cascadesSafe
+}
+
+// ScalarFunctionNames returns a fresh sorted snapshot of registered spellings.
+// Aliases remain separate because each is an independently reachable SQL name.
+func ScalarFunctionNames() []string {
+	names := make([]string, 0, len(scalarFunctionCatalog))
+	for name := range scalarFunctionCatalog {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }

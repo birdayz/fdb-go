@@ -17,7 +17,6 @@ tests:
 
   # UPDATE open tasks without completions → mark as stale
   - query: UPDATE tasks SET status = 'stale' WHERE status = 'open' AND NOT EXISTS (SELECT 1 FROM completions c WHERE c.task_id = tasks.id)
-    rows: []
 
   # Verify: task 1 is now stale, others unchanged
   - query: SELECT id, status FROM tasks ORDER BY id
@@ -29,7 +28,6 @@ tests:
 
   # DELETE closed tasks that have no completions (task 3)
   - query: DELETE FROM tasks WHERE status = 'closed' AND NOT EXISTS (SELECT 1 FROM completions c WHERE c.task_id = tasks.id)
-    rows: []
 
   # Verify: task 3 deleted
   - query: SELECT id FROM tasks ORDER BY id

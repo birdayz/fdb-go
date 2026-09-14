@@ -13,7 +13,6 @@ setup:
 tests:
   # INSERT rows from src WHERE EXISTS in filter_set
   - query: INSERT INTO dst SELECT id, val FROM src WHERE EXISTS (SELECT 1 FROM filter_set WHERE filter_set.k = src.id)
-    rows: []
   - query: SELECT id, val FROM dst ORDER BY id
     rows:
       - [1, 10]
@@ -21,9 +20,7 @@ tests:
 
   # Re-setup: clear dst and insert with NOT EXISTS
   - query: DELETE FROM dst WHERE id > 0
-    rows: []
   - query: INSERT INTO dst SELECT id, val FROM src WHERE NOT EXISTS (SELECT 1 FROM filter_set WHERE filter_set.k = src.id)
-    rows: []
   - query: SELECT id, val FROM dst ORDER BY id
     rows:
       - [2, 20]

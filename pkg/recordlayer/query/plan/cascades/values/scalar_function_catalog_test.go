@@ -305,3 +305,20 @@ func TestEvalScalarFunction_BitmapBucketing(t *testing.T) {
 		require.Equal(t, tc.want, got, "%s(%d, 10000)", tc.fn, tc.x)
 	}
 }
+
+func TestScalarFunctionNamesSnapshot(t *testing.T) {
+	t.Parallel()
+	names := ScalarFunctionNames()
+	require.Len(t, names, len(scalarFunctionCatalog))
+	require.NotEmpty(t, names)
+	require.True(t, sort.StringsAreSorted(names))
+	for i, name := range names {
+		_, ok := scalarFunctionCatalog[name]
+		require.True(t, ok, name)
+		if i > 0 {
+			require.NotEqual(t, names[i-1], name)
+		}
+	}
+	names[0] = "not-a-function"
+	require.NotEqual(t, names[0], ScalarFunctionNames()[0])
+}
