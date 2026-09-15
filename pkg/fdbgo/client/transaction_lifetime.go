@@ -164,11 +164,12 @@ func (tx *Transaction) turnoverLocked() func() {
 	retirePending(pending, true)
 	return func() {
 		tx.readErrMu.Lock()
-		// Clear the internal turnover marker before constructing the replacement:
-		// readIncarnationLocked arms its timebomb, while close(ready) below remains
-		// the external publication edge.
-		tx.readReady = nil
+		// Reads can capture the replacement during turnover. Arm its timebomb
+		// after reset-owned deadlines are final, whether it was captured early
+		// or constructed here. close(ready) remains the publication edge.
 		inc := tx.readIncarnationLocked()
+		tx.readReady = nil
+		tx.armReadTimeoutLocked(inc)
 		cause := inc.cause
 		close(ready)
 		tx.readErrMu.Unlock()

@@ -288,6 +288,58 @@ func TestExecutionLeaseReplacementTimeoutInterruptsActiveRead(t *testing.T) {
 	}
 }
 
+func TestExecutionLeaseEarlyReplacementCaptureArmsTimeout(t *testing.T) {
+	t.Parallel()
+	for _, userReset := range []bool{false, true} {
+		name := "retry"
+		if userReset {
+			name = "user-reset"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			tx := txWithDB()
+			tx.db.mutateDefaults(func(defaults *TransactionDefaults) { defaults.Timeout = 60000 })
+			tx.SetTimeout(60000)
+			defer tx.Cancel()
+			finish := tx.startTurnover()
+
+			// Even a canceled read captures the replacement before waiting for
+			// publication. It must not consume the replacement's timeout setup.
+			parent, cancel := context.WithCancel(context.Background())
+			cancel()
+			waiting, cleanup := tx.opContext(parent)
+			cleanup()
+			captured := tx.readOperation(waiting)
+			tx.resetFields(userReset)
+			finish()
+			if captured == nil || captured.lease != nil {
+				t.Fatalf("canceled turnover waiter = %v, want a captured incarnation without a lease", captured)
+			}
+
+			ctx, release := tx.opContext(context.Background())
+			defer release()
+			op := tx.readOperation(ctx)
+			tx.readErrMu.Lock()
+			timer, generation := op.inc.timer, op.inc.timerGen
+			tx.readErrMu.Unlock()
+			if op.inc != captured.inc || op.lease == nil {
+				t.Fatal("read did not enter the early-captured replacement")
+			}
+			if timer == nil {
+				t.Fatal("published early-captured replacement has no timeout timer")
+			}
+			// Deliver the armed callback deterministically, without racing an
+			// operating-system timer against test scheduling.
+			timer.Stop()
+			tx.fireReadTimeout(op.inc, generation)
+			receiveLifetimeTest(t, ctx.Done(), "replacement timeout delivery")
+			if code := fdbCodeOf(context.Cause(ctx)); code != 1031 {
+				t.Fatalf("replacement interruption code=%d, want 1031", code)
+			}
+		})
+	}
+}
+
 func TestExecutionLeaseOptionsAfterCancellationDoNotReviveRead(t *testing.T) {
 	t.Parallel()
 	tx := &Transaction{}

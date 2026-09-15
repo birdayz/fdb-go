@@ -11293,3 +11293,24 @@ Bazel targets passed (22 executed, 70 cached), with the frozen source inventory
 unchanged. All diagnosed final-suite failures are repaired and retained as tests.
 The bounded implementation is ready for commit/push/PR; RFC-256 is Implemented.
 PR review and final-head CI approval remain necessary before any merge.
+
+### QSC-04/08 RFC-256 — PR review findings, timeout repair verified
+
+PR #785 remains the active work item on `rfc256-cast-array-binding`. The owner
+requires **one new correctness fix per PR, retained regression, query-engine
+gates, green CI, then merge before starting the next fix**. Finish this PR's
+blocking review findings and authorized merge before opening another hunt slice.
+
+The `gpt-6-astra` / `xhigh` virtual reviews of `ed1f41359ec7` are NAK or INCOMPLETE,
+not approvals. All seven CI checks passed on that SHA. The first finding is now
+reproduced and repaired: early replacement-incarnation capture during reset could
+suppress the replacement timeout permanently. Publication now arms the timer
+after reset options are final, as C++ resetRyow requires. Two unit cases and a
+held real-FDB GRV are retained, with applied/reverted red and SHA-checked restored
+green. Ten `-race` repetitions pass (150 RUN lines with neighboring lease tests);
+full `just test` passes 92/92 targets (43 executed, 49 cached). RFC-256's final
+entry names the exact commands' logs under `/var/tmp/query-grind-cast/pr785-review`.
+
+Next: reproduce terminal PendingGet registration after Cancel/timeout without
+calling Resolve, then close the remaining reports in `pr785-review/findings.md`.
+No final-head review approval or merge is claimed; broad QSC entries stay open.

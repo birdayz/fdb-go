@@ -2023,3 +2023,47 @@ lint, build and `just test` (92/92 targets green; 22 executed, 70 reused from th
 Bazel cache). The complete staged source inventory remained unchanged across the
 run (`release-hook-result.txt`: HOOK_EXIT=0, HASH_EXIT=0). No hook was bypassed.
 The normal commit runs that hook again; PR and final-head CI remain merge gates.
+
+### PR review: replacement timeout publication
+
+PR #785 was reviewed at `ed1f41359ec7209d2781fe770e6abadc99748cc8`
+against `ed3504f7e410d8e2a4f4c46fd7b4c72fd0484869` by separate
+`gpt-6-astra` / `xhigh` virtual review sessions. The independent and code-quality
+reviews completed the full 328-file diff; the client-maintainer review completed
+its entire client/wire scope. All returned NAK. The architectural review reported
+INCOMPLETE and is continuing; none of these verdicts is an approval. All seven CI
+checks passed on that reviewed SHA, not on the subsequent finding repairs.
+
+The first reproduced finding concerns reads that capture a replacement incarnation
+while turnover's publication barrier is still closed. Construction deliberately
+suppresses its timeout until reset-owned options/deadlines are final, but publication
+previously armed only an incarnation that had not already been constructed. A read
+could therefore enter the replacement and wait on GRV indefinitely past TIMEOUT.
+C++ 7.3.77 `ReadYourWrites.actor.cpp:2699-2727` reapplies persistent timeout options
+on `resetRyow`; `resetTimeout` at 1576-1579 attaches the timebomb to the replacement
+resetPromise. Publication now explicitly arms that same replacement after finalizing
+its options, regardless of whether it was captured early.
+
+Retained regressions use the actual `opContext` early-capture path for retry and
+user reset, and a real-FDB GRV with its response held behind the existing transport
+interceptor. The real-FDB test expires the actual registered timer only after the
+GRV is held, so response scheduling cannot beat the injected timeout. It checks
+1031 and an independent successful read after releasing the reply. The two unit
+cases and held-GRV case fail without the publication fix, then pass with it.
+An initial test-constructor nil-database panic was corrected and is not counted
+as semantic red evidence.
+
+Evidence in `/var/tmp/query-grind-cast/pr785-review/`: `early-timeout-fdb-red.log`,
+`early-timeout-green.log`, and a literal revert/restoration in
+`early-timeout-revert-red.log` (all three cases detect the absent timer; restoration
+SHA256 checked). `early-timeout-race-10.log` passed ten repetitions under `-race`,
+150 RUN lines including the neighboring execution-lease tests. Full `just test`
+passed 92/92 targets (43 executed, 49 cached) in `early-timeout-just-test.log`;
+`early-timeout-tested.sha256` remained unchanged. Gazelle and module tidy passed.
+
+Other review findings remain unclosed: terminal PendingGet registration cleanup,
+deferred-error/timeout precedence, cancellation at retry retirement, CTE-carried
+scalar correlation, recursive derived-source rebuilding, and UNNEST regression
+assertions that bypass lowering. Their exact reports and reproduction state are
+in `pr785-review/findings.md`. Final implementation delta confirmations, the final
+PR reviewer and final-head CI remain mandatory before merge.

@@ -323,6 +323,72 @@ func TestReadIncarnation_GRVHeldCancellationAndResetIsolation(t *testing.T) {
 	}
 }
 
+func TestReadIncarnation_EarlyReplacementTimeoutStopsHeldGRV(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), readIncarnationTestTimeout)
+	defer cancel()
+	db, sd := newSimTestDB(t, ctx)
+	key := []byte(t.Name() + "_key")
+	seedReadIncarnationValues(t, ctx, db, key, []byte(t.Name()+"_other"), []byte("value"), []byte("other"))
+
+	tx := db.CreateTransaction()
+	defer tx.Cancel()
+	tx.SetTimeout(60000)
+	finish := tx.startTurnover()
+	waitingParent, stopWaiting := context.WithCancel(ctx)
+	stopWaiting()
+	waiting, cleanup := tx.opContext(waitingParent)
+	cleanup()
+	captured := tx.readOperation(waiting)
+	tx.resetFields(false)
+	finish()
+	if captured == nil || captured.lease != nil {
+		t.Fatalf("canceled turnover waiter = %v, want an early capture without a lease", captured)
+	}
+	tx.SetSkipGrvCache()
+
+	parked := make(chan struct{}, 1)
+	release, releaseIt := releaseGate(t)
+	defer releaseIt()
+	sd.setIntercept(func(_ int, _ transport.UID, body []byte) ([]byte, bool) {
+		select {
+		case parked <- struct{}{}:
+		default:
+		}
+		<-release
+		return body, false
+	})
+	sd.armAll()
+	done := make(chan error, 1)
+	go func() { _, err := tx.GetReadVersion(ctx); done <- err }()
+	waitReadParked(t, ctx, parked, "replacement GRV")
+
+	tx.readErrMu.Lock()
+	inc := tx.readLife
+	timer := inc.timer
+	tx.readErrMu.Unlock()
+	if inc != captured.inc {
+		t.Fatal("held GRV did not use the early-captured replacement")
+	}
+	if timer == nil {
+		t.Fatal("replacement GRV is blocked without an armed timeout timer")
+	}
+	// Expire the actual registered timebomb only once the real FDB reply is
+	// held. This removes the scheduling race between GRV dispatch and timeout.
+	timer.Reset(0)
+	select {
+	case err := <-done:
+		if code := fdbCodeOf(err); code != 1031 {
+			t.Fatalf("held replacement GRV returned %v, want FDB error 1031", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("replacement timeout did not stop the held GRV")
+	}
+	releaseIt()
+	sd.setIntercept(nil)
+	assertIndependentRead(t, ctx, db, key, []byte("value"))
+}
+
 func TestReadIncarnation_ResetBetweenPipelinedSendAndRegistration(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), readIncarnationTestTimeout)
