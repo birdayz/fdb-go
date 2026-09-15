@@ -394,19 +394,28 @@ func TestReadIncarnation_ResetBetweenPipelinedSendAndRegistration(t *testing.T) 
 	ctx, cancel := context.WithTimeout(context.Background(), readIncarnationTestTimeout)
 	defer cancel()
 
-	db, _ := newSimTestDB(t, ctx)
+	db, sd := newSimTestDB(t, ctx)
 	key := []byte(t.Name() + "_seed")
 	newKey := []byte(t.Name() + "_new")
 	seedValue := []byte("seed-value")
 	newValue := []byte("new-generation-value")
 	rv := seedReadIncarnationValues(t, ctx, db, key, []byte(t.Name()+"_other"), seedValue, []byte("other"))
+	// The cancellation contract here requires a still-pending response; a
+	// response already published before Reset must retain its completed value.
+	releaseReply, releaseReplyIt := releaseGate(t)
+	defer releaseReplyIt()
+	sd.setIntercept(func(_ int, _ transport.UID, body []byte) ([]byte, bool) {
+		<-releaseReply
+		return body, false
+	})
+	sd.armAddr(storageAddrFor(t, db, ctx, key))
 
 	tx := db.CreateTransaction()
 	tx.SetReadVersion(rv)
 	parked := make(chan struct{})
 	release, releaseIt := releaseGate(t)
 	defer releaseIt()
-	tx.afterPendingSend = func() { close(parked); <-release }
+	tx.afterPendingSend = func(*PendingGet) { close(parked); <-release }
 	type result struct {
 		value   []byte
 		pending *PendingGet
@@ -446,12 +455,146 @@ func TestReadIncarnation_ResetBetweenPipelinedSendAndRegistration(t *testing.T) 
 	// Clear the one-shot seam. The same handle now belongs to the fresh read
 	// incarnation and must support both a real commit and independent reads.
 	tx.afterPendingSend = nil
+	releaseReplyIt()
+	sd.setIntercept(nil)
 	tx.Set(newKey, newValue)
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("new-generation write+Commit: %v", err)
 	}
 	assertIndependentRead(t, ctx, db, key, seedValue)
 	assertIndependentRead(t, ctx, db, newKey, newValue)
+}
+
+func TestReadIncarnation_TerminationBeforePipelinedRegistrationRetiresResources(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		timeout bool
+		reset   bool
+		ready   bool
+	}{
+		{name: "cancel-held"},
+		{name: "cancel-ready", ready: true},
+		{name: "timeout-held", timeout: true},
+		{name: "timeout-ready", timeout: true, ready: true},
+		{name: "reset-held", reset: true},
+		{name: "reset-ready", reset: true, ready: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(context.Background(), readIncarnationTestTimeout)
+			defer cancel()
+			db, sd := newSimTestDB(t, ctx)
+			key := []byte(t.Name() + "_key")
+			rv := seedReadIncarnationValues(t, ctx, db, key, []byte(t.Name()+"_other"), []byte("value"), []byte("other"))
+			addr := storageAddrFor(t, db, ctx, key)
+			conn, err := db.db.getOrDial(ctx, addr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			responseHeld := make(chan struct{}, 1)
+			releaseReply, releaseReplyIt := releaseGate(t)
+			defer releaseReplyIt()
+			sd.setIntercept(func(_ int, _ transport.UID, body []byte) ([]byte, bool) {
+				select {
+				case responseHeld <- struct{}{}:
+				default:
+				}
+				<-releaseReply
+				return body, false
+			})
+			sd.armAddr(addr)
+
+			tx := db.CreateTransaction()
+			defer tx.Cancel()
+			tx.SetReadVersion(rv)
+			tx.SetTimeout(60000)
+			captured := make(chan *PendingGet, 1)
+			releaseSend, releaseSendIt := releaseGate(t)
+			defer releaseSendIt()
+			tx.afterPendingSend = func(p *PendingGet) { captured <- p; <-releaseSend }
+			type result struct {
+				value   []byte
+				pending *PendingGet
+				err     error
+			}
+			done := make(chan result, 1)
+			go func() { value, p, err := tx.GetPipelined(ctx, key); done <- result{value, p, err} }()
+			var sent *PendingGet
+			select {
+			case sent = <-captured:
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			if err := conn.FlushContext(ctx); err != nil {
+				t.Fatal(err)
+			}
+			waitReadParked(t, ctx, responseHeld, "unregistered pipelined reply")
+			if tc.ready {
+				releaseReplyIt()
+				for len(sent.replyCh) == 0 {
+					select {
+					case <-ctx.Done():
+						t.Fatal("reply was not published before termination")
+					case <-time.After(time.Millisecond):
+					}
+				}
+			}
+			wantCode := 1025
+			var resetDone <-chan struct{}
+			if tc.reset {
+				resetDone = retireParkedRead(t, ctx, tx)
+			} else if !tc.timeout {
+				tx.Cancel()
+			} else {
+				wantCode = 1031
+				inc := tx.readOperation(sent.ctx).inc
+				tx.readErrMu.Lock()
+				generation := inc.timerGen
+				tx.readErrMu.Unlock()
+				tx.fireReadTimeout(inc, generation)
+			}
+			var wantValue []byte
+			if tc.ready {
+				wantCode = 0
+				wantValue = []byte("value")
+			}
+			matchesError := func(err error) bool {
+				if tc.ready {
+					return err == nil
+				}
+				return fdbCodeOf(err) == wantCode
+			}
+			releaseSendIt()
+			select {
+			case got := <-done:
+				if got.pending != nil || !matchesError(got.err) || !bytes.Equal(got.value, wantValue) {
+					t.Errorf("terminated send returned value=%q pending=%v error=%v; want %q, nil, FDB%d", got.value, got.pending != nil, got.err, wantValue, wantCode)
+				}
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			if resetDone != nil {
+				waitReadParked(t, ctx, resetDone, "reset after rejected registration")
+			}
+			// Deliberately never Resolve: terminal registration itself owns the
+			// deferred reply handle, timer, and retained operation context.
+			tx.readErrMu.Lock()
+			pendingCount := len(tx.pendingReads)
+			tx.readErrMu.Unlock()
+			if pendingCount != 0 {
+				t.Errorf("terminated send registered %d pending reads, want 0", pendingCount)
+			}
+			sent.mu.Lock()
+			if !sent.done || sent.replyHandle != nil || sent.timer != nil || sent.cancel != nil || !matchesError(sent.memoErr) || !bytes.Equal(sent.memoVal, wantValue) {
+				t.Errorf("unresolved send retained resources: done=%v handle=%v timer=%v cancel=%v error=%v", sent.done, sent.replyHandle != nil, sent.timer != nil, sent.cancel != nil, sent.memoErr)
+			}
+			sent.mu.Unlock()
+			releaseReplyIt()
+			sd.setIntercept(nil)
+			assertIndependentRead(t, ctx, db, key, []byte("value"))
+		})
+	}
 }
 
 // A completed read-version future owns its answer. Resetting the handle before

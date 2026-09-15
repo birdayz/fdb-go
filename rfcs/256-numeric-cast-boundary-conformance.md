@@ -2067,3 +2067,54 @@ scalar correlation, recursive derived-source rebuilding, and UNNEST regression
 assertions that bypass lowering. Their exact reports and reproduction state are
 in `pr785-review/findings.md`. Final implementation delta confirmations, the final
 PR reviewer and final-head CI remain mandatory before merge.
+
+### PR review: terminal pipelined registration owns cleanup
+
+The architecture review continuation completed all 47,295 lines / 328 files of
+`ed1f41359ec7` and returned NAK; it is no longer an incomplete review. It additionally
+identified lost enclosing CTE bodies during derived-source rebuilding. These remain
+reports to reproduce, not evidence that an implementation has been approved.
+
+The next reproduced client finding is Cancel/TIMEOUT between a successful pipelined
+send and its registration. Cancellation detaches the current registry, but the late
+send previously checked only incarnation identity and then registered itself into
+the already-terminal transaction. Without Resolve, its timer, reply handle, retained
+context and pending-map entry survived. C++ `ReadYourWrites.actor.cpp:391-402` races
+each read actor against resetPromise independently of whether its caller consumes
+the future. Registration now checks terminal cause atomically with identity, then
+uses the existing PendingGet retirement/cleanup path outside the leaf mutex.
+
+The already-published reply remains immutable: retirement returns its completed
+value directly rather than replacing it with a late cancellation. Six real-FDB
+cases cross Cancel/TIMEOUT/Reset with held/published responses. They never call
+Resolve and assert terminal result, empty registry, completed memo, and nil timer,
+reply handle and retained cancel function. The existing Reset regression now holds
+its response explicitly: its 1025 assertion applies to an incomplete read, not a
+race against a successful already-published response. New ready-Reset coverage pins
+the complementary value-preservation outcome without weakening that assertion.
+
+The initial Cancel/TIMEOUT cases were red (`pending-registration-red.log`). The
+first ready-response test attempt incorrectly assumed the test helper encoded nil
+as zero; the assertion now checks nil explicitly. This was a harness error, not
+an engine mismatch. Final focused green: `pending-registration-green-2.log`.
+Removing the terminal-cause guard kills all four Cancel/TIMEOUT resource cases;
+replacing retirement with unconditional cancellation kills all three ready-value
+cases. Both mutations compiled and restoration passed explicit SHA256 checks:
+`pending-registration-{cause,ready}-mutant.log` and
+`pending-registration-tested.sha256`. Ten race repetitions passed 80 RUN lines
+(`pending-registration-race-10.log`). Full `just test` passed 92/92 targets
+(43 executed, 49 cached), source hashes unchanged; Gazelle/module tidy passed.
+
+Focused replay (equivalent to the grouped filter used for the ten-run race test):
+
+```sh
+bazelisk test //pkg/fdbgo/client:client_test --@rules_go//go/config:race \
+  --test_arg='--test.run=^TestReadIncarnation_TerminationBeforePipelinedRegistrationRetiresResources$|^TestReadIncarnation_ResetBetweenPipelinedSendAndRegistration$' \
+  --test_arg=--test.v --test_arg=--test.count=10 --nocache_test_results --test_output=all
+```
+
+This closes the pending-registration reproduction locally, not the PR's remaining
+review findings. Next is deferred-error precedence over an expired timeout;
+retry-retirement atomicity, derived rebuilding/CTE ownership, scalar correlation
+and lowering-regression quality are also pending. Final-head delta reviews,
+final PR reviewer and final-head CI are still required before merge.

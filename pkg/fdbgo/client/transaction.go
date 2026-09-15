@@ -309,7 +309,7 @@ type txOptions struct {
 
 	// afterPendingSend is a per-transaction lifecycle interleaving seam. It
 	// runs without transaction locks, after enqueue and before registration.
-	afterPendingSend func()
+	afterPendingSend func(*PendingGet)
 	// afterReadVersion observes a completed GRV before its caller returns.
 	afterReadVersion func()
 	// beforeReadVersionLock parks acquisition after entry validation.
@@ -1019,25 +1019,24 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 			tx.db.handleReadConnError(server.Address, sendErr)
 			continue
 		}
-		if tx.afterPendingSend != nil {
-			tx.afterPendingSend()
-		}
 		timer := getTimer(tx.pipelineReplyTimeout()) // capped by SetTimeout (RFC-112)
-		p := &PendingGet{key: bytes.Clone(key), tx: tx, addr: server.Address, tenantID: tx.tenantId, replyCh: replyCh, replyHandle: replyHandle, conn: conn, ctx: ctx, cancel: opCancel, timer: timer, sentAt: sentAt}
+		p := &PendingGet{key: bytes.Clone(key), tx: tx, addr: server.Address, tenantID: tx.tenantId, replyCh: replyCh, replyHandle: replyHandle, conn: conn, ctx: ctx, cancel: opCancel, timer: timer, sentAt: sentAt, gen: op.inc.gen}
+		if tx.afterPendingSend != nil {
+			tx.afterPendingSend(p)
+		}
 		// Register under the current read incarnation: Commit drains
 		// outstanding pipelined reads (the C++ wait(reading) completion
 		// barrier) and a post-reset late Resolve must not poison the next
 		// incarnation.
 		tx.readErrMu.Lock()
-		if tx.readLife != op.inc {
-			cause := op.inc.cause
+		if tx.readLife != op.inc || op.inc.cause != nil {
 			tx.readErrMu.Unlock()
-			replyHandle.Cancel()
-			replyHandle.Release()
-			putTimer(timer)
-			return nil, nil, cause
+			// Failure can detach the registry before this send is registered.
+			// Retire it here, preserving any already-published reply without
+			// requiring the caller to Resolve just to release its resources.
+			p.retireLocked()
+			return p.memoVal, nil, p.memoErr
 		}
-		p.gen = op.inc.gen
 		if tx.pendingReads == nil {
 			tx.pendingReads = make(map[*PendingGet]struct{})
 		}

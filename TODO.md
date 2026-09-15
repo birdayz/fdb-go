@@ -11314,3 +11314,26 @@ entry names the exact commands' logs under `/var/tmp/query-grind-cast/pr785-revi
 Next: reproduce terminal PendingGet registration after Cancel/timeout without
 calling Resolve, then close the remaining reports in `pr785-review/findings.md`.
 No final-head review approval or merge is claimed; broad QSC entries stay open.
+
+### QSC-04/08 RFC-256 — terminal pipelined registration repaired
+
+The full architectural review continuation completed and returned NAK. No review
+approval is claimed. Its additional derived-source/CTE-body-loss report joins the
+remaining findings in `/var/tmp/query-grind-cast/pr785-review/findings.md`.
+
+Cancel/TIMEOUT after send but before PendingGet registration is now reproduced and
+repaired. Terminal registration retires its own resources without requiring
+Resolve, and preserves an already-published reply. Six real-FDB cases cross
+Cancel/TIMEOUT/Reset with held/published replies; the old Reset cancellation pin
+now explicitly holds its response. Two compiled semantic mutants detect missing
+terminal cleanup and lost ready values, with SHA-checked restoration. Ten race
+repetitions pass (80 RUN lines); full `just test` passes 92/92 (43 executed,
+49 cached). RFC-256's final entry records evidence and exact replay.
+
+Next: reproduce deferred-error versus timeout priority through existing client and
+libfdb_c differential harnesses. C++ ignores SetTimeout after a deferred error, so
+that is not a valid differential setup; observe timeout before applying poison,
+and separately pin poison-before-expiry through the client timer seam. Do not
+conflate the pre-existing deferred-versus-Cancel TODO at line 710 with this newly
+broken timeout contract without explicit scope/design adjudication. PR #785 is
+still blocked on remaining findings and final-head gates; no new hunt slice yet.
