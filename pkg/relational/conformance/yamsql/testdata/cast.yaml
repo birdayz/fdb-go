@@ -1,7 +1,7 @@
 # cast.yaml
 #
 # swingshift-35 commits 1acc097b/258073ee/13f43b58: CAST Java-conformance.
-#   - CAST(float AS INT) uses Math.round semantics (floor(x+0.5))
+#   - CAST(float AS INT) uses Math.round semantics (nearest integer, ties toward +infinity)
 #   - CAST(string AS INT/FLOAT) trims whitespace before parsing
 #   - CAST(string AS BOOLEAN) accepts only trim+lowercased 'true'/'false'/'1'/'0'
 #   - CAST(NULL AS <type>) returns NULL (not "unsupported cast" error)
@@ -40,15 +40,16 @@ tests:
   - query: SELECT CAST(NULL AS BIGINT) FROM t
     rows:
       - [~]
-  # CAST(huge_float AS BIGINT) — overflow raises 22F3H (INVALID_CAST),
-  # matching Java's CastValue which uses INVALID_CAST for all CAST
-  # failures (range overflow, NaN/Infinity, string-parse errors).
-  # Pre-swingshift-35 Go silently wrapped; nightshift-36 aligned the
-  # SQLSTATE to Java's 22F3H.
+  # Finite DOUBLE overflow saturates like Math.round(double). These retain
+  # Go's dotless-exponent spelling; the live Java probe uses 1.0E20 (RFC-256).
   - query: SELECT CAST(1e20 AS BIGINT) FROM t
-    error_code: "22F3H"
+    column_types: [BIGINT]
+    exact_rows:
+      - [{kind: int64, value: "9223372036854775807"}]
   - query: SELECT CAST(-1e20 AS BIGINT) FROM t
-    error_code: "22F3H"
+    column_types: [BIGINT]
+    exact_rows:
+      - [{kind: int64, value: "-9223372036854775808"}]
   # CAST('bogus' AS BOOLEAN) — pre-nightshift-39 this errored 22023
   # (generic INVALID_PARAMETER); now 22F3H (INVALID_CAST) matching the
   # other string-parse CAST failures (integer and float above).

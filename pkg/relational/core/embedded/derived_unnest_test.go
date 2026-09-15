@@ -73,8 +73,8 @@ func TestDerivedUnnest_Dispositions(t *testing.T) {
 	t.Run("scalar_source_invalidref", func(t *testing.T) {
 		code(t, `SELECT x FROM (SELECT id AS arr FROM td) AS d, d.arr AS x`, api.ErrCodeInvalidColumnReference)
 	})
-	t.Run("computed_unsupported", func(t *testing.T) {
-		code(t, `SELECT x FROM (SELECT id + 1 AS arr FROM td) AS d, d.arr AS x`, api.ErrCodeUnsupportedQuery)
+	t.Run("computed_scalar_invalidref", func(t *testing.T) {
+		code(t, `SELECT x FROM (SELECT id + 1 AS arr FROM td) AS d, d.arr AS x`, api.ErrCodeInvalidColumnReference)
 	})
 	t.Run("absent_undefined", func(t *testing.T) {
 		code(t, `SELECT x FROM (SELECT id FROM td) AS d, d.nope AS x`, api.ErrCodeUndefinedColumn)
@@ -89,9 +89,8 @@ func TestDerivedUnnest_Dispositions(t *testing.T) {
 		code(t, `SELECT x FROM (SELECT id AS arr FROM td) AS d, d.arr AS x`, api.ErrCodeInvalidColumnReference)
 	})
 	t.Run("p2a_nested_derived", func(t *testing.T) {
-		// The body's source `inr` is a CTE (also a real base table with array
-		// arr). Must decline (unsupported), never resolve through base inr.
-		code(t, `WITH inr AS (SELECT id, arr FROM td) SELECT x FROM (SELECT arr FROM inr) AS d, d.arr AS x`, api.ErrCodeUnsupportedQuery)
+		// The body's source is the carried CTE, not the same-named base table.
+		plans(t, `WITH inr AS (SELECT id, arr FROM td) SELECT x FROM (SELECT arr FROM inr) AS d, d.arr AS x`)
 	})
 }
 

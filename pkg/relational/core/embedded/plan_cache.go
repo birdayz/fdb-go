@@ -2,6 +2,7 @@ package embedded
 
 import (
 	"container/list"
+	"slices"
 	"sync"
 	"sync/atomic"
 
@@ -45,8 +46,9 @@ type cacheKey struct {
 }
 
 type planCacheEntry struct {
-	plan       plans.RecordQueryPlan
-	scalarSubs []PlannedScalarSubquery
+	plan         plans.RecordQueryPlan
+	scalarSubs   []PlannedScalarSubquery
+	outputLabels []string
 }
 
 // lruItem is the value stored in each list element. It carries its own key
@@ -78,6 +80,14 @@ func NewPlanCache(maxSize int) *PlanCache {
 // whitespace-collapsed, comments stripped). Returns the plan, scalar subquery
 // bindings, and true on a cache hit; nil, nil, false on miss.
 func (c *PlanCache) Get(scope, sql string) (plans.RecordQueryPlan, []PlannedScalarSubquery, bool) {
+	plan, subs, _, ok := c.GetWithOutputLabels(scope, sql)
+	return plan, subs, ok
+}
+
+// GetWithOutputLabels is Get plus the top-level SQL output-label contract.
+// Labels are cached beside the physical plan because they deliberately differ
+// from its deduplicated protobuf field names and must survive a warm cache hit.
+func (c *PlanCache) GetWithOutputLabels(scope, sql string) (plans.RecordQueryPlan, []PlannedScalarSubquery, []string, bool) {
 	key := cacheKey{scope: scope, sql: normalizeSQL(sql)}
 
 	c.mu.Lock()
@@ -85,20 +95,25 @@ func (c *PlanCache) Get(scope, sql string) (plans.RecordQueryPlan, []PlannedScal
 	if !ok {
 		c.mu.Unlock()
 		c.misses.Add(1)
-		return nil, nil, false
+		return nil, nil, nil, false
 	}
 	c.ll.MoveToBack(el)
 	entry := el.Value.(*lruItem).entry
 	c.mu.Unlock()
 
 	c.hits.Add(1)
-	return entry.plan, entry.scalarSubs, true
+	return entry.plan, entry.scalarSubs, slices.Clone(entry.outputLabels), true
 }
 
 // Put stores a plan keyed by (verbatim scope, normalized sql) — see Get for
 // why the scope must not be normalized. If the cache is at capacity, the
 // least recently used entry is evicted.
 func (c *PlanCache) Put(scope, sql string, plan plans.RecordQueryPlan, subs []PlannedScalarSubquery) {
+	c.PutWithOutputLabels(scope, sql, plan, subs, nil)
+}
+
+// PutWithOutputLabels is Put plus the top-level SQL output-label contract.
+func (c *PlanCache) PutWithOutputLabels(scope, sql string, plan plans.RecordQueryPlan, subs []PlannedScalarSubquery, outputLabels []string) {
 	key := cacheKey{scope: scope, sql: normalizeSQL(sql)}
 
 	c.mu.Lock()
@@ -106,14 +121,14 @@ func (c *PlanCache) Put(scope, sql string, plan plans.RecordQueryPlan, subs []Pl
 
 	if el, exists := c.items[key]; exists {
 		// Update in place and promote. Size is unchanged, so no eviction.
-		el.Value.(*lruItem).entry = &planCacheEntry{plan: plan, scalarSubs: subs}
+		el.Value.(*lruItem).entry = &planCacheEntry{plan: plan, scalarSubs: subs, outputLabels: slices.Clone(outputLabels)}
 		c.ll.MoveToBack(el)
 		return
 	}
 
 	el := c.ll.PushBack(&lruItem{
 		key:   key,
-		entry: &planCacheEntry{plan: plan, scalarSubs: subs},
+		entry: &planCacheEntry{plan: plan, scalarSubs: subs, outputLabels: slices.Clone(outputLabels)},
 	})
 	c.items[key] = el
 

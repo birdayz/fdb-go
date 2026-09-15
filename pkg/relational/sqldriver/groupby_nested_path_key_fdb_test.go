@@ -165,7 +165,7 @@ func TestFDB_GroupByNestedPathKey(t *testing.T) {
 
 	t.Run("correlated_scalar_subquery_grouped_by_the_nested_key", func(t *testing.T) {
 		// The correlated-scalar arm runs its OWN group-key resolution
-		// (resolveCorrelatedGroupKeyValues) and its own grouped ORDER BY
+		// (the shared semantic GROUP BY resolver) and its own grouped ORDER BY
 		// binding, neither of which is reachable from the main ladder — so its
 		// behaviour could not be predicted from the arms above and it is
 		// asserted rather than assumed. It resolved the key from the JOINED

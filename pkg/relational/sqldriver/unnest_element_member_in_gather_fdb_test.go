@@ -88,20 +88,20 @@ func TestFDB_UnnestElementMemberInGather(t *testing.T) {
 			// Single-accessor control: the shape the narrow predicate admits.
 			name: "group_by_flat_member",
 			sql:  "SELECT x.ek, COUNT(*) FROM t, t.arr AS x GROUP BY x.ek ORDER BY x.ek",
-			want: "EK,COUNT(*)|10 1;20 1;30 1",
+			want: "EK,_1|10 1;20 1;30 1",
 			rearms: "the SINGLE-accessor element path through the gathered walk changed; " +
 				"the multi-accessor arms below are only interpretable against it",
 		},
 		{
 			name:   "group_by_two_level_member",
 			sql:    "SELECT x.d.dk, COUNT(*) FROM t, t.arr AS x GROUP BY x.d.dk ORDER BY x.d.dk",
-			want:   "DK,COUNT(*)|91 1;92 1;93 1",
+			want:   "DK,_1|91 1;92 1;93 1",
 			rearms: "a MULTI-ACCESSOR element member in a grouping key started losing rows",
 		},
 		{
 			name:   "group_by_two_level_member_with_having",
 			sql:    "SELECT x.d.dk, COUNT(*) FROM t, t.arr AS x GROUP BY x.d.dk HAVING COUNT(*) = 1 ORDER BY x.d.dk",
-			want:   "DK,COUNT(*)|91 1;92 1;93 1",
+			want:   "DK,_1|91 1;92 1;93 1",
 			rearms: "a HAVING over a multi-accessor element grouping key started losing rows",
 		},
 		{
@@ -109,13 +109,13 @@ func TestFDB_UnnestElementMemberInGather(t *testing.T) {
 			// is ALSO correlated into an EXISTS.
 			name:   "group_by_two_level_member_with_correlated_exists",
 			sql:    "SELECT x.d.dk, COUNT(*) FROM t, t.arr AS x WHERE EXISTS (SELECT 1 FROM u WHERE u.uk = x.d.dk) GROUP BY x.d.dk ORDER BY x.d.dk",
-			want:   "DK,COUNT(*)|91 1",
+			want:   "DK,_1|91 1",
 			rearms: "THE CLOSEST ANALOGUE OF THE SIBLING'S SILENT DROP — an empty result here is that defect arriving in the gathered walk",
 		},
 		{
 			name:   "group_by_flat_member_with_correlated_exists",
 			sql:    "SELECT x.ek, COUNT(*) FROM t, t.arr AS x WHERE EXISTS (SELECT 1 FROM u WHERE u.uk = x.ek) GROUP BY x.ek ORDER BY x.ek",
-			want:   "EK,COUNT(*)|10 1",
+			want:   "EK,_1|10 1",
 			rearms: "the single-accessor twin of the arm above; if BOTH go empty the cause is the EXISTS, not the arity",
 		},
 		{
@@ -123,7 +123,7 @@ func TestFDB_UnnestElementMemberInGather(t *testing.T) {
 			// a different position in the same walk.
 			name:   "aggregate_over_two_level_member",
 			sql:    "SELECT x.ek, SUM(x.d.dk) FROM t, t.arr AS x GROUP BY x.ek ORDER BY x.ek",
-			want:   "EK,SUM(X.D.DK)|10 91;20 92;30 93",
+			want:   "EK,_1|10 91;20 92;30 93",
 			rearms: "a multi-accessor element member in an AGGREGATED position started reading wrong",
 		},
 	}

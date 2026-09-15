@@ -47,6 +47,7 @@ go_test(
     srcs = [
         "ansiledger_internal_test.go",
         "ansiledger_test.go",
+        "cast_boundary_fdb_test.go",
         "coverage_internal_test.go",
         "coverage_test.go",
         "diff_struct_test.go",
@@ -61,6 +62,7 @@ go_test(
         "semantic_envelope_test.go",
         "semantic_fdb_test.go",
         "semantic_witness_test.go",
+        "system_cast_fdb_test.go",
         "yamsql_test.go",
     ],
     data = glob(["testdata/**"]) + [
@@ -80,6 +82,7 @@ go_test(
     deps = [
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/relational/api",
+        "//pkg/relational/conformance/plandiff",
         "//pkg/relational/core/parser",
         "//pkg/relational/core/parser/gen",
         "//pkg/relational/core/rowstruct",

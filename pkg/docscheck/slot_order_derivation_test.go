@@ -17,7 +17,10 @@ package docscheck
 // no way to re-run it. A committed log of a deleted probe is an assertion
 // wearing a measurement's clothes.
 //
-// This is the instrument the log claimed to be, and it checks the ORDER.
+// This instrument checks label order, not value ownership. Moving NAME=value
+// pairs is detectable when their labels differ; swapping values while retaining
+// the labels is not, including for anonymous _N labels. Real-FDB assertions remain
+// the independent value oracle.
 //
 // THE METHOD is the by-hand spot-check, mechanised: read the query's SELECT
 // list, derive the output column names in source order, and require the
@@ -26,9 +29,11 @@ package docscheck
 // rendering used to discard.
 //
 // WHERE IT CANNOT DERIVE, IT SAYS SO PER SITE rather than passing quietly.
-// `SELECT *` has no written column list, and a projection over an expression
-// with no alias has no name the test can predict without reimplementing the
-// planner's naming. Those sites fall back to the CROSS-ROW check below, and the
+// Stars, WITH/set/parenthesized bodies, multiple/non-SELECT statements, no-FROM
+// queries and unnamed computations other than bare aggregate calls are declined.
+// Typed SELECT elements supply explicit-AS names, inherited column identifiers
+// and anonymous aggregate labels from absolute SELECT ordinals. Declined sites
+// fall back to the CROSS-ROW check below, and the
 // per-file census in the failure message reports derived and fallback counts
 // separately so a file that silently stops being derivable is visible.
 //
@@ -54,56 +59,109 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	sqlparser "fdb.dev/pkg/relational/core/parser"
+	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 )
 
 // slotOrderSite is one (query, expectations) pair found in the source.
 type slotOrderSite struct {
-	file     string
-	line     int
-	sql      string
-	rows     []string
-	derived  []string // the SELECT list's output names, nil when underivable
-	whyNot   string   // why the SELECT list could not be derived
-	fromCall bool     // paired inside one call, rather than by scope
+	file      string
+	line      int
+	sql       string
+	rows      []string
+	derived   []string // the SELECT list's output names, nil when underivable
+	nameKinds []selectNameKind
+	whyNot    string // why the SELECT list could not be derived
+	fromCall  bool   // paired inside one call, rather than by scope
 }
 
-// selectOutputNames derives a query's output column names, in source order.
-//
-// It reads only the SELECT list — the text between the leading SELECT and its
-// own FROM — because that list IS the slot order contract. Anything it cannot
-// name WITHOUT guessing at planner behaviour makes the whole query underivable,
-// and the reason is returned for the per-site report. Guessing would be worse
-// than declining: a wrong derived order fails a correct expectation, and the
-// fix for that is always to weaken the test.
-func selectOutputNames(sql string) (names []string, whyNot string) {
-	trimmed := strings.TrimSpace(sql)
-	if !strings.HasPrefix(strings.ToUpper(trimmed), "SELECT ") {
-		return nil, "not a SELECT"
+type selectNameKind uint8
+
+const (
+	selectNameInherited selectNameKind = iota
+	selectNameExplicit
+	selectNameAnonymousAggregate
+)
+
+// selectOutputNames is the label-only view used by the independent gate tests.
+func selectOutputNames(sql string) ([]string, string) {
+	names, _, why := selectOutputNamesWithProvenance(sql)
+	return names, why
+}
+
+// selectOutputNamesWithProvenance does not resolve catalog metadata or values.
+// It declines stars, WITH/set/parenthesized bodies, multiple/non-SELECT statements,
+// no-FROM queries and unnamed computations other than a bare aggregate call.
+// Supported labels come only from typed SELECT elements: an explicit AS alias,
+// an inherited column identifier, or the absolute ordinal of an anonymous
+// aggregate. A parsed trailing uid without AS does not grant a SQL name.
+func selectOutputNamesWithProvenance(sql string) (names []string, kinds []selectNameKind, why string) {
+	root, err := sqlparser.Parse(sql)
+	if err != nil {
+		return nil, nil, "SQL parse error"
 	}
-	body := trimmed[len("SELECT "):]
-	if u := strings.ToUpper(strings.TrimSpace(body)); strings.HasPrefix(u, "DISTINCT ") {
-		body = strings.TrimSpace(body)[len("DISTINCT "):]
+	if root.Statements() == nil || len(root.Statements().AllStatement()) != 1 {
+		return nil, nil, "not exactly one statement"
 	}
-	fromAt := topLevelIndexOfWord(body, "FROM")
-	if fromAt < 0 {
-		return nil, "no top-level FROM"
+	statement := root.Statements().Statement(0).SelectStatement()
+	if statement == nil {
+		return nil, nil, "not a SELECT"
 	}
-	list := strings.TrimSpace(body[:fromAt])
-	if list == "" {
-		return nil, "empty SELECT list"
+	query := statement.Query()
+	if query.Ctes() != nil {
+		return nil, nil, "WITH body requires semantic publication"
 	}
-	for _, item := range splitTopLevel(list, ',') {
-		item = strings.TrimSpace(item)
-		if item == "" {
-			return nil, "empty SELECT item"
-		}
-		name, ok := selectItemName(item)
+	body, ok := query.QueryExpressionBody().(*antlrgen.QueryTermDefaultContext)
+	if !ok {
+		return nil, nil, "set body requires semantic publication"
+	}
+	table, ok := body.QueryTerm().(*antlrgen.SimpleTableContext)
+	if !ok || table.FromClause() == nil {
+		return nil, nil, "not a simple SELECT with FROM"
+	}
+	for i, item := range table.SelectElements().AllSelectElement() {
+		selected, ok := item.(*antlrgen.SelectExpressionElementContext)
 		if !ok {
-			return nil, fmt.Sprintf("item %q has no derivable output name", item)
+			return nil, nil, "star requires semantic publication"
 		}
-		names = append(names, name)
+		if selected.AS() != nil && selected.Uid() != nil {
+			names = append(names, selectIdentifierName(selected.Uid()))
+			kinds = append(kinds, selectNameExplicit)
+			continue
+		}
+		expression, ok := selected.Expression().(*antlrgen.PredicatedExpressionContext)
+		if !ok || expression.Predicate() != nil {
+			return nil, nil, "unnamed expression requires semantic publication"
+		}
+		switch atom := expression.ExpressionAtom().(type) {
+		case *antlrgen.FullColumnNameExpressionAtomContext:
+			parts := atom.FullColumnName().FullId().AllUid()
+			names = append(names, selectIdentifierName(parts[len(parts)-1]))
+			kinds = append(kinds, selectNameInherited)
+		case *antlrgen.FunctionCallExpressionAtomContext:
+			if _, aggregate := atom.FunctionCall().(*antlrgen.AggregateFunctionCallContext); !aggregate {
+				return nil, nil, "unnamed non-aggregate call requires semantic publication"
+			}
+			// Java Expressions.getStructType uses the SELECT ordinal, not the
+			// aggregate's position among aggregate calls. No production namer is used.
+			names = append(names, fmt.Sprintf("_%d", i))
+			kinds = append(kinds, selectNameAnonymousAggregate)
+		default:
+			return nil, nil, "unnamed expression requires semantic publication"
+		}
 	}
-	return names, ""
+	return names, kinds, ""
+}
+
+// selectIdentifierName reads a typed identifier token, never expression text.
+// The grammar's DOUBLE_QUOTE_ID token excludes embedded double quotes.
+func selectIdentifierName(id antlrgen.IUidContext) string {
+	if quoted := id.DOUBLE_QUOTE_ID(); quoted != nil {
+		text := quoted.GetText()
+		return text[1 : len(text)-1]
+	}
+	return strings.ToUpper(id.GetText())
 }
 
 // slotNameMatches reports whether a rendered slot name is an acceptable spelling
@@ -112,9 +170,9 @@ func selectOutputNames(sql string) (names []string, whyNot string) {
 // SPELLING IS NOT ORDER, and this instrument is about order. Two spellings are
 // genuinely planner-decided and must both be accepted:
 //
-//   - the QUALIFIER. `SELECT A."K", B."K", "X"` renders `A.K|B.K|X` — the
-//     qualifier survives so two same-named join columns stay distinguishable —
-//     while `SELECT A."K", COUNT(*)` renders plain `K`. Which one appears is a
+//   - the QUALIFIER. Legacy renderings of `SELECT A."K", B."K", "X"` can carry
+//     `A.K|B.K|X`, while other renderings publish unqualified labels. Which
+//     spelling appears is a
 //     naming rule inside the planner; predicting it here would mean
 //     reimplementing that rule, and getting it wrong fails correct expectations.
 //     So a derived `K` accepts `K` or any `<qualifier>.K`.
@@ -148,58 +206,8 @@ func slotNamesMatch(rendered, derived []string) bool {
 	return true
 }
 
-// selectItemName names ONE SELECT item.
-//
-//   - `... AS "N"` / `... AS N`  -> N, whatever the expression was
-//   - `A."K"` / `"K"` / `K`      -> K, the last dotted segment
-//   - `COUNT(*)` / `MAX("M")`    -> the call text, quotes and spaces removed,
-//     which is how an unaliased function projection is named
-//
-// A bare `*`, a qualified `T.*`, or an unaliased expression (`A."K" + 1`) is
-// declined: their output names come from the planner, not from the text.
-func selectItemName(item string) (string, bool) {
-	if at := topLevelIndexOfWord(item, "AS"); at >= 0 {
-		alias := strings.TrimSpace(item[at+len("AS"):])
-		if alias == "" {
-			return "", false
-		}
-		return strings.ToUpper(strings.ReplaceAll(alias, `"`, "")), true
-	}
-	if strings.Contains(item, "*") && !isFunctionCall(item) {
-		return "", false // SELECT * / T.* — no written column list
-	}
-	if isFunctionCall(item) {
-		var b strings.Builder
-		for _, r := range item {
-			if r == '"' || r == ' ' || r == '\t' || r == '\n' {
-				continue
-			}
-			b.WriteRune(r)
-		}
-		return strings.ToUpper(b.String()), true
-	}
-	// A simple (possibly qualified) column reference and nothing else.
-	bare := strings.ReplaceAll(item, `"`, "")
-	if bare == "" {
-		return "", false
-	}
-	for _, r := range bare {
-		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '.' {
-			continue
-		}
-		return "", false // an expression; the planner names it
-	}
-	if i := strings.LastIndexByte(bare, '.'); i >= 0 {
-		bare = bare[i+1:]
-	}
-	if bare == "" {
-		return "", false
-	}
-	return strings.ToUpper(bare), true
-}
-
-// isFunctionCall reports whether item is exactly `NAME(...)` with the closing
-// paren at the very end — so `COUNT(*)` qualifies and `COUNT(*) + 1` does not.
+// isFunctionCall recognizes legacy NAME(...) tokens in rendered expectations,
+// not SQL syntax. Keeping them recognizable lets the gate report stale labels.
 func isFunctionCall(item string) bool {
 	open := strings.IndexByte(item, '(')
 	if open <= 0 || !strings.HasSuffix(item, ")") {
@@ -218,65 +226,6 @@ func isFunctionCall(item string) bool {
 		}
 	}
 	return depth == 0
-}
-
-// splitTopLevel splits on sep at paren depth 0 and outside double quotes.
-func splitTopLevel(s string, sep byte) []string {
-	var out []string
-	depth, inQuote, start := 0, false, 0
-	for i := 0; i < len(s); i++ {
-		switch c := s[i]; {
-		case c == '"':
-			inQuote = !inQuote
-		case inQuote:
-		case c == '(':
-			depth++
-		case c == ')':
-			depth--
-		case c == sep && depth == 0:
-			out = append(out, s[start:i])
-			start = i + 1
-		}
-	}
-	return append(out, s[start:])
-}
-
-// topLevelIndexOfWord finds the keyword as a whole word at paren depth 0 and
-// outside quotes, so the FROM of a scalar subquery in the SELECT list and a
-// column literally named FROM are both skipped.
-func topLevelIndexOfWord(s, word string) int {
-	up := strings.ToUpper(s)
-	depth, inQuote := 0, false
-	for i := 0; i < len(s); i++ {
-		switch c := s[i]; {
-		case c == '"':
-			inQuote = !inQuote
-			continue
-		case inQuote:
-			continue
-		case c == '(':
-			depth++
-			continue
-		case c == ')':
-			depth--
-			continue
-		}
-		if depth != 0 || !strings.HasPrefix(up[i:], word) {
-			continue
-		}
-		if i > 0 && !isSQLBreak(s[i-1]) {
-			continue
-		}
-		if end := i + len(word); end < len(s) && !isSQLBreak(s[end]) {
-			continue
-		}
-		return i
-	}
-	return -1
-}
-
-func isSQLBreak(c byte) bool {
-	return c == ' ' || c == '\t' || c == '\n' || c == '(' || c == ')' || c == ','
 }
 
 // expectationNames extracts the `NAME=` tokens of one rendered row, in order.
@@ -431,10 +380,10 @@ func collectSlotOrderSites(f *ast.File, fset *token.FileSet, rel string) (sites 
 		for _, rn := range rowNodes {
 			claimed[rn] = true
 		}
-		names, why := selectOutputNames(sqls[0])
+		names, kinds, why := selectOutputNamesWithProvenance(sqls[0])
 		sites = append(sites, slotOrderSite{
 			file: rel, line: fset.Position(call.Lparen).Line,
-			sql: sqls[0], rows: rows, derived: names, whyNot: why, fromCall: true,
+			sql: sqls[0], rows: rows, derived: names, nameKinds: kinds, whyNot: why, fromCall: true,
 		})
 		return true
 	})
@@ -467,10 +416,10 @@ func collectSlotOrderSites(f *ast.File, fset *token.FileSet, rel string) (sites 
 			ambiguous += len(rows)
 			continue
 		}
-		names, why := selectOutputNames(sqls[0])
+		names, kinds, why := selectOutputNamesWithProvenance(sqls[0])
 		sites = append(sites, slotOrderSite{
 			file: rel, line: fset.Position(scopePos[scope]).Line,
-			sql: sqls[0], rows: rows, derived: names, whyNot: why,
+			sql: sqls[0], rows: rows, derived: names, nameKinds: kinds, whyNot: why,
 		})
 	}
 	sort.Slice(sites, func(i, j int) bool { return sites[i].line < sites[j].line })
@@ -547,10 +496,49 @@ func strconvUnquote(lit string) (string, error) {
 type slotOrderCensus struct {
 	file                  string
 	derivedSites, derived int
+	namedOrder            int
 	fallbackSites         int
 	shapeMismatch         int
 	fallbackWhy           map[string]int
 	ambiguousRows         int
+}
+
+// hasNamedSlotOrder requires a distinguishable pair with at least one inherited
+// or explicitly authored name. Anonymous _N alone cannot sustain this population;
+// an authored alias spelled _0 can. This observes labels, not value ownership.
+func hasNamedSlotOrder(names []string, kinds []selectNameKind) bool {
+	if len(names) != len(kinds) {
+		return false
+	}
+	for i, kind := range kinds {
+		if kind != selectNameInherited && kind != selectNameExplicit {
+			continue
+		}
+		for j := range names {
+			if !slotNameMatches(names[i], names[j]) || !slotNameMatches(names[j], names[i]) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func slotOrderPopulationProblem(derived, namedOrder int) string {
+	if derived < 0 || namedOrder < 0 || namedOrder > derived {
+		return fmt.Sprintf("invalid slot-order population: derived=%d named=%d", derived, namedOrder)
+	}
+	if derived < 100 {
+		return fmt.Sprintf("only %d row expectation(s) had their slot order DERIVED from a SELECT list — "+
+			"this instrument is vacuous at that population. Something changed in how the sqldriver "+
+			"tests carry their queries, and the census above says which files stopped being "+
+			"derivable. Fix the pairing rather than lowering this floor.", derived)
+	}
+	if namedOrder < 1 {
+		return "named/distinguishable slot-order population COLLAPSED: no width-matched row exercises " +
+			"a distinguishable pair with an inherited or explicit-AS name. Anonymous ordinal labels " +
+			"cannot substitute for named-order coverage; fix the pairing, not this floor."
+	}
+	return ""
 }
 
 func TestConvertedRowExpectationsAgreeWithTheirSelectList(t *testing.T) {
@@ -640,6 +628,9 @@ func TestConvertedRowExpectationsAgreeWithTheirSelectList(t *testing.T) {
 					c.shapeMismatch++
 					continue
 				}
+				if hasNamedSlotOrder(s.derived, s.nameKinds) {
+					c.namedOrder++
+				}
 				if !slotNamesMatch(names, s.derived) {
 					failures = append(failures, fmt.Sprintf(
 						"%s:%d: the expectation's slot order disagrees with the query's SELECT list.\n"+
@@ -655,10 +646,11 @@ func TestConvertedRowExpectationsAgreeWithTheirSelectList(t *testing.T) {
 
 	sort.Strings(order)
 	var table strings.Builder
-	totalDerived, totalDerivedSites, totalFallback, totalAmbiguous := 0, 0, 0, 0
+	totalDerived, totalDerivedSites, totalFallback, totalAmbiguous, totalNamedOrder := 0, 0, 0, 0, 0
 	for _, rel := range order {
 		c := census[rel]
 		totalDerived += c.derived
+		totalNamedOrder += c.namedOrder
 		totalDerivedSites += c.derivedSites
 		totalFallback += c.fallbackSites
 		totalAmbiguous += c.ambiguousRows
@@ -667,22 +659,19 @@ func TestConvertedRowExpectationsAgreeWithTheirSelectList(t *testing.T) {
 			why = append(why, fmt.Sprintf("%s x%d", w, n))
 		}
 		sort.Strings(why)
-		fmt.Fprintf(&table, "  %-58s derived %3d row(s) over %2d site(s); fallback %2d site(s) %s; not-a-slot-rendering %d; ambiguous %d row(s)\n",
+		fmt.Fprintf(&table, "  %-58s derived %3d row(s) over %2d site(s); fallback %2d site(s) %s; not-a-slot-rendering %d; ambiguous %d row(s); named/distinguishable %d row(s)\n",
 			strings.TrimPrefix(rel, rowValueMapScope), c.derived, c.derivedSites,
-			c.fallbackSites, strings.Join(why, ", "), c.shapeMismatch, c.ambiguousRows)
+			c.fallbackSites, strings.Join(why, ", "), c.shapeMismatch, c.ambiguousRows, c.namedOrder)
 	}
 	t.Logf("slot-order derivation census (derived = expectation order checked against the SELECT list):\n%s"+
-		"  TOTAL derived %d row(s) over %d site(s); %d fallback site(s); %d ambiguous row(s)",
-		table.String(), totalDerived, totalDerivedSites, totalFallback, totalAmbiguous)
+		"  TOTAL derived %d row(s) over %d site(s); %d fallback site(s); %d ambiguous row(s); %d named/distinguishable row(s)",
+		table.String(), totalDerived, totalDerivedSites, totalFallback, totalAmbiguous, totalNamedOrder)
 
 	// A derivation that reaches nothing is green forever. The measured population
 	// at the time this landed was far above this floor; it exists so a broken
 	// pairing or a changed helper shape reads as red, not as a clean result.
-	if totalDerived < 100 {
-		t.Fatalf("only %d row expectation(s) had their slot order DERIVED from a SELECT list — "+
-			"this instrument is vacuous at that population. Something changed in how the sqldriver "+
-			"tests carry their queries, and the census above says which files stopped being "+
-			"derivable. Fix the pairing rather than lowering this floor.", totalDerived)
+	if problem := slotOrderPopulationProblem(totalDerived, totalNamedOrder); problem != "" {
+		t.Fatal(problem)
 	}
 
 	if len(failures) > 0 {
@@ -718,7 +707,7 @@ func TestSelectOutputNameDerivation(t *testing.T) {
 	}{
 		{`SELECT "X" FROM A, B, A."ARR" AS "X"`, []string{"X"}},
 		{`SELECT A."K", B."K", "X" FROM A, B, A."ARR" AS "X"`, []string{"K", "K", "X"}},
-		{`SELECT A."K", COUNT(*) FROM A GROUP BY A."K"`, []string{"K", "COUNT(*)"}},
+		{`SELECT A."K", COUNT(*) FROM A GROUP BY A."K"`, []string{"K", "_1"}},
 		{`SELECT A."K", SUM(A."K" + B."K") AS "TOT" FROM A GROUP BY A."K"`, []string{"K", "TOT"}},
 		{`SELECT "ID", "Y", "OX", "OY" FROM T4`, []string{"ID", "Y", "OX", "OY"}},
 		{`SELECT DISTINCT "A", "B" FROM T`, []string{"A", "B"}},
@@ -808,4 +797,176 @@ func TestSlotOrderCheckSeesAPermutation(t *testing.T) {
 	if equalStringSlices(sorted, derived) && !equalStringSlices(derived, []string{"K", "M", "X"}) {
 		t.Fatal("the fixture no longer distinguishes alphabetical order from SELECT order")
 	}
+}
+
+func TestSelectOutputNameTypedBoundaries(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		sql  string
+		want []string
+	}{
+		{`SELECT COUNT(*), k, SUM(v) FROM t GROUP BY k`, []string{"_0", "K", "_2"}},
+		{`SELECT id x, COUNT(*) n FROM t GROUP BY id`, []string{"ID", "_1"}},
+		{`SELECT id AS x, COUNT(*) AS n FROM t GROUP BY id`, []string{"X", "N"}},
+		{`SELECT t."a.b", COUNT(*) AS "_0" FROM t GROUP BY t."a.b"`, []string{"a.b", "_0"}},
+		{`SELECT 'FROM, AS )' AS "text", CAST(1 AS BIGINT) AS n FROM t`, []string{"text", "N"}},
+		{`SELECT "a""b" FROM t`, []string{"a"}},
+	} {
+		t.Run(tc.sql, func(t *testing.T) {
+			t.Parallel()
+			got, why := selectOutputNames(tc.sql)
+			if why != "" || !equalStringSlices(got, tc.want) {
+				t.Fatalf("names=%q reason=%q, want %q", got, why, tc.want)
+			}
+		})
+	}
+	for _, sql := range []string{
+		`SELECT SUM(v) + 1 FROM t`,
+		`SELECT CAST(SUM(v) AS BIGINT) FROM t`,
+		`SELECT COALESCE(SUM(v), 0) FROM t`,
+		`SELECT CASE WHEN k > 0 THEN SUM(v) ELSE 0 END FROM t GROUP BY k`,
+		`WITH c AS (SELECT k FROM t) SELECT k FROM c`,
+		`SELECT k FROM t UNION ALL SELECT k FROM t`,
+		`(SELECT k FROM t)`, `SELECT k FROM t; SELECT k FROM t`,
+		`SELECT k FROM`, `SELECT k`, `INSERT INTO t VALUES (1)`, ``, `SELECT k AS "a""b" FROM t`,
+	} {
+		t.Run("decline/"+sql, func(t *testing.T) {
+			t.Parallel()
+			if names, why := selectOutputNames(sql); why == "" {
+				t.Fatalf("unexpectedly derived %q from unsupported shape", names)
+			}
+		})
+	}
+}
+
+func TestSelectOutputNameProvenance(t *testing.T) {
+	t.Parallel()
+	names, kinds, why := selectOutputNamesWithProvenance(`SELECT id ignored, COUNT(*) ignored, COUNT(*) AS "_0" FROM t GROUP BY id`)
+	wantKinds := []selectNameKind{selectNameInherited, selectNameAnonymousAggregate, selectNameExplicit}
+	if why != "" || !equalStringSlices(names, []string{"ID", "_1", "_0"}) || len(kinds) != len(wantKinds) {
+		t.Fatalf("names=%q kinds=%v reason=%q", names, kinds, why)
+	}
+	for i, want := range wantKinds {
+		if kinds[i] != want {
+			t.Errorf("slot %d provenance=%v, want %v", i, kinds[i], want)
+		}
+	}
+}
+
+func TestNamedSlotOrderPopulation(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		names []string
+		kinds []selectNameKind
+		want  bool
+	}{
+		{"empty", nil, nil, false},
+		{"missing provenance", []string{"K", "V"}, nil, false},
+		{"single named", []string{"K"}, []selectNameKind{selectNameInherited}, false},
+		{"duplicate names", []string{"K", "k"}, []selectNameKind{selectNameInherited, selectNameExplicit}, false},
+		{"anonymous only", []string{"_0", "_1"}, []selectNameKind{selectNameAnonymousAggregate, selectNameAnonymousAggregate}, false},
+		{"authored ordinal spelling", []string{"_0", "_1"}, []selectNameKind{selectNameExplicit, selectNameAnonymousAggregate}, true},
+		{"inherited pair", []string{"K", "V"}, []selectNameKind{selectNameInherited, selectNameInherited}, true},
+		{"inherited and anonymous", []string{"_0", "K"}, []selectNameKind{selectNameAnonymousAggregate, selectNameInherited}, true},
+		{"authored anonymous collision", []string{"_1", "_1"}, []selectNameKind{selectNameExplicit, selectNameAnonymousAggregate}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := hasNamedSlotOrder(tc.names, tc.kinds); got != tc.want {
+				t.Fatalf("hasNamedSlotOrder(%q, %v)=%v, want %v", tc.names, tc.kinds, got, tc.want)
+			}
+		})
+	}
+	for _, tc := range []struct {
+		derived, named int
+		want           string
+	}{
+		{0, 0, "vacuous"},
+		{99, 1, "vacuous"},
+		{100, 0, "COLLAPSED"},
+		{100, 1, ""},
+		{101, 101, ""},
+		{-1, 0, "invalid"},
+		{100, -1, "invalid"},
+		{100, 101, "invalid"},
+	} {
+		t.Run(fmt.Sprintf("floors/%d/%d", tc.derived, tc.named), func(t *testing.T) {
+			t.Parallel()
+			got := slotOrderPopulationProblem(tc.derived, tc.named)
+			if (tc.want == "" && got != "") || (tc.want != "" && !strings.Contains(got, tc.want)) {
+				t.Fatalf("population problem=%q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAnonymousSlotOrderScope(t *testing.T) {
+	t.Parallel()
+	derived, why := selectOutputNames(`SELECT COUNT(*), SUM(v) FROM t`)
+	if why != "" || !equalStringSlices(derived, []string{"_0", "_1"}) {
+		t.Fatalf("derived=%q reason=%q", derived, why)
+	}
+	for _, tc := range []struct {
+		row  string
+		want bool
+	}{
+		{"_0=2|_1=30", true},
+		{"_1=30|_0=2", false}, // Moving NAME=value pairs must be detected.
+		{"_0=30|_1=2", true},  // Fixed-label value swaps are outside this gate.
+	} {
+		t.Run(tc.row, func(t *testing.T) {
+			t.Parallel()
+			names, ok := expectationNames(tc.row)
+			if !ok || slotNamesMatch(names, derived) != tc.want {
+				t.Fatalf("names=%q parsed=%v match=%v, want %v", names, ok, slotNamesMatch(names, derived), tc.want)
+			}
+		})
+	}
+}
+
+func FuzzTypedSelectLabels(f *testing.F) {
+	f.Add([]byte{0, 1, 2, 3})
+	f.Add([]byte{3, 2, 0, 1})
+	f.Add([]byte{})
+	f.Fuzz(func(t *testing.T, choices []byte) {
+		if len(choices) == 0 {
+			choices = []byte{2}
+		}
+		if len(choices) > 16 {
+			choices = choices[:16]
+		}
+		var items, want []string
+		var wantKinds []selectNameKind
+		for i, choice := range choices {
+			switch choice % 4 {
+			case 0:
+				items = append(items, `q."k.part" ignored`)
+				want = append(want, "k.part")
+				wantKinds = append(wantKinds, selectNameInherited)
+			case 1:
+				items = append(items, `COALESCE(q.k, 0) AS "_0"`)
+				want = append(want, "_0")
+				wantKinds = append(wantKinds, selectNameExplicit)
+			case 2:
+				items = append(items, "COUNT(*)")
+				want = append(want, fmt.Sprint("_", i))
+				wantKinds = append(wantKinds, selectNameAnonymousAggregate)
+			case 3:
+				items = append(items, "SUM(q.k) ignored")
+				want = append(want, fmt.Sprint("_", i))
+				wantKinds = append(wantKinds, selectNameAnonymousAggregate)
+			}
+		}
+		sql := "SELECT " + strings.Join(items, ", /* FROM AS , ) */ ") + " FROM t AS q GROUP BY q.k, q.\"k.part\""
+		got, kinds, why := selectOutputNamesWithProvenance(sql)
+		if why != "" || !equalStringSlices(got, want) || len(kinds) != len(wantKinds) {
+			t.Fatalf("query=%s names=%q kinds=%v reason=%q, want %q/%v", sql, got, kinds, why, want, wantKinds)
+		}
+		for i, kind := range kinds {
+			if kind != wantKinds[i] {
+				t.Fatalf("slot %d provenance=%v, want %v", i, kind, wantKinds[i])
+			}
+		}
+	})
 }

@@ -42,7 +42,6 @@ import (
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/functions"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
-	"fdb.dev/pkg/relational/core/query"
 	"fdb.dev/pkg/relational/core/query/expr"
 	"fdb.dev/pkg/relational/core/query/logical"
 	"fdb.dev/pkg/relational/core/query/semantic"
@@ -53,9 +52,10 @@ import (
 // upgrade, column validation, sort-key resolution) and any CTE column
 // schemas accumulated from WITH clause processing.
 type PlanVisitor struct {
-	md        *recordlayer.RecordMetaData
-	cteScopes map[string]semantic.ScopeSource
-	cteBodies map[string]logical.LogicalOperator // CTE name → body plan, for scalar subqueries referencing outer CTEs
+	enclosingScope *semantic.Scope
+	md             *recordlayer.RecordMetaData
+	cteScopes      map[string]semantic.ScopeSource
+	cteBodies      map[string]logical.LogicalOperator // CTE name → body plan, for scalar subqueries referencing outer CTEs
 	// cteOnScopes carries the ON-resolution-only sources for declared CTEs
 	// whose schema derivation declined the global cteScopes (join/unnest
 	// bodies) — consumed ONLY by upgradeJoinOnPredicates so an enclosing
@@ -108,10 +108,7 @@ func collectSelectNames(simpleTable *antlrgen.SimpleTableContext) (cols []string
 			cols = append(cols, "")
 			aliases = append(aliases, "")
 		case *antlrgen.SelectExpressionElementContext:
-			alias := ""
-			if e.Uid() != nil {
-				alias = functions.NormalizeIdentifier(e.Uid().GetText())
-			}
+			alias := selectOutputAlias(e)
 			// Try plain column name first.
 			colName, nameErr := columnNameFromExpr(e.Expression(), "SELECT expression")
 			if nameErr != nil {
@@ -179,6 +176,20 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 		if v.cteOnScopes == nil {
 			v.cteOnScopes = make(map[string]semantic.ScopeSource)
 		}
+		// Detect all duplicate declarations before building any body. A first
+		// body can itself be unsupported (for example SELECT without FROM),
+		// but Java's duplicate-name error has declaration precedence.
+		predeclared := make(map[string]struct{}, len(ctesCtx.AllNamedQuery()))
+		for _, nq := range ctesCtx.AllNamedQuery() {
+			name := functions.FullIdToName(nq.GetName())
+			upper := strings.ToUpper(name)
+			if _, exists := predeclared[upper]; exists {
+				return nil, api.NewErrorf(api.ErrCodeDuplicateAlias,
+					"found '%s' more than once", name)
+			}
+			predeclared[upper] = struct{}{}
+		}
+
 		// Duplicate detection is scoped to THIS WITH clause: a name already
 		// registered from an ENCLOSING query's WITH is legal lexical
 		// SHADOWING (a nested body's `WITH c1 …` shadows the outer c1 inside
@@ -195,6 +206,38 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 					"found '%s' more than once", name)
 			}
 			declaredHere[upper] = struct{}{}
+			if ctesCtx.RECURSIVE() == nil {
+				// A definition sees the prior lexical registry. Publish its new
+				// name only after the full body succeeds; never reuse an older
+				// same-named body when construction of the new generation fails.
+				body, bodyErr := v.buildCTEBodyQuery(nq.Query())
+				if bodyErr != nil {
+					return nil, bodyErr
+				}
+				if body == nil {
+					return nil, api.NewError(api.ErrCodeUnsupportedQuery, "CTE body has no logical plan")
+				}
+				source, exact := exactVirtualScopeSource(name, body, v.md, nil, v.cteScopes)
+				if !exact {
+					// Keep an underivable declaration as a tombstone, not the
+					// previous same-named schema. Consumers retain the existing
+					// correct-or-loud contract; execution still owns the full body.
+					delete(v.cteScopes, upper)
+					v.cteOnScopes[upper] = semantic.ScopeSource{}
+					v.cteBodies[upper] = body
+					continue
+				}
+				if aliases, ok := nq.GetColumnAliases().(*antlrgen.FullIdListContext); ok && aliases != nil &&
+					len(aliases.AllFullId()) != len(source.Table.Columns()) {
+					return nil, api.NewErrorf(api.ErrCodeInvalidColumnReference,
+						"cte query has %d column(s), however %d aliases defined",
+						len(source.Table.Columns()), len(aliases.AllFullId()))
+				}
+				v.cteScopes[upper] = applyCTEColumnAliases(source, nq.GetColumnAliases())
+				delete(v.cteOnScopes, upper)
+				v.cteBodies[upper] = body
+				continue
+			}
 			if src, ok, cteBodyErr := buildCTEColumnSource(v.md, name, nq.Query(), v.cteScopes); cteBodyErr != nil {
 				return nil, cteBodyErr
 			} else if ok {
@@ -470,9 +513,19 @@ func (v *PlanVisitor) visitSimpleTableBody(simpleTable *antlrgen.SimpleTableCont
 func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleTableContext) (logical.LogicalOperator, error) {
 	// Step 1: FROM → parse the source first. Java's QueryVisitor
 	// rejects FROM-less SELECTs before any function dispatch, so
+	if v.enclosingScope != nil {
+		if err := requireResolvedLimitClause(simpleTable); err != nil {
+			return nil, err
+		}
+	}
 	// parseFromSource must run before classification/validation.
 	fs, err := parseFromSource(simpleTable)
 	if err != nil {
+		return nil, err
+	}
+	fs.enclosingScope = v.enclosingScope
+	v.assignDerivedSourceBindings(fs)
+	if err := v.prepareDerivedSourceBodies(fs); err != nil {
 		return nil, err
 	}
 
@@ -518,17 +571,10 @@ func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleT
 		}
 	}
 
-	// Validate qualified star sources against FROM.
-	if err := validateQualifiedStarSourcesFromClassification(cls, fs, v.md); err != nil {
-		return nil, err
-	}
 	resolvesToTable := newUnnestTableResolver(v.md, v.schemaName)
-	if err := rejectDuplicateUnnestAliasesInFrom(fs.tableName, fs.tableAlias, fs.joins, resolvesToTable); err != nil {
-		return nil, err
-	}
 	if err := retargetUsingJoins(fs.tableName, fs.tableAlias,
 		fs.derivedQuery == nil && fs.inlineValues == nil && fs.tableName != "",
-		fs.derivedQuery, fs.joins, v.md, v.schemaName,
+		fs.derivedQuery, fs.catalogAwareInnerPlan, fs.joins, v.md, v.schemaName,
 		cteNamePredicate(v.cteScopes), v.cteScopes); err != nil {
 		return nil, err
 	}
@@ -569,9 +615,6 @@ func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleT
 	// reference is resolved against the scope that binding would build. Left to
 	// translation it survives long enough for a SELECT-list reference to see
 	// the name twice in one source and report an ambiguity instead. RFC-142.
-	if err := query.RejectUnnestAliasCollisions(op); err != nil {
-		return nil, err
-	}
 
 	// Step 2: WHERE → wrap with filter directly from ANTLR.
 	op = v.visitWhere(op, simpleTable)
@@ -592,7 +635,7 @@ func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleT
 	// simpleTable.OrderByClause() and resolves positional references
 	// against the SELECT column list.
 	hasAggregate := cls.countStar || len(cls.aggCols) > 0
-	op = v.visitOrderBy(op, simpleTable, selectCols, selectAliases, cls.aggCols, stripPrefix, groupKeyRefDisplays(cls.groupBy), cls.groupByAliases, cls.postSortStripProj, cls.postSortStripAliases, cls.postSortAggregateOutputOrdinals)
+	op = v.visitOrderBy(op, simpleTable, selectCols, selectAliases, cls.aggCols, stripPrefix, groupKeyRefDisplays(cls.groupBy), cls.groupByAliases, cls.postSortStripProj, cls.postSortSQLNames, cls.postSortAggregateOutputOrdinals)
 
 	// Post-sort strip projection: when hasSortOnly is true in the
 	// aggregate path, the visible-only projection is deferred past
@@ -601,6 +644,7 @@ func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleT
 		proj := logical.NewProject(op, cls.postSortStripProj, cls.postSortStripAliases)
 		proj.AggregateOutputOrdinals = append([]int(nil), cls.postSortAggregateOutputOrdinals...)
 		proj.IsComputed = append([]bool(nil), cls.postSortIsComputed...)
+		proj.SQLNames = append([]string(nil), cls.postSortSQLNames...)
 		op = proj
 	}
 
@@ -635,6 +679,7 @@ func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleT
 	// visit methods above; the selectQuery carries parse-tree metadata
 	// that the upgrade functions need for semantic resolution.
 	sq := selectQueryFromClassification(cls, fs)
+	sq.enclosingScope = v.enclosingScope
 	rememberSchemaAliasTableQualifiers(sq, resolvesToTable)
 	queryCTEScopes := singleSourceQueryBlockCTEScopes(sq, v.cteScopes, v.cteOnScopes)
 
@@ -646,7 +691,7 @@ func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleT
 	// (1) Expand qualified stars (a.*) in the projection list.
 	needRebuild := false
 	if sq.projQualifier != "" && sq.projCols == nil {
-		expandProjQualifier(sq, v.md, v.schemaName)
+		normalizeSoleQualifiedStar(sq)
 		needRebuild = true
 	}
 	// A bare `SELECT *` over a JOIN … USING expands explicitly so the
@@ -659,7 +704,9 @@ func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleT
 	// explicit non-ephemeral projection (the __ROW_VERSION pseudo-field must
 	// not surface through the star — Java's nonEphemeralVisible star over the
 	// ephemeral table-access attribute).
-	if expandBareStarForRowVersion(sq, v.md, v.schemaName, queryCTEScopes) {
+	if expanded, err := expandBareStarFromScope(sq, v.md, v.schemaName, queryCTEScopes); err != nil {
+		return nil, err
+	} else if expanded {
 		needRebuild = true
 	}
 	if hasAnyQualifiedStar(sq) {
@@ -689,10 +736,25 @@ func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleT
 		}
 	}
 
+	if err := bindLateralCollections(op, sq, v.md, v.schemaName, queryCTEScopes); err != nil {
+		return nil, err
+	}
+
 	// (2) Resolve projection columns through the scope.
 	if resolver != nil && sq.projCols != nil && len(sq.aggCols) == 0 && !sq.countStar {
 		proj := findProjection(op)
 		for i, col := range sq.projCols {
+			if col.bound != nil {
+				if proj == nil || i >= len(proj.Projections) {
+					return nil, api.NewError(api.ErrCodeInternalError, "star attribute has no logical projection slot")
+				}
+				if proj.ProjectedValues == nil {
+					proj.ProjectedValues = make([]values.Value, len(proj.Projections))
+				}
+				proj.ProjectedValues[i] = col.bound
+				continue
+			}
+
 			if i < len(sq.projExprs) && sq.projExprs[i] != nil {
 				if proj != nil {
 					wv, walkErr := resolver.WalkExpression(sq.projExprs[i])
@@ -1066,6 +1128,7 @@ func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleT
 	existsPlanner := &existsSubqueryPlanner{
 		md:          v.md,
 		schemaName:  v.schemaName,
+		outerScope:  resolverScope(resolver),
 		outerScopes: buildOuterScopeSources(sq, v.md, v.schemaName, queryCTEScopes),
 		cteScopes:   v.cteScopes,
 		cteOnScopes: v.cteOnScopes,
@@ -1279,15 +1342,120 @@ func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleT
 	return op, nil
 }
 
+// assignDerivedSourceBindings finalizes derived identities before any scope or
+// logical source is built. SQL aliases remain lexical names; nested derived
+// sources cannot share runtime correlations with any enclosing frame. A local
+// deterministic mint avoids exposing global planning history in carrier labels.
+func (v *PlanVisitor) assignDerivedSourceBindings(fs *fromSource) {
+	if fs == nil || v.enclosingScope == nil {
+		return
+	}
+	visible := make(map[string]struct{})
+	reserve := func(name string) {
+		if name != "" {
+			visible[strings.ToUpper(name)] = struct{}{}
+		}
+	}
+	for frame := v.enclosingScope; frame != nil; frame = frame.Parent() {
+		for _, source := range frame.Sources() {
+			reserve(source.Alias.Name())
+			reserve(source.CorrelationName)
+			for _, qualifier := range source.AdditionalQualifiers {
+				reserve(qualifier.Name())
+			}
+		}
+	}
+	for name := range v.cteScopes {
+		reserve(name)
+	}
+	for name := range v.cteOnScopes {
+		reserve(name)
+	}
+	for name := range v.cteBodies {
+		reserve(name)
+	}
+	enclosing := maps.Clone(visible)
+	reserveSource := func(table, alias, binding string, segments []string, explicit bool) {
+		reserve(table)
+		reserve(alias)
+		reserve(binding)
+		// A default schema-qualified table/array alias names its final
+		// captured segment, not the rendered path. Explicit aliases are literal.
+		if !explicit && (alias == "" || alias == table) && len(segments) > 0 {
+			reserve(segments[len(segments)-1])
+		}
+	}
+	reserveSource(fs.tableName, fs.tableAlias, fs.bindingID, fs.sourceSegments, fs.tableAliasExplicit)
+	for _, j := range fs.joins {
+		reserveSource(j.tableName, j.alias, j.bindingID, j.segments, j.aliasExplicit)
+	}
+	candidate := 0
+	mint := func() string {
+		id := mintDistinctUpper(visible, func() values.CorrelationIdentifier {
+			name := "Q$DERIVED" + strconv.Itoa(candidate)
+			candidate++
+			return values.NamedCorrelationIdentifier(name)
+		})
+		reserve(id)
+		return id
+	}
+	if fs.derivedQuery != nil && fs.bindingID == "" {
+		fs.bindingID = mint()
+	}
+	for i := range fs.joins {
+		j := &fs.joins[i]
+		if j.derivedQuery == nil {
+			continue
+		}
+		// Same-level duplicate assignment already distinguishes these legs.
+		// Keep it unless the enclosing environment occupies that identity.
+		_, collision := enclosing[strings.ToUpper(j.bindingID)]
+		if j.bindingID == "" || collision {
+			j.bindingID = mint()
+		}
+	}
+}
+
+// prepareDerivedSourceBodies builds each derived query once, before even the
+// GROUP BY star classifier needs its schema. Later carrier and scope rebuilds
+// share this exact body rather than independently resolving the same parse tree.
+func (v *PlanVisitor) prepareDerivedSourceBodies(fs *fromSource) error {
+	build := func(inner antlrgen.IQueryContext, body *logical.LogicalOperator) error {
+		if inner == nil || *body != nil {
+			return nil
+		}
+		var err error
+		*body, err = v.buildCTEBodyQuery(inner)
+		if err != nil {
+			return err
+		}
+		if *body == nil {
+			return api.NewError(api.ErrCodeUnsupportedQuery, "derived source has no logical body")
+		}
+		return nil
+	}
+	if err := build(fs.derivedQuery, &fs.catalogAwareInnerPlan); err != nil {
+		return err
+	}
+	for i := range fs.joins {
+		if err := build(fs.joins[i].derivedQuery, &fs.joins[i].catalogAwareInnerPlan); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // visitFrom builds the FROM-source subtree from the pre-parsed
-// fromSource. For derived tables (subquery in FROM), it recursively
-// calls v.VisitQueryBody to build the inner plan — CTE scopes flow
-// naturally through the visitor instance.
+// fromSource. Derived queries retain their complete, catalog-aware bodies and
+// lexical CTE environment, including the body's own WITH clause.
 //
 // Pre-built derived table inner plans are written back to
 // fs.joins[i].catalogAwareInnerPlan so that the selectQuery bridge
 // carries them into the upgrade functions.
 func (v *PlanVisitor) visitFrom(simpleTable *antlrgen.SimpleTableContext, fs *fromSource) (logical.LogicalOperator, error) {
+	if err := v.prepareDerivedSourceBodies(fs); err != nil {
+		return nil, err
+	}
 	var op logical.LogicalOperator
 	if fs.inlineValues != nil {
 		var err error
@@ -1296,16 +1464,7 @@ func (v *PlanVisitor) visitFrom(simpleTable *antlrgen.SimpleTableContext, fs *fr
 			return nil, err
 		}
 	} else if fs.derivedQuery != nil {
-		// Derived table: recursively build inner plan via the visitor.
-		// CTE scopes flow naturally through the visitor instance, and
-		// inner plans get catalog-aware upgrades.
-		innerOp, innerErr := v.VisitQueryBody(fs.derivedQuery.QueryExpressionBody())
-		if innerErr != nil {
-			return nil, innerErr
-		}
-		if innerOp == nil {
-			return nil, nil
-		}
+		innerOp := fs.catalogAwareInnerPlan
 		// The CTE wrapper is the logical tree's ONLY carrier of a derived
 		// table's alias — wrap the no-joins case too. Bare innerOp loses the
 		// alias: sourceAlias() then walks through to the BASE table, a
@@ -1323,31 +1482,9 @@ func (v *PlanVisitor) visitFrom(simpleTable *antlrgen.SimpleTableContext, fs *fr
 		// would be rebuilt by the text-only builder — its body's projections
 		// then carry no resolved Values and the translator refuses the whole
 		// query with "projection slot 0 has no resolved Value".
-		fs.catalogAwareInnerPlan = innerOp
-		op = logical.NewCTE(fs.tableName, innerOp,
-			logical.NewScan(fs.tableName, ""), false)
+		op = derivedSourceCarrier(fs.tableName, fs.bindingID, innerOp)
 	} else {
-		op = logical.NewScan(fs.tableName, fs.tableAlias)
-	}
-
-	// Pre-build derived table inner plans for JOIN sources through the
-	// visitor. Write back to fs.joins[i].catalogAwareInnerPlan so
-	// the selectQuery carries them into the upgrade functions. If
-	// upgrades trigger a needRebuild (qualified star expansion),
-	// buildLogicalPlanForSelect can use the already-built inner plan
-	// rather than falling back to the old non-CTE-aware path.
-	for i := range fs.joins {
-		fj := &fs.joins[i]
-		if fj.derivedQuery == nil {
-			continue
-		}
-		innerOp, innerErr := v.VisitQueryBody(fj.derivedQuery.QueryExpressionBody())
-		if innerErr != nil {
-			return nil, innerErr
-		}
-		if innerOp != nil {
-			fj.catalogAwareInnerPlan = innerOp
-		}
+		op = logical.NewScan(fs.tableName, fs.tableAlias, fs.sourceSegments...)
 	}
 
 	// JOINs chain left-to-right from the primary scan. Each join wraps
@@ -1364,30 +1501,9 @@ func (v *PlanVisitor) visitFrom(simpleTable *antlrgen.SimpleTableContext, fs *fr
 		} else if j.catalogAwareInnerPlan != nil {
 			// Use the pre-built inner plan from the visitor.
 			if j.alias != "" {
-				cte := logical.NewCTE(j.alias, j.catalogAwareInnerPlan,
-					logical.NewScan(j.alias, ""), false)
-				cte.Binding = j.bindingID
-				right = cte
+				right = derivedSourceCarrier(j.alias, j.bindingID, j.catalogAwareInnerPlan)
 			} else {
 				right = j.catalogAwareInnerPlan
-			}
-		} else if j.derivedQuery != nil {
-			// Fallback: derived table without a pre-built inner plan
-			// (shouldn't happen, but defensive).
-			innerRight, innerErr := v.VisitQueryBody(j.derivedQuery.QueryExpressionBody())
-			if innerErr != nil {
-				return nil, innerErr
-			}
-			if innerRight == nil {
-				return nil, nil
-			}
-			if j.alias != "" {
-				cte := logical.NewCTE(j.alias, innerRight,
-					logical.NewScan(j.alias, ""), false)
-				cte.Binding = j.bindingID
-				right = cte
-			} else {
-				right = innerRight
 			}
 		} else if u := lateralUnnestCandidate(j, visibleFromAliases(fs.tableName, fs.tableAlias, fs.joins[:i], resolvesToTable), resolvesToTable); u != nil {
 			// A comma source that may be a lateral array unnest
@@ -1397,7 +1513,7 @@ func (v *PlanVisitor) visitFrom(simpleTable *antlrgen.SimpleTableContext, fs *fr
 			// preserved the uid segments + AT alias for exactly this. RFC-142.
 			right = u
 		} else {
-			sc := logical.NewScan(j.tableName, j.alias)
+			sc := logical.NewScan(j.tableName, j.alias, j.segments...)
 			sc.Binding = j.bindingID
 			right = sc
 		}
@@ -1572,6 +1688,7 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 		cls.postSortStripAliases = append([]string(nil), proj.Aliases...)
 		cls.postSortAggregateOutputOrdinals = append([]int(nil), proj.AggregateOutputOrdinals...)
 		cls.postSortIsComputed = append([]bool(nil), proj.IsComputed...)
+		cls.postSortSQLNames = append([]string(nil), proj.SQLNames...)
 		cls.postAggExprs = antlr
 	}
 
@@ -2283,10 +2400,7 @@ func (v *PlanVisitor) visitFinalProjection(op logical.LogicalOperator, simpleTab
 			computed = append(computed, false)
 			refs = append(refs, logical.ColumnRef{})
 		case *antlrgen.SelectExpressionElementContext:
-			alias := ""
-			if e.Uid() != nil {
-				alias = functions.NormalizeIdentifier(e.Uid().GetText())
-			}
+			alias := selectOutputAlias(e)
 			// Try plain column name first.
 			colName, nameErr := columnNameFromExpr(e.Expression(), "SELECT expression")
 			if nameErr != nil {

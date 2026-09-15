@@ -181,7 +181,7 @@ func TestFDB_CrossLegDuplicateColumnBoxUnnest(t *testing.T) {
 	// and never show NULL. A.K distinct 100/300 disambiguates the buried read.
 	t.Run("full_null_grouped", func(t *testing.T) {
 		wantSet(t, `SELECT A."K", COUNT(*) FROM A FULL OUTER JOIN C ON A."AID" = C."CID", B, C."ARR" AS "X" GROUP BY A."K"`,
-			[]string{"K=100|COUNT(*)=2", "K=300|COUNT(*)=1", "K=<nil>|COUNT(*)=1"}, ".K#")
+			[]string{"K=100|_1=2", "K=300|_1=1", "K=<nil>|_1=1"}, ".K#")
 	})
 
 	// CROSS-LEG buried predicate: `A.K <> B.K` spans the buried A.K and the scan B.K — it

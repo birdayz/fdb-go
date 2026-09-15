@@ -684,6 +684,25 @@ func TestWatchSetupErr_MapsCancelWithoutMaskingGenuineError(t *testing.T) {
 	})
 }
 
+func TestCancel_StateVisibleBeforeIncarnationCancellation(t *testing.T) {
+	t.Parallel()
+	tx := newTestTx()
+	called := false
+	tx.beforeReadFailureDelivery = func(cause error) {
+		called = true
+		if code := fdbCodeOf(cause); code != ErrTransactionCancelled {
+			t.Fatalf("delivered cause code=%d, want %d", code, ErrTransactionCancelled)
+		}
+		if state := txState(tx.state.Load()); state != txStateCancelled {
+			t.Fatalf("incarnation cancellation delivered while state=%v, want cancelled", state)
+		}
+	}
+	tx.Cancel()
+	if !called {
+		t.Fatal("Cancel did not deliver incarnation cancellation")
+	}
+}
+
 // TestCancel_StateVisibleWhenWatchCancelled probes Cancel's ordering:
 // Cancel() must store txStateCancelled BEFORE cancelWatches(), so EVERY watch context observes the
 // cancelled state at the instant it is cancelled. With the CORRECT order this is guaranteed — the store
@@ -735,7 +754,7 @@ func TestCancel_StateVisibleWhenWatchCancelled(t *testing.T) {
 
 // TestOnError_CallerCancelOutranksTxnTimeout pins that when a retryable FDB error reaches OnError
 // with BOTH the txn SetTimeout deadline AND the caller ctx expired, the caller's own cancellation
-// wins over the txn timeout (mapTimeout precedence) — a TransactCtx caller gets context.Canceled,
+// wins over the txn timeout (mapReadError precedence) — a TransactCtx caller gets context.Canceled,
 // not 1031. Revert-proof: without the ctx.Err() check the timeout gate returns 1031.
 func TestOnError_CallerCancelOutranksTxnTimeout(t *testing.T) {
 	t.Parallel()
@@ -1019,7 +1038,7 @@ func TestValidateMutation_LegacyVersionstampSizeDiscount(t *testing.T) {
 }
 
 // timedTx builds a bare Transaction with the given SetTimeout budget and deadline —
-// the unit-test shape for checkTimeout/opContext/mapTimeout probes.
+// the unit-test shape for checkTimeout/opContext/mapReadError probes.
 func timedTx(timeout time.Duration, deadline time.Time) *Transaction {
 	tx := &Transaction{}
 	tx.timeoutNs.Store(int64(timeout))

@@ -159,3 +159,80 @@ func TestColumn_LookupStructField_OrdinalIsDeclaredPosition(t *testing.T) {
 		t.Error("LookupStructField descended into a scalar column")
 	}
 }
+
+func TestNestedLookupRequiresStructValue(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, typ   string
+		array, want bool
+	}{
+		{"struct", "RECORD", false, true},
+		{"array_of_struct", "RECORD", true, false},
+		{"scalar_with_element_metadata", "STRING", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			column := Column{Type: tc.typ, IsArray: tc.array, StructFields: []Column{{Id: FromNormalized("leaf"), Type: "BIGINT"}}}
+			_, _, direct := column.LookupStructField(FromNormalized("leaf"))
+			_, _, strict := strictPass.lookupStructField(column, FromNormalized("leaf"))
+			_, _, relaxed := relaxedPass.lookupStructField(column, NewUnquoted("LEAF"))
+			if direct != tc.want || strict != tc.want || relaxed != tc.want {
+				t.Fatalf("direct/strict/relaxed = %v/%v/%v, want %v; element metadata must not authorize container descent", direct, strict, relaxed, tc.want)
+			}
+		})
+	}
+}
+
+func TestArrayMetadataDoesNotCompeteWithUnnestedStruct(t *testing.T) {
+	t.Parallel()
+	element := Column{Id: NewUnquoted("items"), Type: "RECORD", StructFields: []Column{
+		{Id: NewUnquoted("n"), Type: "RECORD", StructFields: []Column{{Id: NewUnquoted("vals"), Type: "DOUBLE", IsArray: true}}},
+	}}
+	array := element
+	array.IsArray = true
+	scope := NewScope(nil)
+	for _, src := range []ScopeSource{
+		{Alias: NewUnquoted("items"), CorrelationName: "ITEMS", Table: &StaticTable{TableColumns: []Column{array}}},
+		{Alias: NewUnquoted("items"), CorrelationName: "Q$DUP1", Shadowing: true, Table: &StaticTable{TableColumns: []Column{element}}},
+	} {
+		if err := scope.AddSource(src); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, owner, path, err := scope.ResolveSourceQualifiedPath(segs("items", "items", "n", "vals"))
+	if err != nil || owner.CorrelationName != "Q$DUP1" || len(path) != 2 || path[0].Ordinal != 0 || path[1].Ordinal != 0 || !path[1].Col.IsArray {
+		t.Fatalf("source-qualified array: owner %s, path %+v, error %v", owner.CorrelationName, path, err)
+	}
+	_, owner, path, err = scope.ResolvePathNested(segs("items", "n", "vals"))
+	if err != nil || owner.CorrelationName != "Q$DUP1" || len(path) != 2 || !path[1].Col.IsArray {
+		t.Fatalf("struct-relative array: owner %s, path %+v, error %v", owner.CorrelationName, path, err)
+	}
+}
+
+func TestNestedArrayStopsDescentButRemainsAddressable(t *testing.T) {
+	t.Parallel()
+	array := Column{Id: NewUnquoted("a"), Type: "RECORD", IsArray: true, StructFields: []Column{{Id: NewUnquoted("leaf"), Type: "BIGINT"}}}
+	scope := NewScope(nil)
+	if err := scope.AddSource(ScopeSource{Alias: NewUnquoted("t"), CorrelationName: "T", Table: &StaticTable{TableColumns: []Column{
+		array, {Id: NewUnquoted("s"), Type: "RECORD", StructFields: []Column{array}},
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range [][]Identifier{segs("t", "a"), segs("t", "s", "a")} {
+		col, _, accessors, err := scope.ResolveSourceQualifiedPath(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(accessors) > 0 {
+			col = accessors[len(accessors)-1].Col
+		}
+		if !col.IsArray {
+			t.Fatalf("%v lost its ARRAY type", path)
+		}
+	}
+	for _, path := range [][]Identifier{segs("t", "a", "leaf"), segs("t", "s", "a", "leaf")} {
+		if _, _, accessors, err := scope.ResolveSourceQualifiedPath(path); err == nil {
+			t.Fatalf("%v descended through ARRAY using element metadata: %+v", path, accessors)
+		}
+	}
+}

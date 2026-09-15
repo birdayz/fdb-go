@@ -2,6 +2,7 @@ package factorycorpus
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"strings"
@@ -21,13 +22,14 @@ import (
 // the shared format worth having. Only the LOADING is this package's own,
 // because provenance is a factory concept the vendored corpus does not carry.
 //
-// The IDPrefix is derived from the scenario name, which is unique by
-// construction (seed, query index, projection), so parallel execution cannot
-// collide on a database path or a template name.
+// The IDPrefix includes the scenario identity and a fresh namespace token.
+// Concurrent replays of the same scenario cannot share a reset/load target;
+// the runner also refuses to drop an existing database in this mode.
 func RunScenario(ctx context.Context, clusterFile string, s *Scenario) javacorpus.FileResult {
 	return javacorpus.RunParsed(ctx, s.SubFile(), javacorpus.Config{
-		ClusterFile: clusterFile,
-		IDPrefix:    "FC_" + sanitize(s.Header.Name),
+		ClusterFile:      clusterFile,
+		IDPrefix:         "FC_" + sanitize(s.Header.Name) + "_" + rand.Text(),
+		FactoryResetLoad: true,
 	})
 }
 
@@ -133,6 +135,12 @@ func Describe(s *Scenario, res javacorpus.FileResult) string {
 		s.Header.Blessing, strings.Join(s.Header.Oracles, "+"))
 	if res.Err != nil {
 		fmt.Fprintf(&b, "  %v\n", res.Err)
+	}
+	if res.FixtureLoadAttempts != 0 {
+		fmt.Fprintf(&b, "  fixture reset/load attempts: %d\n", res.FixtureLoadAttempts)
+	}
+	for i, err := range res.FixtureCommitAmbiguities {
+		fmt.Fprintf(&b, "  fixture commit ambiguity %d: %v\n", i+1, err)
 	}
 	for _, sk := range res.Skips {
 		fmt.Fprintf(&b, "  skip %s at %s: %s\n", sk.Class, sk.Where, sk.Detail)

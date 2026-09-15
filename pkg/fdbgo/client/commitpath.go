@@ -25,7 +25,7 @@ import (
 // barrier before returning the error. This matches C++ NativeAPI.actor.cpp
 // tryCommit() which calls commitDummyTransaction to confirm the original
 // request is no longer in-flight before allowing OnError to retry.
-func (tx *Transaction) commit(ctx context.Context, muts []Mutation, writeConflicts []KeyRange) error {
+func (input *commitInput) commit(ctx context.Context) (result commitOutcome, err error) {
 	// beforeCommitProxySelect is the seam for the one window this function's
 	// design is about: between the caller entering Commit (where the cache token
 	// is captured) and the proxy selection below (where the attempt binds to a
@@ -33,7 +33,7 @@ func (tx *Transaction) commit(ctx context.Context, muts []Mutation, writeConflic
 	// a commit with a token describing a cluster it never talked to, and no
 	// arrangement of goroutines can hit a window this narrow reliably. Nil in
 	// production; a test installs it to fire the handoff at that exact instant.
-	if hook := tx.db.beforeCommitProxySelect.Load(); hook != nil {
+	if hook := input.db.beforeCommitProxySelect.Load(); hook != nil {
 		(*hook)()
 	}
 	// The epoch comes out of the SAME atomic load as the proxy, so it is the
@@ -48,33 +48,33 @@ func (tx *Transaction) commit(ctx context.Context, muts []Mutation, writeConflic
 	// the caller has already been told succeeded. On the GRV path a refusal is
 	// merely conservative; here it costs read-your-committed-writes, the
 	// invariant the floor exists to hold.
-	proxy, commitEpoch, err := tx.db.getCommitProxy()
+	proxy, commitEpoch, err := input.db.getCommitProxy()
 	if err != nil {
-		return &wire.FDBError{Code: ErrAllProxiesUnreachable}
+		return result, &wire.FDBError{Code: ErrAllProxiesUnreachable}
 	}
-	tx.commitEpoch.Store(commitEpoch)
+	result.epoch = commitEpoch
 
-	conn, err := tx.db.getOrDial(ctx, proxy.Address)
+	conn, err := input.db.getOrDial(ctx, proxy.Address)
 	if err != nil {
-		tx.db.handleDialError(ctx, proxy.Address)
-		tx.db.kickTopology()
+		input.db.handleDialError(ctx, proxy.Address)
+		input.db.kickTopology()
 		commitErr := &wire.FDBError{Code: ErrCommitUnknownResult}
-		if !tx.isDummy {
-			tx.commitDummyTransaction(ctx)
+		if !input.isDummy {
+			input.commitDummyTransaction(ctx)
 		}
-		return commitErr
+		return result, commitErr
 	}
 
 	replyToken, replyCh, replyHandle := conn.PrepareReply()
 	defer replyHandle.Release()
-	body, poolBuf := buildCommitTransactionRequest(tx, replyToken, muts, writeConflicts)
+	body, poolBuf := buildCommitInputRequest(input, replyToken)
 
 	// Capture the proxy-change channel BEFORE sending the commit frame.
 	// C++ captures onProxiesChanged before dispatch. If we captured after
 	// SendFrame, a topology change between send and capture would close
 	// the old channel and replace it — we'd get the fresh (unclosed)
 	// channel and miss the change.
-	proxiesChanged := tx.db.waitProxiesChanged()
+	proxiesChanged := input.db.waitProxiesChanged()
 
 	if err := conn.SendFrame(proxy.Token, body); err != nil {
 		// Do NOT return poolBuf to the pool on a SendFrame error: the frame may have been enqueued
@@ -83,13 +83,13 @@ func (tx *Transaction) commit(ctx context.Context, muts []Mutation, writeConflic
 		// buffer now would race that read. Drop it — GC reclaims it once writeLoop lets go.
 		// (The success-path Put below is safe: WriteFrame copied body before errCh fired.)
 		replyHandle.Cancel()
-		tx.db.handleConnError(proxy.Address)
-		tx.db.kickTopology()
+		input.db.handleConnError(proxy.Address)
+		input.db.kickTopology()
 		commitErr := &wire.FDBError{Code: ErrCommitUnknownResult}
-		if !tx.isDummy {
-			tx.commitDummyTransaction(ctx)
+		if !input.isDummy {
+			input.commitDummyTransaction(ctx)
 		}
-		return commitErr
+		return result, commitErr
 	}
 	// body is copied into WriteFrame's own buffer — safe to return to pool.
 	marshalBufPool.Put(poolBuf)
@@ -99,22 +99,24 @@ func (tx *Transaction) commit(ctx context.Context, muts []Mutation, writeConflic
 	if err != nil {
 		replyHandle.Cancel()
 		commitErr := &wire.FDBError{Code: ErrCommitUnknownResult}
-		if !tx.isDummy {
-			tx.commitDummyTransaction(ctx)
+		if !input.isDummy {
+			input.commitDummyTransaction(ctx)
 		}
-		return commitErr
+		return result, commitErr
 	}
 	if resp.Err != nil {
-		tx.db.handleConnError(proxy.Address)
-		tx.db.kickTopology()
+		input.db.handleConnError(proxy.Address)
+		input.db.kickTopology()
 		commitErr := &wire.FDBError{Code: ErrCommitUnknownResult}
-		if !tx.isDummy {
-			tx.commitDummyTransaction(ctx)
+		if !input.isDummy {
+			input.commitDummyTransaction(ctx)
 		}
-		return commitErr
+		return result, commitErr
 	}
 
-	commitErr := tx.parseCommitReply(resp.Body)
+	outcome, commitErr := parseCommitOutcome(resp.Body)
+	outcome.epoch = result.epoch
+	result = outcome
 	// An IN-BAND maybeDelivered error means the commit proxy died while
 	// answering, so whether the mutation landed is UNKNOWN. It arrives here and
 	// not in the four transport arms above, which already map their failures to
@@ -150,13 +152,13 @@ func (tx *Transaction) commit(ctx context.Context, muts []Mutation, writeConflic
 		// on db.ctx.Done() -- so closing the database is the escape.
 		commitErr = &wire.FDBError{Code: ErrCommitUnknownResult}
 	}
-	if commitErr != nil && !tx.isDummy {
+	if commitErr != nil && !input.isDummy {
 		var fdbErr *wire.FDBError
 		if errors.As(commitErr, &fdbErr) && (fdbErr.Code == ErrCommitUnknownResult || fdbErr.Code == ErrClusterVersionChanged) {
-			tx.commitDummyTransaction(ctx)
+			input.commitDummyTransaction(ctx)
 		}
 	}
-	return commitErr
+	return result, commitErr
 }
 
 // commitDummyTransaction runs a dummy transaction as a synchronization barrier.
@@ -172,14 +174,9 @@ func (tx *Transaction) commit(ctx context.Context, muts []Mutation, writeConflic
 // The dummy uses the first write conflict key from the original transaction.
 // OnError will later copy write→read conflicts, so this key will be in both
 // the read and write conflict sets of the retry, ensuring detection.
-func (tx *Transaction) commitDummyTransaction(ctx context.Context) {
-	// Snapshot conflict slices under conflictMu (concurrent-use contract): a Get
-	// future on another goroutine may still be appending read conflicts.
-	// Append-only elements → the header snapshots are stable after release.
-	tx.conflictMu.Lock()
-	writeConflicts := tx.writeConflicts
-	readConflicts := tx.readConflicts
-	tx.conflictMu.Unlock()
+func (input *commitInput) commitDummyTransaction(ctx context.Context) {
+	writeConflicts := input.writeConflicts
+	readConflicts := input.readConflicts
 	if len(writeConflicts) == 0 {
 		return // no write conflicts → read-only, nothing to synchronize
 	}
@@ -207,7 +204,7 @@ func (tx *Transaction) commitDummyTransaction(ctx context.Context) {
 		}
 
 		dummy := &Transaction{
-			db:           tx.db,
+			db:           input.db,
 			txOptions:    txOptions{tenantId: NoTenantID}, // dummy uses raw access
 			creationTime: time.Now(),
 			isDummy:      true, // prevents recursive commitDummyTransaction
@@ -244,7 +241,7 @@ func (tx *Transaction) commitDummyTransaction(ctx context.Context) {
 				// through tr.onError (NativeAPI.actor.cpp:6341), which ticks
 				// the same per-code counters as any transaction. RFC-097.
 				dummyRetries++
-				tx.db.countRetryAndLog(ctx, fdbErr.Code, dummyRetries)
+				input.db.countRetryAndLog(ctx, fdbErr.Code, dummyRetries)
 				if backoffSleep(ctx, dummyRetryBackoff(backoff, rand.Float64())) != nil {
 					return // ctx cancelled — caller gave up
 				}
@@ -343,8 +340,8 @@ var (
 var crSlicePool = sync.Pool{New: func() any { s := make([]types.KeyRangeRef, 0, 8); return &s }}
 
 // Pool for the scratch mutation slice used by the tenant-prefix path. The
-// no-tenant path reuses tx.mutations' backing array via the zero-copy cast and
-// needs no scratch; only the tenant path must copy (see buildCommitTransactionRequest).
+// no-tenant path reuses the captured mutations' backing array via the zero-copy
+// cast and needs no scratch; only the tenant path must copy.
 var mutSlicePool = sync.Pool{New: func() any { s := make([]types.MutationRef, 0, 8); return &s }}
 
 // clearAndReturn zeroes a pooled slice and returns it to pool. The clear is
@@ -370,37 +367,10 @@ var marshalBufPool = sync.Pool{New: func() any {
 	return &b
 }}
 
-// buildCommitTransactionRequest constructs the full request. Returns the
-// serialized body and a pool handle — caller MUST call releaseMarshalBuf
-// after the body is no longer needed (after SendFrame).
-func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID, muts []Mutation, writeConflicts []KeyRange) (body []byte, poolBuf *[]byte) {
-	// `muts` is the mutation snapshot Commit already validated — marshal exactly
-	// it, so the shipped set is byte-identical to the validated set (a Set racing
-	// Commit on another goroutine appends to tx.mutations BEYOND this snapshot and
-	// is simply not in this commit; it can never be shipped unvalidated).
-	//
-	// Conflict ranges are not validated, so snapshot their headers here under
-	// conflictMu: a Get future resolving on another goroutine appends to
-	// readConflicts under this lock, so this reader must take it too. The slices
-	// are append-only (elements never mutated in place) and conflictBuf only ever
-	// reserves NEW regions or reallocates (never overwrites live bytes), so the
-	// header snapshots stay valid after release — no need to hold the lock across
-	// marshal. (The one buffer-overwriting op, reset's conflictBuf[:0], cannot
-	// overlap a live snapshot in-contract: it runs sequentially after this
-	// returns, or via a Reset() the caller must not issue concurrently with a
-	// pending Commit — see RFC-049.) Mirrors C++ tryCommit building
-	// CommitTransactionRequest once from a stable snapshot.
-	tx.conflictMu.Lock()
-	readSnap := tx.readConflicts
-	tx.conflictMu.Unlock()
-	// Capture under readVersionMu (RFC-175 E1): a concurrent Reset writes readVersion
-	// under the mutex. Same capture convention as the read path (readpath.go).
-	tx.readVersionMu.Lock()
-	readSnapshotVersion := tx.readVersion
-	tx.readVersionMu.Unlock()
-	// writeSnap is the caller-supplied write-conflict snapshot — coalesced for a RYW commit (#28), or the
-	// raw op-log ranges for a rywDisabled commit — so the shipped conflict set matches what Commit sized.
-	writeSnap := writeConflicts
+func buildCommitInputRequest(input *commitInput, replyToken transport.UID) (body []byte, poolBuf *[]byte) {
+	muts := input.muts
+	readSnap, writeSnap := input.readConflicts, input.writeConflicts
+	readSnapshotVersion := input.readVersion
 
 	// Zero-copy reinterpret: Mutation and MutationRef have identical memory layout
 	// (uint8 + []byte + []byte). Avoid copying 200+ mutations per batch.
@@ -422,7 +392,7 @@ func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID, mu
 	// to all mutation keys, read/write conflict range keys. Skip metadataVersionKey.
 	//
 	// mutScratch is borrowed only on the tenant path. The zero-copy cast above
-	// aliases tx.mutations' backing array, so prefixing m.Param1/Param2 in place
+	// aliases input.muts' backing array, so prefixing m.Param1/Param2 in place
 	// would corrupt the persistent buffer and double-prefix on any rebuild
 	// (e.g. a re-Commit without an intervening reset). C++ avoids this by
 	// building a fresh VectorRef<MutationRef> (applyTenantPrefix, NativeAPI.actor.cpp:6523:
@@ -431,12 +401,12 @@ func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID, mu
 	// mutation headers into a pooled scratch slice and prefix THAT. The conflict
 	// ranges already build fresh KeyRangeRef copies above, so they are not aliased.
 	var mutScratch *[]types.MutationRef
-	if tx.tenantId >= 0 {
+	if input.tenantID >= 0 {
 		mutScratch = mutSlicePool.Get().(*[]types.MutationRef)
 		mutations = append((*mutScratch)[:0], mutations...)
 
 		var prefix [8]byte
-		binary.BigEndian.PutUint64(prefix[:], uint64(tx.tenantId))
+		binary.BigEndian.PutUint64(prefix[:], uint64(input.tenantID))
 		for i := range mutations {
 			m := &mutations[i]
 			if !bytes.Equal(m.Param1, metadataVersionKey) {
@@ -477,7 +447,7 @@ func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID, mu
 	//   FLAG_FIRST_IN_BATCH = 0x2
 	//   FLAG_BYPASS_STORAGE_QUOTA = 0x4
 	var flags uint32
-	if tx.lockAware {
+	if input.lockAware {
 		flags |= 0x1 // FLAG_IS_LOCK_AWARE
 	}
 	req := types.CommitTransactionRequest{
@@ -495,13 +465,13 @@ func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID, mu
 		},
 		Flags:       flags,
 		Reply:       types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
-		TenantInfo:  types.TenantInfo{TenantId: tx.tenantId},
-		SpanContext: tx.currentSpan(), // RFC-115 §4
+		TenantInfo:  types.TenantInfo{TenantId: input.tenantID},
+		SpanContext: input.span, // RFC-115 §4
 	}
 	// tagSet is Optional<TagSet>; C++ assigns it only when the set is non-empty
 	// (NativeAPI.actor.cpp:6815-6816), leaving the field absent otherwise rather
 	// than sending an empty one.
-	if ts := encodeTagSet(tx.tags); ts != nil {
+	if ts := encodeTagSet(input.tags); ts != nil {
 		req.HasTagSet = true
 		req.TagSet = ts
 	}
@@ -525,11 +495,20 @@ func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID, mu
 	return result, bufp
 }
 
-// parseCommitReply parses an ErrorOr<CommitID> response.
+// parseCommitReply preserves the transaction-local decoder entry for callers
+// that already own the transaction state. Detached commits use the pure decoder.
 func (tx *Transaction) parseCommitReply(data []byte) error {
+	outcome, err := parseCommitOutcome(data)
+	if err == nil {
+		tx.committedVersion, tx.txnBatchId = outcome.version, outcome.batchID
+	}
+	return err
+}
+
+func parseCommitOutcome(data []byte) (commitOutcome, error) {
 	var r wire.Reader
 	if err := wire.ReadErrorOrInto(data, &r); err != nil {
-		return fmt.Errorf("commit: %w", err)
+		return commitOutcome{}, fmt.Errorf("commit: %w", err)
 	}
 	var reply types.CommitID
 	reply.UnmarshalFromReader(&r)
@@ -540,9 +519,7 @@ func (tx *Transaction) parseCommitReply(data []byte) error {
 	// 6653 success-gate, :6726 throw). Without this check a conflict-shaped
 	// CommitID would read as a SUCCESSFUL commit at version -1.
 	if reply.Version == InvalidVersion {
-		return &wire.FDBError{Code: ErrNotCommitted}
+		return commitOutcome{}, &wire.FDBError{Code: ErrNotCommitted}
 	}
-	tx.committedVersion = reply.Version
-	tx.txnBatchId = reply.TxnBatchId
-	return nil
+	return commitOutcome{version: reply.Version, batchID: reply.TxnBatchId}, nil
 }

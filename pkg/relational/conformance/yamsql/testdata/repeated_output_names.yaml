@@ -102,7 +102,7 @@ tests:
   # the unique n was refused at execution as `read as RECORD(G,G,N), declared
   # RECORD(G,G_2,N)` and the sort key as an undeclared binding.
   - query: WITH u AS (SELECT g, SUM(v) AS g, COUNT(*) AS n FROM ga GROUP BY g) SELECT u.n, COUNT(*) FROM u GROUP BY u.n ORDER BY u.n
-    columns: ["N", "COUNT(*)"]
+    columns: ["N", "_1"]
     rows:
       - [1, 1]
       - [2, 1]

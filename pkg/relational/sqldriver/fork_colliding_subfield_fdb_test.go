@@ -2,9 +2,9 @@ package sqldriver_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
-	"strings"
 	"testing"
 
 	"google.golang.org/protobuf/proto"
@@ -18,33 +18,9 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/executor"
+	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 )
-
-// TestForkDupAliasRejected pins the upstream 42712 rejection of duplicate
-// FROM-source aliases — the reason chainedSpineWalk's dup-owner arm is
-// defensive (it fails toward name-based resolution), never load-bearing: a
-// spine with two links answering to the same alias is not plannable SQL. All
-// three variants (link-vs-link, link-vs-table, case-folded) must stay loud;
-// if this pin ever breaks, the walk's defensive arm becomes load-bearing and
-// needs its own coverage. Plan-only — no store required.
-func TestForkDupAliasRejected(t *testing.T) {
-	t.Parallel()
-	md := buildChainedUnnestMetadata(t)
-	for _, tc := range []struct{ name, q string }{
-		{"link_vs_link", `SELECT "Z" FROM T4, T4."SARR" AS "X", "X"."SUBSTRUCT" AS "X", "X"."DEEP" AS "Z"`},
-		{"link_vs_table", `SELECT "Y" FROM T4, T4."SARR" AS "T4", "T4"."SUB" AS "Y"`},
-		{"case_folded", `SELECT "Z" FROM T4, T4."SARR" AS "X", "X"."SUBSTRUCT" AS "x", "x"."DEEP" AS "Z"`},
-	} {
-		_, perr := embedded.PlanRecordQueryWithMetadata(tc.q, md, nil)
-		if perr == nil {
-			t.Fatalf("%s: duplicate alias must be rejected upstream (42712); planned OK instead\n  sql: %s", tc.name, tc.q)
-		}
-		if !strings.Contains(perr.Error(), "42712") {
-			t.Fatalf("%s: want 42712 duplicate-alias rejection, got: %v\n  sql: %s", tc.name, perr, tc.q)
-		}
-	}
-}
 
 // TestFDB_ForkCollidingSubfield proves the SILENT-failure case for a fork
 // target field that exists on BOTH the owner's element and the mid link's
@@ -182,6 +158,36 @@ func TestFDB_ForkCollidingSubfield(t *testing.T) {
 			t.Fatalf("%s: rows = %v, want %v (map[W:100] = the mis-root reading Y's SUB2)\n  sql: %s", name, out, exp, q)
 		}
 	}
+
+	// Repeated display aliases retain separate parser-minted identities, so an
+	// unused duplicate is legal. A later qualified reference that can denote
+	// either output is a semantic ambiguity, not a duplicate declaration.
+	ambiguous := func(name, q string) {
+		t.Helper()
+		_, err := embedded.PlanRecordQueryWithMetadata(q, md, nil)
+		var sqlErr *api.Error
+		if !errors.As(err, &sqlErr) || sqlErr.Code != api.ErrCodeAmbiguousColumn {
+			t.Fatalf("%s: got %v, want 42702", name, err)
+		}
+	}
+	ambiguous("reused_link_alias_reference",
+		`SELECT "Z" FROM TC, TC."ARR" AS "X", "X"."SS" AS "X", "X"."SUB2" AS "Z"`)
+	// Reusing the table alias is legal when the referenced attribute exists on
+	// only the record element: resolution is per attribute, not per alias.
+	want("reused_table_alias_reference",
+		`SELECT "Y" FROM TC AS "X", "X"."ARR" AS "X", "X"."SUB2" AS "Y"`,
+		[]string{"Y=1", "Y=2"})
+	// Delimited X and x are distinct aliases. The lower-case reference names only
+	// the SS element and therefore reads that element's own SUB2 value.
+	want("case_preserved_reused_link_alias_reference",
+		`SELECT "Z" FROM TC, TC."ARR" AS "X", "X"."SS" AS "x", "x"."SUB2" AS "Z"`,
+		[]string{"Z=100"})
+	want("reused_link_alias_unused",
+		`SELECT 1 FROM TC, TC."ARR" AS "X", "X"."SS" AS "X"`,
+		[]string{"1=1"})
+	want("reused_table_alias_unused",
+		`SELECT 1 FROM TC AS "X", "X"."ARR" AS "X"`,
+		[]string{"1=1"})
 
 	// The colliding fork, unfiltered and filtered: W must carry X's SUB2 {1,2}.
 	want("colliding_fork",

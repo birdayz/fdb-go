@@ -107,7 +107,7 @@ func TestFDB_DerivedTableProbe(t *testing.T) {
 		}
 	})
 	t.Run("derived_aggregate", func(t *testing.T) {
-		rows, err := db.QueryContext(ctx, "SELECT g.a_id, g.cnt FROM (SELECT a_id, COUNT(*) cnt FROM c GROUP BY a_id) g")
+		rows, err := db.QueryContext(ctx, "SELECT g.a_id, g.cnt FROM (SELECT a_id, COUNT(*) AS cnt FROM c GROUP BY a_id) g")
 		if err != nil {
 			t.Fatalf("query: %v", err)
 		}

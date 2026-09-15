@@ -4,6 +4,10 @@ import (
 	"strings"
 	"testing"
 
+	cascades "fdb.dev/pkg/recordlayer/query/plan/cascades"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/relational/core/query"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
@@ -343,5 +347,61 @@ func TestThreeLegExistsKeepsExactExistentialAlias(t *testing.T) {
 	}
 	if !foundExactCorrelation {
 		t.Fatal("no predicate below FirstOrDefault references the exact inner-row and merged-outer bindings")
+	}
+}
+
+func TestDerivedExistsClusterProjection(t *testing.T) {
+	t.Parallel()
+	const ddl = "CREATE TABLE ord (order_id BIGINT, cust_id BIGINT, PRIMARY KEY (order_id))"
+	for _, projection := range []string{"order_id", "*"} {
+		t.Run(projection, func(t *testing.T) {
+			t.Parallel()
+			sql := "SELECT o.order_id, EXISTS (SELECT o.order_id FROM (SELECT " + projection + " FROM ord WHERE order_id = 1) AS d WHERE d.order_id = o.order_id) FROM ord AS o, ord AS other"
+			tmpl, err := buildSchemaTemplateFromDDL(ddl)
+			if err != nil {
+				t.Fatal(err)
+			}
+			q, err := parseQueryFromSelect(t, sql)
+			if err != nil {
+				t.Fatal(err)
+			}
+			op, err := NewPlanVisitor(tmpl.Underlying()).VisitQuery(q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ref, _, err := query.TranslateToCascadesWithError(op, tmpl.Underlying())
+			if err != nil || ref == nil {
+				t.Fatalf("translation=%v err=%v", ref, err)
+			}
+			seen := map[*expressions.Reference]bool{}
+			var describe func(*expressions.Reference)
+			describe = func(r *expressions.Reference) {
+				if seen[r] {
+					return
+				}
+				seen[r] = true
+				for _, m := range r.Members() {
+					t.Logf("ref %d member %T rv=%s refs=%v", r.ID(), m, values.ExplainValue(m.GetResultValue()), m.GetCorrelatedToWithoutChildren())
+					if sel, ok := m.(*expressions.SelectExpression); ok {
+						for _, p := range sel.GetPredicates() {
+							t.Logf("predicate %s refs=%v", p.Explain(), predicates.GetCorrelatedToOfPredicate(p))
+						}
+					}
+					for _, quant := range m.GetQuantifiers() {
+						t.Logf("quant %T alias=%#v -> ref %d", quant, quant.GetAlias(), quant.GetRangesOver().ID())
+						describe(quant.GetRangesOver())
+					}
+				}
+			}
+			describe(ref)
+			plan, _, err := planReferenceToPhysical(ref, tmpl.Underlying(), nil, cascades.BatchAExpressionRules(), false, nil, plannerOptionsFrom(nil))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if plan == nil {
+				t.Fatal("no physical plan")
+			}
+			t.Log(plan.Explain())
+		})
 	}
 }

@@ -1096,8 +1096,8 @@ func (e EnumValue) Equals(other EnumValue) bool {
 // Enum nested type. Carries an EnumName (the enum's type identifier)
 // plus an ordered list of EnumValues.
 //
-// Two EnumType instances are Equal iff their EnumName + Nullable
-// match AND their Values slice is element-wise equal.
+// Like Java Type.Enum (unlike relational DataType.EnumType), Equals ignores
+// the nominal name and compares nullability plus the ordered member list.
 type EnumType struct {
 	// EnumName is the enum's type identifier — empty string for
 	// anonymous enums (rare in real schemas but legal).
@@ -1139,7 +1139,7 @@ func (*EnumType) Code() TypeCode { return TypeCodeEnum }
 // IsNullable implements Type.
 func (e *EnumType) IsNullable() bool { return e.Nullable }
 
-// Equals implements Type. Structural — name + nullable + values.
+// Equals implements Type. Structural — nullable + ordered values.
 func (e *EnumType) Equals(other Type) bool {
 	if other == nil {
 		return false
@@ -1454,8 +1454,8 @@ var castPairs = map[promotionEdge]struct{}{
 	{TypeCodeTimestamp, TypeCodeDate}:   {},
 	// GO EXTENSIONS beyond Java's castOperatorMap (DIVERGENCES.md;
 	// runtime arms verified): UUID→STRING renders the canonical 36-char
-	// form ([16]byte arm of the STRING target); ENUM→STRING is identity
-	// (the enum carrier IS its name string). STRING↔BYTES is NOT
+	// form ([16]byte arm of the STRING target); ENUM→STRING renders the
+	// stored numeric carrier in decimal. STRING↔BYTES is NOT
 	// admitted in EITHER direction — no runtime arm (an admitted pair
 	// with no arm evaluates to a SILENT NULL), and Java has no row.
 	{TypeCodeUuid, TypeCodeString}: {},
@@ -1658,9 +1658,8 @@ func MaximumType(t1, t2 Type) Type {
 				}
 			}
 			// EnumName resolution uses Java's withNullability(t1)
-			// shape — keep t1's name. (No anonymous-enum handling
-			// here; if names differ, Equals on the EnumType would
-			// already report inequality at the call site.)
+			// shape — keep t1's name. Distinct nominal names with identical
+			// ordered declarations have the same planner type in Java.
 			return &EnumType{EnumName: e1.EnumName, Nullable: resultNullable, Values: e1.Values}
 		}
 		// RELATION × RELATION: recurse on the inner row type. Both

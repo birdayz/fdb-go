@@ -4070,11 +4070,17 @@ func buildInsertRecord(desc protoreflect.MessageDescriptor, datum map[string]any
 			continue // absent / NULL → leave field unset (SQL NULL)
 		}
 		// INSERT … VALUES pre-converts each field to a protoreflect.Value
-		// at plan time (the relational ConvertToProtoValue handles enums
-		// and nested records that goToProtoValue cannot); set it verbatim.
-		// Projected-SELECT rows carry plain Go values, converted here.
+		// at plan time. Composite values can belong to an equivalent planning
+		// descriptor rather than the target schema descriptor, so re-home them
+		// before Set; protobuf rejects a foreign message/list descriptor. Java's
+		// MessageHelpers.deepCopyMessageIfNeeded does the same by field number.
+		// Projected-SELECT rows carry plain Go values, converted below.
 		if pv, ok := v.(protoreflect.Value); ok {
-			refl.Set(fd, pv)
+			rematerialized, err := rematerializeProtoValue(fd, pv)
+			if err != nil {
+				return nil, err
+			}
+			refl.Set(fd, rematerialized)
 			continue
 		}
 		pv, err := goToProtoValue(fd, v)
@@ -4084,6 +4090,65 @@ func buildInsertRecord(desc protoreflect.MessageDescriptor, datum map[string]any
 		refl.Set(fd, pv)
 	}
 	return msg, nil
+}
+
+// rematerializeProtoValue copies composite planning values into the target
+// schema descriptor. This is the Go equivalent of Java
+// MessageHelpers.deepCopyMessageIfNeeded: field numbers and wire bytes are
+// preserved, but every nested message/list is owned by the descriptor on which
+// it will be set.
+func rematerializeProtoValue(fd protoreflect.FieldDescriptor, value protoreflect.Value) (protoreflect.Value, error) {
+	if fd.IsMap() {
+		holder := dynamicpb.NewMessage(fd.ContainingMessage())
+		target := holder.Mutable(fd).Map()
+		var copyErr error
+		value.Map().Range(func(key protoreflect.MapKey, source protoreflect.Value) bool {
+			copied, err := rematerializeProtoScalar(fd.MapValue(), source)
+			if err != nil {
+				copyErr = err
+				return false
+			}
+			target.Set(key, copied)
+			return true
+		})
+		if copyErr != nil {
+			return protoreflect.Value{}, copyErr
+		}
+		return protoreflect.ValueOfMap(target), nil
+	}
+	if fd.IsList() {
+		holder := dynamicpb.NewMessage(fd.ContainingMessage())
+		target := holder.Mutable(fd).List()
+		source := value.List()
+		for i := 0; i < source.Len(); i++ {
+			copied, err := rematerializeProtoScalar(fd, source.Get(i))
+			if err != nil {
+				return protoreflect.Value{}, err
+			}
+			target.Append(copied)
+		}
+		return protoreflect.ValueOfList(target), nil
+	}
+	return rematerializeProtoScalar(fd, value)
+}
+
+func rematerializeProtoScalar(fd protoreflect.FieldDescriptor, value protoreflect.Value) (protoreflect.Value, error) {
+	if fd.Kind() != protoreflect.MessageKind && fd.Kind() != protoreflect.GroupKind {
+		return value, nil
+	}
+	source := value.Message()
+	if source.Descriptor() == fd.Message() {
+		return value, nil
+	}
+	wireBytes, err := (proto.MarshalOptions{AllowPartial: true}).Marshal(source.Interface())
+	if err != nil {
+		return protoreflect.Value{}, fmt.Errorf("executor: copying composite insert value: %w", err)
+	}
+	target := dynamicpb.NewMessage(fd.Message())
+	if err := (proto.UnmarshalOptions{AllowPartial: true}).Unmarshal(wireBytes, target); err != nil {
+		return protoreflect.Value{}, fmt.Errorf("executor: copying composite insert value: %w", err)
+	}
+	return protoreflect.ValueOfMessage(target), nil
 }
 
 // fieldByNameFold resolves a proto field by name, case-insensitively.
@@ -4897,15 +4962,35 @@ func resultFromValue(v values.Value, rowCtx *values.RowEvalContext) (QueryResult
 	return QueryResult{Positional: scalarPositionalRowOfType(val, v.Type())}, nil
 }
 
-// isBareScalarRow reports whether pos is the 1-slot `_0` wrapper scalarPositionalRow
-// produces — a bare-scalar UNNEST element (`t.arr AS x` flowing a raw int64). The
-// filter/map dispatch uses it to bind the UNWRAPPED scalar under the quantifier
-// alias, since a bare QOV(alias) reference over such a row must resolve to the
-// scalar, not the 1-slot row itself. A WITH-ORDINALITY explode's `{_0,_1}` row is
-// NOT bare (2 slots) and reads its fields by ordinal FieldValue instead.
-func isBareScalarRow(pos *PositionalRow) bool {
-	return pos != nil && pos.Type != nil && len(pos.Type.Fields) == 1 &&
-		pos.Type.Fields[0].Name == values.OrdinalFieldName(0)
+// isBareScalarRow distinguishes a scalar transport envelope from a genuine
+// record, including an anonymous record whose sole field is titled _0. The
+// selected layout is authoritative; without one the producer's explicit
+// transport provenance supplies the kind. Java QuantifiedObjectValue.eval
+// likewise selects record versus datum from the result kind, never a title.
+func isBareScalarRow(pos *PositionalRow) (bool, error) {
+	if pos == nil {
+		return false, nil
+	}
+	if pos.transportKind != values.OrdinalCarrierInvalid && pos.transportKind != values.OrdinalCarrierRecord && pos.transportKind != values.OrdinalCarrierScalar {
+		return false, layoutBindingError(values.LayoutCarrierMismatch, "invalid positional transport kind")
+	}
+	kind := pos.OrdinalRowKind()
+	if pos.Layout != nil {
+		kind = pos.Layout.CarrierKind()
+		if kind != values.OrdinalCarrierRecord && kind != values.OrdinalCarrierScalar {
+			return false, layoutBindingError(values.LayoutCarrierMismatch, "invalid selected carrier kind")
+		}
+		if kind != pos.OrdinalRowKind() {
+			return false, layoutBindingError(values.LayoutCarrierMismatch, "selected carrier kind disagrees with transport provenance")
+		}
+	}
+	if kind != values.OrdinalCarrierScalar {
+		return false, nil
+	}
+	if pos.Type == nil || len(pos.Type.Fields) != 1 || len(pos.Slots) != 1 {
+		return false, layoutBindingError(values.LayoutRuntimeShape, "scalar transport requires exactly one typed slot")
+	}
+	return true, nil
 }
 
 func executeValues(

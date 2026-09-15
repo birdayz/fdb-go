@@ -1,6 +1,7 @@
 package values
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -418,9 +419,9 @@ func TestQualRecAssert_RetiredSplitInvertsTheAlarm(t *testing.T) {
 		} {
 			var counts [qualRecSiteCount][qualRecClassCount]int
 			var wit [qualRecSiteCount][qualRecClassCount][]string
-			counts[QualRecSiteProjScopeClassify][c] = 1
+			counts[QualRecSiteRecursiveRemap][c] = 1
 			failed, out := assertReport(t, counts, wit, &QualifierRecoveryExpectations{
-				RetiredSplit: retired(QualRecSiteProjScopeClassify),
+				RetiredSplit: retired(QualRecSiteRecursiveRemap),
 			})
 			if !failed {
 				t.Fatalf("a %s call at a retired site passed. Every class but CARRIED means a "+
@@ -433,9 +434,9 @@ func TestQualRecAssert_RetiredSplitInvertsTheAlarm(t *testing.T) {
 		t.Parallel()
 		var counts [qualRecSiteCount][qualRecClassCount]int
 		var wit [qualRecSiteCount][qualRecClassCount][]string
-		counts[QualRecSiteProjScopeClassify][QualRecCarried] = 73
+		counts[QualRecSiteRecursiveRemap][QualRecCarried] = 73
 		failed, out := assertReport(t, counts, wit, &QualifierRecoveryExpectations{
-			RetiredSplit: retired(QualRecSiteProjScopeClassify),
+			RetiredSplit: retired(QualRecSiteRecursiveRemap),
 		})
 		if failed {
 			t.Fatalf("a site answering entirely on the CARRIED channel failed its retirement "+
@@ -495,6 +496,60 @@ func TestQualRecAssert_RetiredSplitInvertsTheAlarm(t *testing.T) {
 		if failed {
 			t.Fatalf("the control failed, so every arm above may be passing for a reason "+
 				"other than the one under test:\n%s", out)
+		}
+	})
+}
+
+// TestQualRecAssert_RetiredCallsIncludesCarried pins a deleted classifier, not
+// merely its text-splitting branch. Filters drop floors, never this invariant.
+func TestQualRecAssert_RetiredCallsIncludesCarried(t *testing.T) {
+	t.Parallel()
+	for _, filtered := range []bool{false, true} {
+		for class := QualifierRecoveryClass(0); class < qualRecClassCount; class++ {
+			t.Run(fmt.Sprintf("filtered=%t/%s", filtered, class), func(t *testing.T) {
+				t.Parallel()
+				var counts [qualRecSiteCount][qualRecClassCount]int
+				var witnesses [qualRecSiteCount][qualRecClassCount][]string
+				exp := &QualifierRecoveryExpectations{
+					RetiredCalls: [qualRecSiteCount]bool{QualRecSiteDerivedUnnestSource: true},
+				}
+				if !filtered {
+					exp.Floors = &QualifierRecoveryFloors{}
+				}
+				if failed, out := assertReport(t, counts, witnesses, exp); failed {
+					t.Fatalf("zero traffic at a deleted site must pass: %s", out)
+				}
+				counts[QualRecSiteDerivedUnnestSource][class] = 1
+				failed, out := assertReport(t, counts, witnesses, exp)
+				if !failed || !strings.Contains(out, "ALL-CALL RETIRED") || !strings.Contains(out, "GROWTH") {
+					t.Fatalf("revived %s classifier traffic did not fire retirement: %s", class, out)
+				}
+			})
+		}
+	}
+	t.Run("control: a live carried site is not retired", func(t *testing.T) {
+		t.Parallel()
+		var counts [qualRecSiteCount][qualRecClassCount]int
+		var witnesses [qualRecSiteCount][qualRecClassCount][]string
+		counts[QualRecSiteDerivedUnnestSource][QualRecCarried] = 1
+		if failed, out := assertReport(t, counts, witnesses, &QualifierRecoveryExpectations{}); failed {
+			t.Fatalf("undeclared retirement rejected legitimate carried traffic: %s", out)
+		}
+	})
+	t.Run("retiring one site does not disable another floor", func(t *testing.T) {
+		t.Parallel()
+		var counts [qualRecSiteCount][qualRecClassCount]int
+		var witnesses [qualRecSiteCount][qualRecClassCount][]string
+		exp := &QualifierRecoveryExpectations{
+			RetiredCalls: [qualRecSiteCount]bool{QualRecSiteDerivedUnnestSource: true},
+			Floors:       &QualifierRecoveryFloors{Calls: [qualRecSiteCount]int{QualRecSiteExistsSortSplit: 1}},
+		}
+		if failed, out := assertReport(t, counts, witnesses, exp); !failed || !strings.Contains(out, "below its floor") {
+			t.Fatalf("live site collapse disappeared under another site's retirement: %s", out)
+		}
+		counts[QualRecSiteExistsSortSplit][QualRecCarried] = 1
+		if failed, out := assertReport(t, counts, witnesses, exp); failed {
+			t.Fatalf("live population and retired zero failed: %s", out)
 		}
 	})
 }

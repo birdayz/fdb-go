@@ -3,6 +3,9 @@ package executor
 import (
 	"testing"
 
+	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -29,10 +32,10 @@ import (
 // The unwrap is UNIFORM across both sides, as Java's is: Java decides from the
 // VALUE's own static result type (QuantifiedObjectValue.java:82-95), and the
 // two FlatMap bindings are the identical call (RecordQueryFlatMapPlan.java:135,
-// :140), so there is no side for a rule to key on. What keeps a row-shaped leg
-// out of the unwrap is the SHAPE test, not a role: isBareScalarRow matches the
-// 1-slot `_0` carrier, and a genuine one-column leg carries the COLUMN's name.
-// That is the invariant the last subtest pins.
+// :140), so there is no side for a rule to key on. Selected layout and explicit
+// transport provenance distinguish the scalar envelope from a genuine record.
+// Their logical field shapes may be identical, including the title `_0`; the
+// anonymous-record and non-build tests below pin that distinction.
 func TestOrdinalJoinBuild_ScalarInnerBindsItsDatum(t *testing.T) {
 	t.Parallel()
 
@@ -87,20 +90,9 @@ func TestOrdinalJoinBuild_ScalarInnerBindsItsDatum(t *testing.T) {
 		})
 	}
 
-	// A NAMED ONE-COLUMN LEG KEEPS ITS ROW — the invariant that makes the
-	// uniform unwrap safe, and the only thing standing between it and a
-	// projection over a one-column source being handed a scalar.
-	//
-	// The unwrap's test is the CARRIER's shape (`_0`), not arity: a leg
-	// projecting a single real column carries that column's NAME, so it is not
-	// bare and the unwrap cannot reach it. Both sides are asserted because
-	// neither side is exempt — the rule is uniform, so a regression on either is
-	// the same regression.
-	//
-	// This replaces an earlier subtest that fed a `_0`-shaped carrier in as the
-	// OUTER and asserted it kept its row. That shape cannot arise from a real
-	// outer, so the assertion pinned the role flag rather than any property of
-	// the data — and it went green either way once the flag was gone.
+	// A named one-column record stays whole on both sides, just like the
+	// anonymous `_0` record in TestOrdinalJoinBuildAnonymousRecordRemainsWhole.
+	// Neither field spelling nor the side of a FlatMap selects the object kind.
 	t.Run("a named one-column leg keeps its row", func(t *testing.T) {
 		t.Parallel()
 		oneCol := &QueryResult{Positional: &PositionalRow{
@@ -126,12 +118,8 @@ func TestOrdinalJoinBuild_ScalarInnerBindsItsDatum(t *testing.T) {
 				if _, unwrapped := raw[side.corr]; unwrapped {
 					t.Fatalf("a NAMED one-column leg (%s) was unwrapped to its datum "+
 						"(raw = %#v).\n"+
-						"  The datum unwrap keys on the one-slot `_0` CARRIER Go wraps a\n"+
-						"  computed scalar in — Java's \"result type is not a record\" test.\n"+
-						"  A leg projecting one real column carries that column's NAME and is\n"+
-						"  a row; unwrapping it hands a scalar to every reference that reads\n"+
-						"  its columns. If the unwrap's test was widened to arity, this is the\n"+
-						"  regression.", side.name, raw)
+						"  A genuine record remains a record regardless of its width, title,\n"+
+						"  or join side; unwrapping it destroys ordinal field access.", side.name, raw)
 				}
 				if _, bound := legs[side.corr]; !bound {
 					t.Fatalf("the one-column leg (%s) bound no row at all; legs = %#v raw = %#v",
@@ -140,4 +128,110 @@ func TestOrdinalJoinBuild_ScalarInnerBindsItsDatum(t *testing.T) {
 			})
 		}
 	})
+}
+
+func TestOrdinalJoinBuildAnonymousRecordRemainsWhole(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name  string
+		value any
+	}{
+		{"present", int64(7)},
+		{"null-valued", nil},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			row := &QueryResult{Positional: &PositionalRow{
+				Type: values.NewRecordType("", false, []values.Field{{
+					Name: values.OrdinalFieldName(0), FieldType: values.NullableLong, Ordinal: 0,
+				}}),
+				Slots: []any{test.value},
+			}}
+			outer, inner := values.NamedCorrelationIdentifier("outer"), values.NamedCorrelationIdentifier("inner")
+			for _, side := range []struct {
+				name        string
+				correlation values.CorrelationIdentifier
+			}{
+				{"outer", outer},
+				{"inner", inner},
+			} {
+				t.Run(side.name, func(t *testing.T) {
+					t.Parallel()
+					build := &ordinalJoinBuild{Enabled: true}
+					legs, raw, err := build.legRows(outer, inner, row, row)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, unwrapped := raw[side.correlation]; unwrapped {
+						t.Fatalf("genuine _0 record was unwrapped on %s: %#v", side.name, raw)
+					}
+					bound, present := legs[side.correlation]
+					if !present || bound != row.Positional {
+						t.Fatalf("%s record binding = (%#v, %v), want the whole original record", side.name, bound, present)
+					}
+					exists := mustExecutorConstruct(values.NewExistsValue(side.correlation, row.Positional.Type))
+					got, err := exists.Evaluate(&values.RowEvalContext{Correlations: &buildLegBinder{legs: legs, raw: raw}})
+					if err != nil || got != true {
+						t.Fatalf("present record with scalar slot %v: EXISTS=(%v, %v), want true", test.value, got, err)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestFlatMapNonBuildBindingUsesRecordOrDatumKind(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"record", "scalar"} {
+		for _, presence := range []string{"value", "null-slot"} {
+			for _, side := range []string{"outer", "inner"} {
+				t.Run(kind+"/"+presence+"/"+side, func(t *testing.T) {
+					t.Parallel()
+					var datum any = int64(7)
+					if presence == "null-slot" {
+						datum = nil
+					}
+					seedPlan := mustExecutorConstruct(plans.NewRecordQueryValuesPlan([]values.Value{values.NewNullValue(values.NullableLong)}))
+					recordPlan := mustExecutorConstruct(plans.NewRecordQueryMapPlan(seedPlan, values.NewRawRecordConstructorValue(values.RecordConstructorField{
+						Name: values.OrdinalFieldName(0), Value: values.NewNullValue(values.NullableLong),
+					})))
+					recordType := recordPlan.GetResultType().(*values.RecordType)
+					row := &PositionalRow{Type: recordType, Slots: []any{datum}}
+					var plan plans.RecordQueryPlan = recordPlan
+					var objectType values.Type = recordType
+					if kind == "scalar" {
+						row = scalarPositionalRowOfType(datum, values.NullableLong)
+						objectType = values.NullableLong
+						plan = mustExecutorConstruct(plans.NewRecordQueryMapPlan(recordPlan, values.NewNullValue(values.NullableLong)))
+					}
+					if !row.Type.Equals(recordType) {
+						t.Fatalf("record/scalar shape premise differs: %v vs %v", row.Type, recordType)
+					}
+					outer, inner := values.NamedCorrelationIdentifier("outer"), values.NamedCorrelationIdentifier("inner")
+					correlation := outer
+					if side == "inner" {
+						correlation = inner
+					}
+					result := mustExecutorConstruct(values.NewExistsValue(correlation, objectType))
+					cursor, err := newFlatMapCursorWithOuterProperties(recordlayer.FromList([]QueryResult{}), plan, plan, nil, EmptyEvaluationContext(), outer, inner, result, recordlayer.ExecuteProperties{}, false)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer cursor.Close()
+					if cursor.build.enabled() {
+						t.Fatal("non-build binding witness entered ordinal build instead")
+					}
+					input := QueryResult{Positional: row}
+					got, err := cursor.computeResultLegs(input, &input)
+					if err != nil {
+						t.Fatal(err)
+					}
+					want := kind == "record" || datum != nil
+					if got.Positional == nil || len(got.Positional.Slots) != 1 || got.Positional.Slots[0] != want {
+						t.Fatalf("EXISTS on %s %s %s = %#v, want %v", side, kind, presence, got.Positional, want)
+					}
+				})
+			}
+		}
+	}
 }

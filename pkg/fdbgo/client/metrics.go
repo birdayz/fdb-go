@@ -22,7 +22,7 @@ func (tx *Transaction) GetEstimatedRangeSizeBytes(parentCtx context.Context, beg
 	ctx, cancel := tx.opContext(parentCtx)
 	defer cancel()
 	n, err := tx.getEstimatedRangeSizeBytesImpl(ctx, begin, end)
-	return n, tx.mapTimeout(parentCtx, err)
+	return n, tx.mapReadError(ctx, err)
 }
 
 func (tx *Transaction) getEstimatedRangeSizeBytesImpl(ctx context.Context, begin, end []byte) (int64, error) {
@@ -35,7 +35,7 @@ func (tx *Transaction) getEstimatedRangeSizeBytesImpl(ctx context.Context, begin
 	}
 	// A cancelled txn returns transaction_cancelled (1025) — C++ races resetPromise at op entry,
 	// before any other check (RFC-068). This path bypasses ensureReadVersion, so gate explicitly.
-	if err := tx.checkCancelled(); err != nil {
+	if err := tx.readEntryError(ctx); err != nil {
 		return 0, err
 	}
 	// A transaction poisoned by SetReadYourWritesDisable-after-an-op returns
@@ -137,10 +137,10 @@ func (tx *Transaction) sendWaitMetrics(ctx context.Context, begin, end []byte, s
 			MinVersion: minVersion,
 		}
 		wmToken := getAdjustedEndpoint(server.Token, EndpointWaitMetrics)
-		if err := conn.SendFrame(wmToken, req.MarshalFDB()); err != nil {
+		if err := sendReadFrame(ctx, conn, wmToken, req.MarshalFDB(), replyHandle); err != nil {
 			replyHandle.Cancel()
 			replyHandle.Release()
-			tx.db.handleConnError(server.Address)
+			tx.db.handleReadConnError(server.Address, err)
 			continue
 		}
 		rctx, cancel := context.WithTimeout(ctx, DefaultRPCTimeout)
@@ -149,7 +149,7 @@ func (tx *Transaction) sendWaitMetrics(ctx context.Context, begin, end []byte, s
 			cancel()
 			replyHandle.Release()
 			if resp.Err != nil {
-				tx.db.handleConnError(server.Address)
+				tx.db.handleReadConnError(server.Address, resp.Err)
 				continue
 			}
 			return parseWaitMetricsReply(resp.Body)
@@ -171,7 +171,7 @@ func (tx *Transaction) GetRangeSplitPoints(parentCtx context.Context, begin, end
 	ctx, cancel := tx.opContext(parentCtx)
 	defer cancel()
 	pts, err := tx.getRangeSplitPointsImpl(ctx, begin, end, chunkSize)
-	return pts, tx.mapTimeout(parentCtx, err)
+	return pts, tx.mapReadError(ctx, err)
 }
 
 func (tx *Transaction) getRangeSplitPointsImpl(ctx context.Context, begin, end []byte, chunkSize int64) ([][]byte, error) {
@@ -184,7 +184,7 @@ func (tx *Transaction) getRangeSplitPointsImpl(ctx context.Context, begin, end [
 		return nil, &wire.FDBError{Code: ErrInvertedRange} // 2005
 	}
 	// A cancelled txn returns transaction_cancelled (1025) — resetPromise at op entry (RFC-068).
-	if err := tx.checkCancelled(); err != nil {
+	if err := tx.readEntryError(ctx); err != nil {
 		return nil, err
 	}
 	// Sibling of GetEstimatedRangeSizeBytes: bypasses ensureReadVersion but is poisoned by a
@@ -296,10 +296,10 @@ func (tx *Transaction) sendSplitRange(ctx context.Context, begin, end []byte, ch
 			TenantInfo: types.TenantInfo{TenantId: tx.tenantId},
 		}
 		srToken := getAdjustedEndpoint(server.Token, EndpointGetRangeSplitPoints)
-		if err := conn.SendFrame(srToken, req.MarshalFDB()); err != nil {
+		if err := sendReadFrame(ctx, conn, srToken, req.MarshalFDB(), replyHandle); err != nil {
 			replyHandle.Cancel()
 			replyHandle.Release()
-			tx.db.handleConnError(server.Address)
+			tx.db.handleReadConnError(server.Address, err)
 			continue
 		}
 		rctx, cancel := context.WithTimeout(ctx, DefaultRPCTimeout)
@@ -308,7 +308,7 @@ func (tx *Transaction) sendSplitRange(ctx context.Context, begin, end []byte, ch
 			cancel()
 			replyHandle.Release()
 			if resp.Err != nil {
-				tx.db.handleConnError(server.Address)
+				tx.db.handleReadConnError(server.Address, resp.Err)
 				continue
 			}
 			return parseSplitRangeReply(resp.Body)

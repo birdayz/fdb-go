@@ -3,20 +3,21 @@ package sqldriver_test
 // A sort key's binding universe splits on the key's SHAPE (SortKey.BareRef —
 // the RFC-180 round-14 rule): a BARE user identifier binds alias-preferred
 // output names; a RENDERED item (`ORDER BY SUM(score)`) binds the PROJECTION
-// text only. Over the IMMEDIATE reshaping strip, translateSort's flat-key
-// arm matched alias-preferred names for BOTH shapes, so an output column
-// literally labeled "SUM(SCORE)" (a colliding alias) captured the
-// aggregate's sort key and the query silently sorted by the WRONG column
-// (player DESC instead of SUM DESC). The deferred strip had the split
-// already (aggregate_order_by_java collision pin); this is the immediate
-// strip's twin.
+// text only. RFC-256 established a stronger Java boundary for the former
+// collision witness: an authored output alias is materialized as a protobuf
+// field name, so `AS "SUM(SCORE)"` is rejected with 42602 before ordering.
+// Keep that negative pin beside the ordinary rendered-key and bare-alias
+// controls so relaxing name validation cannot silently re-arm the collision.
 
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"reflect"
 	"testing"
+
+	"fdb.dev/pkg/relational/api"
 )
 
 func TestFDB_SortKeyLabelCollision_ImmediateStrip(t *testing.T) {
@@ -59,14 +60,21 @@ func TestFDB_SortKeyLabelCollision_ImmediateStrip(t *testing.T) {
 		return out
 	}
 
-	// The collision: an alias spelled like the rendered aggregate must NOT
-	// capture the rendered-item sort key.
-	t.Run("colliding_alias", func(t *testing.T) {
-		got := sums(t, `SELECT player AS "SUM(SCORE)", SUM(score) AS s2 FROM scores GROUP BY player ORDER BY SUM(score) DESC`)
-		want := []string{"amy:90", "moe:50", "zed:10"}
-		if !reflect.DeepEqual(got, want) {
-			t.Errorf("= %v, want %v (a colliding alias captured the aggregate's sort key)", got, want)
+	rejectInvalidAlias := func(t *testing.T, q string) {
+		t.Helper()
+		rows, err := db.QueryContext(ctx, q)
+		if rows != nil {
+			rows.Close()
 		}
+		var apiErr *api.Error
+		if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeInvalidName {
+			t.Fatalf("error = %v, want 42602 for invalid materialized output alias\n  sql: %s", err, q)
+		}
+	}
+
+	// The old collision spelling is not an admissible authored output name.
+	t.Run("colliding_alias", func(t *testing.T) {
+		rejectInvalidAlias(t, `SELECT player AS "SUM(SCORE)", SUM(score) AS s2 FROM scores GROUP BY player ORDER BY SUM(score) DESC`)
 	})
 	// Control: no collision, same query shape.
 	t.Run("no_collision_control", func(t *testing.T) {
@@ -84,12 +92,8 @@ func TestFDB_SortKeyLabelCollision_ImmediateStrip(t *testing.T) {
 			t.Errorf("= %v, want %v (ORDER BY <alias> must bind the aliased output)", got, want)
 		}
 	})
-	// The DESC->ASC twin of the collision.
+	// The DESC->ASC twin reaches the same materialization boundary.
 	t.Run("colliding_alias_asc", func(t *testing.T) {
-		got := sums(t, `SELECT player AS "SUM(SCORE)", SUM(score) AS s2 FROM scores GROUP BY player ORDER BY SUM(score)`)
-		want := []string{"zed:10", "moe:50", "amy:90"}
-		if !reflect.DeepEqual(got, want) {
-			t.Errorf("= %v, want %v", got, want)
-		}
+		rejectInvalidAlias(t, `SELECT player AS "SUM(SCORE)", SUM(score) AS s2 FROM scores GROUP BY player ORDER BY SUM(score)`)
 	})
 }

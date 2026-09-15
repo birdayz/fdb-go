@@ -55,8 +55,8 @@ func TestUnnestExistsOuterOnlyConjunctPlans(t *testing.T) {
 
 // TestCorrelatedExistsWithInnerLateralUnnestPlans pins the builder/type
 // boundary for an EXISTS whose own FROM list contains a lateral unnest. That
-// inner LogicalUnnest intentionally carries source syntax rather than a
-// CorrelatedCollection; its enclosing LogicalJoin must still acquire an exact
+// inner LogicalUnnest must carry its resolved collection even on the custom
+// correlated FROM builder, so its enclosing LogicalJoin acquires an exact
 // element row before the existential QOV is minted. AS+AT is the width-sensitive
 // twin: both element and ordinal slots must survive exact typing.
 func TestCorrelatedExistsWithInnerLateralUnnestPlans(t *testing.T) {

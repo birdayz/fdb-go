@@ -1037,11 +1037,11 @@ the same fact.
 | --- | --- | --- |
 | boundary | 1 | 2 |
 | contract | 2 | 4 |
-| dotted | 3 | 3 |
+| dotted | 2 | 2 |
 | harness | 0 | 0 |
 | name-keyed | 4 | 4 |
 | translator | 3 | 4 |
-| TOTAL | 12 | 17 |
+| TOTAL | 11 | 16 |
 
 The per-bucket authority column sums to MORE than the distinct total, because one
 declaration owes debt in more than a single bucket — `deriveColumnsFromProjection`

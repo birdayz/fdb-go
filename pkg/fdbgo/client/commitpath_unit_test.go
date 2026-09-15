@@ -13,6 +13,16 @@ import (
 	"fdb.dev/pkg/fdbgo/wire/types"
 )
 
+// buildCommitTransactionRequest is the test-only adapter for assertions that
+// start from mutable Transaction state. Production captures commitInput at the
+// lifecycle boundary and calls buildCommitInputRequest directly.
+func buildCommitTransactionRequest(tx *Transaction, replyToken transport.UID, muts []Mutation, writeConflicts []KeyRange) (body []byte, poolBuf *[]byte) {
+	lease := tx.enterState()
+	input := tx.captureCommit(muts, writeConflicts)
+	lease.release()
+	return buildCommitInputRequest(input, replyToken)
+}
+
 // ============================================================================
 // buildCommitTransactionRequest — round-trip via types.CommitTransactionRequest.
 // ============================================================================

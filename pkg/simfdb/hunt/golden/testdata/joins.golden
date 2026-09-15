@@ -13,7 +13,7 @@ ROWS(4) cols=[CID, OID, AMT]:
 
 === SELECT c.region, SUM(o.amt) FROM cust c JOIN ord o ON c.cid = o.cid GROUP BY c.region ORDER BY c.region
 PLAN: Project([_current.REGION#0, _current.SUM(O.AMT)#1], StreamingAgg(keys=[_current.REGION#1], InMemorySort([_current.REGION#1 ASC], FlatMap(outer=Scan(ORD), inner=Scan(CUST, [=])))))
-ROWS(2) cols=[REGION, SUM(O.AMT)]:
+ROWS(2) cols=[REGION, _1]:
   [10, 210]
   [20, 30]
 
@@ -26,6 +26,6 @@ ROWS(3) cols=[OID]:
 
 === SELECT COUNT(*) FROM cust c JOIN ord o ON c.cid = o.cid
 PLAN: Project([_current.COUNT(*)#0], StreamingAgg(keys=[], FlatMap(outer=Scan(CUST), inner=IndexScan(ORD_CID, [=]))))
-ROWS(1) cols=[COUNT(*)]:
+ROWS(1) cols=[_0]:
   [4]
 

@@ -269,23 +269,33 @@ func TestFDB_CorrelatedExistsDerivedInner(t *testing.T) {
 		requireSQLSTATE(t, qerr, api.ErrCodeUndefinedColumn)
 	})
 
-	// A derived-inner correlated EXISTS WITH an EXISTS-body WHERE on the derived
-	// alias skips the fast path and reaches the scope/resolver, where a derived
-	// source is not resolvable via the WITH registry. That shape DECLINES cleanly
-	// (0A000) — correct-or-conservative — rather than silently dropping the body.
-	// Pinned so the decline stays LOUD (never regresses to a silent-wrong).
-	t.Run("derived_inner_with_body_where_declines_0A000", func(t *testing.T) {
-		rows, qerr := db.QueryContext(ctx, "SELECT o.order_id, EXISTS (SELECT o.order_id FROM "+
-			"(SELECT order_id FROM ord) AS d WHERE d.order_id = 1) FROM ord AS o")
-		if qerr == nil {
-			for rows.Next() {
-			}
-			qerr = rows.Err()
-			rows.Close()
-		}
-		if qerr == nil {
-			t.Fatalf("expected a clean decline (0A000) for a derived-inner EXISTS with a body WHERE")
-		}
-		requireSQLSTATE(t, qerr, api.ErrCodeUnsupportedOperation)
-	})
+	// WHERE and ON consume the same derived body as the no-predicate fast path;
+	// the alias is a carried source, never a missing catalog table.
+	for _, tc := range []struct {
+		name, query string
+		want        []idBool
+	}{
+		{"derived_inner_with_body_where", "SELECT o.order_id, EXISTS (SELECT o.order_id FROM (SELECT order_id FROM ord) AS d WHERE d.order_id = 1) FROM ord AS o", []idBool{{1, true}, {2, true}}},
+		{"derived_inner_with_empty_where", "SELECT o.order_id, EXISTS (SELECT o.order_id FROM (SELECT order_id FROM ord) AS d WHERE d.order_id = 100) FROM ord AS o", []idBool{{1, false}, {2, false}}},
+		{"derived_inner_where_correlates", "SELECT o.order_id, EXISTS (SELECT o.order_id FROM (SELECT order_id FROM ord WHERE order_id = 1) AS d WHERE d.order_id = o.order_id) FROM ord AS o", []idBool{{1, true}, {2, false}}},
+		{"derived_inner_alias_shadows_outer_leg", "SELECT o.order_id, EXISTS (SELECT o.order_id FROM (SELECT order_id FROM ord WHERE order_id = 1) AS d WHERE d.order_id = o.order_id) FROM ord AS o, ord AS d", []idBool{{1, true}, {1, true}, {2, false}, {2, false}}},
+		{"derived_cluster_disjoint", "SELECT o.order_id, EXISTS (SELECT o.order_id FROM (SELECT order_id FROM ord WHERE order_id = 1) AS d WHERE d.order_id = o.order_id) FROM ord AS o, ord AS other", []idBool{{1, true}, {1, true}, {2, false}, {2, false}}},
+		{"derived_cluster_star", "SELECT o.order_id, EXISTS (SELECT o.order_id FROM (SELECT * FROM ord WHERE order_id = 1) AS d WHERE d.order_id = o.order_id) FROM ord AS o, ord AS other", []idBool{{1, true}, {1, true}, {2, false}, {2, false}}},
+		{"catalog_cluster_two_equalities", "SELECT o.order_id, EXISTS (SELECT o.order_id FROM ord AS d WHERE d.order_id = 1 AND d.order_id = o.order_id) FROM ord AS o, ord AS other", []idBool{{1, true}, {1, true}, {2, false}, {2, false}}},
+		{"derived_single_star", "SELECT o.order_id, EXISTS (SELECT o.order_id FROM (SELECT * FROM ord WHERE order_id = 1) AS d WHERE d.order_id = o.order_id) FROM ord AS o", []idBool{{1, true}, {2, false}}},
+		{"derived_cluster_star_empty", "SELECT o.order_id, EXISTS (SELECT o.order_id FROM (SELECT * FROM ord WHERE order_id = 100) AS d WHERE d.order_id = o.order_id) FROM ord AS o, ord AS other", []idBool{{1, false}, {1, false}, {2, false}, {2, false}}},
+		{"derived_cluster_both_rows_live", "SELECT o.order_id * 10 + other.order_id, EXISTS (SELECT o.order_id FROM (SELECT order_id FROM ord WHERE order_id = 1) AS d WHERE d.order_id = o.order_id) FROM ord AS o, ord AS other", []idBool{{11, true}, {12, true}, {21, false}, {22, false}}},
+		{"derived_cluster_empty_body", "SELECT o.order_id, EXISTS (SELECT o.order_id FROM (SELECT order_id FROM ord WHERE order_id = 100) AS d WHERE d.order_id = o.order_id) FROM ord AS o, ord AS other", []idBool{{1, false}, {1, false}, {2, false}, {2, false}}},
+		{"derived_cluster_not_exists", "SELECT o.order_id, NOT EXISTS (SELECT o.order_id FROM (SELECT order_id FROM ord WHERE order_id = 1) AS d WHERE d.order_id = o.order_id) FROM ord AS o, ord AS other", []idBool{{1, false}, {1, false}, {2, true}, {2, true}}},
+		{"derived_cluster_empty_outer", "SELECT o.order_id, EXISTS (SELECT o.order_id FROM (SELECT order_id FROM ord WHERE order_id = 1) AS d WHERE d.order_id = o.order_id) FROM ord AS o, ord AS other WHERE other.order_id = 100", nil},
+		{"derived_inner_where_not_exists", "SELECT o.order_id, NOT EXISTS (SELECT o.order_id FROM (SELECT order_id FROM ord WHERE order_id = 1) AS d WHERE d.order_id = o.order_id) FROM ord AS o", []idBool{{1, false}, {2, true}}},
+		{"derived_join_leg_on", "SELECT o.order_id, EXISTS (SELECT o.order_id FROM ord a JOIN (SELECT order_id FROM ord) AS d ON a.order_id = d.order_id) FROM ord AS o", []idBool{{1, true}, {2, true}}},
+		{"derived_primary_on", "SELECT o.order_id, EXISTS (SELECT o.order_id FROM (SELECT order_id FROM ord) AS d JOIN ord a ON a.order_id = d.order_id) FROM ord AS o", []idBool{{1, true}, {2, true}}},
+		{"empty_derived_join_leg_on", "SELECT o.order_id, EXISTS (SELECT o.order_id FROM ord a JOIN (SELECT order_id FROM ord WHERE order_id = 100) AS d ON a.order_id = d.order_id) FROM ord AS o", []idBool{{1, false}, {2, false}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			eq(t, queryIDBool(t, tc.query), tc.want)
+		})
+	}
 }

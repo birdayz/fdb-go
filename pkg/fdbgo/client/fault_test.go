@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -602,6 +603,7 @@ func TestPipelinedGet_WrongShardRetry(t *testing.T) {
 
 	tx := db.CreateTransaction()
 	tx.SetReadVersion(rv)
+	originalKey := bytes.Clone(key)
 	_, pending, err := tx.GetPipelined(ctx, key)
 	if err != nil {
 		t.Fatalf("GetPipelined: %v", err)
@@ -609,8 +611,17 @@ func TestPipelinedGet_WrongShardRetry(t *testing.T) {
 	if pending == nil {
 		t.Fatal("expected a pending pipelined get for a server-resident key")
 	}
+	// The first request already owns its encoded bytes. The retained future must
+	// also own the logical key needed by a wrong-shard retry; callers may reuse
+	// their input as soon as GetPipelined returns.
+	for i := range key {
+		key[i] = 'x'
+	}
+	if bytes.Equal(key, originalKey) {
+		t.Fatal("key mutation control did not change the caller-owned input")
+	}
 	// The reply is the injected wrong_shard_server; Resolve must invalidate the
-	// cache and re-drive through the full read path, returning the real value.
+	// cache and re-drive through the full read path with originalKey.
 	got, err := pending.Resolve()
 	if err != nil {
 		t.Fatalf("Resolve after wrong-shard: %v", err)
@@ -959,7 +970,7 @@ func TestPipelinedGet_Resolve_FlushErrorRetries(t *testing.T) {
 // proxy can ever answer the GetKeyServerLocations request — then (4) SetTimeout(2s)
 // and Get. The only thing that can end the read is the opContext deadline waking the
 // ctx.Done() arms in queryLocations (locality.go:468/484), mapped to 1031 by
-// mapTimeout (readpath.go). Revert-prove: drop those ctx.Done() arms (reintroducing
+// mapReadError (readpath.go). Revert-prove: drop those ctx.Done() arms (reintroducing
 // the hang) and Get never returns; the independent 30s watchdog below fires → red.
 // (The watchdog is load-bearing: a plain `elapsed > 30s` check AFTER Get could never
 // fire on a true hang — Get would block to the package/CI timeout first.)

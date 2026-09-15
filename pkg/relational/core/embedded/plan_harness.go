@@ -179,6 +179,11 @@ func planPhysicalForTest(
 	if q == nil {
 		return nil, nil, fmt.Errorf("malformed SELECT")
 	}
+	// Match the production SELECT pre-pass before lowering discards OVER.
+	// Otherwise this harness certifies a bare aggregate production rejects.
+	if err := rejectWindowedAggregate(q); err != nil {
+		return nil, nil, err
+	}
 
 	visitor := NewPlanVisitor(md)
 	logicalOp, buildErr := visitor.VisitQuery(q)
@@ -451,9 +456,6 @@ func planPhysicalDMLWithMetadata(
 	// LAST of the three, matching production's order. A first attempt put this
 	// first, directly beneath the comment arguing that the order of these guards
 	// is load-bearing -- read rather than measured.
-	if err := rejectDuplicateUnnestAlias(logicalOp, md); err != nil {
-		return nil, err
-	}
 	if fn := query.FindUnsupportedFunction(logicalOp); fn != "" {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "Unsupported operator "+fn)
 	}
@@ -744,9 +746,6 @@ func planRecordQueryAndSubqueriesWithOptions(
 	// Reject a lateral unnest's AS/AT alias colliding with ANY other FROM-source
 	// alias (earlier OR later) in the same scope — the later-source collision the
 	// translator's bottom-up lowering cannot see. RFC-142.
-	if err := rejectDuplicateUnnestAlias(logicalOp, md); err != nil {
-		return nil, nil, err
-	}
 	if err := resolveQualifiedTableNames(logicalOp, schemaName); err != nil {
 		return nil, nil, err
 	}

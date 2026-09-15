@@ -29,22 +29,37 @@ import (
 	"fdb.dev/pkg/simfdb"
 )
 
+// chaosSimBackend preserves standalone transactions for seed DML while SELECT
+// pages still use the fault-injecting transactor. A Transactor alone is not a
+// BackendDatabase and cannot supply the SQL statement's one-shot commit handle.
+type chaosSimBackend struct {
+	*chaos.ChaosTransactor
+	standalone *simfdb.SimDB
+}
+
+func (b *chaosSimBackend) CreateWritableTransaction() (fdb.WritableTransaction, error) {
+	return b.standalone.CreateWritableTransaction()
+}
+
+func (b *chaosSimBackend) LocalityGetBoundaryKeys(r fdb.ExactRange, limit int, readVersion int64) ([]fdb.Key, error) {
+	return b.standalone.LocalityGetBoundaryKeys(r, limit, readVersion)
+}
+
+func (b *chaosSimBackend) Close() { b.standalone.Close() }
+
 // newChaosSimConnection is newSimConnection with the fault-injecting transactor
 // in the middle, and the returned FaultConfig is live: mutating its Rates after
 // setup arms the fault for the statements that follow, leaving the DDL and the
 // seed inserts alone.
-func newChaosSimConnection(t *testing.T, seed uint64) (*EmbeddedConnection, *chaos.FaultConfig) {
+func newChaosSimConnection(t *testing.T, seed uint64) (*EmbeddedConnection, *chaos.FaultConfig, *chaos.ChaosTransactor) {
 	t.Helper()
 	env := dst.NewSim(seed)
 	env.Buggify = dst.DisabledBuggifier()
 	sim := simfdb.New(env)
 	faults := &chaos.FaultConfig{Rates: map[chaos.FaultType]float64{}}
 	transactor := chaos.NewChaosTransactor(sim, faults, seed)
-	// The concrete-db slot is empty for the same reason
-	// NewFDBDatabaseWithBackend leaves it empty for SimFDB: the simulator is a
-	// BackendDatabase, not the pure-Go fdb.Database. Everything this test
-	// touches runs through the transactor's Run/RunRead path.
-	fdbDB := recordlayer.NewFDBDatabaseWithTransactor(transactor, fdb.Database{}).SetEnv(env)
+	backend := &chaosSimBackend{ChaosTransactor: transactor, standalone: sim}
+	fdbDB := recordlayer.NewFDBDatabaseWithBackend(backend).SetEnv(env)
 	fdbDB.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
 
 	ks := keyspace.New(subspace.Sub())
@@ -66,7 +81,7 @@ func newChaosSimConnection(t *testing.T, seed uint64) (*EmbeddedConnection, *cha
 		}
 	}
 	c.SetDefaultSchema("s")
-	return c, faults
+	return c, faults, transactor
 }
 
 // TestPagedDistinctUnderAmbiguousCommitsHoldsSteady pins that a paged SELECT
@@ -101,7 +116,7 @@ func TestPagedDistinctUnderAmbiguousCommitsHoldsSteady(t *testing.T) {
 	// the drain ends.
 	drain := func(faulted bool) (values map[int64]int, peak int, finalMem int64) {
 		t.Helper()
-		c, faults := newChaosSimConnection(t, 991)
+		c, faults, transactor := newChaosSimConnection(t, 991)
 		for i := 0; i < rows; i++ {
 			if _, err := c.ExecContext(ctx,
 				fmt.Sprintf("INSERT INTO t (id, v) VALUES (%d, %d)", i, i%distinct), nil); err != nil {
@@ -138,6 +153,15 @@ func TestPagedDistinctUnderAmbiguousCommitsHoldsSteady(t *testing.T) {
 		}
 		if minted := pr.scratch.MintedDistinctSets(); minted < 2 {
 			t.Fatalf("statement parked %d seen-sets; the shape must actually page", minted)
+		}
+		var ambiguous int
+		for _, entry := range transactor.Log {
+			if entry.Fault == chaos.FaultCommitUnknown {
+				ambiguous++
+			}
+		}
+		if faulted && ambiguous < 2 || !faulted && ambiguous != 0 {
+			t.Fatalf("faulted=%v: %d ambiguous commits observed; require multiple faulted pages and an unfaulted control", faulted, ambiguous)
 		}
 		return values, pr.scratch.PeakDistinctSets(), pr.execState.MemUsed()
 	}

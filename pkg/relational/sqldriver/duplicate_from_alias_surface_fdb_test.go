@@ -430,19 +430,16 @@ func TestFDB_DuplicateQualifierShapesCaughtByAnotherGate(t *testing.T) {
 	}
 	db, ctx := dupAliasSurfaceDB(t, "othergate")
 
+	// Java resolves duplicate display aliases per attribute. Only ZN carries ID;
+	// ZP and the scalar element do not, so all 2×3×{2,1} rows are legal and the
+	// selected IDs identify the unique owner.
+	wantRows := [][]int64{{1}, {1}, {1}, {1}, {1}, {1}, {2}, {2}, {2}}
+	if got := dupAliasQueryInts(t, db, ctx,
+		"SELECT a.id FROM zn AS a, zp AS a, a.arr AS a", true); fmt.Sprint(got) != fmt.Sprint(wantRows) {
+		t.Fatalf("duplicate-alias UNNEST rows = %v, want %v", got, wantRows)
+	}
+
 	for _, tc := range []struct{ name, query, wantCode, why string }{
-		{
-			name:     "UNNEST element alias collides with a leg alias",
-			query:    "SELECT a.id FROM zn AS a, zp AS a, a.arr AS a",
-			wantCode: "42712",
-			why: "Caught at DECLARATION by Scope.AddSource's shadowing arm, not at\n" +
-				"  resolution: a lateral-unnest binding SHADOWS same-named columns, so a\n" +
-				"  duplicate involving one cannot be adjudicated per-attribute the way a\n" +
-				"  plain duplicate can. Java forbids the duplicate unnest alias outright\n" +
-				"  (RFC-142). If this stops being 42712, the shape falls through to the\n" +
-				"  per-attribute path, where a shadowing source silently outranks a real\n" +
-				"  column of the same name — wrong rows, not an error.",
-		},
 		// THE THREE-SEGMENT TRIPWIRE THAT LIVED HERE HAS FIRED, and its two arms
 		// moved rather than being re-coded in place.
 		//

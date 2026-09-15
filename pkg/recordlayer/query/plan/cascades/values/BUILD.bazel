@@ -135,6 +135,7 @@ go_test(
         "cast_array_type_test.go",
         "cast_float_identity_test.go",
         "cast_java_trim_test.go",
+        "cast_numeric_boundary_test.go",
         "cast_round_bughunt_test.go",
         "census_gate_test.go",
         "coercion_test.go",

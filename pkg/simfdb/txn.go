@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"sort"
+	"sync/atomic"
 	"time"
 
 	fdb "fdb.dev/pkg/fdbgo/fdb"
@@ -37,8 +38,9 @@ type mutation struct {
 // keyRange is a half-open [begin, end) byte range used for conflict tracking.
 type keyRange struct{ begin, end []byte }
 
-// simTxn is SimFDB's WritableTransaction. It is single-goroutine (the sim driver serializes
-// use); the db mutex only guards the shared store/version counter against a concurrent commit.
+// simTxn is SimFDB's WritableTransaction. Data operations are single-owner;
+// only Cancel may run concurrently, as when a SQL statement's context expires.
+// The db mutex guards the shared store/version counter, not transaction reads.
 type simTxn struct {
 	db *SimDB
 
@@ -110,7 +112,7 @@ type simTxn struct {
 
 	committed        bool
 	committedVersion int64
-	cancelled        bool
+	cancelled        atomic.Bool
 
 	// versionstamp assigned at commit (10-byte tx version), for GetVersionstamp.
 	versionstamp []byte
@@ -459,7 +461,7 @@ func (tx *simTxn) Get(key fdb.KeyConvertible) fdb.FutureByteSlice {
 }
 
 func (tx *simTxn) get(key fdb.KeyConvertible, snapshot bool) fdb.FutureByteSlice {
-	if tx.cancelled {
+	if tx.cancelled.Load() {
 		return newReadyByteSlice(nil, fdb.Error{Code: 1025}) // transaction_cancelled
 	}
 	tx.ensureReadVersion()
@@ -769,7 +771,7 @@ func (tx *simTxn) GetKey(sel fdb.Selectable) fdb.FutureKey {
 }
 
 func (tx *simTxn) getKey(sel fdb.Selectable, snapshot bool) fdb.FutureKey {
-	if tx.cancelled {
+	if tx.cancelled.Load() {
 		return newReadyKey(nil, fdb.Error{Code: 1025})
 	}
 	tx.ensureReadVersion()
@@ -886,7 +888,7 @@ func (tx *simTxn) resolveRangeForRead(r fdb.Range, snapshot bool) (begin, end []
 	// rather than in getRange also matches the client's timing: a transaction cancelled after
 	// GetRange() but before the result is consumed fails the read, because the read had not
 	// happened yet.
-	if tx.cancelled {
+	if tx.cancelled.Load() {
 		return nil, nil, fdb.Error{Code: 1025}
 	}
 	tx.ensureReadVersion()
@@ -1008,7 +1010,7 @@ func (tx *simTxn) GetReadVersion() fdb.FutureInt64 {
 	// The client's GetReadVersion is ensureReadVersion + a field read
 	// (client/transaction.go:2435-2447), and ensureReadVersion opens with checkCancelled
 	// (client/transaction.go:662-665).
-	if tx.cancelled {
+	if tx.cancelled.Load() {
 		return newReadyInt64(0, fdb.Error{Code: 1025})
 	}
 	tx.ensureReadVersion()
@@ -1092,7 +1094,7 @@ func (tx *simTxn) GetEstimatedRangeSizeBytes(r fdb.ExactRange) fdb.FutureInt64 {
 	if bytes.Compare(b, e) > 0 {
 		return newReadyInt64(0, fdb.Error{Code: 2005}) // inverted_range
 	}
-	if tx.cancelled {
+	if tx.cancelled.Load() {
 		return newReadyInt64(0, fdb.Error{Code: 1025})
 	}
 	tx.ensureReadVersion()
@@ -1114,7 +1116,7 @@ func (tx *simTxn) GetRangeSplitPoints(r fdb.ExactRange, chunkSize int64) fdb.Fut
 	if bytes.Compare([]byte(begin.FDBKey()), []byte(end.FDBKey())) > 0 {
 		return newReadyKeyArray(nil, fdb.Error{Code: 2005}) // inverted_range
 	}
-	if tx.cancelled {
+	if tx.cancelled.Load() {
 		return newReadyKeyArray(nil, fdb.Error{Code: 1025})
 	}
 	// Single logical shard: no interior split points (begin/end only, per FDB when the range
@@ -1325,7 +1327,7 @@ func (tx *simTxn) AddWriteConflictKey(key fdb.KeyConvertible) error {
 // ---- lifecycle ------------------------------------------------------------------------
 
 func (tx *simTxn) Commit() fdb.FutureNil {
-	if tx.cancelled {
+	if tx.cancelled.Load() {
 		return newReadyNil(fdb.Error{Code: 1025})
 	}
 	if tx.committed && len(tx.buffer) == 0 {
@@ -1370,7 +1372,7 @@ func (tx *simTxn) postCommitReset() {
 	tx.writeConflicts = nil
 }
 
-func (tx *simTxn) Cancel() { tx.cancelled = true }
+func (tx *simTxn) Cancel() { tx.cancelled.Store(true) }
 
 // Reset returns the transaction to a fresh state for reuse (matching FDB Transaction.reset):
 // clears the buffer, conflict ranges, and read version; keeps the db handle.
@@ -1386,7 +1388,7 @@ func (tx *simTxn) Reset() {
 	tx.nextWriteNoConflict = false
 	tx.committed = false
 	tx.committedVersion = 0
-	tx.cancelled = false
+	tx.cancelled.Store(false)
 	tx.versionstamp = nil
 }
 
@@ -1474,7 +1476,7 @@ type lazyVersionstamp struct{ tx *simTxn }
 func (f *lazyVersionstamp) Get() (fdb.Key, error) {
 	// transaction_cancelled(1025) out-ranks the not-yet-committed verdict, as in the client
 	// (client/transaction.go:2217-2219: checkCancelled precedes the hasCommitted check).
-	if f.tx.cancelled {
+	if f.tx.cancelled.Load() {
 		return nil, fdb.Error{Code: 1025}
 	}
 	if !f.tx.committed || f.tx.versionstamp == nil {

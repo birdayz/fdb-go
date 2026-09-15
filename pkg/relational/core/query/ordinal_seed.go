@@ -209,7 +209,7 @@ func (t *cascadesTranslator) ordinalLegColumns(op logical.LogicalOperator) []val
 			if outerCols == nil {
 				return nil
 			}
-			innerCols := t.exactUnnestLegColumns(o.Left, un)
+			innerCols := boundUnnestLegColumns(un)
 			if innerCols == nil {
 				return nil
 			}
@@ -264,80 +264,6 @@ func (t *cascadesTranslator) ordinalLegColumns(op logical.LogicalOperator) []val
 	default:
 		return t.legColumns(op)
 	}
-}
-
-// exactUnnestLegColumns derives the output columns contributed by one lateral
-// unnest link. LogicalUnnest deliberately carries only syntax, so its generic
-// legColumns arm cannot know the AS element type. Ordinal chained execution,
-// however, stores these columns in an exact row and immediately constructs a
-// QOV over that row; admitting Unknown here would make the next link
-// unrepresentable. Recover the element from the same descriptor/projection
-// authority used by translateUnnestJoin and preserve the seed's AS-then-AT
-// order exactly.
-func (t *cascadesTranslator) exactUnnestLegColumns(
-	outer logical.LogicalOperator,
-	u *logical.LogicalUnnest,
-) []values.Field {
-	if u == nil || (u.Alias == "" && u.AtAlias == "") {
-		return nil
-	}
-
-	var elementType values.Type
-	if len(u.Segments) > 0 && findInlineValuesOwner(outer, u.Segments[0]) != nil {
-		owner := findInlineValuesOwner(outer, u.Segments[0])
-		classified, _, isArray, _ := inlineValuesArrayElementType(owner, u.Segments[1:])
-		if !isArray {
-			return nil
-		}
-		elementType = classified
-	} else if len(u.Segments) > 0 && logical.FindOwnerUnnest(outer, u.Segments[0]) != nil {
-		classified, _, disposition := t.classifyChainedUnnestArray(outer, u)
-		if disposition != derivedUnnestArray {
-			return nil
-		}
-		elementType = classified
-	} else {
-		outerTable := ""
-		if len(u.Segments) > 0 {
-			outerTable = findOuterScanTable(outer, u.Segments[0])
-		}
-		if outerTable == "" {
-			return nil
-		}
-		if t.outerSourceIsCTE(outerTable) || (len(u.Segments) > 0 && outerSourceIsDerivedTable(outer, u.Segments[0])) {
-			classified, _, disposition := t.classifyDerivedUnnestArray(outer, u)
-			if disposition != derivedUnnestArray {
-				return nil
-			}
-			elementType = classified
-		} else {
-			var isArray bool
-			elementType, _, isArray, _ = t.unnestArrayElementType(outerTable, u.Segments[1:])
-			if !isArray {
-				return nil
-			}
-		}
-	}
-	if values.IsUnresolved(elementType) {
-		return nil
-	}
-
-	fields := make([]values.Field, 0, 2)
-	if u.Alias != "" {
-		fields = append(fields, values.Field{
-			Name:      strings.ToUpper(u.Alias),
-			FieldType: elementType,
-			Ordinal:   len(fields),
-		})
-	}
-	if u.AtAlias != "" {
-		fields = append(fields, values.Field{
-			Name:      strings.ToUpper(u.AtAlias),
-			FieldType: values.NotNullInt,
-			Ordinal:   len(fields),
-		})
-	}
-	return fields
 }
 
 // clusterLeg is one leg of a gathered inner-join cluster: the leg operator
@@ -406,7 +332,7 @@ func legBinding(op logical.LogicalOperator) string {
 // comment in values.finalizeSeedWindows for what each one makes it do. A future
 // mint that folds the two together must reconcile that predicate first.
 func unnestOuterCorrelation(outer logical.LogicalOperator) values.CorrelationIdentifier {
-	return values.NamedCorrelationIdentifier(sourceAlias(outer))
+	return values.NamedCorrelationIdentifier(sourceBinding(outer))
 }
 
 // gatherInnerClusterLegs flattens DIRECT inner-join nesting into FROM-order

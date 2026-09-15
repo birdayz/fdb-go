@@ -52,7 +52,7 @@ func TestFDB_CastProbe(t *testing.T) {
 		}
 	})
 	t.Run("cast_double_to_bigint_rounds_half_up", func(t *testing.T) {
-		// CAST(double AS BIGINT) ROUNDS half-up toward +inf (floor(x+0.5)), matching
+		// CAST(double AS BIGINT) ROUNDS to nearest, ties toward +inf, matching
 		// Java CastValue.java's Math.round — NOT truncation. id=2 has d=7.5 → 8.
 		var id sql.NullInt64
 		err := db.QueryRowContext(ctx, "SELECT id FROM t WHERE CAST(d AS BIGINT) = 8").Scan(&id)

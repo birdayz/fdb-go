@@ -237,7 +237,7 @@ func TestCycle_SerializableUnderConcurrency(t *testing.T) {
 					// loop surfaced). Keyed on error IDENTITY, not the clock, so a genuine error
 					// is never masked by a simultaneously-firing deadline. (No per-tx timeout is
 					// set here, so a window-close always surfaces as a raw context error, never a
-					// mapTimeout-converted FDBError — see mapTimeout, transaction.go.)
+					// mapReadError-converted FDBError — see mapReadError, transaction.go.)
 					t.Errorf("swap failed: %v", err)
 					return
 				}
@@ -552,7 +552,7 @@ func runCycleFaultPhase(t *testing.T, ctx context.Context, db *Database, sd *sim
 					// A retryable injected fault must be absorbed by db.Transact. A non-context error
 					// surfacing means the client failed to recover it — a real bug. Keyed on error
 					// IDENTITY, never the clock: no per-tx timeout is set, so a window close is always a
-					// raw context error, never a mapTimeout-synthesized FDBError (transaction.go).
+					// raw context error, never a mapReadError-synthesized FDBError (transaction.go).
 					t.Errorf("[%s] swap failed under injected fault: %v", faultName, err)
 					return
 				}

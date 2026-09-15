@@ -170,11 +170,11 @@ func TestFDB_WithinBoxDup(t *testing.T) {
 	// C.arr has 3 elements → COUNT 3 per group.
 	t.Run("doubly_null_group_by_A_K", func(t *testing.T) {
 		wantSet(t, `SELECT A."K", COUNT(*) FROM A FULL OUTER JOIN B ON A."AID" = B."BID", C, C."ARR" AS "X" GROUP BY A."K"`,
-			[]string{"K=10|COUNT(*)=3", "K=30|COUNT(*)=3", "K=<nil>|COUNT(*)=3"})
+			[]string{"K=10|_1=3", "K=30|_1=3", "K=<nil>|_1=3"})
 	})
 	t.Run("doubly_null_group_by_B_K", func(t *testing.T) {
 		wantSet(t, `SELECT B."K", COUNT(*) FROM A FULL OUTER JOIN B ON A."AID" = B."BID", C, C."ARR" AS "X" GROUP BY B."K"`,
-			[]string{"K=20|COUNT(*)=3", "K=40|COUNT(*)=3", "K=<nil>|COUNT(*)=3"})
+			[]string{"K=20|_1=3", "K=40|_1=3", "K=<nil>|_1=3"})
 	})
 	// SELECT DISTINCT both dup columns — each routes to its own window (matched {10,20},
 	// A-only {30,NULL}, B-only {NULL,40}). DISTINCT dedups the C×unnest cross product.
@@ -201,14 +201,14 @@ func TestFDB_WithinBoxDup(t *testing.T) {
 	// A.K=30→[9] (1).
 	t.Run("owner_side_buried_box_leaf", func(t *testing.T) {
 		wantSet(t, `SELECT A."K", COUNT(*) FROM A FULL OUTER JOIN B ON A."AID" = B."BID", A."ARR" AS "X" GROUP BY A."K"`,
-			[]string{"K=10|COUNT(*)=2", "K=30|COUNT(*)=1"})
+			[]string{"K=10|_1=2", "K=30|_1=1"})
 	})
 
 	// NESTED box-in-box within-box dup: (A FULL B) FULL D (chained, left-assoc).
 	// buriedLegBounds RECURSES — inner (A,B) + outer (D) each get their own distinct window.
 	t.Run("nested_box_in_box_group_A_K", func(t *testing.T) {
 		wantSet(t, `SELECT A."K", COUNT(*) FROM A FULL OUTER JOIN B ON A."AID" = B."BID" FULL OUTER JOIN D ON A."AID" = D."DID", C, C."ARR" AS "X" GROUP BY A."K"`,
-			[]string{"K=10|COUNT(*)=3", "K=30|COUNT(*)=3", "K=<nil>|COUNT(*)=3"})
+			[]string{"K=10|_1=3", "K=30|_1=3", "K=<nil>|_1=3"})
 	})
 	t.Run("nested_box_in_box_select_all_leaves", func(t *testing.T) {
 		wantSet(t, `SELECT A."K", B."K", D."DK" FROM A FULL OUTER JOIN B ON A."AID" = B."BID" FULL OUTER JOIN D ON A."AID" = D."DID"`,

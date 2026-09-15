@@ -7,12 +7,10 @@
 // point query (SELECT id … WHERE k = <K> ORDER BY id). The second check is the whole point — it
 // exercises the secondary index staying consistent with the base record under retry, and the
 // planner using it. Because the workload is IDEMPOTENT DML (absolute UPDATE SET k=,v= + DELETE),
-// faults must be transparent under autocommit retry, so ANY drift — a stale index entry, a missing
-// index entry, an orphan — is a real fault-induced bug, not a known hazard.
-//
-// Bare INSERT and relative UPDATE are deliberately excluded (their non-idempotency under
-// commit_unknown is a KNOWN Java-matching hazard); the setup phase that populates the table runs
-// with faults OFF, and only the idempotent statements run with faults ON.
+// the workload may retry those statements explicitly after SQL reports 40001/40003. SQL commits
+// once; replay is the application's policy, not a driver guarantee. Any subsequent row/index
+// drift remains a finding. Bare INSERT and relative UPDATE are excluded from this retry policy;
+// setup populates the table with faults OFF, and only idempotent statements run with faults ON.
 package sqlhunt
 
 import (
@@ -111,7 +109,7 @@ func (SQLIndexWorkload) Run(seed uint64, cfg hunt.Config) *hunt.Report {
 			// retry consistency this workload hunts. Affects the row only if present.
 			k := rng.Int64N(siKeyDomain)
 			v := int64(rng.Int32N(1_000_000))
-			_, err = h.db.ExecContext(ctx, "UPDATE t SET k = ?, v = ? WHERE id = ?", k, v, id)
+			err = execIdempotentDML(ctx, h.db, "UPDATE t SET k = ?, v = ? WHERE id = ?", k, v, id)
 			if err == nil {
 				if _, ok := model[id]; ok {
 					model[id] = siRow{k: k, v: v}
@@ -120,15 +118,15 @@ func (SQLIndexWorkload) Run(seed uint64, cfg hunt.Config) *hunt.Report {
 		} else {
 			// DELETE — idempotent under retry (deleting an absent row is a no-op). Must remove the
 			// index entry too, else the WHERE k=<K> query would return an orphan id.
-			_, err = h.db.ExecContext(ctx, "DELETE FROM t WHERE id = ?", id)
+			err = execIdempotentDML(ctx, h.db, "DELETE FROM t WHERE id = ?", id)
 			if err == nil {
 				delete(model, id)
 			}
 		}
 		rep.Ops = i + 1
 		if err != nil {
-			// Idempotent DML on this schema has no legitimate domain error, and autocommit retries
-			// faults transparently — so any surfaced error is a real bug.
+			// Unexpected SQL errors and exhausted application retries remain findings;
+			// neither may be counted as a successful operation.
 			rep.Err = fmt.Sprintf("op %d id=%d: %v", i, id, err)
 			rep.FaultsFired = h.faults.Fired()
 			return rep
@@ -156,11 +154,12 @@ func (SQLIndexWorkload) Run(seed uint64, cfg hunt.Config) *hunt.Report {
 // under a unique cache key, with a table + secondary index created (faults off). enableFaults
 // switches the commit-fault schedule on for the workload phase; close releases everything.
 type siHarness struct {
-	env    *dst.Env
-	faults *dst.Buggifier
-	simDB  *recordlayer.FDBDatabase
-	db     *sql.DB
-	closes []func()
+	env     *dst.Env
+	faults  *dst.Buggifier
+	simDB   *recordlayer.FDBDatabase
+	backend *simfdb.SimDB
+	db      *sql.DB
+	closes  []func()
 }
 
 func siNewHarness(seed uint64, faultProb float64) (*siHarness, error) {
@@ -173,11 +172,12 @@ func siNewHarness(seed uint64, faultProb float64) (*siHarness, error) {
 	}
 	env.Buggify = dst.DisabledBuggifier() // setup phase runs fault-free
 
-	simDB := recordlayer.NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(env)
+	backend := simfdb.New(env)
+	simDB := recordlayer.NewFDBDatabaseWithBackend(backend).SetEnv(env)
 	simDB.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
 
 	key := fmt.Sprintf("sim://sqlindexhunt/%d/%d", seed, siKeyCounter.Add(1))
-	h := &siHarness{env: env, faults: faults, simDB: simDB}
+	h := &siHarness{env: env, faults: faults, simDB: simDB, backend: backend}
 	h.closes = append(h.closes, sqldriver.RegisterBackend(key, simDB))
 
 	setup, err := sql.Open("fdbsql", "fdbsql://"+siDBPath+"?cluster_file="+key)

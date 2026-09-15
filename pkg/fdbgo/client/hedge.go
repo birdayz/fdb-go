@@ -97,6 +97,9 @@ func sendFrameWithHedge(
 		return raceReplies(ctx, pResult, sResult, timeout)
 
 	case <-ctx.Done():
+		if result, ready := readyReply(pResult); ready {
+			return result
+		}
 		pResult.replyHandle.Cancel()
 		pResult.replyHandle.Release()
 		// Return the primary's accounting so the caller endRequests its startRequest delta — like
@@ -136,6 +139,9 @@ func waitForReply(ctx context.Context, inflight inFlightRPC, timeout time.Durati
 		// path re-sends (libfdb_c loadBalance has no per-read client timeout).
 		return hedgeResult{addr: inflight.addr, delta: inflight.delta, start: inflight.start, err: errReplyTimeout}
 	case <-ctx.Done():
+		if result, ready := readyReply(inflight); ready {
+			return result
+		}
 		inflight.replyHandle.Cancel()
 		inflight.replyHandle.Release()
 		return hedgeResult{addr: inflight.addr, delta: inflight.delta, start: inflight.start, err: ctx.Err()}
@@ -171,6 +177,18 @@ func raceReplies(ctx context.Context, a, b inFlightRPC, timeout time.Duration) h
 		// re-sends). Both started requests must still be ended by the caller.
 		return hedgeResult{err: errReplyTimeout, others: []rpcAccount{accountOf(a), accountOf(b)}}
 	case <-ctx.Done():
+		if result, ready := readyReply(a); ready {
+			b.replyHandle.Cancel()
+			b.replyHandle.Release()
+			result.others = []rpcAccount{accountOf(b)}
+			return result
+		}
+		if result, ready := readyReply(b); ready {
+			a.replyHandle.Cancel()
+			a.replyHandle.Release()
+			result.others = []rpcAccount{accountOf(a)}
+			return result
+		}
 		a.replyHandle.Cancel()
 		a.replyHandle.Release()
 		b.replyHandle.Cancel()
@@ -183,6 +201,18 @@ func raceReplies(ctx context.Context, a, b inFlightRPC, timeout time.Duration) h
 // caller can endRequest it exactly once.
 func accountOf(r inFlightRPC) rpcAccount {
 	return rpcAccount{addr: r.addr, delta: r.delta, start: r.start}
+}
+
+// readyReply preserves a queued response when cancellation and reply readiness
+// are observed together, matching the read-first ordering of C++ RYW choose.
+func readyReply(inflight inFlightRPC) (hedgeResult, bool) {
+	select {
+	case resp := <-inflight.replyCh:
+		inflight.replyHandle.Release()
+		return processReply(inflight, resp), true
+	default:
+		return hedgeResult{}, false
+	}
 }
 
 func processReply(inflight inFlightRPC, resp transport.Response) hedgeResult {

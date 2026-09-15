@@ -457,7 +457,7 @@ func (tr Transaction) Watch(key KeyConvertible) FutureNil {
 	// user's Transact body, before the wrapper's commit). The async future below blocks on it and
 	// registers the watch at the COMMITTED version, not the read version — so `Set(k,B); w=Watch(k)` stays
 	// pending until the next EXTERNAL change instead of firing on the txn's own write.
-	act := inner.WatchActivation()
+	act := inner.WatchActivationFor(watchCtx)
 	// Cancel() on the returned future cancels THIS watch (its scoped context → WatchPoll drains and
 	// releases the outstanding-watch slot), so an app can free ONE unneeded watch without touching the
 	// transaction's other watches — the base future Cancel() is a no-op, which would leave

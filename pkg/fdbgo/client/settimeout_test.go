@@ -301,7 +301,7 @@ func TestMapTimeout(t *testing.T) {
 	}{
 		{"our-deadline-fired", time.Second, time.Now().Add(-time.Millisecond), live, context.DeadlineExceeded, true, false},
 		{"our-cancel-fired", time.Second, time.Now().Add(-time.Millisecond), live, context.Canceled, true, false},
-		{"caller-ctx-done", time.Second, time.Now().Add(-time.Millisecond), doneCtx, context.DeadlineExceeded, false, true},
+		{"caller-ctx-done", time.Second, time.Now().Add(-time.Millisecond), doneCtx, context.Canceled, false, true},
 		{"no-timeout-set", 0, time.Time{}, live, context.DeadlineExceeded, false, true},
 		{"deadline-not-reached", time.Hour, time.Now().Add(time.Hour), live, context.DeadlineExceeded, false, true},
 		{"nil-error", time.Second, time.Now().Add(-time.Millisecond), live, nil, false, true},
@@ -311,37 +311,56 @@ func TestMapTimeout(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			tx := timedTx(tc.timeout, tc.deadline)
-			got := tx.mapTimeout(tc.parent, tc.in)
+			ctx, release := tx.opContext(tc.parent)
+			defer release()
+			got := tx.mapReadError(ctx, tc.in)
 			var fdbErr *wire.FDBError
 			isTimed := errors.As(got, &fdbErr) && fdbErr.Code == ErrTransactionTimedOut
 			if isTimed != tc.wantTimed {
-				t.Fatalf("mapTimeout timed-out=%v, want %v (got %v)", isTimed, tc.wantTimed, got)
+				t.Fatalf("mapReadError timed-out=%v, want %v (got %v)", isTimed, tc.wantTimed, got)
 			}
 			if tc.wantSame && !errors.Is(got, tc.in) {
-				t.Fatalf("mapTimeout = %v, want unchanged %v", got, tc.in)
+				t.Fatalf("mapReadError = %v, want unchanged %v", got, tc.in)
 			}
 		})
 	}
 }
 
-// TestOpContext proves opContext bounds the ctx by the deadline only when a timeout
-// is set, and otherwise returns the ctx unchanged.
+// TestOpContext preserves caller deadlines and uses the incarnation's signal
+// for a transaction timeout, so reconfiguring TIMEOUT can affect existing reads.
 func TestOpContext(t *testing.T) {
 	t.Parallel()
-	// No timeout → same ctx, no deadline added.
-	txNo := &Transaction{}
-	ctx, cancel := txNo.opContext(context.Background())
-	defer cancel()
+	tx := &Transaction{}
+	ctx, release := tx.opContext(context.Background())
+	defer release()
 	if _, ok := ctx.Deadline(); ok {
-		t.Fatal("opContext added a deadline with no timeout set")
+		t.Fatal("unbounded transaction added a deadline")
 	}
-	// Timeout → ctx carries the transaction deadline.
+	tx.SetTimeout(60_000)
+	if ctx.Err() != nil {
+		t.Fatalf("future timeout prematurely cancelled the read: %v", ctx.Err())
+	}
+	tx.SetTimeout(0)
+	if ctx.Err() != nil {
+		t.Fatalf("clearing timeout cancelled the read: %v", ctx.Err())
+	}
 	want := time.Now().Add(time.Hour)
-	txYes := timedTx(time.Hour, want)
-	ctx2, cancel2 := txYes.opContext(context.Background())
-	defer cancel2()
-	dl, ok := ctx2.Deadline()
-	if !ok || !dl.Equal(want) {
-		t.Fatalf("opContext deadline = %v (ok=%v), want %v", dl, ok, want)
+	parent, cancel := context.WithDeadline(context.Background(), want)
+	defer cancel()
+	callerCtx, stop := tx.opContext(parent)
+	defer stop()
+	if dl, ok := callerCtx.Deadline(); !ok || !dl.Equal(want) {
+		t.Fatalf("caller deadline=%v, %v; want %v", dl, ok, want)
+	}
+	// A timeout already past at configuration is terminal synchronously.
+	tx.creationTime = time.Now().Add(-time.Second)
+	tx.SetTimeout(1)
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("the incarnation timebomb did not interrupt the existing operation")
+	}
+	if got := fdbCodeOf(tx.mapReadError(ctx, ctx.Err())); got != 1031 {
+		t.Fatalf("timebomb code=%d, want 1031", got)
 	}
 }

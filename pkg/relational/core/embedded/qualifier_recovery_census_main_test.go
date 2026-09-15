@@ -50,78 +50,19 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// embeddedQualifierRecoveryFloors is the minimum population this corpus must
-// report at the sites it drives.
-//
-// It floors only those. A floor on a site this package never reaches would
-// assert something about a different corpus; the three harnesses' floor sets
-// together are what keeps every zero non-vacuous somewhere.
-//
-// Set below the measured values because these totals vary run to run. The floor
-// detects COLLAPSE — the shapes stopping, a recorder being routed around — not
-// drift.
-// Measured over this corpus after recursive remapping was retired:
-// derivedUnnestSource 8, projScopeClassify 18, projQualVsScan 4, displayLabelStrip 11,
-// existsSortSplit 6.
-//
-// existsSortSplit's zero was the header's own point about zeros: it read "this
-// package plans no sorted EXISTS fold over a join", which was a fact about the
-// CORPUS, not about the package. derived_source_exists_plan_test.go plans
-// exactly that shape — `ORDER BY d.id` over a correlated EXISTS across a
-// derived source — and the site reports 6 calls, all AGREED, with the split
-// qualifier matching the leg identity on every one (`C.ID`/C, `D.ID`/D,
-// `T1.ID`/T1). So the arm is now carried by the corpus rather than standing on
-// the unit wiring pin, and its floor is a real number below the measurement like
-// every other one here.
-//
-// WHAT IS PRODUCTION TRAFFIC HERE AND WHAT IS FIXTURE, because the two do not
-// support the same claims and a merged total hides which:
-//
-//   - PRODUCTION: derivedUnnestSource's `TD.ARR` AGREED. The display-label
-//     wiring fixture drives `MAX(E.SALARY)`'s heuristic decline plus exact
-//     `E.SALARY` / `E.SAL-ARY` AGREED pairs; the latter carry frozen source E,
-//     matching the source that minted the qualified machinery alias even after
-//     the Value program is physically reanchored.
-//   - FIXTURE: everything spelled `T.COL`, `T2.SK`, `A.NAME` and `SUM(A.VAL).X`
-//     comes from qualifier_recovery_wiring_test.go, which exists to prove the
-//     dotted buckets are reachable at the two embedded sites no corpus
-//     populates. Those calls make the floors below say "the pins still run";
-//     they say nothing about production reach.
-//
-// recursiveRemap is intentionally zero: recursiveRemapValues is a retired
-// compatibility no-op, and the query-package wiring pin proves it records no
-// traffic. It, and projScopeClassify's splitting arm, are declared in
-// embeddedQualifierRecoveryRetiredSplit below rather than as Split zeros here,
-// because both are facts about the TREE and must survive a -test.run filter that
-// drops every floor on this struct.
+// embeddedQualifierRecoveryFloors watches collapse at the live sites reached by
+// this corpus. Derived UNNEST and projection-scope classification are fully
+// retired and forbid all calls independently of these floors.
 var embeddedQualifierRecoveryFloors = values.QualifierRecoveryFloors{
 	Calls: [6]int{
-		values.QualRecSiteExistsSortSplit:     3,
-		values.QualRecSiteDerivedUnnestSource: 4,
-		values.QualRecSiteProjScopeClassify:   6,
-		values.QualRecSiteProjQualVsScan:      2,
-		values.QualRecSiteDisplayLabelStrip:   4,
+		values.QualRecSiteExistsSortSplit:   3,
+		values.QualRecSiteProjQualVsScan:    2,
+		values.QualRecSiteDisplayLabelStrip: 4,
 	},
 	Split: [6]int{
-		values.QualRecSiteExistsSortSplit: 3,
-		// derivedUnnestSource: 0, and the DIRECTION OF THIS GUARD JUST
-		// INVERTED. It was 4 while classifyDerivedUnnestArray split
-		// unconditionally; the site now decides from the parse-tree triple and
-		// splits only for a slot that has none, and every call this corpus
-		// makes carries one. So a positive floor is unsatisfiable and the
-		// alarm is GROWTH: a non-zero here means a slot arrived without a
-		// triple, which is a finding about the CAPTURE and not about this
-		// site.
-		//
-		// It stays a Split DECLARATION rather than moving to the retired list
-		// below, and the distinction is the same one that list draws: the
-		// splitting arm is NOT gone from the tree — it is the documented
-		// fallback for an absent triple, and the query-package wiring pin
-		// drives it directly. What is empty is this corpus's population, which
-		// is a claim about this suite and may be dropped by a filter.
-		values.QualRecSiteDerivedUnnestSource: 0,
-		values.QualRecSiteProjQualVsScan:      2,
-		values.QualRecSiteDisplayLabelStrip:   4,
+		values.QualRecSiteExistsSortSplit:   3,
+		values.QualRecSiteProjQualVsScan:    2,
+		values.QualRecSiteDisplayLabelStrip: 4,
 	},
 }
 
@@ -131,16 +72,8 @@ var embeddedQualifierRecoveryFloors = values.QualifierRecoveryFloors{
 //
 //   - recursiveRemap: values.RecordQualifierRecovery is not called with this site
 //     anywhere in non-test sources.
-//   - projScopeClassify: projScopeAlias's last-dot fallback is unreachable —
-//     values.AsFieldValue admits a *fieldValue only when its Child is a
-//     *quantifiedObjectValue, so the CARRIED branch always answers.
-//     TestQualRecWiring_ProjScopeClassifyCarriesExactOwner drives both an
-//     ordinary and a DOTTED semantic field name through it and gets CARRIED for
-//     each, which is the pin that says the fallback is unreachable by input and
-//     not merely unvisited.
 var embeddedQualifierRecoveryRetiredSplit = func() (r [6]bool) {
 	r[values.QualRecSiteRecursiveRemap] = true
-	r[values.QualRecSiteProjScopeClassify] = true
 	return r
 }()
 
@@ -189,5 +122,9 @@ func assertEmbeddedQualifierRecoveryCensus(w io.Writer) bool {
 		Floors:          floors,
 		AllowedDiverged: qualifierRecoveryNegativeControls,
 		RetiredSplit:    embeddedQualifierRecoveryRetiredSplit,
+		RetiredCalls: [6]bool{
+			values.QualRecSiteDerivedUnnestSource: true,
+			values.QualRecSiteProjScopeClassify:   true,
+		},
 	}, "embedded corpus")
 }

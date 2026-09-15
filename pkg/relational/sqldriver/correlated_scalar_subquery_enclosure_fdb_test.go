@@ -132,18 +132,14 @@ func TestFDB_CorrelatedScalarSubqueryEnclosure(t *testing.T) {
 			[]string{"[100 7]", "[200 8]"})
 	})
 
-	// A WHERE-EXISTS inside a correlated-scalar inner declines at the FRONT-END
-	// (0A000, no SubqueryPlanner) — it never reaches the translator enclosure,
-	// so this path's inner-EXISTS handling is untested. Pinned so a future
-	// front-end change that admits this shape forces a re-verification of the
-	// inner path above.
-	t.Run("inner_where_exists_front_end_declines", func(t *testing.T) {
-		_, err := rowsOf(t, "SELECT t.k, (SELECT c.cv FROM c WHERE c.ck = t.k "+
-			"AND EXISTS (SELECT 1 FROM e WHERE e.eref = c.cid)) FROM t")
-		if err == nil {
-			t.Fatalf("inner WHERE-EXISTS scalar unexpectedly planned — re-verify the inner path (translateSubqueryRef enclosure)")
-		}
-		requireSQLSTATE(t, err, api.ErrCodeUnsupportedOperation)
+	// A WHERE-EXISTS inside a correlated-scalar inner now travels through the
+	// shared full-query visitor. Pin the inner enclosure with discriminating
+	// values: c.cid=1 has an e row and returns 7; c.cid=2 has none and yields
+	// the scalar subquery's NULL-on-empty result.
+	t.Run("inner_where_exists", func(t *testing.T) {
+		wantRows(t, "SELECT t.k, (SELECT c.cv FROM c WHERE c.ck = t.k "+
+			"AND EXISTS (SELECT 1 FROM e WHERE e.eref = c.cid)) FROM t",
+			[]string{"[100 7]", "[200 <nil>]"})
 	})
 
 	// StrictSingle: a second e row for c.cid=1 makes the inner JOIN scalar return TWO

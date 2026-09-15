@@ -78,6 +78,12 @@ func TestPositionalRowKindSeparatesScalarTransportFromOneFieldRecord(t *testing.
 	if scalar.OrdinalRowKind() != values.OrdinalCarrierScalar {
 		t.Fatalf("purpose-built scalar row kind = %v, want scalar", scalar.OrdinalRowKind())
 	}
+	if bare, err := isBareScalarRow(record); bare || err != nil {
+		t.Error("an anonymous one-field RECORD was classified as a scalar envelope by its _0 title")
+	}
+	if bare, err := isBareScalarRow(scalar); !bare || err != nil {
+		t.Error("the purpose-built scalar envelope was classified as a record")
+	}
 	if scalar.Type == nil || !scalar.Type.Equals(oneField) {
 		t.Fatalf("mutation premise lost: scalar type = %v, want exact same shape as record %v", scalar.Type, oneField)
 	}
@@ -249,5 +255,50 @@ func TestPositionalRow_DuplicateNames(t *testing.T) {
 	// prefer it.
 	if _, ok := typ.FieldIndexUnique("ID"); ok {
 		t.Fatal("FieldIndexUnique(ID) resolved on a dup-named type — a name bind must decline here, not answer the first match")
+	}
+}
+
+func TestScalarEnvelopeClassificationRejectsMalformedProvenance(t *testing.T) {
+	t.Parallel()
+	recordType := values.NewRecordType("", false, []values.Field{{Name: "_0", FieldType: values.NotNullLong, Ordinal: 0}})
+	recordLayout, err := values.NewOrdinalLayoutForCarrierType(recordType, []values.OrdinalTileSpec{{Kind: values.OrdinalTileFlat, Start: 0, Width: 1}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scalarLayout, err := values.NewScalarOrdinalLayoutForCarrierType(values.NotNullLong)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name string
+		row  *PositionalRow
+		want bool
+		bad  bool
+	}{
+		{"nil", nil, false, false},
+		{"record layout", &PositionalRow{Type: recordType, Slots: []any{int64(7)}, Layout: recordLayout}, false, false},
+		{"scalar layout", &PositionalRow{Type: recordType, Slots: []any{int64(7)}, Layout: scalarLayout, transportKind: values.OrdinalCarrierScalar}, true, false},
+		{"scalar layout record provenance", &PositionalRow{Type: recordType, Slots: []any{int64(7)}, Layout: scalarLayout}, false, true},
+		{"record layout scalar provenance", &PositionalRow{Type: recordType, Slots: []any{int64(7)}, Layout: recordLayout, transportKind: values.OrdinalCarrierScalar}, false, true},
+		{"invalid provenance", &PositionalRow{transportKind: 255}, false, true},
+		{"scalar without type", &PositionalRow{Slots: []any{int64(7)}, transportKind: values.OrdinalCarrierScalar}, false, true},
+		{"scalar without slot", &PositionalRow{Type: recordType, transportKind: values.OrdinalCarrierScalar}, false, true},
+		{"scalar with extra slot", &PositionalRow{Type: recordType, Slots: []any{int64(7), int64(8)}, transportKind: values.OrdinalCarrierScalar}, false, true},
+		{"scalar with extra field", &PositionalRow{Type: values.NewRecordType("", false, []values.Field{{Name: "x", FieldType: values.NotNullLong, Ordinal: 0}, {Name: "y", FieldType: values.NotNullLong, Ordinal: 1}}), Slots: []any{int64(7)}, transportKind: values.OrdinalCarrierScalar}, false, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := isBareScalarRow(test.row)
+			if (err != nil) != test.bad || got != test.want {
+				t.Fatalf("classification=(%v,%v), want scalar=%v error=%v", got, err, test.want, test.bad)
+			}
+			if test.bad {
+				build := &ordinalJoinBuild{Enabled: true}
+				_, _, bindErr := build.legRows(values.NamedCorrelationIdentifier("outer"), values.NamedCorrelationIdentifier("inner"), &QueryResult{Positional: test.row}, nil)
+				if bindErr == nil {
+					t.Fatal("malformed scalar envelope reached join binding without its error")
+				}
+			}
+		})
 	}
 }

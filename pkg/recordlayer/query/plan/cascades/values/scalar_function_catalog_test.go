@@ -35,10 +35,6 @@ func TestScalarFunctionCatalogCapabilitySets(t *testing.T) {
 		OCTET_LENGTH PI POSITION POW POWER REPLACE REVERSE RIGHT ROUND RTRIM
 		SECOND SIGN SQRT SUBSTR SUBSTRING TRIM UPPER YEAR
 	`
-	const legacyMapNames = `
-		COALESCE DAY DAYOFMONTH DAYOFWEEK DAYOFYEAR GREATEST HOUR LEAST MINUTE
-		MONTH SECOND YEAR
-	`
 	const commonNumericArgumentNames = `GREATEST LEAST MOD`
 
 	require.Equal(t, sortedWords(allNames), catalogNamesMatching(
@@ -51,10 +47,6 @@ func TestScalarFunctionCatalogCapabilitySets(t *testing.T) {
 		func(definition scalarFunctionDefinition) bool {
 			return definition.scalarCall
 		}))
-	require.Equal(t, sortedWords(legacyMapNames), catalogNamesMatching(
-		func(definition scalarFunctionDefinition) bool {
-			return definition.legacyMapFunction != legacyMapScalarFunctionUnsupported
-		}))
 	require.Equal(t, sortedWords(commonNumericArgumentNames), catalogNamesMatching(
 		func(definition scalarFunctionDefinition) bool {
 			return definition.argumentStrategy == scalarFunctionCommonNumericArguments
@@ -63,7 +55,6 @@ func TestScalarFunctionCatalogCapabilitySets(t *testing.T) {
 	require.Len(t, scalarFunctionCatalog, 58)
 	require.Len(t, sortedWords(cascadesSafeNames), 55)
 	require.Len(t, sortedWords(scalarCallNames), 51)
-	require.Len(t, sortedWords(legacyMapNames), 12)
 }
 
 func TestScalarFunctionCatalogOperatorCoverageAndAliases(t *testing.T) {
@@ -237,28 +228,6 @@ func TestScalarFunctionCatalogRouteBoundaries(t *testing.T) {
 		got, ok := ScalarFunctionDeclaredResultType(name)
 		require.True(t, ok, name)
 		require.True(t, got.Equals(want), name)
-	}
-	for _, name := range []string{"IFNULL", "MOD", "UPPER", "CURRENT_DATE", "upper"} {
-		_, legacyMapCall := LookupLegacyMapScalarFunction(name)
-		require.False(t, legacyMapCall, name)
-	}
-	for name, want := range map[string]LegacyMapScalarFunction{
-		"COALESCE":   LegacyMapScalarFunctionCoalesce,
-		"GREATEST":   LegacyMapScalarFunctionGreatest,
-		"LEAST":      LegacyMapScalarFunctionLeast,
-		"YEAR":       LegacyMapScalarFunctionYear,
-		"MONTH":      LegacyMapScalarFunctionMonth,
-		"DAY":        LegacyMapScalarFunctionDay,
-		"HOUR":       LegacyMapScalarFunctionHour,
-		"MINUTE":     LegacyMapScalarFunctionMinute,
-		"SECOND":     LegacyMapScalarFunctionSecond,
-		"DAYOFMONTH": LegacyMapScalarFunctionDayOfMonth,
-		"DAYOFWEEK":  LegacyMapScalarFunctionDayOfWeek,
-		"DAYOFYEAR":  LegacyMapScalarFunctionDayOfYear,
-	} {
-		got, legacyMapCall := LookupLegacyMapScalarFunction(name)
-		require.True(t, legacyMapCall, name)
-		require.Equal(t, want, got, name)
 	}
 }
 

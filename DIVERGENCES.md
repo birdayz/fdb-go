@@ -2628,3 +2628,23 @@ This changes only invalid-encoding error handling, not valid continuation bytes,
 record formats, or index formats. `TestChainedCursorNilEncode` pins rejection and
 single generator invocation both directly and through Concat, and
 `TestChainedCursorEmptyWithNilEncode` pins the exhausted-generator control.
+
+### Projected existential over an independent outer block (RFC-256)
+
+Go's live-existential partition guard excludes a result-live existential from a
+lower partition containing another quantifier. For a select with at least two
+ordinary independent ForEach sources and exactly one result-projected
+existential, that can leave the canonical outer cross product as the only
+implementable split. `PartitionSelectRule` now preserves exactly that split
+(all ordinary ForEach below, sole projected existential above) through both
+cross-product deferral and disconnected-lower pruning. Hard dependencies,
+cycles, null-on-empty/strict-single sources, additional existential/physical
+quantifiers, liveness and exact-row checks retain their exclusions.
+
+Java's `PartitionSelectRule` also has cross-product deferral; this is NOT a claim
+that Java bypasses that configuration. It is a bounded Go search-admissibility
+difference necessitated by Go's narrower live-existential lowering alternatives.
+The retained `DerivedSourceReference` JVM test proves same-alias, star/empty-body
+and both-live-outer-row EXISTS queries; direct rule tests drive both deferral
+settings and verify the exact canonical lower block. See RFC-256's final sections
+for the rejected broader exemptions, reference outcomes and verification scope.

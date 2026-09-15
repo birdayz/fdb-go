@@ -1580,19 +1580,17 @@ func TestTranslateUnnest_NilMetadataAtOrdinalityIsCleanError(t *testing.T) {
 	}
 }
 
-// TestExactLogicalResultType_LateralRightUnnest pins the only context in which
-// a syntax-only LogicalUnnest has enough information to state an exact type:
-// the right child of its lateral join. The owner is selected structurally from
-// the exact left input, and its stored array slot supplies the element type.
-// A standalone unnest and every malformed owner/path remain loud; this must
-// never become an Unknown-producing text fallback.
+// TestExactLogicalResultType_LateralRightUnnest pins the exact type supplied by
+// the semantic collection binding. A syntax-only source stays untyped even when
+// its diagnostic Segments happen to name a real catalog array.
 func TestExactLogicalResultType_LateralRightUnnest(t *testing.T) {
 	t.Parallel()
 	md := demoMetaData(t)
 	left := logical.NewScan("Order", "O")
 
 	t.Run("scalar AS", func(t *testing.T) {
-		unnest := &logical.LogicalUnnest{Segments: []string{"O", "TAGS"}, Alias: "TAG"}
+		owner, path := rawProtoPath(t, md, "Order", "TAGS")
+		unnest, _ := rawBoundUnnest(t, []string{"O", "TAGS"}, "TAG", "", "O", owner, path...)
 		joined, err := ExactLogicalResultType(logical.NewJoin(left, unnest, logical.JoinInner, ""), md)
 		if err != nil {
 			t.Fatal(err)
@@ -1608,8 +1606,9 @@ func TestExactLogicalResultType_LateralRightUnnest(t *testing.T) {
 	})
 
 	t.Run("AS plus AT", func(t *testing.T) {
-		unnest := &logical.LogicalUnnest{Segments: []string{"O", "TAGS"}, Alias: "TAG", AtAlias: "POS"}
-		right, err := exactLateralUnnestResultType(left, unnest, md)
+		owner, path := rawProtoPath(t, md, "Order", "TAGS")
+		unnest, _ := rawBoundUnnest(t, []string{"O", "TAGS"}, "TAG", "POS", "O", owner, path...)
+		right, err := ExactLogicalResultType(unnest, md)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -272,9 +272,7 @@ func TestFDB_ArrayUnnestStruct(t *testing.T) {
 
 	// assertColumns pins the user-visible RESULT-SET COLUMN labels (the metadata
 	// the driver returns via rows.Columns(), from the same production
-	// ResultColumnLabelsForPlan the live path uses). This is the load-bearing
-	// pin for "the struct element is ONE column, NOT flattened": a flattening
-	// bug would expand X into SKU/QTY here.
+	// ResultColumnLabelsForPlan the live path uses).
 	assertColumns := func(t *testing.T, sql string, want []string) {
 		t.Helper()
 		plan, perr := embedded.PlanRecordQueryWithMetadata(sql, md, nil)
@@ -320,13 +318,11 @@ func TestFDB_ArrayUnnestStruct(t *testing.T) {
 		}
 	})
 
-	t.Run("SELECT star keeps the element as one struct column not flattened", func(t *testing.T) {
-		// (c) The KEY pin: `SELECT *` over a struct-array unnest exposes the
-		// element as ONE column X — NOT the flattened struct subfields (no SKU /
-		// QTY columns). The outer table's own columns (ID, ITEMS, NAME) plus the
-		// element X, in FROM order.
+	t.Run("SELECT star expands the visible record-element fields", func(t *testing.T) {
+		// Java's record UNNEST without AT publishes the element's visible fields;
+		// the whole-object X remains available to an explicit SELECT X above.
 		assertColumns(t, `SELECT * FROM TS, TS."ITEMS" AS "X"`,
-			[]string{"ID", "ITEMS", "NAME", "X"})
+			[]string{"ID", "ITEMS", "NAME", "SKU", "QTY"})
 	})
 
 	t.Run("WITH ORDINALITY binds whole struct element plus 1-based ordinal", func(t *testing.T) {

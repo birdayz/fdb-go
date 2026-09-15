@@ -2225,6 +2225,14 @@ func (b *ordinalJoinBuild) legRows(outerAlias, innerAlias values.CorrelationIden
 }
 
 func (b *ordinalJoinBuild) bindLeg(legs map[values.CorrelationIdentifier]values.OrdinalRow, raw map[values.CorrelationIdentifier]any, id values.CorrelationIdentifier, qr *QueryResult) error {
+	var scalar bool
+	if qr != nil {
+		var err error
+		scalar, err = isBareScalarRow(qr.Positional)
+		if err != nil {
+			return err
+		}
+	}
 	// FirstOrDefault's empty record arm carries an exact-width shell so layout
 	// validation remains possible, with LayoutPresence stating that the WHOLE
 	// quantified object is absent. Bind that object as NULL before any scalar
@@ -2256,7 +2264,7 @@ func (b *ordinalJoinBuild) bindLeg(legs map[values.CorrelationIdentifier]values.
 			// A nil / positional-less inner is the deliberately-NULL leg (→ NULL);
 			// bind an UNTYPED nil, never a typed-nil *PositionalRow.
 			raw[id] = nil
-		case isBareScalarRow(qr.Positional):
+		case scalar:
 			raw[id] = qr.Positional.Slots[0]
 		default:
 			raw[id] = qr.Positional
@@ -2301,11 +2309,10 @@ func (b *ordinalJoinBuild) bindLeg(legs map[values.CorrelationIdentifier]values.
 	// (RecordQueryFlatMapPlan.java:135 and :140 — `withBinding(CORRELATION,
 	// quantifier.getAlias(), result)`), so there is no side for a rule to key on.
 	//
-	// isBareScalarRow is exactly Go's "not a record" test here: it matches the
-	// 1-slot `_0` carrier scalarPositionalRow builds around a computed scalar,
-	// and a genuine one-column leg carries the COLUMN's name, not `_0`. So a
-	// row-shaped leg — one column or many, outer or inner — cannot reach this.
-	//
+	// The carrier kind distinguishes a datum envelope from a genuine record.
+	// Anonymous one-field records may have the SAME _0 title and still bind
+	// whole; the checked discriminator above never uses that title.
+
 	// The consequence when the carrier is bound instead: the quantifier object
 	// is non-null whatever it holds, so ExistsValue.eval
 	// (ExistsValue.java:98-100, `getChild().eval() != null`) can no longer see
@@ -2314,7 +2321,7 @@ func (b *ordinalJoinBuild) bindLeg(legs map[values.CorrelationIdentifier]values.
 	// EMPTY `e` answered TRUE for every row, while the same query correlated to
 	// the FIRST leg (which lands on the sibling non-build path, which already
 	// unwrapped) answered FALSE.
-	if isBareScalarRow(qr.Positional) {
+	if scalar {
 		raw[id] = qr.Positional.Slots[0]
 		return nil
 	}

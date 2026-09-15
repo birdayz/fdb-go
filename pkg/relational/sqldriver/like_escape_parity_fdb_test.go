@@ -1,6 +1,6 @@
 package sqldriver_test
 
-// LIKE ... ESCAPE trailing-escape parity, on BOTH evaluator paths.
+// LIKE ... ESCAPE trailing-escape parity for user and system tables.
 //
 // The pattern `'Z' ESCAPE 'Z'` ends with the escape character and
 // nothing follows it. Java's answer is recorded in its own corpus,
@@ -21,14 +21,9 @@ package sqldriver_test
 // match, and "doesn't work in Java → doesn't work in Go, in the same
 // architectural way" cuts both directions.
 //
-// Two Go paths must agree with that and with each other:
-//   - the ENGINE path (Cascades → predicates.likeMatch → values.LikeMatch)
-//   - the MAP path (INFORMATION_SCHEMA WHERE → filterSysRows →
-//     evalPredicateOnMapTri)
-//
-// Both are pinned here because the defect being guarded is precisely
-// that the two paths used different matchers; a unit test on either
-// helper cannot express it.
+// Both table sources now use the same typed predicate compiler and evaluator.
+// Retain both SQL regressions: they originally exposed different matchers and
+// must continue to agree after the legacy system-table interpreter is retired.
 
 import (
 	"context"

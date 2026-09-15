@@ -155,9 +155,9 @@ func buildW5StructStarMetadata(t *testing.T) *recordlayer.RecordMetaData {
 	return md
 }
 
-// TestStarMetadataStructElementType pins that the gathered multi-source
-// star's STRUCT-typed element column reports STRUCT, never the BIGINT
-// fallback (valueTypeName had no TypeCodeRecord case).
+// TestStarMetadataStructElementType pins Java's record-element star rule: a
+// record UNNEST without AT publishes the element's visible fields, not its
+// ephemeral whole-object alias. The published SKU leaf keeps its STRING type.
 func TestStarMetadataStructElementType(t *testing.T) {
 	t.Parallel()
 	md := buildW5StructStarMetadata(t)
@@ -168,11 +168,11 @@ func TestStarMetadataStructElementType(t *testing.T) {
 	}
 	labels := embedded.ResultColumnLabelsForPlan(plan, md)
 	types := embedded.ResultColumnTypesForPlan(plan, md)
-	if fmt.Sprintf("%v", labels) != "[WID SITEMS XID EL]" {
-		t.Fatalf("labels = %v, want [WID SITEMS XID EL]", labels)
+	if fmt.Sprintf("%v", labels) != "[WID SITEMS XID SKU]" {
+		t.Fatalf("labels = %v, want [WID SITEMS XID SKU]", labels)
 	}
-	if types[len(types)-1] != "STRUCT" {
-		t.Fatalf("element column type = %q (all types %v), want STRUCT — the TypeCodeRecord case is missing and the BIGINT fallback silently mistyped the struct element", types[len(types)-1], types)
+	if types[len(types)-1] != "STRING" {
+		t.Fatalf("element leaf type = %q (all types %v), want STRING", types[len(types)-1], types)
 	}
 }
 
@@ -284,34 +284,40 @@ func TestStarMetadataTwinLayoutTypesTheUnnestedLeg(t *testing.T) {
 	t.Parallel()
 	md := buildTwinLayoutStarMetadata(t)
 	for _, tc := range []struct {
-		name string
-		sql  string
-		want string
+		name      string
+		sql       string
+		wantLabel string
+		wantType  string
 	}{
 		{
-			name: "struct-element leg planned outer",
-			sql:  `SELECT * FROM WS AS A, WX AS B, B."SITEMS" AS "EL"`,
-			want: "STRUCT",
+			name:      "struct-element leg planned outer",
+			sql:       `SELECT * FROM WS AS A, WX AS B, B."SITEMS" AS "EL"`,
+			wantLabel: "SKU",
+			wantType:  "STRING",
 		},
 		{
-			name: "struct-element leg planned inner",
-			sql:  `SELECT * FROM WX AS B, WS AS A, B."SITEMS" AS "EL"`,
-			want: "STRUCT",
+			name:      "struct-element leg planned inner",
+			sql:       `SELECT * FROM WX AS B, WS AS A, B."SITEMS" AS "EL"`,
+			wantLabel: "SKU",
+			wantType:  "STRING",
 		},
 		{
-			name: "struct-element leg unaliased",
-			sql:  `SELECT * FROM WS, WX, WX."SITEMS" AS "EL"`,
-			want: "STRUCT",
+			name:      "struct-element leg unaliased",
+			sql:       `SELECT * FROM WS, WX, WX."SITEMS" AS "EL"`,
+			wantLabel: "SKU",
+			wantType:  "STRING",
 		},
 		{
-			name: "scalar-element leg planned outer",
-			sql:  `SELECT * FROM WX AS B, WS AS A, A."SITEMS" AS "EL"`,
-			want: "BIGINT",
+			name:      "scalar-element leg planned outer",
+			sql:       `SELECT * FROM WX AS B, WS AS A, A."SITEMS" AS "EL"`,
+			wantLabel: "EL",
+			wantType:  "BIGINT",
 		},
 		{
-			name: "scalar-element leg planned inner",
-			sql:  `SELECT * FROM WS AS A, WX AS B, A."SITEMS" AS "EL"`,
-			want: "BIGINT",
+			name:      "scalar-element leg planned inner",
+			sql:       `SELECT * FROM WS AS A, WX AS B, A."SITEMS" AS "EL"`,
+			wantLabel: "EL",
+			wantType:  "BIGINT",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -322,12 +328,13 @@ func TestStarMetadataTwinLayoutTypesTheUnnestedLeg(t *testing.T) {
 			}
 			labels := embedded.ResultColumnLabelsForPlan(plan, md)
 			types := embedded.ResultColumnTypesForPlan(plan, md)
-			if fmt.Sprintf("%v", labels) != "[ID SITEMS ID SITEMS EL]" {
-				t.Fatalf("labels = %v, want [ID SITEMS ID SITEMS EL] — the gathered-star arm did not fire, so the element type below proves nothing", labels)
+			wantLabels := fmt.Sprintf("[ID SITEMS ID SITEMS %s]", tc.wantLabel)
+			if fmt.Sprintf("%v", labels) != wantLabels {
+				t.Fatalf("labels = %v, want %s", labels, wantLabels)
 			}
-			if got := types[len(types)-1]; got != tc.want {
-				t.Fatalf("element column type = %q (all types %v), want %q — the unnested array column was resolved by a leaf name BOTH legs declare, instead of by its ordinal in the leg the Explode actually reads",
-					got, types, tc.want)
+			if got := types[len(types)-1]; got != tc.wantType {
+				t.Fatalf("element output type = %q (all types %v), want %q — the unnested array column was resolved by a leaf name BOTH legs declare, instead of by its ordinal in the leg the Explode actually reads",
+					got, types, tc.wantType)
 			}
 		})
 	}

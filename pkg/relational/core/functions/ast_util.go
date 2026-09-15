@@ -58,20 +58,33 @@ func FullIdToName(fid antlrgen.IFullIdContext) string {
 // schemaName is the current schema context (e.g., from session).
 // Returns (tableName, errCode, errMsg). errCode is "" on success.
 func ResolveQualifiedTableName(dottedName, schemaName string) (string, error) {
-	dot := strings.IndexByte(dottedName, '.')
-	if dot < 0 {
-		return dottedName, nil
+	// Legacy string callers cannot distinguish quoted dots from qualification.
+	// SQL parse-derived callers use ResolveQualifiedTablePath instead.
+	if dottedName == "" {
+		return "", nil
 	}
-	qualifier := dottedName[:dot]
-	rest := dottedName[dot+1:]
+	return ResolveQualifiedTablePath(strings.Split(dottedName, "."), schemaName)
+}
 
-	if strings.IndexByte(rest, '.') >= 0 {
+// ResolveQualifiedTablePath validates captured identifier segments without
+// reinterpreting dots inside a literal name. Mirrors Java's Identifier name and
+// qualifier separation; the path must contain one or two non-empty segments.
+func ResolveQualifiedTablePath(path []string, schemaName string) (string, error) {
+	if len(path) > 2 {
 		return "", api.NewErrorf(api.ErrCodeInternalError,
-			"multi-part qualified table name %q not supported", dottedName)
+			"multi-part qualified table name %q not supported", strings.Join(path, "."))
 	}
-	if !strings.EqualFold(qualifier, schemaName) {
+	if len(path) == 0 {
+		return "", api.NewError(api.ErrCodeInternalError, "table identifier path is empty")
+	}
+	for _, part := range path {
+		if part == "" {
+			return "", api.NewError(api.ErrCodeInternalError, "table identifier path contains an empty segment")
+		}
+	}
+	if len(path) == 2 && !strings.EqualFold(path[0], schemaName) {
 		return "", api.NewErrorf(api.ErrCodeUndefinedDatabase,
-			"Unknown database %s", qualifier)
+			"Unknown database %s", path[0])
 	}
-	return rest, nil
+	return path[len(path)-1], nil
 }

@@ -1,8 +1,6 @@
 package query
 
 import (
-	"strings"
-
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/core/query/logical"
 )
@@ -95,41 +93,16 @@ func (t *cascadesTranslator) unnestOrdinalSeed(
 	return rc
 }
 
-// unnestBakedRootCollection builds the BAKED fused collection for a lateral
-// unnest under the ORDINAL seed, rooting the Explode's array Value at a
-// POSITIONAL column of the outer's ordinal leg type and riding the remaining
-// segments as a NAME-addressed FUSED suffix. Two callers, distinguished by
-// rootSegmentIndex — the segment that names the ROOT array column:
-//
-//   - SINGLE-SOURCE MULTI-SEGMENT (`FROM t, t.rec.arr AS x`, unnest-
-//     residual class 2): rootSegmentIndex 1 — Segments[0] is the source alias,
-//     Segments[1] the struct column; suffix Segments[2:] descend it. owner ==
-//     the outer scan itself.
-//   - CHAINED (`FROM t, t.arr AS x, x.sub AS y`, unnest-residual class 4):
-//     rootSegmentIndex 0 — Segments[0] is the OWNER ALIAS `x`, a COLUMN of the
-//     first link's ordinal leg type (the element of the prior Explode);
-//     suffix Segments[1:] (`sub…`) descend it.
-//
-// The name-keyed arrayValue the name-model path uses (`FieldValue{QOV(outer),
-// Resolved:[{rec,-1},{arr,-1}]}`) does NOT descend under the ordinal-seed build:
-// the outer row is ORDINAL-addressed, so the ordinal-build resolver applies all
-// name accessors flat against the outer row and fails ("field NARR not resolvable
-// ... ordinal -1"). The ordinal form bakes the ROOT column positionally —
-// ofOrdinal(QOV(outer, outerType), FieldIndexUnique(root)) — and rides the remaining
-// segments as a NAME-addressed FUSED suffix that descends the struct VALUE
-// through FieldValue's proto-message arm (independent of the positional build).
-// This is the single-leg case of the gathered unnest cluster's owner-window
-// bake: owner == the outer itself, leafOffset 0.
-//
-// Returns nil (DECLINE → the caller keeps the name-model builder) when the outer
-// leg is untranslatable or the root column is absent.
+// unnestBakedRootCollection rebinds the semantic collection's exact ordinal
+// path onto the outer physical row. A single source starts at zero; a boxed
+// source uses its owner window. A chained owner supplies explicitRootIdx,
+// accounting for whether the preceding UNNEST flows its element directly or
+// wraps it with AT. Diagnostic Segments never participate in this binding.
+// Returns nil when no exact outer layout or owner window can be established.
 func (t *cascadesTranslator) unnestBakedRootCollection(
 	outer logical.LogicalOperator,
 	outerCorr values.CorrelationIdentifier,
 	u *logical.LogicalUnnest,
-	fieldName string,
-	elementType values.Type,
-	rootSegmentIndex int,
 	explicitRootIdx int,
 ) values.Value {
 	outerType := t.ordinalLegType(outer)
@@ -144,154 +117,45 @@ func (t *cascadesTranslator) unnestBakedRootCollection(
 			return nil
 		}
 	}
-	if rootSegmentIndex < 0 || rootSegmentIndex >= len(u.Segments) {
+	owner, _, _ := boundUnnestCollection(u)
+	if owner == nil {
 		return nil
-	}
-	// The ROOT column of the collection path (the remaining segments ride as the
-	// fused suffix, Segments[rootSegmentIndex+1:]). Resolve the ROOT INDEX two ways:
-	//   - single-source root (a struct column of the outer SCAN): explicitRootIdx
-	//     < 0 → resolve by NAME (Segments[rootSegmentIndex]). Unshadowable — the
-	//     outer scan's own columns.
-	//   - CHAINED owner-alias root (the first link's ELEMENT): the caller passes
-	//     explicitRootIdx (the element's slot). A NAME lookup here cannot reach the
-	//     element: an OUTER column SHADOWS the alias, and the outer columns precede
-	//     the element in the merged row, so the name matches TWO fields and the
-	//     unique-match lookup declines — the Explode never roots. Use the slot.
-	var arrIdx int
-	if explicitRootIdx >= 0 {
-		if explicitRootIdx >= len(outerType.Fields) {
-			return nil
-		}
-		arrIdx = explicitRootIdx
-	} else {
-		idx, found := seedFieldIndex(outerType, u.Segments[rootSegmentIndex])
-		if !found {
-			return nil
-		}
-		arrIdx = idx
 	}
 	outerQOV, err := values.NewQuantifiedObjectValue(outerCorr, outerType)
 	if err != nil {
 		return nil
 	}
-	collection := resolveSeedCollection(outerQOV, arrIdx, u.Segments[rootSegmentIndex+1:])
-	if collection == nil {
-		return nil
-	}
-	wantArray := values.NewArrayType(collection.Type().IsNullable(), elementType)
-	if !collection.Type().Equals(wantArray) {
-		return nil
-	}
-	return collection
-}
-
-// seedFieldIndex resolves ONE path segment against a seed row layout: the
-// segment's EXACT spelling first, then a case-insensitive match against the
-// layout's OWN spellings.
-//
-// A FROM-source path segment arrives already normalized by the parse capture —
-// unquoted folded UPPER, quoted kept verbatim — while the layout it indexes
-// carries whatever spelling its authority minted: a base table's row is named
-// from the DESCRIPTOR, so a hand-written .proto contributes lower/snake names,
-// and a derived source's row is named by its projection. Neither authority
-// folds, so the reference and the layout can differ by case in EITHER
-// direction, and only a case-insensitive pass spans both. Re-folding the
-// SEGMENT spans one direction: it reaches `TAGS` from `tags` and never `tags`
-// from `TAGS`, which is the direction every unquoted reference to a descriptor
-// column takes.
-//
-// Exact first is what keeps a quoted identifier addressable — `"sk"` must reach
-// the field literally named `sk` even when a sibling `SK` exists — and it is
-// the same strict-then-relaxed order the semantic scope resolves references
-// with. Both passes decline a name matching more than one field, so neither can
-// first-match its way past an ambiguity.
-//
-// IT DECLINES ON A COLLISION WHERE THE SCOPE REPORTS 42702, and the difference
-// is the caller, not a second policy. The scope is resolving a USER reference
-// and owes the user an error naming the fault; this is a TRANSLATOR seed
-// builder whose every failure path is a DECLINE that falls back to the
-// name-model builder, so raising here would convert a shape that has a working
-// fallback into a hard failure. Both refuse to pick one of two candidates,
-// which is the property that matters.
-func seedFieldIndex(rt *values.RecordType, segment string) (int, bool) {
-	if rt == nil || segment == "" {
-		return 0, false
-	}
-	if idx, ok := rt.FieldIndexUnique(segment); ok {
-		return idx, true
-	}
-	idx, hits := 0, 0
-	for i, f := range rt.Fields {
-		if strings.EqualFold(f.Name, segment) {
-			idx, hits = i, hits+1
+	if explicitRootIdx >= 0 {
+		prior := boundUnnestOwner(outer, u)
+		if prior == nil {
+			return nil
 		}
+		return resolveBoundSeedCollection(outerQOV, u, explicitRootIdx, prior.AtAlias == "")
 	}
-	if hits != 1 {
-		return 0, false
+	if boundUnnestSingleSource(outer, u) {
+		// Zero is valid only for the identified whole source. Optimizer arity
+		// cannot establish ownership: a FULL box is one leg with several source
+		// windows, and an unrelated source may have exactly the same row type.
+		return resolveBoundSeedCollection(outerQOV, u, 0, false)
 	}
-	return idx, true
-}
-
-// resolveSeedCollection resolves an ordinal root plus a NAME-addressed suffix
-// against a seed row. nil means DECLINE — both callers fall back to the
-// name-model builder — which is why the suffix walk returns a bool rather than
-// an error: an error here would be constructed, discarded and never seen, and a
-// contract that promises a diagnosis nobody reads is worse than one that says
-// "no".
-func resolveSeedCollection(root values.Value, ordinal int, segments []string) values.Value {
-	requests, ok := seedFieldRequests(root, ordinal, segments)
+	// A boxed outer carries every visible source as a distinct flat window.
+	// Its quantifier is named after the rightmost source, but that does not
+	// make the rightmost source start at ordinal zero.
+	offset := -1
+	source, ok := owner.FlowedType().(*values.RecordType)
 	if !ok {
 		return nil
 	}
-	collection, err := values.ResolveOrdinalSeedAccess(root, ordinal, requests)
-	if err != nil {
-		return nil
-	}
-	return collection
-}
-
-// seedFieldRequests spells the NAME-addressed suffix the way the ROW spells it.
-//
-// The descent resolves each request by EXACT name, so a request has to carry
-// the layout's own spelling and not the reference's. Each segment is therefore
-// resolved through seedFieldIndex against the type reached so far, and the
-// request is built from the FIELD's name — the same relaxation the root segment
-// gets, applied at the one place the descent cannot apply it itself.
-//
-// Walking segment by segment is required rather than convenient: the descent
-// re-types on every step, so which field segment n+1 may name is only settled
-// once segment n has chosen its own.
-func seedFieldRequests(root values.Value, ordinal int, segments []string) ([]values.FieldRequest, bool) {
-	if len(segments) == 0 {
-		return nil, true
-	}
-	rowType, isRecord := root.Type().(*values.RecordType)
-	if !isRecord || ordinal < 0 || ordinal >= len(rowType.Fields) {
-		// The root ordinal does not address a field of the flowed row.
-		return nil, false
-	}
-	current := rowType.Fields[ordinal].FieldType
-	out := make([]values.FieldRequest, 0, len(segments))
-	for _, seg := range segments {
-		record, stillRecord := current.(*values.RecordType)
-		if !stillRecord {
-			// The segment does not descend a record.
-			return nil, false
+	for _, leg := range outerType.Legs {
+		if !values.SameLeg(leg.Alias, owner.Correlation()) {
+			continue
 		}
-		idx, found := seedFieldIndex(record, seg)
-		if !found {
-			// Absent, or ambiguous under the relaxed pass. Either way this
-			// builder has nothing to bake.
-			return nil, false
+		if offset >= 0 || leg.Kind != values.LegKindFlatRun || leg.Width != len(source.Fields) {
+			return nil
 		}
-		request, err := values.FieldByName(record.Fields[idx].Name)
-		if err != nil {
-			return nil, false
-		}
-		out = append(out, request)
-		current = record.Fields[idx].FieldType
+		offset = leg.Start
 	}
-	return out, true
+	return resolveBoundSeedCollection(outerQOV, u, offset, false)
 }
 
 // unnestSeedInnerFields builds the unnest INNER leg's seed fields — the
@@ -320,16 +184,13 @@ func unnestSeedInnerFields(
 		// row to this alias-named leg strictly by position (element slot 0,
 		// ordinal slot 1). AT-only leaves the element slot named
 		// `_0` — unreferenced, since without an AS the element binds to nothing.
-		elemName := strings.ToUpper(u.Alias)
-		if elemName == "" {
-			elemName = values.OrdinalFieldName(0)
-		}
+		names := logical.UnnestOrdinalityNames(u.Alias, u.AtAlias)
 		// Match the physical Explode WITH ORDINALITY carrier exactly. Each
 		// emitted element/ordinal pair is a present row; an empty or NULL array
 		// emits no row rather than a null-supplying row.
 		innerType := values.NewRecordType("", false, []values.Field{
-			{Name: elemName, FieldType: elementType, Ordinal: 0},
-			{Name: strings.ToUpper(u.AtAlias), FieldType: values.NotNullInt, Ordinal: 1},
+			{Name: names[0], FieldType: elementType, Ordinal: 0},
+			{Name: names[1], FieldType: values.NotNullInt, Ordinal: 1},
 		})
 		innerQOV, err := values.NewQuantifiedObjectValue(innerCorr, innerType)
 		if err != nil {
@@ -343,14 +204,14 @@ func unnestSeedInnerFields(
 			if err != nil {
 				return nil, false, false
 			}
-			fields = append(fields, values.RecordConstructorField{Name: strings.ToUpper(u.Alias), Value: elemFV})
+			fields = append(fields, values.RecordConstructorField{Name: names[0], Value: elemFV})
 			fullBaked = true // element+ordinal cover the whole inner leg
 		}
 		ordFV, err := values.ResolveOrdinalSeedField(innerQOV, 1)
 		if err != nil {
 			return nil, false, false
 		}
-		fields = append(fields, values.RecordConstructorField{Name: strings.ToUpper(u.AtAlias), Value: ordFV})
+		fields = append(fields, values.RecordConstructorField{Name: names[1], Value: ordFV})
 		return fields, fullBaked, true
 	}
 	// The element is the whole flowed object — Java's primitive branch.
@@ -361,6 +222,6 @@ func unnestSeedInnerFields(
 	if err != nil {
 		return nil, false, false
 	}
-	fields = append(fields, values.RecordConstructorField{Name: strings.ToUpper(u.Alias), Value: elementValue})
+	fields = append(fields, values.RecordConstructorField{Name: u.Alias, Value: elementValue})
 	return fields, false, true
 }

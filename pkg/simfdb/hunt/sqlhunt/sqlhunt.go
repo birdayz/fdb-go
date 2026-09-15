@@ -5,23 +5,27 @@
 //
 // It sets a table up faults-free, then runs a random stream of IDEMPOTENT DML (absolute UPDATE +
 // DELETE) under the commit-fault schedule, and after each batch compares the table's full
-// contents to a Go row-model. Idempotent statements make faults transparent under autocommit
-// retry, so any divergence is a real fault-induced SQL bug. Bare INSERT and relative
-// `UPDATE … SET a=a+1` are deliberately excluded: their non-idempotency under commit_unknown is
-// a KNOWN, Java-matching hazard (see TODO.md `## DST findings`), so they'd be known-hazard noise
-// here — characterize those with dedicated regression tests, not this hunt.
+// contents to a Go row-model. This workload, as the application, explicitly retries only its
+// idempotent statements after 40001/40003 with matching typed FDB causes. SQL itself
+// commits once and reports ambiguity, like Java; it cannot safely replay arbitrary DML.
+// Bare INSERT and relative `UPDATE … SET a=a+1`
+// are deliberately excluded from this retry policy and have one-shot ambiguity regressions
+// in sqldriver. The model is advanced only after a successful application attempt.
 package sqlhunt
 
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"sort"
 	"sync/atomic"
 
 	"fdb.dev/pkg/dst"
+	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/relational/api"
 	// registers the "fdbsql" database/sql driver and exposes RegisterBackend
 	"fdb.dev/pkg/relational/sqldriver"
 	"fdb.dev/pkg/simfdb"
@@ -100,7 +104,7 @@ func (SQLWorkload) Run(seed uint64, cfg hunt.Config) *hunt.Report {
 			// Absolute UPDATE — idempotent under retry (re-setting a=v is a no-op the 2nd time).
 			// Affects the row only if present, matching the model update below.
 			v := int64(rng.Int32N(1_000_000))
-			_, err = h.db.ExecContext(ctx, "UPDATE t SET a = ? WHERE id = ?", v, id)
+			err = execIdempotentDML(ctx, h.db, "UPDATE t SET a = ? WHERE id = ?", v, id)
 			if err == nil {
 				if _, ok := model[id]; ok {
 					model[id] = v
@@ -108,15 +112,15 @@ func (SQLWorkload) Run(seed uint64, cfg hunt.Config) *hunt.Report {
 			}
 		} else {
 			// DELETE — idempotent under retry (deleting an absent row is a no-op).
-			_, err = h.db.ExecContext(ctx, "DELETE FROM t WHERE id = ?", id)
+			err = execIdempotentDML(ctx, h.db, "DELETE FROM t WHERE id = ?", id)
 			if err == nil {
 				delete(model, id)
 			}
 		}
 		rep.Ops = i + 1
 		if err != nil {
-			// Idempotent DML on this schema has no legitimate domain error, and autocommit
-			// retries faults transparently — so any surfaced error is a real bug.
+			// Unexpected SQL errors and exhausted application retries remain findings;
+			// neither may be counted as a successful operation.
 			rep.Err = fmt.Sprintf("op %d id=%d: %v", i, id, err)
 			rep.FaultsFired = h.faults.Fired()
 			return rep
@@ -140,15 +144,66 @@ func (SQLWorkload) Run(seed uint64, cfg hunt.Config) *hunt.Report {
 	return rep
 }
 
+// execIdempotentDML is the application's retry boundary, not SQL engine policy.
+// Its callers are only the absolute UPDATE and DELETE statements authored by
+// SQLWorkload and SQLIndexWorkload. It must not be used for arbitrary SQL: after
+// 40003 a relative UPDATE may already have applied. RowsAffected is deliberately
+// not used as an oracle because an already-applied DELETE retries as zero rows.
+func execIdempotentDML(ctx context.Context, db *sql.DB, statement string, args ...any) error {
+	// Match the simulator's bounded retry population, so a permanent fault is
+	// a reported finding, never a hang or an unearned success.
+	const maxRetries = 100
+	for attempt := 0; ; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		_, err := db.ExecContext(ctx, statement, args...)
+		if attempt >= maxRetries || !retryableIdempotentDMLError(err) {
+			return err
+		}
+	}
+}
+
+func retryableIdempotentDMLError(err error) bool {
+	// Only a single causal chain authorizes replay. A joined failure can carry
+	// an unrelated error (including cancellation) beside an eligible FDB cause.
+	for cause := err; cause != nil; cause = errors.Unwrap(cause) {
+		if _, joined := cause.(interface{ Unwrap() []error }); joined {
+			return false
+		}
+	}
+	var sqlErr *api.Error
+	if !errors.As(err, &sqlErr) {
+		return false
+	}
+	var value fdb.Error
+	var pointer *fdb.Error
+	var code int
+	if errors.As(sqlErr.Cause, &value) {
+		code = value.Code
+	} else if errors.As(sqlErr.Cause, &pointer) && pointer != nil {
+		code = pointer.Code
+	}
+	switch sqlErr.Code {
+	case api.ErrCodeSerializationFailure:
+		return code == 1007 || code == 1020
+	case api.ErrCodeStatementCompletionUnknown:
+		return code == 1021
+	default:
+		return false
+	}
+}
+
 // harness owns the SQL-over-SimFDB plumbing for one run: a SimFDB-backed FDBDatabase registered
 // under a unique cache key, with the schema created (faults off). enableFaults switches the
 // commit-fault schedule on for the workload phase; close releases everything.
 type harness struct {
-	env    *dst.Env
-	faults *dst.Buggifier
-	simDB  *recordlayer.FDBDatabase
-	db     *sql.DB
-	closes []func()
+	env     *dst.Env
+	faults  *dst.Buggifier
+	simDB   *recordlayer.FDBDatabase
+	backend *simfdb.SimDB
+	db      *sql.DB
+	closes  []func()
 }
 
 // dbPath is FIXED across runs (only the cache key varies), so the persisted keyspace for a given
@@ -166,11 +221,12 @@ func newHarness(seed uint64, faultProb float64) (*harness, error) {
 	}
 	env.Buggify = dst.DisabledBuggifier() // setup phase runs fault-free
 
-	simDB := recordlayer.NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(env)
+	backend := simfdb.New(env)
+	simDB := recordlayer.NewFDBDatabaseWithBackend(backend).SetEnv(env)
 	simDB.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
 
 	key := fmt.Sprintf("sim://sqlhunt/%d/%d", seed, keyCounter.Add(1))
-	h := &harness{env: env, faults: faults, simDB: simDB}
+	h := &harness{env: env, faults: faults, simDB: simDB, backend: backend}
 	h.closes = append(h.closes, sqldriver.RegisterBackend(key, simDB))
 
 	setup, err := sql.Open("fdbsql", "fdbsql://"+dbPath+"?cluster_file="+key)

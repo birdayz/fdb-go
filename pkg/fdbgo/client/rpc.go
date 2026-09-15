@@ -63,7 +63,12 @@ func waitReply(replyCh <-chan transport.Response, ctx context.Context, timeout t
 		return transport.Response{}, errReplyTimeout
 	case <-ctx.Done():
 		putTimer(timer)
-		return transport.Response{}, ctx.Err()
+		select {
+		case resp := <-replyCh:
+			return resp, nil
+		default:
+			return transport.Response{}, ctx.Err()
+		}
 	}
 }
 

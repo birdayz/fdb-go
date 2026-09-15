@@ -1,6 +1,6 @@
 ---
 name: dst
-description: How to hunt bugs and reproduce failures in the FDB record-layer Go port with the DST toolbox — chaos, fuzz, the libfdb_c differential, SQL/binding stress, and dlv/rr replay — plus what each RFC-199 DST tier unlocks. Living doc: a symptom→tool decision table, verified reproduce-from-seed recipes, and how to pin every bug with a regression. Invoke for bug hunting, flake root-causing, "reproduce this seed", or "what can I test at this stage".
+description: "How to hunt bugs and reproduce failures in the FDB record-layer Go port with the DST toolbox — chaos, fuzz, the libfdb_c differential, SQL/binding stress, and dlv/rr replay — plus what each RFC-199 DST tier unlocks. Living doc: a symptom→tool decision table, verified reproduce-from-seed recipes, and how to pin every bug with a regression. Invoke for bug hunting, flake root-causing, \"reproduce this seed\", or \"what can I test at this stage\"."
 ---
 
 # DST — deterministic simulation testing & bug hunting

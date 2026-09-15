@@ -121,7 +121,11 @@ func exactLogicalResultType(op logical.LogicalOperator, md *recordlayer.RecordMe
 			if fieldType == nil {
 				return nil, fmt.Errorf("projection result slot %d has no resolved typed value", i)
 			}
-			fields[i] = values.Field{Name: projectionSlotSQLName(typed, i), Ordinal: i, FieldType: fieldType}
+			name := projectionSlotSQLName(typed, i)
+			if projected != nil {
+				name = exactLogicalProjectionSlotName(typed, i, projected)
+			}
+			fields[i] = values.Field{Name: name, Ordinal: i, FieldType: fieldType}
 		}
 		// The row the projection FLOWS is its record constructor's, which names a
 		// repeated output by the name-addressability suffix (values.DedupFieldNames:
@@ -193,19 +197,7 @@ func exactLogicalResultType(op logical.LogicalOperator, md *recordlayer.RecordMe
 		if err != nil {
 			return nil, err
 		}
-		var right values.Type
-		if unnest, isLateralUnnest := typed.Right.(*logical.LogicalUnnest); isLateralUnnest && unnest.CorrelatedCollection == nil {
-			// A regular lateral FROM leg deliberately carries only its source
-			// syntax. Its collection is resolved against the left input when the
-			// join is translated, so the standalone LogicalUnnest arm below must
-			// remain loud while the enclosing join supplies the missing owner
-			// context here. This is the only syntax-only unnest position admitted:
-			// a foreign owner, a derived owner, a missing field, or a non-array
-			// field all decline instead of minting Unknown.
-			right, err = exactLateralUnnestResultType(typed.Left, unnest, md)
-		} else {
-			right, err = exactLogicalResultType(typed.Right, md, env)
-		}
+		right, err := exactLogicalResultType(typed.Right, md, env)
 		if err != nil {
 			return nil, err
 		}
@@ -289,36 +281,59 @@ func ExactLogicalOutputLabels(
 	md *recordlayer.RecordMetaData,
 	enclosing map[string]values.Type,
 ) ([]string, error) {
-	var env cteRows
-	if len(enclosing) > 0 {
-		env = make(cteRows, len(enclosing))
-		for name, row := range enclosing {
-			if row == nil {
-				continue
-			}
-			env[strings.ToUpper(name)] = row
+	env := &logicalLabelScope{rows: make(cteRows, len(enclosing))}
+	for name, row := range enclosing {
+		if row != nil {
+			env.rows[strings.ToUpper(name)] = row
 		}
 	}
 	return exactLogicalOutputLabels(op, md, env)
 }
 
+// logicalLabelScope keeps SQL names separate from exact CTE row types. A UNION
+// can publish its first branch's names before promotion has settled its type;
+// label-only bindings must never manufacture an executable record type.
+type logicalLabelScope struct {
+	rows   cteRows
+	labels map[string][]string
+}
+
 func exactLogicalOutputLabels(
 	op logical.LogicalOperator,
 	md *recordlayer.RecordMetaData,
-	env cteRows,
+	env *logicalLabelScope,
 ) ([]string, error) {
 	if op == nil {
 		return nil, fmt.Errorf("cannot label a nil logical operator")
 	}
+	var rows cteRows
+	if env != nil {
+		rows = env.rows
+	}
 	switch typed := op.(type) {
+	case *logical.LogicalScan:
+		if env != nil {
+			if labels, ok := env.labels[strings.ToUpper(typed.Table)]; ok {
+				return append([]string(nil), labels...), nil
+			}
+		}
 	case *logical.LogicalProject:
 		// The SQL names, one per slot and NOT deduplicated: these labels are
 		// what a derived source publishes for resolution, where a repeated
 		// name must stay repeated so a reference that spells it is ambiguous.
 		// The exact result type applies the constructor's suffix to the same
 		// names, because it states the row the plan flows.
+		if typed.SQLNames != nil {
+			if len(typed.SQLNames) != len(typed.Projections) {
+				return nil, fmt.Errorf("projection has %d semantic names for %d slots", len(typed.SQLNames), len(typed.Projections))
+			}
+			return append([]string(nil), typed.SQLNames...), nil
+		}
 		labels := make([]string, len(typed.Projections))
 		for i := range typed.Projections {
+			if i < len(typed.IsComputed) && typed.IsComputed[i] && (i >= len(typed.Aliases) || typed.Aliases[i] == "") {
+				continue // an unnamed expression's physical key is not a SQL name
+			}
 			labels[i] = projectionSlotSQLName(typed, i)
 		}
 		return labels, nil
@@ -330,40 +345,56 @@ func exactLogicalOutputLabels(
 		return exactLogicalOutputLabels(typed.Input, md, env)
 	case *logical.LogicalDistinct:
 		return exactLogicalOutputLabels(typed.Input, md, env)
+	case *logical.LogicalUnion:
+		if len(typed.Inputs) == 0 {
+			return nil, fmt.Errorf("union has no inputs")
+		}
+		// SQL publishes the first branch's names. Label derivation must not
+		// require branch type equality: promotion is settled by union planning,
+		// and an invalid branch deserves that path's precise diagnostic rather
+		// than an earlier metadata error.
+		return exactLogicalOutputLabels(typed.Inputs[0], md, env)
 	case *logical.LogicalJoin:
 		left, err := exactLogicalLegLabels(typed.Left, md, env)
 		if err != nil {
 			return nil, err
 		}
-		var right []string
-		if unnest, isLateralUnnest := typed.Right.(*logical.LogicalUnnest); isLateralUnnest &&
-			unnest.CorrelatedCollection == nil {
-			// The syntax-only lateral leg is typed by the enclosing join, the
-			// same seam exactLogicalResultType carries.
-			elementType, elementErr := exactLateralUnnestResultType(typed.Left, unnest, md)
-			if elementErr != nil {
-				return nil, elementErr
-			}
-			right, err = legLabelsForType(typed.Right, elementType)
-		} else {
-			right, err = exactLogicalLegLabels(typed.Right, md, env)
-		}
+		right, err := exactLogicalLegLabels(typed.Right, md, env)
 		if err != nil {
 			return nil, err
 		}
 		return append(append(make([]string, 0, len(left)+len(right)), left...), right...), nil
 	case *logical.LogicalCTE:
-		main := env
-		if bodyRow, bodyErr := exactLogicalResultType(typed.Body, md, env); bodyErr == nil {
+		main := &logicalLabelScope{rows: make(cteRows, len(rows)+1), labels: make(map[string][]string)}
+		for name, row := range rows {
+			main.rows[name] = row
+		}
+		if env != nil {
+			for name, labels := range env.labels {
+				main.labels[name] = labels
+			}
+		}
+		key := strings.ToUpper(typed.Name)
+		delete(main.rows, key)
+		delete(main.labels, key)
+		if bodyRow, bodyErr := exactLogicalResultType(typed.Body, md, rows); bodyErr == nil {
 			bound, bindErr := cteBoundRowType(bodyRow, typed)
 			if bindErr != nil {
 				return nil, bindErr
 			}
-			main = make(cteRows, len(env)+1)
-			for name, row := range env {
-				main[name] = row
+			main.rows[key] = bound
+		}
+		// Both derivations see the enclosing scope. Only Main sees the newly
+		// published binding; a nested definition may shadow an enclosing CTE.
+		if labels, labelErr := exactLogicalOutputLabels(typed.Body, md, env); labelErr == nil {
+			if len(typed.ColumnAliases) > 0 {
+				if len(labels) != len(typed.ColumnAliases) {
+					return nil, fmt.Errorf("CTE %q column list has %d names but its body flows %d columns",
+						typed.Name, len(typed.ColumnAliases), len(labels))
+				}
+				labels = append([]string(nil), typed.ColumnAliases...)
 			}
-			main[strings.ToUpper(typed.Name)] = bound
+			main.labels[key] = labels
 		}
 		return exactLogicalOutputLabels(typed.Main, md, main)
 	}
@@ -371,7 +402,7 @@ func exactLogicalOutputLabels(
 	// projection's are its aliases, a scan's are its stored column names, an
 	// aggregate's are its key and call names. Only a join qualifies, and only
 	// the arms above reach one.
-	typ, err := exactLogicalResultType(op, md, env)
+	typ, err := exactLogicalResultType(op, md, rows)
 	if err != nil {
 		return nil, err
 	}
@@ -382,25 +413,36 @@ func exactLogicalOutputLabels(
 func exactLogicalLegLabels(
 	op logical.LogicalOperator,
 	md *recordlayer.RecordMetaData,
-	env cteRows,
+	env *logicalLabelScope,
 ) ([]string, error) {
-	// A nested join leg recurses so its own legs stay unqualified too — seen
-	// through the filter the builder places directly above an inner cluster
-	// under an OUTER join (gatedLegBox): the filter adds no column.
-	if nested := gatedLegBox(op); nested != nil {
-		return exactLogicalOutputLabels(nested, md, env)
+	// An UNNEST publishes its AS/AT columns rather than its whole element row.
+	// Every other leg uses the same label walk, including pending CTE types
+	// behind transparent wrappers and duplicate names in derived projections.
+	if _, isUnnest := op.(*logical.LogicalUnnest); isUnnest {
+		return legLabelsForType(op, nil)
 	}
-	typ, err := exactLogicalResultType(op, md, env)
-	if err != nil {
-		return nil, err
-	}
-	return legLabelsForType(op, typ)
+	return exactLogicalOutputLabels(op, md, env)
 }
 
 // legLabelsForType is logicalLegFields' naming rule with the qualifier left
 // off. A scalar leg still contributes exactly one column named for its source,
 // which is the label SQL gives it.
 func legLabelsForType(op logical.LogicalOperator, typ values.Type) ([]string, error) {
+	if unnest, ok := op.(*logical.LogicalUnnest); ok {
+		fields := boundUnnestLegColumns(unnest)
+		if fields == nil {
+			return nil, fmt.Errorf("lateral source has no exact bound output labels")
+		}
+		// SQL labels may repeat even though the physical slots have unique keys.
+		labels := make([]string, 0, len(fields))
+		if unnest.Alias != "" {
+			labels = append(labels, unnest.Alias)
+		}
+		if unnest.AtAlias != "" {
+			labels = append(labels, unnest.AtAlias)
+		}
+		return labels, nil
+	}
 	if record, ok := typ.(*values.RecordType); ok {
 		labels := make([]string, len(record.Fields))
 		for i, field := range record.Fields {
@@ -470,52 +512,6 @@ func cteBoundRowType(bodyRow values.Type, cte *logical.LogicalCTE) (values.Type,
 		Fields:     fields,
 		Legs:       append([]values.RecordTypeLeg(nil), record.Legs...),
 	}, nil
-}
-
-// exactLateralUnnestResultType derives the exact row contributed by a
-// syntax-only LogicalUnnest in the one position where that syntax has an owner:
-// the right child of its lateral LogicalJoin. exactUnnestLegColumns is the same
-// owner/descriptor/projection authority that types the translated Explode seed;
-// using it here prevents the existential QOV from acquiring an element type
-// different from the physical unnest. No text fallback or Unknown element is
-// admitted.
-func exactLateralUnnestResultType(
-	left logical.LogicalOperator,
-	unnest *logical.LogicalUnnest,
-	md *recordlayer.RecordMetaData,
-) (values.Type, error) {
-	if unnest == nil || unnest.CorrelatedCollection != nil {
-		return nil, fmt.Errorf("lateral unnest requires syntax-only collection ownership")
-	}
-	if len(unnest.Segments) < 2 {
-		return nil, fmt.Errorf("lateral unnest %q has no owner-qualified array field", strings.Join(unnest.Segments, "."))
-	}
-	if unnest.Alias == "" {
-		return nil, fmt.Errorf("lateral unnest %q has no element alias", strings.Join(unnest.Segments, "."))
-	}
-	inlineOwner := findInlineValuesOwner(left, unnest.Segments[0])
-	if md == nil && inlineOwner == nil {
-		return nil, fmt.Errorf("lateral unnest %q has no record metadata", strings.Join(unnest.Segments, "."))
-	}
-
-	fields := (&cascadesTranslator{md: md}).exactUnnestLegColumns(left, unnest)
-	if len(fields) == 0 {
-		return nil, fmt.Errorf("lateral unnest %q has no exact owner-qualified array field", strings.Join(unnest.Segments, "."))
-	}
-	if unnest.AtAlias == "" {
-		if len(fields) != 1 || !strings.EqualFold(fields[0].Name, unnest.Alias) ||
-			fields[0].FieldType == nil || values.IsUnresolved(fields[0].FieldType) {
-			return nil, fmt.Errorf("lateral unnest %q has an inexact scalar element layout", strings.Join(unnest.Segments, "."))
-		}
-		return fields[0].FieldType, nil
-	}
-	if len(fields) != 2 || !strings.EqualFold(fields[0].Name, unnest.Alias) ||
-		!strings.EqualFold(fields[1].Name, unnest.AtAlias) ||
-		fields[0].FieldType == nil || values.IsUnresolved(fields[0].FieldType) ||
-		fields[1].FieldType == nil || !fields[1].FieldType.Equals(values.NotNullInt) {
-		return nil, fmt.Errorf("lateral unnest %q has an inexact AS/AT layout", strings.Join(unnest.Segments, "."))
-	}
-	return &values.RecordType{Fields: append([]values.Field(nil), fields...)}, nil
 }
 
 func exactLogicalAggregateCallType(aggregate *logical.LogicalAggregate, index int) (values.Type, error) {
@@ -617,6 +613,13 @@ func exactJoinResultType(join *logical.LogicalJoin, left, right values.Type) (va
 }
 
 func logicalLegFields(op logical.LogicalOperator, typ values.Type) ([]values.Field, error) {
+	if unnest, ok := op.(*logical.LogicalUnnest); ok {
+		fields := boundUnnestLegColumns(unnest)
+		if fields == nil {
+			return nil, fmt.Errorf("lateral source has no exact bound output columns")
+		}
+		return fields, nil
+	}
 	alias := strings.ToUpper(sourceAlias(op))
 	if record, ok := typ.(*values.RecordType); ok {
 		fields := make([]values.Field, len(record.Fields))
@@ -686,7 +689,8 @@ func unionBranchTypesAgree(first, branch values.Type) bool {
 // the label derivation, which must not.
 func projectionSlotSQLName(typed *logical.LogicalProject, i int) string {
 	name := typed.Projections[i]
-	if i < len(typed.Aliases) && typed.Aliases[i] != "" {
+	if i < len(typed.Aliases) && typed.Aliases[i] != "" &&
+		!(i < len(typed.AliasMinted) && typed.AliasMinted[i]) {
 		return typed.Aliases[i]
 	}
 	if i < len(typed.ProjectionRefs) && typed.ProjectionRefs[i].Present {

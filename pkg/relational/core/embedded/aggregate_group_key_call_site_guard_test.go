@@ -129,13 +129,12 @@ func TestAggregateGroupKeyMatcherIsAlwaysORedWithSemanticEquality(t *testing.T) 
 	// The count is asserted so that ADDING a call site is a deliberate act: a
 	// new site must be read against the reachability argument, not just
 	// compile.
-	// The four live sites are the exact-boundary post-aggregate draft
-	// validator, the native-ordinal selector, and the two correlated-scalar
-	// resolution comparisons. The former HAVING-only fifth site was retired
-	// with its dead local pushdown decider; HAVING now calls the live Cascades
-	// authority instead. Every surviving site retains the semantic-equality OR
-	// guard, so this compatibility matcher is never decisive.
-	const wantSites = 4
+	// The exact-boundary post-aggregate draft validator is the remaining site.
+	// The native-ordinal selector and two correlated-scalar comparisons were
+	// retired when scalar queries switched to the shared full-query builder.
+	// The validator retains the semantic-equality OR guard; any added caller
+	// must establish the same guarded identity contract.
+	const wantSites = 1
 	if len(sites) != wantSites {
 		var where []string
 		for _, s := range sites {

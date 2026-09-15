@@ -3,20 +3,19 @@ package sqldriver_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"testing"
 
+	"fdb.dev/pkg/recordlayer/protoname"
+	"fdb.dev/pkg/relational/api"
 	"github.com/onsi/gomega"
 )
 
-// TestFDB_QuotedHashIdentifier pins that the dialect accepts quoted
-// identifiers containing '#' end-to-end (DOUBLE_QUOTE_ID lexes any non-quote
-// character) — the REACHABILITY premise of the finding on PR
-// #446: because `AS "X#0"` is legal and an outer scope can reference it, a
-// plain name-read of a field literally named X#0 exists in real plans and
-// must never render identically to an ordinal read of X at slot 0 in the
-// ExplainValue-keyed plan identity (values.ExplainValue doubles '#' in raw
-// field text; the identity is injective over (field text, ordinal)).
+// TestFDB_QuotedHashIdentifier pins the materialization boundary established by
+// RFC-256: although the lexer accepts '#' inside a delimited identifier, an
+// authored SELECT alias becomes a protobuf result field and Java rejects X#0
+// with 42602. The typed InvalidNameError cause must survive the driver wrapper.
 func TestFDB_QuotedHashIdentifier(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -41,24 +40,18 @@ func TestFDB_QuotedHashIdentifier(t *testing.T) {
 
 	g.Expect(db.ExecContext(ctx, "INSERT INTO t VALUES (7)")).Error().NotTo(gomega.HaveOccurred())
 
-	// The quoted '#' alias is accepted and surfaces verbatim as the column label.
-	rows, err := db.QueryContext(ctx, `SELECT id AS "X#0" FROM t`)
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	defer rows.Close()
-	cols, err := rows.Columns()
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-	g.Expect(cols).To(gomega.Equal([]string{"X#0"}))
-	var v int64
-	g.Expect(rows.Next()).To(gomega.BeTrue())
-	g.Expect(rows.Scan(&v)).To(gomega.Succeed())
-	g.Expect(v).To(gomega.Equal(int64(7)))
-	g.Expect(rows.Next()).To(gomega.BeFalse())
-	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
-
-	// An OUTER scope can reference the '#' alias — i.e. a FieldValue whose
-	// Field is literally "X#0" (a plain NAME read) occurs in real plans.
-	var vv int64
-	g.Expect(db.QueryRowContext(ctx,
-		`SELECT "X#0" FROM (SELECT id AS "X#0" FROM t) AS d`).Scan(&vv)).To(gomega.Succeed())
-	g.Expect(vv).To(gomega.Equal(int64(7)))
+	for _, query := range []string{
+		`SELECT id AS "X#0" FROM t`,
+		`SELECT "X#0" FROM (SELECT id AS "X#0" FROM t) AS d`,
+	} {
+		rows, queryErr := db.QueryContext(ctx, query)
+		if rows != nil {
+			_ = rows.Close()
+		}
+		var apiErr *api.Error
+		g.Expect(errors.As(queryErr, &apiErr)).To(gomega.BeTrue(), "query: %s; error: %v", query, queryErr)
+		g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeInvalidName))
+		var cause *protoname.InvalidNameError
+		g.Expect(errors.As(queryErr, &cause)).To(gomega.BeTrue(), "invalid-name cause was lost: %v", queryErr)
+	}
 }

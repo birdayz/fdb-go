@@ -15,8 +15,11 @@ import (
 
 // unnestFor builds a LogicalUnnest over the given outer table with the given
 // AS/AT aliases (empty = omitted).
-func unnestFor(table, asAlias, atAlias string) *logical.LogicalUnnest {
-	return &logical.LogicalUnnest{Segments: []string{table, "ARR"}, Alias: asAlias, AtAlias: atAlias}
+func unnestFor(t testing.TB, table, asAlias, atAlias string) *logical.LogicalUnnest {
+	t.Helper()
+	ownerLayout := &values.RecordType{Fields: []values.Field{{Name: "ARR", Ordinal: 0, FieldType: values.NewArrayType(false, values.NotNullLong)}}}
+	u, _ := rawBoundUnnest(t, []string{table, "ARR"}, asAlias, atAlias, table, ownerLayout, 0)
+	return u
 }
 
 // TestUnnestSeed_NonOrdinality pins the NO-AT seed: a MIXED RC — the outer
@@ -32,7 +35,7 @@ func TestUnnestSeed_NonOrdinality(t *testing.T) {
 	outerCorr := values.NamedCorrelationIdentifier("c")
 	innerCorr := values.NamedCorrelationIdentifier("X")
 
-	seed := tr.unnestOrdinalSeed(outer, outerCorr, innerCorr, unnestFor("CUSTOMER", "X", ""), values.NotNullLong)
+	seed := tr.unnestOrdinalSeed(outer, outerCorr, innerCorr, unnestFor(t, "CUSTOMER", "X", ""), values.NotNullLong)
 	if seed == nil {
 		t.Fatal("single-source non-ordinality unnest must ordinalize, got nil (declined)")
 	}
@@ -80,7 +83,7 @@ func TestUnnestSeed_WithOrdinality(t *testing.T) {
 	outerCorr := values.NamedCorrelationIdentifier("c")
 	innerCorr := values.NamedCorrelationIdentifier("X")
 
-	seed := tr.unnestOrdinalSeed(outer, outerCorr, innerCorr, unnestFor("CUSTOMER", "X", "O"), values.NotNullLong)
+	seed := tr.unnestOrdinalSeed(outer, outerCorr, innerCorr, unnestFor(t, "CUSTOMER", "X", "O"), values.NotNullLong)
 	if seed == nil {
 		t.Fatal("single-source with-ordinality unnest must ordinalize, got nil")
 	}
@@ -130,7 +133,7 @@ func TestUnnestSeed_ATOnly(t *testing.T) {
 	outerCorr := values.NamedCorrelationIdentifier("c")
 	innerCorr := values.NamedCorrelationIdentifier("O")
 
-	seed := tr.unnestOrdinalSeed(outer, outerCorr, innerCorr, unnestFor("CUSTOMER", "", "O"), values.NotNullLong)
+	seed := tr.unnestOrdinalSeed(outer, outerCorr, innerCorr, unnestFor(t, "CUSTOMER", "", "O"), values.NotNullLong)
 	if seed == nil {
 		t.Fatal("AT-only unnest must ordinalize, got nil")
 	}
@@ -165,7 +168,7 @@ func nestedArrayUnnestFixture(t testing.TB) (logical.LogicalOperator, *logical.L
 		Projections:     []string{"N"},
 		ProjectedValues: []values.Value{exactTestField(t, exactTestQOV(t, "SRC", sourceType), 0)},
 	}
-	u := &logical.LogicalUnnest{Segments: []string{"D", "N", "ARR"}, Alias: "X"}
+	u, _ := rawBoundUnnest(t, []string{"D", "N", "ARR"}, "X", "", "D", sourceType, 0, 0)
 	return outer, u, elementType
 }
 
@@ -178,20 +181,16 @@ func nestedArrayUnnestFixture(t testing.TB) (logical.LogicalOperator, *logical.L
 // while exact type descent determines the suffix ordinal.
 func TestUnnestBakedRootCollection_MultiSegment(t *testing.T) {
 	t.Parallel()
-	tr := newGateTranslator(t)
-	outer, u, elementType := nestedArrayUnnestFixture(t)
+	_, u, _ := nestedArrayUnnestFixture(t)
 	outerCorr := values.NamedCorrelationIdentifier("D")
 
-	coll := tr.unnestBakedRootCollection(outer, outerCorr, u, "ARR", elementType, 1, -1)
+	coll := u.CorrelatedCollection
 	if coll == nil {
 		t.Fatal("multi-segment single-source unnest must bake a fused collection, got nil (declined)")
 	}
 	fv, ok := values.AsFieldValue(coll)
 	if !ok {
 		t.Fatalf("baked collection = %T, want *FieldValue", coll)
-	}
-	if !fv.Path().IsFrontierPinned() {
-		t.Fatal("baked collection root must be a frontier-pinned ofOrdinal (positional), not a name read")
 	}
 	if fv.Path().Len() != 2 {
 		t.Fatalf("baked collection has %d accessors, want 2 (ofOrdinal root + exact suffix)", fv.Path().Len())
@@ -205,8 +204,9 @@ func TestUnnestBakedRootCollection_MultiSegment(t *testing.T) {
 	if !leafOK || !named || leafName != "ARR" || leaf.Ordinal() != 0 {
 		t.Errorf("suffix accessor = {%q, %d}, want exact ARR ordinal 0", leafName, leaf.Ordinal())
 	}
-	// The child is the outer QOV carrying the outer LEG TYPE, so the root ordinal
-	// resolves positionally against the ordinal-seed build row.
+	// The child is the author-supplied owner QOV carrying its exact semantic row,
+	// and both root and suffix ordinals are fixture inputs rather than recovered
+	// from Segments.
 	qov, ok := values.AsQuantifiedObjectValue(fv.ChildValue())
 	if !ok || qov.Correlation() != outerCorr {
 		t.Fatalf("baked collection child = %T, want the outer *QuantifiedObjectValue %s", fv.ChildValue(), outerCorr)
@@ -233,7 +233,6 @@ func TestUnnestBakedRootCollection_MultiSegment(t *testing.T) {
 // from the reference.
 func TestUnnestBakedRootCollection_SuffixTakesTheRowsSpelling(t *testing.T) {
 	t.Parallel()
-	tr := newGateTranslator(t)
 
 	elementType := values.NotNullLong
 	// The nested record carries the descriptor's spelling; the OUTER column
@@ -245,15 +244,9 @@ func TestUnnestBakedRootCollection_SuffixTakesTheRowsSpelling(t *testing.T) {
 	sourceType := &values.RecordType{Fields: []values.Field{
 		{Name: "N", Ordinal: 0, FieldType: nestedType},
 	}}
-	outer := &logical.LogicalProject{
-		Input:           scan("Customer", "src"),
-		Projections:     []string{"N"},
-		ProjectedValues: []values.Value{exactTestField(t, exactTestQOV(t, "SRC", sourceType), 0)},
-	}
-	u := &logical.LogicalUnnest{Segments: []string{"D", "N", "ARR"}, Alias: "X"}
-	outerCorr := values.NamedCorrelationIdentifier("D")
+	u, _ := rawBoundUnnest(t, []string{"D", "N", "ARR"}, "X", "", "D", sourceType, 0, 0)
 
-	coll := tr.unnestBakedRootCollection(outer, outerCorr, u, "ARR", elementType, 1, -1)
+	coll := u.CorrelatedCollection
 	if coll == nil {
 		t.Fatal("a folded segment over a descriptor-spelled nested field must still bake the fused collection, got nil (declined)")
 	}
@@ -274,15 +267,14 @@ func TestUnnestBakedRootCollection_SuffixTakesTheRowsSpelling(t *testing.T) {
 
 // TestUnnestBakedRootCollection_DeclineUntranslatable pins the bake's
 // DECLINE: a catalog-free outer has no derivable leg type, so the bake returns
-// nil and the caller keeps the name-model builder (which owns the name-keyed
-// collection).
+// nil rather than inventing a collection binding from its diagnostic spelling.
 func TestUnnestBakedRootCollection_DeclineUntranslatable(t *testing.T) {
 	t.Parallel()
 	tr := &cascadesTranslator{} // no md → ordinalLegType nil
 	coll := tr.unnestBakedRootCollection(scan("Order", "o"),
 		values.NamedCorrelationIdentifier("o"),
 		&logical.LogicalUnnest{Segments: []string{"ORDER", "FLOWER", "TYPE"}, Alias: "X"},
-		"TYPE", values.NotNullLong, 1, -1)
+		-1)
 	if coll != nil {
 		t.Fatalf("untranslatable outer (no metadata) must DECLINE the bake to nil, got %T", coll)
 	}
@@ -296,7 +288,7 @@ func TestUnnestSeed_DeclineUntranslatable(t *testing.T) {
 	tr := &cascadesTranslator{} // no md → ordinalLegType nil
 	seed := tr.unnestOrdinalSeed(scan("Customer", "c"),
 		values.NamedCorrelationIdentifier("c"), values.NamedCorrelationIdentifier("X"),
-		unnestFor("CUSTOMER", "X", ""), values.NotNullLong)
+		unnestFor(t, "CUSTOMER", "X", ""), values.NotNullLong)
 	if seed != nil {
 		t.Fatalf("untranslatable outer (no metadata) must DECLINE to nil (name-model fallback), got %T", seed)
 	}

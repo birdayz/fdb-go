@@ -16,8 +16,7 @@ import (
 // analysis. Rules match on these.
 //
 // Semantics: SQL Kleene 3-valued logic. Eval returns a tri-state
-// (true / false / nil-for-UNKNOWN) — mirrors the embedded
-// engine's `triBool`.
+// (true / false / nil-for-UNKNOWN).
 //
 // Core types:
 //

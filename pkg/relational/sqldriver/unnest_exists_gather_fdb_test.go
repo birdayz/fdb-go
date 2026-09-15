@@ -29,7 +29,7 @@ func TestFDB_UnnestExistsGather(t *testing.T) {
 		t.Fatal(err)
 	}
 	db := recordlayer.NewFDBDatabase(rawDB)
-	ks := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
+	ks := subspace.FromBytes(tuple.Tuple{t.Name(), t.TempDir()}.Pack())
 	md := existsGatherSchemaMetadata(t)
 
 	mkA := func(aid, k int64, vals ...int32) proto.Message {
@@ -114,7 +114,7 @@ func TestFDB_UnnestExistsGather(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			rows, plan, err := runQ(t, sql)
 			if err != nil {
-				t.Fatalf("%q: %v", sql, err)
+				t.Fatalf("%q: %v\n  plan: %s", sql, err, plan)
 			}
 			sort.Strings(want)
 			if strings.Join(rows, ",") != strings.Join(want, ",") {

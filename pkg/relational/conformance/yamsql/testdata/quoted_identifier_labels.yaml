@@ -202,13 +202,13 @@ tests:
   # unquoted twins below are unchanged — except a delimited identifier, which
   # contributes its inner text verbatim.
   - query: SELECT SUM("KeepCase") FROM QCASE
-    columns: ["SUM(KeepCase)"]
+    columns: ["_0"]
     rows:
       - [42]
   # The unquoted twin. `plain` folded at DDL time, so the column really is
   # named PLAIN and the label is upper for a reason, not by a fold.
   - query: SELECT SUM(plain) FROM QCASE
-    columns: ["SUM(PLAIN)"]
+    columns: ["_0"]
     rows:
       - [7]
   # The AGREEMENT arm, and the one this whole fix is measured by: an unquoted
@@ -216,14 +216,14 @@ tests:
   # spellings must be indistinguishable downstream. `SUM("PLAIN")` used to
   # report `SUM("PLAIN")` — quotes and all — in a result-set column label.
   - query: SELECT SUM("PLAIN") FROM QCASE
-    columns: ["SUM(PLAIN)"]
+    columns: ["_0"]
     rows:
       - [7]
   # A COMPOUND operand, which is the arm the old code got wrong twice over:
   # the raw source slice carried the quotes in, and the repair that stripped
   # its whitespace also upper-folded the quoted half back out.
   - query: SELECT SUM("KeepCase" * plain) FROM QCASE
-    columns: ["SUM(KeepCase*PLAIN)"]
+    columns: ["_0"]
     rows:
       - [294]
   # A QUOTED ALIAS on an aggregate. The alias reaches the logical layer already
@@ -236,7 +236,7 @@ tests:
   # agree about the same table's columns. This is the shape that made the
   # disagreement visible, so it is the shape that pins it.
   - query: SELECT "KeepCase", SUM(plain) FROM QCASE GROUP BY "KeepCase"
-    columns: ["KeepCase", "SUM(PLAIN)"]
+    columns: ["KeepCase", "_1"]
     rows:
       - [42, 7]
   # An explicit CTE column-alias list OVERRIDES the seed-derived output names
@@ -402,24 +402,10 @@ tests:
   # merged branch-name row just as happily.
   - query: WITH RECURSIVE d AS (SELECT * FROM (SELECT q1."id" AS aa, QCASE.id AS bb FROM q1, QCASE WHERE q1."id" = 1 UNION ALL SELECT q1."id" AS cc, QCASE.id AS dd FROM q1, QCASE WHERE q1."id" = 2) x UNION ALL SELECT d.cc + 1, d.dd FROM d WHERE d.cc < 3) SELECT d.cc FROM d ORDER BY d.cc
     error_code: "42703"
-  # THE CORRELATED HALF OF THE PAIR THAT PROVES NO RULE OVER THE FLAT NAME CAN
-  # BE RIGHT. `xprobe` declares BOTH `"TOTAL"` and `"X.TOTAL"`, so this read of
-  # `x."TOTAL"` renders as the seven characters `X.TOTAL` at the label boundary
-  # — identical to `SELECT "X.TOTAL" FROM xprobe`, which reads a DIFFERENT
-  # column and wants a different label. The information that separates them was
-  # discarded upstream, where the qualifier stopped being structure and became
-  # punctuation; RFC-238 carries it as structure instead.
-  #
-  # ONLY THIS HALF IS HERE, and that is the point. This corpus is
-  # Java-authoritative, so an arm asserting a label Java does not report would
-  # convert a known divergence into a passing conformance case and credit it in
-  # the generated ledgers. The other half — where Go says `TOTAL` and Java says
-  # `X.TOTAL` — is measured on BOTH engines in
-  # conformance/dotted_and_recursive_seed_java_probe_test.go, which is where a
-  # divergence belongs. This arm is correct today and is here so a fix for that
-  # one cannot pay for itself by breaking this one: they are one decision.
+  # The scalar value reads x."TOTAL", but the unaliased scalar expression is an
+  # anonymous item in the OUTER select list and is named by that outer ordinal.
   - query: SELECT s.id, (SELECT x."TOTAL" FROM xprobe x WHERE x.id = s.id) FROM sprobe s
-    columns: ["ID", "TOTAL"]
+    columns: ["ID", "_1"]
     rows:
       - [1, 10]
   # A STAR OVER A JOIN — the dimension this scenario did not have. It asserts a

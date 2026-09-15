@@ -291,15 +291,12 @@ var knownFieldDecisionDebt = map[string]fieldDebt{
 		1, "contract: projection output metadata is still named through the value renderer; retires when the projection stores its output label explicitly.",
 	},
 
-	// dotted (3)
+	// dotted (2)
 	"pkg/recordlayer/query/plan/cascades/values/accessor_name_path.go # AccessorNamePath # a Contains call # 1": {
 		1, "dotted: the lazy compatibility channel refuses to interpret a dotted display label as one accessor; retires when no unresolved name-only FieldValue can reach matching.",
 	},
 	"pkg/relational/core/embedded/cascades_generator.go # deriveColumnsFromProjection # a dotted-name MINT (qualifier joined to the name) # 1": {
 		1, "dotted: projection metadata still emits one qualified display alias for downstream textual lookup; retires when column provenance is carried structurally.",
-	},
-	"pkg/relational/core/embedded/logical_predicate.go # (existsSubqueryPlanner).buildCorrelatedScalar # a dotted-name MINT (qualifier joined to the name) # 1": {
-		1, "dotted: the correlated-scalar output row still exposes a LEG.COLUMN compatibility label; retires when its consumer addresses the exact leg window.",
 	},
 
 	// name-keyed (4)
@@ -444,7 +441,7 @@ func bucketCounts(m map[string]fieldDebt) (counts map[string]int, untagged []str
 // headers were introduced; the authority count is the figure that now LEADS the
 // report, so it needs it more, not less. Changing this constant is how a change
 // to the authority count becomes deliberate.
-const fieldDebtAuthorityTotal = 12
+const fieldDebtAuthorityTotal = 11
 
 func bucketAuthorityCounts(m map[string]fieldDebt) map[string]int {
 	perBucket := map[string]map[string]struct{}{}

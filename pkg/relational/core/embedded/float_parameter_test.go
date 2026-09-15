@@ -52,15 +52,6 @@ func assertFiniteFloatParameter(t *testing.T, value float64) {
 	if !ok || math.Float64bits(result) != math.Float64bits(value) {
 		t.Errorf("float64(%v) rendered %q resolves to %T(%v), want identical floating bits", value, rendered, evaluated, evaluated)
 	}
-	// Also pin the literal decoder behind the evalConstant path.
-	decoded, err := parseDecimalLiteralValue(rendered)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, ok := decoded.(float64)
-	if !ok || math.Float64bits(got) != math.Float64bits(value) {
-		t.Fatalf("float64(%v) rendered %q then decoded %T(%v), want identical floating bits", value, rendered, decoded, decoded)
-	}
 }
 
 func FuzzSubstituteParamsFiniteFloat(f *testing.F) {

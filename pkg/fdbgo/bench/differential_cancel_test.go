@@ -176,3 +176,48 @@ func TestDifferential_CancelLifecycle(t *testing.T) {
 		})
 	}
 }
+
+// TestDifferential_RetryLimitDoesNotReviveTerminalTransaction pins the failed
+// OnError boundary, distinct from changing a limit on an active transaction.
+// C++ API >=610 fails resetPromise on that boundary; only Reset revives it.
+func TestDifferential_RetryLimitDoesNotReviveTerminalTransaction(t *testing.T) {
+	t.Parallel()
+	gt, err := goClient.CreateTransaction()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gt.Cancel()
+	ct, err := cgoClient.CreateTransaction()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ct.Cancel()
+	for _, err := range []error{gt.Options().SetRetryLimit(0), ct.Options().SetRetryLimit(0)} {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertCodes := func(stage string, want int, goErr, cErr error) {
+		t.Helper()
+		g, c := fdbErrorCode(goErr), fdbErrorCode(cErr)
+		if g != want || c != want {
+			t.Fatalf("%s: go=%d cgo=%d, independently want %d", stage, g, c, want)
+		}
+		t.Logf("%s: go=%d cgo=%d", stage, g, c)
+	}
+	assertCodes("limit exhausted", 1020, gt.OnError(gofdb.Error{Code: 1020}).Get(), ct.OnError(cgofdb.Error{Code: 1020}).Get())
+	for _, err := range []error{gt.Options().SetRetryLimit(-1), ct.Options().SetRetryLimit(-1)} {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertCodes("changing limit cannot revive", 1025, gt.OnError(gofdb.Error{Code: 1020}).Get(), ct.OnError(cgofdb.Error{Code: 1020}).Get())
+	gt.Reset()
+	ct.Reset()
+	for _, err := range []error{gt.Options().SetRetryLimit(-1), ct.Options().SetRetryLimit(-1)} {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertCodes("explicit reset revives", 0, gt.OnError(gofdb.Error{Code: 1020}).Get(), ct.OnError(cgofdb.Error{Code: 1020}).Get())
+}

@@ -328,7 +328,7 @@ func TestCorrelatedScalarLogicalCarrierIsExact(t *testing.T) {
 	t.Parallel()
 	md := buildTestMetaData(t)
 	q, err := parseQueryFromSelect(t,
-		"SELECT (SELECT o.price FROM Order o WHERE o.order_id = c.customer_id ORDER BY o.price DESC LIMIT 1) FROM Customer c")
+		`SELECT (SELECT o.price FROM "Order" o WHERE o.order_id = c.customer_id ORDER BY o.price DESC LIMIT 1) FROM "Customer" c`)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -363,7 +363,11 @@ func TestCorrelatedScalarLogicalCarrierIsExact(t *testing.T) {
 	}
 
 	inner := carrier.CorrelatedScalarSubqueries[0].InnerPlan
-	materialized, ok := inner.(*logical.LogicalProject)
+	limit, ok := inner.(*logical.LogicalLimit)
+	if !ok || limit.Limit != 1 || limit.Offset != 0 {
+		t.Fatalf("full scalar query lost its final LIMIT 1: %#v", inner)
+	}
+	materialized, ok := limit.Input.(*logical.LogicalProject)
 	if !ok {
 		t.Fatalf("correlated scalar inner = %T, want one-column LogicalProject materializer", inner)
 	}
@@ -441,24 +445,32 @@ func TestBuildScalarValidatesSemanticOutputBeforeRegistration(t *testing.T) {
 		wantCode api.ErrorCode
 		wantType values.Type
 	}{
+		// The raw protobuf fixture stores mixed-case table names. Java's
+		// SemanticAnalyzer.getTable resolves the normalized name exactly, so
+		// quotes are required to reach those tables before output validation.
+		{
+			name:     "unquoted_table_is_not_the_mixed_case_stored_table",
+			sql:      "SELECT MIN(price) FROM Order",
+			wantCode: api.ErrCodeUndefinedTable,
+		},
 		{
 			name:     "multiple_columns_are_syntax_error",
-			sql:      "SELECT order_id, price FROM Order WHERE order_id = 1",
+			sql:      `SELECT order_id, price FROM "Order" WHERE order_id = 1`,
 			wantCode: api.ErrCodeSyntaxError,
 		},
 		{
 			name:     "string_min_is_unsupported_operation",
-			sql:      "SELECT MIN(name) FROM Customer",
+			sql:      `SELECT MIN(name) FROM "Customer"`,
 			wantCode: api.ErrCodeUnsupportedOperation,
 		},
 		{
 			name:     "array_min_is_unsupported_operation",
-			sql:      "SELECT MIN(tags) FROM Order",
+			sql:      `SELECT MIN(tags) FROM "Order"`,
 			wantCode: api.ErrCodeUnsupportedOperation,
 		},
 		{
 			name:     "numeric_min_remains_exact_and_admitted",
-			sql:      "SELECT MIN(price) FROM Order",
+			sql:      `SELECT MIN(price) FROM "Order"`,
 			wantType: values.NullableInt,
 		},
 	}
@@ -534,23 +546,20 @@ func TestBuildLogicalPlanWithCatalog_NilMetaData(t *testing.T) {
 	}
 }
 
-// Catalog miss (table not registered) falls back to text. Ensures a
-// bad schema lookup doesn't hard-fail the builder; the next shift
-// can add validation elsewhere if desired.
+// A checked star scope must preserve the SQL table-resolution error, not
+// leak the semantic package's internal error or build a text-only fallback.
 func TestBuildLogicalPlanWithCatalog_UnknownTable(t *testing.T) {
 	t.Parallel()
 	md := buildTestMetaData(t)
 	sq := parseSelect(t, "SELECT * FROM NoSuchTable WHERE id > 5")
-	op, _ := buildLogicalPlanForSelectWithCatalog(sq, md, defaultEmbeddedSchema)
-	filter, ok := op.(*logical.LogicalFilter)
-	if !ok {
-		t.Fatalf("expected LogicalFilter, got %T", op)
+	op, err := buildLogicalPlanForSelectWithCatalog(sq, md, defaultEmbeddedSchema)
+	var sqlErr *api.Error
+	if op != nil || !errors.As(err, &sqlErr) || sqlErr.Code != api.ErrCodeUndefinedTable {
+		t.Fatalf("plan=%v error=%v, want no plan and 42F01", op, err)
 	}
-	if filter.Predicate != nil {
-		t.Fatal("expected Predicate nil on catalog miss")
-	}
-	if want := "Filter(id > 5)\n  Scan(NOSUCHTABLE)"; op.Explain("") != want {
-		t.Fatalf("Explain: got %q, want %q", op.Explain(""), want)
+	var cause *semantic.TableNotFoundError
+	if !errors.As(err, &cause) || cause.Name.Name() != "NOSUCHTABLE" {
+		t.Fatalf("table-resolution cause lost: %v", err)
 	}
 }
 
@@ -1360,7 +1369,7 @@ func TestDerivedJoinBodyNullability_IsDerivedFromTheJoinAlgebra(t *testing.T) {
 	innerSrc, ok := buildDerivedTableSourceFromJoinBody(md, "D", &selectQuery{
 		tableName: "Order", tableAlias: "A",
 		joins: []joinClause{{tableName: "Customer", alias: "B", joinType: joinTypeInner}},
-	})
+	}, defaultEmbeddedSchema, nil)
 	_ = inner
 	if !ok {
 		t.Fatal("the INNER control body did not derive at all — nothing below is comparable")
@@ -1410,7 +1419,7 @@ func TestDerivedJoinBodyNullability_IsDerivedFromTheJoinAlgebra(t *testing.T) {
 			src, derived := buildDerivedTableSourceFromJoinBody(md, "D", &selectQuery{
 				tableName: "Order", tableAlias: "A",
 				joins: []joinClause{{tableName: "Customer", alias: "B", joinType: tc.jt}},
-			})
+			}, defaultEmbeddedSchema, nil)
 			if !derived {
 				t.Fatalf("the body did not derive — the case tests nothing")
 			}
@@ -1707,31 +1716,36 @@ func TestSemanticColumnFromExactTypeCarriesRecordName(t *testing.T) {
 	}
 }
 
-func TestSemanticColumnFromExactTypeDeclinesEnum(t *testing.T) {
+func TestSemanticColumnFromExactTypeCarriesEnum(t *testing.T) {
 	t.Parallel()
-	// An enum has no lossless semantic carrier: the catalog kind "ENUM"
-	// bridges forward to a plain STRING (sqlTypeToCascadesType), so publishing
-	// one here would change the exact type on the round trip. This is the
-	// bridge's own contract, reached by no SQL shape today — the exact logical
-	// derivation types an enum field as that STRING before it gets here
-	// (TestDerivedNestedEnumFieldTypesAsStringSoTheShapeRuleNeverDeclines).
-	enum := values.NewEnumType("COLOR", false, []values.EnumValue{{Name: "RED", Number: 1}})
-	if column, ok := semanticColumnFromExactType("C", enum); ok {
-		t.Fatalf("enum was published as an exact semantic column: %+v", column)
+	enum := values.NewEnumType("COLOR", false, []values.EnumValue{{Name: "RED", Number: 9}, {Name: "BLUE", Number: 2}})
+	for _, typ := range []values.Type{
+		enum, values.WithNullability(enum, true),
+		values.NewRecordType("PAINT", false, []values.Field{{Name: "C", FieldType: enum}}),
+		values.NewArrayType(true, enum),
+	} {
+		column, ok := semanticColumnFromExactType("C", typ)
+		if !ok {
+			t.Fatalf("enum-bearing type declined: %v", typ)
+		}
+		row := expr.SourceRowType(semantic.ScopeSource{Table: &semantic.StaticTable{TableColumns: []semantic.Column{column}}})
+		if row == nil || len(row.Fields) != 1 || !row.Fields[0].FieldType.Equals(typ) {
+			t.Fatalf("enum-bearing round trip = %v, want %v", row, typ)
+		}
 	}
-	record := values.NewRecordType("PAINT", false, []values.Field{{Name: "C", FieldType: enum}})
-	if column, ok := semanticColumnFromExactType("P", record); ok {
-		t.Fatalf("record carrying an enum field was published as exact: %+v", column)
+	column, ok := semanticColumnFromExactType("C", enum)
+	if !ok || column.EnumTypeName != "COLOR" || len(column.EnumMembers) != 2 {
+		t.Fatalf("enum declaration lost: %+v", column)
+	}
+	enum.Values[0].Name = "CHANGED"
+	if column.EnumMembers[0].Name != "RED" {
+		t.Fatal("semantic enum aliases its source declaration")
 	}
 }
 
-// enumHomonymMetaData is a table whose struct column P carries an enum field
-// COLOR beside a top-level STRING column COLOR — Java-authored metadata, since
-// this DDL declares no enum. An enum is the one leaf the semantic column model
-// cannot state (semanticColumnFromExactType), so a nested path to it is the
-// shape to watch for the shape rule's exact route declining; with a homonym at
-// the top level it is also the shape where re-resolving a declined path by
-// its leaf would type the slot as that STRING.
+// enumHomonymMetaData places a nested enum beside a top-level STRING of the
+// same name. Binding by the leaf name instead of the resolved path changes the
+// selected slot and erases the enum declaration.
 func enumHomonymMetaData(t *testing.T) *recordlayer.RecordMetaData {
 	t.Helper()
 	label := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL
@@ -1776,22 +1790,9 @@ func enumHomonymMetaData(t *testing.T) *recordlayer.RecordMetaData {
 	return md
 }
 
-func TestDerivedNestedEnumFieldTypesAsStringSoTheShapeRuleNeverDeclines(t *testing.T) {
+func TestDerivedNestedEnumFieldKeepsExactTypeAndHomonym(t *testing.T) {
 	t.Parallel()
 	md := enumHomonymMetaData(t)
-	// A NEGATIVE result, pinned: the shape rule's decline is final in every arm
-	// (a declined exact route is never re-resolved by the leaf lookup, which
-	// would type the slot as the top-level homonym), and today no shape reaches
-	// a decline the walk would answer differently: a NULL literal beside the
-	// path declines the exact route ("placeholder type is not exact") and the
-	// walk alike, and the one unrepresentable leaf Java-authored metadata can
-	// put under a nested path — an enum — arrives already typed STRING (the
-	// catalog kind ENUM bridges to STRING; TODO.md, "The exact derivation types
-	// an enum field as STRING"), so the nested path publishes beside the STRING
-	// homonym.
-	// When the exact derivation starts carrying enums, this goes red: the
-	// decline is then reachable, and this shape (a STRING `color` beside the
-	// enum `p.color`) is the one to pin as a loud decline, never as the homonym.
 	for _, sql := range []string{
 		`SELECT x.color FROM (SELECT t.p.color FROM t) x`,
 		`WITH x AS (SELECT t.p.color FROM t) SELECT x.color FROM x`,
@@ -1799,8 +1800,7 @@ func TestDerivedNestedEnumFieldTypesAsStringSoTheShapeRuleNeverDeclines(t *testi
 	} {
 		plan, _, err := PlanRecordQueryWithSubqueries(sql, md, nil)
 		if err != nil || plan == nil {
-			t.Fatalf("%s: plan %v, err %v; the exact derivation no longer states the enum field as STRING — "+
-				"the shape rule's decline is reachable now, pin this homonym shape as a loud decline", sql, plan, err)
+			t.Fatalf("%s: plan %v, err %v", sql, plan, err)
 		}
 	}
 	sq := parseSelect(t, `SELECT t.p.color FROM t`)
@@ -1809,10 +1809,228 @@ func TestDerivedNestedEnumFieldTypesAsStringSoTheShapeRuleNeverDeclines(t *testi
 	}
 	src, ok := buildExactVirtualScopeSourceForSelect(md, "X", sq, nil, nil)
 	if !ok {
-		t.Fatal("the exact derivation declined the enum field; the shape rule's decline is reachable now — pin the homonym shape as a loud decline")
+		t.Fatal("the exact derivation declined the nested enum field")
 	}
 	cols := src.Table.Columns()
-	if len(cols) != 1 || cols[0].Id.Name() != "COLOR" || cols[0].Type != "STRING" {
-		t.Fatalf("exact row over the enum field = %+v, want the one STRING column COLOR", cols)
+	if len(cols) != 1 || cols[0].Id.Name() != "COLOR" || cols[0].Type != "ENUM" || cols[0].EnumTypeName != "enumhomonymtest.Color" {
+		t.Fatalf("exact row over the enum field = %+v, want the nested ENUM column COLOR", cols)
+	}
+}
+
+func TestDerivedBindingMintReservesLexicalEnvironment(t *testing.T) {
+	t.Parallel()
+	inner, err := parseQueryFromSelect(t, "SELECT order_id FROM Order")
+	if err != nil {
+		t.Fatal(err)
+	}
+	table := &semantic.StaticTable{
+		TableName:    semantic.FromSegments([]string{"ORDER"}, false),
+		TableColumns: []semantic.Column{{Id: semantic.FromNormalized("ORDER_ID"), Type: "BIGINT", Nullable: true}},
+	}
+	grand := semantic.NewScope(nil)
+	if err := grand.AddSource(semantic.ScopeSource{
+		Table: table,
+		Alias: semantic.FromNormalized("Q$DERIVED0"), CorrelationName: "Q$DERIVED1",
+		AdditionalQualifiers: []semantic.Identifier{semantic.FromNormalized("Q$DERIVED2")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	parent := semantic.NewScope(grand)
+	if err := parent.AddSource(semantic.ScopeSource{Table: table, Alias: semantic.FromNormalized("D"), CorrelationName: "Q$DUP1"}); err != nil {
+		t.Fatal(err)
+	}
+	visitor := NewPlanVisitor(buildTestMetaData(t))
+	visitor.enclosingScope = parent
+	visitor.cteScopes = map[string]semantic.ScopeSource{"Q$DERIVED3": {}}
+	visitor.cteOnScopes = map[string]semantic.ScopeSource{"Q$DERIVED4": {}}
+	visitor.cteBodies = map[string]logical.LogicalOperator{"Q$DERIVED5": logical.NewScan("Order", "")}
+	for range 2 {
+		fs := &fromSource{
+			tableName: "D", tableAlias: "D", derivedQuery: inner, enclosingScope: parent,
+			joins: []joinClause{
+				{alias: "D", derivedQuery: inner, bindingID: "Q$DUP1"},
+				{alias: "D", derivedQuery: inner, bindingID: "Q$DUP2"},
+				{alias: "Q$DERIVED6", tableName: "Order", bindingID: "Q$DERIVED7"},
+				{alias: "S.Q$DERIVED8", tableName: "S.Q$DERIVED8", segments: []string{"S", "Q$DERIVED8"}},
+			},
+		}
+		visitor.assignDerivedSourceBindings(fs)
+		if fs.bindingID != "Q$DERIVED9" || fs.joins[0].bindingID != "Q$DERIVED10" || fs.joins[1].bindingID != "Q$DUP2" {
+			t.Fatalf("mint must reserve every lexical namespace and retain a disjoint duplicate identity: primary=%q joins=%+v", fs.bindingID, fs.joins)
+		}
+		sq := selectQueryFromClassification(&selectClassification{}, fs)
+		if sq.bindingID != "Q$DERIVED9" || sq.enclosingScope != parent || sq.tableAlias != "D" {
+			t.Fatalf("FROM bridge lost runtime/lexical identity: %+v", sq)
+		}
+		visitor.assignDerivedSourceBindings(fs)
+		if fs.bindingID != "Q$DERIVED9" || fs.joins[0].bindingID != "Q$DERIVED10" {
+			t.Fatal("repeated identity pass changed the carried bindings")
+		}
+	}
+}
+
+func TestDerivedBindingCarrierAndScopeRebuilds(t *testing.T) {
+	t.Parallel()
+	md := buildTestMetaData(t)
+	outerQ, err := parseQueryFromSelect(t, "SELECT * FROM Customer d")
+	if err != nil {
+		t.Fatal(err)
+	}
+	outerSQ, err := extractFromQueryTerm(outerQ.QueryExpressionBody().(*antlrgen.QueryTermDefaultContext))
+	if err != nil {
+		t.Fatal(err)
+	}
+	outer, err := buildSelectScopeChecked(outerSQ, md, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q, err := parseQueryFromSelect(t, "SELECT d.price, j.order_id FROM (SELECT order_id, price FROM Order) AS d JOIN (SELECT order_id FROM Order) AS j USING (order_id)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	simple := q.QueryExpressionBody().(*antlrgen.QueryTermDefaultContext).QueryTerm().(*antlrgen.SimpleTableContext)
+	fs, err := parseFromSource(simple)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs.enclosingScope = outer.Scope()
+	visitor := NewPlanVisitor(md)
+	visitor.enclosingScope = outer.Scope()
+	visitor.assignDerivedSourceBindings(fs)
+	op, err := visitor.visitFrom(simple, fs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cls, err := classifySelectElements(simple, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sq := selectQueryFromClassification(cls, fs)
+	check := func(t *testing.T, root logical.LogicalOperator, wantJoined bool) {
+		t.Helper()
+		var carriers []*logical.LogicalCTE
+		var walk func(logical.LogicalOperator)
+		walk = func(node logical.LogicalOperator) {
+			if c, ok := node.(*logical.LogicalCTE); ok {
+				carriers = append(carriers, c)
+				return // The exported source, never hidden definitions inside Body.
+			}
+			for _, child := range node.Children() {
+				walk(child)
+			}
+		}
+		if root == nil {
+			t.Fatal("rebuild returned no plan")
+		}
+		walk(root)
+		want := 1
+		if wantJoined {
+			want = 2
+		}
+		if len(carriers) != want {
+			t.Fatalf("exported carriers=%d, want %d", len(carriers), want)
+		}
+		for i, c := range carriers {
+			binding, body := sq.bindingID, sq.catalogAwareInnerPlan
+			if i == 1 {
+				binding, body = sq.joins[0].bindingID, sq.joins[0].catalogAwareInnerPlan
+			}
+			scan, ok := c.Main.(*logical.LogicalScan)
+			if binding == "" || c.Name != binding || c.Binding != binding || !ok || scan.Table != binding || c.Body != body {
+				t.Fatalf("carrier lost identity or rebuilt Body: binding=%q carrier=%#v main=%#v", binding, c, c.Main)
+			}
+		}
+	}
+	check(t, op, true)
+	check(t, buildLogicalPlanForSelect(sq), true)
+	catalog, err := buildLogicalPlanForSelectWithCTECatalog(sq, md, "", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check(t, catalog, true)
+	single := *sq
+	single.joins = nil
+	check(t, buildOuterPlanOnDerived(&single, sq.catalogAwareInnerPlan), false)
+	selectResolver, err := buildSelectScopeChecked(sq, md, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, resolver := range []*expr.Resolver{selectResolver, buildProjectionResolverWithCTEScopes(sq, md, "", nil)} {
+		if resolver == nil || resolver.Scope().Parent() != outer.Scope() {
+			t.Fatal("scope rebuild lost the actual lexical parent")
+		}
+		bound, err := resolver.ResolveIdentifierPath([]semantic.Identifier{semantic.FromNormalized("D"), semantic.FromNormalized("PRICE")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		correlations := values.GetCorrelatedToOfValue(bound)
+		if _, ok := correlations[values.NamedCorrelationIdentifier(sq.bindingID)]; !ok || len(correlations) != 1 {
+			t.Fatalf("derived reference lost its private owner: %v", correlations)
+		}
+		if bound.Type().Code() != values.TypeCodeInt {
+			t.Fatalf("derived PRICE type=%v, want INTEGER", bound.Type())
+		}
+	}
+	sources := buildOuterScopeSources(sq, md, "", nil)
+	if len(sources) != 2 || sources[0].Alias.Name() != "D" || sources[0].CorrelationName != sq.bindingID || sources[1].Alias.Name() != "J" || sources[1].CorrelationName != sq.joins[0].bindingID {
+		t.Fatalf("nested planner source metadata lost lexical/runtime identities: %+v", sources)
+	}
+}
+
+// Plain references and expanded stars must inherit the same declared attribute
+// name, including references admitted by the case-insensitive lookup extension.
+func TestProjectionInheritsResolvedUnqualifiedName(t *testing.T) {
+	t.Parallel()
+	tmpl, err := buildSchemaTemplateFromDDL(`CREATE TABLE QCASE (id BIGINT, "KeepCase" BIGINT, plain BIGINT, PRIMARY KEY (id))`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		projection, want string
+	}{
+		{`"KeepCase"`, "KeepCase"},
+		{`KeepCase`, "KeepCase"},
+		{`"KEEPCASE"`, "KeepCase"},
+		{`"keepcase"`, "KeepCase"},
+		{`"plain"`, "PLAIN"},
+		{`"keepcase" AS "chosen"`, "chosen"},
+		{`QCASE."KeepCase"`, "KeepCase"},
+	} {
+		t.Run(tc.projection, func(t *testing.T) {
+			t.Parallel()
+			root, err := parseQueryFromSelect(t, "SELECT "+tc.projection+" FROM QCASE")
+			if err != nil {
+				t.Fatal(err)
+			}
+			op, err := NewPlanVisitor(tmpl.Underlying()).VisitQuery(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			proj := findProjection(op)
+			if proj == nil || len(proj.Aliases) != 1 || proj.Aliases[0] != tc.want {
+				t.Fatalf("projection = %+v, want inherited name %q", proj, tc.want)
+			}
+		})
+	}
+}
+
+func TestProjectionKeepsScalarQOVSQLName(t *testing.T) {
+	t.Parallel()
+	for _, binding := range []string{"V", "Q$DUP1"} {
+		t.Run(binding, func(t *testing.T) {
+			t.Parallel()
+			value, err := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(binding), values.NotNullLong)
+			if err != nil {
+				t.Fatal(err)
+			}
+			proj := logical.NewProject(logical.NewScan("QARR", "", ""), []string{"v"}, nil)
+			proj.ProjectedValues = []values.Value{value}
+			sq := &selectQuery{}
+			sq.projCols = []projCol{{name: "v", bare: "v"}}
+			publishInheritedProjectionNames(proj, sq)
+			if len(proj.Aliases) != 1 || proj.Aliases[0] != "v" {
+				t.Fatalf("SQL names = %v, want [v], not quantifier binding %q", proj.Aliases, binding)
+			}
+		})
 	}
 }

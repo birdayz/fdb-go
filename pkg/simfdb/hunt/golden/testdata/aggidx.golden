@@ -5,7 +5,7 @@
 
 === SELECT g, SUM(v) FROM t GROUP BY g ORDER BY g
 PLAN: Project([_current.G#0, _current.SUM(V)#1], GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_G, [G], T, live_groups_only), AggregateIndex(SUM, SUM_BY_G, [G], T); keys=[G#0], driving=0))
-ROWS(4) cols=[G, SUM(V)]:
+ROWS(4) cols=[G, _1]:
   [1, 90]
   [2, 70]
   [3, 50]
@@ -13,7 +13,7 @@ ROWS(4) cols=[G, SUM(V)]:
 
 === SELECT g, COUNT(*) FROM t GROUP BY g ORDER BY g
 PLAN: Project([_current.G#0, _current.COUNT(*)#1], AggregateIndex(COUNT, CNT_BY_G, [G], T, live_groups_only))
-ROWS(4) cols=[G, COUNT(*)]:
+ROWS(4) cols=[G, _1]:
   [1, 3]
   [2, 2]
   [3, 1]
@@ -21,11 +21,11 @@ ROWS(4) cols=[G, COUNT(*)]:
 
 === SELECT SUM(v) FROM t
 PLAN: Project([_current.SUM(V)#0], StreamingAgg(keys=[], Scan(T)))
-ROWS(1) cols=[SUM(V)]:
+ROWS(1) cols=[_0]:
   [210]
 
 === SELECT MIN(v), MAX(v) FROM t
 PLAN: Project([_current.MIN(V)#0, _current.MAX(V)#1], StreamingAgg(keys=[], Scan(T)))
-ROWS(1) cols=[MIN(V), MAX(V)]:
+ROWS(1) cols=[_0, _1]:
   [10, 60]
 

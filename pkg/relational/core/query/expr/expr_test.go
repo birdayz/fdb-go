@@ -140,7 +140,7 @@ func TestResolver_ResolveIdentifier_TypeMapping(t *testing.T) {
 			{Id: semantic.NewUnquoted("inn"), Type: "INT NOT NULL"},
 			{Id: semantic.NewUnquoted("intnn"), Type: "INTEGER NOT NULL"},
 			{Id: semantic.NewUnquoted("s"), Type: "STRING", Nullable: true},
-			{Id: semantic.NewUnquoted("e"), Type: "ENUM", Nullable: true},
+			{Id: semantic.NewUnquoted("e"), Type: "ENUM", Nullable: true, EnumTypeName: "COLOR", EnumMembers: []semantic.EnumMember{{Name: "RED", Number: 1}}},
 			{Id: semantic.NewUnquoted("b"), Type: "BOOL", Nullable: true},
 			{Id: semantic.NewUnquoted("f"), Type: "FLOAT", Nullable: true},
 			{Id: semantic.NewUnquoted("by"), Type: "BYTES", Nullable: true},
@@ -163,7 +163,7 @@ func TestResolver_ResolveIdentifier_TypeMapping(t *testing.T) {
 		"inn":   values.NotNullInt,  // "INT NOT NULL" → non-null INT (unnest ordinal)
 		"intnn": values.NotNullInt,  // "INTEGER NOT NULL" → non-null INT
 		"s":     values.TypeString,
-		"e":     values.TypeString,
+		"e":     values.NewEnumType("COLOR", true, []values.EnumValue{{Name: "RED", Number: 1}}),
 		"b":     values.TypeBool,
 		"f":     values.NullableFloat, // FLOAT is a genuine 32-bit type; DOUBLE seeds NullableDouble (both still reject a bare WHERE with 42804)
 		"by":    values.NullableBytes, // BYTES → seed bytes type
@@ -1007,4 +1007,148 @@ func (o *orderlessTable) Indexes() []string            { return nil }
 func (o *orderlessTable) LookupColumn(id semantic.Identifier) (semantic.Column, bool) {
 	c, ok := o.cols[id.Name()]
 	return c, ok
+}
+
+func TestSemanticEnumDeclarationRoundTrip(t *testing.T) {
+	t.Parallel()
+	for _, nullable := range []bool{false, true} {
+		for _, array := range []bool{false, true} {
+			members := []semantic.EnumMember{{Name: "RED", Number: 9}, {Name: "BLUE", Number: 2}}
+			column := semantic.Column{Id: semantic.NewUnquoted("C"), Type: "ENUM", EnumTypeName: "COLOR", EnumMembers: members, Nullable: nullable, IsArray: array}
+			row := expr.SourceRowType(semantic.ScopeSource{Table: &semantic.StaticTable{TableColumns: []semantic.Column{column}}})
+			require.NotNil(t, row)
+			typ := row.Fields[0].FieldType
+			require.Equal(t, nullable, typ.IsNullable())
+			if array {
+				typ = typ.(*values.ArrayType).ElementType
+			}
+			enum, ok := typ.(*values.EnumType)
+			require.True(t, ok, "array=%t nullable=%t: %v", array, nullable, typ)
+			require.Equal(t, "COLOR", enum.EnumName)
+			require.Equal(t, []values.EnumValue{{Name: "RED", Number: 9}, {Name: "BLUE", Number: 2}}, enum.Values)
+			require.Equal(t, nullable && !array, enum.Nullable)
+			members[0].Name = "CHANGED"
+			require.Equal(t, "RED", enum.Values[0].Name, "planner declaration must not alias semantic metadata")
+		}
+	}
+}
+
+func TestMalformedSemanticEnumDeclinesWithoutPanic(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, typeName string
+		members        []semantic.EnumMember
+	}{
+		{name: "bare_kind"},
+		{name: "no_name", members: []semantic.EnumMember{{Name: "R", Number: 1}}},
+		{name: "no_members", typeName: "C"},
+		{name: "empty_member", typeName: "C", members: []semantic.EnumMember{{Number: 1}}},
+		{name: "duplicate_name", typeName: "C", members: []semantic.EnumMember{{Name: "R", Number: 1}, {Name: "R", Number: 2}}},
+		{name: "duplicate_number", typeName: "C", members: []semantic.EnumMember{{Name: "R", Number: 1}, {Name: "B", Number: 1}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			column := semantic.Column{Id: semantic.NewUnquoted("C"), Type: "ENUM", EnumTypeName: tc.typeName, EnumMembers: tc.members}
+			row := expr.SourceRowType(semantic.ScopeSource{Table: &semantic.StaticTable{TableColumns: []semantic.Column{column}}})
+			require.Equal(t, values.TypeCodeUnknown, row.Fields[0].FieldType.Code())
+			_, err := values.SnapshotExactType(row)
+			require.Error(t, err, "malformed enum must not enter an exact row")
+		})
+	}
+}
+
+func TestResolverEnumComparisons(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	enum := values.NewEnumType("COLOR", true, []values.EnumValue{{Name: "RED", Number: 9}, {Name: "BLUE", Number: 2}})
+	for _, tc := range []struct {
+		name     string
+		op       predicates.ComparisonType
+		left     any
+		right    string
+		reversed bool
+		want     predicates.TriBool
+	}{
+		{"equal", predicates.ComparisonEquals, int64(9), "RED", false, predicates.TriTrue},
+		{"unequal", predicates.ComparisonNotEquals, int64(9), "BLUE", false, predicates.TriTrue},
+		{"number_order", predicates.ComparisonGreaterThan, int64(9), "BLUE", false, predicates.TriTrue},
+		{"reversed", predicates.ComparisonLessThan, int64(9), "BLUE", true, predicates.TriTrue},
+		{"null", predicates.ComparisonEquals, nil, "RED", false, predicates.TriUnknown},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var left values.Value = &values.ConstantValue{Value: tc.left, Typ: enum}
+			var right values.Value = &values.ConstantValue{Value: tc.right, Typ: values.TypeString}
+			if tc.reversed {
+				left, right = right, left
+			}
+			pred, err := r.ResolveComparison(tc.op, left, right)
+			require.NoError(t, err)
+			got, err := pred.Eval(nil)
+			require.NoError(t, err)
+			require.Equal(t, tc.want, got)
+		})
+	}
+	left := &values.ConstantValue{Value: int64(9), Typ: enum}
+	pred, err := r.ResolveIn(left, []values.Value{&values.ConstantValue{Value: "RED", Typ: values.TypeString}})
+	require.NoError(t, err)
+	got, err := pred.Eval(nil)
+	require.NoError(t, err)
+	require.Equal(t, predicates.TriTrue, got, "constant IN must promote the string to the stored number")
+}
+
+func TestResolverEnumStructuralCompatibility(t *testing.T) {
+	t.Parallel()
+	a, s := buildScope(t)
+	r := expr.New(a, s)
+	members := []values.EnumValue{{Name: "R", Number: 1}, {Name: "B", Number: 9}}
+	left := &values.ConstantValue{Value: int64(1), Typ: values.NewEnumType("FIRST", false, members)}
+	for _, tc := range []struct {
+		name         string
+		members      []values.EnumValue
+		incompatible bool
+	}{
+		{"distinct_nominal_name", members, false},
+		{"reordered", []values.EnumValue{{Name: "B", Number: 9}, {Name: "R", Number: 1}}, true},
+		{"renumbered", []values.EnumValue{{Name: "R", Number: 2}, {Name: "B", Number: 9}}, true},
+		{"different_members", []values.EnumValue{{Name: "G", Number: 1}}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rightType := values.NewEnumType("SECOND", true, tc.members)
+			right := &values.ConstantValue{Value: int64(1), Typ: rightType}
+			pred, err := r.ResolveComparison(predicates.ComparisonEquals, left, right)
+			if tc.incompatible {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			got, err := pred.Eval(nil)
+			require.NoError(t, err)
+			require.Equal(t, predicates.TriTrue, got)
+			// Java's semantic DataType preserves names, but Type.Enum.equals
+			// and maximumType compare the ordered declaration, not its name.
+			maximum := values.MaximumType(left.Type(), rightType).(*values.EnumType)
+			require.Equal(t, "FIRST", maximum.EnumName)
+			require.True(t, maximum.Nullable)
+		})
+	}
+	for _, reversed := range []bool{false, true} {
+		var x values.Value = left
+		var y values.Value = values.NewParameterValue(1)
+		if reversed {
+			x, y = y, x
+		}
+		pred, err := r.ResolveComparison(predicates.ComparisonEquals, x, y)
+		require.NoError(t, err)
+		got, err := pred.Eval(paramRow{bound: map[int]any{1: "R"}})
+		require.NoError(t, err)
+		require.Equal(t, predicates.TriTrue, got)
+	}
+	pred, err := r.ResolveIn(left, []values.Value{values.NewParameterValue(1)})
+	require.NoError(t, err)
+	got, err := pred.Eval(paramRow{bound: map[int]any{1: "R"}})
+	require.NoError(t, err)
+	require.Equal(t, predicates.TriTrue, got)
 }

@@ -298,6 +298,7 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 	// Compute independent quantifiers partitioning — used to defer
 	// cross products when configured to do so.
 	independentPartitioning := computeIndependentQuantifiersPartitioning(sel, fullCorrelationOrder)
+	projectedContinuation, hasProjectedContinuation := independentForEachBlockBelowProjectedExistential(sel, fullCorrelationOrder)
 
 	// The select's conjuncts (its list, lifted flat by the constructor): the classifier loop
 	// consumes them per bipartition, and the disconnected-lower guard judges
@@ -348,8 +349,12 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 			continue
 		}
 
+		// Search preferences cannot eliminate the sole implementable projected
+		// existential continuation. Other partitions still honor deferral.
+		_, continuationAbove := upperAliases[projectedContinuation]
+		keepsForEachBlock := hasProjectedContinuation && len(upperAliases) == 1 && continuationAbove
 		// Check independent quantifiers partitioning for cross-product deferral.
-		if len(independentPartitioning) > 1 {
+		if len(independentPartitioning) > 1 && !keepsForEachBlock {
 			if plannerCfg.ShouldDeferCrossProducts {
 				if !isCrossProduct(independentPartitioning, lowerAliases, upperAliases) {
 					continue
@@ -648,7 +653,10 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 			lowerConnected = aliasesConnectedByPredicatesOrCorrelation(lowerAliases, allPredicates, fullCorrelationOrder)
 		}
 		disconnectedLower := len(lowerAliases) >= 2 && !lowerConnected
-		if disconnectedLower &&
+		// A projected existential may require the entire row-producing block
+		// beneath it. Connectivity cannot prune that canonical partition: the
+		// live-existential checks prevent moving its boolean into the lower.
+		if disconnectedLower && !keepsForEachBlock &&
 			!(isCrossProduct(independentPartitioning, lowerAliases, upperAliases) &&
 				lowerComponentsAreSingletons(independentPartitioning, lowerAliases)) {
 			continue
@@ -1222,4 +1230,36 @@ func lowerComponentsAreSingletons(
 		}
 	}
 	return true
+}
+
+// independentForEachBlockBelowProjectedExistential declines ordinary joins,
+// predicate-only or multiple existentials, and lower edge semantics/dependencies.
+// Otherwise the sole existential's result-live identity determines the canonical
+// partition: all ordinary ForEach rows below, the projected existential above.
+// Existing partition dependency, liveness and exact-row guards still apply.
+func independentForEachBlockBelowProjectedExistential(
+	sel *expressions.SelectExpression,
+	correlationOrder map[values.CorrelationIdentifier]map[values.CorrelationIdentifier]struct{},
+) (values.CorrelationIdentifier, bool) {
+	var continuation values.CorrelationIdentifier
+	ordinary, existentials := 0, 0
+	for _, q := range sel.GetQuantifiers() {
+		switch q.Kind() {
+		case expressions.QuantifierForEach:
+			if q.IsNullOnEmpty() || q.IsStrictSingle() || len(correlationOrder[q.GetAlias()]) != 0 {
+				return values.CorrelationIdentifier{}, false
+			}
+			ordinary++
+		case expressions.QuantifierExistential:
+			existentials++
+			continuation = q.GetAlias()
+		default:
+			return values.CorrelationIdentifier{}, false
+		}
+	}
+	if ordinary < 2 || existentials != 1 {
+		return values.CorrelationIdentifier{}, false
+	}
+	_, projected := values.GetCorrelatedToOfValue(sel.GetResultValue())[continuation]
+	return continuation, projected
 }

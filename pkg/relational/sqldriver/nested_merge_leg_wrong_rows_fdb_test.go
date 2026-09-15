@@ -18,9 +18,9 @@ package sqldriver_test
 //     directions stayed GREEN.
 //   - THREE sources, so one step-1 leg is the COLLAPSED PAIR whose result value
 //     is the positional merge. Two sources give flat windows throughout.
-//   - WITH EQUIJOINS. A predicate-free comma join does not plan through this arm
-//     at all; it fails loudly, before and after the nested acceptance. That is a
-//     separate pre-existing defect, pinned below in its own test.
+//   - WITH EQUIJOINS. This retains the original nested-acceptance probe's
+//     connected shape. The predicate-free cross-product sibling is independently
+//     pinned below, including truth values, field ordinals and multiplicities.
 //
 // WHAT IS STILL NOT MEASURABLE, and why. Even on this shape the NESTED READER
 // ARM IS NOT ENTERED. Measured directly: the seed-window reader census reports
@@ -184,13 +184,9 @@ func TestFDB_NestedMergeLegProjectedExistsFold(t *testing.T) {
 	// result value is the positional merge — the shape that reaches the nested
 	// window.
 	//
-	// THE EQUIJOIN PREDICATES ARE LOAD-BEARING, and their absence is what made an
-	// earlier version of this fixture useless. A predicate-free comma join
-	// (`FROM ta, tb, tc` with no WHERE) does not plan through this arm at all — it
-	// fails LOUDLY with "multi-leg row cannot serve a source-relative ordinal / no
-	// frontier row resolved", before AND after the nested acceptance, so all four
-	// mutation directions stayed green on it. The corpus's own shape for this arm
-	// carries equijoins, and with them the query plans and runs.
+	// Retain the original connected shape. Its predicate-free sibling below now
+	// plans too, through the canonical independent outer block (RFC-256), and
+	// must not be used to infer which nested-reader arm this fixture reaches.
 	const q = `SELECT tc.k, EXISTS (SELECT 1 FROM tp WHERE tp.owner = ta.aid) ` +
 		`FROM ta, tb, tc WHERE ta.aid = tb.bid AND tb.bid = tc.cid`
 
@@ -255,17 +251,10 @@ func TestFDB_NestedMergeLegProjectedExistsFold(t *testing.T) {
 	}
 }
 
-// The PREDICATE-FREE comma join is a SEPARATE, pre-existing defect, pinned so it
-// does not evaporate — and so the reason the probe above carries equijoins stays
-// on the record.
-//
-// `SELECT tc.k, EXISTS (...) FROM ta, tb, tc` with NO join predicate fails
-// loudly. Measured with the nested acceptance DISABLED as well (by disabling
-// the FlatMap arm that activated it, in the physical leg walk since retired
-// with the three-quantifier arm): same error,
-// same message. Pre-existing, not an RFC-200 regression, and LOUD rather than
-// silent — no wrong row reaches a user.
-func TestFDB_PredicateFreeCommaJoinProjectedExistsFailsLoud(t *testing.T) {
+// The predicate-free outer block must survive partition search even when a
+// projected existential is its only predicate-bearing connection. Preserve the
+// entire cross product and its multiplicities, not just the source read by EXISTS.
+func TestFDB_PredicateFreeCommaJoinProjectedExists(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
@@ -293,47 +282,41 @@ func TestFDB_PredicateFreeCommaJoinProjectedExistsFailsLoud(t *testing.T) {
 	mwjoMustExec(t, db, ctx, "INSERT INTO tc (cid, k, cv, cw) VALUES (1, 901, 951, 971)")
 	mwjoMustExec(t, db, ctx, "INSERT INTO tp (pid, owner) VALUES (401, 1)")
 
-	delivered := 0
-	rows, qErr := db.QueryContext(ctx,
-		`SELECT tc.k, EXISTS (SELECT 1 FROM tp WHERE tp.owner = ta.aid) FROM ta, tb, tc`)
-	if qErr == nil {
-		defer rows.Close()
-		for rows.Next() {
-			delivered++
+	const query = `SELECT tc.k, EXISTS (SELECT 1 FROM tp WHERE tp.owner = ta.aid) FROM ta, tb, tc`
+	check := func(want ...string) {
+		t.Helper()
+		rows, err := db.QueryContext(ctx, query)
+		if err != nil {
+			t.Fatal(err)
 		}
-		qErr = rows.Err()
+		defer rows.Close()
+		var got []string
+		for rows.Next() {
+			var k int64
+			var exists bool
+			if err := rows.Scan(&k, &exists); err != nil {
+				t.Fatal(err)
+			}
+			got = append(got, fmt.Sprintf("%d=%t", k, exists))
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		sort.Strings(got)
+		sort.Strings(want)
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Fatalf("predicate-free outer block: got %v, want %v", got, want)
+		}
 	}
-	if qErr == nil {
-		t.Fatal("the PREDICATE-FREE three-source projected-EXISTS fold now EXECUTES.\n" +
-			"  That is good news: delete this pin and assert its rows. It was failing\n" +
-			"  loudly before AND after RFC-200's nested acceptance, so its repair is\n" +
-			"  independent of that work.")
-	}
-	// The pin records the failure CLASS, not a message. It is LOUD that makes
-	// this defect survivable — no wrong row reaches a user — and the two
-	// properties that establish it are that the query fails and that it hands
-	// back nothing on the way.
-	//
-	// The internal WORDING is deliberately not asserted. It has already moved
-	// once for a reason that changed nothing about the defect: the read used to
-	// die naming the context that could not serve it ("multi-leg row cannot
-	// serve a source-relative ordinal" / "no frontier row resolved"), and under
-	// the ordinal layout the same shape is refused one level earlier, at the
-	// carrier ("row type and layout carrier type disagree"). Pinning either
-	// spelling makes this test report a wording change as a defect change.
-	if delivered != 0 {
-		t.Fatalf("the predicate-free fold delivered %d row(s) before failing with %v.\n"+
-			"  Rows escaping ahead of the failure is the SILENT half this pin exists to "+
-			"exclude — a partial answer is a wrong answer.", delivered, qErr)
-	}
-	// A 42-class failure would mean the fixture drifted — the query stopped
-	// being the shape under test and started being rejected as malformed —
-	// which would make the two assertions above pass for the wrong reason.
-	if strings.Contains(qErr.Error(), "SQLSTATE 42") || strings.Contains(qErr.Error(), "42703") {
-		t.Fatalf("the predicate-free fold was rejected as a malformed query: %v\n"+
-			"  The schema or the SELECT list has drifted; this pin no longer describes "+
-			"the three-source projected-EXISTS fold.", qErr)
-	}
+	// The original one-row reproducer also pins TC.K's nonzero ordinal.
+	check("901=true")
+	mwjoMustExec(t, db, ctx, "INSERT INTO ta (aid, k, av) VALUES (2, 102, 202)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO tb (bid, bv) VALUES (2, 302)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO tc (cid, k, cv, cw) VALUES (2, 902, 952, 972)")
+	// TA determines truth, TC the value, and unused TB still doubles each pair.
+	check("901=true", "901=true", "902=true", "902=true", "901=false", "901=false", "902=false", "902=false")
+	mwjoMustExec(t, db, ctx, "DELETE FROM tp")
+	check("901=false", "901=false", "901=false", "901=false", "902=false", "902=false", "902=false", "902=false")
 }
 
 func nestedMergeInt(v sql.NullInt64) string {

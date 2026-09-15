@@ -124,23 +124,14 @@ func TestFDB_NestedReferenceReachProbe(t *testing.T) {
 				"ResolveIdentifier's fuse, the other is the qualified projection mint",
 		},
 		{
-			// A CORRELATED grouping key inside a grouped scalar subquery, ordered
-			// by that key. Raised as a suspected over-refusal in
-			// groupedScalarSortKeys, whose ordinal gate accepts only a CHILDLESS
-			// single-accessor FieldValue. It answers, and the reason it answers is
-			// that the gate's input is always its own binder's output:
-			// bindPostAggregateValueToNativeOrdinals emits exactly that shape for
-			// a matched grouping key and errors on every other FieldValue, so the
-			// gate restates a postcondition rather than restricting a capability.
-			// The rows are the check on that reading.
+			// A correlated grouping key inside a grouped scalar subquery, ordered
+			// by that key. The shared full-query path resolves the key structurally
+			// and binds its native aggregate ordinal; the rows pin the composition.
 			name: "correlated_grouped_scalar_order_by",
 			sql: "SELECT id, (SELECT COUNT(*) FROM t2 WHERE t2.other = t1.id " +
 				"GROUP BY t2.other ORDER BY t2.other) AS c FROM t1 ORDER BY id",
-			want: "ID,C|1 2;2 1",
-			rearms: "a correlated grouped-scalar ORDER BY key now plans; " +
-				"groupedScalarSortKeys' childless single-accessor shape gate is " +
-				"the thing to re-derive, since its input is no longer only " +
-				"bindPostAggregateValueToNativeOrdinals' own output",
+			want:   "ID,C|1 2;2 1",
+			rearms: "the correlated grouped-scalar ORDER BY key stopped binding to its native grouping slot",
 		},
 	}
 

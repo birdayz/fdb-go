@@ -1192,6 +1192,10 @@ func executePredicatesFilter(
 	filtered := &filterResultCursor{
 		inner: inner,
 		pred: func(qr QueryResult) (bool, error) {
+			scalar, kindErr := isBareScalarRow(qr.Positional)
+			if kindErr != nil {
+				return false, kindErr
+			}
 			var rowCtx any
 			switch {
 			case qr.Positional != nil && qr.Positional.Layout != nil:
@@ -1206,7 +1210,7 @@ func executePredicatesFilter(
 				// the leg bindings are required; the bare merged row misreads
 				// leg-relative ordinals — a wrong-slot hazard).
 				rowCtx = legWindowRowContext(qr.Positional, evalCtx, legSpans)
-			case qr.Positional != nil && bindAlias && isBareScalarRow(qr.Positional):
+			case qr.Positional != nil && bindAlias && scalar:
 				// A BARE SCALAR inner row (a non-ordinal lateral-array UNNEST's
 				// Explode flows a raw int64, wrapped by scalarPositionalRow into a
 				// 1-slot `_0` row — RFC-142). A WHERE on the element references the
