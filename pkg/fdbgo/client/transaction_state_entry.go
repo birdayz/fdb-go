@@ -59,7 +59,7 @@ func (tx *Transaction) GetCommittedVersion() (int64, error) {
 func (tx *Transaction) GetVersionstamp() ([]byte, error) {
 	lease := tx.enterState()
 	defer lease.release()
-	return tx.stateGetVersionstamp()
+	return tx.stateGetVersionstamp(lease.inc)
 }
 
 func (tx *Transaction) SetReadVersion(version int64) {

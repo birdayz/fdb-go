@@ -78,7 +78,7 @@ func (tx *Transaction) captureCommit(muts []Mutation, writeConflicts []KeyRange)
 
 // publishCommit does not reinterpret the detached operation's outcome. A stale
 // completion returns to its caller but cannot publish into or reset a successor.
-func (tx *Transaction) publishCommit(inc *readIncarnation, released *executionLease, result commitOutcome, completion *versionstampCompletion) {
+func (tx *Transaction) publishCommit(inc *readIncarnation, released *executionLease, result commitOutcome) {
 	finish, err := tx.beginTurnover(inc, released)
 	if err != nil {
 		return
@@ -88,7 +88,11 @@ func (tx *Transaction) publishCommit(inc *readIncarnation, released *executionLe
 	tx.txnBatchId = result.batchID
 	tx.commitEpoch.Store(result.epoch)
 	tx.hasCommitted = true
-	tx.lastVersionstamp = completion
+	// Retain the latest admitted producer, not necessarily this successful
+	// producer. Turnover has drained admission and sealed any pending result.
+	tx.readErrMu.Lock()
+	tx.lastVersionstamp = inc.versionstamp
+	tx.readErrMu.Unlock()
 	tx.fireWatchActivation(result.version, false)
 	tx.postCommitResetFields()
 }

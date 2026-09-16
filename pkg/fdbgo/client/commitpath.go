@@ -25,11 +25,16 @@ import (
 // barrier before returning the error. This matches C++ NativeAPI.actor.cpp
 // tryCommit() which calls commitDummyTransaction to confirm the original
 // request is no longer in-flight before allowing OnError to retry.
-func (input *commitInput) commit(ctx context.Context) (result commitOutcome, err error) {
-	// Select the native stamp outcome before returning the received CommitID
-	// to handle publication. Unknown-result errors reach here only after their
-	// uncertainty barrier, matching native commitAndWatch's catch boundary.
-	defer func() { input.versionstamp.finishNative(result, err) }()
+func (input *commitInput) commit(ctx context.Context) (commitOutcome, error) {
+	// Only a normal native return supplies an outcome. A defer would publish
+	// zero CommitID bytes during panic unwinding, before any reply existed.
+	// Unknown-result failures return only after their uncertainty barrier.
+	result, err := input.commitNative(ctx)
+	input.versionstamp.finishNative(result, err)
+	return result, err
+}
+
+func (input *commitInput) commitNative(ctx context.Context) (result commitOutcome, err error) {
 	// beforeCommitProxySelect is the seam for the one window this function's
 	// design is about: between the caller entering Commit (where the cache token
 	// is captured) and the proxy selection below (where the attempt binds to a

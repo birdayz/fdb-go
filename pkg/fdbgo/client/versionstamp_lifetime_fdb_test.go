@@ -240,3 +240,215 @@ func TestFDBVersionstampOverlappingProducers(t *testing.T) {
 		t.Fatalf("stored stamp: %x != %x", got, stamp)
 	}
 }
+
+func TestFDBVersionstampSynchronousGetterTurnover(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"reset", "commit"} {
+		for _, head := range []string{"nil-head", "replacement-head"} {
+			t.Run(mode+"/"+head, func(t *testing.T) {
+				t.Parallel()
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				db := openTestDB(t, ctx)
+				tx := db.CreateTransaction()
+				key := []byte(t.Name())
+				tx.Atomic(MutSetVersionstampedValue, key, make([]byte, 14))
+				lease := tx.enterState()
+				old := lease.inc
+				lease.release()
+				pause := &pausedCommit{reached: make(chan struct{}), release: make(chan struct{})}
+				defer pause.unblock()
+				tx.beforeVersionstampLookup = func() {
+					close(pause.reached)
+					<-pause.release
+				}
+				getter := make(chan error, 1)
+				go func() {
+					_, err := tx.GetVersionstamp()
+					getter <- err
+				}()
+				waitCommitLifetimeGate(t, ctx, pause.reached, "getter before completion lookup")
+				turnover := make(chan error, 1)
+				go func() {
+					if mode == "reset" {
+						tx.Reset()
+						turnover <- nil
+					} else {
+						turnover <- tx.Commit(ctx)
+					}
+				}()
+				waitCommitLifetimeGate(t, ctx, old.ctx.Done(), "turnover before getter lease drain")
+				requireLifetimeTestBlocked(t, turnover, "turnover with a live getter lease")
+				tx.readErrMu.Lock()
+				nilHead := tx.readLife == nil
+				if head == "replacement-head" {
+					tx.readIncarnationLocked()
+				}
+				tx.readErrMu.Unlock()
+				if !nilHead {
+					t.Fatal("turnover did not clear the current incarnation")
+				}
+				pause.unblock()
+				// No Cancel cleanup until the getter has released its lease: the
+				// broken nil-head path deadlocks in panic unwinding, and must fail
+				// this bounded assertion rather than wedging the test's cleanup.
+				err := receiveLifetimeTest(t, getter, "getter on retired incarnation")
+				requireCommitLifetimeCode(t, err, 1025, "captured retirement, never successor state")
+				awaitCommitLifetimeResult(t, ctx, turnover, "turnover after getter lease release")
+				defer tx.Cancel()
+				tx.beforeVersionstampLookup = nil
+				stamp, err := tx.GetVersionstamp()
+				if mode == "reset" {
+					requireCommitLifetimeCode(t, err, 2015, "new incarnation after Reset")
+				} else if stored := readCommitLifetimeValue(t, ctx, db, key); err != nil || len(stored) != 10 || !bytes.Equal(stamp, stored) {
+					t.Fatalf("new getter lost selected CommitID: stamp=%x stored=%x err=%v", stamp, stored, err)
+				}
+			})
+		}
+	}
+}
+
+// Latest-producer retention is Go's concurrent/auto-reuse extension. The native
+// size-failure mapping (Commit 2101, stamp 2020) is separately differential-pinned.
+func TestFDBVersionstampOlderSuccessRetainsLatestProducer(t *testing.T) {
+	t.Parallel()
+	for _, gate := range []string{"before-dispatch", "after-selection"} {
+		for _, newer := range []string{"native-failure", "pending"} {
+			t.Run(gate+"/"+newer, func(t *testing.T) {
+				t.Parallel()
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				db := openTestDB(t, ctx)
+				tx := db.CreateTransaction()
+				defer tx.Cancel()
+				tx.SetSizeLimit(1000)
+				key := []byte(t.Name())
+				tx.Atomic(MutSetVersionstampedValue, key, make([]byte, 14))
+				first := pendingStamp(t, ctx, tx)
+				var reached <-chan struct{}
+				var unblock func()
+				if gate == "before-dispatch" {
+					pause := installOneShotCommitPause(t, db)
+					reached, unblock = pause.reached, pause.unblock
+				} else {
+					db.db.metrics.commitLatency.mu.Lock()
+					var once sync.Once
+					reached = first.completion.done
+					unblock = func() { once.Do(db.db.metrics.commitLatency.mu.Unlock) }
+				}
+				defer unblock()
+				firstDone := make(chan error, 1)
+				go func() { firstDone <- tx.Commit(ctx) }()
+				waitCommitLifetimeGate(t, ctx, reached, "older producer gate")
+				tx.Set(append(append([]byte(nil), key...), '/'), make([]byte, 4000))
+				second := tx.PrepareCommit(ctx)
+				defer second.cleanup()
+				latest := pendingStamp(t, ctx, tx)
+				if latest.completion == first.completion {
+					t.Fatal("later producer reused the older completion")
+				}
+				want := 1025
+				if newer == "native-failure" {
+					requireCommitLifetimeCode(t, second.Resolve(), 2101, "newer native size failure")
+					_, err := latest.Resolve()
+					requireCommitLifetimeCode(t, err, 2020, "newer stamp before older success")
+					want = 2020
+				} else {
+					requireStampPending(t, latest)
+				}
+				unblock()
+				awaitCommitLifetimeResult(t, ctx, firstDone, "older successful Commit")
+				stamp, err := first.Resolve()
+				stored := readCommitLifetimeValue(t, ctx, db, key)
+				if err != nil || len(stored) != 10 || !bytes.Equal(stamp, stored) {
+					t.Fatalf("older immutable result: stamp=%x stored=%x err=%v", stamp, stored, err)
+				}
+				version, err := tx.GetCommittedVersion()
+				if err != nil || version <= 0 {
+					t.Fatalf("successful Commit metadata: %d, %v", version, err)
+				}
+				_, err = latest.Resolve()
+				requireCommitLifetimeCode(t, err, want, "latest handle after older turnover")
+				_, err = tx.GetVersionstamp()
+				requireCommitLifetimeCode(t, err, want, "synchronous getter retains latest producer")
+				value, pending, err := tx.GetVersionstampPending(ctx)
+				if pending != nil {
+					pending.cleanup()
+					t.Fatal("retained latest completion became pending")
+				}
+				if value != nil {
+					t.Fatalf("latest producer failure became a stamp: %x", value)
+				}
+				requireCommitLifetimeCode(t, err, want, "future getter retains latest producer")
+				if newer == "pending" {
+					requireCommitLifetimeCode(t, second.Resolve(), 1025, "retired newer producer cannot execute")
+				}
+			})
+		}
+	}
+}
+
+func TestFDBVersionstampPanicCannotPublishSuccess(t *testing.T) {
+	t.Parallel()
+	for _, phase := range []string{"before-dispatch", "uncertainty-barrier"} {
+		t.Run(phase, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			db, sd := newSimTestDB(t, ctx)
+			tx := db.CreateTransaction()
+			defer tx.Cancel()
+			key := []byte(t.Name())
+			tx.Atomic(MutSetVersionstampedValue, key, make([]byte, 14))
+			if _, err := tx.GetReadVersion(ctx); err != nil {
+				t.Fatal(err)
+			}
+			p := pendingStamp(t, ctx, tx)
+			var injected atomic.Bool
+			panicAt := int32(1)
+			if phase == "uncertainty-barrier" {
+				proxy, _, err := db.db.getCommitProxy()
+				if err != nil {
+					t.Fatal(err)
+				}
+				sd.setIntercept(func(_ int, _ transport.UID, body []byte) ([]byte, bool) {
+					if injected.CompareAndSwap(false, true) {
+						return (&types.ErrorOrError{ErrorCode: 1100}).MarshalFDB(), false
+					}
+					return body, false
+				})
+				sd.armAddr(proxy.Address)
+				panicAt = 2
+			}
+			panicValue := &struct{ phase string }{phase}
+			var calls atomic.Int32
+			hook := func() {
+				if calls.Add(1) == panicAt {
+					panic(panicValue)
+				}
+			}
+			db.db.beforeCommitProxySelect.Store(&hook)
+			defer db.db.beforeCommitProxySelect.Store(nil)
+			var caught any
+			func() {
+				defer func() { caught = recover() }()
+				_ = tx.Commit(ctx)
+			}()
+			if caught != panicValue || calls.Load() != panicAt {
+				t.Fatalf("Commit swallowed/changed panic or missed phase: %v, calls=%d", caught, calls.Load())
+			}
+			if phase == "uncertainty-barrier" && !injected.Load() {
+				t.Fatal("barrier panic without canonical maybe-delivered injection")
+			}
+			requireStampPending(t, p)
+			if phase == "before-dispatch" {
+				if stored := readCommitLifetimeValue(t, ctx, db, key); stored != nil {
+					t.Fatalf("pre-dispatch panic wrote a value: %x", stored)
+				}
+			}
+			tx.Cancel()
+			_, err := p.Resolve()
+			requireCommitLifetimeCode(t, err, 1025, "unselected stamp still retires normally after panic")
+		})
+	}
+}

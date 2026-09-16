@@ -11346,7 +11346,7 @@ still blocked on remaining findings and final-head gates; no new hunt slice yet.
 
 ### QSC-04/08 RFC-256 — deferred entry precedence reproduced (historical RED)
 
-Current production and PR #785 HEAD are `feacb809443d579db7dc15a58dc1d71b329d6645`.
+Reproduction production/PR #785 HEAD was `feacb809443d579db7dc15a58dc1d71b329d6645`.
 Both preceding lifetime repairs are committed/pushed; the PR remains OPEN/BLOCKED.
 The deferred/timeout finding is now reproduced, not merely source-derived:
 `TestDeferredErrorOutranksExpiredTimeoutAtReadEntry` has ten failures among twelve
@@ -11378,8 +11378,8 @@ reviews/CI/authorized merge still precede any new hunt slice.
 
 Revision four received DESIGN ACKs from the same three tracked virtual
 `gpt-6-astra`/`xhigh` sessions, reviewing supplied source packets only. This is not
-human sign-off or implementation approval. The repair is implemented locally,
-not yet committed: deferred errors are captured at leased admission (including a
+human sign-off or implementation approval. The initial repair was committed and
+pushed as `ef1b0532e5a2bc279340a932423aa27648d58fc3`: deferred errors are captured at leased admission (including a
 clean nil), and versionstamp completion belongs to the client incarnation rather
 than mutable facade commitDone/commitErr fields. Database/Tenant retries, manual
 Commit, Reset, caller exits, and auto-reuse now use the captured owner. Commit's
@@ -11428,3 +11428,64 @@ The full rerun passes 92/92 targets (43 executed, 49 cached, 947s), with every
 `versionstamp-full-2-tested.sha256` hash unchanged during execution. Evidence:
 `versionstamp-full-2.log`. Implementation and exact-final-HEAD approvals remain
 required; no merge is claimed.
+
+
+### QSC-04/08 RFC-256 — implementation-review ownership regressions
+
+All three same-session `gpt-6-astra`/`xhigh` supplied-byte implementation reviews
+NAKed `ef1b0532e5a2bc279340a932423aa27648d58fc3`. Prior green evidence did not cover:
+1. A leased synchronous getter consulting the cleared/replacement transaction
+   head during user Reset or successful auto-turnover (panic/deadlock or 2015
+   instead of its captured 1025).
+2. Older successful producer A retaining A's stamp over later producer B's native
+   size failure or retirement. Latest-admitted ownership, not last-successful
+   ownership, is the accepted Go concurrency/reuse extension.
+3. Panic unwinding running the native-result defer with an unset result and nil
+   error, manufacturing ten zero bytes before any successful CommitID reply.
+
+These are implementation corrections within the accepted design, not new C++
+concurrency claims. Ten deterministic real-FDB cells now cross Reset/auto-turnover
+with nil/replacement heads; before-dispatch/after-selection older-commit gates
+with newer native-size-failure/pending producers; and pre-dispatch/uncertainty-
+barrier panic. A caller-first retirement unit control supplements those cells.
+C++ 7.3.77 anchors remain ThreadSafeTransaction.cpp:725, RYW:2515–2523 and
+NativeAPI:6645–6680/6910–6940. An abnormal Go panic propagates unchanged; it is
+neither a successful CommitID nor a normal native return. The pending stamp can
+still retire normally. No Go panic-to-FDB-code mapping is invented.
+
+The original nine-cell version of the FDB tests ran RED (11 RUN/11 FAIL lines,
+including parents): `versionstamp-review-regressions-red.log`. The first repair
+run additionally found retained retirement mapped through the new caller's
+incarnation, yielding bare context cancellation instead of sealed 1025. That
+mapping is repaired, keeping caller-first cancellation local. The following
+88-RUN targeted pass predates the extra uncertainty-barrier panic/caller-first
+controls; do not mistake it for final-tree coverage. Four compiled semantic
+mutants then fail their intended assertions (3/5/3/3 RUN lines respectively),
+with byte-for-byte/SHA-checked restoration: current-head lookup (replacement-head
+cases, not timeout credit), older-producer retention, deferred panic success and
+successor-based retirement mapping. Artifacts are
+`/var/tmp/query-grind-cast/pr785-review/versionstamp-review-*`.
+
+Current PR HEAD ef1b0532 has seven completed successful CI checks, verified in
+`versionstamp-pr-state-reviewed.json`; this does not approve the dirty repair or
+close the prior feacb809 CI flake. That failed run has exactly two timestamp
+fixture INSERT failures (Where batch 1000, CrossPage batch 6000), both marked
+FDB transaction-too-old. Setup currently executes single-shot autocommit batches
+of 1000 rows. Deterministic setup/retry proof is still required; do not change
+production autocommit replay semantics or timestamp expectations.
+
+Restored final-tree gates pass: ten race repetitions across client/facade targets
+(1,140 RUN lines, 214s), entire client/facade race suites (2,000 RUN lines, 253s),
+and four libfdb_c differentials (20 RUN lines, 24s); all have zero FAIL/SKIP lines.
+All seven changed Go-file hashes remained unchanged through both race runs.
+`just test` passes 92/92 targets (43 executed, 49 cached, 932s), with all nine
+changed-file hashes unchanged during execution. Full suite output is target-level,
+not a verbose per-test execution count. See `versionstamp-review-race-10.log`,
+`versionstamp-review-race-full.log`, `versionstamp-review-differential.log`,
+`versionstamp-review-full.log` and the corresponding hash inventories/results.
+Only this TODO block and its linked RFC evidence paragraph change after that full
+run; the normal commit hook must check those updated documentation bytes too.
+
+Next: hooked repair commit and exact-HEAD delta reviews in the same three sessions.
+OnError's non-atomic beginTurnover and the remaining CTE/derived/UNNEST findings
+remain open. No merge/new hunt slice.

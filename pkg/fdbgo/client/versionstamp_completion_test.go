@@ -306,3 +306,19 @@ func FuzzVersionstampSelection(f *testing.F) {
 		}
 	})
 }
+
+func TestVersionstampRetiredCompletionPreservesCallerFirst(t *testing.T) {
+	t.Parallel()
+	tx := newTestTx()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	caller := pendingStamp(t, ctx, tx)
+	sibling := pendingStamp(t, context.Background(), tx)
+	tx.Cancel()
+	cancel()
+	if _, err := caller.Resolve(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("caller interruption lost to sealed retirement: %v", err)
+	}
+	_, err := sibling.Resolve()
+	requireCommitLifetimeCode(t, err, 1025, "caller cannot overwrite shared retirement")
+}

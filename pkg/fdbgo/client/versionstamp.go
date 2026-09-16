@@ -114,8 +114,13 @@ func (p *PendingVersionstamp) Resolve() ([]byte, error) {
 			}
 		}
 		if p.completion.retired {
-			p.err = p.completion.tx.mapReadError(p.ctx, context.Canceled)
-			return
+			// A reused handle can retain a retired completion from an older
+			// incarnation. Preserve caller-first interruption, but take the
+			// terminal cause from that sealed record, not this caller's owner.
+			if err := p.completion.tx.readOperation(p.ctx).parent.Err(); err != nil {
+				p.err = err
+				return
+			}
 		}
 		p.value, p.err = p.completion.value()
 	})

@@ -2301,7 +2301,7 @@ Further retained RED proof at the same production SHA:
   A new post-poison versionstamp correctly gives 2000 on both. These two cases
   establish the pre-native/native distinction independently of Go's current output.
 
-### Deferred entry / versionstamp implementation evidence (worktree)
+### Deferred entry / versionstamp implementation evidence (initial ef1b0532)
 
 The accepted revision-four design is now implemented above production
 `feacb809443d579db7dc15a58dc1d71b329d6645`. Client `PendingCommit` captures admission
@@ -2376,3 +2376,50 @@ seeds (`versionstamp-race-final-10.log`, 1,000 RUN lines, zero FAIL/SKIP lines,
 947s), with all `versionstamp-full-2-tested.sha256` hashes unchanged during the
 run (`versionstamp-full-2.log`). Implementation and final-HEAD review gates remain
 open.
+
+
+### Versionstamp implementation-review corrections (after ef1b0532)
+
+The three tracked virtual implementation reviews all NAKed ef1b0532. Their
+supplied-packet verdicts are `precedence-implementation-{cpp,torvalds,codex}-verdict.md`.
+They identified current-head rediscovery by the synchronous getter, retention of
+an older successful producer instead of the latest admitted producer, and a
+native-result defer manufacturing success during panic unwinding. None of the
+prior race/differential/full-suite greens exercised these schedules.
+
+The repair passes the getter's lease incarnation into lookup, with deferred entry
+before the leaf-locked captured cause/completion. Successful turnover retains the
+retired incarnation's latest producer independently of committed-version metadata.
+A retained retirement carries its sealed cause even when a new caller is admitted
+on the replacement; caller-first interruption remains local. Native outcome
+publication now follows a normal wire/uncertainty-barrier return, not a defer
+that runs during panic. Go panic propagation is unchanged, with no fabricated
+success/error code; later retirement still completes the pending stamp. These
+implement the existing accepted ownership/result-boundary contract.
+
+Retained real-FDB controls cover four getter turnover schedules, four opposite-
+producer schedules, and two panic phases (before dispatch and during the dummy
+uncertainty barrier after literal wire 1100). The first nine-cell run was RED
+(11 RUN lines including parents). The first repair exposed another wrong-owner
+retirement mapping (bare context cancellation instead of 1025), which is repaired
+without changing expected codes. A caller-first unit control pins the local/shared
+split. Four independent compiled mutants are killed at the intended semantic
+assertions: replacement-head 2015, older-success nil, panic-created stamp and
+successor-context cancellation. Every changed file is restored byte-for-byte and
+SHA-checked by `versionstamp-review-mutants.py`; the summary records RUN counts
+3/5/3/3. The nil-head deadlock regression is not counted as a semantic mutant kill.
+Artifacts live under `/var/tmp/query-grind-cast/pr785-review`.
+
+Restored gates pass on unchanged Go bytes: ten client/facade race repetitions
+(1,140 RUN lines, zero FAIL/SKIP, 214s), entire client/facade race suites (2,000 RUN
+lines, zero FAIL/SKIP, 253s), and the four libfdb_c differentials (20 RUN lines,
+zero FAIL/SKIP, 24s). `just test` passes 92/92 targets (43 executed, 49 cached,
+932s); its output is target-level, not per-test RUN evidence. The seven Go hashes
+match across both race runs and all nine changed-file hashes match across the
+full run. The two tracking documents receive this evidence update afterwards;
+the normal commit hook must verify those updated bytes as well. Logs and hash
+manifests share the `versionstamp-review-` artifact prefix.
+
+Commit and exact-HEAD delta approvals are still pending. This bounded correction
+does not close the other PR findings or give human approval. See TODO.md's latest
+QSC-04/08 block for CI/remaining-finding status.

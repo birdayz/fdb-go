@@ -316,6 +316,8 @@ type txOptions struct {
 	beforeReadVersionLock func()
 	// beforeReadFailureDelivery observes terminal-state publication ordering.
 	beforeReadFailureDelivery func(error)
+	// beforeVersionstampLookup parks the synchronous getter after entry checks.
+	beforeVersionstampLookup func()
 
 	// backoffJitter: if non-nil, replaces rand.Float64() in nextBackoff's jitter.
 	// Test-only knob to make the backoff delay deterministic (production leaves it
@@ -1933,7 +1935,7 @@ func (tx *Transaction) commitAdmitted(parent context.Context, completion *versio
 		// postCommitReset clears the read version.
 		completion.finishNoWrite()
 		op.lease.release()
-		tx.publishCommit(op.inc, op.lease, commitOutcome{}, completion)
+		tx.publishCommit(op.inc, op.lease, commitOutcome{})
 		return nil
 	}
 
@@ -2041,7 +2043,7 @@ func (tx *Transaction) commitAdmitted(parent context.Context, completion *versio
 			commitStart, result.version)
 	}
 
-	tx.publishCommit(op.inc, op.lease, result, completion)
+	tx.publishCommit(op.inc, op.lease, result)
 	return nil
 }
 
@@ -2324,16 +2326,22 @@ func (tx *Transaction) stateGetCommittedVersion() (int64, error) {
 // GetVersionstamp returns the 10-byte versionstamp from the committed transaction.
 // Format: [version 8 bytes big-endian][txnBatchId 2 bytes big-endian].
 // Must be called after a successful Commit.
-func (tx *Transaction) stateGetVersionstamp() ([]byte, error) {
+func (tx *Transaction) stateGetVersionstamp(inc *readIncarnation) ([]byte, error) {
 	// C++ checks deferredError before RYW's captured resetPromise.
 	if e := tx.deferredErr.Load(); e != nil {
 		return nil, e
 	}
-	if err := tx.checkCancelled(); err != nil {
-		return nil, err
+	if tx.beforeVersionstampLookup != nil {
+		tx.beforeVersionstampLookup()
 	}
 	tx.readErrMu.Lock()
-	completion := tx.readLife.versionstamp
+	// Turnover clears the current head before draining leases. Only the
+	// incarnation captured at admission can classify this getter.
+	if inc.cause != nil {
+		tx.readErrMu.Unlock()
+		return nil, inc.cause
+	}
+	completion := inc.versionstamp
 	if completion == nil {
 		completion = tx.lastVersionstamp
 	}
