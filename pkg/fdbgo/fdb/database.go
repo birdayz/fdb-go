@@ -337,10 +337,10 @@ func (db Database) Close() {
 func (db Database) CreateTransaction() (Transaction, error) {
 	tx := db.d.inner.CreateTransaction()
 	t := &transaction{
-		inner:      tx,
-		db:         db,
-		ctx:        db.d.ctx,
-		commitDone: make(chan struct{}),
+		inner:         tx,
+		db:            db,
+		ctx:           db.d.ctx,
+		versionstamps: true,
 	}
 	// Apply DB-level option defaults to manually-created transactions too, exactly
 	// like the Transact* paths. C++ copies the database transaction defaults into
@@ -382,33 +382,19 @@ func (db Database) Transact(f func(WritableTransaction) (any, error)) (any, erro
 // caller's ctx never cancels an in-flight commit — which is already bounded by the
 // per-RPC timeout.
 func (db Database) TransactCtx(ctx context.Context, f func(WritableTransaction) (any, error)) (any, error) {
-	var lastTx *transaction // capture for commitDone signaling
 	result, err := db.d.inner.Transact(ctx, func(tx *client.Transaction) (r any, e error) {
 		defer panicToError(&e)
 		t := &transaction{
-			inner:      tx,
-			db:         db,
-			ctx:        ctx,
-			commitDone: make(chan struct{}),
+			inner:         tx,
+			db:            db,
+			ctx:           ctx,
+			versionstamps: true,
 		}
 		db.applyTxDefaults(t)
-		lastTx = t
 		r, e = f(Transaction{t: t})
 		e = unconvertError(e)
 		return
 	})
-	// Signal commitDone — client.Transact auto-committed after the closure
-	// returned. Any GetVersionstamp goroutine blocked on commitDone will unblock.
-	if lastTx != nil && lastTx.commitDone != nil {
-		select {
-		case <-lastTx.commitDone:
-		default:
-			if err != nil {
-				lastTx.commitErr = convertError(err)
-			}
-			close(lastTx.commitDone)
-		}
-	}
 	if err != nil {
 		return nil, convertError(err)
 	}

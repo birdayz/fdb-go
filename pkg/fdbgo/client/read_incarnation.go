@@ -20,14 +20,18 @@ type readIncarnation struct {
 	timerGen uint64
 	users    int
 	drained  chan struct{}
+
+	versionstamp  *versionstampCompletion
+	versionstamps map[*versionstampCompletion]struct{}
 }
 
 type readContextKey struct{ tx *Transaction }
 
 type readOperation struct {
-	inc    *readIncarnation
-	parent context.Context
-	lease  *executionLease
+	inc      *readIncarnation
+	parent   context.Context
+	lease    *executionLease
+	entryErr *wire.FDBError
 }
 
 func (tx *Transaction) readIncarnationLocked() *readIncarnation {
@@ -45,6 +49,9 @@ func recordReadCauseLocked(inc *readIncarnation, cause error) {
 	if inc.cause == nil {
 		inc.cause = cause
 		inc.timerGen++
+		for completion := range inc.versionstamps {
+			completion.selectLocked(commitOutcome{}, cause, true)
+		}
 	}
 }
 
@@ -154,7 +161,7 @@ func (tx *Transaction) opContext(parent context.Context) (context.Context, conte
 		if lease == nil {
 			return parent, func() {}
 		}
-		ctx := context.WithValue(parent, key, &readOperation{inc: op.inc, parent: op.parent, lease: lease})
+		ctx := context.WithValue(parent, key, &readOperation{inc: op.inc, parent: op.parent, lease: lease, entryErr: op.entryErr})
 		return ctx, lease.release
 	}
 	tx.readErrMu.Lock()
@@ -170,7 +177,13 @@ func (tx *Transaction) opContext(parent context.Context) (context.Context, conte
 		cancel(cause)
 	}
 	lease := tx.enterReadState(ctx, inc, true)
-	ctx = context.WithValue(ctx, key, &readOperation{inc: inc, parent: parent, lease: lease})
+	var entryErr *wire.FDBError
+	if lease != nil {
+		// The lease pins this incarnation's slot across reset. Preserve even a
+		// clean entry through nested work; later poison gates later operations.
+		entryErr = tx.deferredErr.Load()
+	}
+	ctx = context.WithValue(ctx, key, &readOperation{inc: inc, parent: parent, lease: lease, entryErr: entryErr})
 	return ctx, func() {
 		stop()
 		cancel(nil)
@@ -189,10 +202,20 @@ func (tx *Transaction) readIncarnationCause(inc *readIncarnation) error {
 	return inc.cause
 }
 
-// readEntryError observes terminal incarnation failure before ordinary key
-// validation. Unlike completion mapping, an already-failed resetPromise wins
-// even when the caller also arrived with a cancelled context.
+// readEntryError preserves the deferred verdict captured at admission. C++ checks
+// deferredError before dispatching to RYW and its resetPromise; nested work does
+// not re-enter that wrapper or sample a later void-operation error.
 func (tx *Transaction) readEntryError(ctx context.Context) error {
+	if op := tx.readOperation(ctx); op != nil && op.entryErr != nil {
+		return op.entryErr
+	}
+	return tx.readLifetimeError(ctx)
+}
+
+// readLifetimeError excludes deferred admission failure. OnError has no C++
+// deferred gate. Unlike completion mapping, an already-failed incarnation wins
+// over an already-canceled caller at entry.
+func (tx *Transaction) readLifetimeError(ctx context.Context) error {
 	if op := tx.readOperation(ctx); op != nil {
 		tx.readErrMu.Lock()
 		cause := op.inc.cause

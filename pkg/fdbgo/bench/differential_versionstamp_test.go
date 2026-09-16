@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	gofdb "fdb.dev/pkg/fdbgo/fdb"
 	gotuple "fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -618,4 +619,176 @@ func TestDifferential_GetVersionstamp(t *testing.T) {
 		kvs := r.([]cgofdb.KeyValue)
 		return kvs[0].Key[len(iso) : len(iso)+vsStampLen], []byte(stampGV)
 	})
+}
+
+func TestDifferential_VersionstampCompletionLifetime(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		code int
+	}{
+		{"no-write-commit", 2021},
+		{"native-size-failure", 2020},
+		{"timeout-after-admission", 1031},
+		{"cancel-after-admission", 1025},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			gt, err := goClient.CreateTransaction()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer gt.Cancel()
+			ct, err := cgoClient.CreateTransaction()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ct.Cancel()
+			gv, cv := gt.GetVersionstamp(), ct.GetVersionstamp()
+			if gv.IsReady() || cv.IsReady() {
+				t.Fatal("healthy pre-commit versionstamp must initially be pending")
+			}
+			bounded := func(name string, op func() error) error {
+				t.Helper()
+				done := make(chan error, 1)
+				go func() { done <- op() }()
+				select {
+				case err := <-done:
+					return err
+				case <-time.After(5 * time.Second):
+					t.Fatalf("%s did not resolve after %s; want code %d", name, tc.name, tc.code)
+					return nil
+				}
+			}
+			switch tc.name {
+			case "no-write-commit":
+				if err := bounded("C++ Commit", func() error { return ct.Commit().Get() }); err != nil {
+					t.Fatal(err)
+				}
+				if err := bounded("Go Commit", func() error { return gt.Commit().Get() }); err != nil {
+					t.Fatal(err)
+				}
+			case "native-size-failure":
+				prefix := fmt.Sprintf("vs_size_%d_%s_", os.Getpid(), t.Name())
+				gt.Set(gofdb.Key(prefix+"go"), make([]byte, 64))
+				ct.Set(cgofdb.Key(prefix+"c"), make([]byte, 64))
+				if err := gt.Options().SetSizeLimit(32); err != nil {
+					t.Fatal(err)
+				}
+				if err := ct.Options().SetSizeLimit(32); err != nil {
+					t.Fatal(err)
+				}
+				ce := bounded("C++ oversized Commit", func() error { return ct.Commit().Get() })
+				ge := bounded("Go oversized Commit", func() error { return gt.Commit().Get() })
+				if fdbErrorCode(ce) != 2101 || fdbErrorCode(ge) != 2101 {
+					t.Fatalf("native failure precondition: go=%v cgo=%v, want 2101", ge, ce)
+				}
+			case "timeout-after-admission":
+				// Configure timeout only after obtaining both healthy futures.
+				// No sleep: the completion itself must observe the live deadline.
+				if err := gt.Options().SetTimeout(1); err != nil {
+					t.Fatal(err)
+				}
+				if err := ct.Options().SetTimeout(1); err != nil {
+					t.Fatal(err)
+				}
+			case "cancel-after-admission":
+				gt.Cancel()
+				ct.Cancel()
+			}
+			ce := bounded("C++ versionstamp", func() error { _, err := cv.Get(); return err })
+			if fdbErrorCode(ce) != tc.code {
+				t.Fatalf("C++ versionstamp: %v, want code %d", ce, tc.code)
+			}
+			ge := bounded("Go versionstamp", func() error { _, err := gv.Get(); return err })
+			if fdbErrorCode(ge) != tc.code {
+				t.Fatalf("Go versionstamp: %v, want code %d (C++ confirmed)", ge, tc.code)
+			}
+		})
+	}
+}
+
+func TestDifferential_VersionstampSurvivesPreNativeCommitFailure(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		code int
+	}{
+		{"late-deferred-error", 2000},
+		{"failed-read-barrier", 1036},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			gt, err := goClient.CreateTransaction()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer gt.Cancel()
+			ct, err := cgoClient.CreateTransaction()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ct.Cancel()
+			gv, cv := gt.GetVersionstamp(), ct.GetVersionstamp()
+			bounded := func(name string, op func() error) error {
+				t.Helper()
+				done := make(chan error, 1)
+				go func() { done <- op() }()
+				select {
+				case err := <-done:
+					return err
+				case <-time.After(5 * time.Second):
+					t.Fatalf("%s did not complete", name)
+					return nil
+				}
+			}
+			prefix := fmt.Sprintf("vs_early_%d_%s_", os.Getpid(), t.Name())
+			gk, ck := gofdb.Key(prefix+"go"), cgofdb.Key(prefix+"c")
+			switch tc.name {
+			case "late-deferred-error":
+				gt.Set(gk, []byte("value"))
+				ct.Set(ck, []byte("value"))
+				if err := gt.Options().SetReadYourWritesDisable(); err != nil {
+					t.Fatal(err)
+				}
+				if err := ct.Options().SetReadYourWritesDisable(); err != nil {
+					t.Fatal(err)
+				}
+			case "failed-read-barrier":
+				// A valid offset-zero versionstamped operand is unreadable
+				// before commit. The failed read is retained by RYW's barrier.
+				gt.SetVersionstampedValue(gk, make([]byte, 14))
+				ct.SetVersionstampedValue(ck, make([]byte, 14))
+				ce := bounded("C++ unreadable read", func() error { _, e := ct.Get(ck).Get(); return e })
+				ge := bounded("Go unreadable read", func() error { _, e := gt.Get(gk).Get(); return e })
+				if fdbErrorCode(ce) != 1036 || fdbErrorCode(ge) != 1036 {
+					t.Fatalf("failed-read precondition: go=%v cgo=%v, want 1036", ge, ce)
+				}
+			}
+			ce := bounded("C++ Commit", func() error { return ct.Commit().Get() })
+			ge := bounded("Go Commit", func() error { return gt.Commit().Get() })
+			if fdbErrorCode(ce) != tc.code || fdbErrorCode(ge) != tc.code {
+				t.Fatalf("Commit precondition: go=%v cgo=%v, want %d", ge, ce, tc.code)
+			}
+			// Commit.Get is a C++ network-thread barrier: its early rejection
+			// has completed, but the previously admitted native stamp has not.
+			if cv.IsReady() {
+				t.Fatal("C++ early Commit failure completed the previously admitted versionstamp")
+			}
+			if tc.name == "late-deferred-error" {
+				ce := bounded("C++ newly admitted stamp", func() error { _, e := ct.GetVersionstamp().Get(); return e })
+				ge := bounded("Go newly admitted stamp", func() error { _, e := gt.GetVersionstamp().Get(); return e })
+				if fdbErrorCode(ce) != 2000 || fdbErrorCode(ge) != 2000 {
+					t.Fatalf("new stamp admission: go=%v cgo=%v, want deferred 2000", ge, ce)
+				}
+			}
+			gt.Cancel()
+			ct.Cancel()
+			ce = bounded("C++ old stamp after Cancel", func() error { _, e := cv.Get(); return e })
+			ge = bounded("Go old stamp after Cancel", func() error { _, e := gv.Get(); return e })
+			if fdbErrorCode(ce) != 1025 || fdbErrorCode(ge) != 1025 {
+				t.Fatalf("admitted stamp after early Commit failure and Cancel: go=%v cgo=%v, want 1025", ge, ce)
+			}
+		})
+	}
 }

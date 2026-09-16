@@ -2118,3 +2118,261 @@ review findings. Next is deferred-error precedence over an expired timeout;
 retry-retirement atomicity, derived rebuilding/CTE ownership, scalar correlation
 and lowering-regression quality are also pending. Final-head delta reviews,
 final PR reviewer and final-head CI are still required before merge.
+
+### Proposed review repair: deferred failure at the operation entry boundary
+
+**Design status: Accepted (revision four); implementation in progress, no implementation approval.** The current production
+base is `feacb809443d579db7dc15a58dc1d71b329d6645`. Against that base, two retained regression
+additions were red: the client unit test's twelve entry points yield ten incorrect
+1031s instead of the pre-existing deferred 2018 (Commit and size are positive
+controls). The real libfdb_c differential first OBSERVES timeout on both clean
+transactions, then poisons both using Set followed by RYW-disable. Size witnesses
+2000 on both, after which eight Go read paths return 1031 while C++ returns 2000.
+The Go facade's versionstamp future blocks indefinitely before checking its
+underlying error; the bounded regression now reports that failure explicitly.
+Commit remains a 2000 positive control. Logs:
+`pr785-review/deferred-timeout-{unit-red,differential-red-2}.log`.
+The first differential attempt exceeded its shell timeout at versionstamp, not a
+completed test run; the later bounded run preserves that failing dimension.
+
+C++ `ThreadSafeTransaction.cpp:421-465,654,669,715-729` checks deferredError at
+operation entry, before the underlying RYW resetPromise. `ThreadHelper.actor.h:51`
+also explains why setting TIMEOUT AFTER poisoning cannot establish this test:
+the already-failed deferred slot suppresses later void operations. RYW set and
+RYW-disable do not reject an already-timed-out, uncommitted transaction, so the
+observed-timeout-then-poison differential establishes both conditions in order.
+
+Accepted revision-four implementation contract:
+
+1. Capture the deferred entry error when a NEW `opContext` gains its execution
+   lease; keep it in `readOperation` and preserve it when nested operations borrow
+   or reacquire the captured operation. A nil/stale lease must never read a
+   replacement's deferred slot. `readEntryError` prioritizes this captured error
+   over the captured incarnation cause, then caller cancellation. Do NOT add a
+   live deferred-slot lookup to every existing `readEntryError` call: some are
+   completion/revalidation checks, and a later invalid operation must not rewrite
+   an already-started read's entry outcome.
+2. Route first-entry gates through that captured authority instead of the later
+   duplicate deferred checks in readVersion/metrics/watch. Retain genuine
+   API argument validation that occurs before C++ dispatch (e.g. inverted ranges),
+   existing immutable reply selection, and Commit's separately justified mutation
+   snapshot recheck. At context-free versionstamp entry, check deferredError before
+   cancellation/timeout while the state lease protects the incarnation.
+3. **Completion ownership belongs in the client incarnation, not in a facade
+   after-the-fact publisher.** Replace the facade's commitDone/commitErr mechanism
+   with client-owned pending-versionstamp and pending-commit handles, analogous to
+   the existing PendingGet boundary. A versionstamp handle captures its entry
+   verdict, inner transaction/incarnation and completion record synchronously;
+   it never later reads a mutable facade transaction pointer. Use explicit
+   pending/selected state, not 2015 as a readiness discriminator. The synchronous
+   low-level GetVersionstamp API keeps its existing not-yet-committed result.
+4. A completion record owns an immutable stamp/error and a done signal; all
+   selection and ownership fields are protected by the existing readErrMu leaf
+   lock. An incarnation tracks its uncompleted records, allowing its first recorded
+   terminal cause to retire them all. No completion path rereads deferredErr:
+   late poison cannot replace the entry verdict, and an earlier timeout survives
+   Cancel/Reset. Selected records are never overwritten. Close ready signals only
+   after result fields are final; context cancellation delivery and other locks
+   remain outside readErrMu. Completed records can be removed from the pending
+   set while handles retain their immutable result.
+5. **Each commit producer has an owner before asynchronous execution.** A common
+   client preparation routine captures the operation and claims its completion
+   record **only after its deferred/terminal admission gate succeeds**. Rejected
+   Commit admission completes that Commit handle, without claiming or failing
+   an already-admitted versionstamp promise. The first admitted producer claims
+   an initial unclaimed record to which pre-commit versionstamp handles are attached. A subsequent producer always gets
+   a distinct record, even if the previous producer is still pending; new
+   versionstamp calls bind to the most recently admitted producer. The facade
+   invokes this admission synchronously before spawning commit work; direct and
+   managed low-level Commit use the same preparation/execution path synchronously,
+   with no additional goroutine on the synchronous path. Protect current-record
+   replacement with readErrMu. This is explicit ownership for Go's existing
+   auto-reuse/concurrent-call surface, not a change to mutation dispatch/replay.
+6. **Select at the client result boundary.** A successful stamp comes directly
+   from that invocation's immutable commitOutcome (version/batchID), never a getter
+   on the mutable handle. Select it at successful reply processing, before metrics,
+   facade scheduling or successful auto-turnover can intervene. The same locked
+   selection point orders an already-recorded incarnation failure against the
+   result. A later retirement cannot replace an already-selected result; a prior
+   retirement keeps its first cause, even if the detached Commit still returns
+   success to its own caller. **Commit completion and versionstamp completion
+   are distinct outputs of the captured owner**, not one shared error result.
+   Commit's own handle always returns execution's actual error after normalization
+   and the uncertainty barrier. A deferred admission failure never changes an
+   existing versionstamp promise; neither does a failed RYW reading barrier or
+   pre-native write validation. Those previously admitted versionstamps stay
+   pending until their native promise completes or their incarnation retires.
+   Only the native-equivalent phase selects a versionstamp outcome: success uses
+   CommitID; native commit failure produces transaction_invalid_version (2020),
+   not the Commit error (NativeAPI.actor.cpp:6910-6940); no-write produces 2021.
+   Classify by the C++ phase, not by a broad error-number switch. In Go, admission,
+   the failed-read drain and mutation validation precede that phase; coalesced
+   transaction-size validation, no-write handling, commit GRV and dispatch belong
+   to native commit. Pin the split with live differentials. Detached Commit return
+   semantics and stale-handle publication guards remain unchanged. The no-write
+   path must explicitly distinguish its result
+   from a real CommitID: C++ resolves versionstamp with no_commit_version (2021),
+   NativeAPI.actor.cpp:6800-6805; pin this with the live oracle instead of treating
+   a zero-filled stamp as a committed version.
+7. **Every attempt is connected.** Database/Tenant managed retries already pass
+   through client Commit and OnError/turnover, so their old versionstamp handles
+   select that attempt's result or retirement cause directly; delete final-lastTx
+   facade signaling rather than add a second completion authority. Callback errors
+   retire through the existing OnError path. Caller-context exits must release
+   admitted versionstamp waiters through their captured context even when no
+   Commit/OnError runs. Preserve caller-first interruption mapping. User Reset
+   swaps the inner transaction only after old handles have captured their owner;
+   cancellation/retirement acts on that old owner, not the replacement. Facade
+   ReadTransact's existing unsupported-versionstamp policy remains explicit.
+8. A getter after a successful Go auto-reuse boundary may still expose the retained
+   prior completed result only when no new commit producer has been admitted in
+   the new incarnation. Once a new producer is admitted, its pending/error/result
+   record is authoritative; failure can never reveal the prior successful stamp.
+   Handles already holding the old result remain immutable. Preserve the existing
+   committed-version metadata API separately from pending-versionstamp ownership.
+9. **Scope amendment:** using the same captured incarnation failure authority
+   necessarily also makes a healthy-created pending versionstamp observe later
+   timeout, Cancel, and Reset, matching RYW::getVersionstamp's live resetPromise
+   race (:2520). Include this dimension and its controlled differential rather than
+   retain a second, deliberately incomplete facade wait mechanism. This is the
+   same completion-ownership repair, not a claim that every other versionstamp
+   or transaction behavior now matches C++.
+
+**Scope ruling:** deferred-before-Cancel is included in this one entry-order
+correction, including Commit's cancellation-first branch, as all three virtual
+reviewers required. A 1031-only exception would violate the shared entry invariant.
+OnError is explicitly exempt: C++ ThreadSafeTransaction::onError has no deferred
+entry gate (:758); its existing retry/caller/terminal ordering must not change.
+Context-free size retains its own C++ exception: deferred failure gates it, but
+ordinary cancellation/timeout alone does not. Metrics inversion validation remains
+before dispatch. No claim extends this repair to every adjacent API divergence.
+
+Required proof: both poison/timeout and poison/Cancel orders, old-captured-context
+versus replacement poison, preserved nil capture across nested lease reacquisition,
+late poison not rewriting an admitted read, caller-first interruption and immutable
+completed replies, both sides of Commit's mutation snapshot, metrics inversion and
+size exceptions, versionstamp ready-error/pending/success/failure/Reset controls,
+prior-success then failed reuse (including terminal 2015) without stale-stamp
+success, old ready/pending futures isolated from replacement completion, retained
+literal-2018 unit and real 2000 libfdb_c differential, applied/compiled
+revert/mutation evidence, race repetitions, full suite, and final milestone delta
+confirmations. Implementation is now present in the worktree; current evidence
+is recorded below. No implementation or final-HEAD approval is claimed.
+
+**Design review evidence:** the first direct and resumed reads failed sandbox
+startup on a stale autofs mount; they produced no verdict. The same three tracked
+`gpt-6-astra`/`xhigh` sessions then reviewed a numbered, hashed source packet supplied
+as input, without relaxing sandbox permissions. All returned DESIGN NAK on the
+original facade shortcut while supporting leased entry capture. The second
+proposal was also NAKed: a facade getter/publisher cannot establish
+source-result ordering, pending is not unclaimed, and lastTx abandons earlier
+managed attempts. The client-owned completion design and explicit scope above
+are revision four. Revision three received a Torvalds design ACK
+but C++ and independent review NAKed forwarding early Commit failure into an
+already-admitted versionstamp; the separate outputs/phase distinction above repairs
+that design error. Revision four (`605ed116f83d…`) received DESIGN ACK from all
+three same-model/same-session virtual reviewers in
+`precedence-design-{cpp,torvalds,codex}-revision-4-verdict.md`. Native failure
+publication must follow uncertainty-barrier completion and preserve C++'s
+actor_cancelled exclusion. These are supplied-byte design approvals only.
+All implementation and final-HEAD gates remain open.
+Artifacts: `pr785-review/precedence-design-{cpp,torvalds,codex}-packet-verdict.md`;
+these are virtual reviews of supplied bytes, not human approvals or independent
+live-filesystem verification.
+
+Two further retained admission tests compiled and ran against unchanged production:
+borrowed and reacquired clean entry both incorrectly observe late 2018; a captured
+poisoned entry loses its 2018 to retirement 1025; the clean-old/replacement-poison
+control passes. Four subcases, three semantic failures, six total RUN lines.
+`pr785-review/deferred-entry-capture-red.log` records the run (before a diagnostic-only
+wording correction). They are additional RED evidence, not implementation proof.
+
+Further retained RED proof at the same production SHA:
+- `deferred-cancel-unit-red.log`: both Cancel/poison orders, twelve entries each;
+  eleven failures and size positive control per order (27 RUN lines).
+- `versionstamp-completion-differential-red-2.log`: four cases; C++ confirms 2021
+  after no-write Commit, 2020 after native size failure (Commit itself 2101), and
+  1031 after timeout configured on an already-pending healthy future. Go returns
+  success, 2101, and no completion within five seconds respectively. The Cancel
+  control passes on both. The earlier three-case log is a smaller historical run.
+- `versionstamp-pre-native-differential-red.log`: late deferred 2000 and retained
+  failed read 1036 both fail Commit without completing C++'s earlier versionstamp;
+  subsequent Cancel gives that old future 1025. Go instead forwards 2000/1036.
+  A new post-poison versionstamp correctly gives 2000 on both. These two cases
+  establish the pre-native/native distinction independently of Go's current output.
+
+### Deferred entry / versionstamp implementation evidence (worktree)
+
+The accepted revision-four design is now implemented above production
+`feacb809443d579db7dc15a58dc1d71b329d6645`. Client `PendingCommit` captures admission
+before facade goroutine startup; synchronous Commit uses the same admission and
+execution without an additional goroutine. `PendingVersionstamp` holds a captured
+incarnation and explicitly selected completion. First terminal cause seals all
+pending records under readErrMu; native outcomes are immutable and no completion
+rereads deferredErr. The facade has no lastTx signaling or shared Commit-error
+arbiter. ReadTransact explicitly retains its unsupported 2015 policy. Go's
+concurrent producer and auto-reuse behavior is an extension, not C++ parity.
+
+The first restored libfdb_c run passes all four selected top-level tests (20 RUN
+lines), including retained REDs for deferred/timeout, 2020 versus Commit's 2101,
+2021 for no-write, live timeout of healthy pending stamps, and pre-native failures
+remaining pending until retirement: `versionstamp-first-green.log` (55s).
+
+The completion unit suite exposed a provisional omission: C++ actor_cancelled
+is operation_cancelled 1101 (`flow/Error.h:109`, `error_definitions.h:114`), not
+only Go context cancellation. `versionstamp-selection-unit-red.log` records its
+executed failure; that exclusion is now implemented. Client/facade targeted green
+in `versionstamp-lifetime-green.log` passes both targets with 90 RUN lines (89s).
+Real-FDB pins hold native dispatch and the uncertainty barrier, and hold the
+metrics mutex after success to prove stamp selection precedes metrics and Reset.
+They compare successful stamps with persisted versionstamped bytes. Database AND
+Tenant coverage includes successful retry, terminal callback 2015, caller exit
+without Commit/OnError, and no-write completion. A further real-FDB overlapping
+producer case passes in `versionstamp-overlapping-green.log` (one RUN line).
+
+Compiled negative controls (not build-failure credit):
+- `versionstamp-native-error-mutant.log`: passing Commit errors to stamps fails
+  literal 2101 and 2015 cases that must select 2020 (12 RUN lines, five FAIL lines
+  including parent tests).
+- `versionstamp-producer-mutant.log`: removing the claimed-owner distinction
+  fails producer identity (one RUN and one FAIL).
+- `versionstamp-retirement-mutant.log`: context delivery without sealing pending
+  records fails all three Cancel/Reset/timeout siblings consumed after successful
+  native reply (six RUN lines, four FAIL lines including the parent).
+- `versionstamp-facade-revert.log`: restoring the old transaction/database/tenant
+  facades fails managed attempt/Reset waiter ownership (six RUN lines, four FAIL
+  lines including the parent).
+
+Each `.source.txt` records applied source hashes and verified exact restoration;
+`versionstamp-mutants.py` retains the exact mutations and commands. Artifacts live
+under `/var/tmp/query-grind-cast/pr785-review`. Ten race repetitions pass with
+910 RUN lines and zero FAIL/SKIP lines across both targets (214s), and every
+`versionstamp-race-tested.sha256` hash remained unchanged during that run. A later
+fuzz-only append to `versionstamp_completion_test.go` adds an independent first-
+effective-event model. The initial 25-second attempt completed zero seeds during
+worker FDB-fixture startup; it is not fuzz evidence. The 90-second, one-worker
+rerun completes all seven seeds and 2,837,314 executions without failure
+(`versionstamp-fuzz-2.log`). Bazel explicitly warns that this binary lacks
+coverage instrumentation: this is unguided lifecycle fuzzing, not wire coverage.
+The following full-gate follow-up records restored suite results. Milestone
+implementation/exact-final-HEAD PR approvals remain open; these tests do not close
+the other review findings.
+
+Full-suite follow-up: the first `just test` (`versionstamp-full.log`, 978s) was
+RED, 91/92 targets. `TestMetricOps_EarlyReturnPrecedence` called the private metric
+Impl functions with a bare context, bypassing the new captured-admission boundary.
+Its two poison/timeout cases therefore lacked a deferred entry verdict and got
+1031 instead of 2000. Production callers already pass through the public leased
+wrappers. The retained test now exercises those public wrappers, with ALL original
+expected codes unchanged and two added inverted+poisoned+timed-out 2005 assertions.
+This is a test-entry repair, not an error-expectation relaxation or a new live
+revalidation gate. A compiled mutant discarding readEntryError's captured verdict
+still fails both 2000 assertions (`metrics-entry-mutant.log`); source restoration
+is SHA-checked. Public metrics plus all four libfdb_c differential targets pass
+`versionstamp-restored-differential-metrics-green.log` (21 RUN lines, 45s).
+The final ten-run race pass also includes the repaired metric boundary and fuzz
+seeds (`versionstamp-race-final-10.log`, 1,000 RUN lines, zero FAIL/SKIP lines,
+213s). Full `just test` rerun passes 92/92 targets (43 executed, 49 cached,
+947s), with all `versionstamp-full-2-tested.sha256` hashes unchanged during the
+run (`versionstamp-full-2.log`). Implementation and final-HEAD review gates remain
+open.

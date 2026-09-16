@@ -33,18 +33,10 @@ func (tx *Transaction) getEstimatedRangeSizeBytesImpl(ctx context.Context, begin
 	if bytes.Compare(begin, end) > 0 {
 		return 0, &wire.FDBError{Code: ErrInvertedRange} // 2005
 	}
-	// A cancelled txn returns transaction_cancelled (1025) — C++ races resetPromise at op entry,
-	// before any other check (RFC-068). This path bypasses ensureReadVersion, so gate explicitly.
+	// This path bypasses GRV, but uses the same captured deferred-before-
+	// resetPromise entry verdict. Range construction above precedes dispatch.
 	if err := tx.readEntryError(ctx); err != nil {
 		return 0, err
-	}
-	// A transaction poisoned by SetReadYourWritesDisable-after-an-op returns
-	// client_invalid_operation here too (verified differentially: libfdb_c poisons the metrics
-	// path). This entry point does not fetch a read version, so it is gated explicitly rather
-	// than via ensureReadVersion (RFC-059). The poison (2000) out-ranks the timeout below — the
-	// same order as ensureReadVersion (the deferred error before checkTimeout, transaction.go).
-	if e := tx.deferredErr.Load(); e != nil {
-		return 0, e
 	}
 	// resetPromise also carries the SetTimeout error → transaction_timed_out (1031). Gate it here too
 	// (this path bypasses ensureReadVersion's checkTimeout), matching C++'s resetPromise.isSet() check.
@@ -183,16 +175,9 @@ func (tx *Transaction) getRangeSplitPointsImpl(ctx context.Context, begin, end [
 	if bytes.Compare(begin, end) > 0 {
 		return nil, &wire.FDBError{Code: ErrInvertedRange} // 2005
 	}
-	// A cancelled txn returns transaction_cancelled (1025) — resetPromise at op entry (RFC-068).
+	// Range construction precedes the captured deferred/resetPromise entry gate.
 	if err := tx.readEntryError(ctx); err != nil {
 		return nil, err
-	}
-	// Sibling of GetEstimatedRangeSizeBytes: bypasses ensureReadVersion but is poisoned by a
-	// SetReadYourWritesDisable-after-an-op (libfdb_c gates it via the same deferredError /
-	// checkValid path) — RFC-059. The poison (2000) out-ranks the timeout below — the same order as
-	// ensureReadVersion (the deferred error before checkTimeout, transaction.go).
-	if e := tx.deferredErr.Load(); e != nil {
-		return nil, e
 	}
 	// C++ checks resetPromise.isSet() (which holds the SetTimeout error) BEFORE the maxKey check
 	// (ReadYourWrites.actor.cpp:1872 before :1875), so a timed-out txn returns transaction_timed_out

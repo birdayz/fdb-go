@@ -711,13 +711,18 @@ against a ceiling rather than swallowed.
 
 C++ checks `deferredError` at every ThreadSafeTransaction op lambda (get :431, watch :654, commit
 :669, …) BEFORE the underlying actor observes `resetPromise` — so a transaction that is both
-poisoned (deferred 2000/2018) and Cancel()ed surfaces the deferred code from every op. Go's
-uniform entry order is cancelled-first (checkCancelled → deferredErr → checkTimeout, in
-ensureReadVersion/Commit/WatchSetup), so the same txn surfaces 1025. Observable ONLY on that
-double-terminal corner; deferred-beats-timeout and deferred-beats-1034 are already C++-aligned
-and pinned. Resolution needs a differential probe (poison, Cancel, Get on both clients — mind
-that MultiVersionTransaction may reorder) and, if confirmed, a single swap of the two gates at
-each entry point in one FDB-C-dev cycle.
+poisoned (deferred 2000/2018) and Cancel()ed surfaces the deferred code from every op. At
+production `feacb809`, Go's entry order was cancelled-first in
+ensureReadVersion/Commit/WatchSetup, so the same txn surfaced 1025. Observable ONLY on that
+double-terminal corner. The earlier deferred-beats-timeout claim is superseded by RFC-256's
+PR #785 red reproductions: ten of twelve client entry points return 1031 instead of deferred
+2018, and eight facade reads return 1031 where libfdb_c returns 2000. The versionstamp facade
+also blocks before observing the existing deferred error. See the active §12 checkpoint and
+RFC-256's accepted revision-four entry-boundary repair, now implemented in the worktree
+with both cancellation orders pinned. Full gates and implementation approvals remain open;
+this checkbox is not a merge claim. Deferred-beats-1034 remains separately pinned.
+Resolution must preserve captured-incarnation
+ownership and admitted outcomes, not merely swap live gates at every revalidation site.
 
 
 ### [ ] fdbgo/client: GRV reply's ProxyTagThrottledDuration is discarded — GetTagThrottledDuration undercounts vs libfdb_c
@@ -11337,3 +11342,89 @@ and separately pin poison-before-expiry through the client timer seam. Do not
 conflate the pre-existing deferred-versus-Cancel TODO at line 710 with this newly
 broken timeout contract without explicit scope/design adjudication. PR #785 is
 still blocked on remaining findings and final-head gates; no new hunt slice yet.
+
+
+### QSC-04/08 RFC-256 — deferred entry precedence reproduced (historical RED)
+
+Current production and PR #785 HEAD are `feacb809443d579db7dc15a58dc1d71b329d6645`.
+Both preceding lifetime repairs are committed/pushed; the PR remains OPEN/BLOCKED.
+The deferred/timeout finding is now reproduced, not merely source-derived:
+`TestDeferredErrorOutranksExpiredTimeoutAtReadEntry` has ten failures among twelve
+entry cases (deferred 2018 versus actual 1031; size/Commit positive controls).
+`TestDifferential_DeferredErrorAfterTimeout` first observes 1031 on both clean
+clients, then witnesses deferred 2000 through size: eight Go read operations
+return 1031 where C++ returns 2000, Go versionstamp exceeds its bounded wait,
+and Commit returns 2000 on both. These retained tests are RED, not a release gate.
+The unbounded first differential attempt is not a completed result.
+
+The initial RFC draft proposed capturing deferred failure at leased operation
+entry, preserving that capture across nested work, never consulting replacement
+state from a retired operation. That proposal has since advanced to revision-four
+design approval and implementation, recorded in the following block. Three tracked
+gpt-6-astra/xhigh virtual reviewer sessions initially failed read-only sandbox
+startup on a stale autofs mount; the alternative sandbox selection also failed,
+yielding no review verdicts. The same sessions subsequently reviewed numbered,
+hashed source packets supplied directly as input without weakening sandbox
+permissions. Their verdicts cover supplied bytes, not independently verified live
+filesystem reads.
+
+Evidence: `/var/tmp/query-grind-cast/pr785-review/deferred-timeout-unit-red.log`,
+`deferred-timeout-differential-red-2.log`, `precedence-design-source-packet.txt`,
+and `precedence-design-{cpp,torvalds,codex}*`. The following block supersedes this
+entry's next action and RED-only status. Other PR blockers and final-head
+reviews/CI/authorized merge still precede any new hunt slice.
+
+### QSC-04/08 RFC-256 — deferred admission and client-owned stamp implementation
+
+Revision four received DESIGN ACKs from the same three tracked virtual
+`gpt-6-astra`/`xhigh` sessions, reviewing supplied source packets only. This is not
+human sign-off or implementation approval. The repair is implemented locally,
+not yet committed: deferred errors are captured at leased admission (including a
+clean nil), and versionstamp completion belongs to the client incarnation rather
+than mutable facade commitDone/commitErr fields. Database/Tenant retries, manual
+Commit, Reset, caller exits, and auto-reuse now use the captured owner. Commit's
+actual error remains separate from the native promise's 2020/2021/CommitID result.
+
+Observed evidence in `/var/tmp/query-grind-cast/pr785-review`:
+- `versionstamp-first-green.log`: four libfdb_c differential top-level tests,
+  20 RUN lines; deferred/timeout, completion lifetime, pre-native failure and
+  existing successful stamp contract pass against real FDB.
+- `versionstamp-selection-unit-red.log`: new literal actor_cancelled (1101)
+  exclusion pin caught a missing exclusion in the provisional implementation.
+  Fixed using flow/Error.h's operation_cancelled alias, not an inferred code.
+- `versionstamp-lifetime-green.log`: 90 RUN lines across client and facade targets,
+  including Database/Tenant attempts and a held uncertainty barrier; both targets
+  pass. The later overlapping-producer real-FDB pin passes separately in
+  `versionstamp-overlapping-green.log` (one RUN line).
+- Four compiled semantic mutants/reversions are killed: forwarding native Commit
+  errors, sharing overlapping producers, omitting sealed retirement, and restoring
+  the three old facade files. `versionstamp-mutants-summary.log` and each mutant's
+  `.source.txt` record executed failures and SHA-256-checked restoration. The
+  retirement proof includes an unresolved sibling consumed AFTER native success.
+
+Ten race repetitions now pass (`versionstamp-race-10.log`, 910 RUN lines,
+zero FAIL/SKIP lines, both targets, 214s), with source hashes unchanged during the
+run. A subsequent fuzz-only test addition exercises an independent first-event
+model: the initial 25-second run completed zero seeds while its worker started the
+FDB fixture and earns no fuzz credit. The one-worker 90-second rerun completes
+7/7 seeds and 2,837,314 unguided executions (`versionstamp-fuzz-2.log`); the Bazel
+binary explicitly lacks coverage instrumentation. No wire-fuzz claim is made.
+
+Next: milestone implementation review; the following full-gate follow-up records
+restored test results. The separate
+OnError validation/retirement gap and remaining planner/lowering review findings
+remain open; PR #785 is not ready to merge. No new hunt slice or broad QSC closure.
+
+Full-gate follow-up for the preceding block: first full `just test` was RED
+(91/92 targets, `versionstamp-full.log`). The existing metric-precedence test
+bypassed public admission by calling private Impl helpers with bare contexts.
+It now uses the public wrappers, retains every expected code and adds two poisoned
+inverted-range controls. A compiled admission-discard mutant fails both 2000
+assertions; SHA-checked restoration and the four libfdb_c differential tests pass
+(`metrics-entry-mutant.log`, `versionstamp-restored-differential-metrics-green.log`).
+Final ten-run race tests including this metric boundary and fuzz seeds pass in
+`versionstamp-race-final-10.log` (1,000 RUN lines, zero FAIL/SKIP lines, 213s).
+The full rerun passes 92/92 targets (43 executed, 49 cached, 947s), with every
+`versionstamp-full-2-tested.sha256` hash unchanged during execution. Evidence:
+`versionstamp-full-2.log`. Implementation and exact-final-HEAD approvals remain
+required; no merge is claimed.

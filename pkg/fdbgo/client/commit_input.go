@@ -21,6 +21,7 @@ type commitInput struct {
 	span           types.SpanContext
 	tags           []string
 	metricStart    time.Time
+	versionstamp   *versionstampCompletion
 }
 
 type commitOutcome struct {
@@ -77,7 +78,7 @@ func (tx *Transaction) captureCommit(muts []Mutation, writeConflicts []KeyRange)
 
 // publishCommit does not reinterpret the detached operation's outcome. A stale
 // completion returns to its caller but cannot publish into or reset a successor.
-func (tx *Transaction) publishCommit(inc *readIncarnation, released *executionLease, result commitOutcome) {
+func (tx *Transaction) publishCommit(inc *readIncarnation, released *executionLease, result commitOutcome, completion *versionstampCompletion) {
 	finish, err := tx.beginTurnover(inc, released)
 	if err != nil {
 		return
@@ -87,6 +88,7 @@ func (tx *Transaction) publishCommit(inc *readIncarnation, released *executionLe
 	tx.txnBatchId = result.batchID
 	tx.commitEpoch.Store(result.epoch)
 	tx.hasCommitted = true
+	tx.lastVersionstamp = completion
 	tx.fireWatchActivation(result.version, false)
 	tx.postCommitResetFields()
 }

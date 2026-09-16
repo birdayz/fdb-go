@@ -391,6 +391,7 @@ type Transaction struct {
 	committedVersion int64
 	hasCommitted     bool
 	txnBatchId       uint16
+	lastVersionstamp *versionstampCompletion
 
 	// Mutation & conflict buffers — conflictMu guards all six (the published
 	// contract makes data ops concurrent-safe: a pipelined Get future resolving
@@ -774,17 +775,8 @@ func (tx *Transaction) readVersionForOperation(parentCtx context.Context) (int64
 	// the timeout (RFC-112; the C++ analog is RYWImpl::getReadVersion's
 	// `choose { getReadVersion() | resetPromise }`, ReadYourWrites.actor.cpp:1537).
 	// Interruption is classified against the captured incarnation by mapReadError.
-	// The deferred error (bad Atomic op-code, or SetReadYourWritesDisable-after-an-op)
-	// surfaces on every subsequent op — C++ checkDeferredError at each read entry
-	// (ThreadSafeTransaction.cpp:431 get, :441 getKey, :421 getReadVersion, :654 watch).
-	// This is the single uniform gate: all reads (regular + snapshot), Commit, Watch, and
-	// GetReadVersion fetch a read version through here — libfdb_c gates all of them
-	// identically (poison verified differentially, incl. GetReadVersion). The metrics /
-	// approx-size / versionstamp paths bypass this and are gated separately. (Cleared on
-	// reset.)
-	if e := tx.deferredErr.Load(); e != nil {
-		return 0, e
-	}
+	// Deferred failure was captured by opContext at the outer entry, before
+	// RYW/resetPromise dispatch. Nested GRV work must not sample later poison.
 	if err := tx.checkTimeout(); err != nil {
 		return 0, err
 	}
@@ -1779,41 +1771,46 @@ func (tx *Transaction) validateMutation(m Mutation, maxWrite []byte) error {
 func (tx *Transaction) Commit(ctx context.Context) error {
 	ctx, release := tx.opContext(ctx)
 	defer release()
+	completion, err := tx.admitCommit(ctx)
+	if err != nil {
+		return err
+	}
+	return tx.commitAdmitted(ctx, completion)
+}
+
+func (tx *Transaction) commitEntryError(ctx context.Context) error {
 	op := tx.readOperation(ctx)
 	if op.lease == nil {
 		return tx.readEntryError(ctx)
 	}
-	// Creating the operation context may observe an already-fired timebomb.
-	// Cancellation still gates entry, while deferredError must retain its
-	// established precedence over transaction_timed_out.
-	terminalCause := tx.readIncarnationCause(op.inc)
-	var terminalFDB *wire.FDBError
-	if terminalCause != nil && (!errors.As(terminalCause, &terminalFDB) || terminalFDB.Code != ErrTransactionTimedOut) {
+	// The C++ wrapper checks deferredError before entering RYW, including on
+	// a canceled or timed-out transaction. Only the mutation snapshot below
+	// rechecks concurrent poison; nested GRV work preserves this entry verdict.
+	if op.entryErr != nil {
+		return op.entryErr
+	}
+	if terminalCause := tx.readIncarnationCause(op.inc); terminalCause != nil {
 		return terminalCause
 	}
 	if txState(tx.state.Load()) != txStateActive {
 		return fmt.Errorf("transaction not active")
 	}
-	// The deferred error (bad Atomic op-code 2018/2004/2000, or SetReadYourWritesDisable
-	// after an op, 2000) fails commit — the C++ checkDeferredError at commit entry
-	// (ThreadSafeTransaction.cpp:669). Checked HERE — before the read-only fast path below
-	// (a poisoned read-only commit has no mutations, so it would otherwise skip
-	// ensureReadVersion's gate and commit successfully) AND before checkTimeout: reads check
-	// the deferred error before the timeout, and libfdb_c's checkDeferredError runs before
-	// any commit logic, so it must out-rank a stale-timeout 1031 for parity. Returns
-	// WITHOUT resetting or marking the txn errored — in C++ the transaction stays
-	// poisoned-but-alive and every subsequent op re-throws the same error until reset;
-	// Go's per-op gates reproduce that (the bad mutation itself was never buffered,
-	// so nothing can reach the cluster). RFC-059 / RFC-175 E2.
-	if e := tx.deferredErr.Load(); e != nil {
-		return e
-	}
-	if terminalCause != nil {
-		return terminalCause
-	}
-	if err := tx.checkTimeout(); err != nil {
+	return tx.checkTimeout()
+}
+
+func (tx *Transaction) commitAdmitted(parent context.Context, completion *versionstampCompletion) (rerr error) {
+	ctx, release := tx.opContext(parent)
+	defer release()
+	op := tx.readOperation(ctx)
+	if err := tx.commitEntryError(ctx); err != nil {
 		return err
 	}
+	nativeStarted := false
+	defer func() {
+		if nativeStarted && rerr != nil {
+			completion.finishNative(commitOutcome{}, rerr)
+		}
+	}()
 	// C++ commit() waits on ryw->reading before ANY commit work — before the
 	// RYW-disabled branch, the read-only fast path, and the size checks
 	// (ReadYourWrites.actor.cpp:1358-1359). That wait is a COMPLETION BARRIER
@@ -1917,6 +1914,7 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	// that fast path's condition) but BEFORE the size check (~:6835), so a
 	// persistently oversized commit shows up as Started-without-Completed.
 	// Started-Completed = failed/in-flight (intentional asymmetry). RFC-097.
+	nativeStarted = true
 	if tx.db != nil && (len(shipMuts) > 0 || len(sizeConflicts) > 0) {
 		tx.db.metrics.transactionsCommitStarted.Add(1)
 	}
@@ -1933,8 +1931,9 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 		// RFC-170 (#8): activate pending watches at the READ version (committedVersion is 0 for a
 		// no-commit txn — C++ setupWatches' ternary falls back to getReadVersion). Fire BEFORE
 		// postCommitReset clears the read version.
+		completion.finishNoWrite()
 		op.lease.release()
-		tx.publishCommit(op.inc, op.lease, commitOutcome{})
+		tx.publishCommit(op.inc, op.lease, commitOutcome{}, completion)
 		return nil
 	}
 
@@ -1989,6 +1988,7 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 		commitTok = tx.db.grvCache.token()
 	}
 	input := tx.captureCommit(shipMuts, shipConflicts)
+	input.versionstamp = completion
 	if err := tx.readEntryError(ctx); err != nil {
 		return err
 	}
@@ -2041,7 +2041,7 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 			commitStart, result.version)
 	}
 
-	tx.publishCommit(op.inc, op.lease, result)
+	tx.publishCommit(op.inc, op.lease, result, completion)
 	return nil
 }
 
@@ -2316,7 +2316,7 @@ func (tx *Transaction) newWatchCtx(parent context.Context) (context.Context, con
 // GetCommittedVersion returns the version at which this transaction committed.
 func (tx *Transaction) stateGetCommittedVersion() (int64, error) {
 	if !tx.hasCommitted {
-		return 0, &wire.FDBError{Code: 2015} // used_during_commit / not yet committed
+		return 0, &wire.FDBError{Code: 2015} // future_not_set / not yet committed
 	}
 	return tx.committedVersion, nil
 }
@@ -2325,15 +2325,28 @@ func (tx *Transaction) stateGetCommittedVersion() (int64, error) {
 // Format: [version 8 bytes big-endian][txnBatchId 2 bytes big-endian].
 // Must be called after a successful Commit.
 func (tx *Transaction) stateGetVersionstamp() ([]byte, error) {
-	if err := tx.checkCancelled(); err != nil {
-		return nil, err // transaction_cancelled (1025) out-ranks the not-yet-committed 2015 (RFC-068)
-	}
-	// C++ gates getVersionstamp on the deferred error (ThreadSafeTransaction.cpp
-	// checkDeferredError before tr->getVersionstamp()) — before the
-	// no_commit_version check (a poisoned txn cannot have committed anyway).
+	// C++ checks deferredError before RYW's captured resetPromise.
 	if e := tx.deferredErr.Load(); e != nil {
 		return nil, e
 	}
+	if err := tx.checkCancelled(); err != nil {
+		return nil, err
+	}
+	tx.readErrMu.Lock()
+	completion := tx.readLife.versionstamp
+	if completion == nil {
+		completion = tx.lastVersionstamp
+	}
+	if completion != nil {
+		if !completion.ready {
+			tx.readErrMu.Unlock()
+			return nil, &wire.FDBError{Code: 2015}
+		}
+		value, err := completion.value()
+		tx.readErrMu.Unlock()
+		return value, err
+	}
+	tx.readErrMu.Unlock()
 	if !tx.hasCommitted {
 		return nil, &wire.FDBError{Code: 2015}
 	}
@@ -2413,7 +2426,7 @@ func (tx *Transaction) OnError(ctx context.Context, err error) (rerr error) {
 		if e := callerCtx.Err(); e != nil {
 			return e
 		}
-		return tx.readEntryError(ctx)
+		return tx.readLifetimeError(ctx)
 	}
 	tx.readErrMu.Lock()
 	terminalCause := op.inc.cause
@@ -3536,6 +3549,7 @@ func (tx *Transaction) resetFields(userReset bool) {
 	tx.committedVersion = 0
 	tx.hasCommitted = false
 	tx.txnBatchId = 0
+	tx.lastVersionstamp = nil
 	// Hold conflictMu: Watch() goroutines may still be running after
 	// cancelWatches() (cancel is async — goroutines drain on ctx.Done), and the
 	// concurrent-use contract means Set/Commit may touch these under the lock.
