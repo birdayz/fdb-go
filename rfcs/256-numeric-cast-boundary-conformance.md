@@ -2513,7 +2513,59 @@ FAIL/SKIP (360s). Entire client/facade race suites pass 2,004 RUN lines, zero
 FAIL/SKIP (273s). Both changed Go hashes match across both runs. `just test` passes
 92/92 targets (43 executed, 49 cached, 961s), all four changed-file hashes
 unchanged; target-level output is not per-test no-skip evidence. These evidence-
-only TODO/RFC updates follow the full run and require the normal hook. Exact-HEAD
-same-session delta reviews remain pending. The latest TODO.md QSC-04/08 block
-tracks the separate parked timestamp-fixture repair and remaining PR blockers;
-none is waived here.
+only TODO/RFC updates followed the full run and passed the normal hook (92/92,
+one executed). The correction is committed/pushed as 2212c0643; all three tracked
+virtual reviewers gave scoped IMPLEMENTATION ACK on that exact HEAD, explicitly
+closing the independent watch-cleanup NAK. These supplied-byte reviews are not
+human/full-PR approvals. The following block resumes the timestamp-fixture repair;
+other PR blockers remain open.
+
+### CURRENT_TIMESTAMP fixture expiry correction
+
+The feacb809 Build/Lint/Test CI failure was seed INSERT transaction-too-old in
+Where batch1000 and CrossPage batch6000, before any timestamp assertion. The
+client lifecycle repair and subsequent green CI do not resolve this separate
+fixture assumption. Its saved patch is restored after the client cleanup's
+scoped exact-HEAD ACKs, with both fixture-file hashes verified.
+
+Keep all three 10,000-row test populations, all timestamp expectations and the
+cross-page execution options. Factor only seed setup through the existing
+retryTx helper: batch100, full explicit transaction per batch, three attempts on
+typed transaction-time-limit failure only. Each body commits and the helper
+rolls back failed attempts. Other errors, including conflict and unknown commit,
+still fail immediately. No production SQL retry, clock or pagination code changes.
+
+CURRENT_TIMESTAMP is a Go extension here, not Java row-conformance evidence:
+Java4.12.11.0 BaseVisitor:1376–1380 delegates its visitor to children, and
+QueryExecutionContext:28–65 supplies no per-statement instant. The independent
+Go contract remains the retained statement/predicate/pagination assertions.
+
+The retained SimFDB regression injects canonical1007 AFTER warming the query
+connection/catalog, requires exactly one helper retry, and checks ordered rows
+against the independent population0…999. Initial single-shot setup is RED;
+initial repaired execution passes that regression, all three real-FDB timestamp
+tests and five SQL1007/1021 controls (nine RUN lines). The compiled single-shot
+reversion with SMALLER batch100 also fails at the injected1007 assertion (one
+RUN/FAIL); restoration is byte-for-byte/SHA-checked. This distinguishes the retry
+fix from merely reducing work. SimFDB is not wire-fidelity evidence, and no
+Java rejection is counted as row evidence. Artifacts use `timestamp-seed-` under
+`/var/tmp/query-grind-cast/pr785-review`.
+
+Ten serial uncached race processes pass 240 RUN/PASS lines, zero FAIL/SKIP;
+each touched test runs ten times (250s), source hashes unchanged. The first
+unfiltered SQL-driver race run hit an ad-hoc 1800s timeout (6673 RUN/6672 PASS):
+only MetamorphicPagingAtScale remained, runnable in LIMIT/sort continuation
+serialization. The published eternal budget is 3600s in .bazelrc, not that
+override. The unchanged full scope at its published budget passes 6688 RUN/PASS,
+zero FAIL/SKIP (1849s), all four changed-file hashes unchanged. The paging test
+finishes 140 checks in 1789s; the additional 15 RUN lines are the subsequently
+reached FuzzSQL_QueryContext function and 14 seeds. Retained CPU profiling shows sort
+continuation encoding consuming 757.75/6027.41 sampled CPU seconds cumulatively;
+no baseline/performance-improvement claim is made. No repository budget, test
+population or expectation changed. Logs/profile use `timestamp-seed-race-full`
+and `timestamp-seed-race-full-2` prefixes. Full non-race `just test` passes
+92/92 targets (three executed, 89 cached, 249s), all four changed-file hashes
+unchanged (`timestamp-seed-full.log` and hash records). Target-level output does
+not establish per-test no-skip evidence. Only these TODO/RFC evidence paragraphs
+change afterward and still require the normal hook. Implementation/final-HEAD
+review gates remain required; the latest QSC-04/08 block tracks other PR blockers.

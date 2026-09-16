@@ -13,8 +13,6 @@ package sqldriver_test
 
 import (
 	"context"
-	"fmt"
-	"strings"
 	"testing"
 	"time"
 
@@ -28,20 +26,8 @@ func TestFDB_CurrentTimestamp_CrossPage_Stable(t *testing.T) {
 		"CREATE TABLE Item (id BIGINT, PRIMARY KEY (id))")
 	ctx := context.Background()
 
-	const total, batch = 10000, 1000
-	for lo := 0; lo < total; lo += batch {
-		var sb strings.Builder
-		sb.WriteString("INSERT INTO Item VALUES ")
-		for i := 0; i < batch; i++ {
-			if i > 0 {
-				sb.WriteString(", ")
-			}
-			fmt.Fprintf(&sb, "(%d)", lo+i)
-		}
-		if _, err := db.ExecContext(ctx, sb.String()); err != nil {
-			t.Fatalf("seed INSERT batch at %d: %v", lo, err)
-		}
-	}
+	const total = 10000
+	seedCurrentTimestampItems(t, db, total, nil)
 
 	// Force ~20 pages per statement so page boundaries are guaranteed, and
 	// loop executions across wall-clock second boundaries so at least one

@@ -11586,13 +11586,78 @@ passes 92/92 targets (43 executed, 49 cached, 961s), all four changed-file hashe
 unchanged during execution. The full-suite output is target-level, not per-test
 no-skip evidence. Logs: `turnover-watch-race-10.log`, `turnover-watch-race-full.log`,
 `turnover-watch-full.log` and matching hash inventories/results. These evidence-
-only TODO/RFC updates follow the full run; normal hook and exact-HEAD same-session
-delta reviews remain required. No final approval is claimed.
+only TODO/RFC updates followed the full run; the normal hook subsequently passed
+92/92 (one executed). This correction is committed/pushed as 2212c0643; all three
+same-session virtual reviewers gave scoped IMPLEMENTATION ACK on that exact HEAD.
+The independent review explicitly resolved its watch-cleanup NAK. Those supplied-
+byte ACKs are not human/full-PR approval.
 
 The remote 3f15b0877 CI now has seven completed successful checks
 (`turnover-watch-pr-state-precommit.json`); those do not cover this dirty repair
 or close the earlier timestamp fixture failure. Its regression/repair remains
-losslessly parked in
-`timestamp-seed-pending.patch` with its hash inventory; restore it after this
-client review closes. No production autocommit replay or golden changes. Other
-planner/lowering and final PR gates remain open; no merge or new hunt slice.
+losslessly saved in `timestamp-seed-pending.patch` with its hash inventory and
+restored immediately after the client scoped review closed. The next block
+resumes that fixture repair. No production autocommit replay or golden changes.
+Other planner/lowering and final PR gates remain open; no merge or new hunt slice.
+
+### QSC-04/08 RFC-256 — timestamp fixture stays within the MVCC window
+
+Resume the diagnosed feacb809 CI failure after the client cleanup's scoped review
+closure. `ci-feacb809-failed.log` contains two CURRENT_TIMESTAMP fixture INSERT
+failures, Where at batch1000 and CrossPage at batch6000, both typed transaction-
+too-old. These are seed failures before semantic assertions, not timestamp drift.
+Later green CI cannot dismiss them. The patch was parked only while resolving
+the client NAK and is now restored with both source hashes verified.
+
+Three 10,000-row timestamp tests now share seedCurrentTimestampItems: 100 rows per
+batch rather than 1,000, using the EXISTING retryTx caller-owned transaction
+helper (three attempts, typed api.IsTransactionTimeLimit only). Each attempt
+executes the full batch and commits; failed attempts are rolled back. Conflict
+and unknown-completion failures still abort, not replay. Production autocommit
+remains single-shot. No timestamp assertions, execution floors, paging options,
+row population or expected results are weakened.
+
+This is fixture reliability for a Go extension, not Java row parity. The pinned
+Java 4.12.11.0 BaseVisitor::visitCurrentTimestamp delegates to visitChildren
+(lines1376–1380); QueryExecutionContext:28–65 has no statement-clock contract.
+The unchanged Go tests require one timestamp within each statement, advancing
+instants across statements, stable predicate counts and stable paginated results.
+
+A retained SimFDB test warms catalog/connection setup, injects literal1007 once,
+then calls the actual shared seed helper. It requires exactly one caller-owned
+retry and independently checks every ordered id0…999, with no missing/duplicate
+rows. Simulation proves fault/retry routing, not real-wire timing. The original
+single-shot batch1000 version is RED (`timestamp-seed-red.log`); the initial
+repair plus three real-FDB timestamp tests and five SQL1007/1021 no-replay
+controls passes nine RUN lines (`timestamp-seed-green.log`). A newly compiled
+reversion to single-shot Exec STILL retaining smaller batch100 fails the injected
+1007 assertion (one RUN/FAIL), proving batching alone cannot satisfy the detector.
+Original bytes/SHA are restored (`timestamp-seed-revert.py`, log and source).
+
+Artifacts: `/var/tmp/query-grind-cast/pr785-review/timestamp-seed-*`. Ten serial
+uncached Bazel race processes pass 240 RUN/PASS lines, zero FAIL/SKIP, 250s;
+the new regression and all three real-FDB timestamp tests each run ten times.
+Both changed Go-file hashes remain unchanged.
+
+The first FULL SQL-driver race run was RED at an ad-hoc 1800s timeout, with
+6673 RUN/6672 PASS and only TestFDB_MetamorphicPagingAtScale still running. All
+four touched tests passed. Its stack was runnable in LIMIT/sort continuation
+serialization, not a client-lock wait. The target's PUBLISHED timeout is eternal,
+3600s in .bazelrc; the override was below that budget (the older TODO:8439 already
+records a 1766s standalone race execution). The identical full scope at the
+published budget passes 6688 RUN/PASS, zero FAIL/SKIP, 1849s, with all four
+changed-file hashes unchanged. The paging test passes 140 checks in 1789s; the
+15 extra RUN lines are the fuzz function plus 14 seeds, not a changed test scope.
+CPU profiling attributes 757.75/6027.41 sampled CPU seconds cumulatively to sort
+continuation encoding, supporting the observed expensive runnable path; this is
+not a baseline performance comparison. No repository timeout, performance limit,
+population or expectation was relaxed. Logs: `timestamp-seed-race-full.log`,
+`timestamp-seed-race-full-2.log`, the matching hash records and CPU profile.
+
+Full non-race `just test` passes 92/92 targets (three executed, 89 cached, 249s),
+all four changed-file hashes unchanged (`timestamp-seed-full.log` and matching
+hash records). This target-level output is not per-test no-skip evidence.
+Only these TODO/RFC evidence paragraphs change afterward; the normal hook must
+verify them. Milestone/final-HEAD review gates remain required. Client scoped
+ACKs are not fixture or full-PR approval. CTE/derived/UNNEST and final PR gates
+remain open; no merge or new hunt slice.
