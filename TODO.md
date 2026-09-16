@@ -11538,6 +11538,61 @@ the normal commit hook must verify those documentation updates.
 
 The preceding cc2e21d14 PR HEAD also has seven completed successful CI checks
 (`versionstamp-review-pr-state-final.json`); those do not cover this local repair
-or close the earlier timestamp fixture failure. Next: hooked commit and exact-HEAD
-client delta review. Timestamp fixture setup, CTE correlation/derived rebinding,
-UNNEST lowering evidence and final-PR approvals/CI remain open. No new hunt slice.
+or close the earlier timestamp fixture failure. This correction subsequently
+passed its normal hook and was committed/pushed as 3f15b0877. C++ and Torvalds
+scoped reviews ACKed atomicity; the independent review NAKed rejected-turnover
+watch cleanup. The next block records that repair. Timestamp fixture setup,
+CTE correlation/derived rebinding, UNNEST lowering evidence and final-PR
+approvals/CI remain open. No new hunt slice.
+
+### QSC-04/08 RFC-256 — rejected-turnover watch cleanup ownership
+
+The independent supplied-byte review of 3f15b0877 found a missing cleanup edge:
+OnError releases its execution lease before conditional turnover. A timeout that
+rejects that turnover bypasses both reset cleanup and the terminal defer's
+active-lease-only watch cleanup. Atomic retirement itself remains sound; two
+scoped ACKs do not override this third review's NAK.
+
+The existing real-FDB cancel/timeout regression now establishes a pending watch
+and checks context cancellation, failed completion and slot release BEFORE
+explicit Reset/deferred Cancel. The timeout case is RED on the committed code
+(three RUN, two FAIL lines including the parent; cancel control passes).
+The repair uses the existing identity-checked enterReadState admission to reclaim
+cleanup authority only for the captured incarnation after release. That lease
+pins reset-owned watch state through cancellation; readErrMu is released before
+watch locking/delivery. If replacement already won, old cleanup does nothing.
+The original terminal return (1031) and incarnation remain unchanged.
+
+A retained real-FDB replacement test parks old terminal cleanup, performs Reset,
+starts a successor watch, then releases the old cleanup. It requires unchanged
+1031, a live successor watch and successful completion after an independent
+transaction changes its key, with no outstanding slots. C++ 7.3.77 anchors:
+RYW onError:1499–1533, watch:1284–1335 and NativeAPI watch:5637–5684 (counter
+release on success AND failure). These are controlled Go lifecycle regressions,
+not claims of C++ concurrent-handle support or a live differential.
+
+The initial focused repaired run passes 23 RUN lines with no FAIL/SKIP. Two
+compiled semantic mutants fail the intended assertions: omitted reclaim leaks
+the old watch (three RUN, two FAIL including parent); unconditional current-head
+reclaim cancels the successor watch (one RUN/FAIL). Final test bytes use a
+versionstamp writer so repeated runs always change the key; both mutants were
+rerun against those bytes, with byte-for-byte/SHA-checked source restoration.
+Artifacts: `/var/tmp/query-grind-cast/pr785-review/turnover-watch-*`.
+
+Ten race repetitions pass 1,510 RUN lines, both turnover tests ten times, zero
+FAIL/SKIP, 360s. Full client/facade race suites pass 2,004 RUN lines, zero
+FAIL/SKIP, 273s. Both changed Go-file hashes match across both runs. `just test`
+passes 92/92 targets (43 executed, 49 cached, 961s), all four changed-file hashes
+unchanged during execution. The full-suite output is target-level, not per-test
+no-skip evidence. Logs: `turnover-watch-race-10.log`, `turnover-watch-race-full.log`,
+`turnover-watch-full.log` and matching hash inventories/results. These evidence-
+only TODO/RFC updates follow the full run; normal hook and exact-HEAD same-session
+delta reviews remain required. No final approval is claimed.
+
+The remote 3f15b0877 CI now has seven completed successful checks
+(`turnover-watch-pr-state-precommit.json`); those do not cover this dirty repair
+or close the earlier timestamp fixture failure. Its regression/repair remains
+losslessly parked in
+`timestamp-seed-pending.patch` with its hash inventory; restore it after this
+client review closes. No production autocommit replay or golden changes. Other
+planner/lowering and final PR gates remain open; no merge or new hunt slice.

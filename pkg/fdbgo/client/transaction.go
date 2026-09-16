@@ -321,6 +321,9 @@ type txOptions struct {
 	// beforeTurnoverRetirement parks conditional turnover before its leaf-lock
 	// lifetime claim, with resetMu held but no execution lease or leaf lock.
 	beforeTurnoverRetirement func()
+	// beforeOnErrorWatchCleanup parks terminal cleanup before claiming watch
+	// state; it runs without resetMu or readErrMu.
+	beforeOnErrorWatchCleanup func()
 
 	// backoffJitter: if non-nil, replaces rand.Float64() in nextBackoff's jitter.
 	// Test-only knob to make the backoff delay deterministic (production leaves it
@@ -2417,12 +2420,23 @@ func (tx *Transaction) OnError(ctx context.Context, err error) (rerr error) {
 	defer func() {
 		if rerr != nil {
 			tx.failCapturedIncarnation(op.inc, &wire.FDBError{Code: ErrTransactionCancelled})
+			if tx.beforeOnErrorWatchCleanup != nil {
+				tx.beforeOnErrorWatchCleanup()
+			}
 			tx.readErrMu.Lock()
 			owned := op.lease != nil && op.lease.active
 			tx.readErrMu.Unlock()
-			if owned {
-				tx.cancelWatches()
+			if !owned {
+				// Conditional turnover can reject a timeout after releasing
+				// the operation's token. Reclaim cleanup authority only on the
+				// same incarnation; a successor's watches are never ours.
+				cleanupLease := tx.enterReadState(ctx, op.inc, false)
+				if cleanupLease == nil {
+					return
+				}
+				defer cleanupLease.release()
 			}
+			tx.cancelWatches()
 		}
 	}()
 	// A cancelled txn can never be retried — C++ OnError races resetPromise and returns

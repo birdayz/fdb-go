@@ -743,6 +743,17 @@ func TestFDBOnErrorCannotEraseTerminalCauseAtTurnover(t *testing.T) {
 			if _, err := tx.GetReadVersion(ctx); err != nil {
 				t.Fatal(err)
 			}
+			watchKey := []byte(t.Name() + "/watch")
+			value, version, span, watchCtx, watchCancel, err := tx.WatchSetup(ctx, watchKey)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer watchCancel()
+			watchDone := make(chan error, 1)
+			go func() { watchDone <- tx.WatchPoll(watchCtx, watchCancel, watchKey, value, version, span) }()
+			if got := db.db.outstandingWatches.Load(); got != 1 {
+				t.Fatalf("watch setup charged %d slots, want 1", got)
+			}
 			tx.readErrMu.Lock()
 			old, timerGen := tx.readLife, tx.readLife.timerGen
 			tx.readErrMu.Unlock()
@@ -764,8 +775,17 @@ func TestFDBOnErrorCannotEraseTerminalCauseAtTurnover(t *testing.T) {
 			}
 			waitCommitLifetimeGate(t, ctx, old.ctx.Done(), "terminal cause published before retirement claim")
 			pause.unblock()
-			err := receiveLifetimeTest(t, done, "OnError after terminal cause")
+			err = receiveLifetimeTest(t, done, "OnError after terminal cause")
 			requireCommitLifetimeCode(t, err, want, "OnError must not erase completed terminal failure")
+			if watchCtx.Err() == nil {
+				t.Fatal("terminal OnError left the old watch context live before Reset/Cancel cleanup")
+			}
+			if watchErr := receiveLifetimeTest(t, watchDone, "terminal watch completion"); watchErr == nil {
+				t.Fatal("terminal watch completed successfully on an unchanged key")
+			}
+			if got := db.db.outstandingWatches.Load(); got != 0 {
+				t.Fatalf("terminal OnError leaked %d watch slots before Reset/Cancel cleanup", got)
+			}
 			tx.readErrMu.Lock()
 			current := tx.readLife
 			tx.readErrMu.Unlock()
@@ -791,5 +811,80 @@ func TestFDBOnErrorCannotEraseTerminalCauseAtTurnover(t *testing.T) {
 				t.Fatalf("replacement mutation: %q", got)
 			}
 		})
+	}
+}
+
+func TestFDBOnErrorReleasedCleanupCannotCancelReplacementWatch(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db := openTestDB(t, ctx)
+	tx := db.CreateTransaction()
+	defer tx.Cancel()
+	tx.SetTimeout(60000)
+	watch := func(key []byte) (context.Context, <-chan error) {
+		t.Helper()
+		value, version, span, watchCtx, watchCancel, err := tx.WatchSetup(ctx, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(watchCancel)
+		done := make(chan error, 1)
+		go func() { done <- tx.WatchPoll(watchCtx, watchCancel, key, value, version, span) }()
+		return watchCtx, done
+	}
+	_, oldWatchDone := watch([]byte(t.Name() + "/old"))
+	tx.readErrMu.Lock()
+	old, timerGen := tx.readLife, tx.readLife.timerGen
+	tx.readErrMu.Unlock()
+	claim := &pausedCommit{reached: make(chan struct{}), release: make(chan struct{})}
+	defer claim.unblock()
+	cleanup := &pausedCommit{reached: make(chan struct{}), release: make(chan struct{})}
+	defer cleanup.unblock()
+	tx.beforeTurnoverRetirement = func() {
+		close(claim.reached)
+		<-claim.release
+	}
+	tx.beforeOnErrorWatchCleanup = func() {
+		close(cleanup.reached)
+		<-cleanup.release
+	}
+	done := make(chan error, 1)
+	go func() { done <- tx.OnError(ctx, &wire.FDBError{Code: 1020}) }()
+	waitCommitLifetimeGate(t, ctx, claim.reached, "conditional turnover")
+	tx.fireReadTimeout(old, timerGen)
+	claim.unblock()
+	waitCommitLifetimeGate(t, ctx, cleanup.reached, "released-owner terminal cleanup")
+
+	// OnError has rejected turnover and owns no execution lease. Reset must
+	// finish now, and its new watch must remain outside that old cleanup.
+	tx.Reset()
+	if err := receiveLifetimeTest(t, oldWatchDone, "old watch retired by explicit Reset"); err == nil {
+		t.Fatal("old watch succeeded on an unchanged key")
+	}
+	if got := db.db.outstandingWatches.Load(); got != 0 {
+		t.Fatalf("explicit Reset left %d old watch slots", got)
+	}
+	newKey := []byte(t.Name() + "/replacement")
+	newWatchCtx, newWatchDone := watch(newKey)
+	if got := db.db.outstandingWatches.Load(); got != 1 {
+		t.Fatalf("replacement watch charged %d slots, want 1", got)
+	}
+	cleanup.unblock()
+	requireCommitLifetimeCode(t, receiveLifetimeTest(t, done, "old OnError return"), 1031, "old timeout survives Reset")
+	if err := newWatchCtx.Err(); err != nil {
+		t.Fatalf("old terminal cleanup canceled replacement watch: %v", err)
+	}
+	requireLifetimeTestBlocked(t, newWatchDone, "replacement watch before a key change")
+	if _, err := db.Transact(ctx, func(writer *Transaction) (any, error) {
+		// A server-minted value changes even across -test.count iterations.
+		writer.Atomic(MutSetVersionstampedValue, newKey, make([]byte, 14))
+		return nil, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	awaitCommitLifetimeResult(t, ctx, newWatchDone, "replacement watch after independent key change")
+	if got := db.db.outstandingWatches.Load(); got != 0 {
+		t.Fatalf("replacement watch completion left %d slots", got)
 	}
 }

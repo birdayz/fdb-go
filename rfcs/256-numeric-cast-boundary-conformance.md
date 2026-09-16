@@ -2467,5 +2467,53 @@ lines, zero FAIL/SKIP (258s). All three changed Go hashes match across both runs
 `just test` passes 92/92 targets (43 executed, 49 cached, 968s); all five changed-
 file hashes match across execution. These evidence-only TODO/RFC updates follow
 the full run and remain subject to the normal commit hook. Logs/hash inventories
-use the `turnover-terminal-` prefix. Commit and exact-HEAD delta approval remain
-pending; other PR findings remain open.
+use the `turnover-terminal-` prefix. The normal hook subsequently passed and the
+correction was committed/pushed as 3f15b0877. C++ and Torvalds gave scoped
+atomicity ACKs, but the independent review NAKed rejected-turnover watch cleanup,
+addressed in the following block. Other PR findings remain open.
+
+### Rejected-turnover terminal watch cleanup correction
+
+The independent implementation review of 3f15b0877 accepted the atomic claim but
+found a cleanup obligation missed after OnError releases its lease. Timeout
+rejection skips resetFields, and the terminal defer previously canceled watches
+only with the original lease still active. The accepted incarnation protocol
+already requires terminal cleanup without affecting successor state.
+
+C++ 7.3.77 ReadYourWrites.actor.cpp:1499–1533 races OnError against resetPromise;
+its watch actor at 1284–1335 observes transaction failure. NativeAPI.actor.cpp:
+5637–5684 releases the outstanding-watch counter on both completion and failure.
+The Go correction reuses enterReadState with the captured incarnation and
+wait=false when the original lease was released. A successful cleanup lease
+prevents replacement publication until cancelWatches finishes; if replacement
+has already begun, identity rejection leaves its watches untouched. Watch mutex
+acquisition and cancellation delivery remain outside readErrMu. No new lifetime
+mechanism, wire bytes, retry/error policy or C++ concurrency guarantee is added.
+
+The retained real-FDB turnover regression now requires pending-watch termination
+and slot release before any explicit Reset/deferred Cancel. Timeout is RED before
+the fix while the public Cancel control passes. A second retained test parks
+released-owner cleanup, resets and creates a replacement watch, then verifies
+old OnError still returns literal 1031 without canceling the replacement. An
+independent writer changes the watched key with a server-minted versionstamp
+(also different across -test.count iterations); the replacement watch must fire
+successfully and release its slot. This checks functionality, not just an unset
+cancellation bit. Controlled Go schedule tests are not live C++ differential
+coverage.
+
+The first focused repaired run passes 23 RUN lines, no FAIL/SKIP. Compiled omission
+and successor-reclaim mutants fail the old-watch leak and replacement-watch
+cancellation assertions, respectively (three RUN/two FAIL including parent; one
+RUN/FAIL). Both were rerun against the final repeat-safe test bytes; original
+source restoration is byte-for-byte/SHA-checked. Logs and source artifacts use
+`turnover-watch-` under `/var/tmp/query-grind-cast/pr785-review`.
+
+Restored ten-run race passes 1,510 RUN lines, both turnover tests ten times, zero
+FAIL/SKIP (360s). Entire client/facade race suites pass 2,004 RUN lines, zero
+FAIL/SKIP (273s). Both changed Go hashes match across both runs. `just test` passes
+92/92 targets (43 executed, 49 cached, 961s), all four changed-file hashes
+unchanged; target-level output is not per-test no-skip evidence. These evidence-
+only TODO/RFC updates follow the full run and require the normal hook. Exact-HEAD
+same-session delta reviews remain pending. The latest TODO.md QSC-04/08 block
+tracks the separate parked timestamp-fixture repair and remaining PR blockers;
+none is waived here.
