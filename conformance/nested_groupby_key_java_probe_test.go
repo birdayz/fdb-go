@@ -296,11 +296,12 @@ var _ = Describe("NestedGroupByKeyJavaProbe", func() {
 			return ""
 		}
 		// Java got the key past semantic analysis: it reached the planner and
-		// the planner is what turned it away, with no SQLSTATE — the flat key's
-		// own outcome. Anything carrying a SQLSTATE was refused EARLIER, which
-		// is the case this whole probe exists to rule out.
+		// the planner is what turned it away. The conformance transport now
+		// preserves PlanGenerator's 0AF00 wrapper as well as the deepest cause,
+		// so both the code and the planner message are required; 42703 would
+		// mean semantic resolution refused the key earlier.
 		javaSemanticallyAccepted := func(r plandiff.RunResult) bool {
-			return r.Err != nil && javaState(r) == "" && strings.Contains(errMsg(r), "could not plan")
+			return r.Err != nil && javaState(r) == "0AF00" && strings.Contains(errMsg(r), "could not plan")
 		}
 
 		var divergences []string

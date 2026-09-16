@@ -2,6 +2,7 @@ package semantic
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -175,20 +176,38 @@ func TestScope_AddSource_DuplicateAlias(t *testing.T) {
 		t.Fatalf("sources = %d, want both duplicate legs registered", got)
 	}
 
-	// A duplicate involving a SHADOWING source (lateral-unnest AS/AT
-	// binding) still errors in BOTH directions — Java genuinely forbids a
-	// duplicate unnest alias at FROM (RFC-142), and the join-ON builder's
-	// drop-risk taxonomy keys on this signal.
-	err := s.AddSource(ScopeSource{Table: users, Alias: NewUnquoted("u"), Shadowing: true})
-	var dae *DuplicateAliasError
-	if !errors.As(err, &dae) {
-		t.Fatalf("shadowing duplicate must keep erroring (RFC-142), got %T: %v", err, err)
+	// Virtual element sources follow the same attribute ambiguity rule.
+	if err := s.AddSource(ScopeSource{Table: users, Alias: NewUnquoted("u"), CorrelationName: "Q$DUP2", Shadowing: true}); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := s.ResolveColumn(NewUnquoted("name"))
+	var ambiguous *AmbiguousColumnError
+	if !errors.As(err, &ambiguous) {
+		t.Fatalf("three matching attributes must be ambiguous: %v", err)
+	}
+	if err := s.AddSource(ScopeSource{Table: users, Alias: NewUnquoted("u"), CorrelationName: "Q$DUP3", Shadowing: true}); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = s.ResolveColumn(NewUnquoted("name"))
+	if !errors.As(err, &ambiguous) {
+		t.Fatalf("two shadowing attributes must be ambiguous: %v", err)
 	}
 	s2 := NewScope(nil)
-	_ = s2.AddSource(ScopeSource{Table: users, Alias: NewUnquoted("x"), Shadowing: true})
-	err = s2.AddSource(ScopeSource{Table: users, Alias: NewUnquoted("x")})
-	if !errors.As(err, &dae) {
-		t.Fatalf("plain-over-shadowing duplicate must keep erroring (RFC-142), got %T: %v", err, err)
+	if err := s2.AddSource(ScopeSource{Table: users, Alias: NewUnquoted("x"), CorrelationName: "X", Shadowing: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s2.AddSource(ScopeSource{Table: users, Alias: NewUnquoted("x"), CorrelationName: "Q$DUP1"}); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = s2.ResolveColumn(NewUnquoted("name"))
+	if !errors.As(err, &ambiguous) {
+		t.Fatalf("element and later table attribute must be ambiguous: %v", err)
+	}
+	// Identity collisions are unsafe even under distinct display aliases.
+	err = s2.AddSource(ScopeSource{Table: users, Alias: NewUnquoted("different"), CorrelationName: "x"})
+	var duplicate *DuplicateAliasError
+	if !errors.As(err, &duplicate) {
+		t.Fatalf("duplicate runtime identity: %v", err)
 	}
 }
 
@@ -264,5 +283,43 @@ func TestScope_SourcesDefensiveCopy(t *testing.T) {
 	s2 := s.Sources()
 	if s2[0].Alias.Name() == "HACKED" {
 		t.Fatal("Sources() mutation leaked")
+	}
+}
+
+// TestUnnestAttributeDoesNotOverrideAnotherSource matches Java's attribute-list
+// lookup: a FROM element and a table column with the same name are ambiguous,
+// regardless of source order or whether their display aliases also coincide.
+func TestUnnestAttributeDoesNotOverrideAnotherSource(t *testing.T) {
+	t.Parallel()
+	for _, tableAlias := range []string{"U", "V"} {
+		for _, reverse := range []bool{false, true} {
+			t.Run(fmt.Sprintf("table=%s/reverse=%t", tableAlias, reverse), func(t *testing.T) {
+				t.Parallel()
+				sources := []ScopeSource{
+					{Alias: NewUnquoted(tableAlias), CorrelationName: "TABLE", Table: &StaticTable{TableColumns: []Column{{Id: NewUnquoted("v"), Type: "BIGINT"}}}},
+					{Alias: NewUnquoted("v"), CorrelationName: "ELEMENT", Shadowing: true, Table: &StaticTable{TableColumns: []Column{{Id: NewUnquoted("v"), Type: "BIGINT"}}}},
+				}
+				if reverse {
+					sources[0], sources[1] = sources[1], sources[0]
+				}
+				scope := NewScope(nil)
+				for _, source := range sources {
+					if err := scope.AddSource(source); err != nil {
+						t.Fatal(err)
+					}
+				}
+				_, _, err := scope.ResolveColumn(NewUnquoted("v"))
+				var ambiguous *AmbiguousColumnError
+				if !errors.As(err, &ambiguous) {
+					t.Fatalf("duplicate attribute resolved with %v, want ambiguity", err)
+				}
+				if tableAlias == "U" {
+					_, source, _, err := scope.ResolvePathNested([]Identifier{NewUnquoted("u"), NewUnquoted("v")})
+					if err != nil || source.CorrelationName != "TABLE" {
+						t.Fatalf("qualified table column = %+v / %v", source, err)
+					}
+				}
+			})
+		}
 	}
 }

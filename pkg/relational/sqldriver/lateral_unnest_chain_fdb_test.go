@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -399,11 +400,12 @@ func TestFDB_ChainedUnnest(t *testing.T) {
 		}
 	})
 
-	t.Run("SELECT star exposes outer columns plus both chain element columns", func(t *testing.T) {
-		// The outer T4 columns (ID, SARR, SCARR, SUB) plus the two chained element
-		// bindings X (the whole ELEM struct) and Y (the SUB scalar), in FROM order.
+	t.Run("SELECT star exposes outer columns plus record-element fields and scalar element", func(t *testing.T) {
+		// A record element without AT publishes its visible fields; its ephemeral
+		// whole-object alias X remains available only to an explicit SELECT X.
+		// The scalar Y is published directly after those fields.
 		assertColumns(t, `SELECT * FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y"`,
-			[]string{"ID", "SARR", "SCARR", "SUB", "X", "Y"})
+			[]string{"ID", "SARR", "SCARR", "SUB", "SUB", "K", "SUBSTRUCT", "Y"})
 	})
 
 	t.Run("shadow precedence: x.SUB reads the element field, not the same-named outer column", func(t *testing.T) {
@@ -471,49 +473,46 @@ func TestFDB_ChainedUnnest(t *testing.T) {
 		}
 	})
 
-	t.Run("chain rooted at a CTE owner declines loudly (UNSUPPORTED_QUERY)", func(t *testing.T) {
-		// A chained unnest whose chain bottoms at a CTE/derived
-		// owner (not a real-table scan) declines LOUDLY. Here the first link
-		// `c.SARR AS X` is a class-3 derived-owner unnest; the SECOND link
-		// `X.SUB AS Y` is chained, but resolving X's element bottoms at the CTE
-		// `c` (not a base-table scan), so chainedOwnerElementMessage declines and
-		// the translator raises UNSUPPORTED_QUERY rather than resolve through the
-		// CTE body (class-3×/class-4 composition is a separate follow-on).
+	t.Run("chain rooted at a CTE owner", func(t *testing.T) {
 		const q = `WITH "C" AS (SELECT * FROM T4) SELECT "Y" FROM "C", "C"."SARR" AS "X", "X"."SUB" AS "Y"`
-		if code := planErr(t, q); code != api.ErrCodeUnsupportedQuery {
-			t.Fatalf("CTE-rooted chain: got SQLSTATE %s, want 0AF00 (UNSUPPORTED_QUERY)", code)
+		explain, rows := queryRows(t, q)
+		if !strings.Contains(explain, "Explode") {
+			t.Fatalf("CTE-rooted chain must retain an Explode witness: %s", explain)
+		}
+		got := make([]string, 0, len(rows))
+		for _, row := range rows {
+			got = append(got, positionalPipeSprint(row))
+		}
+		sort.Strings(got)
+		want := []string{"100", "200", "300", "400"}
+		if !slices.Equal(got, want) {
+			t.Fatalf("CTE-rooted chain rows = %v, want %v", got, want)
 		}
 	})
 
-	t.Run("chain rooted at a DERIVED-TABLE owner declines loudly (UNSUPPORTED_QUERY)", func(t *testing.T) {
-		// The derived-table primary form: `(SELECT * FROM T4) AS D` is a
-		// derived owner; the chained `X.SUB AS Y` bottoms at D (not a base scan),
-		// so chainedOwnerElementMessage's real-table branch (guarded by
-		// outerSourceIsDerivedTable) declines — never resolving against a real
-		// same-named table's descriptor (the P2a shadow the class-3 structural
-		// guard closes). Loud 0AF00, never wrong-type metadata or wrong rows.
+	t.Run("chain rooted at a derived-table owner", func(t *testing.T) {
 		const q = `SELECT "Y" FROM (SELECT * FROM T4) AS "D", "D"."SARR" AS "X", "X"."SUB" AS "Y"`
-		if code := planErr(t, q); code != api.ErrCodeUnsupportedQuery {
-			t.Fatalf("derived-owner chain: got SQLSTATE %s, want 0AF00 (UNSUPPORTED_QUERY)", code)
+		explain, rows := queryRows(t, q)
+		if !strings.Contains(explain, "Explode") {
+			t.Fatalf("derived-owner chain must retain an Explode witness: %s", explain)
+		}
+		got := make([]string, 0, len(rows))
+		for _, row := range rows {
+			got = append(got, positionalPipeSprint(row))
+		}
+		sort.Strings(got)
+		want := []string{"100", "200", "300", "400"}
+		if !slices.Equal(got, want) {
+			t.Fatalf("derived-owner chain rows = %v, want %v", got, want)
 		}
 	})
 
-	t.Run("multi-segment chained sub-path (x.a.b) declines with its OWN cause", func(t *testing.T) {
-		// A multi-HOP sub-path on the element (`x.SUBSTRUCT.DEEP AS y`, 3 segments)
-		// is a Go reach gap Java DOES support — it must decline with the honest
-		// "multi-segment" message, not be mislabeled a CTE/derived-root decline
-		// (both are 0AF00; the message is the distinguishing signal).
+	t.Run("multi-segment path cannot descend through an ARRAY", func(t *testing.T) {
+		// SUBSTRUCT is ARRAY<ELEM2>, not one ELEM2 value. A further FROM leg
+		// is required before DEEP is addressable (the three-link test above).
 		const q = `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUBSTRUCT"."DEEP" AS "Y"`
-		_, perr := embedded.PlanRecordQueryWithMetadata(q, md, nil)
-		if perr == nil {
-			t.Fatalf("multi-segment sub-path: expected a loud decline, got nil")
-		}
-		var se *api.Error
-		if !errors.As(perr, &se) || se.Code != api.ErrCodeUnsupportedQuery {
-			t.Fatalf("multi-segment sub-path: got %v, want 0AF00 (UNSUPPORTED_QUERY)", perr)
-		}
-		if !strings.Contains(se.Message, "multi-segment") {
-			t.Fatalf("multi-segment sub-path: message %q should name the real cause (multi-segment), not a CTE/derived-root decline", se.Message)
+		if code := planErr(t, q); code != api.ErrCodeUndefinedColumn {
+			t.Fatalf("ARRAY intermediate error = %s, want 42703", code)
 		}
 	})
 
@@ -539,21 +538,19 @@ func TestFDB_ChainedUnnest(t *testing.T) {
 		}
 	})
 
-	// Regression pin (wrong value): the chained path used to bypass translateUnnestJoin's
-	// AS==AT overwrite guard. `... AS "Y" AT "Y"` appends the element and the ordinal
-	// under the SAME name; the map-keyed result silently overwrites the element with the
-	// ordinal, so `SELECT "Y"` returns the ordinal, not the unnested value. Java binds AS
-	// and AT to distinct quantifier columns (a duplicate is a binding error), so Go must
-	// reject cleanly. The guard now fires on the chained path too.
-	t.Run("chained AS==AT dup alias rejects (element/ordinal overwrite)", func(t *testing.T) {
-		const q = `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" AT "Y"`
-		if code := planErr(t, q); code != api.ErrCodeDuplicateAlias {
-			t.Fatalf("chained AS==AT dup: got SQLSTATE %s, want 42710 (DUPLICATE_ALIAS) — the ordinal must not silently overwrite the element", code)
+	// AS and AT are distinct output slots even when their display labels match.
+	// Leaving the duplicate label unused is legal; referring to it is ambiguous.
+	t.Run("chained AS==AT is legal unused and ambiguous referenced", func(t *testing.T) {
+		const referenced = `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" AT "Y"`
+		if code := planErr(t, referenced); code != api.ErrCodeAmbiguousColumn {
+			t.Fatalf("chained AS==AT reference: got SQLSTATE %s, want 42702", code)
 		}
-		// The distinct-alias sibling still chains and answers (the guard is scoped to
-		// the collision, not the WITH-ORDINALITY chain itself).
-		if _, rows := queryRows(t, `SELECT "ID", "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" AT "O"`); len(rows) == 0 {
-			t.Fatal("distinct AS/AT chain returned zero rows — the dup guard must not block valid WITH ORDINALITY chains")
+		explain, rows := queryRows(t, `SELECT 1 FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" AT "Y"`)
+		if len(rows) != 4 {
+			t.Fatalf("unused chained AS==AT rows = %d, want 4", len(rows))
+		}
+		if !strings.Contains(explain, "WITH ORDINALITY") {
+			t.Fatalf("unused chained AS==AT must retain ordinality Explode: %s", explain)
 		}
 	})
 

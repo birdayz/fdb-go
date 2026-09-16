@@ -66,6 +66,7 @@ go_test(
         "testmain_test.go",
         "transact_ctx_fdb_test.go",
         "unbounded_default_pin_test.go",
+        "versionstamp_lifetime_test.go",
     ],
     embed = [":fdb"],
     embedsrcs = [

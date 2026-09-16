@@ -1,5 +1,7 @@
 package values
 
+import "sort"
+
 // scalarFunctionOperator is the evaluator dispatch key stored in the scalar
 // function catalog. Aliases share an operator, so adding or removing a spelling
 // changes evaluator reachability and planner metadata together.
@@ -66,36 +68,13 @@ const (
 	scalarFunctionCommonNumericArguments
 )
 
-// LegacyMapScalarFunction is the compatibility evaluator operation used for
-// INFORMATION_SCHEMA map filtering. Its deliberately smaller surface is
-// catalogued beside the main Cascades capabilities, while the compatibility
-// evaluator retains its distinct argument, carrier, and SQLSTATE semantics.
-type LegacyMapScalarFunction uint8
-
-const (
-	legacyMapScalarFunctionUnsupported LegacyMapScalarFunction = iota
-	LegacyMapScalarFunctionCoalesce
-	LegacyMapScalarFunctionGreatest
-	LegacyMapScalarFunctionLeast
-	LegacyMapScalarFunctionYear
-	LegacyMapScalarFunctionMonth
-	LegacyMapScalarFunctionDay
-	LegacyMapScalarFunctionHour
-	LegacyMapScalarFunctionMinute
-	LegacyMapScalarFunctionSecond
-	LegacyMapScalarFunctionDayOfMonth
-	LegacyMapScalarFunctionDayOfWeek
-	LegacyMapScalarFunctionDayOfYear
-)
-
 type scalarFunctionDefinition struct {
-	operator          scalarFunctionOperator
-	resultType        Type
-	resultStrategy    scalarFunctionResultStrategy
-	argumentStrategy  scalarFunctionArgumentStrategy
-	cascadesSafe      bool
-	scalarCall        bool
-	legacyMapFunction LegacyMapScalarFunction
+	operator         scalarFunctionOperator
+	resultType       Type
+	resultStrategy   scalarFunctionResultStrategy
+	argumentStrategy scalarFunctionArgumentStrategy
+	cascadesSafe     bool
+	scalarCall       bool
 	// physicalOperatorTypes is the set of RESULT type codes for which a
 	// physical implementation of this function exists. Empty means
 	// unrestricted.
@@ -319,14 +298,6 @@ func routedScalarFunction(
 	}
 }
 
-func legacyMapScalarCall(
-	definition scalarFunctionDefinition,
-	function LegacyMapScalarFunction,
-) scalarFunctionDefinition {
-	definition.legacyMapFunction = function
-	return definition
-}
-
 func commonNumericArguments(
 	definition scalarFunctionDefinition,
 ) scalarFunctionDefinition {
@@ -406,19 +377,15 @@ var scalarFunctionCatalog = map[string]scalarFunctionDefinition{
 	"LOG": scalarCallFunction(scalarFunctionLog, NullableDouble),
 
 	// Null/comparison helpers.
-	"COALESCE": legacyMapScalarCall(
-		polymorphicScalarCall(scalarFunctionCoalesce, scalarFunctionCommonResult),
-		LegacyMapScalarFunctionCoalesce),
+	"COALESCE": polymorphicScalarCall(scalarFunctionCoalesce, scalarFunctionCommonResult),
 	"IFNULL": polymorphicScalarCall(
 		scalarFunctionIfNull, scalarFunctionCommonResult),
-	"GREATEST": legacyMapScalarCall(withPhysicalOperatorTypes(commonNumericArguments(
+	"GREATEST": withPhysicalOperatorTypes(commonNumericArguments(
 		polymorphicScalarCall(scalarFunctionGreatest, scalarFunctionCommonResult)),
 		comparisonPhysicalOperatorTypes),
-		LegacyMapScalarFunctionGreatest),
-	"LEAST": legacyMapScalarCall(withPhysicalOperatorTypes(commonNumericArguments(
+	"LEAST": withPhysicalOperatorTypes(commonNumericArguments(
 		polymorphicScalarCall(scalarFunctionLeast, scalarFunctionCommonResult)),
 		comparisonPhysicalOperatorTypes),
-		LegacyMapScalarFunctionLeast),
 	"NULLIF": internalScalarCall(
 		scalarFunctionNullIf, scalarFunctionNullableFirstArgumentResult),
 	"IF": internalScalarCall(
@@ -443,33 +410,15 @@ var scalarFunctionCatalog = map[string]scalarFunctionDefinition{
 	"BITMAP_BIT_POSITION":  scalarCallFunction(scalarFunctionBitmapBitPosition, NullableLong),
 
 	// Date/time functions.
-	"YEAR": legacyMapScalarCall(
-		scalarCallFunction(scalarFunctionDatePart, NullableLong),
-		LegacyMapScalarFunctionYear),
-	"MONTH": legacyMapScalarCall(
-		scalarCallFunction(scalarFunctionDatePart, NullableLong),
-		LegacyMapScalarFunctionMonth),
-	"DAY": legacyMapScalarCall(
-		scalarCallFunction(scalarFunctionDatePart, NullableLong),
-		LegacyMapScalarFunctionDay),
-	"DAYOFMONTH": legacyMapScalarCall(
-		scalarCallFunction(scalarFunctionDatePart, NullableLong),
-		LegacyMapScalarFunctionDayOfMonth),
-	"HOUR": legacyMapScalarCall(
-		scalarCallFunction(scalarFunctionDatePart, NullableLong),
-		LegacyMapScalarFunctionHour),
-	"MINUTE": legacyMapScalarCall(
-		scalarCallFunction(scalarFunctionDatePart, NullableLong),
-		LegacyMapScalarFunctionMinute),
-	"SECOND": legacyMapScalarCall(
-		scalarCallFunction(scalarFunctionDatePart, NullableLong),
-		LegacyMapScalarFunctionSecond),
-	"DAYOFWEEK": legacyMapScalarCall(
-		scalarCallFunction(scalarFunctionDatePart, NullableLong),
-		LegacyMapScalarFunctionDayOfWeek),
-	"DAYOFYEAR": legacyMapScalarCall(
-		scalarCallFunction(scalarFunctionDatePart, NullableLong),
-		LegacyMapScalarFunctionDayOfYear),
+	"YEAR":       scalarCallFunction(scalarFunctionDatePart, NullableLong),
+	"MONTH":      scalarCallFunction(scalarFunctionDatePart, NullableLong),
+	"DAY":        scalarCallFunction(scalarFunctionDatePart, NullableLong),
+	"DAYOFMONTH": scalarCallFunction(scalarFunctionDatePart, NullableLong),
+	"HOUR":       scalarCallFunction(scalarFunctionDatePart, NullableLong),
+	"MINUTE":     scalarCallFunction(scalarFunctionDatePart, NullableLong),
+	"SECOND":     scalarCallFunction(scalarFunctionDatePart, NullableLong),
+	"DAYOFWEEK":  scalarCallFunction(scalarFunctionDatePart, NullableLong),
+	"DAYOFYEAR":  scalarCallFunction(scalarFunctionDatePart, NullableLong),
 	"CURRENT_DATE": routedScalarFunction(
 		scalarFunctionStatementDate, NullableDate),
 	"CURRENT_TIME": routedScalarFunction(
@@ -594,19 +543,20 @@ func CommonValueType(branches []Value) Type {
 	return WithNullability(typ, true)
 }
 
-// LookupLegacyMapScalarFunction returns the operation admitted by the legacy
-// INFORMATION_SCHEMA map evaluator without widening that evaluator's surface.
-func LookupLegacyMapScalarFunction(name string) (LegacyMapScalarFunction, bool) {
-	definition, ok := scalarFunctionDefinitionFor(name)
-	if !ok || definition.legacyMapFunction == legacyMapScalarFunctionUnsupported {
-		return legacyMapScalarFunctionUnsupported, false
-	}
-	return definition.legacyMapFunction, true
-}
-
 // IsCascadesSafeScalarFunction reports whether the named scalar function is
 // admitted to the Cascades SQL pipeline.
 func IsCascadesSafeScalarFunction(name string) bool {
 	definition, ok := scalarFunctionDefinitionFor(name)
 	return ok && definition.cascadesSafe
+}
+
+// ScalarFunctionNames returns a fresh sorted snapshot of registered spellings.
+// Aliases remain separate because each is an independently reachable SQL name.
+func ScalarFunctionNames() []string {
+	names := make([]string, 0, len(scalarFunctionCatalog))
+	for name := range scalarFunctionCatalog {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }

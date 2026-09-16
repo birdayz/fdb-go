@@ -2874,11 +2874,8 @@ func evalScalarFunction(name string, args []any) (any, error) {
 				result = roundFloat64DecimalPlaces(f, decimals)
 			}
 		}
-		// Preserve the compact direct-evaluator carrier. ScalarFunctionValue
-		// converts it to the declared FLOAT/DOUBLE carrier at its boundary.
-		if result == math.Trunc(result) && float64FitsInt64(result) {
-			return int64(result), nil
-		}
+		// Keep floating inputs floating: an integer carrier would erase -0
+		// before declared-type coercion or constant folding can preserve it.
 		return result, nil
 	case scalarFunctionPi:
 		// Zero-argument constant.
@@ -2914,9 +2911,6 @@ func evalScalarFunction(name string, args []any) (any, error) {
 		result := math.Pow(base, exp)
 		if math.IsNaN(result) || math.IsInf(result, 0) {
 			return nil, nil
-		}
-		if result == math.Trunc(result) && float64FitsInt64(result) {
-			return int64(result), nil
 		}
 		return result, nil
 	case scalarFunctionCoalesce:
@@ -4088,6 +4082,16 @@ func (e *InvalidCastError) Error() string {
 	return e.Message
 }
 
+// InvalidEnumValueError mirrors SemanticException.INVALID_ENUM_VALUE: the
+// string comparand is not a declared member of the target enum.
+type InvalidEnumValueError struct {
+	Value string
+}
+
+func (e *InvalidEnumValueError) Error() string {
+	return "Invalid enum value for the enum type " + e.Value
+}
+
 // InvalidArgumentError is returned by a scalar function when an argument
 // is outside the function's mathematical domain — currently SQRT of a
 // negative number. The executor converts this to SQLSTATE 22023
@@ -4229,12 +4233,6 @@ func (c *CastValue) Type() Type {
 	return WithNullability(c.Target, true)
 }
 
-// javaMathRound mirrors java.lang.Math.round(double) on Java 7+ (post
-// JDK-6430675): round to nearest, ties toward positive infinity. It corrects
-// the pre-Java-7 floor(x+0.5) algorithm at the boundary where x+0.5 rounds up
-// purely due to floating-point error — e.g. the largest double below 0.5
-// (0.49999999999999994) must round to 0, not 1. Go's math.Round differs (it
-// rounds half AWAY from zero, so -0.5 → -1 vs Java's 0), so it cannot be used.
 // trimJavaWhitespace strips leading/trailing characters the way Java's
 // String.trim() does — ONLY code points <= U+0020 — not the full Unicode
 // whitespace set strings.TrimSpace removes. Numeric CAST(string AS
@@ -4245,7 +4243,10 @@ func trimJavaWhitespace(s string) string {
 	return strings.TrimFunc(s, func(r rune) bool { return r <= ' ' })
 }
 
-func javaMathRound(a float64) float64 {
+// javaMathRound mirrors Math.round(double): nearest integer, ties toward
+// positive infinity, with saturation at signed-64 bounds. The integer result
+// must not travel through float64: Long.MAX_VALUE would round up to 2^63.
+func javaMathRound(a float64) int64 {
 	// Integer bit-ops on the IEEE-754 representation, exactly as Java does —
 	// floor(a+0.5) can't be patched up in float (the correcting subtraction
 	// rounds too).
@@ -4263,17 +4264,54 @@ func javaMathRound(a float64) float64 {
 		if longBits < 0 {
 			r = -r
 		}
-		return float64(((r >> uint(shift)) + 1) >> 1)
+		return ((r >> uint(shift)) + 1) >> 1
 	}
-	if shift < 0 {
-		// |a| >= 2^52 — already an exact integer; rounding is the identity.
-		// Return a unchanged so a caller's overflow range-check sees the true
-		// magnitude. (Java's Math.round saturates to Long.MAX/MIN here, but that
-		// would mask CAST overflow detection, e.g. CAST(1e20 AS BIGINT).)
-		return a
+	// Java's fallback is a saturating floating-to-long conversion. The upper
+	// comparison is inclusive: float64(MaxInt64) is exactly 2^63.
+	if a >= 0x1p63 {
+		return math.MaxInt64
 	}
-	// shift >= 64 — |a| < 2^-12, far below 0.5, so it rounds to 0.
-	return 0
+	if a <= -0x1p63 {
+		return math.MinInt64
+	}
+	if math.IsNaN(a) {
+		return 0
+	}
+	return int64(a)
+}
+
+func javaMathRoundFloat(a float32) int64 {
+	// Widening binary32 to binary64 is exact, so nearest-integer rounding is
+	// unchanged. Math.round(float) saturates to int, not long.
+	rounded := javaMathRound(float64(a))
+	return min(max(rounded, math.MinInt32), math.MaxInt32)
+}
+
+func castFloatingToInteger(v float64, source, target TypeCode) (any, error) {
+	if source == TypeCodeFloat {
+		v = float64(float32(v))
+	}
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return nil, &InvalidCastError{Message: fmt.Sprintf("Cannot cast NaN or Infinite to %v", target)}
+	}
+	if source == TypeCodeFloat {
+		// Java FLOAT_TO_LONG boxes Math.round(float)'s int as Integer, which
+		// cannot populate a LONG result record (RFC-256). Preserve the numeric
+		// operation while using the declared SQL target's canonical Go carrier.
+		return javaMathRoundFloat(float32(v)), nil
+	}
+	rounded := javaMathRound(v)
+	if target == TypeCodeInt {
+		return int64(int32(rounded)), nil
+	}
+	return rounded, nil
+}
+
+// CastEvaluated applies CAST to a value whose declared SQL source type is known.
+// A float64 carrier alone cannot distinguish FLOAT from DOUBLE. This shares the
+// scalar/array conversion used by CastValue without constructing a child Value.
+func CastEvaluated(v any, source, target Type) (any, error) {
+	return (&CastValue{Target: target}).castEvaluated(v, source)
 }
 
 func (c *CastValue) Evaluate(evalCtx any) (any, error) {
@@ -4301,6 +4339,16 @@ func (c *CastValue) castEvaluated(v any, source Type) (any, error) {
 		sourceCode = source.Code()
 	}
 	switch c.Target.Code() {
+	case TypeCodeEnum:
+		if enum, ok := c.Target.(*EnumType); ok {
+			if name, isString := v.(string); isString {
+				return stringToEnumValue(enum, name)
+			}
+			if sourceCode == TypeCodeEnum {
+				return v, nil
+			}
+		}
+		return nil, &InvalidCastError{Message: "Cannot cast value to ENUM"}
 	case TypeCodeArray:
 		// Java CastValue.castArrayToArray: cast element-wise, keeping NULL
 		// elements as NULL and an empty array empty. Each element goes
@@ -4369,14 +4417,9 @@ func (c *CastValue) castEvaluated(v any, source Type) (any, error) {
 			}
 			return int64(0), nil
 		case float64:
-			if val != val || math.IsInf(val, 0) {
-				return nil, &InvalidCastError{Message: "Cannot cast NaN or Infinite to INT"}
-			}
-			rounded := javaMathRound(val)
-			if rounded > math.MaxInt32 || rounded < math.MinInt32 {
-				return nil, &InvalidCastError{Message: fmt.Sprintf("Cannot cast %v to INT: out of range", val)}
-			}
-			return int64(int32(rounded)), nil
+			return castFloatingToInteger(val, sourceCode, TypeCodeInt)
+		case float32:
+			return castFloatingToInteger(float64(val), sourceCode, TypeCodeInt)
 		case string:
 			n, err := strconv.ParseInt(trimJavaWhitespace(val), 10, 32)
 			if err != nil {
@@ -4398,14 +4441,9 @@ func (c *CastValue) castEvaluated(v any, source Type) (any, error) {
 			}
 			return int64(0), nil
 		case float64:
-			if val != val || math.IsInf(val, 0) {
-				return nil, &InvalidCastError{Message: "Cannot cast NaN or Infinite to LONG"}
-			}
-			rounded := javaMathRound(val)
-			if !float64FitsInt64(rounded) {
-				return nil, &InvalidCastError{Message: fmt.Sprintf("Cannot cast %v to LONG: out of range", val)}
-			}
-			return int64(rounded), nil
+			return castFloatingToInteger(val, sourceCode, TypeCodeLong)
+		case float32:
+			return castFloatingToInteger(float64(val), sourceCode, TypeCodeLong)
 		case string:
 			n, err := strconv.ParseInt(trimJavaWhitespace(val), 10, 64)
 			if err != nil {
@@ -5127,7 +5165,7 @@ func (p *PromoteValue) Type() Type {
 // Name returns the debug-print kind.
 func (*PromoteValue) Name() string { return "promote" }
 
-// Evaluate applies numeric width conversion and STRING → UUID (Java's
+// Evaluate applies numeric width conversion, STRING → ENUM, and STRING → UUID (Java's
 // PromoteValue.STRING_TO_UUID, `UUID.fromString`): a UUID column has
 // no native proto/SQL primitive, so `uuid_col = '<uuid>'` arrives as
 // a STRING comparand. Promoting it to UUID here parses the canonical
@@ -5140,6 +5178,12 @@ func (p *PromoteValue) Evaluate(evalCtx any) (any, error) {
 	childResult, err := p.Child.Evaluate(evalCtx)
 	if err != nil {
 		return nil, err
+	}
+	if enum, ok := p.Target.(*EnumType); ok {
+		if name, isString := childResult.(string); isString {
+			return stringToEnumValue(enum, name)
+		}
+		return childResult, nil
 	}
 	if !IsUuid(p.Target) {
 		return coerceNumericResult(childResult, p.Target), nil
@@ -5162,6 +5206,17 @@ func (p *PromoteValue) Evaluate(evalCtx any) (any, error) {
 	default:
 		return childResult, nil
 	}
+}
+
+// stringToEnumValue is shared by CastValue and PromoteValue, as in Java.
+func stringToEnumValue(enum *EnumType, name string) (any, error) {
+	member, found := enum.LookupValueByName(name)
+	if !found {
+		return nil, &InvalidEnumValueError{Value: name}
+	}
+	// ProtoScalarKindToRowValue and the index tuple both carry an enum's
+	// declared number as int64, not its name or position in the declaration.
+	return int64(member.Number), nil
 }
 
 // --- QuantifiedObjectValue -----------------------------------------

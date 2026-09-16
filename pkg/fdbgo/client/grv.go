@@ -1284,10 +1284,10 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 			replyToken, replyCh, replyHandle := conn.PrepareReply()
 			body := buildGetReadVersionRequest(replyToken, flags, txnCount, span, tags)
 
-			if err := conn.SendFrame(proxy.Token, body); err != nil {
+			if err := sendReadFrame(ctx, conn, proxy.Token, body, replyHandle); err != nil {
 				replyHandle.Cancel()
 				replyHandle.Release()
-				db.handleConnError(proxy.Address)
+				db.handleReadConnError(proxy.Address, err)
 				continue
 			}
 
@@ -1306,7 +1306,7 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 			}
 			replyHandle.Release()
 			if resp.Err != nil {
-				db.handleConnError(proxy.Address)
+				db.handleReadConnError(proxy.Address, resp.Err)
 				continue
 			}
 			// ALIVE on frame receipt, before classifying the reply. The failure

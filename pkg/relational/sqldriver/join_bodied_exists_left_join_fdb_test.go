@@ -257,13 +257,9 @@ func TestFDB_BuriedAliasShadowingIsRejectedUpstream(t *testing.T) {
 			wantGuard: "correlation inside an OUTER",
 		},
 		{
-			// The SECOND route. buildCorrelatedScalar puts the walked ON predicate
-			// onto a JoinLeft node verbatim with no outer-join decline, so if this
-			// shape planned it would reach the rewrite carrying the same external
-			// correlation. It is stopped for an unrelated reason — the predicate
-			// walk refuses a nested EXISTS — which is exactly why it is pinned
-			// separately: that guard could be lifted by work that has nothing to do
-			// with outer joins.
+			// The SECOND route now passes through the shared full-query visitor.
+			// The exact row assertion below proves the externally-correlated ON
+			// conjunct remains on the LEFT JOIN while the nested EXISTS rebinds t.
 			name: "scalar_route_shadowed_enclosing_alias",
 			sql: "SELECT id, (SELECT COUNT(*) FROM a LEFT JOIN b ON b.k = a.k AND b.z = t.z " +
 				"WHERE EXISTS (SELECT 1 FROM t WHERE t.id = a.id)) FROM t",
@@ -295,15 +291,13 @@ func TestFDB_BuriedAliasShadowingIsRejectedUpstream(t *testing.T) {
 					}
 					got = append(got, a.String+"|"+b.String)
 				}
-				t.Fatalf("%s: the query was ACCEPTED and returned %v.\n"+
-					"  This is the re-arming signal, not a pass. The buried-alias map in\n"+
-					"  RewriteOuterJoinRule keys on an alias NAME, and this shape re-binds an\n"+
-					"  enclosing name inside an existential — so a genuine ON-conjunct can now be\n"+
-					"  lifted above the null-extension, degrading LEFT JOIN to INNER silently.\n"+
-					"  For the EXISTS-route arms the correct answer is [1] (a's row is\n"+
-					"  null-extended and the inner EXISTS holds); [] means the conjunct was\n"+
-					"  lifted. Carry predicate ownership from existsInnerCorrelation instead of\n"+
-					"  re-deriving it by alias intersection.", tc.name, got)
+				if tc.name == "scalar_route_shadowed_enclosing_alias" {
+					if fmt.Sprint(got) != "[1|1]" {
+						t.Fatalf("%s: rows = %v, want [1|1]; the LEFT JOIN was not null-extended or the nested EXISTS rebound the wrong t", tc.name, got)
+					}
+					return
+				}
+				t.Fatalf("%s: the query was ACCEPTED and returned %v; this outer-join guard must still refuse the EXISTS route", tc.name, got)
 			}
 			// The engine's own error type, not just its text: a refusal that stops
 			// being an *api.Error means the query died somewhere other than the

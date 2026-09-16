@@ -6,26 +6,10 @@ import (
 	"fdb.dev/pkg/relational/core/query/logical"
 )
 
-// A DERIVED TABLE'S OUTPUT NAME COMES FROM THE PARSE-TREE SEGMENTS WHEN IT HAS
-// THEM, and from the split only when it does not. `ProjectionRefs`' own doc
-// states the rule — "qualification is FullId SEGMENT COUNT, never a scan of the
-// rendered name" — and this site was recovering the qualifier by slicing at the
-// last dot, so a column DECLARED `"a.b"` was published as `b`:
-//
-//	CREATE TABLE dottarr (id BIGINT, "a.b" BIGINT ARRAY, PRIMARY KEY (id));
-//	SELECT x FROM (SELECT "a.b" FROM dottarr) d, d."a.b" AS x
-//	  -> 42703: column "a.b" does not exist on source "D"
-//
-// WHY THIS IS A UNIT PIN AND NOT THAT QUERY. The shape still does not plan —
-// it now fails in the lateral-unnest source resolver, which is RFC-238 step 6
-// and lands the e2e arm this stands in for. The sibling site,
-// classifyDerivedUnnestArray, is migrated too and for a sharper reason: its
-// split was binding the WRONG COLUMN, schema-dependently. See its comment.
-//
-// So the pin is here, where the corrected authority is directly observable. It
-// reddens if the site goes back to splitting, whatever the sites downstream of
-// it do.
-func TestProjectionOutputNamesTakesSegmentsOverTheSplit(t *testing.T) {
+// TestExactOutputLabelsTakeSegmentsOverTheSplit pins quoted dotted identifiers
+// at the live logical output-label authority. Lateral binding consumes the
+// resulting semantic column, never a descriptor-backtracked body projection.
+func TestExactOutputLabelsTakeSegmentsOverTheSplit(t *testing.T) {
 	t.Parallel()
 
 	// project builds a body whose single projected item renders as `rendered`
@@ -78,12 +62,15 @@ func TestProjectionOutputNamesTakesSegmentsOverTheSplit(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := projectionOutputNames(project(tc.rendered, tc.ref))
+			got, err := ExactLogicalOutputLabels(project(tc.rendered, tc.ref), nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
 			if len(got) != 1 {
-				t.Fatalf("projectionOutputNames returned %d names, want 1: %v", len(got), got)
+				t.Fatalf("ExactLogicalOutputLabels returned %d names, want 1: %v", len(got), got)
 			}
 			if got[0] != tc.want {
-				t.Errorf("projectionOutputNames(%q) = %q, want %q\n  %s",
+				t.Errorf("ExactLogicalOutputLabels(%q) = %q, want %q\n  %s",
 					tc.rendered, got[0], tc.want, tc.why)
 			}
 		})

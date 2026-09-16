@@ -12,7 +12,9 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/dst",
+        "//pkg/fdbgo/fdb",
         "//pkg/recordlayer",
+        "//pkg/relational/api",
         "//pkg/relational/sqldriver",
         "//pkg/simfdb",
         "//pkg/simfdb/hunt",
@@ -35,7 +37,9 @@ go_test(
     embed = [":sqlhunt"],
     deps = [
         "//pkg/dst",
+        "//pkg/fdbgo/fdb",
         "//pkg/recordlayer",
+        "//pkg/relational/api",
         "//pkg/relational/sqldriver",
         "//pkg/simfdb",
         "//pkg/simfdb/hunt",

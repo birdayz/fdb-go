@@ -31,7 +31,7 @@ func TestWatch_AbortBeforeCommitReleasesSlot(t *testing.T) {
 	if setupErr != nil {
 		t.Fatalf("WatchSetup: %v", setupErr)
 	}
-	act := tx.WatchActivation()
+	act := tx.WatchActivationFor(watchCtx)
 	if got := db.db.outstandingWatches.Load(); got != before+1 {
 		t.Fatalf("WatchSetup must reserve one slot: outstandingWatches=%d, want %d", got, before+1)
 	}
@@ -47,5 +47,36 @@ func TestWatch_AbortBeforeCommitReleasesSlot(t *testing.T) {
 
 	if got := db.db.outstandingWatches.Load(); got != before {
 		t.Fatalf("#8 P1: watch slot leaked after a pre-commit abort — outstandingWatches=%d, want %d", got, before)
+	}
+}
+
+func TestWatchActivationForSetupSurvivesInterveningReset(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	db, _ := newSimTestDB(t, ctx)
+	tx := db.CreateTransaction()
+	defer tx.Cancel()
+	_, _, _, watchCtx, watchCancel, err := tx.WatchSetup(ctx, []byte(t.Name()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer watchCancel()
+	defer tx.ReleaseWatch()
+	captured := tx.WatchActivationFor(watchCtx)
+	tx.Reset()
+	if got := tx.WatchActivationFor(watchCtx); got != captured {
+		t.Fatal("watch setup rebound to the replacement transaction activation")
+	}
+	select {
+	case <-captured.done:
+		if !captured.abandoned {
+			t.Fatal("reset completed captured activation without abandoning it")
+		}
+	default:
+		t.Fatal("reset did not resolve the captured watch activation")
+	}
+	if current := tx.WatchActivation(); current == captured {
+		t.Fatal("reset did not rotate the current watch activation")
 	}
 }

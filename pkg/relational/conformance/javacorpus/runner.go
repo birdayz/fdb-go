@@ -20,6 +20,9 @@ type Config struct {
 	// concurrent runs of the same file cannot collide. It must be a legal SQL
 	// identifier fragment.
 	IDPrefix string
+	// FactoryResetLoad enables the validated, private generated-fixture setup
+	// contract in RunParsed. Vendored Java corpus runs never use this mode.
+	FactoryResetLoad bool
 }
 
 // catalogPath is the system database every DDL statement is issued against.
@@ -53,6 +56,7 @@ type runner struct {
 	cleanups []func()
 	// counter makes the generated identifiers unique within one file.
 	counter int
+	fixture *privateFixture
 }
 
 // Run executes one corpus file and returns its ledger entry.
@@ -62,6 +66,10 @@ type runner struct {
 // caller mistake (no cluster file) is reported out of band.
 func Run(ctx context.Context, corpus *javayamsql.Corpus, path string, cfg Config) FileResult {
 	res := FileResult{Path: path}
+	if cfg.FactoryResetLoad {
+		res.Status, res.Err = StatusFail, fmt.Errorf("factory reset/load is only valid for RunParsed")
+		return res
+	}
 
 	switch javayamsql.PolarityOf(path) {
 	case javayamsql.NegativeParse:
@@ -351,12 +359,14 @@ func (r *runner) executeSchemaTemplate(ctx context.Context, resource string, blk
 		return err
 	}
 
-	for _, stmt := range []string{
-		fmt.Sprintf("DROP SCHEMA TEMPLATE IF EXISTS %s", tmpl),
-		fmt.Sprintf("DROP DATABASE IF EXISTS %s", dbPath),
-	} {
-		if _, err := cat.ExecContext(ctx, stmt); err != nil {
-			return fmt.Errorf("%s: %w", stmt, err)
+	if r.fixture == nil {
+		for _, stmt := range []string{
+			fmt.Sprintf("DROP SCHEMA TEMPLATE IF EXISTS %s", tmpl),
+			fmt.Sprintf("DROP DATABASE IF EXISTS %s", dbPath),
+		} {
+			if _, err := cat.ExecContext(ctx, stmt); err != nil {
+				return fmt.Errorf("%s: %w", stmt, err)
+			}
 		}
 	}
 
@@ -610,6 +620,12 @@ func (r *runner) executeSetup(ctx context.Context, resource string, blk *javayam
 	db, err := r.open(target)
 	if err != nil {
 		return err
+	}
+	if r.fixture != nil {
+		if target != r.fixture.target {
+			return fmt.Errorf("factory fixture setup resolved outside its private schema")
+		}
+		return r.fixture.load(ctx, db, blk.Setup.Steps, r.result)
 	}
 	for _, step := range blk.Setup.Steps {
 		if step.Kind != javayamsql.CommandQuery {

@@ -55,10 +55,8 @@ func inner(l, r logical.LogicalOperator) *logical.LogicalJoin {
 func TestStarBodyBoundaryInputOrdinalsSkipShadowedBottomColumn(t *testing.T) {
 	t.Parallel()
 	tr := newChainedSpineTranslator(t)
-	body := inner(
-		scan("T4", "T4"),
-		&logical.LogicalUnnest{Segments: []string{"T4", "SARR"}, Alias: "SUB"},
-	)
+	u, _ := rawBoundProtoUnnest(t, tr.md, "T4", "T4", []string{"T4", "SARR"}, "SUB", "", "SARR")
+	body := inner(scan("T4", "T4"), u)
 	columns, ok := tr.derivedBodyStarOrdinalLeg(body)
 	if !ok {
 		t.Fatal("colliding star body was not admitted")

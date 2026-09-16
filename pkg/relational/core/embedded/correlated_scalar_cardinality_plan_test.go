@@ -84,6 +84,29 @@ func TestPlanHarness_CorrelatedScalarCardinalityConsumers(t *testing.T) {
 			sql:        "SELECT p.id FROM parent p WHERE p.wanted = (SELECT c.val FROM child c WHERE c.parent_id = p.id ORDER BY c.val DESC LIMIT 1)",
 			wantStrict: false,
 		},
+		// The complete scalar query retains pagination, DISTINCT and HAVING.
+		// A multi-row result must still pass through the strict scalar barrier;
+		// the FDB AllConsumers regression pins post-operation row counts.
+		{
+			name:       "projection_limit_greater_than_one",
+			sql:        "SELECT (SELECT c.val FROM child c WHERE c.parent_id = p.id LIMIT 5) FROM parent p",
+			wantStrict: true,
+		},
+		{
+			name:       "where_limit_greater_than_one",
+			sql:        "SELECT p.id FROM parent p WHERE p.wanted = (SELECT c.val FROM child c WHERE c.parent_id = p.id LIMIT 2)",
+			wantStrict: true,
+		},
+		{
+			name:       "distinct",
+			sql:        "SELECT (SELECT DISTINCT c.val FROM child c WHERE c.parent_id = p.id) FROM parent p",
+			wantStrict: true,
+		},
+		{
+			name:       "group_key_only_having",
+			sql:        "SELECT (SELECT c.grp FROM child c WHERE c.parent_id = p.id GROUP BY c.grp HAVING c.grp = 'A') FROM parent p",
+			wantStrict: true,
+		},
 		{
 			name:       "projection_global_aggregate_limit_five",
 			sql:        "SELECT (SELECT MAX(c.val) FROM child c WHERE c.parent_id = p.id LIMIT 5) FROM parent p",
@@ -115,18 +138,6 @@ func TestPlanHarness_CorrelatedScalarCorrectOrLoudGuards(t *testing.T) {
 		sql  string
 	}{
 		{
-			name: "projection_limit_greater_than_one",
-			sql:  "SELECT (SELECT c.val FROM child c WHERE c.parent_id = p.id LIMIT 5) FROM parent p",
-		},
-		{
-			name: "where_limit_greater_than_one",
-			sql:  "SELECT p.id FROM parent p WHERE p.wanted = (SELECT c.val FROM child c WHERE c.parent_id = p.id LIMIT 2)",
-		},
-		{
-			name: "distinct",
-			sql:  "SELECT (SELECT DISTINCT c.val FROM child c WHERE c.parent_id = p.id) FROM parent p",
-		},
-		{
 			name: "window",
 			sql:  "SELECT (SELECT SUM(c.val) OVER () FROM child c WHERE c.parent_id = p.id) FROM parent p",
 		},
@@ -138,10 +149,7 @@ func TestPlanHarness_CorrelatedScalarCorrectOrLoudGuards(t *testing.T) {
 			name: "unresolved_offset",
 			sql:  "SELECT (SELECT c.val FROM child c WHERE c.parent_id = p.id LIMIT 1 OFFSET ?) FROM parent p",
 		},
-		{
-			name: "group_key_only_having",
-			sql:  "SELECT (SELECT c.grp FROM child c WHERE c.parent_id = p.id GROUP BY c.grp HAVING c.grp = 'A') FROM parent p",
-		},
+
 		{
 			name: "projected_exists_with_where_scalar",
 			sql:  "SELECT EXISTS (SELECT 1 FROM child m WHERE m.parent_id = p.id) FROM parent p WHERE p.wanted = (SELECT c.val FROM child c WHERE c.parent_id = p.id LIMIT 1)",

@@ -18203,7 +18203,7 @@ func SeedRunCorpus() []RunQuery {
 			Divergence: &Divergence{
 				Reason:          "Both engines reject the undefined table; cosmetic message wording differs. The dup-alias check skips undefined-table pairs so 42F01 is not masked as 42702.",
 				Direction:       DivergenceBothErrorMessagesDrift,
-				GoErrorContains: "table \"NOSUCH_DUP\" does not exist",
+				GoErrorContains: "Unknown table NOSUCH_DUP",
 			},
 		},
 		{
@@ -18242,19 +18242,18 @@ func SeedRunCorpus() []RunQuery {
 			},
 		},
 		{
-			// GENERATED output names under duplicate aliases: an unaliased
-			// aggregate's output is referenceable by its generated name, and
-			// two duplicate legs exposing the same one are ambiguous (the
-			// review-found silent one-side read).
+			// An unaliased aggregate output is anonymous in both engines. A quoted
+			// reference to its canonical rendering therefore names no column;
+			// duplicate FROM aliases must not manufacture such a name.
 			Name: "dup_from_alias_generated_aggregate",
 			SchemaTemplate: "CREATE TABLE T_DUP_GA (id BIGINT, PRIMARY KEY (id))" +
 				" CREATE TABLE T_DUP_GB (id BIGINT, PRIMARY KEY (id))",
 			SetupSqls: []string{"INSERT INTO T_DUP_GA VALUES (1)", "INSERT INTO T_DUP_GB VALUES (2)"},
 			Query:     `SELECT a."COUNT(*)" FROM (SELECT COUNT(*) FROM T_DUP_GA) AS a, (SELECT COUNT(*) FROM T_DUP_GB) AS a`,
 			Divergence: &Divergence{
-				Reason:          "Both engines reject; Java's generated aggregate output name differs from the text 'COUNT(*)', so the quoted reference is a NON-EXISTING column there ('Attempting to query non existing column A.COUNT(*)'), while Go's generated name matches both duplicate legs and rejects as ambiguous (matching both legs prevents a silent one-side read).",
+				Reason:          "Both engines reject the generated aggregate spelling as a non-existing column. RFC-256 makes an unaliased aggregate output anonymous in Go as it is in Java; only diagnostic wording differs.",
 				Direction:       DivergenceBothErrorMessagesDrift,
-				GoErrorContains: "Ambiguous reference A.COUNT(*)",
+				GoErrorContains: "column \"A.COUNT(*)\" does not exist",
 			},
 		},
 		{

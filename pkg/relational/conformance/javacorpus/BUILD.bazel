@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "javacorpus",
     srcs = [
+        "fixture.go",
         "gaps.go",
         "javarandom.go",
         "ledger.go",
@@ -15,9 +16,14 @@ go_library(
     importpath = "fdb.dev/pkg/relational/conformance/javacorpus",
     visibility = ["//visibility:public"],
     deps = [
+        "//pkg/fdbgo/fdb",
         "//pkg/relational/api",
         "//pkg/relational/conformance/javayamsql",
         "//pkg/relational/conformance/yamsql",
+        "//pkg/relational/core/functions",
+        "//pkg/relational/core/parser",
+        "//pkg/relational/core/parser/gen",
+        "@com_github_antlr4_go_antlr_v4//:antlr",
     ],
 )
 
@@ -34,6 +40,7 @@ go_test(
         "configplan_internal_test.go",
         "corpus_run_test.go",
         "descending_census_internal_test.go",
+        "fixture_internal_test.go",
         "javarandom_test.go",
         "match_float_bits_internal_test.go",
         "match_internal_test.go",
@@ -48,9 +55,13 @@ go_test(
     embed = [":javacorpus"],
     tags = ["resources:memory:400"],
     deps = [
+        "//pkg/dst",
+        "//pkg/fdbgo/fdb",
+        "//pkg/recordlayer",
         "//pkg/relational/api",
         "//pkg/relational/conformance/javayamsql",
         "//pkg/relational/sqldriver",
+        "//pkg/simfdb",
         "//pkg/testcontainers/foundationdb",
     ],
 )

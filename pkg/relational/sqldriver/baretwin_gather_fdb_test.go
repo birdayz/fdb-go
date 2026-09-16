@@ -186,7 +186,7 @@ func TestFDB_BareTwinGather(t *testing.T) {
 	// group key correctly. COUNT over the 2 unnest rows.
 	t.Run("grouped_bare_twin", func(t *testing.T) {
 		wantRows(t, `SELECT A."K", COUNT(*) FROM A, B, A."ARR" AS "X" GROUP BY A."K"`,
-			[]string{"K=100|COUNT(*)=2"})
+			[]string{"K=100|_1=2"})
 	})
 
 	// GROUPED bare-twin with a cross-leg WHERE — the outer-filter-under-aggregate
@@ -200,7 +200,7 @@ func TestFDB_BareTwinGather(t *testing.T) {
 	// This pins that the grouped path does not ship those wrong rows.
 	t.Run("grouped_bare_twin_cross_leg_where", func(t *testing.T) {
 		wantRows(t, `SELECT A."K", COUNT(*) FROM A, B, A."ARR" AS "X" WHERE B."K" = 200 GROUP BY A."K"`,
-			[]string{"K=100|COUNT(*)=2"})
+			[]string{"K=100|_1=2"})
 		wantRows(t, `SELECT A."K", COUNT(*) FROM A, B, A."ARR" AS "X" WHERE B."K" = 999 GROUP BY A."K"`, nil)
 	})
 
@@ -223,9 +223,9 @@ func TestFDB_BareTwinGather(t *testing.T) {
 	// cross-leg dup WORKS (not the fail-open decline — the authority windows it).
 	t.Run("mid_list_element_grouped_bare_twin", func(t *testing.T) {
 		wantRows(t, `SELECT A."K", COUNT(*) FROM A, A."ARR" AS "X", B GROUP BY A."K"`,
-			[]string{"K=100|COUNT(*)=2"})
+			[]string{"K=100|_1=2"})
 		wantRows(t, `SELECT A."K", COUNT(*) FROM A, A."ARR" AS "X", B WHERE B."K" = 200 GROUP BY A."K"`,
-			[]string{"K=100|COUNT(*)=2"})
+			[]string{"K=100|_1=2"})
 		wantRows(t, `SELECT A."K", COUNT(*) FROM A, A."ARR" AS "X", B WHERE B."K" = 999 GROUP BY A."K"`, nil)
 	})
 
@@ -289,7 +289,7 @@ func TestFDB_BareTwinGather(t *testing.T) {
 	// pin covers the gathered-correctness side.
 	t.Run("grouped_subquery_conjunct_gathers", func(t *testing.T) {
 		explain := wantRows(t, `SELECT "X", COUNT(*) FROM A FULL OUTER JOIN B ON A."AID" = B."BID", A."ARR" AS "X" WHERE A."K" > (SELECT MAX("M") FROM C) GROUP BY "X"`,
-			[]string{"X=7|COUNT(*)=1", "X=8|COUNT(*)=1"})
+			[]string{"X=7|_1=1", "X=8|_1=1"})
 		// PROOF of POSITIONAL gather (not name-model): the GROUP BY key bakes to
 		// an ORDINAL slot (`X#5` — the ofOrdinal positional bake), and the FULL
 		// box gathers as a FlatMap-over-Explode. A name-model row would key the

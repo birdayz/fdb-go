@@ -11,6 +11,19 @@ import (
 	"fdb.dev/pkg/relational/core/query/logical"
 )
 
+func rawOrderTagsUnnest(t testing.TB, tr *cascadesTranslator, alias, atAlias string) *logical.LogicalUnnest {
+	t.Helper()
+	u, _ := rawBoundProtoUnnest(t, tr.md, "Order", "O", []string{"o", "TAGS"}, alias, atAlias, "TAGS")
+	return u
+}
+
+func rawNullSuppliedOrderTagsUnnest(t testing.TB, tr *cascadesTranslator, alias, atAlias string) *logical.LogicalUnnest {
+	t.Helper()
+	layout, path := rawProtoPath(t, tr.md, "Order", "TAGS")
+	u, _ := rawBoundUnnest(t, []string{"o", "TAGS"}, alias, atAlias, "O", rawNullSuppliedLayout(layout), path...)
+	return u
+}
+
 // The under-existential unnest. A single-source lateral unnest under
 // WHERE-EXISTS used to be forced name-model (t.unnestUnderExistential
 // declined the ordinal seed, because the existential rebase read outer-leg
@@ -29,7 +42,7 @@ func TestUnnestUnderExistsGatesOrdinal(t *testing.T) {
 	// FROM Order o, o.tags AS X — single source with a real array column, under
 	// an existential.
 	j := logical.NewJoin(scan("Order", "o"),
-		&logical.LogicalUnnest{Segments: []string{"o", "TAGS"}, Alias: "X"},
+		rawOrderTagsUnnest(t, tr, "X", ""),
 		logical.JoinInner, "")
 	tr.unnestUnderExistential = true
 	expr := tr.translateUnnestJoin(j, j.Right.(*logical.LogicalUnnest)) //nolint:errcheck // fixture
@@ -72,7 +85,7 @@ func TestSeedWindowAuthority(t *testing.T) {
 	// Mixed no-AT seed: now yields windows — the baked outer prefix PLUS a
 	// synthesized 1-field element window at the last slot (keyed by the AS alias).
 	mixed := tr.unnestOrdinalSeed(outer, outerCorr, innerCorr,
-		&logical.LogicalUnnest{Segments: []string{"o", "TAGS"}, Alias: "X"}, values.NotNullString)
+		rawOrderTagsUnnest(t, tr, "X", ""), values.NotNullString)
 	mixedRC, ok := mixed.(*values.RecordConstructorValue)
 	if !ok {
 		t.Fatalf("mixed seed = %T, want an RC", mixed)
@@ -92,7 +105,7 @@ func TestSeedWindowAuthority(t *testing.T) {
 
 	// Fully-baked AS+AT seed: NON-nil windows (pristine path, unchanged).
 	atSeed := tr.unnestOrdinalSeed(outer, outerCorr, innerCorr,
-		&logical.LogicalUnnest{Segments: []string{"o", "TAGS"}, Alias: "X", AtAlias: "O"}, values.NotNullString)
+		rawOrderTagsUnnest(t, tr, "X", "O"), values.NotNullString)
 	atRC, ok := atSeed.(*values.RecordConstructorValue)
 	if !ok {
 		t.Fatalf("AT seed = %T, want an RC", atSeed)
@@ -233,7 +246,12 @@ func TestMultiAliasOuterGatesOrdinal(t *testing.T) {
 	tr := newGateTranslator(t)
 	// FROM (Order o FULL OUTER JOIN Customer c), o.TAGS AS X — a 2-alias outer.
 	outer := logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinFull, "")
-	j := logical.NewJoin(outer, &logical.LogicalUnnest{Segments: []string{"o", "TAGS"}, Alias: "X"}, logical.JoinInner, "")
+	storedLayout, path := rawProtoPath(t, tr.md, "Order", "TAGS")
+	// FULL null-supplies every visible column of this owner, independently of
+	// the stored protobuf field's original nullability.
+	ownerLayout := rawNullSuppliedLayout(storedLayout)
+	unnest, _ := rawBoundUnnest(t, []string{"o", "TAGS"}, "X", "", "O", ownerLayout, path...)
+	j := logical.NewJoin(outer, unnest, logical.JoinInner, "")
 	tr.unnestUnderExistential = true
 	expr := tr.translateUnnestJoin(j, j.Right.(*logical.LogicalUnnest)) //nolint:errcheck // fixture
 	if expr == nil {
@@ -267,7 +285,7 @@ func TestMultiSourceInnerClusterDeclines(t *testing.T) {
 	tr := newGateTranslator(t)
 	// FROM (Order o INNER JOIN Customer c), o.TAGS AS X — a 2-alias INNER outer.
 	outer := logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinInner, "")
-	j := logical.NewJoin(outer, &logical.LogicalUnnest{Segments: []string{"o", "TAGS"}, Alias: "X"}, logical.JoinInner, "")
+	j := logical.NewJoin(outer, rawOrderTagsUnnest(t, tr, "X", ""), logical.JoinInner, "")
 	tr.unnestUnderExistential = true
 	if expr := tr.translateUnnestJoin(j, j.Right.(*logical.LogicalUnnest)); expr != nil { //nolint:errcheck // fixture
 		t.Fatalf("multi-source INNER cluster under EXISTS must DECLINE (correct-or-loud; the name-model fallback is deleted), got %T", expr)
@@ -419,7 +437,7 @@ func TestClusteredBoxSeedsOrdinal(t *testing.T) {
 		logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinInner, ""),
 		scan("TypedRecord", "d"), logical.JoinFull, "",
 	)
-	j := logical.NewJoin(outer, &logical.LogicalUnnest{Segments: []string{"o", "TAGS"}, Alias: "X"}, logical.JoinInner, "")
+	j := logical.NewJoin(outer, rawNullSuppliedOrderTagsUnnest(t, tr, "X", ""), logical.JoinInner, "")
 	expr := tr.translateUnnestJoin(j, j.Right.(*logical.LogicalUnnest)) //nolint:errcheck // fixture
 	if expr == nil {
 		t.Fatalf("translation failed: %v", tr.translateErr)
@@ -452,7 +470,7 @@ func TestShadowAliasGatesOrdinal(t *testing.T) {
 	tr := newGateTranslator(t)
 	// FROM Order o, o.TAGS AS PRICE — the AS alias shadows Order's PRICE column.
 	j := logical.NewJoin(scan("Order", "o"),
-		&logical.LogicalUnnest{Segments: []string{"o", "TAGS"}, Alias: "PRICE"},
+		rawOrderTagsUnnest(t, tr, "PRICE", ""),
 		logical.JoinInner, "")
 	tr.unnestUnderExistential = true
 	expr := tr.translateUnnestJoin(j, j.Right.(*logical.LogicalUnnest)) //nolint:errcheck // fixture
@@ -664,7 +682,7 @@ func TestThreeWayBoxCrossAgreement(t *testing.T) {
 	// sourceBinding convention is exactly that they are the same thing. Calling the
 	// authority removes the invention and cannot drift from the producers.
 	innerCorr := values.UniqueCorrelationIdentifier()
-	u := &logical.LogicalUnnest{Segments: []string{"o", "TAGS"}, Alias: "X"}
+	u := rawNullSuppliedOrderTagsUnnest(t, tr, "X", "")
 	boxCorr := unnestOuterCorrelation(box)
 	seedVal := tr.unnestOrdinalSeed(box, boxCorr, innerCorr, u, values.NotNullString)
 	seed, ok := seedVal.(*values.RecordConstructorValue)
@@ -741,7 +759,7 @@ func TestOuterConjunctNarrowing(t *testing.T) {
 			tr.unnestBoxLegConjunct = boxConjNone
 		}
 		outer := logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinFull, "")
-		j := logical.NewJoin(outer, &logical.LogicalUnnest{Segments: []string{"o", "TAGS"}, Alias: "X"}, logical.JoinInner, "")
+		j := logical.NewJoin(outer, rawNullSuppliedOrderTagsUnnest(t, tr, "X", ""), logical.JoinInner, "")
 		return tr.translateUnnestJoin(j, j.Right.(*logical.LogicalUnnest)) //nolint:errcheck // fixture
 	}
 	for _, underExists := range []bool{true, false} {

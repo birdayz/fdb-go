@@ -1,6 +1,6 @@
 ---
 name: fdb-client-review
-description: Work on the pure-Go FoundationDB client (pkg/fdbgo — transport, transaction, commit path, RYW, key selectors, retry/ctx, wire encoding). Includes mandatory review by the FDB C++ client developer (validates Go against the 7.3.77 C++ source — the spec) and Torvalds (code quality). The client/wire analog of the query-engine skill: the FDB C++ dev substitutes for Graefe on client/wire items.
+description: "Work on the pure-Go FoundationDB client (pkg/fdbgo — transport, transaction, commit path, RYW, key selectors, retry/ctx, wire encoding). Includes mandatory review by the FDB C++ client developer (validates Go against the 7.3.77 C++ source — the spec) and Torvalds (code quality). The client/wire analog of the query-engine skill: the FDB C++ dev substitutes for Graefe on client/wire items."
 ---
 
 # FDB Client Work (pure-Go `pkg/fdbgo`)

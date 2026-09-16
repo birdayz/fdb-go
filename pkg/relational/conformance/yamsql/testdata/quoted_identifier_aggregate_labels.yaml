@@ -33,14 +33,14 @@ tests:
   # ordinary streaming path, which has a different naming authority.
   - query: SELECT "Region", SUM("Amount") FROM sales GROUP BY "Region" ORDER BY "Region"
     plan_contains: AggregateIndex
-    columns: ["Region", "SUM(Amount)"]
+    columns: ["Region", "_1"]
     rows:
       - ["EU", 300]
       - ["US", 300]
   # The bare SCALAR aggregate — no grouping, so nothing above it to re-name the
   # column.
   - query: SELECT SUM("Amount") FROM sales
-    columns: ["SUM(Amount)"]
+    columns: ["_0"]
     rows:
       - [600]
   # The unquoted control on the same table and the same shape. `plain` folded at
@@ -48,7 +48,7 @@ tests:
   # this arm an upper label above could not be told apart from a fold that
   # happened to be right.
   - query: SELECT SUM(plain) FROM sales
-    columns: ["SUM(PLAIN)"]
+    columns: ["_0"]
     rows:
       - [6]
   # A quoted ALIAS on the scalar shape. The alias is the output name and must
@@ -60,7 +60,7 @@ tests:
   # Grouped, no index available for MAX — the ordinary streaming-aggregate
   # shape, both authorities in one row.
   - query: SELECT "Region", MAX("Amount") FROM sales GROUP BY "Region" ORDER BY "Region"
-    columns: ["Region", "MAX(Amount)"]
+    columns: ["Region", "_1"]
     rows:
       - ["EU", 300]
       - ["US", 200]
@@ -75,19 +75,17 @@ tests:
       - [1, 300]
       - [2, 300]
       - [3, 300]
-  # The UNALIASED twin, which is the one that actually exposes the derived name
-  # — the alias above would mask any fold behind it.
+  # The UNALIASED twin is anonymous at the outer SELECT-list position, matching
+  # Java Expressions.getStructType rather than publishing the inner program.
   - query: SELECT s.id, (SELECT SUM(x."Amount") FROM sales x WHERE x."Region" = s."Region") FROM sales s ORDER BY s.id
-    columns: ["ID", "SUM(X.Amount)"]
+    columns: ["ID", "_1"]
     rows:
       - [1, 300]
       - [2, 300]
       - [3, 300]
-  # The unquoted control for the same shape. `plain` folded at DDL time, so the
-  # upper label is the column's real name — without this arm the verbatim claim
-  # above could not be told from a fold that happened to be right.
+  # The unquoted control reaches the same anonymous outer slot.
   - query: SELECT s.id, (SELECT SUM(x.plain) FROM sales x WHERE x."Region" = s."Region") FROM sales s ORDER BY s.id
-    columns: ["ID", "SUM(X.PLAIN)"]
+    columns: ["ID", "_1"]
     rows:
       - [1, 3]
       - [2, 3]
@@ -111,11 +109,11 @@ tests:
   # the same name as the `'US'` one. Two aggregates that count different things,
   # one name. These two arms pin the labels apart and the isolated values.
   - query: SELECT COUNT(CASE WHEN "Region" = 'us' THEN 1 END) FROM sales
-    columns: ["COUNT(CASEWHENRegion='us'THEN1END)"]
+    columns: ["_0"]
     rows:
       - [0]
   - query: SELECT COUNT(CASE WHEN "Region" = 'US' THEN 1 END) FROM sales
-    columns: ["COUNT(CASEWHENRegion='US'THEN1END)"]
+    columns: ["_0"]
     rows:
       - [2]
   # Two aggregates over literals differing by more than case, in ONE query, as
@@ -132,17 +130,11 @@ tests:
       - [1, null, 1]
       - [2, null, 1]
       - [3, null, null]
-  # TWO DERIVED ALIASES CARRYING APOSTROPHES, each exposing a column alias that
-  # carries one. This is the SQL-level pin for a regression that a unit row over
-  # the name-splitting helper could not express: that row bypasses identifier
-  # normalization, alias provenance, join planning and result metadata, so it
-  # asserted the helper's behaviour rather than the behaviour a user sees.
-  # Treating an apostrophe as a string-literal delimiter hid the qualifier dot
-  # between `Q'` and `Z'`, and these labels came back as `Q'.Z'` / `R'.Z'`.
+  # A SELECT alias materializes as a protobuf result field. Apostrophe is not
+  # escapable by Java ProtoUtils, so the inner authored alias is rejected even
+  # though the SQL lexer accepts it as a delimited identifier.
   - query: SELECT "Q'"."Z'", "R'"."Z'" FROM (SELECT "Amount" AS "Z'" FROM sales WHERE id = 1) "Q'", (SELECT "Amount" AS "Z'" FROM sales WHERE id = 2) "R'"
-    columns: ["Z'", "Z'"]
-    rows:
-      - [100, 200]
+    error_code: "42602"
   # A derived column whose generated name CONTAINS A STRING LITERAL, re-projected
   # through a derived table. The label was predicted to come back as the fragment
   # `AMOUNTEND)` once parseColRef stopped treating quotes as literal delimiters;
@@ -156,6 +148,6 @@ tests:
   # qualified, `d.`; the operative property is where the dot sits relative to
   # the literal.) It pins the label, nothing more.
   - query: SELECT * FROM (SELECT COUNT(CASE WHEN "Region" = ')' THEN "Amount" END) FROM sales) d
-    columns: ["COUNT(CASEWHENRegion=')'THENAmountEND)"]
+    columns: ["_0"]
     rows:
       - [0]

@@ -194,7 +194,7 @@ func TestFDB_RFC153_AggregateInnerNullExtension(t *testing.T) {
 
 	rows, err := db.QueryContext(ctx,
 		"SELECT a.id, g.cnt FROM a JOIN b ON b.a_id = a.id "+
-			"LEFT JOIN (SELECT a_id, COUNT(*) cnt FROM c GROUP BY a_id) g ON g.a_id = a.id")
+			"LEFT JOIN (SELECT a_id, COUNT(*) AS cnt FROM c GROUP BY a_id) g ON g.a_id = a.id")
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}

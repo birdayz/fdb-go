@@ -335,6 +335,30 @@ func columnForField(f protoreflect.FieldDescriptor, enclosing []protoreflect.Ful
 		Nullable: nullable,
 		IsArray:  isArr,
 	}
+	if col.Type == "ENUM" {
+		// Use the stored-row authority, including its LONG representation for
+		// protobuf number aliases. An enum declaration must never describe a
+		// different row type than the scan emits.
+		stored := values.FieldTypeForProtoField(elemF)
+		if array, ok := stored.(*values.ArrayType); ok {
+			stored = array.ElementType
+		}
+		switch typed := stored.(type) {
+		case *values.EnumType:
+			col.EnumTypeName = typed.EnumName
+			col.EnumMembers = make([]semantic.EnumMember, len(typed.Values))
+			for i, member := range typed.Values {
+				col.EnumMembers[i] = semantic.EnumMember{Name: member.Name, Number: member.Number}
+			}
+		default:
+			if stored != nil && stored.Code() == values.TypeCodeLong {
+				col.Type = "BIGINT"
+			} else {
+				col.Type = "UNKNOWN"
+			}
+		}
+		return col
+	}
 	// Only a field the type mapping calls RECORD carries a field list: the
 	// UUID message maps to "UUID" and is a scalar to every consumer, so
 	// descending into its proto fields would invent `id.msb` as a resolvable

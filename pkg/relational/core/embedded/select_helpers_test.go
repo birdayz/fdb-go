@@ -87,68 +87,6 @@ func TestJdbcizeColumnNames_Empty(t *testing.T) {
 	}
 }
 
-// ----- classifyPrimitiveType ------------------------------------------------
-
-func TestClassifyPrimitiveType(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		castType, wantType string
-	}{
-		{"INTEGER", "INTEGER"},
-		{"BIGINT", "BIGINT"},
-		{"FLOAT", "FLOAT"},
-		{"DOUBLE", "DOUBLE"},
-		{"STRING", "STRING"},
-		{"BOOLEAN", "BOOLEAN"},
-		{"BYTES", "BYTES"},
-		{"UUID", "UUID"},
-		{"DATE", "DATE"},
-		{"TIMESTAMP", "TIMESTAMP"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.castType, func(t *testing.T) {
-			t.Parallel()
-			cdt := parseCastType(t, "SELECT CAST(1 AS "+tt.castType+") FROM t")
-			got := classifyPrimitiveType(cdt)
-			if got != tt.wantType {
-				t.Errorf("classifyPrimitiveType(%s) = %q, want %q", tt.castType, got, tt.wantType)
-			}
-		})
-	}
-}
-
-// parseCastType parses a SELECT containing CAST(... AS T) and returns
-// the ConvertedDataType node.
-func parseCastType(t *testing.T, sql string) antlrgen.IConvertedDataTypeContext {
-	t.Helper()
-	sq := parseSelect(t, sql)
-	if len(sq.projExprs) == 0 || sq.projExprs[0] == nil {
-		t.Fatalf("no projections in %q", sql)
-	}
-	expr := sq.projExprs[0]
-	pred, ok := expr.(*antlrgen.PredicatedExpressionContext)
-	if !ok {
-		t.Fatalf("expected PredicatedExpressionContext, got %T", expr)
-	}
-	fcea, ok := pred.ExpressionAtom().(*antlrgen.FunctionCallExpressionAtomContext)
-	if !ok {
-		t.Fatalf("expected FunctionCallExpressionAtomContext, got %T", pred.ExpressionAtom())
-	}
-	sfc, ok := fcea.FunctionCall().(*antlrgen.SpecificFunctionCallContext)
-	if !ok {
-		t.Fatalf("expected SpecificFunctionCallContext, got %T", fcea.FunctionCall())
-	}
-	dtfc, ok := sfc.SpecificFunction().(*antlrgen.DataTypeFunctionCallContext)
-	if !ok {
-		t.Fatalf("expected DataTypeFunctionCallContext, got %T", sfc.SpecificFunction())
-	}
-	cdt := dtfc.ConvertedDataType()
-	if cdt == nil {
-		t.Fatalf("no ConvertedDataType in %q", sql)
-	}
-	return cdt
-}
-
 // ----- orderByLess ----------------------------------------------------------
 
 func TestOrderByLess_AscendingStrings(t *testing.T) {

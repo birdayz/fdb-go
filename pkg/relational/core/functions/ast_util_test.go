@@ -111,3 +111,38 @@ func TestResolveQualifiedTableName_PreservesTableCase(t *testing.T) {
 		t.Fatalf("got %q, want %q (table case preserved)", got, "MyTable")
 	}
 }
+
+func TestResolveQualifiedTablePath(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		path []string
+		want string
+		code api.ErrorCode
+	}{
+		{"literal", []string{"q.q"}, "q.q", ""},
+		{"qualified", []string{"S", "q.q"}, "q.q", ""},
+		{"wrong_schema_same_spelling", []string{"q", "q"}, "", api.ErrCodeUndefinedDatabase},
+		{"nil", nil, "", api.ErrCodeInternalError},
+		{"empty", []string{}, "", api.ErrCodeInternalError},
+		{"empty_name", []string{""}, "", api.ErrCodeInternalError},
+		{"empty_qualifier", []string{"", "q"}, "", api.ErrCodeInternalError},
+		{"empty_qualified_name", []string{"s", ""}, "", api.ErrCodeInternalError},
+		{"multipart", []string{"s", "q", "q"}, "", api.ErrCodeInternalError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := ResolveQualifiedTablePath(tc.path, "s")
+			if tc.code != "" {
+				var coded *api.Error
+				if !errors.As(err, &coded) || coded.Code != tc.code {
+					t.Fatalf("path %q: got %q / %v, want %s", tc.path, got, err, tc.code)
+				}
+				return
+			}
+			if err != nil || got != tc.want {
+				t.Fatalf("path %q: got %q / %v, want %q", tc.path, got, err, tc.want)
+			}
+		})
+	}
+}

@@ -57,14 +57,15 @@ tests:
       - [1, 'alpha']
       - [2, 'beta']
 
-  # Wrong qualifier on a single-source FROM errors cleanly
-  # (42F01 undefined_table). Pre-fix this silently returned all rows.
+  # Java SemanticAnalyzer.expandStar resolves an unmatched qualifier as an
+  # identifier: 42703 (UNDEFINED_COLUMN), not 42F01. The cross-engine
+  # NumericCastBoundaryConformance pins single/multi-source and mixed lists.
   - query: SELECT wrong.* FROM a
-    error_code: "42F01"
+    error_code: "42703"
 
   # Wrong qualifier on a multi-source FROM errors cleanly.
   - query: SELECT nope.* FROM a, b
-    error_code: "42F01"
+    error_code: "42703"
 
   # Mixed qualifier-star + named column: `a.*, b.label`. a.* expands to
   # all of a's columns in descriptor order, then b.label follows. With
@@ -103,15 +104,11 @@ tests:
       - [1, 10, 'one']
       - [1, 20, 'two']
 
-  # Wrong qualifier-star alongside a valid named column. The
-  # star-expansion path goes through resolveQualifierColumns and
-  # rejects qualifier `c` (no source matches). Pins that the star
-  # validation still fires in the mixed SELECT-list path.
-  # (Wrong qualifiers on *named* columns — e.g. `SELECT a.id, c.label`
-  #  with no source `c` — now also error 42F01 via the JOIN projection
-  #  path. See wrong_qualifier.yaml for the named-column coverage.)
+  # Wrong qualifier-star alongside a valid named column still rejects the
+  # unresolved identifier with 42703. Named columns use the same error;
+  # see wrong_qualifier.yaml for the named-column coverage.
   - query: SELECT c.*, b.label FROM a, b
-    error_code: "42F01"
+    error_code: "42703"
 
   # Mixed qualifier-star on an explicit INNER JOIN (rather than a
   # comma-join). Same projection code via execSelectJoin, but pinned

@@ -1,16 +1,11 @@
 package sqldriver_test
 
 // A struct member declared with a dot in its name (`"a.b" BIGINT`) reads
-// correctly through a derived table — the value is the member's — and its
-// result-set LABEL is `b`, over the base table and through the derived table
-// alike: the label is derived by qualifierStrippedLabel, whose declared
-// limit is that a nested member is not a top-level field of any descriptor,
-// so the dot inside its name is read as a qualifier and stripped (RFC-238 §2,
-// `qualifier_stripped_label_test.go`, "nested field declared with a dot is
-// invisible"). This is a NEGATIVE pin of that residual on the shape the
-// derived-table arm admits now (a nested path decided by its shape): the
-// value must stay right, and when the label reads `a.b` the residual is
-// closed — re-pin both spellings to it. The aliased control labels as told.
+// correctly through a derived table and retains its exact declared SQL name as
+// the result label. RFC-256 closes RFC-238's nested-member residual by carrying
+// the resolved attribute's inherited name through projection publication;
+// punctuation in that name is never re-parsed as qualification. The aliased
+// control still labels as told.
 
 import (
 	"context"
@@ -67,11 +62,8 @@ func TestFDB_QuotedDotNestedMemberLabel(t *testing.T) {
 		if v != 9 {
 			t.Fatalf("%q: value = %d, want the member's 9", spelling, v)
 		}
-		if label == "a.b" {
-			t.Fatalf("%q: the label reads the member's own name %q — RFC-238's nested-member residual is closed; re-pin this spelling to it", spelling, label)
-		}
-		if label != "b" {
-			t.Fatalf("%q: label = %q, want the residual's `b` (or `a.b` once closed)", spelling, label)
+		if label != "a.b" {
+			t.Fatalf("%q: label = %q, want the member's exact declared name a.b", spelling, label)
 		}
 	}
 	label, v := read(t, `SELECT x.q FROM (SELECT tq.s."a.b" AS q FROM tq) x`)

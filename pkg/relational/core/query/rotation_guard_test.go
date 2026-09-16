@@ -3,6 +3,7 @@ package query
 import (
 	"testing"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/core/query/logical"
 )
 
@@ -21,11 +22,18 @@ func TestSubtreeUnnestsOffAlias(t *testing.T) {
 		t.Fatal("a plain scan trailing leg must be rotation-safe (no lateral unnest off the spine)")
 	}
 
+	ownerLayout := &values.RecordType{Fields: []values.Field{
+		{Name: "FOO", Ordinal: 0, FieldType: values.NewArrayType(false, values.NotNullLong)},
+		{Name: "BAR", Ordinal: 1, FieldType: values.NewArrayType(false, values.NotNullLong)},
+		{Name: "ARR", Ordinal: 2, FieldType: values.NewArrayType(false, values.NotNullLong)},
+	}}
+
 	// A trailing leg that laterally unnests off a SPINE element (`X.FOO AS W`, X a
 	// spine link element) would be stranded by the rotation — must be flagged.
+	lateralUnnest, _ := rawBoundUnnest(t, []string{"X", "FOO"}, "W", "", "X", ownerLayout, 0)
 	lateral := &logical.LogicalJoin{
 		Left:  &logical.LogicalScan{Table: "T4", Alias: "T4C"},
-		Right: &logical.LogicalUnnest{Segments: []string{"X", "FOO"}, Alias: "W"},
+		Right: lateralUnnest,
 		Kind:  logical.JoinInner,
 	}
 	if !subtreeUnnestsOffAlias(lateral, spine) {
@@ -33,14 +41,14 @@ func TestSubtreeUnnestsOffAlias(t *testing.T) {
 	}
 
 	// Case-insensitive owner match (aliases compare uppercased throughout).
-	lowerCase := &logical.LogicalUnnest{Segments: []string{"y", "BAR"}, Alias: "W"}
+	lowerCase, _ := rawBoundUnnest(t, []string{"y", "BAR"}, "W", "", "Y", ownerLayout, 1)
 	if !subtreeUnnestsOffAlias(lowerCase, spine) {
 		t.Fatal("owner match must be case-insensitive (y == spine Y)")
 	}
 
 	// An unnest off a NON-spine source (`Z.ARR AS W`) is independent of the links —
 	// rotation-safe.
-	nonSpine := &logical.LogicalUnnest{Segments: []string{"Z", "ARR"}, Alias: "W"}
+	nonSpine, _ := rawBoundUnnest(t, []string{"Z", "ARR"}, "W", "", "Z", ownerLayout, 2)
 	if subtreeUnnestsOffAlias(nonSpine, spine) {
 		t.Fatal("an unnest off a non-spine source is rotation-safe")
 	}

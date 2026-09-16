@@ -9,7 +9,6 @@ setup:
 tests:
   # UPDATE with IN on PK
   - query: UPDATE t SET status = 'cancelled' WHERE id IN (1, 4)
-    rows: []
   - query: SELECT id, status FROM t WHERE id IN (1, 4) ORDER BY id
     rows:
       - [1, "cancelled"]

@@ -30,10 +30,10 @@ tests:
   # unresolved identifier, regardless of qualifier mismatch.
   - query: SELECT a.id, c.label FROM a, b WHERE a.id = b.id
     error_code: "42703"
-  # `c.*`-style wrong qualifier already erred via resolveQualifierColumns;
-  # regression guard that the two code paths don't drift.
+  # Java expandStar falls back to resolveIdentifier for an unmatched source;
+  # the cross-engine NumericCastBoundaryConformance pins the same 42703.
   - query: SELECT c.* FROM a, b
-    error_code: "42F01"
+    error_code: "42703"
   # Wrong qualifier on an INNER JOIN (explicit) matches the comma-join
   # behavior — both routes feed execSelectJoin's projection path.
   - query: |

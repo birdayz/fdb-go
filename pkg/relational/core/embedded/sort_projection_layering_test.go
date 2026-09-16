@@ -225,13 +225,13 @@ func TestSortNeverSitsOverAProjection_CorrelatedScalarBuilder(t *testing.T) {
 	md := buildTestMetaData(t)
 	for _, sql := range []string{
 		// Ungrouped arm (:9510) — the sort runs over raw scan rows before LIMIT 1.
-		"SELECT c.name, (SELECT o.price FROM Order o WHERE o.price = c.price ORDER BY o.order_id LIMIT 1) FROM Customer c",
-		"SELECT c.name, (SELECT o.order_id FROM Order o WHERE o.price = c.price ORDER BY o.price DESC LIMIT 1) FROM Customer c",
-		"SELECT c.name FROM Customer c WHERE c.price > (SELECT o.price FROM Order o WHERE o.order_id = c.customer_id ORDER BY o.price LIMIT 1)",
+		`SELECT c.name, (SELECT o.price FROM "Order" o WHERE o.price = c.price ORDER BY o.order_id LIMIT 1) FROM "Customer" c`,
+		`SELECT c.name, (SELECT o.order_id FROM "Order" o WHERE o.price = c.price ORDER BY o.price DESC LIMIT 1) FROM "Customer" c`,
+		`SELECT c.name FROM "Customer" c WHERE c.price > (SELECT o.price FROM "Order" o WHERE o.order_id = c.customer_id ORDER BY o.price LIMIT 1)`,
 		// Aggregate arm (:9246) — the sort runs over the grouped output.
-		"SELECT c.name, (SELECT SUM(o.price) FROM Order o WHERE o.price = c.price GROUP BY o.quantity ORDER BY SUM(o.price) LIMIT 1) FROM Customer c",
+		`SELECT c.name, (SELECT SUM(o.price) FROM "Order" o WHERE o.price = c.price GROUP BY o.quantity ORDER BY SUM(o.price) LIMIT 1) FROM "Customer" c`,
 		// Group-key-only arm (:9487) — grouped output, no aggregate selected.
-		"SELECT c.name, (SELECT o.quantity FROM Order o WHERE o.price = c.price GROUP BY o.quantity ORDER BY o.quantity LIMIT 1) FROM Customer c",
+		`SELECT c.name, (SELECT o.quantity FROM "Order" o WHERE o.price = c.price GROUP BY o.quantity ORDER BY o.quantity LIMIT 1) FROM "Customer" c`,
 	} {
 		t.Run(sql, func(t *testing.T) {
 			t.Parallel()

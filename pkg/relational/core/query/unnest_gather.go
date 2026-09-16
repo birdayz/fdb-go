@@ -56,7 +56,6 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 	u *logical.LogicalUnnest,
 	innerCorr values.CorrelationIdentifier,
 	elementType values.Type,
-	fieldName string,
 	unnestPos int,
 ) expressions.RelationalExpression {
 	leftJoin, isJoin := j.Left.(*logical.LogicalJoin)
@@ -147,26 +146,13 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 	// concat). The collection bakes at the WINDOW: ofOrdinal(QOV(corr,
 	// window type), leafOffset + arrIdx) — for a plain leg that degenerates
 	// to the old leg-local bake verbatim (offset 0, own type, own binding).
-	seg0 := strings.ToUpper(u.Segments[0])
-	ownerWindow, isOwner := legTypes[seg0]
-	if !isOwner || ownerWindow.typ == nil || ownerWindow.leafTyp == nil || len(u.Segments) < 2 {
+	owner, _, array := boundUnnestCollection(u)
+	if owner == nil {
 		return nil
 	}
-	// The ROOT column of the collection path: for a single-segment path the
-	// classifier's proto-derived name; for a MULTI-SEGMENT path (`t.rec.arr`)
-	// the FIRST field segment — the remaining segments ride as a FUSED
-	// suffix (Java's lookupNestedField →
-	// ofFieldsAndFuseIfPossible shape) and descend the struct value at eval
-	// through FieldValue's proto-message arm. Suffix accessors are
-	// NAME-addressed (the proto descent resolves by field name); the
-	// classifier has already validated every intermediate as a singular
-	// record field.
-	rootField := fieldName
-	if len(u.Segments) > 2 {
-		rootField = u.Segments[1]
-	}
-	arrIdx, found := seedFieldIndex(ownerWindow.leafTyp, rootField)
-	if !found {
+	seg0 := owner.Correlation().Name()
+	ownerWindow, isOwner := legTypes[seg0]
+	if !isOwner || ownerWindow.typ == nil || ownerWindow.leafTyp == nil {
 		return nil
 	}
 	ownerCorr := seg0
@@ -177,12 +163,11 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 	if err != nil {
 		return nil
 	}
-	collection := resolveSeedCollection(ownerQOV, ownerWindow.leafOffset+arrIdx, u.Segments[2:])
+	collection := resolveBoundSeedCollection(ownerQOV, u, ownerWindow.leafOffset, false)
 	if collection == nil {
 		return nil
 	}
-	wantArray := values.NewArrayType(collection.Type().IsNullable(), elementType)
-	if !collection.Type().Equals(wantArray) {
+	if !collection.Type().Equals(array) {
 		return nil
 	}
 
@@ -675,39 +660,26 @@ func gatherLegsWithBuriedUnnest(j *logical.LogicalJoin) (plainLegs []logical.Log
 // instead of errors. Seed-field order places the element LAST (not at its
 // FROM position) — observable only via SELECT-*-over-multi-source, which
 // cannot plan today (a known follow-on fix, not yet implemented).
-func (t *cascadesTranslator) rotateEnclosedUnnest(j *logical.LogicalJoin) (rebuilt *logical.LogicalJoin, u *logical.LogicalUnnest, elementType values.Type, fieldName string, unnestPos int, ok bool) {
+func (t *cascadesTranslator) rotateEnclosedUnnest(j *logical.LogicalJoin) (rebuilt *logical.LogicalJoin, u *logical.LogicalUnnest, elementType values.Type, unnestPos int, ok bool) {
 	if t.md == nil || j.Kind != logical.JoinInner {
-		return nil, nil, nil, "", 0, false
+		return nil, nil, nil, 0, false
 	}
 	if _, rootUnnest := j.Right.(*logical.LogicalUnnest); rootUnnest {
-		return nil, nil, nil, "", 0, false // the root form — translateUnnestJoin owns it
+		return nil, nil, nil, 0, false // the root form — translateUnnestJoin owns it
 	}
 	plainLegs, preds, uLeft, u, unnestPos, gok := gatherLegsWithBuriedUnnest(j)
 	if !gok || len(plainLegs) < 2 {
-		return nil, nil, nil, "", 0, false
+		return nil, nil, nil, 0, false
 	}
 
-	// Classification against the unnest's OWN scope (uLeft — the sources
-	// before it in FROM order). Multi-segment paths (`t.rec.arr`) pass
-	// through: the gathered builder bakes them as fused root+suffix
-	// collections, and the classifier below validates every intermediate
-	// segment.
-	if len(u.Segments) < 2 {
-		return nil, nil, nil, "", 0, false
+	_, _, array := boundUnnestCollection(u)
+	if array == nil {
+		return nil, nil, nil, 0, false
 	}
-	outerTable := findOuterScanTable(uLeft, u.Segments[0])
-	if outerTable == "" {
-		return nil, nil, nil, "", 0, false
-	}
-	if t.outerSourceIsCTE(outerTable) || outerSourceIsDerivedTable(uLeft, u.Segments[0]) {
-		return nil, nil, nil, "", 0, false
-	}
-	elementType, fieldName, isArray, _ := t.unnestArrayElementType(outerTable, u.Segments[1:])
-	if !isArray {
-		return nil, nil, nil, "", 0, false
-	}
+	elementType = array.ElementType
+
 	if containsLateralUnnest(uLeft) {
-		return nil, nil, nil, "", 0, false
+		return nil, nil, nil, 0, false
 	}
 
 	newLeft := plainLegs[0]
@@ -715,31 +687,11 @@ func (t *cascadesTranslator) rotateEnclosedUnnest(j *logical.LogicalJoin) (rebui
 		newLeft = logical.NewJoin(newLeft, leg, logical.JoinInner, "")
 	}
 	if _, isLJ := newLeft.(*logical.LogicalJoin); !isLJ {
-		return nil, nil, nil, "", 0, false
+		return nil, nil, nil, 0, false
 	}
 
-	// Alias-collision and AS/AT-distinct checks against ALL plain legs — the
-	// flat select binds every leg alias (including legs AFTER the unnest in
-	// FROM order), which is the root-form gauntlet's scope after the
-	// rotation. The residual rejects these faithfully when this declines.
-	bound := outerBoundAliases(newLeft)
-	collide := func(name string) bool {
-		if name == "" {
-			return false
-		}
-		if strings.EqualFold(name, sourceAlias(newLeft)) {
-			return true
-		}
-		_, isBound := bound[strings.ToUpper(name)]
-		return isBound
-	}
-	if collide(u.Alias) || collide(u.AtAlias) {
-		return nil, nil, nil, "", 0, false
-	}
-	if unnestAliasReject(u) != nil {
-		// Decline the shape; the raw body surfaces the loud duplicate-alias
-		// rejection at translation (unnestAliasReject in translateUnnestJoin).
-		return nil, nil, nil, "", 0, false
+	if unnestCorrelationReject(newLeft, u) != nil {
+		return nil, nil, nil, 0, false
 	}
 
 	var onPred predicates.QueryPredicate
@@ -749,7 +701,7 @@ func (t *cascadesTranslator) rotateEnclosedUnnest(j *logical.LogicalJoin) (rebui
 			onPred = predicates.NewAnd(preds...)
 		}
 	}
-	return logical.NewJoinWithPredicate(newLeft, u, logical.JoinInner, onPred), u, elementType, fieldName, unnestPos, true
+	return logical.NewJoinWithPredicate(newLeft, u, logical.JoinInner, onPred), u, elementType, unnestPos, true
 }
 
 // translateEnclosedUnnestGather is the dispatch for the enclosed unnest
@@ -766,9 +718,9 @@ func (t *cascadesTranslator) translateEnclosedUnnestGather(j *logical.LogicalJoi
 		delete(t.enclosedGatherCache, j)
 		return sel
 	}
-	rebuilt, u, elementType, fieldName, unnestPos, ok := t.rotateEnclosedUnnest(j)
+	rebuilt, u, elementType, unnestPos, ok := t.rotateEnclosedUnnest(j)
 	if !ok {
 		return nil
 	}
-	return t.translateGatheredUnnestCluster(rebuilt, u, unnestSourceCorrelation(u), elementType, fieldName, unnestPos)
+	return t.translateGatheredUnnestCluster(rebuilt, u, unnestSourceCorrelation(u), elementType, unnestPos)
 }

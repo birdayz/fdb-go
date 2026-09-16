@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/api"
 )
 
 func TestFDB_DmlSubqueryWhereProbe(t *testing.T) {
@@ -129,6 +131,14 @@ func TestFDB_DmlSubqueryWhereProbe(t *testing.T) {
 	// identically wrong. planDML now plans + carries the subqueries and
 	// fetchPage pre-binds them, so the threshold is real. A threshold row
 	// (id=25) makes MAX(ref.id)=25 discriminating against a={10,20,30}.
+	t.Run("delete_where_scalar_missing_table", func(t *testing.T) {
+		reset()
+		_, err := db.ExecContext(ctx, "DELETE FROM t WHERE id = (SELECT MAX(id) FROM nosuchtable)")
+		requireSQLSTATE(t, err, api.ErrCodeUndefinedTable)
+		if got := remainingIDs(); !eq(got, []int64{1, 2, 3}) {
+			t.Errorf("missing table must delete nothing; remaining = %v, want [1 2 3]", got)
+		}
+	})
 	t.Run("delete_where_scalar_subquery_threshold", func(t *testing.T) {
 		reset()
 		mwjoMustExec(t, db, ctx, "INSERT INTO ref (id, flag) VALUES (25, 0)")

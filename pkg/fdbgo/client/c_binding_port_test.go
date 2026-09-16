@@ -1566,15 +1566,19 @@ func TestSetRetryLimit_Unlimited(t *testing.T) {
 
 	// Should not retry.
 	err := tx.OnError(context.Background(), &wire.FDBError{Code: ErrNotCommitted})
-	if err == nil {
-		t.Fatal("retryLimit=0 should not retry")
+	if fdbCodeOf(err) != 1020 {
+		t.Fatalf("retryLimit=0 returned %v, want 1020", err)
 	}
 
-	// Now remove the limit.
-	tx.state.Store(int32(txStateActive))
+	// An option change cannot revive a failed OnError (C++ API >=610).
+	tx.SetRetryLimit(-1)
+	if err := tx.OnError(context.Background(), &wire.FDBError{Code: 1020}); fdbCodeOf(err) != 1025 {
+		t.Fatalf("changing retry limit revived terminal transaction: %v", err)
+	}
+	tx.Reset()
 	tx.SetRetryLimit(-1)
 
-	// Should retry now.
+	// A fresh active transaction with no limit may retry.
 	if err := tx.OnError(context.Background(), &wire.FDBError{Code: ErrNotCommitted}); err != nil {
 		t.Fatalf("unlimited retry should succeed: %v", err)
 	}

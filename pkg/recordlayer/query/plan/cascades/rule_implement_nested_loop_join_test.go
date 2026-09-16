@@ -2996,3 +2996,110 @@ func TestBuriedLegOrdinalLayout_SkipsFusedNestedSameLeafName(t *testing.T) {
 			"never mint a layout key")
 	}
 }
+
+func TestExistsShortcutPreservesPriorScanBounds(t *testing.T) {
+	t.Parallel()
+	for _, access := range []string{"primary", "secondary"} {
+		t.Run(access, func(t *testing.T) {
+			t.Parallel()
+			for _, tc := range []struct {
+				name  string
+				kinds []predicates.ComparisonType
+			}{
+				{"unbounded", nil},
+				{"equality", []predicates.ComparisonType{predicates.ComparisonEquals}},
+				{"inequality", []predicates.ComparisonType{predicates.ComparisonGreaterThan}},
+				{"composite", []predicates.ComparisonType{predicates.ComparisonEquals, predicates.ComparisonGreaterThan}},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					t.Parallel()
+					o, i := values.NamedCorrelationIdentifier("O"), values.NamedCorrelationIdentifier("I")
+					outerType, innerType := nljTestLayouts["OUTER"], nljTestLayouts["INNER"]
+					outer := mustNLJConstruct(plans.NewRecordQueryScanPlan([]string{"OUTER"}, outerType, false))
+					inner := mustNLJConstruct(plans.NewRecordQueryScanPlan([]string{"INNER"}, innerType, false)).WithPrimaryKey([]values.Value{
+						nljBakedRef(t, "INNER", i, "ID"), nljBakedRef(t, "INNER", i, "OUTER_ID"),
+					})
+					var bounds []*predicates.ComparisonRange
+					for n, kind := range tc.kinds {
+						merged := predicates.EmptyComparisonRange().Merge(&predicates.Comparison{Type: kind, Operand: &values.ConstantValue{Value: int64(n + 1), Typ: values.NotNullLong}})
+						if !merged.Complete() {
+							t.Fatal("fixture bound did not merge")
+						}
+						bounds = append(bounds, merged.Range)
+					}
+					inner = inner.WithScanComparisons(bounds).WithKeyComponentTypes([]values.Type{values.NotNullLong, values.NotNullLong})
+					outerRef := expressions.InitialOf(mustNLJConstruct(expressions.NewFullUnorderedScanExpression([]string{"OUTER"}, outerType)))
+					innerRef := expressions.InitialOf(mustNLJConstruct(expressions.NewFullUnorderedScanExpression([]string{"INNER"}, innerType)))
+					outerRef.InsertFinal(outer)
+					innerRef.InsertFinal(inner)
+					oq, iq := expressions.NamedForEachQuantifier(o, outerRef), expressions.NamedExistentialQuantifier(i, innerRef)
+					pred := predicates.NewComparisonPredicate(nljBakedRef(t, "INNER", i, "ID"), predicates.Comparison{Type: predicates.ComparisonEquals, Operand: nljBakedRef(t, "OUTER", o, "ID")})
+					sel := mustNLJConstruct(expressions.NewSelectExpressionWithAliases(nljFlowed(oq), []expressions.Quantifier{oq, iq}, []predicates.QueryPredicate{pred, mustExistentialAlias(t, i)}, []string{"O", "I"}))
+					ctx := nljPrimaryKeyPlanContext{PlanContext: NewPlanContextFromMatchCandidates(nil), primaryKey: []string{"ID", "OUTER_ID"}}
+					if access == "secondary" {
+						scalar := false
+						candidate := NewValueIndexScanMatchCandidateWithFunctions("INNER$ID", []string{"INNER"}, []string{"ID"}, nil, []values.CorrelationIdentifier{values.UniqueCorrelationIdentifier()}, innerType, false, nil, &scalar).WithKeyComponentTypes([]values.Type{values.NotNullLong})
+						ctx.PlanContext = NewPlanContextFromMatchCandidates([]MatchCandidate{candidate})
+						ctx.primaryKey = nil
+					}
+					alternatives := mustFireExpressionRuleWithMemo(t, NewImplementNestedLoopJoinRule(), expressions.InitialOf(sel), ctx, nil)
+					if len(alternatives) == 0 {
+						t.Fatal("no implemented existential; bound preservation cannot be vacuous")
+					}
+					for _, alternative := range alternatives {
+						plan, ok := alternative.(plans.RecordQueryPlan)
+						if !ok {
+							t.Fatalf("not a physical plan: %T", alternative)
+						}
+						scans, indexes, residuals := 0, 0, 0
+						plans.Walk(plan, func(p plans.RecordQueryPlan) bool {
+							if _, ok := p.(*plans.RecordQueryPredicatesFilterPlan); ok {
+								residuals++
+							}
+							if _, ok := p.(*plans.RecordQueryIndexPlan); ok {
+								indexes++
+							}
+							scan, ok := p.(*plans.RecordQueryScanPlan)
+							if !ok || len(scan.GetRecordTypes()) != 1 || scan.GetRecordTypes()[0] != "INNER" {
+								return true
+							}
+							scans++
+							got := scan.GetScanComparisons()
+							if len(tc.kinds) == 0 {
+								if len(got) != 1 {
+									t.Errorf("unbounded primary control did not become a correlated point probe: %v", got)
+								}
+								return true
+							}
+							if len(got) != len(tc.kinds) {
+								t.Errorf("lost bound vector: got %d positions, want %d", len(got), len(tc.kinds))
+								return true
+							}
+							for pos, r := range got {
+								comparisons := r.GetComparisons()
+								if len(comparisons) != 1 {
+									t.Errorf("position %d comparisons=%v", pos, comparisons)
+									continue
+								}
+								literal, isLiteral := comparisons[0].Operand.(*values.ConstantValue)
+								if comparisons[0].Type != tc.kinds[pos] || !isLiteral || literal.Value != int64(pos+1) {
+									t.Errorf("position %d lost prior %v %d: %#v", pos, tc.kinds[pos], pos+1, comparisons[0])
+								}
+							}
+							return true
+						})
+						if len(tc.kinds) > 0 && (scans != 1 || indexes != 0 || residuals == 0) {
+							t.Errorf("bounded inner must survive with residual: scans=%d indexes=%d filters=%d", scans, indexes, residuals)
+						}
+						if len(tc.kinds) == 0 && access == "secondary" && indexes != 1 {
+							t.Errorf("unbounded secondary control did not select index: %d", indexes)
+						}
+						if len(tc.kinds) == 0 && access == "primary" && scans != 1 {
+							t.Errorf("unbounded primary control has %d inner scans", scans)
+						}
+					}
+				})
+			}
+		})
+	}
+}

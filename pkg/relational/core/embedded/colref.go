@@ -186,43 +186,6 @@ func recordProjQualVsScan(proj *logical.LogicalProject, slot int, upper string, 
 	values.RecordQualifierRecovery(values.QualRecSiteProjQualVsScan, class, upper, witness)
 }
 
-// projScopeAlias returns the source alias a projection field reference binds,
-// for the inner- vs outer-scoping decision, and files the decision into the
-// qualifier recovery census.
-//
-// It is a named function rather than the inline branch it replaces so the
-// recorder can be pinned PER CLASS by unit test. That is not cosmetic: this
-// site's MANUFACTURED bucket is 0 over every corpus that runs, so nothing else
-// can tell a debt population that is genuinely empty from a recorder that never
-// reaches the branch.
-//
-// TWO CHANNELS, and which one answers is the whole measurement:
-//
-//   - a QuantifiedObjectValue child — the correlation IS the alias, carried, no
-//     string sliced. CARRIED.
-//   - otherwise a LAST-dot split of the rendered field name, with NO
-//     counterparty: the split arm runs precisely where no correlation was
-//     carried, so this site can report carried or manufactured and never AGREED.
-//     That structural fact is its conversion answer — there is nothing local to
-//     convert to.
-//
-// The DECISION is parseColRef's, unchanged. The census is recorded BESIDE it
-// rather than derived from the shared classifier, because the two disagree on
-// the degenerate `T.` (a trailing dot is a qualifier to parseColRef and a bare
-// name to the classifier) and an instrument may not move the behaviour it
-// measures.
-func projScopeAlias(fv values.FieldValue) string {
-	if qov, isQOV := values.AsQuantifiedObjectValue(fv.ChildValue()); isQOV {
-		alias := strings.ToUpper(qov.Correlation().Name())
-		values.RecordQualifierRecovery(values.QualRecSiteProjScopeClassify,
-			values.QualRecCarried, fv.DisplayName(), alias)
-		return alias
-	}
-	values.RecordQualifierRecovery(values.QualRecSiteProjScopeClassify,
-		values.QualRecBare, fv.DisplayName(), "")
-	return ""
-}
-
 // stripDisplayLabelQualifier removes the SOURCE qualifier from a
 // machinery-pinned alias and reports whether it removed one. It classifies the
 // same decision it makes, which is the point: a recorder that classified a

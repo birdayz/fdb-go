@@ -2,6 +2,7 @@ package logical
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -85,6 +86,10 @@ type CorrelatedScalarSubquery struct {
 type LogicalScan struct {
 	Table string
 	Alias string
+	// TablePath preserves normalized identifier segments from the SQL parse
+	// boundary. A quoted dotted name is one segment, not a schema qualifier.
+	// Nil denotes legacy programmatic input; non-nil empty is malformed.
+	TablePath []string
 	// Binding is the scan's binding correlation name when its FROM alias
 	// DUPLICATES an earlier leg's at the same level ("" = the alias binds —
 	// every non-duplicate leg). Carried from the
@@ -94,9 +99,11 @@ type LogicalScan struct {
 	Binding string
 }
 
-// NewScan constructs a LogicalScan.
-func NewScan(table, alias string) *LogicalScan {
-	return &LogicalScan{Table: table, Alias: alias}
+// NewScan constructs a LogicalScan. SQL builders supply captured tablePath
+// segments; synthesized alias references supply exactly one literal segment.
+// Omitting tablePath retains the legacy string-only programmatic interface.
+func NewScan(table, alias string, tablePath ...string) *LogicalScan {
+	return &LogicalScan{Table: table, Alias: alias, TablePath: slices.Clone(tablePath)}
 }
 
 func (*LogicalScan) Children() []LogicalOperator { return []LogicalOperator{} }
@@ -133,13 +140,37 @@ type LogicalUnnest struct {
 	// AtAlias is the AT ordinal alias (`ord` in `... AT ord`), empty when
 	// absent. Its presence makes the Explode WITH ORDINALITY.
 	AtAlias string
-	// CorrelatedCollection is set only when this unnest is the primary source
-	// of a correlated subquery (`EXISTS (SELECT ... FROM R.TAGS AS E)`). It is
-	// the already-resolved array FieldValue over the outer correlation. A
-	// regular lateral FROM leg gets that value from the LogicalJoin on its left
-	// and leaves this nil. Carrying the resolved Value preserves minted outer
-	// correlations and avoids resolving the owner a second time.
+	// CorrelatedCollection is the already-resolved array Value over the outer
+	// correlation. A lateral FROM leg binds it against its preceding FROM
+	// prefix; a correlated primary source in EXISTS binds it against its outer
+	// scope. Carrying the value preserves the owner, exact type and ordinal
+	// path instead of resolving the syntax again during translation.
 	CorrelatedCollection values.Value
+}
+
+// UnnestBindingName reads a lateral source's runtime identity. A nonempty
+// binding is the parser's collision-free identity; the empty-binding convention
+// uses the captured AS/default name (AT for programmatic ordinal-only sources).
+// Display aliases never replace a carried binding at a consumer.
+func UnnestBindingName(binding, alias, atAlias string) string {
+	if binding != "" {
+		return strings.ToUpper(binding)
+	}
+	if alias != "" {
+		return strings.ToUpper(alias)
+	}
+	return strings.ToUpper(atAlias)
+}
+
+// UnnestOrdinalityNames names the two physical slots without changing their
+// order. Semantic labels remain untouched. For AT-only input the visible ordinal
+// keeps its name; only the hidden element is renamed on a collision.
+func UnnestOrdinalityNames(alias, atAlias string) []string {
+	if alias == "" {
+		names := values.DedupFieldNames([]string{atAlias, values.OrdinalFieldName(0)})
+		return []string{names[1], names[0]}
+	}
+	return values.DedupFieldNames([]string{alias, atAlias})
 }
 
 func (*LogicalUnnest) Children() []LogicalOperator { return []LogicalOperator{} }
@@ -224,6 +255,10 @@ type LogicalProject struct {
 	Aliases         []string       // parallel to Projections; "" means no alias
 	ProjectedValues []values.Value // parallel to Projections; nil slot = walker declined
 	IsComputed      []bool         // parallel to Projections; true = expression, not plain column ref
+	// SQLNames preserves semantic name presence independently of physical
+	// aliases: an empty slot is unnamed, even when its emitted field is _N.
+	// nil means names derive from the projection's authored references/aliases.
+	SQLNames []string
 	// AliasMinted is parallel to Aliases: true = the alias in that slot was
 	// written by the MACHINERY, not by the user's `AS`. It is the provenance of
 	// the name, carried, because the name's SHAPE cannot carry it: the

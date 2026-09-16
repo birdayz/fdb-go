@@ -109,16 +109,14 @@ const (
 	// case: `A.B.C` is treated as qualifier `A.B`, column `C`.
 	QualRecSiteExistsSortSplit
 
-	// QualRecSiteDerivedUnnestSource is query.classifyDerivedUnnestArray's split
-	// of the unnest body's source column (derived_unnest.go), whose manufactured
-	// qualifier is compared against the base scan's alias/table name.
+	// QualRecSiteDerivedUnnestSource is the stable identity of the retired
+	// derived-UNNEST descriptor/backtracking classifier. Bound collection
+	// consumption does not record traffic here, including CARRIED.
 	QualRecSiteDerivedUnnestSource
 
-	// QualRecSiteProjScopeClassify is embedded.classifyProjFieldValue
-	// (logical_predicate.go): inner- vs outer-scoping of a projection field. The
-	// parseColRef call is in the ELSE of a QuantifiedObjectValue check, so its
-	// CARRIED class is that QOV branch and its split arm runs only where no
-	// correlation was carried.
+	// QualRecSiteProjScopeClassify is the stable identity of the retired
+	// projection-scope classifier. Exact semantic projection resolution carries
+	// its source identity directly; every class at this site is a revival.
 	QualRecSiteProjScopeClassify
 
 	// QualRecSiteProjQualVsScan is embedded's projected-column qualifier check
@@ -397,6 +395,10 @@ type QualifierRecoveryExpectations struct {
 	// A site listed here is exempt from the Floors.Split zero-declaration check,
 	// so the two guards report the same event once, with the right words.
 	RetiredSplit [qualRecSiteCount]bool
+
+	// RetiredCalls forbids every class, including CARRIED, at a deleted site.
+	// Like RetiredSplit, this tree invariant survives filtered/empty corpora.
+	RetiredCalls [qualRecSiteCount]bool
 }
 
 // assertQualifierRecoveryCounts is the decision, split from the process-global
@@ -412,9 +414,10 @@ func assertQualifierRecoveryCounts(
 	failed := false
 	var floors *QualifierRecoveryFloors
 	var allowedDiverged map[QualifierRecoverySite]map[string]struct{}
-	var retiredSplit [qualRecSiteCount]bool
+	var retiredSplit, retiredCalls [qualRecSiteCount]bool
 	if exp != nil {
 		floors, allowedDiverged, retiredSplit = exp.Floors, exp.AllowedDiverged, exp.RetiredSplit
+		retiredCalls = exp.RetiredCalls
 	}
 
 	fmt.Fprintf(w, "[%s] qualifier recovery census — the DARK SPLITTERS (per resolution decision):\n", corpus)
@@ -527,6 +530,16 @@ func assertQualifierRecoveryCounts(
 	// retired arm is a fact about the TREE and stays true over the empty
 	// population a -test.run filter leaves behind, where every floor is dropped.
 	for s := QualifierRecoverySite(0); s < qualRecSiteCount; s++ {
+		if retiredCalls[s] {
+			total := splitPopulation(counts, s) + counts[s][QualRecCarried]
+			if total > 0 {
+				failed = true
+				fmt.Fprintf(w, "FAIL: %s reported %d call(s) at an ALL-CALL RETIRED site.\n"+
+					"  Zero is the steady state; GROWTH, including CARRIED, means the deleted classifier returned.\n"+
+					"  Do not restore a population floor or manufacture recorder traffic.\n", s, total)
+			}
+			continue
+		}
 		if !retiredSplit[s] {
 			continue
 		}
@@ -547,6 +560,9 @@ func assertQualifierRecoveryCounts(
 		return failed
 	}
 	for s := QualifierRecoverySite(0); s < qualRecSiteCount; s++ {
+		if retiredCalls[s] {
+			continue
+		}
 		total := 0
 		for c := QualifierRecoveryClass(0); c < qualRecClassCount; c++ {
 			total += counts[s][c]

@@ -1555,11 +1555,23 @@ guard must not be "fixed" back toward Java.
 The plan-time promotion and cast-pair gates exempt UNKNOWN-typed
 operands, which includes bound parameters on the exported
 PlanRecordQueryWithMetadata path (the SQL driver substitutes `?` as
-text, so driver-reachable binds arrive STRING-typed and take the
-STRING arms). Java types parameters by inference and gates them too;
-Go's parameter-inference arc would close this — until then a
-LONG-bound parameter through the exported path evaluates leniently
-where Java rejects at plan time.
+text, so driver-reachable string binds arrive STRING-typed and take the
+STRING arms; other binds take their rendered literal's type). Java types
+parameters by inference and gates them too; Go's parameter-inference arc
+would close this — until then a LONG-bound parameter through the exported
+path evaluates leniently where Java rejects at plan time.
+
+RFC-254 (`rfcs/254-scalar-floating-results-preserve-type-and-sign.md`) repairs
+the SQL driver's finite DOUBLE transport: exponent literals preserve both
+type and bits instead of `%g` turning whole doubles into integers. The
+executor has WithParams/BindParameter, but the driver does not use them;
+switching channels also changes statement-global ordinals, cache typing,
+literal-dependent plans and DDL/view parameter admission. Remaining concrete
+text-channel limits: only the documented renderable NaN bit patterns are
+admitted (other payloads are rejected); midnight time.Time is rendered as a
+date-only string, whereas other times include the time; integer parameters
+retain integer-literal interpretation, including ORDER BY positions. The
+RFC's SQL tests pin floating parameters as constants rather than positions.
 
 ## REWRITING prune: virtual (designation) vs Java's physical prune (RFC-186)
 
@@ -2616,3 +2628,23 @@ This changes only invalid-encoding error handling, not valid continuation bytes,
 record formats, or index formats. `TestChainedCursorNilEncode` pins rejection and
 single generator invocation both directly and through Concat, and
 `TestChainedCursorEmptyWithNilEncode` pins the exhausted-generator control.
+
+### Projected existential over an independent outer block (RFC-256)
+
+Go's live-existential partition guard excludes a result-live existential from a
+lower partition containing another quantifier. For a select with at least two
+ordinary independent ForEach sources and exactly one result-projected
+existential, that can leave the canonical outer cross product as the only
+implementable split. `PartitionSelectRule` now preserves exactly that split
+(all ordinary ForEach below, sole projected existential above) through both
+cross-product deferral and disconnected-lower pruning. Hard dependencies,
+cycles, null-on-empty/strict-single sources, additional existential/physical
+quantifiers, liveness and exact-row checks retain their exclusions.
+
+Java's `PartitionSelectRule` also has cross-product deferral; this is NOT a claim
+that Java bypasses that configuration. It is a bounded Go search-admissibility
+difference necessitated by Go's narrower live-existential lowering alternatives.
+The retained `DerivedSourceReference` JVM test proves same-alias, star/empty-body
+and both-live-outer-row EXISTS queries; direct rule tests drive both deferral
+settings and verify the exact canonical lower block. See RFC-256's final sections
+for the rejected broader exemptions, reference outcomes and verification scope.

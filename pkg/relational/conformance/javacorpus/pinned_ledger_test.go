@@ -175,14 +175,14 @@ package javacorpus_test
 // move: one query in it disagrees with the corpus on purpose. Reading this as
 // "a file regressed" is the wrong reading — the run got 29 queries FURTHER
 // than it had ever been.
-const pinnedLedger = "pass=70 fail=0 skip=168 queries=2005 file_skips{conformance:go-accepts-what-java-rejects=4," +
+const pinnedLedger = "pass=72 fail=0 skip=166 queries=2110 file_skips{conformance:go-accepts-what-java-rejects=5," +
 	"conformance:java-planner-bug=1," +
 	"engine-gap:catalog-system-tables=2,engine-gap:comma-join-mixed-from=1," +
 	"engine-gap:correlated-exists-setop=1," +
 	"engine-gap:dml-returning-result-set=2,engine-gap:error-class=2," +
 	"engine-gap:multiple-lateral-unnests=2," +
 	"engine-gap:nested-recursive-with=2," +
-	"engine-gap:planner-declines=5,engine-gap:result-metadata=3," +
+	"engine-gap:planner-declines=5," +
 	"engine-gap:returning-dry-run=1,engine-gap:serialization-options=1," +
 	"engine-gap:star-group-by-expansion=1,engine-gap:struct-query=2,engine-gap:table-valued-function=1,fragment=2," +
 	"no-checks=1,plan-assertion=8,polarity:fixed-version-meta=9," +
@@ -191,21 +191,21 @@ const pinnedLedger = "pass=70 fail=0 skip=168 queries=2005 file_skips{conformanc
 	"unsupported-DDL:struct-index=3,unsupported:continuation=3," +
 	"unsupported:multi-cluster=2,unsupported:result-metadata-nested=6," +
 	"unsupported:schema-command=8,unsupported:temporary-function=17," +
-	"vacuous:all-assertions-skipped=5} inner_skips{conformance:go-accepts-what-java-rejects=4," +
+	"vacuous:all-assertions-skipped=5} inner_skips{conformance:go-accepts-what-java-rejects=5," +
 	"conformance:java-planner-bug=1," +
 	"engine-gap:catalog-system-tables=2,engine-gap:comma-join-mixed-from=1," +
 	"engine-gap:correlated-exists-setop=1," +
 	"engine-gap:dml-returning-result-set=2,engine-gap:error-class=2," +
 	"engine-gap:multiple-lateral-unnests=2," +
 	"engine-gap:nested-recursive-with=2," +
-	"engine-gap:planner-declines=5,engine-gap:result-metadata=3," +
+	"engine-gap:planner-declines=5," +
 	"engine-gap:returning-dry-run=1,engine-gap:serialization-options=1," +
 	"engine-gap:star-group-by-expansion=1,engine-gap:struct-query=2,engine-gap:table-valued-function=1," +
-	"no-checks=8,plan-assertion=867,polarity:negative-execution=26," +
+	"no-checks=8,plan-assertion=954,polarity:negative-execution=26," +
 	"unsupported-DDL:function=11,unsupported-DDL:other=11," +
-	"unsupported-DDL:struct-index=3,unsupported:check-cache=145," +
+	"unsupported-DDL:struct-index=3,unsupported:check-cache=146," +
 	"unsupported:continuation=36,unsupported:debugger=3," +
-	"unsupported:multi-cluster=2,unsupported:prepared=221," +
+	"unsupported:multi-cluster=2,unsupported:prepared=222," +
 	"unsupported:random-injection=25,unsupported:result-metadata-nested=85," +
 	"unsupported:schema-command=16,unsupported:temporary-function=197}"
 
@@ -249,4 +249,4 @@ const pinnedFileTotal = 238
 // `pass` does not move — but its `queries` goes 0 → 29, which is the whole
 // event and is invisible in this digest by construction. Read it beside the
 // ledger line's 1976 → 2005.
-const pinnedAssignmentDigest = "d7fbfa446c3ac3065f5b5aa29869cc64ac5e4d444546ce27f820dfa9d5d3d8ee"
+const pinnedAssignmentDigest = "a5c81ddc39e1e755aecf44de6d5d3034a5559dbb91cbeb4ed3669a2fe142b9f1"

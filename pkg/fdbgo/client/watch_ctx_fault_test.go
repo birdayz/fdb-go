@@ -177,3 +177,58 @@ func TestWatchSetup_CancelUnblocksStuckSetupRead(t *testing.T) {
 	}
 	db.db.releaseWatch() // free tx2's slot (no WatchPoll runs for it)
 }
+
+// TestGet_CancelUnblocksHeldReply applies the same held-reply control to an
+// ordinary read. C++ RYW reads race resetPromise, not just watch setup; Cancel
+// must end the read while the successful storage reply is still withheld.
+func TestGet_CancelUnblocksHeldReply(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	db, sd := newSimTestDB(t, ctx)
+	key := []byte(t.Name() + "_k")
+	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+		tx.Set(key, []byte("value"))
+		return nil, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rv, _, _, err := db.db.grvBatchers[grvBatcherDefault].getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, nil, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	storageAddr := storageAddrFor(t, db, ctx, key)
+	parked, release := make(chan struct{}, 1), make(chan struct{})
+	defer close(release)
+	sd.setIntercept(func(_ int, _ transport.UID, body []byte) ([]byte, bool) {
+		select {
+		case parked <- struct{}{}:
+			<-release
+		default:
+		}
+		return body, false
+	})
+	sd.armAddr(storageAddr)
+	tx := db.CreateTransaction()
+	tx.SetReadVersion(rv)
+	tx.rpcTimeoutOverride = time.Hour // Only cancellation may end this held read.
+	done := make(chan error, 1)
+	go func() {
+		_, err := tx.Get(ctx, key)
+		done <- err
+	}()
+	select {
+	case <-parked:
+	case <-ctx.Done():
+		t.Fatal("read did not reach the held storage reply")
+	}
+	tx.Cancel()
+	select {
+	case err := <-done:
+		if fdbCodeOf(err) != 1025 {
+			t.Fatalf("canceled in-flight read=%v, want 1025", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Cancel did not end the read while its reply remained held")
+	}
+}

@@ -15,11 +15,9 @@ type transaction struct {
 	db    Database
 	ctx   context.Context
 
-	// commitDone is closed after Commit completes (success or failure).
-	// GetVersionstamp() blocks on this channel to match Apple binding
-	// semantics where the future resolves after commit.
-	commitDone chan struct{}
-	commitErr  error
+	// ReadTransact has no commit producer. Other wrappers bind versionstamp
+	// futures directly to their client incarnation, including managed retries.
+	versionstamps bool
 }
 
 // Transaction is a handle to a FoundationDB transaction.
@@ -136,33 +134,22 @@ func (tr Transaction) GetCommittedVersion() (int64, error) {
 // GetVersionstamp returns the versionstamp which was used by any
 // versionstamp operations in this transaction.
 //
-// Can be called before or after Commit(). If called before, the returned
-// future blocks until commit completes — matching the Apple binding's
-// deferred versionstamp pattern.
-//
-// Only supported on transactions created via CreateTransaction() with
-// explicit Commit(). Transactions from Transact()/ReadTransact() return
-// error 2015 (used_during_commit) because commit is managed internally.
+// A pre-commit future belongs to the admitted incarnation's native versionstamp
+// promise, not Commit's error result. Timeout, Cancel and Reset retire a pending
+// future; an already-selected result remains immutable. Managed Transact attempts
+// have the same ownership. ReadTransact has no commit and returns future_not_set
+// (2015). Post-commit access is also supported by Go's auto-reuse extension.
 func (tr Transaction) GetVersionstamp() FutureKey {
-	if tr.t.commitDone == nil {
-		// Transact/ReadTransact manage commit internally — we can't
-		// defer the versionstamp read. Use CreateTransaction() instead.
+	if !tr.t.versionstamps {
 		return newReadyFutureKey(nil, Error{Code: 2015})
 	}
-	inner := tr.t.inner
-	t := tr.t
+	value, pending, err := tr.t.inner.GetVersionstampPending(tr.t.ctx)
+	if pending == nil {
+		return newReadyFutureKey(Key(value), convertError(err))
+	}
 	return newFutureKey(func() (Key, error) {
-		// Block until commit completes (or has already completed).
-		<-t.commitDone
-		// If commit failed, return the commit error.
-		if t.commitErr != nil {
-			return nil, t.commitErr
-		}
-		vs, err := inner.GetVersionstamp()
-		if err != nil {
-			return nil, convertError(err)
-		}
-		return Key(vs), nil
+		value, err := pending.Resolve()
+		return Key(value), convertError(err)
 	})
 }
 
@@ -323,36 +310,18 @@ func (tr Transaction) CompareAndClearBytes(key, param []byte) {
 }
 
 // Commit commits the transaction. The returned FutureNil becomes ready
-// when the commit has been acknowledged by the cluster. Also unblocks
-// any pending GetVersionstamp() futures.
+// when the commit has been acknowledged by the cluster. Native completion also
+// resolves this producer's versionstamp promise; pre-native rejection leaves an
+// already-admitted versionstamp pending until native completion or retirement.
 func (tr Transaction) Commit() FutureNil {
-	inner, ctx := tr.t.inner, tr.t.ctx
-	t := tr.t
-	return newFutureNil(func() error {
-		err := convertError(inner.Commit(ctx))
-		t.commitErr = err
-		if t.commitDone != nil {
-			select {
-			case <-t.commitDone:
-			default:
-				close(t.commitDone)
-			}
-		}
-		return err
-	})
+	pending := tr.t.inner.PrepareCommit(tr.t.ctx)
+	return newFutureNil(func() error { return convertError(pending.Resolve()) })
 }
 
 // Cancel cancels the transaction. Also unblocks any pending
 // GetVersionstamp() futures.
 func (tr Transaction) Cancel() {
 	tr.t.inner.Cancel()
-	if tr.t.commitDone != nil {
-		select {
-		case <-tr.t.commitDone:
-		default:
-			close(tr.t.commitDone)
-		}
-	}
 }
 
 // OnError determines whether an error is retryable. The returned FutureNil
@@ -384,7 +353,6 @@ func (tr Transaction) SetReadVersion(version int64) {
 // where Reset must not be called while the transaction is in use.
 func (tr Transaction) Reset() {
 	old := tr.t.inner
-	oldDone := tr.t.commitDone
 	// Match C++ user-facing reset() (ReadYourWrites.actor.cpp:2735-2755): DROP
 	// user-set options, KEEP the tenant, re-apply the database transaction defaults.
 	// A fresh inner drops the user-set per-tx options (writeConflictsDisabled,
@@ -399,18 +367,9 @@ func (tr Transaction) Reset() {
 		fresh.SetTenantId(tid)
 	}
 	tr.t.inner = fresh
-	tr.t.commitDone = make(chan struct{})
-	tr.t.commitErr = nil
+	tr.t.versionstamps = true
 	tr.t.db.applyTxDefaults(tr.t)
 	old.Cancel()
-	// Unblock any goroutines from GetVersionstamp() calls made before Reset.
-	if oldDone != nil {
-		select {
-		case <-oldDone:
-		default:
-			close(oldDone)
-		}
-	}
 }
 
 // AddReadConflictRange adds a read conflict range.
@@ -457,7 +416,7 @@ func (tr Transaction) Watch(key KeyConvertible) FutureNil {
 	// user's Transact body, before the wrapper's commit). The async future below blocks on it and
 	// registers the watch at the COMMITTED version, not the read version — so `Set(k,B); w=Watch(k)` stays
 	// pending until the next EXTERNAL change instead of firing on the txn's own write.
-	act := inner.WatchActivation()
+	act := inner.WatchActivationFor(watchCtx)
 	// Cancel() on the returned future cancels THIS watch (its scoped context → WatchPoll drains and
 	// releases the outstanding-watch slot), so an app can free ONE unneeded watch without touching the
 	// transaction's other watches — the base future Cancel() is a no-op, which would leave
@@ -549,10 +508,10 @@ func (tr Transaction) ReadTransact(f func(ReadTransaction) (any, error)) (r any,
 // expects the fdb facade types (e.g., the directory layer).
 func WrapTransaction(tx *client.Transaction, db Database) Transaction {
 	return Transaction{t: &transaction{
-		inner:      tx,
-		db:         db,
-		ctx:        db.d.ctx,
-		commitDone: make(chan struct{}),
+		inner:         tx,
+		db:            db,
+		ctx:           db.d.ctx,
+		versionstamps: true,
 	}}
 }
 

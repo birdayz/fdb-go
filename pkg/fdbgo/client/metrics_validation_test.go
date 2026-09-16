@@ -13,7 +13,8 @@ import (
 // KeyRangeRef (inverted_range) before the op and checks resetPromise (cancel/timeout) before the maxKey
 // check. So the order must be: inverted (2005) → cancelled (1025) → timed_out (1031) → maxKey (2004).
 // Deterministic (forces the timeout state; the synchronous checks return before the locate loop, so no
-// DB is needed).
+// DB is needed). Exercise the public admission boundary: its captured deferred
+// verdict belongs to the operation context, not to a context-free Impl call.
 func TestMetricOps_EarlyReturnPrecedence(t *testing.T) {
 	t.Parallel()
 	timedOut := func() *Transaction {
@@ -25,21 +26,21 @@ func TestMetricOps_EarlyReturnPrecedence(t *testing.T) {
 
 	// getRangeSplitPoints: timed-out AND key past maxReadKey → transaction_timed_out (1031) wins over
 	// key_outside_legal_range (2004) — C++ resetPromise check precedes the maxKey check.
-	_, err := timedOut().getRangeSplitPointsImpl(context.Background(), []byte("a"), []byte("\xff\xff\xff"), 1000)
+	_, err := timedOut().GetRangeSplitPoints(context.Background(), []byte("a"), []byte("\xff\xff\xff"), 1000)
 	if got := crCode(t, err); got != ErrTransactionTimedOut {
 		t.Errorf("getRangeSplitPoints timed-out+>maxKey: code=%d, want %d (timeout beats maxKey)", got, ErrTransactionTimedOut)
 	}
 	// Inverted still beats timeout (KeyRangeRef construction precedes the op entirely).
-	_, err = timedOut().getRangeSplitPointsImpl(context.Background(), []byte("z"), []byte("a"), 1000)
+	_, err = timedOut().GetRangeSplitPoints(context.Background(), []byte("z"), []byte("a"), 1000)
 	if got := crCode(t, err); got != ErrInvertedRange {
 		t.Errorf("getRangeSplitPoints inverted+timed-out: code=%d, want %d (inverted beats timeout)", got, ErrInvertedRange)
 	}
 	// getEstimatedRangeSizeBytes (no maxKey check): timed-out → 1031; inverted → 2005.
-	_, err = timedOut().getEstimatedRangeSizeBytesImpl(context.Background(), []byte("a"), []byte("b"))
+	_, err = timedOut().GetEstimatedRangeSizeBytes(context.Background(), []byte("a"), []byte("b"))
 	if got := crCode(t, err); got != ErrTransactionTimedOut {
 		t.Errorf("getEstimatedRangeSizeBytes timed-out: code=%d, want %d", got, ErrTransactionTimedOut)
 	}
-	_, err = timedOut().getEstimatedRangeSizeBytesImpl(context.Background(), []byte("z"), []byte("a"))
+	_, err = timedOut().GetEstimatedRangeSizeBytes(context.Background(), []byte("z"), []byte("a"))
 	if got := crCode(t, err); got != ErrInvertedRange {
 		t.Errorf("getEstimatedRangeSizeBytes inverted+timed-out: code=%d, want %d", got, ErrInvertedRange)
 	}
@@ -53,12 +54,22 @@ func TestMetricOps_EarlyReturnPrecedence(t *testing.T) {
 		tx.deferredErr.Store(&wire.FDBError{Code: clientInvalidOperation})
 		return tx
 	}
-	_, err = poisonedAndTimedOut().getRangeSplitPointsImpl(context.Background(), []byte("a"), []byte("\xff\xff\xff"), 1000)
+	_, err = poisonedAndTimedOut().GetRangeSplitPoints(context.Background(), []byte("a"), []byte("\xff\xff\xff"), 1000)
 	if got := crCode(t, err); got != clientInvalidOperation {
 		t.Errorf("getRangeSplitPoints poisoned+timed-out: code=%d, want %d (poison beats timeout)", got, clientInvalidOperation)
 	}
-	_, err = poisonedAndTimedOut().getEstimatedRangeSizeBytesImpl(context.Background(), []byte("a"), []byte("b"))
+	_, err = poisonedAndTimedOut().GetEstimatedRangeSizeBytes(context.Background(), []byte("a"), []byte("b"))
 	if got := crCode(t, err); got != clientInvalidOperation {
 		t.Errorf("getEstimatedRangeSizeBytes poisoned+timed-out: code=%d, want %d (poison beats timeout)", got, clientInvalidOperation)
+	}
+	// Range construction still precedes deferred dispatch, even when both the
+	// deferred error and timeout are already present at the admission boundary.
+	_, err = poisonedAndTimedOut().GetRangeSplitPoints(context.Background(), []byte("z"), []byte("a"), 1000)
+	if got := crCode(t, err); got != 2005 {
+		t.Errorf("getRangeSplitPoints inverted+poisoned+timed-out: code=%d, want 2005", got)
+	}
+	_, err = poisonedAndTimedOut().GetEstimatedRangeSizeBytes(context.Background(), []byte("z"), []byte("a"))
+	if got := crCode(t, err); got != 2005 {
+		t.Errorf("getEstimatedRangeSizeBytes inverted+poisoned+timed-out: code=%d, want 2005", got)
 	}
 }

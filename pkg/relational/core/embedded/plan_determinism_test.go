@@ -77,7 +77,7 @@ func TestPlanDeterminism_MultiEqualityShellTie_CrossProcess(t *testing.T) {
 
 	exe, err := os.Executable()
 	if err != nil {
-		t.Skipf("cross-process harness unavailable (os.Executable: %v)", err)
+		t.Fatalf("cross-process harness unavailable (os.Executable: %v)", err)
 	}
 	const procs = 5
 	seen := make(map[string]int)
@@ -88,13 +88,13 @@ func TestPlanDeterminism_MultiEqualityShellTie_CrossProcess(t *testing.T) {
 		if err != nil {
 			// Distinguish "child RAN and FAILED" (planning error / panic / assertion →
 			// exit non-zero → *exec.ExitError) from "couldn't START the binary" (restricted
-			// sandbox). The former is a real regression and must FAIL the parent; only the
-			// latter skips. Skipping a child failure would let CI miss it.
+			// sandbox). Both fail: an unavailable child is not a determinism pass.
+			// Keep the reason distinct so a planning failure cannot look like infrastructure.
 			var exitErr *exec.ExitError
 			if errors.As(err, &exitErr) {
 				t.Fatalf("cross-process subprocess %d ran but failed (%v):\n%s", i, err, out)
 			}
-			t.Skipf("cross-process harness could not start (subprocess %d: %v)", i, err)
+			t.Fatalf("cross-process harness could not start (subprocess %d: %v)", i, err)
 		}
 		plan := ""
 		for _, line := range strings.Split(string(out), "\n") {

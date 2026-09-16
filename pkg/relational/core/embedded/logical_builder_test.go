@@ -310,7 +310,7 @@ func TestBuildLogicalPlan_CountStar(t *testing.T) {
 	if op == nil {
 		t.Fatal("expected non-nil")
 	}
-	want := "Project(COUNT(*))\n  Aggregate(group=[], agg=[COUNT(*)])\n    Scan(T)"
+	want := "Project(COUNT(*) AS _0)\n  Aggregate(group=[], agg=[COUNT(*)])\n    Scan(T)"
 	if got := op.Explain(""); got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
@@ -384,10 +384,8 @@ func TestBuildLogicalPlan_PostAggExprAlias_CarriesAlias(t *testing.T) {
 	}
 }
 
-// TestBuildLogicalPlan_PostAggExpr_NoSpuriousAlias pins the other direction: an
-// unaliased post-aggregate expression must NOT be given an alias (hasAlias stays
-// false → nil Aliases), so buildPostAggregateProjection only aliases when the SELECT
-// list actually renamed the column.
+// TestBuildLogicalPlan_PostAggExpr_NoSpuriousAlias separates an anonymous SQL
+// expression from the physical _0 field required to materialize its result.
 func TestBuildLogicalPlan_PostAggExpr_NoSpuriousAlias(t *testing.T) {
 	t.Parallel()
 	sq := parseSelect(t, "SELECT COUNT(*)+1 FROM a")
@@ -396,11 +394,11 @@ func TestBuildLogicalPlan_PostAggExpr_NoSpuriousAlias(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected top *logical.LogicalProject, got %T:\n%s", op, op.Explain(""))
 	}
-	for _, a := range proj.Aliases {
-		if a != "" {
-			t.Fatalf("unaliased post-aggregate expression must not be aliased; got Aliases=%v, plan:\n%s",
-				proj.Aliases, op.Explain(""))
-		}
+	if len(proj.SQLNames) != 1 || proj.SQLNames[0] != "" {
+		t.Fatalf("unaliased post-aggregate expression acquired a SQL name: %q", proj.SQLNames)
+	}
+	if len(proj.Aliases) != 1 || proj.Aliases[0] != "_0" {
+		t.Fatalf("anonymous result has no physical output field: %q", proj.Aliases)
 	}
 }
 
@@ -967,6 +965,7 @@ func TestSortKeySegments_AliasRebaseClearsStaleSegments(t *testing.T) {
 	// Force the deferred-strip shape the builder rebases under.
 	sq.postSortStripProj = []string{"ID"}
 	sq.postSortStripAliases = []string{"V"}
+	sq.postSortSQLNames = []string{"V"}
 	op := buildSelectShell(logical.NewScan("t", ""), sq, "")
 	sort, ok := op.(*logical.LogicalSort)
 	if !ok {

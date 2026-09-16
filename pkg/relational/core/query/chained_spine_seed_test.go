@@ -105,8 +105,45 @@ func newChainedSpineTranslator(t *testing.T) *cascadesTranslator {
 }
 
 // link appends one lateral-unnest link to a spine.
-func link(left logical.LogicalOperator, owner, field, alias string) (*logical.LogicalJoin, *logical.LogicalUnnest) {
-	u := &logical.LogicalUnnest{Segments: []string{owner, field}, Alias: alias}
+func link(t testing.TB, left logical.LogicalOperator, owner, field, alias string) (*logical.LogicalJoin, *logical.LogicalUnnest) {
+	t.Helper()
+	elem2 := &values.RecordType{Fields: []values.Field{
+		{Name: "DEEP", Ordinal: 0, FieldType: values.NewArrayType(false, values.NotNullInt)},
+		{Name: "LEAF", Ordinal: 1, FieldType: values.NullableLong},
+	}}
+	elem := &values.RecordType{Fields: []values.Field{
+		{Name: "SUB", Ordinal: 0, FieldType: values.NewArrayType(false, values.NotNullInt)},
+		{Name: "K", Ordinal: 1, FieldType: values.NullableLong},
+		{Name: "SUBSTRUCT", Ordinal: 2, FieldType: values.NewArrayType(false, elem2)},
+	}}
+	cElem := &values.RecordType{Fields: []values.Field{{Name: "V", Ordinal: 0, FieldType: values.NewArrayType(false, values.NotNullInt)}, {Name: "LEAF", Ordinal: 1, FieldType: values.NullableLong}}}
+	bElem := &values.RecordType{Fields: []values.Field{{Name: "C", Ordinal: 0, FieldType: values.NewArrayType(false, cElem)}}}
+	aElem := &values.RecordType{Fields: []values.Field{{Name: "B", Ordinal: 0, FieldType: values.NewArrayType(false, bElem)}}}
+	t4 := &values.RecordType{Fields: []values.Field{{Name: "ID", Ordinal: 0, FieldType: values.NullableLong}, {Name: "SARR", Ordinal: 1, FieldType: values.NewArrayType(false, elem)}, {Name: "SUB", Ordinal: 2, FieldType: values.NullableLong}}}
+	tRow := &values.RecordType{Fields: []values.Field{{Name: "ID", Ordinal: 0, FieldType: values.NullableLong}, {Name: "A", Ordinal: 1, FieldType: values.NewArrayType(false, aElem)}}}
+
+	layout := t4
+	ordinal := 1
+	switch field {
+	case "SUB":
+		layout, ordinal = elem, 0
+	case "SUBSTRUCT":
+		layout, ordinal = elem, 2
+	case "DEEP":
+		layout, ordinal = elem2, 0
+	case "A":
+		layout, ordinal = tRow, 1
+	case "B":
+		layout, ordinal = aElem, 0
+	case "C":
+		layout, ordinal = bElem, 0
+	case "V":
+		layout, ordinal = cElem, 0
+	}
+	if field == "SARR" && (owner == "A" || owner == "B") {
+		layout = rawNullSuppliedLayout(layout)
+	}
+	u, _ := rawBoundUnnest(t, []string{owner, field}, alias, "", strings.ToUpper(owner), layout, ordinal)
 	return inner(left, u), u
 }
 
@@ -140,57 +177,57 @@ func TestChainedSpineSeedForm(t *testing.T) {
 	// Spine builders (fresh trees per case — the translator mutates nothing,
 	// but sharing nodes across subtests invites accidental coupling).
 	linear3 := func() (*logical.LogicalJoin, *logical.LogicalUnnest) {
-		l1, _ := link(scan("T4", "T4"), "T4", "SARR", "X")
-		l2, _ := link(l1, "X", "SUBSTRUCT", "Y")
-		return link(l2, "Y", "DEEP", "Z")
+		l1, _ := link(t, scan("T4", "T4"), "T4", "SARR", "X")
+		l2, _ := link(t, l1, "X", "SUBSTRUCT", "Y")
+		return link(t, l2, "Y", "DEEP", "Z")
 	}
 	linear4 := func() (*logical.LogicalJoin, *logical.LogicalUnnest) {
-		l1, _ := link(scan("T", "T"), "T", "A", "a")
-		l2, _ := link(l1, "a", "B", "b")
-		l3, _ := link(l2, "b", "C", "c")
-		return link(l3, "c", "V", "v")
+		l1, _ := link(t, scan("T", "T"), "T", "A", "a")
+		l2, _ := link(t, l1, "a", "B", "b")
+		l3, _ := link(t, l2, "b", "C", "c")
+		return link(t, l3, "c", "V", "v")
 	}
 	linear2 := func() (*logical.LogicalJoin, *logical.LogicalUnnest) {
-		l1, _ := link(scan("T4", "T4"), "T4", "SARR", "X")
-		return link(l1, "X", "SUB", "Y")
+		l1, _ := link(t, scan("T4", "T4"), "T4", "SARR", "X")
+		return link(t, l1, "X", "SUB", "Y")
 	}
 	topFork := func() (*logical.LogicalJoin, *logical.LogicalUnnest) {
 		// W's owner is X, TWO links back (not the preceding Y): a shape that a
 		// simpler owner-resolution would malform-plan (ordinal -1) and would be
 		// SILENTLY WRONG with colliding field names.
-		l1, _ := link(scan("T4", "T4"), "T4", "SARR", "X")
-		l2, _ := link(l1, "X", "SUBSTRUCT", "Y")
-		return link(l2, "X", "SUB", "W")
+		l1, _ := link(t, scan("T4", "T4"), "T4", "SARR", "X")
+		l2, _ := link(t, l1, "X", "SUBSTRUCT", "Y")
+		return link(t, l2, "X", "SUB", "W")
 	}
 	midFork := func() (*logical.LogicalJoin, *logical.LogicalUnnest) {
 		// The fork sits ONE level below the dispatching link: Z↔Y2 is linear,
 		// but Y2's owner X is not the preceding Y — a walk over firstBase alone
 		// (skipping firstUnnest) would admit it.
-		l1, _ := link(scan("T4", "T4"), "T4", "SARR", "X")
-		l2, _ := link(l1, "X", "SUBSTRUCT", "Y")
-		l3, _ := link(l2, "X", "SUBSTRUCT", "Y2")
-		return link(l3, "Y2", "DEEP", "Z")
+		l1, _ := link(t, scan("T4", "T4"), "T4", "SARR", "X")
+		l2, _ := link(t, l1, "X", "SUBSTRUCT", "Y")
+		l3, _ := link(t, l2, "X", "SUBSTRUCT", "Y2")
+		return link(t, l3, "Y2", "DEEP", "Z")
 	}
 	twinFork := func() (*logical.LogicalJoin, *logical.LogicalUnnest) {
 		// TWO iterations of the SAME array (X, X2), the sub-unnest owned by the
 		// FIRST: mis-rooting at X2's element would read the SAME-NAMED SUB off
 		// the wrong iteration variable — the silent-wrong-rows variant.
-		l1, _ := link(scan("T4", "T4"), "T4", "SARR", "X")
-		l2, _ := link(l1, "T4", "SARR", "X2")
-		return link(l2, "X", "SUB", "Y")
+		l1, _ := link(t, scan("T4", "T4"), "T4", "SARR", "X")
+		l2, _ := link(t, l1, "T4", "SARR", "X2")
+		return link(t, l2, "X", "SUB", "Y")
 	}
 	boxBase3 := func() (*logical.LogicalJoin, *logical.LogicalUnnest) {
 		box := inner(scan("T4", "T4"), scan("T4", "T4C"))
-		l1, _ := link(box, "T4", "SARR", "X")
-		l2, _ := link(l1, "X", "SUBSTRUCT", "Y")
-		return link(l2, "Y", "DEEP", "Z")
+		l1, _ := link(t, box, "T4", "SARR", "X")
+		l2, _ := link(t, l1, "X", "SUBSTRUCT", "Y")
+		return link(t, l2, "Y", "DEEP", "Z")
 	}
 	oneSegMid := func() (*logical.LogicalJoin, *logical.LogicalUnnest) {
 		// A malformed 1-segment unnest mid-spine (constructible via the
 		// AT-source parser path) — the mid-spine Segments<2 check.
 		l1 := inner(scan("T4", "T4"), &logical.LogicalUnnest{Segments: []string{"SARR"}, Alias: "X"})
-		l2, _ := link(l1, "X", "SUBSTRUCT", "Y")
-		return link(l2, "Y", "DEEP", "Z")
+		l2, _ := link(t, l1, "X", "SUBSTRUCT", "Y")
+		return link(t, l2, "Y", "DEEP", "Z")
 	}
 	fullBoxBottom := func() (*logical.LogicalJoin, *logical.LogicalUnnest) {
 		// The spine bottoms in a FULL OUTER box — clusterArity==1, so ADMITTED
@@ -200,8 +237,8 @@ func TestChainedSpineSeedForm(t *testing.T) {
 		// incoherent split — an ordinal chained link over a name-keyed first
 		// link — would read a name-keyed row positionally: silent wrong rows.
 		fullBox := logical.NewJoin(scan("T4", "A"), scan("T4", "B"), logical.JoinFull, "")
-		l1, _ := link(fullBox, "A", "SARR", "X")
-		return link(l1, "X", "SUB", "Y")
+		l1, _ := link(t, fullBox, "A", "SARR", "X")
+		return link(t, l1, "X", "SUB", "Y")
 	}
 	nestedBoxBottom := func() (*logical.LogicalJoin, *logical.LogicalUnnest) {
 		// The spine bottoms in a NESTED outer box — `(A LEFT B) FULL C` — which
@@ -217,8 +254,8 @@ func TestChainedSpineSeedForm(t *testing.T) {
 		// an unvalidated code path.
 		innerLeft := logical.NewJoin(scan("T4", "A"), scan("T4", "B"), logical.JoinLeft, "")
 		nested := logical.NewJoin(innerLeft, scan("T4", "C"), logical.JoinFull, "")
-		l1, _ := link(nested, "A", "SARR", "X")
-		return link(l1, "X", "SUB", "Y")
+		l1, _ := link(t, nested, "A", "SARR", "X")
+		return link(t, l1, "X", "SUB", "Y")
 	}
 	forkOverFullBox := func() (*logical.LogicalJoin, *logical.LogicalUnnest) {
 		// The FORK admission composing with the impure bottom — the coupling
@@ -227,18 +264,21 @@ func TestChainedSpineSeedForm(t *testing.T) {
 		// (box-leg WHERE): the WHOLE chain declines loudly via the arm,
 		// exactly as the linear FULL-box-bottom spine does.
 		fullBox := logical.NewJoin(scan("T4", "A"), scan("T4", "B"), logical.JoinFull, "")
-		l1, _ := link(fullBox, "A", "SARR", "X")
-		l2, _ := link(l1, "X", "SUBSTRUCT", "Y")
-		return link(l2, "X", "SUB", "W")
+		l1, _ := link(t, fullBox, "A", "SARR", "X")
+		l2, _ := link(t, l1, "X", "SUBSTRUCT", "Y")
+		return link(t, l2, "X", "SUB", "W")
 	}
 	linear3AtMid := func() (*logical.LogicalJoin, *logical.LogicalUnnest) {
 		// AT-ordinality on the MID link (AS+AT): the linearity walk keys on the
 		// AS alias; the AT column rides the leg columns without disturbing
 		// elementRootIdx.
-		l1, _ := link(scan("T4", "T4"), "T4", "SARR", "X")
-		u2 := &logical.LogicalUnnest{Segments: []string{"X", "SUBSTRUCT"}, Alias: "Y", AtAlias: "P"}
+		l1, _ := link(t, scan("T4", "T4"), "T4", "SARR", "X")
+		elem := rawProtoRowLayout(t, newChainedSpineTranslator(t).md, "T4").Fields[1].FieldType.(*values.ArrayType).ElementType.(*values.RecordType)
+		u2, _ := rawBoundUnnest(t, []string{"X", "SUBSTRUCT"}, "Y", "P", "X", elem, 2)
 		l2 := inner(l1, u2)
-		return link(l2, "Y", "DEEP", "Z")
+		elem2 := elem.Fields[2].FieldType.(*values.ArrayType).ElementType.(*values.RecordType)
+		u3, _ := rawBoundPriorElementUnnest(t, "Y", "P", elem2, []string{"Y", "DEEP"}, "Z", "", 0)
+		return inner(l2, u3), u3
 	}
 
 	cases := []struct {
@@ -309,7 +349,7 @@ func TestChainedSpineSeedForm(t *testing.T) {
 		// the gate ever runs — the walk's own Segments<2 check is defense in
 		// depth behind that, pinned directly in the walk test below
 		// (one_segment_mid_spine expects admitted=false).
-		{"one_segment_mid_spine", oneSegMid, false, "nil", "not yet supported"},
+		{"one_segment_mid_spine", oneSegMid, false, "nil", "inadmissible spine"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -343,47 +383,47 @@ func TestChainedSpineWalk(t *testing.T) {
 	t.Parallel()
 	tr := newChainedSpineTranslator(t)
 
-	l1, _ := link(scan("T4", "T4"), "T4", "SARR", "X")
-	l2, _ := link(l1, "X", "SUBSTRUCT", "Y")
-	l3, _ := link(l2, "Y", "DEEP", "Z")
+	l1, _ := link(t, scan("T4", "T4"), "T4", "SARR", "X")
+	l2, _ := link(t, l1, "X", "SUBSTRUCT", "Y")
+	l3, _ := link(t, l2, "Y", "DEEP", "Z")
 	// A TABLE-owned mid-spine link (X2's owner is T4, not a prior unnest —
 	// the twin shape, upstream-rejected as multiple lateral unnests): the
 	// ownership rule finds ZERO deeper links for it → defensive decline.
-	forkL2, _ := link(l1, "T4", "SARR", "X2")
-	forkAtY, _ := link(forkL2, "X", "SUB", "Y")
+	forkL2, _ := link(t, l1, "T4", "SARR", "X2")
+	forkAtY, _ := link(t, forkL2, "X", "SUB", "Y")
 	// A GENUINE fork spine: Y and Y2 both owned by X, Z owned by Y2 — every
 	// above-first owner resolves to exactly one deeper link → ADMITTED; the
 	// collection roots at the OWNER's element
 	// slot via chainedOwnerElementSlot, so the mis-root class a simpler
 	// linear-only rule would have to reject is closed by construction, not by
 	// declining.
-	gf2, _ := link(l1, "X", "SUBSTRUCT", "Y")
-	gf3, _ := link(gf2, "X", "SUBSTRUCT", "Y2")
-	gf4, _ := link(gf3, "Y2", "DEEP", "Z")
+	gf2, _ := link(t, l1, "X", "SUBSTRUCT", "Y")
+	gf3, _ := link(t, gf2, "X", "SUBSTRUCT", "Y2")
+	gf4, _ := link(t, gf3, "Y2", "DEEP", "Z")
 	box := inner(scan("T4", "T4"), scan("T4", "T4C"))
-	boxL1, _ := link(box, "T4", "SARR", "X")
+	boxL1, _ := link(t, box, "T4", "SARR", "X")
 	// A FULL box is clusterArity==1 (merge-opaque): ADMITTED, but IMPURE: its
 	// bottom binds the two
 	// leg aliases, which are genuine box legs, so the box-leg-conjunct arm must
 	// stay active (a pure verdict here would ordinalize a chained link over the
 	// first link's name-keyed seed under a box-leg WHERE → silent wrong rows).
 	fullBox := logical.NewJoin(scan("T4", "A"), scan("T4", "B"), logical.JoinFull, "")
-	fullBoxL1, _ := link(fullBox, "A", "SARR", "X")
-	fullBoxL2, _ := link(fullBoxL1, "X", "SUB", "Y")
+	fullBoxL1, _ := link(t, fullBox, "A", "SARR", "X")
+	fullBoxL2, _ := link(t, fullBoxL1, "X", "SUB", "Y")
 	// A malformed 1-SEGMENT link mid-spine (constructible via the AT-source
 	// parser path): the peel's own Segments<2 check must decline it — WITHOUT
 	// this check a 1-segment link peels as a normal link and the walk would
 	// admit the spine.
 	oneSegL1 := inner(scan("T4", "T4"), &logical.LogicalUnnest{Segments: []string{"SARR"}, Alias: "X"})
-	oneSegL2, _ := link(oneSegL1, "X", "SUBSTRUCT", "Y")
+	oneSegL2, _ := link(t, oneSegL1, "X", "SUBSTRUCT", "Y")
 	// DUPLICATE aliases in the spine (42712-loud upstream — this arm is the
 	// defensive fail-toward-name-model): Y's owner "X" matches TWO links.
-	dupL1, _ := link(scan("T4", "T4"), "T4", "SARR", "X")
-	dupL2, _ := link(dupL1, "X", "SUBSTRUCT", "X")
-	dupAtY, _ := link(dupL2, "X", "SUB", "Y")
+	dupL1, _ := link(t, scan("T4", "T4"), "T4", "SARR", "X")
+	dupL2, _ := link(t, dupL1, "X", "SUBSTRUCT", "X")
+	dupAtY, _ := link(t, dupL2, "X", "SUB", "Y")
 	// An owner alias matching NO deeper link (a table-owned mid-spine unnest —
 	// upstream-rejected as multiple lateral unnests; defensive here).
-	orphanL2, _ := link(l1, "NOSUCH", "SUB", "W")
+	orphanL2, _ := link(t, l1, "NOSUCH", "SUB", "W")
 
 	cases := []struct {
 		name          string
@@ -434,8 +474,10 @@ func TestForkOwnerElementSlot(t *testing.T) {
 	t.Parallel()
 	tr := newChainedSpineTranslator(t)
 
-	linkAT := func(left logical.LogicalOperator, owner, field, alias, atAlias string) (*logical.LogicalJoin, *logical.LogicalUnnest) {
-		u := &logical.LogicalUnnest{Segments: []string{owner, field}, Alias: alias, AtAlias: atAlias}
+	linkAT := func(t testing.TB, left logical.LogicalOperator, owner, field, alias, atAlias string) (*logical.LogicalJoin, *logical.LogicalUnnest) {
+		t.Helper()
+		_, u := link(t, left, owner, field, alias)
+		u.AtAlias = atAlias
 		return inner(left, u), u
 	}
 	slotOf := func(name string, spine logical.LogicalOperator, owner string, wantSlot int, wantOK bool) {
@@ -452,20 +494,20 @@ func TestForkOwnerElementSlot(t *testing.T) {
 
 	// T4 columns: [ID SARR SUB] (3). X's element lands at slot 3 in every
 	// combination; Y's at len(prefix incl. X's link columns).
-	l1, _ := link(scan("T4", "T4"), "T4", "SARR", "X")
-	l2, _ := link(l1, "X", "SUBSTRUCT", "Y")
+	l1, _ := link(t, scan("T4", "T4"), "T4", "SARR", "X")
+	l2, _ := link(t, l1, "X", "SUBSTRUCT", "Y")
 	slotOf("linear_no_at_X", l2, "X", 3, true)
 	slotOf("linear_no_at_Y", l2, "Y", 4, true)
 
 	// AT on the owner: element still at 3 (P follows at 4); Y shifts to 5.
-	a1, _ := linkAT(scan("T4", "T4"), "T4", "SARR", "X", "P")
-	a2, _ := link(a1, "X", "SUBSTRUCT", "Y")
+	a1, _ := linkAT(t, scan("T4", "T4"), "T4", "SARR", "X", "P")
+	a2, _ := link(t, a1, "X", "SUBSTRUCT", "Y")
 	slotOf("at_on_owner_X", a2, "X", 3, true)
 	slotOf("at_on_owner_Y", a2, "Y", 5, true)
 
 	// AT on the downstream link: X's slot unmoved.
-	b1, _ := link(scan("T4", "T4"), "T4", "SARR", "X")
-	b2, _ := linkAT(b1, "X", "SUBSTRUCT", "Y", "Q")
+	b1, _ := link(t, scan("T4", "T4"), "T4", "SARR", "X")
+	b2, _ := linkAT(t, b1, "X", "SUBSTRUCT", "Y", "Q")
 	slotOf("at_downstream_X", b2, "X", 3, true)
 	slotOf("at_downstream_Y", b2, "Y", 4, true)
 
@@ -473,10 +515,11 @@ func TestForkOwnerElementSlot(t *testing.T) {
 	// (no element field without AS — but the parser defaults AS to the last
 	// segment, so a true AT-only link is parser-unreachable; constructed here
 	// directly to pin the arithmetic's invariance to a one-column link).
-	c1, _ := link(scan("T4", "T4"), "T4", "SARR", "X")
-	atOnly := &logical.LogicalUnnest{Segments: []string{"X", "SUB"}, AtAlias: "O"}
+	c1, _ := link(t, scan("T4", "T4"), "T4", "SARR", "X")
+	_, atOnly := link(t, c1, "X", "SUB", "")
+	atOnly.AtAlias = "O"
 	c2 := inner(c1, atOnly)
-	c3, _ := link(c2, "X", "SUBSTRUCT", "Y")
+	c3, _ := link(t, c2, "X", "SUBSTRUCT", "Y")
 	slotOf("at_only_upstream_X", c3, "X", 3, true)
 	// Y's prefix = [ID SARR SUB X] ++ [O] = 5 columns.
 	slotOf("at_only_upstream_Y", c3, "Y", 5, true)

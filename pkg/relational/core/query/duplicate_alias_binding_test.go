@@ -135,11 +135,11 @@ func TestGatheredUnnestBindingConsistency(t *testing.T) {
 	t.Parallel()
 	tr := newDisjointUnnestTranslator(t)
 
-	u := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL"}
+	u := rawSRCArrayUnnest(t, tr, "EL", "")
 	left := inner(scan("SRC", "s"), scanWithBinding("AUX", "s", "Q$DUP1"))
 	j := logical.NewJoin(left, u, logical.JoinInner, "")
 	innerCorr := values.NamedCorrelationIdentifier("EL")
-	sel := tr.translateGatheredUnnestCluster(j, u, innerCorr, values.NotNullLong, "ARR", unnestTrailing)
+	sel := tr.translateGatheredUnnestCluster(j, u, innerCorr, values.NotNullLong, unnestTrailing)
 	if sel == nil {
 		t.Fatal("a binding-distinguished duplicate-alias gathered cluster must translate")
 	}

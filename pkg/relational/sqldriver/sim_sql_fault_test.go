@@ -1,34 +1,11 @@
 package sqldriver
 
-// The two `commit_unknown_result` (1021) autocommit hazards, pinned deterministically.
-//
-// READ THESE AS A PROBLEM STATEMENT, NOT AS BUGS UNDER TEST. Both assert what the engine
-// does TODAY, and today's behaviour matches Java: fdb-relational autocommits through the
-// same FDBDatabase.run retry-on-1021, and 1021 is a retryable code. So these are inherited
-// FDB hazards surfaced by composition, not Go-specific defects, and "fixing" them here
-// would be inventing semantics. RFC-198 (an explicit transaction's reads belong to that
-// transaction) is what decides whether an explicit transaction changes them — these tests
-// are its inputs, and they are what will go red, loudly and on purpose, when it does.
-//
-// 1021 means the client cannot learn whether the commit landed. It has two real branches, and
-// the hazards live on ONE of them: the write IS durable but the client is told nothing. Because
-// the code is retryable and the statement is autocommitted inside a retrying Run, the whole
-// statement then re-executes against data that already reflects it. What that costs depends
-// entirely on whether the statement is idempotent:
-//
-//   - a RELATIVE update (SET a = a + 1) re-derives its value from the now-durable row, so
-//     +1 silently becomes +2. Wrong data, no error.
-//   - an INSERT re-inserts and finds its own durable row, so the caller gets 23505
-//     (duplicate key) for a statement that SUCCEEDED. Right data, wrong error.
-//
-// They are the two halves of one hazard and are pinned separately because a fix could
-// plausibly address one and not the other. The OTHER branch — the commit never reached the
-// proxy — has its own test below, and it is the control: with nothing durable, the same retry
-// is correct, which is precisely why the hazard is about the applied branch and not about
-// retrying per se.
-//
-// Determinism is the point: SimFDB's InjectOnce places a NAMED 1021 branch at an exact commit,
-// so these reproduce identically every run instead of requiring a lucky cluster fault.
+// SQL autocommit owns one statement transaction. The generic FDB transaction
+// runner may retry 1021, but Java SQL does not enter that runner: it opens one
+// context and commits once. These pins retain both ambiguity branches and guard
+// against reintroducing SQL replay (a duplicate INSERT or double relative UPDATE).
+// The existing 40003 error-surface extension distinguishes unknown completion
+// from a definite rollback; the application, not the driver, owns any retry.
 
 import (
 	"context"
@@ -83,12 +60,8 @@ func openSimSchema(t *testing.T, seed uint64, tableDDL string) (*sql.DB, *simfdb
 	return db, sim
 }
 
-// TestSQLFault_UpdateRelative_DoubleApply pins the SILENT half of the hazard: a relative
-// UPDATE under an injected 1021 applies TWICE, and the statement reports success.
-//
-// This is the dangerous one — there is no error anywhere for a caller to react to, and the
-// stored value is simply wrong. RFC-198 changes the disposition; until then, pinning it is
-// what keeps it from being rediscovered as a mystery.
+// TestSQLFault_UpdateRelative_DoubleApply prevents the old silent replay:
+// a durable ambiguous +1 must stay +1 and report 40003, never become +2.
 func TestSQLFault_UpdateRelative_DoubleApply(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -113,27 +86,10 @@ func TestSQLFault_UpdateRelative_DoubleApply(t *testing.T) {
 	// explicitly rather than left to the run's coin.
 	sim.InjectOnce(simfdb.CommitUnknownApplied)
 
-	// The statement SUCCEEDS from the caller's point of view: 1021 is retryable, the
-	// autocommit Run retries, and the retry sees its own durable write.
-	if _, err := db.ExecContext(ctx, "UPDATE t SET a = a + 1 WHERE id = 1"); err != nil {
-		t.Fatalf("relative UPDATE under an injected 1021 returned an error (%v). The pinned "+
-			"hazard is that it returns SUCCESS while applying twice; an error here means the "+
-			"autocommit retry behaviour changed and RFC-198's input has moved", err)
-	}
-
-	got := readA()
-	switch got {
-	case 102:
-		// The pinned hazard: +1 applied twice.
-	case 101:
-		t.Fatalf("relative UPDATE applied EXACTLY ONCE under an injected 1021 (a = 101). That is " +
-			"the CORRECT result and this hazard is FIXED — the autocommit path became idempotent " +
-			"for relative updates. Update RFC-198 and convert this pin into a correctness " +
-			"assertion (want 101)")
-	default:
-		t.Fatalf("a = %d after a relative UPDATE under an injected 1021; expected the pinned "+
-			"double-apply (102) or a fixed single apply (101). Neither means the retry semantics "+
-			"changed in a way nobody has characterised", got)
+	_, err := db.ExecContext(ctx, "UPDATE t SET a = a + 1 WHERE id = 1")
+	wantCommitSQLState(t, err, api.ErrCodeStatementCompletionUnknown, "autocommit UPDATE")
+	if got := readA(); got != 101 {
+		t.Fatalf("a = %d, want 101: an ambiguous durable UPDATE must not be replayed", got)
 	}
 
 	// Data integrity otherwise holds: exactly one row, no duplicate.
@@ -146,13 +102,8 @@ func TestSQLFault_UpdateRelative_DoubleApply(t *testing.T) {
 	}
 }
 
-// TestSQLFault_InsertDurablyCommitted_Spurious23505 pins the LOUD half: an autocommit INSERT
-// whose row committed durably under 1021 reports a duplicate-key error for a statement that
-// succeeded.
-//
-// Data is intact — the row is present exactly once — so this is a wrong-error hazard, not a
-// wrong-data one. It is the strictly safer failure of the two, and it is pinned separately
-// because a fix for the relative-update case would not necessarily reach it.
+// TestSQLFault_InsertDurablyCommitted_Spurious23505 prevents reporting a
+// duplicate-key error for the first INSERT's own durable ambiguous commit.
 func TestSQLFault_InsertDurablyCommitted_Spurious23505(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -162,27 +113,10 @@ func TestSQLFault_InsertDurablyCommitted_Spurious23505(t *testing.T) {
 	sim.InjectOnce(simfdb.CommitUnknownApplied)
 
 	_, err := db.ExecContext(ctx, "INSERT INTO t (id, a) VALUES (1, 100)")
-	if err == nil {
-		t.Fatalf("INSERT under an injected 1021 SUCCEEDED. That is the CORRECT outcome and this " +
-			"hazard is FIXED — the autocommit retry stopped surfacing its own durable row as a " +
-			"conflict. Update RFC-198 and convert this pin into a correctness assertion (want no error)")
-	}
+	wantCommitSQLState(t, err, api.ErrCodeStatementCompletionUnknown, "autocommit INSERT")
 
-	// The pinned shape: a duplicate-key (23505) class error.
-	var apiErr *api.Error
-	if !errors.As(err, &apiErr) {
-		t.Fatalf("INSERT under an injected 1021 failed with %v (%T), which is not an *api.Error. "+
-			"The pinned hazard is a 23505 duplicate-key error for a statement that succeeded; a "+
-			"different error type means the retry path changed", err, err)
-	}
-	if apiErr.Code != api.ErrCodeUniqueConstraintViolation {
-		t.Fatalf("INSERT under an injected 1021 failed with code %s, want %s (23505). The pinned "+
-			"hazard is specifically the spurious duplicate-key report",
-			apiErr.Code, api.ErrCodeUniqueConstraintViolation)
-	}
+	// The injected applied branch is durable exactly once despite the ambiguity.
 
-	// The row IS there, exactly once: the write was durable and the error is spurious. This is
-	// the assertion that makes the hazard "wrong error" rather than "lost write".
 	var n int
 	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM t").Scan(&n); err != nil {
 		t.Fatalf("count: %v", err)
@@ -200,60 +134,32 @@ func TestSQLFault_InsertDurablyCommitted_Spurious23505(t *testing.T) {
 	}
 }
 
-// TestSQLFault_1021HazardsAreDeterministic is the property that makes the two pins above
-// usable as RFC-198 inputs at all: the injected fault places the hazard at an exact commit,
-// so the outcome is identical on every run. A hazard that only reproduces on a lucky cluster
-// fault cannot be the acceptance criterion for a semantics change.
+// TestSQLFault_1021HazardsAreDeterministic pins the corrected ambiguous-commit
+// contract across repeated identical schedules. Both the error and value are
+// asserted: a deleted injection would leave the same value without an error.
 func TestSQLFault_1021HazardsAreDeterministic(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-
-	// Same seed, same injection, repeated: the double-applied value must be identical.
 	const runs = 3
-	var seen []int64
-	for r := 0; r < runs; r++ {
-		func() {
+	for r := range runs {
+		t.Run(fmt.Sprint(r), func(t *testing.T) {
+			t.Parallel()
 			db, sim := openSimSchema(t, 7,
 				"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
 			mustExecSQL(t, db, ctx, "INSERT INTO t (id, a) VALUES (1, 100)")
 			sim.InjectOnce(simfdb.CommitUnknownApplied)
-			if _, err := db.ExecContext(ctx, "UPDATE t SET a = a + 1 WHERE id = 1"); err != nil {
-				t.Fatalf("run %d: update: %v", r, err)
+			_, err := db.ExecContext(ctx, "UPDATE t SET a = a + 1 WHERE id = 1")
+			wantCommitSQLState(t, err, api.ErrCodeStatementCompletionUnknown, "autocommit UPDATE")
+			if got := readTxFaultA(t, ctx, db); got != 101 {
+				t.Fatalf("run %d: a=%d, want 101 without replay", r, got)
 			}
-			var a int64
-			if err := db.QueryRowContext(ctx, "SELECT a FROM t WHERE id = 1").Scan(&a); err != nil {
-				t.Fatalf("run %d: read: %v", r, err)
-			}
-			seen = append(seen, a)
-		}()
+		})
 	}
-	// The hazard must actually have OCCURRED, not merely have occurred consistently. Three runs
-	// that agree on 101 agree that nothing happened: with the injection deleted entirely this
-	// test still passed, which made it a determinism check over an empty set. 102 is the
-	// double-apply — assert it first, then assert every run reproduced it.
-	if seen[0] != 102 {
-		t.Fatalf("the relative UPDATE gave a = %d, want 102: the injected commit_unknown_result "+
-			"did not produce the double-apply, so the runs below agree about a hazard that never "+
-			"fired (all runs: %v)", seen[0], seen)
-	}
-	for r, a := range seen {
-		if a != seen[0] {
-			t.Fatalf("the 1021 hazard is NOT deterministic: run %d gave a = %d, run 0 gave %d "+
-				"(all runs: %v). Without determinism these pins cannot serve as RFC-198's "+
-				"acceptance criterion", r, a, seen[0], seen)
-		}
-	}
-	t.Logf("1021 relative-update hazard is deterministic across %d runs: a = %d every time", runs, seen[0])
 }
 
-// TestSQLFault_DiscardedCommitUnknownAppliesExactlyOnce is the OTHER branch of
-// commit_unknown_result, which the sim could not previously express: the commit never reached
-// the proxy, so nothing is durable and the autocommit retry has to do the work.
-//
-// It is the control for the two hazard pins above. Both of those depend entirely on the retry
-// meeting its own durable write; on this branch there is no durable write, so a relative UPDATE
-// applies exactly once and an INSERT succeeds. A sim that models 1021 as always-applied cannot
-// produce this case at all — which is how "the retry is safe here" went unexamined.
+// TestSQLFault_DiscardedCommitUnknownAppliesExactlyOnce pins an application
+// retry AFTER independently determining that the first transaction did not
+// commit. SQL itself must surface 40003 and leave the discarded state untouched.
 func TestSQLFault_DiscardedCommitUnknownAppliesExactlyOnce(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -264,16 +170,15 @@ func TestSQLFault_DiscardedCommitUnknownAppliesExactlyOnce(t *testing.T) {
 			"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
 		mustExecSQL(t, db, ctx, "INSERT INTO t (id, a) VALUES (1, 100)")
 		sim.InjectOnce(simfdb.CommitUnknownDiscarded)
-		if _, err := db.ExecContext(ctx, "UPDATE t SET a = a + 1 WHERE id = 1"); err != nil {
-			t.Fatalf("relative UPDATE under a discarded 1021: %v", err)
+		query := "UPDATE t SET a = a + 1 WHERE id = 1"
+		_, err := db.ExecContext(ctx, query)
+		wantCommitSQLState(t, err, api.ErrCodeStatementCompletionUnknown, "discarded UPDATE")
+		if got := readTxFaultA(t, ctx, db); got != 100 {
+			t.Fatalf("discarded UPDATE changed a to %d, want 100", got)
 		}
-		var a int64
-		if err := db.QueryRowContext(ctx, "SELECT a FROM t WHERE id = 1").Scan(&a); err != nil {
-			t.Fatalf("read a: %v", err)
-		}
-		if a != 101 {
-			t.Fatalf("a = %d, want 101: on the DISCARDED branch nothing was durable, so the "+
-				"autocommit retry must apply the +1 exactly once", a)
+		mustExecSQL(t, db, ctx, query)
+		if got := readTxFaultA(t, ctx, db); got != 101 {
+			t.Fatalf("application retry changed a to %d, want 101", got)
 		}
 	})
 
@@ -282,16 +187,124 @@ func TestSQLFault_DiscardedCommitUnknownAppliesExactlyOnce(t *testing.T) {
 		db, sim := openSimSchema(t, 29,
 			"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
 		sim.InjectOnce(simfdb.CommitUnknownDiscarded)
-		if _, err := db.ExecContext(ctx, "INSERT INTO t (id, a) VALUES (1, 100)"); err != nil {
-			t.Fatalf("INSERT under a discarded 1021: %v — on this branch there is no durable "+
-				"row for the retry to collide with, so it must succeed", err)
-		}
-		var n int
+		query := "INSERT INTO t (id, a) VALUES (1, 100)"
+		_, err := db.ExecContext(ctx, query)
+		wantCommitSQLState(t, err, api.ErrCodeStatementCompletionUnknown, "discarded INSERT")
+		var n int64
 		if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM t").Scan(&n); err != nil {
-			t.Fatalf("count: %v", err)
+			t.Fatal(err)
 		}
-		if n != 1 {
-			t.Fatalf("COUNT(*) = %d, want 1", n)
+		if n != 0 {
+			t.Fatalf("discarded INSERT left %d rows, want 0 before application retry", n)
+		}
+		mustExecSQL(t, db, ctx, query)
+		if got := readTxFaultA(t, ctx, db); got != 100 {
+			t.Fatalf("application retry inserted %d, want 100", got)
 		}
 	})
+}
+
+// TestSQLAutoCommitDML_CommitUnknownIsNotReplayed distinguishes the commit's
+// unknown outcome from SQL execution errors. Java commits the statement's
+// context once; an application retry is not an implicit part of SQL INSERT
+// or relative UPDATE. Both actual FDB outcomes must report the same 40003.
+func TestSQLAutoCommitDML_CommitUnknownIsNotReplayed(t *testing.T) {
+	t.Parallel()
+	for _, operation := range []string{"insert", "relative_update"} {
+		for _, fault := range []struct {
+			name    string
+			code    int
+			applied bool
+		}{
+			{"applied", simfdb.CommitUnknownApplied, true},
+			{"discarded", simfdb.CommitUnknownDiscarded, false},
+		} {
+			t.Run(operation+"/"+fault.name, func(t *testing.T) {
+				t.Parallel()
+				ctx := context.Background()
+				db, sim := openSimSchema(t, 745, "CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
+				query := "INSERT INTO t VALUES (1, 100)"
+				var wantCount, wantSum int64
+				if operation == "relative_update" {
+					mustExecSQL(t, db, ctx, query)
+					query = "UPDATE t SET a = a + 1 WHERE id = 1"
+					wantCount, wantSum = 1, 100
+					if fault.applied {
+						wantSum = 101
+					}
+				} else if fault.applied {
+					wantCount, wantSum = 1, 100
+				}
+				sim.InjectOnce(fault.code)
+				_, err := db.ExecContext(ctx, query)
+				// Read durability even if the error assertion fails, so the
+				// transcript distinguishes replay from a missing fault.
+				var count int64
+				var sum sql.NullInt64
+				if readErr := db.QueryRowContext(ctx, "SELECT COUNT(*), SUM(a) FROM t").Scan(&count, &sum); readErr != nil {
+					t.Fatal(readErr)
+				}
+				t.Logf("commit branch=%s error=%v rows=%d sum=%+v", fault.name, err, count, sum)
+				var apiErr *api.Error
+				if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeStatementCompletionUnknown {
+					t.Errorf("one-shot SQL commit error=%v, want 40003; do not replay the statement", err)
+				}
+				if count != wantCount || sum.Valid != (wantCount > 0) || (sum.Valid && sum.Int64 != wantSum) {
+					t.Errorf("durable state=(%d,%+v), want rows=%d sum=%d without SQL replay", count, sum, wantCount, wantSum)
+				}
+			})
+		}
+	}
+}
+
+func TestSQLAutoCommitDML_AtomicityAndOwnership(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db, _ := openSimSchema(t, 746, "CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
+	mustExecSQL(t, db, ctx, "INSERT INTO t VALUES (1, 100)")
+	// The first row's mutation precedes a genuine duplicate in the same
+	// statement. A statement-owned transaction must discard the first row too.
+	_, err := db.ExecContext(ctx, "INSERT INTO t VALUES (2, 200), (1, 999)")
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeUniqueConstraintViolation {
+		t.Fatalf("genuine duplicate=%v, want 23505", err)
+	}
+	check := func(wantCount, wantSum int64) {
+		t.Helper()
+		var count, sum int64
+		if err := db.QueryRowContext(ctx, "SELECT COUNT(*), SUM(a) FROM t").Scan(&count, &sum); err != nil {
+			t.Fatal(err)
+		}
+		if count != wantCount || sum != wantSum {
+			t.Fatalf("committed state=(%d,%d), want (%d,%d)", count, sum, wantCount, wantSum)
+		}
+	}
+	check(1, 100)
+	result, err := db.ExecContext(ctx, "INSERT INTO t VALUES (3, 300), (4, 400)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, err := result.RowsAffected(); err != nil || n != 2 {
+		t.Fatalf("committed affected count=(%d,%v), want 2", n, err)
+	}
+	check(3, 800)
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+	if _, err := tx.ExecContext(ctx, "UPDATE t SET a = a + 1"); err != nil {
+		t.Fatal(err)
+	}
+	check(3, 800) // Statement completion may not commit a borrowed transaction.
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	check(3, 800)
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := db.ExecContext(canceled, "DELETE FROM t"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled statement error=%v, want context.Canceled", err)
+	}
+	check(3, 800)
 }

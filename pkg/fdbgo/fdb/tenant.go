@@ -27,31 +27,19 @@ func (t Tenant) Transact(f func(WritableTransaction) (any, error)) (any, error) 
 // commit + commit_unknown barrier run detached (in client.Database.Transact); ctx never
 // cancels an in-flight commit.
 func (t Tenant) TransactCtx(ctx context.Context, f func(WritableTransaction) (any, error)) (any, error) {
-	var lastTx *transaction
 	result, err := t.db.d.inner.Transact(ctx, func(tx *client.Transaction) (r any, e error) {
 		defer func() { e = unconvertError(e) }()
 		defer panicToError(&e)
 		tx.SetTenantId(t.tenantId)
 		txn := &transaction{
-			inner:      tx,
-			db:         t.db,
-			ctx:        ctx,
-			commitDone: make(chan struct{}),
+			inner:         tx,
+			db:            t.db,
+			ctx:           ctx,
+			versionstamps: true,
 		}
 		t.db.applyTxDefaults(txn) // inherit DB-level option defaults — parity with Database.TransactCtx
-		lastTx = txn
 		return f(Transaction{t: txn})
 	})
-	if lastTx != nil && lastTx.commitDone != nil {
-		select {
-		case <-lastTx.commitDone:
-		default:
-			if err != nil {
-				lastTx.commitErr = convertError(err)
-			}
-			close(lastTx.commitDone)
-		}
-	}
 	if err != nil {
 		return nil, convertError(err)
 	}
@@ -92,10 +80,10 @@ func (t Tenant) CreateTransaction() (Transaction, error) {
 	tx := t.db.d.inner.CreateTransaction()
 	tx.SetTenantId(t.tenantId)
 	txn := &transaction{
-		inner:      tx,
-		db:         t.db,
-		ctx:        t.db.d.ctx,
-		commitDone: make(chan struct{}),
+		inner:         tx,
+		db:            t.db,
+		ctx:           t.db.d.ctx,
+		versionstamps: true,
 	}
 	t.db.applyTxDefaults(txn) // parity with Database.CreateTransaction + the Transact* paths
 	return Transaction{t: txn}, nil

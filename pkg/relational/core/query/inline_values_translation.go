@@ -1,8 +1,6 @@
 package query
 
 import (
-	"strings"
-
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
@@ -53,57 +51,4 @@ func arrayElementType(array *values.ArrayType) values.Type {
 		return nil
 	}
 	return array.ElementType
-}
-
-// findInlineValuesOwner resolves one visible source alias in the current FROM
-// scope. CTE bodies are separate scopes, so only a CTE's visible Main is
-// traversed. A duplicate match declines rather than selecting by walk order.
-func findInlineValuesOwner(op logical.LogicalOperator, alias string) *logical.LogicalInlineValues {
-	return logical.FindOwnerInlineValues(op, alias)
-}
-
-// inlineValuesArrayElementType classifies an owner-relative array path against
-// the inline source's frozen exact row. It is the literal-row counterpart of
-// descriptor-backed unnestArrayElementType: no metadata, text fallback, or
-// Unknown placeholder participates.
-func inlineValuesArrayElementType(
-	owner *logical.LogicalInlineValues,
-	fieldSegments []string,
-) (elementType values.Type, fieldName string, isArray, fieldPresent bool) {
-	if owner == nil || len(fieldSegments) == 0 {
-		return values.UnknownType, "", false, false
-	}
-	current, ok := owner.ResultType().(*values.RecordType)
-	if !ok || current == nil {
-		return values.UnknownType, "", false, false
-	}
-	for index, segment := range fieldSegments {
-		matched := -1
-		for ordinal, field := range current.Fields {
-			if !strings.EqualFold(field.Name, segment) {
-				continue
-			}
-			if matched >= 0 {
-				return values.UnknownType, "", false, true
-			}
-			matched = ordinal
-		}
-		if matched < 0 {
-			return values.UnknownType, "", false, false
-		}
-		field := current.Fields[matched]
-		if index == len(fieldSegments)-1 {
-			array, isExactArray := field.FieldType.(*values.ArrayType)
-			if !isExactArray || array.ElementType == nil || values.IsUnresolved(array.ElementType) {
-				return values.UnknownType, "", false, true
-			}
-			return array.ElementType, strings.ToUpper(field.Name), true, true
-		}
-		nested, isRecord := field.FieldType.(*values.RecordType)
-		if !isRecord || nested == nil {
-			return values.UnknownType, "", false, true
-		}
-		current = nested
-	}
-	return values.UnknownType, "", false, false
 }

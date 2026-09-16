@@ -167,10 +167,9 @@ func TestScalarFunctionValue_PropagatesError(t *testing.T) {
 // TestScalarInt64Boundary_NoWrap pins the 2^63 int64-conversion boundary
 // (RFC-087). math.MaxInt64 (2^63-1) has no exact float64
 // representation and rounds UP to 2^63, so the old `f <= math.MaxInt64` guards
-// admitted 2^63 and int64(2^63) wrapped to math.MinInt64. The fix
-// (float64FitsInt64, exclusive upper bound at 2^63) keeps such values as
-// float64 instead of silently wrapping. Without the fix POWER(2,63) returns a
-// negative int64 and these assertions fail.
+// admitted 2^63 and int64(2^63) wrapped to math.MinInt64. Floating results
+// now retain their carrier at every magnitude; integer argument conversion
+// still uses the exclusive 2^63 bound. These assertions guard both paths.
 func TestScalarInt64Boundary_NoWrap(t *testing.T) {
 	t.Parallel()
 	const twoPow63 = 9223372036854775808.0 // 2^63, smallest float64 > math.MaxInt64
@@ -188,13 +187,13 @@ func TestScalarInt64Boundary_NoWrap(t *testing.T) {
 		t.Fatalf("POWER(2,63) = %v, want %v", f, twoPow63)
 	}
 
-	// POWER(2,62) = 2^62 fits int64 → returns int64 (still folds when safe).
+	// POWER(2,62) stays floating even though its value also fits int64.
 	got62, err := evalScalarFunction("POWER", []any{float64(2), float64(62)})
 	if err != nil {
 		t.Fatalf("POWER(2,62): %v", err)
 	}
-	if got62 != int64(1)<<62 {
-		t.Fatalf("POWER(2,62) = %v (%T), want int64 %d", got62, got62, int64(1)<<62)
+	if got62 != float64(int64(1)<<62) {
+		t.Fatalf("POWER(2,62) = %v (%T), want float64 %v", got62, got62, float64(int64(1)<<62))
 	}
 
 	// FLOOR of a value at 2^63 stays float64 (no wrap).

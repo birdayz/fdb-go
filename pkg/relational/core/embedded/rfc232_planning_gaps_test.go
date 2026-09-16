@@ -783,8 +783,8 @@ CREATE TABLE dept (did BIGINT, dtags BIGINT ARRAY NOT NULL, PRIMARY KEY (did))`
 // the projected QOV scalar and neither rule looked at it.
 //
 // Both are now decided by IDENTITY: `x` is a named source, so projecting it is
-// a column of that source. The `SELECT *` arm is the other end — it builds no
-// projection at all, which is what says the element is not being flattened.
+// a column of that source. In contrast, `SELECT *` expands the element's
+// visible members, matching Java SemanticAnalyzer.expandStar.
 func TestStructUnnestElementProjectsAsOneColumn(t *testing.T) {
 	t.Parallel()
 	const ddl = `CREATE TYPE AS STRUCT sitem (sku STRING, qty BIGINT)
@@ -812,11 +812,11 @@ CREATE TABLE ts (id BIGINT, items sitem ARRAY, name STRING, PRIMARY KEY (id))`
 			want: "Project([_current.ID#0, _current.X#3], FlatMap(outer=Scan(TS), inner=Explode(field)))",
 		},
 		{
-			// SELECT * builds no projection, so the element stays ONE column
-			// of the merged row rather than being flattened into SKU/QTY.
-			name: "select star keeps the element whole",
+			// The merged row still carries X as one struct slot; the star's
+			// projection reads its visible SKU/QTY members from that slot.
+			name: "select star expands visible element members",
 			sql:  `SELECT * FROM TS, TS."ITEMS" AS "X"`,
-			want: "FlatMap(outer=Scan(TS), inner=Explode(field))",
+			want: "Project([_current.ID#0, _current.ITEMS#1, _current.NAME#2, _current.X#3.SKU#0, _current.X#3.QTY#1], FlatMap(outer=Scan(TS), inner=Explode(field)))",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

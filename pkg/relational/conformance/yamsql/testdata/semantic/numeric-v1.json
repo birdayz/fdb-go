@@ -1,0 +1,141 @@
+{
+  "version": 1,
+  "catalog": [
+    "ABS",
+    "BITAND",
+    "BITMAP_BIT_POSITION",
+    "BITMAP_BUCKET_OFFSET",
+    "BITOR",
+    "BITXOR",
+    "CEIL",
+    "CEILING",
+    "CHARACTER_LENGTH",
+    "CHAR_LENGTH",
+    "COALESCE",
+    "CONCAT",
+    "CONCAT_WS",
+    "CURRENT_DATE",
+    "CURRENT_TIME",
+    "CURRENT_TIMESTAMP",
+    "DAY",
+    "DAYOFMONTH",
+    "DAYOFWEEK",
+    "DAYOFYEAR",
+    "EXP",
+    "FLOOR",
+    "GREATEST",
+    "HOUR",
+    "IF",
+    "IFNULL",
+    "IIF",
+    "LEAST",
+    "LEFT",
+    "LEN",
+    "LENGTH",
+    "LN",
+    "LOCALTIME",
+    "LOG",
+    "LOWER",
+    "LTRIM",
+    "MINUTE",
+    "MOD",
+    "MONTH",
+    "NULLIF",
+    "OCTET_LENGTH",
+    "PI",
+    "POSITION",
+    "POW",
+    "POWER",
+    "REPLACE",
+    "REVERSE",
+    "RIGHT",
+    "ROUND",
+    "RTRIM",
+    "SECOND",
+    "SIGN",
+    "SQRT",
+    "SUBSTR",
+    "SUBSTRING",
+    "TRIM",
+    "UPPER",
+    "YEAR"
+  ],
+  "functions": [
+    "FLOOR",
+    "CEIL",
+    "CEILING",
+    "ROUND",
+    "POWER",
+    "POW"
+  ],
+  "producers": [
+    "literal",
+    "driver-text-transport",
+    "stored-column"
+  ],
+  "inputs": [
+    {
+      "name": "negative-zero",
+      "bits": "8000000000000000",
+      "literal": "-0.0"
+    },
+    {
+      "name": "positive-zero",
+      "bits": "0000000000000000",
+      "literal": "0.0"
+    },
+    {
+      "name": "negative-quarter",
+      "bits": "bfd0000000000000",
+      "literal": "-0.25"
+    },
+    {
+      "name": "positive-quarter",
+      "bits": "3fd0000000000000",
+      "literal": "0.25"
+    },
+    {
+      "name": "whole-three",
+      "bits": "4008000000000000",
+      "literal": "3.0"
+    }
+  ],
+  "answers": {
+    "FLOOR": [
+      "8000000000000000",
+      "0000000000000000",
+      "bff0000000000000",
+      "0000000000000000",
+      "4008000000000000"
+    ],
+    "CEIL": [
+      "8000000000000000",
+      "0000000000000000",
+      "8000000000000000",
+      "3ff0000000000000",
+      "4008000000000000"
+    ],
+    "ROUND": [
+      "8000000000000000",
+      "0000000000000000",
+      "8000000000000000",
+      "0000000000000000",
+      "4008000000000000"
+    ],
+    "POWER": [
+      "8000000000000000",
+      "0000000000000000",
+      "bf90000000000000",
+      "3f90000000000000",
+      "403b000000000000"
+    ]
+  },
+  "outside": [
+    "other functions unclassified",
+    "FLOAT, integer and nonfinite inputs",
+    "ties, fractions above 0.5 magnitude, negative whole and subnormal inputs",
+    "explicit precision, nesting, other consumers",
+    "executor WithParams, cache, continuation and transaction lifecycle"
+  ],
+  "oracle": "Hand-derived exact arithmetic, IEEE zero signs, nearest integer at non-ties; aliases share answers. See RFC-255."
+}

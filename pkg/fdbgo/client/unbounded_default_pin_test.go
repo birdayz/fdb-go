@@ -81,21 +81,11 @@ func TestExplicitRetryLimitBounds(t *testing.T) {
 	}
 }
 
-// TestExplicitTimeoutBounds pins that SetTimeout — the direct analog of C++ `timebomb`
-// (ReadYourWrites.actor.cpp:1576-1578) — terminates the retry loop with 1031, and that
-// it installs a real deadline on operation contexts rather than only gating at op
-// entry. The opContext half is what makes the timeout bound an in-FLIGHT RPC (RFC-112);
-// without it the doc's claim that SetTimeout is a usable substitute for a ctx deadline
-// would be false for a hung read.
-//
-// Measured while mutation-checking this pin: the timeout bound on the retry loop is
-// defence-in-depth with TWO independent enforcement points — the OnError entry gate
-// (checkTimeout) and backoffSleepBounded, which cuts a backoff that would cross the
-// deadline and raises 1031 itself. Removing either one alone leaves the documented
-// behaviour intact and this test correctly green; the claim only breaks when both go.
-// That is deliberate on the code's side (the entry gate exists so a contended txn does
-// not overshoot by one full backoff before the next op notices), and it means anyone
-// re-testing this pin by deleting a single guard should expect green, not red.
+// TestExplicitTimeoutBounds pins that SetTimeout — the C++ timebomb —
+// terminates retry with 1031 and interrupts an already-started operation.
+// It must not merely reject operations that start after the deadline. The
+// default remains unbounded, and resetting timeout zero retires an unfired
+// timebomb rather than leaving a stale per-operation deadline behind.
 func TestExplicitTimeoutBounds(t *testing.T) {
 	t.Parallel()
 
@@ -110,15 +100,21 @@ func TestExplicitTimeoutBounds(t *testing.T) {
 		}
 	})
 
-	t.Run("timeout deadlines the op context", func(t *testing.T) {
+	t.Run("timeout interrupts the op context", func(t *testing.T) {
 		t.Parallel()
 		tx := pinTx()
 		tx.SetTimeout(60_000) // 60s
 		ctx, cancel := tx.opContext(context.Background())
 		defer cancel()
-		if _, ok := ctx.Deadline(); !ok {
-			t.Fatal("SetTimeout must bound in-flight operations with a real deadline (the C++ timebomb analog, RFC-112);\n" +
-				"without it SetTimeout gates only at op boundaries and cannot stop a hung RPC.")
+		tx.creationTime = time.Now().Add(-time.Second)
+		tx.SetTimeout(1)
+		select {
+		case <-ctx.Done():
+		case <-time.After(time.Second):
+			t.Fatal("SetTimeout failed to interrupt an already-started operation")
+		}
+		if code := fdbCodeOf(tx.mapReadError(ctx, ctx.Err())); code != 1031 {
+			t.Fatalf("timebomb code=%d, want 1031", code)
 		}
 	})
 

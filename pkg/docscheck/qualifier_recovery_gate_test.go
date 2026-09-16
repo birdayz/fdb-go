@@ -58,7 +58,7 @@ var censusGateRecorders = []censusGateFunc{
 	{
 		file: "pkg/relational/core/embedded/colref.go",
 		fn:   "recordDisplayLabelStrip",
-		why: "the costliest of the four: its production line already parses the label " +
+		why: "its production line already parses the label " +
 			"twice, and a recorder classifying first doubles that on every projected " +
 			"column of every query (750 calls over the real-FDB corpus)",
 	},
@@ -66,11 +66,6 @@ var censusGateRecorders = []censusGateFunc{
 		file: "pkg/relational/core/embedded/colref.go",
 		fn:   "recordProjQualVsScan",
 		why:  "upper-cases the slot's triple qualifier on every projected column",
-	},
-	{
-		file: "pkg/relational/core/query/derived_unnest.go",
-		fn:   "recordDerivedUnnestSplit",
-		why:  "upper-cases both the source and the slot's triple qualifier per unnest classification",
 	},
 	{
 		file: "pkg/relational/core/query/cascades_translator.go",

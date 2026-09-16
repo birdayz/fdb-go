@@ -14,7 +14,7 @@ ROWS(4) cols=[ID]:
 
 === SELECT cat, MAX(v) FROM t GROUP BY cat ORDER BY cat
 PLAN: Project([_current.CAT#0, _current.MAX(V)#1], AggregateIndex(MAX, MAX_BY_CAT, [CAT], T))
-ROWS(4) cols=[CAT, MAX(V)]:
+ROWS(4) cols=[CAT, _1]:
   [1, 20]
   [2, 40]
   [3, 50]
@@ -22,7 +22,7 @@ ROWS(4) cols=[CAT, MAX(V)]:
 
 === SELECT cat, MIN(v) FROM t GROUP BY cat ORDER BY cat
 PLAN: Project([_current.CAT#0, _current.MIN(V)#1], AggregateIndex(MIN, MIN_BY_CAT, [CAT], T))
-ROWS(4) cols=[CAT, MIN(V)]:
+ROWS(4) cols=[CAT, _1]:
   [1, 10]
   [2, 30]
   [3, 50]

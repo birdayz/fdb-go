@@ -28,7 +28,6 @@ tests:
 
   # Populate flags and re-check — EXISTS flips to TRUE.
   - query: INSERT INTO flags VALUES (1)
-    rows: []
   - query: SELECT id FROM orders WHERE EXISTS (SELECT k FROM flags) ORDER BY id
     rows:
       - [1]

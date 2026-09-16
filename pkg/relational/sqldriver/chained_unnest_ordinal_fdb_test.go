@@ -272,18 +272,17 @@ func TestFDB_ChainedUnnestOrdinal(t *testing.T) {
 	})
 
 	t.Run("SELECT star column labels come from the ordinal seed RC", func(t *testing.T) {
-		// The ordinal seed's RC field order [ID, SARR, SCARR, SUB, X, Y] IS the
-		// star-expanded result column order — outer columns positionally then the
-		// two chained element bindings. This root select (no projection wrapper)
-		// implements only because SelectMergeRule's barrier keeps the ordinal
-		// first link nested.
+		// The ordinal seed's RC field order expands the record element's visible
+		// SUB/K/SUBSTRUCT fields and then the scalar Y. This root select (no
+		// projection wrapper) implements only because SelectMergeRule's barrier
+		// keeps the ordinal first link nested.
 		const q = `SELECT * FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y"`
 		plan, perr := embedded.PlanRecordQueryWithMetadata(q, md, nil)
 		if perr != nil {
 			t.Fatalf("plan %q: %v", q, perr)
 		}
 		got := embedded.ResultColumnLabelsForPlan(plan, md)
-		want := []string{"ID", "SARR", "SCARR", "SUB", "X", "Y"}
+		want := []string{"ID", "SARR", "SCARR", "SUB", "SUB", "K", "SUBSTRUCT", "Y"}
 		if fmt.Sprintf("%v", got) != fmt.Sprintf("%v", want) {
 			t.Fatalf("SELECT * columns\n got=%v\nwant=%v", got, want)
 		}

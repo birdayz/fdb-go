@@ -98,7 +98,7 @@ func TestFDB_OrderedGroupedScalarSubquery(t *testing.T) {
 // aggregate itself (the central aggDatumKey path): ASC picks the min-SUM group,
 // DESC the max-SUM group. Covers the aggregate spelled identically to SELECT,
 // and spelled with a DIFFERING operand qualifier (the parse-tree FN(BAREARG)
-// recovery in groupedScalarSortKeys).
+// recovery in the shared grouped ORDER BY resolver).
 func TestFDB_OrderedGroupedScalarSubquery_ByAggregate(t *testing.T) {
 	t.Parallel()
 	db, ctx := ogsDB(t, "byagg")
@@ -339,9 +339,9 @@ func TestFDB_OrderedGroupedScalarSubquery_Determinism(t *testing.T) {
 	}
 }
 
-// TestFDB_OrderedGroupedScalarSubquery_Reject pins that ORDER BY over a column
-// that is neither grouped nor a selected aggregate is rejected LOUDLY (not a
-// silent-nil sort that would defeat the determinism this feature provides).
+// TestFDB_OrderedGroupedScalarSubquery_Reject pins both ORDER BY boundaries: a
+// non-grouped raw column is rejected, while an unselected aggregate is a valid
+// group program and deterministically orders the scalar's groups.
 func TestFDB_OrderedGroupedScalarSubquery_Reject(t *testing.T) {
 	t.Parallel()
 	db, ctx := ogsDB(t, "rej")
@@ -359,7 +359,7 @@ func TestFDB_OrderedGroupedScalarSubquery_Reject(t *testing.T) {
 			t.Fatalf("%s: error is not *api.Error: %T %v", why, err, err)
 		}
 		if apiErr.Code != api.ErrCodeGroupingError {
-			t.Fatalf("%s: error code = %s, want %s (42803)", why, apiErr.Code, api.ErrCodeGroupingError)
+			t.Fatalf("%s: error code = %s, want %s (42803): %v", why, apiErr.Code, api.ErrCodeGroupingError, err)
 		}
 	}
 
@@ -367,10 +367,12 @@ func TestFDB_OrderedGroupedScalarSubquery_Reject(t *testing.T) {
 	assertGroupingReject("ORDER BY a non-grouped/non-aggregated column",
 		"SELECT (SELECT SUM(o.amount) FROM orders o WHERE o.customer_id = c.id GROUP BY o.status ORDER BY o.amount LIMIT 1) FROM customers c WHERE c.id = 1")
 
-	// ORDER BY an aggregate that is NOT selected (the subquery selects SUM, orders
-	// by COUNT) → reject (harvesting ORDER-BY-only aggregates is a future extension).
-	assertGroupingReject("ORDER BY an unselected aggregate",
-		"SELECT (SELECT SUM(o.amount) FROM orders o WHERE o.customer_id = c.id GROUP BY o.status ORDER BY COUNT(*) LIMIT 1) FROM customers c WHERE c.id = 1")
+	// ORDER BY an aggregate that is not selected is still valid. Group a has
+	// COUNT=2/SUM=15 and group b COUNT=1/SUM=20, so ascending COUNT picks b.
+	q := "SELECT (SELECT SUM(o.amount) FROM orders o WHERE o.customer_id = c.id GROUP BY o.status ORDER BY COUNT(*) LIMIT 1) FROM customers c WHERE c.id = 1"
+	if got, ok := ogsScalar(t, ctx, db, q); !ok || got != 20 {
+		t.Fatalf("ORDER BY unselected COUNT: got %d (valid=%v), want 20", got, ok)
+	}
 }
 
 // TestFDB_OrderedScalarSubquery_NoGroupByUnchanged guards that ORDER BY WITHOUT

@@ -1162,32 +1162,39 @@ func TestFDB_QualityProbe_CorrelatedScalarSubqueryShapes(t *testing.T) {
 		})
 	})
 
-	t.Run("join_expression_aggregate_in_having_rejected", func(t *testing.T) {
-		// The deferred residual: over a JOIN, an expression-argument aggregate in
-		// HAVING still can't be resolved (the operand binds to the wrong
-		// quantifier through the parser round-trip), so the join path keeps the
-		// fail-safe rejection. Single-source is fully supported (above); joins are
-		// the tracked follow-up.
-		err := expectError(t, db, `SELECT name,
+	t.Run("join_expression_aggregate_in_having", func(t *testing.T) {
+		// The full correlated query path keeps each expression aggregate bound to
+		// its own join leg. Every non-empty join group passes SUM(price*3)>0;
+		// Diana has no joined row and therefore produces scalar NULL.
+		rows := collectRows(t, db, `SELECT name,
 			(SELECT SUM(i.price * 2) FROM orders o JOIN items i ON i.order_id = o.id WHERE o.customer_id = c.id GROUP BY o.customer_id HAVING SUM(i.price * 3) > 0)
-			FROM customers c`)
-		if err == nil {
-			t.Fatal("expected error for an expression aggregate in HAVING over a join")
-		}
+			FROM customers c ORDER BY name`)
+		assertScalarAggRows(t, rows, []struct {
+			name string
+			val  any
+		}{
+			{"Alice", 201.00},
+			{"Bob", 100.50},
+			{"Charlie", 60.00},
+			{"Diana", nil},
+		})
 	})
 
-	t.Run("post_aggregate_expression_rejected", func(t *testing.T) {
-		// Review delta P2: a post-aggregation expression output (`SUM(x) + 1`)
-		// is a visible aggCol with empty aggFunc + outExpr. It must NOT be
-		// misclassified as a group-key projection (which would read an
-		// unmaterialized column => NULL). Computing the expression over the
-		// aggregate row is out of scope, so reject cleanly.
-		err := expectError(t, db, `SELECT name,
+	t.Run("post_aggregate_expression", func(t *testing.T) {
+		// A post-aggregation expression evaluates over the native aggregate row;
+		// NULL SUM remains NULL through addition.
+		rows := collectRows(t, db, `SELECT name,
 			(SELECT SUM(o.amount) + 1 FROM orders o WHERE o.customer_id = c.id)
-			FROM customers c`)
-		if err == nil {
-			t.Fatal("expected error for post-aggregation expression in correlated scalar subquery")
-		}
+			FROM customers c ORDER BY name`)
+		assertScalarAggRows(t, rows, []struct {
+			name string
+			val  any
+		}{
+			{"Alice", 301.50},
+			{"Bob", 126.25},
+			{"Charlie", 301.00},
+			{"Diana", nil},
+		})
 	})
 
 	t.Run("undefined_group_key_rejected", func(t *testing.T) {

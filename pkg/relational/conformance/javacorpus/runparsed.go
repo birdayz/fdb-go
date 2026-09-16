@@ -37,6 +37,14 @@ func RunParsed(ctx context.Context, file *javayamsql.File, cfg Config) FileResul
 		dbs:             map[connTarget]*sql.DB{},
 	}
 	defer r.teardown()
+	if cfg.FactoryResetLoad {
+		var err error
+		r.fixture, err = validatePrivateFixture(file, cfg.IDPrefix)
+		if err != nil {
+			res.Status, res.Err = StatusFail, err
+			return res
+		}
+	}
 
 	runErr := r.execute(ctx, file)
 

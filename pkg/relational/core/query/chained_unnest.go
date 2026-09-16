@@ -3,160 +3,17 @@ package query
 import (
 	"strings"
 
-	"google.golang.org/protobuf/reflect/protoreflect"
-
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/query/logical"
 )
 
-// Unnest-residual class 4 — CHAINED lateral unnests (`FROM t, t.arr AS
-// x, x.sub AS y`). The second unnest's OWNER `x` is the FIRST unnest's element,
-// not a table, so segment-0 doesn't resolve to a scan and the single-unnest
-// path bails to a table-not-found. Java calls generateCorrelatedFieldAccess
-// once per link, each a nested Explode-under-forEach; the residual composition
-// mirrors that (translateRef(j.Left) recurses through the left-deep join tree,
-// so the nested FlatMap-over-FlatMap falls out).
-//
-// Runtime reuses the class-2 struct-descent VERBATIM: a struct-array element
-// flows as a raw proto.Message, so the second unnest's collection is a
-// multi-accessor FieldValue rooted at the owner alias (reads the element off
-// the merged row) with the sub-field descended by name. The only new
-// work is CLASSIFICATION — arrayFieldElementType collapses message-array
-// elements to UnknownType, so the sub-array's element type is recovered from
-// the proto DESCRIPTOR through the owner unnest's element message (the same
-// descriptor-is-the-only-surviving-type finding as class 3).
-
-// classifyChainedUnnestArray classifies the array field of a CHAINED unnest
-// (owner = a prior unnest's element). Returns the sub-array's element type and
-// the OUTPUT name the collection reads (the owner element's field name), plus a
-// disposition reusing the derived enum. The owner chain must bottom at a
-// REAL-TABLE scan (a CTE/derived/box root declines).
-func (t *cascadesTranslator) classifyChainedUnnestArray(outerLeft logical.LogicalOperator, u *logical.LogicalUnnest) (elementType values.Type, fieldName string, disp derivedUnnestDisposition) {
-	if len(u.Segments) != 2 {
-		// A multi-segment chained path (`x.a.b`) descends the element struct
-		// further — out of the class-4 single-sub-field whitelist for now.
-		return values.UnknownType, "", derivedUnnestUnsupported
-	}
-	elemMsg, scalar, ok := t.chainedOwnerElementMessage(outerLeft, u.Segments[0])
-	if !ok {
-		// Owner not found, or its chain doesn't bottom at a real table
-		// (CTE/derived/box root) — loud decline.
-		return values.UnknownType, "", derivedUnnestUnsupported
-	}
-	if scalar {
-		// The owner's element is a SCALAR — it has no field `sub` to read.
-		// Java's lookupNestedField soft-returns empty for a non-struct base →
-		// resolveIdentifier miss → UNDEFINED_COLUMN.
-		return values.UnknownType, "", derivedUnnestUndefined
-	}
-	et, name, isArray, present := arrayFieldFromDescriptor(elemMsg.Fields(), u.Segments[1:])
-	switch {
-	case isArray:
-		return et, name, derivedUnnestArray
-	case present:
-		// Present-but-scalar sub → Java's generateCorrelatedFieldAccess
-		// "repeated type" assert (INVALID_COLUMN_REFERENCE, aligned above).
-		return values.UnknownType, "", derivedUnnestWrongType
-	default:
-		return values.UnknownType, "", derivedUnnestUndefined
-	}
-}
-
-// chainedOwnerElementMessage returns the message descriptor of each ELEMENT of
-// the unnest named `alias` (a struct-array element's record type). Recursive:
-// the owner unnest's array field lives on either a base-table record (scan
-// root — the recursion's base case) or the element message of ITS OWN owner
-// unnest (a deeper chain link). scalar=true when the element is a scalar (no
-// message — the caller maps a sub-field read on it to UNDEFINED_COLUMN).
-// ok=false when the unnest isn't found or the chain bottoms at a non-real-table
-// owner (CTE/derived/box — a loud decline).
-func (t *cascadesTranslator) chainedOwnerElementMessage(outerLeft logical.LogicalOperator, alias string) (md protoreflect.MessageDescriptor, scalar, ok bool) {
-	u := logical.FindOwnerUnnest(outerLeft, alias)
-	if u == nil || len(u.Segments) != 2 {
-		return nil, false, false
-	}
-	// The record the owner's array field `u.Segments[1]` lives on. The base
-	// branch is a REAL-TABLE scan ONLY: exclude both a CTE reference
-	// (outerSourceIsCTE) AND a derived-table primary `(SELECT…) AS D`
-	// (outerSourceIsDerivedTable) — declines a CTE/derived-rooted
-	// chain loudly. The derived guard is structural, not just a resolveRecordType
-	// miss: a derived alias `D` that SHADOWS a real table `D` (with a matching
-	// struct-array) would otherwise bottom at the base-table descriptor here
-	// (the derived body isn't in cteScope until translateRef(j.Left) runs — a
-	// timing hole class-3 closes structurally), yielding wrong element-type
-	// metadata. Declining routes it to the loud 0AF00.
-	var base protoreflect.FieldDescriptors
-	if scanTable := findOuterScanTable(outerLeft, u.Segments[0]); scanTable != "" &&
-		!t.outerSourceIsCTE(scanTable) && !outerSourceIsDerivedTable(outerLeft, u.Segments[0]) {
-		rt := t.resolveRecordType(scanTable)
-		if rt == nil || rt.Descriptor == nil {
-			return nil, false, false
-		}
-		base = rt.Descriptor.Fields()
-	} else if inner := logical.FindOwnerUnnest(outerLeft, u.Segments[0]); inner != nil {
-		// A deeper chain link: the owner's own owner is a prior unnest —
-		// recurse to its element message (the record the owner's array lives
-		// on). A scalar-element owner-of-owner cannot carry an array field.
-		innerMsg, innerScalar, innerOK := t.chainedOwnerElementMessage(outerLeft, u.Segments[0])
-		if !innerOK || innerScalar {
-			return nil, innerScalar, false
-		}
-		base = innerMsg.Fields()
-	} else {
-		// CTE/derived/box owner root — no base descriptor.
-		return nil, false, false
-	}
-	// Descend the owner's array FIELD PATH (u.Segments[1:] — segment 0 is the
-	// owner's own source, already resolved into `base`; the field path lives
-	// under it): intermediates singular message, final repeated. A repeated
-	// MESSAGE final yields the element message; a repeated SCALAR final yields
-	// scalar=true.
-	arrFd, ok := descendToArrayField(base, u.Segments[1:])
-	if !ok {
-		return nil, false, false
-	}
-	if arrFd.Kind() != protoreflect.MessageKind {
-		return nil, true, true // scalar element
-	}
-	return arrFd.Message(), false, true
-}
-
-// descendToArrayField walks a field path over a proto record's fields:
-// intermediates must be singular message fields, the final must be repeated.
-// Returns the final (repeated) field descriptor, or ok=false when a step is
-// absent or a non-descendable intermediate.
-func descendToArrayField(fields protoreflect.FieldDescriptors, path []string) (protoreflect.FieldDescriptor, bool) {
-	if len(path) == 0 {
-		return nil, false
-	}
-	for _, seg := range path[:len(path)-1] {
-		fd := protoFieldLookup(fields, seg)
-		// Intermediates must be singular STRUCTs — flat repeated fields and
-		// NullableArrayWrapper fields are arrays, not descendable structs.
-		if fd == nil || fd.IsList() || fd.Kind() != protoreflect.MessageKind ||
-			values.IsWrappedArrayDescriptor(fd.Message()) {
-			return nil, false
-		}
-		fields = fd.Message().Fields()
-	}
-	fd := protoFieldLookup(fields, path[len(path)-1])
-	// The final segment resolves through the NullableArrayWrapper: the
-	// EFFECTIVE repeated field (the wrapper's `values`) carries the element
-	// kind the caller classifies on.
-	inner, _, ok := values.EffectiveListField(fd)
-	if !ok {
-		return nil, false
-	}
-	return inner, true
-}
-
 // isChainedUnnest reports whether u's owner (segment 0) is a prior lateral
 // unnest's element in outerLeft (the positive gate for the chained dispatch —
 // never merely outerTable=="").
 func isChainedUnnest(outerLeft logical.LogicalOperator, u *logical.LogicalUnnest) bool {
-	return len(u.Segments) >= 1 && logical.FindOwnerUnnest(outerLeft, u.Segments[0]) != nil
+	return boundUnnestOwner(outerLeft, u) != nil
 }
 
 // filterInputHasChainedUnnest reports whether a filter's input contains a CHAINED
@@ -181,7 +38,7 @@ func filterInputHasChainedUnnest(input logical.LogicalOperator) bool {
 		}
 		switch n := o.(type) {
 		case *logical.LogicalUnnest:
-			if len(n.Segments) >= 1 && logical.FindOwnerUnnest(input, n.Segments[0]) != nil {
+			if boundUnnestOwner(input, n) != nil {
 				found = true
 			}
 		case *logical.LogicalJoin:
@@ -222,39 +79,16 @@ func filterInputHasChainedUnnest(input logical.LogicalOperator) bool {
 // nil with a set translate error on a loud classification failure; nil with no
 // error to decline to the caller's fallback.
 func (t *cascadesTranslator) translateChainedUnnestJoin(j *logical.LogicalJoin, u *logical.LogicalUnnest, prevEnclosure bool) expressions.RelationalExpression {
-	// Mirror translateUnnestJoin's alias-collision guard (AS==AT overwrite +
-	// AT-only reserved `_0`, see unnestAliasReject). The chained path returns
-	// before the non-chained guard, so it must repeat the check. RFC-142.
-	if rejectErr := unnestAliasReject(u); rejectErr != nil {
-		t.setTranslateErr(rejectErr)
+	if err := unnestCorrelationReject(j.Left, u); err != nil {
+		t.setTranslateErr(err)
 		return nil
 	}
-	elementType, _, disp := t.classifyChainedUnnestArray(j.Left, u)
-	switch disp {
-	case derivedUnnestArray:
-		// proceed
-	case derivedUnnestWrongType:
-		t.setTranslateErr(api.NewError(api.ErrCodeInvalidColumnReference,
-			"join correlation can occur only on a column of repeated (array) type"))
-		return nil
-	case derivedUnnestUndefined:
-		t.setTranslateErr(api.NewErrorf(api.ErrCodeUndefinedColumn,
-			"column %q does not exist on source %q",
-			strings.Join(u.Segments[1:], "."), u.Segments[0]))
-		return nil
-	default: // derivedUnnestUnsupported — two distinct causes, both loud 0AF00
-		if len(u.Segments) > 2 {
-			// A multi-HOP sub-path on the element (`x.a.b AS y`) — Java DOES
-			// support this (a further struct descent per link); it's a Go reach
-			// gap, not a CTE-root decline. Name the real cause.
-			t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
-				"multi-segment chained unnest sub-path (x.a.b) is not yet supported"))
-		} else {
-			t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
-				"chained lateral unnest rooted at a CTE/derived-table source is not yet supported"))
-		}
+	_, _, array := boundUnnestCollection(u)
+	if array == nil {
+		t.setTranslateErr(boundUnnestBindingError(u))
 		return nil
 	}
+	elementType := array.ElementType
 
 	outerAlias := sourceAlias(j.Left)
 	outerCorr := unnestOuterCorrelation(j.Left)
@@ -411,7 +245,7 @@ func (t *cascadesTranslator) chainedSpineWalk(op logical.LogicalOperator) (links
 		if !isU {
 			break // a non-unnest join: the spine BOTTOM (a box)
 		}
-		if len(un.Segments) < 2 {
+		if owner, _, _ := boundUnnestCollection(un); owner == nil {
 			return nil, false, false
 		}
 		rev = append(rev, chainedSpineLink{join: bj, un: un})
@@ -470,9 +304,10 @@ func (t *cascadesTranslator) chainedSpineWalk(op logical.LogicalOperator) (links
 		links = append(links, rev[i])
 	}
 	for i := 1; i < len(links); i++ {
+		owner, _, _ := boundUnnestCollection(links[i].un)
 		matches := 0
 		for k := range i {
-			if links[k].un.Alias != "" && strings.EqualFold(links[i].un.Segments[0], links[k].un.Alias) {
+			if owner != nil && links[k].un.Alias != "" && owner.Correlation() == unnestSourceCorrelation(links[k].un) {
 				matches++
 			}
 		}
@@ -560,13 +395,13 @@ func (t *cascadesTranslator) rotateBuriedChainedSpine(j *logical.LogicalJoin) (*
 	var linksTopDown []*logical.LogicalJoin
 	var bottom logical.LogicalOperator
 	for sj := spineTop; ; {
-		un, isU := sj.Right.(*logical.LogicalUnnest)
+		_, isU := sj.Right.(*logical.LogicalUnnest)
 		if !isU {
 			bottom = sj
 			break
 		}
 		if sj.Kind != logical.JoinInner ||
-			sj.OnPredicate != nil || sj.OnText != "" || len(un.Segments) < 2 {
+			sj.OnPredicate != nil || sj.OnText != "" {
 			return nil, false
 		}
 		linksTopDown = append(linksTopDown, sj)
@@ -640,8 +475,12 @@ func subtreeUnnestsOffAlias(op logical.LogicalOperator, aliases map[string]struc
 	if op == nil {
 		return false
 	}
-	if un, ok := op.(*logical.LogicalUnnest); ok && len(un.Segments) > 0 {
-		if _, hit := aliases[strings.ToUpper(un.Segments[0])]; hit {
+	if un, ok := op.(*logical.LogicalUnnest); ok {
+		owner, _, _ := boundUnnestCollection(un)
+		if owner == nil {
+			return len(aliases) > 0 // unknown dependencies cannot justify a rotation
+		}
+		if _, hit := aliases[owner.Correlation().Name()]; hit {
 			return true
 		}
 	}
@@ -667,7 +506,7 @@ func subtreeUnnestsOffAlias(op logical.LogicalOperator, aliases map[string]struc
 func (t *cascadesTranslator) chainedOwnerElementSlot(links []chainedSpineLink, ownerAlias string) (int, bool) {
 	ownerIdx := -1
 	for i, l := range links {
-		if l.un.Alias != "" && strings.EqualFold(ownerAlias, l.un.Alias) {
+		if l.un.Alias != "" && ownerAlias == unnestSourceCorrelation(l.un).Name() {
 			if ownerIdx >= 0 {
 				return 0, false
 			}
@@ -719,7 +558,8 @@ func (t *cascadesTranslator) chainedUnnestOrdinalGate(
 	outerCorr, innerCorr values.CorrelationIdentifier,
 	elementType values.Type,
 ) (collection, resultValue values.Value, ok bool) {
-	if len(u.Segments) < 2 {
+	owner, _, _ := boundUnnestCollection(u)
+	if owner == nil {
 		return nil, nil, false
 	}
 	links, spineAdmitted, pureSpine := t.chainedSpineWalk(j.Left)
@@ -764,12 +604,11 @@ func (t *cascadesTranslator) chainedUnnestOrdinalGate(
 	// alias (an outer scalar named the same as the owner precedes the element in
 	// the merged row → wrong root → the sub-path descends the wrong column, the
 	// silent-wrong axis the colliding-schema cert pins).
-	elementRootIdx, slotOK := t.chainedOwnerElementSlot(links, u.Segments[0])
+	elementRootIdx, slotOK := t.chainedOwnerElementSlot(links, owner.Correlation().Name())
 	if !slotOK {
 		return nil, nil, false
 	}
-	fieldName := u.Segments[len(u.Segments)-1]
-	collection = t.unnestBakedRootCollection(j.Left, outerCorr, u, fieldName, elementType, 0, elementRootIdx)
+	collection = t.unnestBakedRootCollection(j.Left, outerCorr, u, elementRootIdx)
 	if collection == nil {
 		return nil, nil, false
 	}

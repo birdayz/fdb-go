@@ -351,7 +351,10 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 	}
 	run := func(t *testing.T, sql string) ([]string, error) {
 		t.Helper()
-		out, _, err := runPlanned(t, sql)
+		out, plan, err := runPlanned(t, sql)
+		if err != nil {
+			t.Logf("failed query plan: %s", plan)
+		}
 		return out, err
 	}
 	check := func(t *testing.T, sql string, expect ...string) {
@@ -1121,8 +1124,8 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 	// the body rather than FROM it. Boundary as it stands:
 	//   - BARE read over the coinciding shadow answers (Q52);
 	//   - QUALIFIED read (V."X") resolves too, rather than a silent NULL;
-	//   - a 2+-extra-leg shadow read whose correlation cannot ordinalize is
-	//     still LOUD — the arm below is the pin against the panic returning;
+	//   - a correlated multi-leg shadow read answers through the scoped carrier
+	//     walk; zero and nonzero counts below pin both predicate outcomes;
 	//   - a DUPLICATE-name body is published whole: a read of a unique column
 	//     in it answers, and only a read that spells the repeated name is
 	//     ambiguous (42702; see Q55 (b) and (d)).
@@ -1135,9 +1138,28 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 		// name-keyed resolution would have silently returned `<nil>` here.
 		check(t, `WITH "V" AS (SELECT "BID" AS "X" FROM LB) SELECT (WITH "V" AS (SELECT CC."CID" AS "X" FROM "V" LEFT JOIN CC ON "V"."X" = CC."CID") SELECT MAX("V"."X") FROM "V") FROM LB LIMIT 1`,
 			"1")
-		_, ePanic := run(t, `WITH "V" AS (SELECT "BID" AS "B" FROM LB) SELECT (WITH "V" AS (SELECT LB."K" AS "B" FROM "V" LEFT JOIN CC ON "V"."B" = CC."CID" LEFT JOIN LA ON "V"."B" = LA."AID") SELECT COUNT(*) FROM "V", CC WHERE "V"."B" = 100) FROM LB LIMIT 1`)
-		if ePanic == nil {
-			t.Fatal("comma-multi-leg shadow read must be LOUD (an install panicked here), got rows")
+		// Body B is the enclosing LB.K (5 or 6), not the old V.B (1 or 3).
+		// Both left joins preserve the two old V rows; CC contributes one row.
+		// Therefore the original B=100 predicate counts zero, while B=LB.K
+		// counts two for either possible outer row selected by LIMIT 1.
+		check(t, `WITH "V" AS (SELECT "BID" AS "B" FROM LB) SELECT (WITH "V" AS (SELECT LB."K" AS "B" FROM "V" LEFT JOIN CC ON "V"."B" = CC."CID" LEFT JOIN LA ON "V"."B" = LA."AID") SELECT COUNT(*) FROM "V", CC WHERE "V"."B" = 100) FROM LB LIMIT 1`, "0")
+		for _, tc := range []struct {
+			name, query string
+			want        []string
+		}{
+			{"matching outer value", `WITH "V" AS (SELECT "BID" AS "B" FROM LB) SELECT (WITH "V" AS (SELECT LB."K" AS "B" FROM "V" LEFT JOIN CC ON "V"."B" = CC."CID" LEFT JOIN LA ON "V"."B" = LA."AID") SELECT COUNT(*) FROM "V", CC WHERE "V"."B" = LB."K") FROM LB LIMIT 1`, []string{"2"}},
+			{"unfiltered count", `WITH "V" AS (SELECT "BID" AS "B" FROM LB) SELECT (WITH "V" AS (SELECT LB."K" AS "B" FROM "V" LEFT JOIN CC ON "V"."B" = CC."CID" LEFT JOIN LA ON "V"."B" = LA."AID") SELECT COUNT(*) FROM "V", CC) FROM LB LIMIT 1`, []string{"2"}},
+			{"outer value in body", `WITH "V" AS (SELECT "BID" AS "B" FROM LB) SELECT LB."K", (WITH "V" AS (SELECT LB."K" AS "B" FROM "V" LEFT JOIN CC ON "V"."B" = CC."CID" LEFT JOIN LA ON "V"."B" = LA."AID") SELECT MAX("V"."B") FROM "V", CC) FROM LB`, []string{"5|5", "6|6"}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				got, plan, err := runPlanned(t, tc.query)
+				t.Logf("shadow carrier plan: %s", plan)
+				sort.Strings(got)
+				if err != nil || strings.Join(got, ",") != strings.Join(tc.want, ",") {
+					t.Fatalf("rows=%v err=%v, want %v", got, err, tc.want)
+				}
+			})
 		}
 		// duplicate X in the body: the body is published as stated, repeated
 		// name included, so the UNIQUE Y reads through it and answers — LA JOIN

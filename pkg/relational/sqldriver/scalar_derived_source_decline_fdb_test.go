@@ -4,27 +4,17 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"testing"
 
 	"fdb.dev/pkg/relational/api"
 )
 
-// TestFDB_ScalarDerivedSourceDeclines pins the correlated-SCALAR-subquery twin of
-// the derived-inner correlated-EXISTS fix. A correlated scalar subquery
-// (`SELECT …, (SELECT … WHERE inner.k = outer.k) FROM …`) whose inner FROM is a
-// DERIVED TABLE routes through buildCorrelatedScalar. Unlike the EXISTS fast path,
-// buildCorrelatedScalar builds its inner SCOPE first (analyzer.ResolveTable /
-// addCorrelatedJoinScopeSource) BEFORE the operator tree, and a derived source is
-// not a catalog table nor WITH-registered — so ResolveTable("d") misses and the
-// query DECLINES LOUDLY (0A000) rather than degrading to the empty bare scan.
-//
-// Correct-or-conservative: the derived scalar shape is a reach gap, NOT a
-// silent-wrong. This test guards the loud decline so a future change to the scalar
-// path can never regress it into the same silent-wrong the EXISTS path had (a bare
-// NewScan("d") over a non-existent table → the scalar reads an empty relation and
-// answers a wrong / silently-NULL value). Both the derived-PRIMARY and the
-// derived-LEG positions are pinned.
-func TestFDB_ScalarDerivedSourceDeclines(t *testing.T) {
+// TestFDB_ScalarDerivedSources pins the Go scalar-subquery extension over
+// derived primary and join sources. Derived aliases must carry their bodies and
+// exact scope metadata, not resolve as catalog tables. Zero inner rows are NULL,
+// one yields its value, and multiple rows raise the scalar cardinality error.
+func TestFDB_ScalarDerivedSources(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
@@ -43,29 +33,91 @@ func TestFDB_ScalarDerivedSourceDeclines(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 	mustExec(t, db, ctx, "INSERT INTO ord VALUES (1, 10), (2, 20)")
 
-	mustDecline := func(t *testing.T, q string) {
+	queryRows := func(t *testing.T, q string) []string {
 		t.Helper()
-		rows, qerr := db.QueryContext(ctx, q)
+		rows, err := db.QueryContext(ctx, q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		types, err := rows.ColumnTypes()
+		if err != nil || len(types) != 2 || types[1].DatabaseTypeName() != "BIGINT" {
+			t.Fatalf("scalar metadata=%v, err=%v; want second column BIGINT", types, err)
+		}
+		if nullable, known := types[1].Nullable(); !known || !nullable {
+			t.Fatalf("scalar metadata nullable=(%v,%v), want known nullable", nullable, known)
+		}
+		var out []string
+		for rows.Next() {
+			var id int64
+			var value sql.NullInt64
+			if err := rows.Scan(&id, &value); err != nil {
+				t.Fatal(err)
+			}
+			if value.Valid {
+				out = append(out, fmt.Sprintf("%d=%d", id, value.Int64))
+			} else {
+				out = append(out, fmt.Sprintf("%d=NULL", id))
+			}
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		sort.Strings(out)
+		return out
+	}
+	for _, tc := range []struct {
+		name, query string
+		want        []string
+	}{
+		{"derived_primary", "SELECT o.order_id, (SELECT d.cust_id FROM (SELECT order_id, cust_id FROM ord) AS d WHERE d.order_id = o.order_id) FROM ord AS o", []string{"1=10", "2=20"}},
+		{"derived_primary_empty", "SELECT o.order_id, (SELECT d.cust_id FROM (SELECT order_id, cust_id FROM ord WHERE order_id = 100) AS d WHERE d.order_id = o.order_id) FROM ord AS o", []string{"1=NULL", "2=NULL"}},
+		{"derived_primary_computed", "SELECT o.order_id, (SELECT d.v FROM (SELECT order_id, cust_id + 1 AS v FROM ord) AS d WHERE d.order_id = o.order_id) FROM ord AS o", []string{"1=11", "2=21"}},
+		{"derived_leg_filtered", "SELECT o.order_id, (SELECT a.cust_id FROM ord a, (SELECT order_id FROM ord) AS d WHERE a.order_id = o.order_id AND d.order_id = a.order_id) FROM ord AS o", []string{"1=10", "2=20"}},
+		{"derived_primary_reads_cte", "WITH c AS (SELECT order_id, cust_id + 2 AS v FROM ord) SELECT o.order_id, (SELECT d.v FROM (SELECT order_id, v FROM c) AS d WHERE d.order_id = o.order_id) FROM ord AS o", []string{"1=12", "2=22"}},
+		{"derived_primary_alias_shadows_outer_leg", "SELECT o.order_id, (SELECT d.cust_id FROM (SELECT order_id, cust_id FROM ord) AS d WHERE d.order_id = o.order_id) FROM ord AS o, ord AS d", []string{"1=10", "1=10", "2=20", "2=20"}},
+		{"derived_join_alias_shadows_outer_leg", "SELECT o.order_id, (SELECT a.cust_id FROM ord a JOIN (SELECT order_id FROM ord) AS d ON a.order_id = d.order_id WHERE a.order_id = o.order_id) FROM ord AS o, ord AS d", []string{"1=10", "1=10", "2=20", "2=20"}},
+		{"derived_shadow_qualified_star", "SELECT o.order_id, (SELECT d.* FROM (SELECT cust_id FROM ord WHERE order_id = 1) AS d WHERE o.order_id > 0) FROM ord AS o, ord AS d", []string{"1=10", "1=10", "2=10", "2=10"}},
+		{"derived_shadow_using", "SELECT o.order_id, (SELECT d.cust_id FROM (SELECT order_id, cust_id FROM ord) AS d JOIN (SELECT order_id FROM ord) AS a USING (order_id) WHERE d.order_id = o.order_id) FROM ord AS o, ord AS d", []string{"1=10", "1=10", "2=20", "2=20"}},
+		{"derived_body_reads_actual_parent", "SELECT o.order_id, (SELECT d.v FROM (SELECT o.cust_id AS v FROM ord WHERE order_id = 1) AS d) FROM ord AS o, ord AS d", []string{"1=10", "1=10", "2=20", "2=20"}},
+		{"derived_same_level_duplicate_aliases", "SELECT o.order_id, (SELECT x.cust_id FROM (SELECT order_id FROM ord) AS x, (SELECT cust_id FROM ord WHERE order_id = 1) AS x WHERE x.order_id = o.order_id) FROM ord AS o", []string{"1=10", "2=10"}},
+		{"derived_quoted_mint_alias", `SELECT o.order_id, (SELECT "Q$DERIVED0".cust_id FROM (SELECT order_id, cust_id FROM ord) AS "Q$DERIVED0" WHERE "Q$DERIVED0".order_id = o.order_id) FROM ord AS o, ord AS "Q$DERIVED0"`, []string{"1=10", "1=10", "2=20", "2=20"}},
+		{"derived_body_own_with", "SELECT o.order_id, (SELECT d.v FROM (WITH c AS (SELECT order_id, cust_id + 3 AS v FROM ord) SELECT order_id, v FROM c) AS d WHERE d.order_id = o.order_id) FROM ord AS o", []string{"1=13", "2=23"}},
+		{"derived_body_hidden_table_homonym", "SELECT ord.order_id, (SELECT d.cust_id FROM (SELECT order_id, cust_id FROM ord) AS d WHERE d.order_id = ord.order_id) FROM ord, ord AS other", []string{"1=10", "1=10", "2=20", "2=20"}},
+		{"derived_cluster_disjoint", "SELECT o.order_id, (SELECT d.cust_id FROM (SELECT order_id, cust_id FROM ord) AS d WHERE d.order_id = o.order_id) FROM ord AS o, ord AS other", []string{"1=10", "1=10", "2=20", "2=20"}},
+		{"derived_leg_on", "SELECT o.order_id, (SELECT a.cust_id FROM ord a JOIN (SELECT order_id FROM ord) AS d ON a.order_id = d.order_id WHERE a.order_id = o.order_id) FROM ord AS o", []string{"1=10", "2=20"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var firstPlan string
+			for i := range 5 {
+				var plan string
+				if err := db.QueryRowContext(ctx, "EXPLAIN "+tc.query).Scan(&plan); err != nil {
+					t.Fatal(err)
+				}
+				if i == 0 {
+					firstPlan = plan
+				} else if plan != firstPlan {
+					t.Fatalf("derived private identity leaked planning history:\n%s\n%s", firstPlan, plan)
+				}
+			}
+			got := queryRows(t, tc.query)
+			if fmt.Sprint(got) != fmt.Sprint(tc.want) {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+	// The original comma-leg query has TWO inner rows per outer row. Preserve
+	// that exact query as a cardinality negative, not a silent first-row answer.
+	t.Run("derived_leg_cardinality", func(t *testing.T) {
+		t.Parallel()
+		rows, qerr := db.QueryContext(ctx, "SELECT o.order_id, (SELECT a.cust_id FROM ord a, (SELECT order_id FROM ord) AS d WHERE a.order_id = o.order_id) FROM ord AS o")
 		if qerr == nil {
 			for rows.Next() {
 			}
 			qerr = rows.Err()
 			rows.Close()
 		}
-		if qerr == nil {
-			t.Fatalf("expected a LOUD decline (0A000) for a derived source in a correlated scalar subquery — never a silent bare scan\n  sql: %s", q)
-		}
-		requireSQLSTATE(t, qerr, api.ErrCodeUnsupportedOperation)
-	}
-
-	// Derived PRIMARY source of the scalar subquery.
-	t.Run("derived_primary", func(t *testing.T) {
-		mustDecline(t, "SELECT o.order_id, (SELECT d.cust_id FROM "+
-			"(SELECT order_id, cust_id FROM ord) AS d WHERE d.order_id = o.order_id) FROM ord AS o")
-	})
-	// Real primary + derived comma LEG of the scalar subquery.
-	t.Run("derived_leg", func(t *testing.T) {
-		mustDecline(t, "SELECT o.order_id, (SELECT a.cust_id FROM ord a, "+
-			"(SELECT order_id FROM ord) AS d WHERE a.order_id = o.order_id) FROM ord AS o")
+		requireSQLSTATE(t, qerr, api.ErrCodeCardinalityViolation)
 	})
 }

@@ -157,6 +157,8 @@ go_test(
     deps = [
         "//gen",
         "//pkg/linters/norecover",
+        "//pkg/relational/core/parser",
+        "//pkg/relational/core/parser/gen",
         "@in_gopkg_yaml_v3//:yaml_v3",
         "@org_golang_google_protobuf//reflect/protoreflect",
         "@org_golang_x_text//cases",

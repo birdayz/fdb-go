@@ -19,6 +19,10 @@ import (
 // because the value exceeds Integer.MAX_VALUE, even though the
 // runtime representation of int64 doesn't need narrowing.
 //
+// This untyped Go API treats float64 as DOUBLE and float32 as FLOAT. SQL
+// expressions instead use the typed values.CastValue path, because SQL FLOAT
+// values can also have a float64 carrier.
+//
 // NULL casts to NULL of the target type. Unsupported source/target
 // combinations error with ErrCodeUnsupportedOperation.
 func CastValue(v any, typeName string) (any, error) {
@@ -41,36 +45,21 @@ func CastValue(v any, typeName string) (any, error) {
 					"Invalid cast operation Value out of range for INT: %d", n)
 			}
 			return n, nil
-		case float64:
-			// Java CastValue.DOUBLE_TO_LONG: reject NaN/Inf, round to nearest
-			// using ties-to-positive-infinity (`Math.round` = floor(x + 0.5)),
-			// error on range overflow. Previously Go truncated silently and
-			// relied on int64() wrap on overflow — both diverged from Java.
-			if math.IsNaN(n) || math.IsInf(n, 0) {
-				return nil, api.NewErrorf(api.ErrCodeInvalidCast,
-					"cannot CAST NaN or Infinity to integer")
+		case float64, float32:
+			source := values.NullableDouble
+			if _, ok := n.(float32); ok {
+				source = values.NullableFloat
 			}
-			// Java's Math.round(double) returns floor(x + 0.5).
-			rounded := math.Floor(n + 0.5)
-			// Guard overflow before the int64() conversion. float64 can't
-			// represent every int64 exactly near the limits, so use a strict
-			// comparison against the max/min-as-float (values that *do* fit
-			// exactly into float64).
-			if rounded > 9.2233720368547748e18 || rounded < -9.2233720368547758e18 {
-				// Java CastValue uses INVALID_CAST (22F3H) for all CAST
-				// failures including range overflow — matches our
-				// ErrCodeInvalidCast. Distinct from arithmetic-overflow
-				// sites (which use 22003) because Java specifically
-				// categorises CAST failures separately.
-				return nil, api.NewErrorf(api.ErrCodeInvalidCast,
-					"value out of range for integer: %v", n)
+			target := values.NullableLong
+			if is32BitInteger {
+				target = values.NullableInt
 			}
-			r := int64(rounded)
-			if is32BitInteger && (r < math.MinInt32 || r > math.MaxInt32) {
-				return nil, api.NewErrorf(api.ErrCodeInvalidCast,
-					"Invalid cast operation Value out of range for INT: %d", r)
+			result, err := values.CastEvaluated(n, source, target)
+			var invalid *values.InvalidCastError
+			if errors.As(err, &invalid) {
+				return nil, api.NewError(api.ErrCodeInvalidCast, invalid.Error())
 			}
-			return r, nil
+			return result, err
 		case string:
 			// Java CastValue.STRING_TO_LONG: Integer.parseInt(in.trim()) —
 			// trims whitespace before parsing.

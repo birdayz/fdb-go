@@ -1,6 +1,7 @@
 package embedded
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 
@@ -38,6 +39,7 @@ func visibleAggregateOutputColumns(aggCols []aggSelectCol, countStar bool, count
 	}
 	return []aggSelectCol{{
 		outName:       countStarAlias,
+		outputAliased: countStarAlias != "",
 		selectOrdinal: 1,
 		aggFunc:       "COUNT",
 		aggArg:        "*",
@@ -108,26 +110,38 @@ func logicalAggregateCalls(
 	return calls, provenance, hasDistinct
 }
 
+// aggregateOutputSQLName never publishes an accumulator rendering as a name.
+// An unaliased direct grouping column inherits its identifier; an expression
+// remains unnamed until the result schema materializes its positional label.
+func aggregateOutputSQLName(ac aggSelectCol) string {
+	if ac.outputAliased {
+		return ac.outName
+	}
+	return ac.outputInheritedName
+}
+
 func aggregateProjectionItem(ac aggSelectCol, strip func(string) string) (name, alias string, expr antlrgen.IExpressionContext) {
 	switch {
 	case ac.outExpr != nil && ac.aggFunc == "":
 		name = canonicalTextOf(ac.outExpr)
 		expr = ac.outExpr
-		if ac.outName != "" && !strings.EqualFold(ac.outName, name) {
+		if ac.outputAliased && ac.outName != "" {
 			alias = ac.outName
 		}
 	case ac.aggFunc != "":
 		name = ac.aggFunc + "(" + strip(aggColOperandText(ac)) + ")"
-		if ac.outName != "" && !strings.EqualFold(ac.outName, name) {
+		if ac.outputAliased && ac.outName != "" {
 			alias = ac.outName
 		}
 	case ac.groupCol != "":
 		name = strip(ac.groupCol)
-		// Alias presence is the parser's fact (groupColAliased), never inferred
-		// from outName equalling the reference: `ga.g AS "GA.G"` is aliased,
-		// and inferring it labelled that column G.
-		if ac.groupColAliased && ac.outName != "" {
+		// Authored AS remains explicit even if it equals the execution key.
+		// A rebased GROUP BY alias instead inherits its original SELECT name;
+		// only its physical output spelling changes, not AS provenance.
+		if ac.outputAliased && ac.outName != "" {
 			alias = ac.outName
+		} else if ac.outputInheritedName != "" && ac.outputInheritedName != name {
+			alias = ac.outputInheritedName
 		}
 	}
 	return name, alias, expr
@@ -386,9 +400,20 @@ func buildLogicalPlanForUnion(setQ *antlrgen.SetQueryContext) logical.LogicalOpe
 //	          → LogicalLimit (if LIMIT or OFFSET)
 //	            → LogicalProject (unless SELECT *)
 
-// buildLogicalPlanForSelect returns a LogicalOperator tree for the
-// parsed selectQuery, or nil when the shape is out of current scope
-// (SELECT without FROM; derived-table builds that recursively fail).
+// derivedSourceCarrier exports a body under one runtime identity without
+// rewriting anything inside it. The SQL qualifier lives in the semantic scope;
+// Name here is the CTE registration key used by Main's scan.
+func derivedSourceCarrier(alias, binding string, body logical.LogicalOperator) *logical.LogicalCTE {
+	if binding == "" {
+		binding = alias
+	}
+	cte := logical.NewCTE(binding, body, logical.NewScan(binding, "", binding), false)
+	cte.Binding = binding
+	return cte
+}
+
+// buildLogicalPlanForSelect returns a LogicalOperator tree for the parsed
+// selectQuery, or nil when a source cannot be built.
 func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 	if sq == nil {
 		return nil
@@ -436,15 +461,10 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 		// a caller that never went through the catalog path; taking it while a
 		// resolved plan exists loses every ProjectedValue in the body.
 		innerOp := sq.catalogAwareInnerPlan
-		if innerOp == nil {
-			body := sq.derivedQuery.QueryExpressionBody()
-			if termDefault, ok := body.(*antlrgen.QueryTermDefaultContext); ok {
-				if simpleTable, ok := termDefault.QueryTerm().(*antlrgen.SimpleTableContext); ok {
-					if inner, err := extractFromSimpleTable(simpleTable); err == nil {
-						innerOp = buildLogicalPlanForSelect(inner)
-					}
-				}
-			}
+		if innerOp == nil && sq.enclosingScope == nil {
+			// Metadata-free programmatic construction still retains the full
+			// query. A parent-scoped source requires its already-resolved body.
+			innerOp, _ = NewPlanVisitor(nil).VisitQuery(sq.derivedQuery)
 		}
 		if innerOp == nil {
 			// Derived query is out of the inner builder's scope — bail
@@ -459,10 +479,9 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 		// name). The qualified-star rebuild re-enters THIS builder, so
 		// dropping the wrapper here silently undid the visitor path's
 		// alias fidelity.
-		op = logical.NewCTE(sq.tableName, innerOp,
-			logical.NewScan(sq.tableName, ""), false)
+		op = derivedSourceCarrier(sq.tableName, sq.bindingID, innerOp)
 	} else {
-		op = logical.NewScan(sq.tableName, sq.tableAlias)
+		op = logical.NewScan(sq.tableName, sq.tableAlias, sq.sourceSegments...)
 	}
 
 	// JOINs chain left-to-right from the primary scan. Each join wraps
@@ -482,32 +501,21 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 			// catalog-aware path. Wrap it in a CTE so the join alias
 			// is preserved (same logic as the primary source above).
 			if j.alias != "" {
-				cte := logical.NewCTE(j.alias, j.catalogAwareInnerPlan,
-					logical.NewScan(j.alias, ""), false)
-				cte.Binding = j.bindingID
-				right = cte
+				right = derivedSourceCarrier(j.alias, j.bindingID, j.catalogAwareInnerPlan)
 			} else {
 				right = j.catalogAwareInnerPlan
 			}
 		} else if j.derivedQuery != nil {
 			var innerRight logical.LogicalOperator
-			body := j.derivedQuery.QueryExpressionBody()
-			if termDefault, ok := body.(*antlrgen.QueryTermDefaultContext); ok {
-				if simpleTable, ok := termDefault.QueryTerm().(*antlrgen.SimpleTableContext); ok {
-					if inner, err := extractFromSimpleTable(simpleTable); err == nil {
-						innerRight = buildLogicalPlanForSelect(inner)
-					}
-				}
+			if sq.enclosingScope == nil {
+				innerRight, _ = NewPlanVisitor(nil).VisitQuery(j.derivedQuery)
 			}
 			if innerRight == nil {
 				return nil
 			}
 			// Wrap as CTE so the alias surfaces in sourceAlias.
 			if j.alias != "" {
-				cte := logical.NewCTE(j.alias, innerRight,
-					logical.NewScan(j.alias, ""), false)
-				cte.Binding = j.bindingID
-				right = cte
+				right = derivedSourceCarrier(j.alias, j.bindingID, innerRight)
 			} else {
 				right = innerRight
 			}
@@ -520,7 +528,7 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 			// demoteSchemaQualifiedUnnest once metadata is in scope. RFC-142.
 			right = u
 		} else {
-			sc := logical.NewScan(j.tableName, j.alias)
+			sc := logical.NewScan(j.tableName, j.alias, j.segments...)
 			sc.Binding = j.bindingID
 			right = sc
 		}
@@ -573,6 +581,7 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 func buildPostAggregateProjection(op logical.LogicalOperator, aggCols []aggSelectCol, strip func(string) string) (*logical.LogicalProject, []antlrgen.IExpressionContext) {
 	var allProj []string
 	var allAliases []string
+	var sqlNames []string
 	var allAntlr []antlrgen.IExpressionContext
 	var outputOrdinals []int
 	hasAlias := false
@@ -587,14 +596,12 @@ func buildPostAggregateProjection(op logical.LogicalOperator, aggCols []aggSelec
 		if name == "" {
 			continue
 		}
-		if alias == "" && ac.aggFunc != "" && strings.Contains(name, ".") {
-			// The projection Value is an ordinal-bound FieldValue for the
-			// private aggregate slot. A dotted SQL rendering needs a machinery
-			// alias so metadata treats the whole expression as its label,
-			// never as a qualified base column (`MAX(E.SALARY)` must not be
-			// truncated to `SALARY)`). Non-dotted renderings already survive
-			// FieldValue label derivation verbatim and need no alias.
-			alias = name
+		sqlName := aggregateOutputSQLName(ac)
+		sqlNames = append(sqlNames, sqlName)
+		if sqlName == "" {
+			// Materialize an anonymous result field without naming the SQL
+			// expression. The accumulator is still read by its native ordinal.
+			alias = fmt.Sprintf("_%d", i)
 		}
 		allProj = append(allProj, name)
 		allAntlr = append(allAntlr, expr)
@@ -625,6 +632,7 @@ func buildPostAggregateProjection(op logical.LogicalOperator, aggCols []aggSelec
 	}
 	proj.IsComputed = computed
 	proj.AggregateOutputOrdinals = outputOrdinals
+	proj.SQLNames = sqlNames
 	return proj, allAntlr
 }
 
@@ -673,6 +681,7 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 			sq.postSortStripAliases = append([]string(nil), proj.Aliases...)
 			sq.postSortAggregateOutputOrdinals = append([]int(nil), proj.AggregateOutputOrdinals...)
 			sq.postSortIsComputed = append([]bool(nil), proj.IsComputed...)
+			sq.postSortSQLNames = append([]string(nil), proj.SQLNames...)
 			sq.postAggExprs = antlr
 		}
 	}
@@ -703,7 +712,7 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 			if !ob.bareRef {
 				continue
 			}
-			for j, al := range sq.postSortStripAliases {
+			for j, al := range sq.postSortSQLNames {
 				if al != "" && strings.EqualFold(al, ob.colName) && j < len(sq.postSortStripProj) {
 					ob.colName = sq.postSortStripProj[j]
 					// Same rule as the positional rebase above: internal
@@ -780,6 +789,7 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 		proj := logical.NewProject(op, sq.postSortStripProj, sq.postSortStripAliases)
 		proj.AggregateOutputOrdinals = append([]int(nil), sq.postSortAggregateOutputOrdinals...)
 		proj.IsComputed = append([]bool(nil), sq.postSortIsComputed...)
+		proj.SQLNames = append([]string(nil), sq.postSortSQLNames...)
 		op = proj
 	}
 

@@ -4,8 +4,8 @@
 #   CREATE INDEX ord_cid ON ord(cid)
 
 === SELECT c.cid, (SELECT COUNT(*) FROM ord o WHERE o.cid = c.cid) FROM cust c ORDER BY c.cid
-PLAN: Project([_current.CID#0, _current.O.COUNT(*)#2], FlatMap(outer=Scan(CUST), inner=DefaultOnEmpty(Project([_current.COUNT(*)#0], StreamingAgg(keys=[], IndexScan(ORD_CID, [=] COVERING))))))
-ROWS(3) cols=[CID, COUNT(*)]:
+PLAN: Project([_current.CID#0, _current._0#2], FlatMap(outer=Scan(CUST), inner=DefaultOnEmpty(Project([_current.COUNT(*)#0], StreamingAgg(keys=[], IndexScan(ORD_CID, [=] COVERING))))))
+ROWS(3) cols=[CID, _1]:
   [1, 2]
   [2, 1]
   [3, 1]
@@ -26,6 +26,6 @@ ROWS(3) cols=[OID]:
 
 === SELECT c.region, COUNT(*) FROM cust c JOIN ord o ON c.cid = o.cid GROUP BY c.region HAVING COUNT(*) > 1 ORDER BY c.region
 PLAN: Project([_current.REGION#0, _current.COUNT(*)#1], PredicatesFilter(StreamingAgg(keys=[_current.REGION#1], InMemorySort([_current.REGION#1 ASC], FlatMap(outer=Scan(ORD), inner=Scan(CUST, [=])))), [1 preds]))
-ROWS(1) cols=[REGION, COUNT(*)]:
+ROWS(1) cols=[REGION, _1]:
   [10, 3]
 

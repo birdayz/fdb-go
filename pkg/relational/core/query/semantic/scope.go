@@ -49,14 +49,9 @@ type ScopeSource struct {
 	// Ordinary aliased sources leave this empty, so SQL's usual alias-hides-table
 	// rule and the correlation mint remain unchanged.
 	AdditionalQualifiers []Identifier
-	// Shadowing marks a source whose columns SHADOW same-named columns of
-	// non-shadowing sources at this scope level (instead of colliding into
-	// an ambiguity error). A lateral array unnest (`FROM t, t.arr AS x`)
-	// uses this: its AS/AT binding shadows a same-named real column of `t`
-	// — Java's generateCorrelatedFieldAccess binding wins over the outer
-	// (RFC-142). When ≥1 shadowing source matches a bare column, the
-	// shadowing match is taken and the non-shadowing matches are ignored;
-	// two shadowing matches are still ambiguous.
+	// Shadowing marks a virtual AS/AT source whose value construction must keep
+	// the exact element/ordinal correlation. It grants no lookup precedence:
+	// every visible matching attribute participates in ordinary ambiguity.
 	Shadowing bool
 	// FlowedColumns is the exact row layout carried by this source's quantified
 	// object when that layout differs from the columns exposed for SQL name
@@ -66,6 +61,15 @@ type ScopeSource struct {
 	// while an AT-only source still physically carries the unexposed element in
 	// slot 0 and the ordinal in slot 1.
 	FlowedColumns []Column
+	// FlowedObject is the exact whole value carried by a non-row virtual
+	// source. A record element publishes its fields and an ephemeral whole
+	// alias while the quantifier still flows the original nominal record type;
+	// neither the extra alias nor its SQL position is a physical row slot.
+	FlowedObject *Column
+	// ColumnOrdinals maps SQL attribute positions to physical row slots when
+	// they are not parallel to FlowedColumns (for example, AT without AS).
+	// A whole-object attribute uses -1 instead of a fabricated row slot.
+	ColumnOrdinals []int
 	// FlowedNullable is the record-level nullability of FlowedColumns. It is
 	// meaningful only when FlowedColumns is non-empty.
 	FlowedNullable bool
@@ -135,15 +139,9 @@ func (s *Scope) AllSourcesRecursive() []ScopeSource {
 	return out
 }
 
-// AddSource appends a FROM-clause source. Duplicate PLAIN aliases at the
-// same level are ACCEPTED — Java registers quantifiers freely (unique ids;
-// the SQL alias is only a display qualifier) and errors per-ATTRIBUTE at
-// reference resolution; the caller distinguishes duplicate legs via
-// CorrelationName (the parser-minted binding id). A duplicate involving a
-// SHADOWING source (a lateral-unnest AS/AT binding, either direction) still
-// errors: Java genuinely forbids a duplicate unnest alias at FROM (RFC-142),
-// and the scope-level signal is what the join-ON builder's drop-risk
-// taxonomy keys on.
+// AddSource appends a FROM-clause source. SQL aliases may repeat, including
+// lateral shadowing sources; references are adjudicated per attribute. Explicit
+// runtime correlation identities must remain unique, independent of alias text.
 func (s *Scope) AddSource(src ScopeSource) error {
 	// A nil-Table source is the declared-but-underivable CTE TOMBSTONE (or a
 	// construction bug) — never a resolvable relation. Rejecting it HERE, at
@@ -171,21 +169,7 @@ func (s *Scope) AddSource(src ScopeSource) error {
 		src.CorrelationName = strings.ToUpper(src.CorrelationName)
 	}
 	for _, existing := range s.sources {
-		if !existing.Alias.EqualsIgnoreQuoting(src.Alias) {
-			// FOLD-COLLISION guard: two DIFFERENT aliases whose
-			// correlation keys canonicalize to the same upper form
-			// (`AS "q$1"` beside `AS "Q$1"`) would be two legs behind ONE
-			// runtime key — first-span-wins silent misbinding. Java keeps
-			// quoted identifiers case-distinct end-to-end and can never
-			// conflate them; we reject loudly. Equal-alias duplicates
-			// (the dup-FROM-alias class) keep distinct minted binding
-			// keys and are adjudicated per-attribute downstream.
-			if src.CorrelationName != "" && existing.CorrelationName == src.CorrelationName {
-				return &DuplicateAliasError{Alias: src.Alias}
-			}
-			continue
-		}
-		if existing.Shadowing || src.Shadowing {
+		if src.CorrelationName != "" && existing.CorrelationName == src.CorrelationName {
 			return &DuplicateAliasError{Alias: src.Alias}
 		}
 	}
@@ -295,6 +279,9 @@ func (p resolutionPass) lookupColumn(tbl Table, id Identifier) (Column, bool) {
 
 // lookupStructField resolves a nested field of col under this pass.
 func (p resolutionPass) lookupStructField(col Column, id Identifier) (Column, int, bool) {
+	if col.IsArray || col.Type != "RECORD" {
+		return Column{}, 0, false
+	}
 	if f, ord, ok := col.LookupStructField(id); ok {
 		return f, ord, true
 	}
@@ -411,24 +398,6 @@ func (s *Scope) ResolveColumn(id Identifier) (Column, ScopeSource, error) {
 		}
 		if len(matches) > 0 {
 			break
-		}
-	}
-	// A SHADOWING source (a lateral array unnest binding, RFC-142) wins over
-	// non-shadowing sources at this level: when ≥1 shadowing source matches,
-	// keep only the shadowing matches (Java's unnest binding shadows the outer
-	// table's same-named column). Two shadowing matches are still ambiguous.
-	if len(matches) > 1 {
-		var shadow []struct {
-			col Column
-			src ScopeSource
-		}
-		for _, m := range matches {
-			if m.src.Shadowing {
-				shadow = append(shadow, m)
-			}
-		}
-		if len(shadow) > 0 {
-			matches = shadow
 		}
 	}
 	switch len(matches) {
@@ -609,11 +578,13 @@ func (s *Scope) ResolvePathNested(segs []Identifier) (Column, ScopeSource, []Nes
 	var firstAliasTable QualifiedName
 	aliasSeen := false
 	for cur := s; cur != nil; cur = cur.parent {
-		var matches []struct {
-			col       Column
-			src       ScopeSource
-			accessors []NestedAccessor
+		type candidate struct {
+			col              Column
+			src              ScopeSource
+			accessors        []NestedAccessor
+			ephemeralDerived bool
 		}
+		var matches []candidate
 		// STRICT then RELAXED at this level; only then the parent. The
 		// qualifier is compared exactly in BOTH passes — a source alias never
 		// comes from a descriptor, so a fold has nothing to repair there.
@@ -623,13 +594,9 @@ func (s *Scope) ResolvePathNested(segs []Identifier) (Column, ScopeSource, []Nes
 				// Checked for EVERY source, not only alias-matching ones, because
 				// the struct column is reached through the source's columns — the
 				// reference `home_address.city` carries no source qualifier at all.
-				if structCol, ok := pass.lookupColumn(src.Table, qualifier); ok {
+				for _, structCol := range matchingColumns(src.Table, qualifier, pass) {
 					if acc, found := descendStruct(structCol, segs[1:], pass); found {
-						matches = append(matches, struct {
-							col       Column
-							src       ScopeSource
-							accessors []NestedAccessor
-						}{structCol, src, acc})
+						matches = append(matches, candidate{structCol, src, acc, structCol.Ephemeral})
 					}
 				}
 				if !src.matchesQualifier(qualifier) {
@@ -646,12 +613,28 @@ func (s *Scope) ResolvePathNested(segs []Identifier) (Column, ScopeSource, []Nes
 					if !found {
 						continue
 					}
-					matches = append(matches, struct {
-						col       Column
-						src       ScopeSource
-						accessors []NestedAccessor
-					}{c, src, acc})
+					matches = append(matches, candidate{c, src, acc, c.Ephemeral && len(acc) > 0})
 				}
+			}
+			// All successful paths name this requested identifier. Java drops
+			// a nested route through an ephemeral whole object when a direct
+			// attribute already supplies that same identifier. Independent
+			// non-ephemeral attributes still compete, regardless of source.
+			hasDirect := false
+			for _, match := range matches {
+				if !match.ephemeralDerived {
+					hasDirect = true
+					break
+				}
+			}
+			if hasDirect {
+				kept := matches[:0]
+				for _, match := range matches {
+					if !match.ephemeralDerived {
+						kept = append(kept, match)
+					}
+				}
+				matches = kept
 			}
 			if len(matches) > 0 {
 				break

@@ -124,9 +124,12 @@ func TestExplodeCollectionsAreOrdinalBaked(t *testing.T) {
 			t.Parallel()
 			tr := newGateTranslator(t)
 			tr.unnestUnderExistential = tc.underExistential
-			j := logical.NewJoin(tc.outer,
-				&logical.LogicalUnnest{Segments: tc.segments, Alias: "X"},
-				logical.JoinInner, "")
+			ownerLayout := rawProtoRowLayout(t, tr.md, "Order")
+			if strings.Contains(tc.name, "FULL box") {
+				ownerLayout = rawNullSuppliedLayout(ownerLayout)
+			}
+			u, _ := rawBoundUnnest(t, tc.segments, "X", "", "O", ownerLayout, 3)
+			j := logical.NewJoin(tc.outer, u, logical.JoinInner, "")
 			expr := tr.translateUnnestJoin(j, j.Right.(*logical.LogicalUnnest)) //nolint:errcheck // fixture
 			if expr == nil {
 				t.Fatalf("translation failed: %v", tr.translateErr)
@@ -173,9 +176,12 @@ func TestBoxCollectionOrdinalIndexesTheMergedRow(t *testing.T) {
 	bake := func(t *testing.T, outer logical.LogicalOperator) values.FieldValue {
 		t.Helper()
 		tr := newGateTranslator(t)
-		j := logical.NewJoin(outer,
-			&logical.LogicalUnnest{Segments: []string{"o", "TAGS"}, Alias: "X"},
-			logical.JoinInner, "")
+		ownerLayout := rawProtoRowLayout(t, tr.md, "Order")
+		if _, boxed := outer.(*logical.LogicalJoin); boxed {
+			ownerLayout = rawNullSuppliedLayout(ownerLayout)
+		}
+		u, _ := rawBoundUnnest(t, []string{"o", "TAGS"}, "X", "", "O", ownerLayout, 3)
+		j := logical.NewJoin(outer, u, logical.JoinInner, "")
 		expr := tr.translateUnnestJoin(j, j.Right.(*logical.LogicalUnnest)) //nolint:errcheck // fixture
 		sel, ok := expr.(*expressions.SelectExpression)
 		if !ok {
@@ -274,24 +280,18 @@ func TestNameModelCollectionIsRejectedByTheGate(t *testing.T) {
 func TestUnnestBakedRootCollectionFusesAMultiSegmentPath(t *testing.T) {
 	t.Parallel()
 
-	tr := newGateTranslator(t)
-	outer, u, elementType := nestedArrayUnnestFixture(t)
-	got := tr.unnestBakedRootCollection(outer, values.NamedCorrelationIdentifier("D"),
-		u, "ARR", elementType, 1, -1)
+	_, u, _ := nestedArrayUnnestFixture(t)
+	got := u.CorrelatedCollection
 
 	fv, isFV := values.AsFieldValue(got)
 	if !isFV || fv.Path() == nil {
 		t.Fatalf("multi-segment bake = %#v, want an admitted exact FieldValue", got)
 	}
-	if !fv.Path().IsFrontierPinned() {
-		t.Fatal("multi-segment collection root lacks the seed-purpose frontier pin")
-	}
 	if n := fv.Path().Len(); n != 2 {
 		t.Fatalf("accessors = %v, want exactly root+suffix", fv.Path().Ordinals())
 	}
-	// N is the projected leg's first column. The ROOT is positional: the whole
-	// point is that the outer row is ordinal-addressed at this build, so a
-	// name-keyed root has nothing to resolve against.
+	// N is the projected leg's first column. The root ordinal is supplied by the
+	// fixture's exact semantic binding; Segments is not consulted as an oracle.
 	root, ok := fv.Path().Accessor(0)
 	if !ok {
 		t.Fatal("multi-segment field has no root accessor")
@@ -318,22 +318,23 @@ func TestUnnestBakedRootCollectionFusesAMultiSegmentPath(t *testing.T) {
 	}
 }
 
-// TestMultiSegmentUnnestIsRejectedBeforeTheBake records the OTHER half of why
-// the arm above has no end-to-end route: even with a nested path spelled out,
-// the lowering's classifier rejects it before any collection is built, because
-// the leaf is not an array. If a nested ARRAY ever becomes expressible, this
-// stops being the reason and the arm needs the full translateUnnestJoin case.
+// TestMultiSegmentUnnestIsRejectedBeforeTheBake supplies an exact nested scalar
+// field rather than an array. Its type, not its source spelling, must produce
+// the same non-array diagnostic as semantic FROM binding.
 func TestMultiSegmentUnnestIsRejectedBeforeTheBake(t *testing.T) {
 	t.Parallel()
 
 	tr := newGateTranslator(t)
-	j := logical.NewJoin(scan("Order", "o"),
-		&logical.LogicalUnnest{Segments: []string{"o", "FLOWER", "TYPE"}, Alias: "X"},
-		logical.JoinInner, "")
+	ownerLayout, ordinals := rawProtoPath(t, tr.md, "Order", "FLOWER", "TYPE")
+	u := &logical.LogicalUnnest{
+		Segments:             []string{"o", "FLOWER", "TYPE"},
+		Alias:                "X",
+		CorrelatedCollection: rawCorrelatedValue(t, "O", ownerLayout, ordinals...),
+	}
+	j := logical.NewJoin(scan("Order", "o"), u, logical.JoinInner, "")
 	if expr := tr.translateUnnestJoin(j, j.Right.(*logical.LogicalUnnest)); expr != nil {
 		t.Fatalf("a multi-segment unnest over a NON-array leaf translated (%T) — the "+
-			"classifier must reject it, and if it no longer does, the multi-segment "+
-			"routing arm is live and needs coverage through translateUnnestJoin", expr)
+			"bound collection must remain an ARRAY", expr)
 	}
 	var apiErr *api.Error
 	if !errors.As(tr.translateErr, &apiErr) || apiErr.Code != api.ErrCodeInvalidColumnReference {

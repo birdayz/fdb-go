@@ -60,6 +60,13 @@ type Table interface {
 	Indexes() []string
 }
 
+// EnumMember is one declared enum member, in declaration order. Numbers are
+// protobuf values, not positions in the member list.
+type EnumMember struct {
+	Name   string
+	Number int32
+}
+
 // Column is the analyzer's view of a table column. Type is a
 // placeholder string until the DataType / Type hierarchy port lands
 // (Phase 4.0 continuation).
@@ -92,8 +99,9 @@ type Column struct {
 	// ordinal binding (sourceRowType) keeps it.
 	Ephemeral bool
 
-	// StructFields is the DECLARED field list of a STRUCT column (Type
-	// "RECORD"), in declared order, and empty for every other column. It is
+	// StructFields is the DECLARED field list of a STRUCT column or an ARRAY's
+	// STRUCT element (Type "RECORD"), in declared order. IsArray distinguishes
+	// the container; its element metadata does not authorize field descent. It is
 	// the thing Java's lookupNestedField scans when it turns the path
 	// segments left over after the matched attribute prefix into
 	// FieldValue.Accessor(name, ordinal) entries (SemanticAnalyzer.java:
@@ -121,6 +129,12 @@ type Column struct {
 	// Empty for non-STRUCT columns and for synthetic catalog fixtures that do
 	// not declare a nominal record identity.
 	StructTypeName string
+
+	// EnumTypeName and EnumMembers carry the complete declaration when Type
+	// is ENUM (also for an enum array's element). A kind string alone cannot
+	// distinguish an enum from a STRING or reconstruct its stored numbers.
+	EnumTypeName string
+	EnumMembers  []EnumMember
 }
 
 // LookupStructField scans a STRUCT column's declared fields for one named by
@@ -135,6 +149,9 @@ type Column struct {
 // turn a candidate that merely lost into a hard error, and a reference that
 // Java resolves against a LATER source would die on an EARLIER one.
 func (c Column) LookupStructField(id Identifier) (Column, int, bool) {
+	if c.IsArray || c.Type != "RECORD" {
+		return Column{}, 0, false
+	}
 	for i, f := range c.StructFields {
 		if f.Id.EqualsIgnoreQuoting(id) {
 			return f, i, true

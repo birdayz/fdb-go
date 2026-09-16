@@ -582,7 +582,7 @@ func (t *cascadesTranslator) derivedBodyStarOrdinalLeg(body logical.LogicalOpera
 		return nil, false
 	}
 	u, isU := j.Right.(*logical.LogicalUnnest)
-	if !isU || len(u.Segments) < 2 || (u.Alias == "" && u.AtAlias == "") {
+	if !isU || (u.Alias == "" && u.AtAlias == "") {
 		return nil, false
 	}
 	if isChainedUnnest(j.Left, u) {
@@ -595,29 +595,22 @@ func (t *cascadesTranslator) derivedBodyStarOrdinalLeg(body logical.LogicalOpera
 		// gate. The correlations passed are the seed's own (sourceAlias /
 		// unnestSourceCorrelation); the built values are discarded — the gate is
 		// side-effect-free construction.
-		if unnestAliasReject(u) != nil {
-			// Decline the shape; the raw body surfaces the loud
-			// duplicate-alias rejection at translation (unnestAliasReject
-			// in translateUnnestJoin / translateChainedUnnestJoin).
+		if unnestCorrelationReject(j.Left, u) != nil {
 			return nil, false
 		}
-		elementType, _, disp := t.classifyChainedUnnestArray(j.Left, u)
-		if disp != derivedUnnestArray {
+		_, _, array := boundUnnestCollection(u)
+		if array == nil {
 			return nil, false
 		}
 		outerCorr := unnestOuterCorrelation(j.Left)
-		if _, _, ok := t.chainedUnnestOrdinalGate(j, u, outerCorr, unnestSourceCorrelation(u), elementType); !ok {
+		if _, _, ok := t.chainedUnnestOrdinalGate(j, u, outerCorr, unnestSourceCorrelation(u), array.ElementType); !ok {
 			return nil, false
 		}
 	} else {
 		if t.clusterArity(j.Left) != 1 || len(outerBoundAliases(j.Left)) != 1 {
 			return nil, false
 		}
-		outerTable := findOuterScanTable(j.Left, u.Segments[0])
-		if outerTable == "" || t.outerSourceIsCTE(outerTable) || outerSourceIsDerivedTable(j.Left, u.Segments[0]) {
-			return nil, false
-		}
-		if _, _, isArray, _ := t.unnestArrayElementType(outerTable, u.Segments[1:]); !isArray {
+		if _, _, array := boundUnnestCollection(u); array == nil {
 			return nil, false
 		}
 	}

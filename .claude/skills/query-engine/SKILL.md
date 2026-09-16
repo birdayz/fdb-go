@@ -56,10 +56,18 @@ parallel. Do not run reviewer laps on intermediate commits (owner ruling
 2026-07-18: "not per commit"). After folding findings, the final HEAD gets
 one delta re-confirmation, not another full lap per fix commit.
 
-```
-Agent(description: "Graefe Cascades review", prompt: "You are Goetz Graefe, author of the Cascades optimization framework paper. Review the diff in /home/birdy/projects/fdb-record-layer-go. Run `git diff HEAD` (or `git diff HEAD~N` for specific commits). [describe what changed and why]. Evaluate Cascades alignment. Under 300 words.", run_in_background: true)
+Use **`gpt-6-astra` with `xhigh` reasoning** for both virtual reviewers and the
+independent Codex review. Do not silently substitute another model. Run each
+review in its own read-only session; launch the two commands below in parallel
+through the tracked task runner (not detached shell jobs). Record the reviewed
+HEAD and the actual verdict; an incomplete review is not an ACK.
 
-Agent(description: "Torvalds code review", prompt: "You are Linus Torvalds. Review the diff in /home/birdy/projects/fdb-record-layer-go. Run `git diff HEAD`. [describe what changed]. Focus on dead code, logic holes, incomplete conversions, papered-over regressions. Under 300 words.", run_in_background: true)
+```sh
+codex -a never exec -m gpt-6-astra -c 'model_reasoning_effort="xhigh"' -s read-only \
+  'Apply the virtual Goetz Graefe review lens. Review the completed milestone diff in /home/birdy/projects/fdb-record-layer-go. [Specify exact base/HEAD and describe what changed and why.] Read the full diff and corresponding Java source. Evaluate Cascades alignment. Do not edit files. Return ACK or NAK with file:line evidence and the reviewed SHA, under 300 words.'
+
+codex -a never exec -m gpt-6-astra -c 'model_reasoning_effort="xhigh"' -s read-only \
+  'Apply the virtual Linus Torvalds review lens. Review the completed milestone diff in /home/birdy/projects/fdb-record-layer-go. [Specify exact base/HEAD and describe what changed.] Read the full diff. Focus on dead code, logic holes, incomplete conversions, and papered-over regressions. Do not edit files. Return ACK or NAK with file:line evidence and the reviewed SHA, under 300 words.'
 ```
 
 ### 4. Address findings
@@ -74,8 +82,13 @@ Do NOT ship with a NAK from either reviewer. Iterate until both approve.
 
 When reviewing the entire PR (not just the latest commit), use `gh pr diff <number>`:
 
-```
-Agent(prompt: "...Run `gh pr diff 200` to read the ENTIRE PR diff. READ THE ENTIRE DIFF...", run_in_background: true)
+Use the same `gpt-6-astra` / `xhigh` read-only sessions above, with the PR number
+and exact base/HEAD in each prompt:
+
+```text
+Run gh pr diff <number> to read the ENTIRE PR diff, not only the latest commit.
+If GitHub refuses an oversized diff, read git diff <PR-base>...<PR-head> in full
+instead. Report any incomplete scope rather than approving a sampled diff.
 ```
 
 These catch systemic issues (dead code accumulation, MaxTasks creep, test assertion downgrades) that per-commit reviews miss.
