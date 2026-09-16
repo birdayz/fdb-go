@@ -2420,6 +2420,52 @@ full run. The two tracking documents receive this evidence update afterwards;
 the normal commit hook must verify those updated bytes as well. Logs and hash
 manifests share the `versionstamp-review-` artifact prefix.
 
-Commit and exact-HEAD delta approvals are still pending. This bounded correction
-does not close the other PR findings or give human approval. See TODO.md's latest
-QSC-04/08 block for CI/remaining-finding status.
+This correction subsequently passed the normal hook and was committed/pushed as
+cc2e21d14, with three scoped same-session delta ACKs. Those approvals do not close
+the other PR findings or give human approval. The next block resumes conditional
+turnover; TODO.md's latest QSC-04/08 block tracks CI/remaining-finding status.
+
+### Conditional-turnover validation/retirement correction
+
+The preceding versionstamp correction is committed/pushed as cc2e21d14 and has
+three scoped, supplied-byte virtual implementation ACKs on that exact HEAD.
+Those ACKs explicitly excluded the already-disclosed beginTurnover gap.
+
+The accepted Drain protocol closure requires one readErrMu critical section for
+expected-owner validation, replacement-not-ready publication and old-owner
+retirement. Implementation split validation and retirement with an unlock/relock.
+A completed Cancel/timeout in that interval could therefore be followed by
+OnError returning nil and resetting away the terminal cause. This is a missed
+implementation obligation, not a new lifetime mechanism or design change.
+C++ 7.3.77 ReadYourWrites.actor.cpp:1499–1537 checks/races resetPromise in onError;
+after the retry wait resumes it reaches resetRyow without another actor yield.
+
+`TestFDBOnErrorCannotEraseTerminalCauseAtTurnover` pins both terminal sources
+through public OnError over a real FDB-backed transaction. A boundary hook pauses
+the conditional lifetime claim; Cancel or the deterministic existing timer callback
+finishes first. Expected OnError errors are literal 1025 and 1031; the old owner
+must remain terminal. Explicit Reset then discards its mutations and permits only
+new writes to commit. Both cases are RED before repair (three RUN/FAIL lines,
+including the parent, `turnover-terminal-red.log`).
+
+The repair transfers the already-held leaf lock and captured incarnation into
+turnoverLocked. Expected-owner validation and retirement cannot interleave with
+terminal publication. Unconditional user Reset acquires the same leaf lock before
+calling that helper. The pre-claim hook, cancellation delivery, timer stopping,
+resource cleanup, drain waits and reset fields all stay outside readErrMu. No new
+wire format, error mapping, retry policy or deferred gate is involved.
+
+Restored targeted execution passes 27 RUN lines with zero FAIL/SKIP. A compiled
+literal reversion to the split claim (retaining the same boundary hook) gives nil
+instead of both expected errors. Full source and SHA-checked restoration are in
+`turnover-terminal-revert-source.txt`; logs use `turnover-terminal-` under
+`/var/tmp/query-grind-cast/pr785-review`.
+
+Restored ten-run race passes 1,320 RUN lines, zero FAIL/SKIP (306s), including ten
+executions of the new regression. Entire client/facade race suites pass 2,003 RUN
+lines, zero FAIL/SKIP (258s). All three changed Go hashes match across both runs.
+`just test` passes 92/92 targets (43 executed, 49 cached, 968s); all five changed-
+file hashes match across execution. These evidence-only TODO/RFC updates follow
+the full run and remain subject to the normal commit hook. Logs/hash inventories
+use the `turnover-terminal-` prefix. Commit and exact-HEAD delta approval remain
+pending; other PR findings remain open.

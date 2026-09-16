@@ -726,3 +726,70 @@ func retireParkedRead(t *testing.T, ctx context.Context, tx *Transaction) <-chan
 	}
 	return done
 }
+
+func TestFDBOnErrorCannotEraseTerminalCauseAtTurnover(t *testing.T) {
+	t.Parallel()
+	for _, terminal := range []string{"cancel", "timeout"} {
+		t.Run(terminal, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			db := openTestDB(t, ctx)
+			tx := db.CreateTransaction()
+			defer tx.Cancel()
+			tx.SetTimeout(60000)
+			oldKey := []byte(t.Name() + "/discarded")
+			tx.Set(oldKey, []byte("old mutation"))
+			if _, err := tx.GetReadVersion(ctx); err != nil {
+				t.Fatal(err)
+			}
+			tx.readErrMu.Lock()
+			old, timerGen := tx.readLife, tx.readLife.timerGen
+			tx.readErrMu.Unlock()
+			pause := &pausedCommit{reached: make(chan struct{}), release: make(chan struct{})}
+			defer pause.unblock()
+			tx.beforeTurnoverRetirement = func() {
+				close(pause.reached)
+				<-pause.release
+			}
+			done := make(chan error, 1)
+			go func() { done <- tx.OnError(ctx, &wire.FDBError{Code: 1020}) }()
+			waitCommitLifetimeGate(t, ctx, pause.reached, "OnError immediately before retirement claim")
+			want := 1025
+			if terminal == "cancel" {
+				tx.Cancel()
+			} else {
+				tx.fireReadTimeout(old, timerGen)
+				want = 1031
+			}
+			waitCommitLifetimeGate(t, ctx, old.ctx.Done(), "terminal cause published before retirement claim")
+			pause.unblock()
+			err := receiveLifetimeTest(t, done, "OnError after terminal cause")
+			requireCommitLifetimeCode(t, err, want, "OnError must not erase completed terminal failure")
+			tx.readErrMu.Lock()
+			current := tx.readLife
+			tx.readErrMu.Unlock()
+			if current != old {
+				t.Fatal("failed conditional turnover installed a replacement")
+			}
+			_, err = tx.GetReadVersion(ctx)
+			requireCommitLifetimeCode(t, err, want, "old transaction remains terminal after OnError")
+
+			// Only an explicit Reset may revive this handle. It must discard
+			// old mutations rather than committing them during the next use.
+			tx.beforeTurnoverRetirement = nil
+			tx.Reset()
+			newKey := []byte(t.Name() + "/replacement")
+			tx.Set(newKey, []byte("new mutation"))
+			if err := tx.Commit(ctx); err != nil {
+				t.Fatalf("explicit Reset did not restore usability: %v", err)
+			}
+			if got := readCommitLifetimeValue(t, ctx, db, oldKey); got != nil {
+				t.Fatalf("old mutation survived explicit Reset: %q", got)
+			}
+			if got := readCommitLifetimeValue(t, ctx, db, newKey); string(got) != "new mutation" {
+				t.Fatalf("replacement mutation: %q", got)
+			}
+		})
+	}
+}

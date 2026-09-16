@@ -114,6 +114,9 @@ func (tx *Transaction) beginTurnover(expected *readIncarnation, released *execut
 		return nil, &wire.FDBError{Code: ErrClientInvalidOperation}
 	}
 	tx.resetMu.Lock()
+	if tx.beforeTurnoverRetirement != nil {
+		tx.beforeTurnoverRetirement()
+	}
 	tx.readErrMu.Lock()
 	old := tx.readIncarnationLocked()
 	if expected != nil && (old != expected || expected.cause != nil) {
@@ -125,19 +128,21 @@ func (tx *Transaction) beginTurnover(expected *readIncarnation, released *execut
 		}
 		return nil, cause
 	}
-	tx.readErrMu.Unlock()
-	return tx.turnoverLocked(), nil
+	// Expected-owner validation and retirement are one leaf-locked claim.
+	// Releasing it here lets a completed Cancel/timeout be erased by reset.
+	return tx.turnoverLocked(old), nil
 }
 
 func (tx *Transaction) startTurnover() func() {
 	tx.resetMu.Lock()
-	return tx.turnoverLocked()
+	tx.readErrMu.Lock()
+	return tx.turnoverLocked(tx.readIncarnationLocked())
 }
 
-// turnoverLocked owns resetMu through the returned publication closure.
-func (tx *Transaction) turnoverLocked() func() {
-	tx.readErrMu.Lock()
-	old := tx.readIncarnationLocked()
+// turnoverLocked enters with resetMu and readErrMu held. It releases readErrMu
+// before delivering cancellation or waiting, and owns resetMu through the
+// returned publication closure.
+func (tx *Transaction) turnoverLocked(old *readIncarnation) func() {
 	pending := tx.detachPendingLocked(old)
 	ready := make(chan struct{})
 	tx.readReady = ready

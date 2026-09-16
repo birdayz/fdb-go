@@ -11486,6 +11486,58 @@ not a verbose per-test execution count. See `versionstamp-review-race-10.log`,
 Only this TODO block and its linked RFC evidence paragraph change after that full
 run; the normal commit hook must check those updated documentation bytes too.
 
-Next: hooked repair commit and exact-HEAD delta reviews in the same three sessions.
-OnError's non-atomic beginTurnover and the remaining CTE/derived/UNNEST findings
-remain open. No merge/new hunt slice.
+This correction subsequently passed its normal hook and was committed/pushed as
+cc2e21d14, with three same-session scoped delta ACKs. The following block resumes
+OnError's non-atomic beginTurnover finding. CTE/derived/UNNEST findings remain
+open; no merge/new hunt slice.
+
+### QSC-04/08 RFC-256 — conditional turnover cannot erase terminal failure
+
+The preceding ownership correction is committed/pushed as
+`cc2e21d1406d765254c4250a4d738681df6f287b`. The same three virtual
+`gpt-6-astra`/`xhigh` sessions all give scoped IMPLEMENTATION ACK on that exact
+HEAD (`versionstamp-delta-{cpp,torvalds,codex}-verdict.md`, supplied bytes only).
+These are not full-PR/human approvals; the previously disclosed conditional-
+turnover race remained explicitly outside those ACKs.
+
+That next finding is now reproduced. `beginTurnover` validated its expected
+incarnation, unlocked readErrMu, then reacquired it in `turnoverLocked`. Cancel
+or the existing timer callback in that gap completed before retirement but was
+erased by the ensuing successful OnError reset. Two retained real-FDB cases
+observe nil instead of literal 1025/1031 (`turnover-terminal-red.log`, three
+RUN/FAIL lines including the parent). This violates the already-specified single
+leaf-lock validation/retirement claim in RFC-256's Drain protocol closure, not a
+new concurrency contract. C++ 7.3.77 RYWImpl::onError:1499–1537 races resetPromise
+against retry completion and does not yield between completion and resetRyow.
+
+The repair keeps expected-owner validation and retirement under one continuous
+readErrMu hold, with the captured old incarnation passed to the retirement helper.
+Public Reset acquires the same lock before that helper. Cancellation delivery,
+timer stopping, cleanup and lease drain remain outside the leaf lock; resetMu
+still serializes the whole turnover. The deterministic pre-retirement hook is
+outside the leaf lock on both sides of the correction. No new retry, wire-byte,
+error-code or deferred-error policy is introduced.
+
+The corrected real-FDB cases preserve the old terminal owner, reject later reads,
+and verify that explicit Reset alone restores usability while discarding the old
+mutations and committing only replacement writes. The first restored targeted
+run passes 27 RUN lines, zero FAIL/SKIP (`turnover-terminal-green.log`). A compiled
+literal reversion (old implementation plus the same boundary hook) fails both
+1025/1031 assertions; exact source and SHA-checked restoration are saved in
+`turnover-terminal-revert-source.txt` and `turnover-terminal-revert.log`.
+Artifacts: `/var/tmp/query-grind-cast/pr785-review`.
+
+Restored gates pass: ten race repetitions execute 1,320 RUN lines (new regression
+10 times), zero FAIL/SKIP, 306s; entire client/facade race suites execute 2,003 RUN
+lines, zero FAIL/SKIP, 258s. All three changed Go-file hashes remain unchanged.
+`just test` passes 92/92 targets (43 executed, 49 cached, 968s), all five changed-
+file hashes unchanged through execution. Artifacts: `turnover-terminal-race-10.log`,
+`turnover-terminal-race-full.log`, `turnover-terminal-full.log` and matching hash
+inventories/results. Only these TODO/RFC evidence paragraphs are updated afterward;
+the normal commit hook must verify those documentation updates.
+
+The preceding cc2e21d14 PR HEAD also has seven completed successful CI checks
+(`versionstamp-review-pr-state-final.json`); those do not cover this local repair
+or close the earlier timestamp fixture failure. Next: hooked commit and exact-HEAD
+client delta review. Timestamp fixture setup, CTE correlation/derived rebinding,
+UNNEST lowering evidence and final-PR approvals/CI remain open. No new hunt slice.

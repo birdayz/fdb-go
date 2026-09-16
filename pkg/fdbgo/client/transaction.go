@@ -318,6 +318,9 @@ type txOptions struct {
 	beforeReadFailureDelivery func(error)
 	// beforeVersionstampLookup parks the synchronous getter after entry checks.
 	beforeVersionstampLookup func()
+	// beforeTurnoverRetirement parks conditional turnover before its leaf-lock
+	// lifetime claim, with resetMu held but no execution lease or leaf lock.
+	beforeTurnoverRetirement func()
 
 	// backoffJitter: if non-nil, replaces rand.Float64() in nextBackoff's jitter.
 	// Test-only knob to make the backoff delay deterministic (production leaves it
