@@ -365,7 +365,7 @@ func TestPreparedMemberDuplicateDoesNotMutateForwardingOrCorrelationCaches(t *te
 	if leaf.forwardedTo != middle || middle.forwardedTo != root || root.forwardedTo != nil {
 		t.Fatal("prepared equality compressed or rewrote a child forwarding chain")
 	}
-	if root.correlatedToCache != nil || middle.correlatedToCache != nil || leaf.correlatedToCache != nil {
+	if root.correlatedToCache.Load() != nil || middle.correlatedToCache.Load() != nil || leaf.correlatedToCache.Load() != nil {
 		t.Fatal("prepared equality populated a shared Reference correlation cache")
 	}
 }

@@ -645,7 +645,9 @@ func (q Quantifier) RequireFlowedObjectValue() (values.QuantifiedObjectValue, er
 // Quantifier.getCorrelatedTo() delegates to getRangesOver().getCorrelatedTo().
 // (Reference.GetCorrelatedTo already excludes each member's own bound
 // quantifier aliases; q.alias is bound at the PARENT, not inside the
-// ranged-over reference, so it is not in this set.)
+// ranged-over reference, so it is not in this set.) The returned map is borrowed
+// and must not be modified. Concurrent reads require a stable reachable graph,
+// as documented by Reference.GetCorrelatedTo.
 func (q Quantifier) GetCorrelatedTo() map[values.CorrelationIdentifier]struct{} {
 	if ref := q.GetRangesOver(); ref != nil {
 		return ref.GetCorrelatedTo()
