@@ -1,8 +1,8 @@
 # RFC-256: Numeric CAST boundary conformance
 
-Status: Implemented; local release gates passed. The amendments and evidence
-ledger below supersede earlier in-progress entries. PR review and CI approval
-are still required before merge.
+Status: Implementation under review; the latest CI race gate is failing. The
+amendments and evidence ledger below supersede earlier local release gates.
+PR review and CI approval are still required before merge.
 
 ## Finding and reference
 
@@ -3428,16 +3428,18 @@ The golden changes were inspected in full before refreshing:
   changing any existing successful-row expectations. Generated feature/coverage
   ledgers are regenerated from the corpus, not hand-adjusted.
 
-Review remains a real owner-decision gate. The existing virtual Graefe session
+Review remained open at this snapshot. The existing virtual Graefe session
 subsequently ACKed all 18 supplied source/test/BUILD/golden deltas in
 `cte-helper-graefe-verdict.md`; four documentation files were not byte-reviewed.
 That scoped ACK predates the final three test-file repairs recorded below and is
 not final-HEAD or full-PR approval. The mandated existing Torvalds and Codex
 sessions both return `context window`
 exhaustion (`cte-bound-implementation-{torvalds,codex}-recovered.jsonl`). No
-replacement session, history reset, model substitution or approval bypass has
-been performed. Context-reset permission for those same session IDs is required
-before completing their implementation reviews. No merge approval is claimed.
+replacement session, history reset, model substitution or approval bypass had
+been performed at that snapshot. On 2026-09-17 the owner explicitly authorized
+whatever review-session management is needed, including fresh sessions. The
+missing implementation reviews remain gates; retaining those session IDs does
+not. No merge approval is claimed.
 
 ### Legacy migration — final assertion repairs and fresh local gates
 
@@ -3496,12 +3498,12 @@ requested`, not unavailable Docker. No skip was introduced or counted as a pass;
 no new hunt was started. Their non-execution remains explicit rather than being
 hidden by Bazel's green target summary.
 
-Review is still an owner-decision stop: the existing Torvalds and Codex sessions
-return `Codex ran out of room in the model's context window. Start a new thread
-or clear earlier history before retrying.` Their implementation approvals are
-absent; no reset/replacement has been authorized or performed. Graefe's scoped
-18-file ACK needs the final test/documentation delta and committed-HEAD
-reconfirmation. Fresh stress/performance, final-HEAD reviews and CI remain
+At this snapshot, the existing Torvalds and Codex sessions returned `Codex ran
+out of room in the model's context window. Start a new thread or clear earlier
+history before retrying.` Their implementation approvals were absent. The owner
+subsequently authorized fresh sessions on 2026-09-17; session reuse is not a gate.
+Graefe's scoped 18-file ACK still required the final test/documentation delta and
+committed-HEAD reconfirmation at this snapshot. Fresh stress/performance, final-HEAD reviews and CI remain
 separate gates; the historical release comparison is not evidence for this
 migration snapshot. No merge approval is claimed.
 
@@ -3527,3 +3529,414 @@ the end-to-end difference. No limits or executor/performance code changed.
 
 The companion TODO block retains the exact measurements and remaining review,
 no-skip and final-HEAD CI gates. These measurements do not authorize merge.
+
+### Legacy migration — witnessed CI correlation-read race (2026-09-17)
+
+**Status: Graefe and Torvalds design ACKs; repair implemented, verification and
+implementation reviews in progress.** This is
+triage of CI run `35198992145` at
+`3905677ad4480c7593bdf96fdd4b8bc2158cafa7`, not a new query hunt. The companion
+block at the end of `TODO.md` identifies the same open gate.
+`TestPartitionSelect_ProjectedExistentialKeepsOuterCrossProduct` shares a stable
+expression graph between parallel `enumerate_products`/`defer_products` cases.
+Their independent rule calls race between `Reference.getCorrelatedToGuarded`'s
+plain-map cache read and publication (`reference.go:1195/1240` at that SHA).
+The existing `Reference.flowedType` contract and concurrent-read test explicitly
+permit property reads over a shared stable reference; the fixture must not be
+serialized or copied merely to suppress this failure. Memo mutation remains
+single-threaded.
+
+Java tag `4.12.11.0` supplies the reference semantics: `Reference.java:474–479`
+unions member correlations into a fresh `ImmutableSet`;
+`AbstractRelationalExpressionWithChildren.java:45–75` memoizes the immutable
+set and excludes locally bound aliases; `Quantifier.java:102,711–712` delegates
+through its memoizing supplier. Go's reference-level cache is retained because
+its cross-group merging invalidation lives at that level (RFC-037 §3), not moved
+onto immutable-looking quantifiers whose ranged-over group can change.
+
+The chosen repair publishes the complete, thereafter read-only correlation map
+through `atomic.Pointer`, like the existing flowed-type memo. Concurrent cold
+readers may derive equivalent maps; none may observe a partially built map.
+Convert each existing invalidation to an atomic nil store without changing the
+invalidation sites or correlation algorithm. Resolve forwarding with the existing
+`canonicalReferenceReadOnly` helper: path compression would itself write shared
+topology during a getter. This does **not** authorize concurrent member insertion,
+merge, pruning, or arbitrary mutation of a returned correlation set. A coarse
+lock or `sync.Once` is wrong here: recursive graph traversal should not hold a
+reference lock, and caches must remain invalidatable after sequential memo edits.
+
+The regression belongs in the existing sandboxed expressions target and covers
+empty/nonempty sets, transitive bound-alias exclusion, a shared DAG child, and a
+forwarded receiver. It starts eight readers over up to 32 fresh graphs per
+shape (stopping on failure), checks literal expected sets on cold and warm reads,
+and asserts that the forwarding chain is not compressed. Retain the original parallel Cascades test
+unchanged and repeat it under `-race`; also run the full expressions/Cascades
+race targets, existing invalidation/merge tests, and `just test`. A race-free run
+cannot certify concurrent mutation or general planner thread safety.
+
+Local reproduction of the original CI failure: `cte-correlation-race-red.log`
+and its BEP under `/var/tmp/query-grind-cast/pr785-review`; the uncached Bazel
+race target compiles, runs the named test 20 times, and exits 3 with a data race.
+This supersedes any reading of the earlier seven-target local race green as a
+full Cascades race gate. The earlier scoped implementation approvals do not cover
+this repair.
+
+The new regression compiled and executed under Bazel with `-race`: five RUN,
+five FAIL, no missing or extra outcomes (`cte-correlation-regression-red.log`,
+`-counts.json`, `-bep.jsonl`). It catches both cache publication and path-compression
+races. Plain `just test` also exits 3: the expressions target fails the explicit
+`correlation reads compressed shared forwarding topology` assertion without
+requiring the race detector. Its printed population is 357 expressions
+RUN = 355 PASS + two FAIL (the parent and forwarded subtest). BEP reports 91
+passing targets and one failing target; 90 results were cached, only expressions
+and docscheck executed freshly. The source/test hashes remained unchanged during
+both runs. An earlier `just test --test_arg=...` invocation did not run tests
+because that recipe accepts no arguments; its diagnostic is retained separately
+in `cte-correlation-just-test-bad-args.log`.
+
+The existing Graefe session returned a scoped design ACK
+(`cte-correlation-design-graefe-verdict.md`), requiring atomic publication of
+completed non-nil maps, unchanged invalidation sites, read-only forwarding,
+explicit borrowed/read-only results, and no concurrent memo mutation. The
+existing Torvalds session, using `gpt-6-astra/xhigh` even with its advertised
+872000-token context setting, still exits 1 before review with `Codex ran out of
+room in the model's context window` (`cte-correlation-design-torvalds.jsonl`).
+The owner has explicitly authorized fresh review sessions and any necessary
+session management. Review prompts must be short: describe scope, repository,
+SHAs, evidence paths, and the specific ask; reviewers inspect source and diffs
+through their own tools rather than receiving pasted code packets. Old sessions
+and findings remain available as evidence, not mandatory conversation IDs. The
+missing approvals remain mandatory; session replacement needs no further owner
+decision. A fresh, tool-enabled Torvalds review inspected the code and Java
+source and returned DESIGN ACK (`cte-correlation-design-torvalds-fresh-verdict.md`).
+The approved repair is now implemented: atomic complete-map publication, atomic
+stores at the existing invalidation sites, read-only getter forwarding, and
+borrowed/read-only contracts on both public getters. The original Cascades
+fixture is unchanged.
+
+`TestReferenceCorrelationCacheSequentialInvalidation` adds seven operation arms:
+exploratory/final insertion, both prepared-admission lanes, absorb with growth,
+absorb of a duplicate, and invalidation through a forwarded receiver. It warms
+the cache before each operation, checks invalidation/recomputation and literal
+expected sets, and requires previously returned maps to remain unchanged. Its
+eight Go outcomes passed on the original implementation before converting the
+cache representation. The first repaired-code race run then passed 440 outcomes:
+20 repetitions of the focused correlation-read, sequential-invalidation,
+prepared-equality, original projected-existential and merge-invariant tests
+across the expressions and Cascades targets, with no missing/extra outcomes
+(`cte-correlation-focused-green.log`, `-counts.json`, `-bep.jsonl`). Full targets,
+mutation verification and final implementation reviews remain separate gates.
+
+Mutation verification covers seven deliberate regressions: plain-map publication,
+getter path compression, and each of the five invalidation sites. All seven edits
+were observed in source, compiled, and failed the intended test/assertion; exact
+source/test bytes were restored afterward (`cte-correlation-mutants.json` and
+per-mutant logs/BEP/diffs). The first explicit-invalidation mutation failed nogo
+SA4006 before testing because deleting the store left its canonicalized receiver
+unused. That attempt is not counted as a killed mutation and is preserved in
+`cte-correlation-mutants-first-attempt/`. Its corrected mutant stores the existing
+cache rather than nil; it compiles and fails the forwarded-invalidation assertion.
+No test expectations, race checks, parallelism, or limits were weakened.
+
+
+### Legacy migration — full review findings and captured timeout repair (2026-09-17)
+
+**Status: review repairs in progress; no full-PR implementation ACK or merge
+approval.** Companion: TODO.md **RFC-256 PR785 full-review repair queue**.
+The correlation repair's six hashes in `cte-correlation-final-freeze.json`
+remained unchanged through the uncached full suite: 92/92 targets passed,
+39,950 Go RUN = 39,945 PASS + five non-Docker opt-in SKIP, zero missing/extra
+outcomes. This is not a no-skip pass. Full expressions/Cascades race targets
+executed 4,026 RUN/PASS without skips; the focused 20-repeat run executed
+440 RUN/PASS. Existing `FuzzSemanticEquals_Properties` ran for 15s under race:
+664,376 executions and exit 0, explicitly without coverage guidance. The seven
+compiled/killed semantic/race mutants and first failed-build attempt remain
+recorded above. All artifacts are in `/var/tmp/query-grind-cast/pr785-review`.
+
+Fresh gpt-6-astra/xhigh implementation reviews returned:
+- Torvalds: scoped correlation-repair ACK; full PR incomplete. Retained P2:
+  mapped special-key reads bypass the captured deferred error (2018 loses to
+  2000), `mappedrange.go:317` at committed HEAD `3905677ad4480c7593bdf96fdd4b8bc2158cafa7`.
+- C++ maintainer: NAK, full PR incomplete. Retained P1: synchronous timeout
+  publication can fail the replacement incarnation while Reset drains the
+  admitted old operation, `transaction.go:2834` at that HEAD.
+- Independent Codex: all 367 committed changed files / 59,984 diff lines plus
+  the six-file repair reviewed; NAK on lost production-lowering assertions in
+  `unnest_seed_test.go:187,249` and `explode_collection_ordinal_test.go:284`.
+  Fixture-supplied collection inspection must again exercise physical rebinding
+  with a nonzero owner offset and assert correlation, full nested ordinal path,
+  suffix spelling and frontier pin; retain a compiled mutant proving detection.
+Graefe's full review is still running at this entry. These are repairs to the
+retained migration review, not authorization for a new hunt or performance work.
+The SQL/client CI-equivalent race gate, final committed-HEAD reviews, @claude,
+CI, five opt-in omissions and measured aggregate slowdowns remain unwaived.
+
+#### Captured synchronous timeout publication — design under review
+
+The P1 is a lifetime-ownership gap in the existing client migration. A read has
+an execution lease and passes its initial entry check. Reset retires that owner,
+sets `readLife=nil`, and waits for the lease. `checkTimeout()` still reads the
+old deadline, but its `failReadIncarnation()` looks up/creates the current owner;
+this poisons the unpublished successor with 1031. Its `checkCancelled()` return
+also samples the successor rather than the operation that detected expiry.
+
+C++ tag **7.3.77**, not the local checkout's 7.3.75, is authoritative. Pinned
+raw sources are retained in `pr785-review/fdb-7.3.77/`, fetched from
+`https://raw.githubusercontent.com/apple/foundationdb/7.3.77/fdbclient/`.
+`ReadYourWrites.actor.cpp:1567–1578` captures `resetPromise` by value in the
+timebomb; `:2699–2727` replaces it and completes the old promise, preserving its
+first terminal cause. Deadline publication and returned cause must have the
+same captured owner in Go too. No wire encoding or conflict-range change.
+
+Change `checkTimeout` to accept the operation context and acquire/borrow its
+existing `opContext` lease. Inspect the captured incarnation's cause, publish an
+expired deadline only with `failCapturedIncarnation`, and return that same
+incarnation's first cause. Never select/create another incarnation for a
+captured read; remove the now-unused current-owner failure helper. Convert its
+six production callers (GRV, commit entry, OnError, two metrics paths, watch
+setup) to pass their captured context. Existing direct timeout unit/port tests
+pass a fresh caller context and retain their assertions. Reset still waits for
+lease drain; cancellation delivery remains outside the leaf lock.
+
+A per-transaction, lock-free test seam immediately before synchronous timeout
+publication permits a deterministic schedule: stop the real timer, expire the
+atomic deadline, admit a public Get, park publication, start Reset and observe
+old-owner retirement while the lease is held, then release publication. The
+old Get must return literal 1025 (Reset won), not 1031; the reset successor must
+perform a real FDB read/commit successfully. A no-turnover control must return
+1031. Cover each synchronous timeout entry path without weakening existing
+error ordering, and retain a compiled revert/mutation showing the old
+current-owner lookup poisons the successor. Run repeated race regression,
+full client race and normal suites. Implementation starts only after the C++
+maintainer and Torvalds design ACKs.
+
+
+Captured-timeout design review: both fresh gpt-6-astra/xhigh C++ maintainer and
+Torvalds sessions ACKed the design (`cte-timeout-design-{cpp,torvalds}-verdict.md`).
+They additionally require stale/unadmitted context handling, borrowed lease
+preservation, prepared-commit coverage, and timeout-first preservation. The
+instrumented, otherwise unfixed implementation compiled and ran against real
+FDB under race: 22 RUN = seven PASS + 15 FAIL, no missing/extra outcomes. All
+seven `reset-first` route leaves return 1031 instead of 1025 and poison the
+successor's real read; all seven timeout-first controls pass. The aggregate
+fail count also includes their parents. Evidence: `cte-timeout-regression-red.*`
+and the unchanged two-file red freeze. The captured-context implementation and
+additional prepared-commit/stale-context pins are now present; repeated race,
+compiled mutation and full-target verification are running/pending.
+
+The completed Graefe full-PR review read all 367 committed files and the frozen
+correlation repair, excluding later client/docs edits. It found no additional
+correlation-repair defect, but returned a retained migration **P1** at
+`logical_predicate.go:9003,9529`: EXISTS handoff copies directly referenced CTEs
+without their defining environment. A chained `b AS (SELECT id FROM a)` inside
+EXISTS can lose CTE `a`, yielding 42F01 or resolving to a same-named physical
+table. This source-derived finding still requires a witnessed regression.
+Required pins: chained EXISTS/NOT EXISTS, catalog-name collision and lexical
+shadowing; Java preserves bound producer identity via
+`LogicalOperator.withNewSharedReferenceAndAlias`. This finding follows the
+active client repair in the same existing-review queue, not a new hunt.
+
+
+Captured-timeout implementation verification: all eight changed client-file
+hashes in `cte-timeout-fix-freeze.json` survived the focused race run (1,720
+RUN/PASS over 20 repetitions) and full uncached client race target (1,790
+RUN/PASS, no skip/failure/missing/extra outcomes, 213.819s). The expanded real-FDB
+regression has eight routes, including prepared commit; the original red
+population had seven routes. Reintroducing current-owner selection at timeout
+publication compiled and killed the expanded regression: 25 RUN, 17 FAIL
+(including eight reset-first leaves), eight timeout-first PASS; every failing
+leaf witnesses successor poisoning. The exact fixed bytes were restored and
+the full client race above ran after restoration. Artifact:
+`cte-timeout-mutant-current-owner.{json,log,diff,bep.jsonl}`.
+
+C++ maintainer and Torvalds each inspected the entire eight-file delta and
+verified its hashes before/after review. Both returned **scoped implementation
+ACK** (`cte-timeout-impl-{cpp,torvalds}-verdict.md`), excluding the still-open
+mapped-read and SQL findings and all final-HEAD/full-PR/CI/performance gates.
+Fresh normal-suite verification and independent review remain in progress.
+
+
+Captured-timeout local normal gate completed on the unchanged 14-file working
+snapshot (`cte-timeout-just-test-freeze.json`): 92/92 uncached targets passed,
+39,979 Go RUN = 39,974 PASS + 5 existing opt-in SKIP, zero
+missing/extra outcomes, 969.344s. Independent Codex also ACKed the eight-file
+client repair after verifying its hashes and recounting red/green/mutation
+logs (`cte-timeout-impl-codex-verdict.md`). No skips earn pass credit.
+
+Artifact correction: this normal run reused the correlation run's BEP filename
+because the old local wrapper hard-coded it. The earlier correlation BEP was
+overwritten and is **not retained**. Its full stdout, exit, reconciled counts
+and unchanged-file verdict remain. The new complete BEP is correctly named
+`cte-timeout-just-test.bep.jsonl`; the misleading old filename was removed.
+`cte-correlation-just-test-bep-status.json` records this loss. Subsequent
+uncached wrappers require a unique BEP path and refuse existing destinations.
+Do not use the later event stream as evidence about the earlier tree.
+
+### Legacy migration — mapped-read deferred-entry repair (2026-09-17)
+
+**Status: retained Torvalds P2; all three scoped implementation ACKs and local
+verification recorded below; publication and no-skip gates remain open.** Companion: TODO.md
+**RFC-256 PR785 mapped-read deferred-entry repair**. This is not a new hunt.
+The existing `GetMappedRange` captures `opContext` but rejects special keys
+before checking `op.entryErr`, so deferred invalid-atomic 2018 incorrectly loses
+to special-key 2000. Pinned C++ 7.3.77 `ThreadSafeTransaction.cpp:497–511` checks
+`deferredError` before calling RYW; `ReadYourWrites.actor.cpp:1785–1802` then
+checks special keys before `resetPromise`. The exact precedence is **captured
+deferred error → special-key rejection → lifetime/remaining guards**.
+
+Add the captured operation's `entryErr` check immediately after `opContext` in
+`GetMappedRange`. Do not move the combined `readEntryError` before special keys,
+and do not load the live deferred slot: either change would violate existing
+special-key/lifetime ordering or the admitted operation's ownership. No wire,
+conflict-range, or mapper-processing change. The existing deferred-entry test
+matrix gains regular and special-key mapped calls; focused pins retain
+special-key-over-cancel/timeout, nested clean-entry preservation, and stale
+entry versus replacement poison. Extend the existing tag-gated raw-libfdb_c
+mapped differential with literal invalid atomic type 1, reverse/forward and
+ordinary/special-key controls; its reference handle needs only a thin raw
+`fdb_transaction_atomic_op` wrapper. That differential is intentionally run by
+`go test -tags libfdbc`, as its existing per-PR CI lane and BUILD file specify,
+not silently credited to Bazel's stub target. Retain red→green and compiled
+revert proof, race repetitions and full client/normal gates.
+
+
+#### Mapped-read fixture correction and first green evidence
+
+The first focused run after adding the captured-entry guard was **not green**:
+1,780 RUN = 1,720 PASS + 60 FAIL across 20 repetitions. Both replacement arms
+failed their setup (and their parent failed): oversized `Set` buffers its
+mutation and does not immediately populate `deferredErr`, so the intended
+replacement-2103 precondition was absent. This did not exercise replacement
+isolation and is not a regression kill. The original raw-C differential did
+witness the actual bug independently: both poisoned/special-key directions
+returned Go 2000 versus C++ 2018; the other six matrix arms passed.
+
+The corrected replacement setup calls invalid atomic type **1** on an ordinary
+system key, producing literal **2004** before op-code validation
+(`ReadYourWrites.actor.cpp:2226–2235`). The fixture asserts this precondition.
+2004 is distinct from both the old 2018 and special-key 2000, preserving the
+replacement-isolation detector rather than weakening its expected outcome.
+Production `Set` validation was not changed by this mapped-entry repair.
+
+After correction, the focused uncached client race run passed **1,780/1,780**
+outcomes across 20 repetitions, with no skips or unmatched outcomes. The raw-C
+2×2×2 differential passed **27/27** outcomes (eight arms plus their parent,
+three repetitions). Its oracle was the downloaded/checksummed official
+**libfdb_c 7.3.77**, API 730 selected, client version
+`7.3.77,3ea44ce1d9003ad095e408039e1f755c319c4dfb,fdb00b073000000`;
+the installed 7.3.69 library was not used. Headers, shared-library search path
+and server version were pinned together. Artifacts under the existing review
+root: `cte-mapped-focused-{green,fixed}.*` (the former is the failed first
+attempt), `cte-mapped-differential-{red,green}.*`,
+`cte-mapped-reference-version.json`, and `cte-mapped-fix-freeze.json`.
+Compiled mutants, full client race, normal suite and implementation reviews
+remain separate obligations; these results are not merge approval.
+
+#### Repair publication sequencing — one correctness fix per PR
+
+The earlier separate-PR sequencing below is superseded by the owner's explicit
+instruction to commit and push the existing PR785 branch. Keep logical commits
+and normal hooks; that publication instruction does not authorize merge.
+The correlation repair was recorded as local commit
+`e3a03821bcb61cb551e2741e8c0f6bc0c0bc9690` (parent
+`3905677ad4480c7593bdf96fdd4b8bc2158cafa7`), containing only its four Go files.
+Its commit ran the ordinary generate/lint/build/test hook successfully. Main
+worktree bytes were preserved when adopting it; the exact adoption inventory
+is `cte-correlation-commit-adoption.json` under the review root.
+
+Local branch `fix/pr785-correlation-cache-race` was prepared for a separate
+repair PR, but was never pushed and no second PR was opened. The owner clarified
+that these repairs belong on existing PR785, whose branch remains
+`rfc256-cast-array-binding`. Publish the verified correlation, timeout and mapped
+repairs there, in logical commits, rather than using the unused local branch.
+PR785 targets master, so its normal pull-request workflows apply; the earlier
+manual-dispatch plan for a hypothetical non-master repair PR is not needed.
+Final-HEAD reviews, the exact CI race scopes and published merge gates still
+apply. `cte-repair-sequencing.json` records the superseded split-PR plan.
+
+The five existing non-Docker opt-in omissions and the prohibition on starting
+new hunts remain a release-policy conflict, not a waived gate. Neither these
+local greens nor the separate-branch preparation authorizes a merge.
+
+
+#### Mapped-read compiled mutants and complete client race
+
+The corrected 55-outcome deferred/mapped race population killed three compiled
+mutations: missing captured-entry guard (42 PASS / 13 FAIL), combined
+lifetime/deferred guard moved before special keys (50 PASS / five FAIL), and
+live deferred-slot lookup (49 PASS / six FAIL). Each edit was observed in source,
+each target built and ran, and each expected diagnostic appeared. All four
+mapped-repair source hashes were restored and checked before the next run.
+`cte-mapped-mutants.json`, per-mutant logs/BEP/counts, and
+`cte-mapped-mutants-freeze-verdict.json` retain the evidence.
+
+The complete uncached client race target then passed **1,805 RUN/PASS**, no
+skips or missing/extra outcomes, in 210.277s. The four mapped-repair hashes
+matched again after the run (`cte-mapped-full-client-race.*` and its freeze
+verdict). This population also contains the uncommitted timeout repair; it is
+integrated local evidence, not a claim that either repair has independently
+passed published-PR gates. C++/Torvalds/independent implementation reviews and
+fresh normal-suite verification remain in progress.
+
+
+#### Mapped-read implementation ACKs, normal gate and publication STOP
+
+Fresh read-only `gpt-6-astra/xhigh` C++ maintainer, Torvalds and independent
+Codex sessions each returned **scoped implementation ACK** on the complete
+four-file mapped delta at HEAD `e3a03821bcb61cb551e2741e8c0f6bc0c0bc9690`.
+Each independently checked the frozen source hashes, C++ ordering, corrected
+fixture, raw-C differential and compiled mutations. Verdicts are retained as
+`cte-mapped-impl-{cpp,torvalds,codex}-verdict.md` under the review root. These
+ACKs exclude the other repairs and do not approve a whole PR or merge.
+
+Fresh `just test` completed in **986.546s**: **92/92 uncached Bazel targets**,
+**39,994 RUN = 39,989 PASS + five SKIP**, no missing/extra outcomes. The thirteen
+embedded subprocess diagnostic outcomes are excluded from that Go population.
+The BEP's 92 unique summaries and 92 fresh passing results match the log's 92
+targets. `cte-mapped-just-test.{log,exit,bep.jsonl}` and the count/target/freeze
+verdicts record the run. All 18 frozen paths matched after this suite and after
+the subsequent tagged lane (`cte-mapped-all-gates-freeze-verdict.json`). This
+closing documentation amendment follows that freeze; it does not rewrite the
+frozen run as having tested later documentation bytes.
+
+The complete per-PR libfdbc command then ran against the pinned official 7.3.77
+library/headers/server:
+`go test -tags libfdbc -count=1 -timeout=30m -v ./pkg/fdbgo/libfdbc/... ./pkg/internal/fdbclient/...`.
+It passed **85/85** outcomes, with no skips or unmatched outcomes, including
+both the existing mapped differential and the new deferred-entry matrix.
+Artifacts: `cte-mapped-full-libfdbc.{log,exit}` and `-counts.json`.
+
+**Earlier publication STOP, superseded for commit/push only:** the owner has
+explicitly requested publication on existing PR785. Merge remains unauthorized.
+The normal suite's five omissions are
+`TestFDB_{PlanDiversityHunt,NestedShapeHunt,PredicateEquivalenceHunt,ExcludedShapeHunt,FullShapeHunt}`,
+not unavailable Docker. They call `requireSweepOptIn` in
+`pkg/relational/conformance/factory/excluded_shape_hunt_fdb_test.go:37–43`,
+requiring `HUNT_SEEDS`, `NEST_SEEDS`, `EQUIV_SEEDS`, `EXCL_SEEDS` and `FULL_SEEDS`
+respectively. Starting those sweeps conflicts with the owner's no-new-hunt
+scope; counting the skips as passes conflicts with the no-skip release rule.
+Owner authorization to execute these existing opt-in sweeps for verification
+is needed. No skip, expectation, golden, timeout or workload limit was changed.
+The publication instruction does not waive the omissions or other retained
+findings, and does not authorize starting new hunts.
+
+The unused local correlation branch remains unpublished; the verified repairs
+are to be committed and pushed through `rfc256-cast-array-binding` to PR785.
+The missing production-lowering assertions and source-derived transitive-CTE
+finding in the full-review queue have not been repaired by this work. There is
+no final full-PR ACK, clean no-skip result or performance approval.
+
+
+#### PR785 publication preparation — owner clarification
+
+The owner explicitly requested **commit and push to existing PR785**, not a
+new repair PR. The branch is `rfc256-cast-array-binding`; no second PR was
+opened. Correlation commit `e3a03821bcb61cb551e2741e8c0f6bc0c0bc9690` is followed
+by timeout commit `79f411aae438c481e6843d5269c8ba96e9ef330e` and mapped-read commit
+`41d40f3127334715d7930cf1157fee35ec1aeb65`. The latter two were made in the clean comparison
+worktree with ordinary generate/lint/build/test hooks and exact reviewed source
+hashes; 92 target results passed on each commit (43 freshly executed for timeout,
+39 for mapped, with the remaining target results cached). These hook results
+are separate from the uncached verification ledger above. Publication does not
+authorize merge or waive the remaining full-PR findings, final-HEAD review/CI,
+opt-in omissions or measured performance concerns. No new hunt was started.

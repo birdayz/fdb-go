@@ -12007,9 +12007,10 @@ four-query `unionjoinleg` capture changes one PLAN line and no non-PLAN bytes.
 Fresh normal/race/determinism results are recorded in the following gate block;
 stress/performance and exact-HEAD review/CI are not established by this entry.
 
-Owner decision still required: the mandated existing Torvalds and Codex sessions
-are context-exhausted; permission to reset history within those same session IDs
-has not been granted. No replacement sessions/models or review bypass were used.
+At this snapshot, the existing Torvalds and Codex sessions were context-exhausted;
+no replacement sessions/models or review bypass had been used. The owner has since
+explicitly authorized fresh sessions and necessary session management (2026-09-17).
+Session reuse is not a gate; missing reviews still are.
 The subsequent scoped Graefe ACK covers the 18 supplied repair deltas, excluding
 four documentation files and the final three test-file repairs below. It is not
 final-HEAD or full-PR approval. No merge is asserted by this status block.
@@ -12038,11 +12039,11 @@ not Docker unavailability; they do not earn pass credit or a clean no-skip gate.
 No new hunt has been started. Fresh stress/performance and final-HEAD CI remain
 separate from these results.
 
-Owner decision required before implementation review can finish: allow recovery
-of the mandated context-exhausted Torvalds/Codex sessions. No history reset,
-replacement reviewer or model substitution was performed. Graefe's 18-file
-scoped ACK precedes the three final test-file repairs; exact-HEAD confirmation
-remains required. This block does not authorize merge or close any QSC item.
+The owner subsequently authorized fresh/reset/resumed review sessions on
+2026-09-17; recovery of context-exhausted sessions no longer requires a decision.
+Fresh `gpt-6-astra/xhigh` reviews are recorded in the later PR785 review block.
+Graefe's earlier 18-file scoped ACK precedes the three final test-file repairs;
+exact-HEAD confirmation remains required. This block does not authorize merge or close any QSC item.
 
 ### Stress test 1M baseline — RFC-256 bound-query migration (2026-09-17)
 
@@ -12115,3 +12116,196 @@ complete logs, commands, SHAs, load, BEP, row samples and table), and
 This result accompanies the fresh normal/race/determinism block above; it does
 not waive the five opt-in hunt omissions, absent Torvalds/Codex implementation
 reviews, final exact-HEAD review/CI or merge gate. No QSC item is closed.
+
+### RFC-256 PR785 CI correlation-read race — 2026-09-17
+
+- [ ] Repair the witnessed race from CI `35198992145` at
+  `3905677ad4480c7593bdf96fdd4b8bc2158cafa7`. The full diagnosis, Java citations,
+  selected atomic-publication/read-only-forwarding design, and regression scope
+  are in `rfcs/256-numeric-cast-boundary-conformance.md`, **Legacy migration —
+  witnessed CI correlation-read race**. Both design ACKs are obtained and the
+  atomic-publication/read-only-forwarding repair is implemented; final
+  verification and implementation reviews remain open. `cte-correlation-race-red.log` in
+  `/var/tmp/query-grind-cast/pr785-review` reproduces the original named Cascades
+  test under `-race` (20 repetitions, uncached, exit 3). Preserve its parallel
+  cases; do not dismiss this as a flake. The earlier seven-target local race
+  population did not contain the whole Cascades target and does not override
+  this failure. The new expressions regression compiled and failed under Bazel
+  `-race` (five RUN/FAIL), and plain `just test` fails its forwarding-chain
+  assertion (91 passing targets, one failing; 90 cached). It witnesses both
+  unsynchronized map publication and getter path-compression writes. Graefe
+  returned a scoped design ACK; the existing Torvalds session still errors with
+  context exhaustion, including the advertised 872000-token setting. The owner
+  has explicitly authorized fresh review sessions and all necessary session
+  management. Use concise, tool-enabled prompts with source/evidence paths and a
+  specific ask, not pasted source/diff packets. Fresh Torvalds design review
+  ACKed after inspecting the code and Java source. Seven sequential-invalidation
+  operation arms passed before the representation change; the repaired focused
+  race run passed 440 outcomes across 20 repetitions. Full targets, mutation
+  verification and final implementation reviews remain open. The original
+  Cascades fixture is unchanged. This entry predates local commit `e3a03821b`;
+  current publication sequencing is recorded in the final repair block below.
+
+
+### RFC-256 PR785 full-review repair queue — 2026-09-17
+
+Companion: RFC-256 **Legacy migration — full review findings and captured timeout
+repair**. This is the existing migration's review repair queue, not QSC/new-hunt
+or executor/performance work. At this review snapshot, HEAD was
+`3905677ad4480c7593bdf96fdd4b8bc2158cafa7` and correlation was uncommitted;
+its later local commit and publication sequencing are recorded below.
+
+- Correlation verification completed on its six-file freeze: uncached `just test`
+  92/92 targets, 39,945 PASS + five non-Docker opt-in SKIP; full expressions/
+  Cascades race 4,026 PASS; focused repeated race 440 PASS; seven compiled/killed
+  mutants. Existing semantic-equality fuzz: 664,376 executions, 15s, under race
+  **without coverage guidance**. These do not certify a no-skip pass.
+- [ ] C++ P1 synchronous timeout uses current rather than captured incarnation
+  during Reset. Active DFS repair; C++ 7.3.77 citations and chosen design are in
+  the companion RFC section. Design reviews required before implementation.
+- [ ] Torvalds P2 mapped special-key reads must preserve captured deferred-error
+  precedence. Same migration's entry-gate gap; no new hunt.
+- [ ] Independent Codex P2 restore production lowering and nonzero owner offset
+  in the three nested UNNEST structural regression pins, including frontier,
+  complete ordinal path, correlation and suffix spelling; compiled mutant.
+
+Torvalds ACKs only the six-file correlation repair and did not finish the full
+PR. C++ NAKs the client and did not finish the full PR. Independent Codex read
+all 367 committed changed files / 59,984 diff lines plus the repair and NAKs the
+UNNEST test regression. Graefe review is still running. Verdicts and complete
+verification logs: `/var/tmp/query-grind-cast/pr785-review/cte-correlation-*`.
+The SQL/client CI-equivalent race check, final exact-HEAD full-PR approvals,
+@claude and CI remain mandatory. The five opt-in omissions and previously
+measured aggregate slowdowns are not waived. No merge or completed QSC item.
+
+
+### RFC-256 PR785 review repair status — captured timeout design ACKs
+
+Companion: RFC-256 **Legacy migration — full review findings and captured timeout
+repair**, including the appended design/reproduction results. Both client design
+reviewers ACKed. Real-FDB race RED is witnessed at all seven public-operation
+routes: 22 RUN = seven PASS + 15 FAIL, where the failures include parents and
+all seven reset-first leaves (old and replacement both wrongly receive 1031).
+Timeout-first controls pass. Implementation plus prepared-commit/stale-context
+pins is under verification; no correctness repair has been pushed or merged.
+
+- [ ] Additional retained Graefe P1: transitive CTE producer/environment loss
+  across EXISTS translation (`logical_predicate.go:9003,9529` at `3905677a`).
+  Source-derived, not yet executed. Required chained EXISTS/NOT EXISTS,
+  catalog-name collision and lexical-shadowing regressions; preserve the bound
+  defining environment rather than re-resolving diagnostic names. The completed
+  review read all 367 committed files plus the frozen correlation repair and
+  found no further defect in that repair; later client/docs edits were excluded.
+
+This extends the preceding full-review queue with the completed review result.
+The client timeout was the active DFS path at this snapshot; subsequent
+verification and the mapped-entry repair are recorded below. Review artifacts:
+`/var/tmp/query-grind-cast/pr785-review/cte-{timeout-design-*,timeout-regression-red.*,correlation-full-graefe-verdict.md}`.
+No full-PR ACK, no-skip pass, performance waiver or merge is asserted.
+
+
+### RFC-256 PR785 captured-timeout repair — implementation verification
+
+Companion: RFC-256 **Legacy migration — full review findings and captured timeout
+repair**, appended implementation verification. C++ maintainer and Torvalds
+both ACK the frozen eight-file client implementation. Repeated focused race:
+1,720 PASS over 20 repeats. Full uncached client race: 1,790 RUN/PASS, no skips,
+failure or missing/extra outcomes. The compiled current-owner mutation kills
+all eight reset-first leaves, including prepared commit; timeout-first controls
+remain green. Exact source bytes restored and full client race ran afterward.
+Normal full-suite and independent review were still pending at this snapshot;
+the following block records their completion. The timeout delta is uncommitted;
+no repair has been pushed or merged.
+The mapped-error, nested-UNNEST test and transitive-CTE review findings remain
+open in the preceding queue. No new hunt or performance fix is authorized by
+these scoped results. Evidence: `pr785-review/cte-timeout-*` under the artifact
+root named in the preceding block.
+
+
+### RFC-256 PR785 mapped-read deferred-entry repair — 2026-09-17
+
+Companion: RFC-256 **Legacy migration — mapped-read deferred-entry repair**.
+The prior timeout repair now has all three scoped implementation ACKs and an
+unchanged-file normal gate: 92 uncached targets, 39,974 PASS + five opt-in
+SKIP. Its separate full client race passed 1,790 outcomes. A clean comparison
+worktree is preserving separate logical commits and normal hooks while the main
+worktree retains all bytes; no repair has been pushed or merged.
+
+The active retained P2 is mapped special-key precedence: captured deferred 2018
+must precede special-key 2000, which still precedes lifetime failures. Use the
+existing captured entry, never the mutable live slot or the combined lifetime
+check before special keys. Chosen design, C++ citations and exact regression/
+differential contracts are in the companion RFC section. No new hunt, executor
+change or performance repair. Transitive-CTE and nested-UNNEST test findings
+remain in the preceding review queue; final-HEAD/full-PR gates remain unwaived.
+
+
+### RFC-256 PR785 mapped fixture and repair sequencing — 2026-09-17
+
+Companion: RFC-256 **Mapped-read fixture correction and first green evidence**
+and **Repair publication sequencing — one correctness fix per PR**.
+The first mapped-focused attempt failed its replacement-poison precondition;
+that failed run earns no green/revert-proof credit. The replacement fixture now
+uses invalid atomic type 1 on a system key, asserting distinct deferred 2004.
+Focused client race: 1,780 RUN/PASS across 20 repeats. Official pinned libfdb_c
+7.3.77 differential: 27 RUN/PASS across three repetitions of eight arms plus
+the parent. No skips or missing/extra outcomes in either corrected run.
+Implementation review and full gates remain separate; no new hunt was started.
+
+The earlier correlation repair was committed locally through normal hooks as
+`e3a03821bcb61cb551e2741e8c0f6bc0c0bc9690`; a dedicated local branch
+`fix/pr785-correlation-cache-race` now isolates its four-file delta against
+`3905677ad4480c7593bdf96fdd4b8bc2158cafa7`. The initial separate-PR plan was
+never published; the owner subsequently directed commit and push to existing
+PR785 on `rfc256-cast-array-binding`. That supersedes split-PR sequencing, not
+logical commits or the final-HEAD/full-PR merge gates. The companion RFC records
+the clarification and the still-unresolved no-skip/no-new-hunt policy conflict.
+
+
+### RFC-256 PR785 mapped-read complete client race — 2026-09-17
+
+Companion: RFC-256 **Mapped-read compiled mutants and complete client race**.
+The 55-outcome focused race population killed all three compiled semantic
+mutants (missing entry guard, premature lifetime check, live deferred lookup);
+exact source hashes were restored. Full uncached client race then passed
+1,805 RUN/PASS, no skips or unmatched outcomes, with matching post-run hashes.
+This verified the local combined tree only. At this snapshot, fresh normal
+verification and three scoped implementation reviews were still in progress;
+the following block records their results. The owner's subsequent instruction
+authorizes commit/push to existing PR785, not merge.
+
+
+### RFC-256 PR785 mapped-read verification and publication STOP — 2026-09-17
+
+Companion: RFC-256 **Mapped-read implementation ACKs, normal gate and
+publication STOP**. All three fresh `gpt-6-astra/xhigh` reviewers ACK the frozen
+four-file mapped repair only. Full client race passed 1,805/1,805; compiled
+mutants and the raw-C matrix are recorded in the preceding blocks. Fresh
+normal suite: 92/92 uncached targets, 39,994 RUN = 39,989 PASS + five opt-in
+SKIP, no missing/extra outcomes. Complete pinned libfdb_c 7.3.77 tagged lane:
+85 RUN/PASS, no skips. The 18-path freeze matched after both suites and review;
+the closing documentation amendment follows that verification snapshot.
+
+**Merge gate remains open; commit/push now authorized:** the five non-Docker
+`requireSweepOptIn` omissions
+prevent a clean no-skip release gate, while the owner forbids starting new
+hunts. Authorization is needed to run these existing five opt-in sweeps as
+verification; no sweep, skip removal, weakened assertion/limit or new hunt has
+been introduced. The companion RFC names every test and opt-in variable.
+The owner has explicitly directed commit and push to existing PR785 on
+`rfc256-cast-array-binding`; the unused local correlation branch is not another
+PR and is not the publication target. The retained nested-UNNEST and
+transitive-CTE review findings remain unresolved. This instruction grants no
+merge authorization, full-PR ACK or performance approval.
+
+
+### RFC-256 PR785 publication preparation — owner clarification
+
+Companion: RFC-256 **PR785 publication preparation — owner clarification**.
+The owner directed commit/push on existing PR785 (`rfc256-cast-array-binding`),
+superseding the unexecuted split-PR plan. Correlation `e3a03821b`, timeout
+`79f411aae` and mapped-read `41d40f312` are separate logical commits;
+the client commits passed ordinary generate/lint/build/test hooks in a clean
+comparison worktree, preserving the main worktree's bytes. The companion RFC
+records their full SHAs and fresh/cached target populations. No new PR, hunt,
+merge approval or waiver of remaining review/CI/no-skip/performance gates.
