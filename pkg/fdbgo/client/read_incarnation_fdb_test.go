@@ -888,3 +888,119 @@ func TestFDBOnErrorReleasedCleanupCannotCancelReplacementWatch(t *testing.T) {
 		t.Fatalf("replacement watch completion left %d slots", got)
 	}
 }
+
+// A synchronous expiry check must publish into the same resetPromise that its
+// operation captured, even when Reset retires that owner before publication.
+func TestReadIncarnation_SynchronousTimeoutCannotPoisonReplacement(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		run  func(context.Context, *Transaction, []byte) error
+	}{
+		{"read-version", func(ctx context.Context, tx *Transaction, _ []byte) error {
+			_, err := tx.GetReadVersion(ctx)
+			return err
+		}},
+		{"get", func(ctx context.Context, tx *Transaction, key []byte) error {
+			_, err := tx.Get(ctx, key)
+			return err
+		}},
+		{"commit", func(ctx context.Context, tx *Transaction, _ []byte) error { return tx.Commit(ctx) }},
+		{"prepared-commit", func(ctx context.Context, tx *Transaction, _ []byte) error {
+			return tx.PrepareCommit(ctx).Resolve()
+		}},
+		{"on-error", func(ctx context.Context, tx *Transaction, _ []byte) error {
+			return tx.OnError(ctx, &wire.FDBError{Code: 1020})
+		}},
+		{"estimated-size", func(ctx context.Context, tx *Transaction, key []byte) error {
+			_, err := tx.GetEstimatedRangeSizeBytes(ctx, key, keyAfterBytes(key))
+			return err
+		}},
+		{"split-points", func(ctx context.Context, tx *Transaction, key []byte) error {
+			_, err := tx.GetRangeSplitPoints(ctx, key, keyAfterBytes(key), 100)
+			return err
+		}},
+		{"watch", func(ctx context.Context, tx *Transaction, key []byte) error {
+			_, _, _, _, cancel, err := tx.WatchSetup(ctx, key)
+			if cancel != nil {
+				cancel()
+			}
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			for _, reset := range []bool{false, true} {
+				name := "timeout-first"
+				if reset {
+					name = "reset-first"
+				}
+				t.Run(name, func(t *testing.T) {
+					t.Parallel()
+					ctx, cancel := context.WithTimeout(context.Background(), readIncarnationTestTimeout)
+					defer cancel()
+					db := openTestDB(t, ctx)
+					key := []byte(t.Name())
+					if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+						tx.Set(key, []byte("seed"))
+						return nil, nil
+					}); err != nil {
+						t.Fatal(err)
+					}
+					tx := db.CreateTransaction()
+					defer tx.Cancel()
+					tx.SetTimeout(60000)
+					tx.readErrMu.Lock()
+					old := tx.readLife
+					timer := old.timer
+					tx.readErrMu.Unlock()
+					if timer == nil || !timer.Stop() {
+						t.Fatal("timeout callback must remain undelivered before synchronous expiry")
+					}
+					// Model a due deadline whose asynchronous callback has not run.
+					// Only the synchronous public-operation check can publish 1031.
+					tx.deadlineNs.Store(time.Now().Add(-time.Second).UnixNano())
+					parked := make(chan struct{})
+					release, releaseIt := releaseGate(t)
+					defer releaseIt()
+					tx.beforeReadTimeoutPublication = func() { close(parked); <-release }
+					done := make(chan error, 1)
+					go func() { done <- tc.run(ctx, tx, key) }()
+					waitReadParked(t, ctx, parked, "synchronous timeout publication")
+					var resetDone <-chan struct{}
+					want := 1031
+					if reset {
+						resetDone = retireParkedRead(t, ctx, tx)
+						want = 1025
+					}
+					releaseIt()
+					select {
+					case err := <-done:
+						if fdbCodeOf(err) != want {
+							t.Errorf("old operation returned %v, want literal %d from its captured owner", err, want)
+						}
+					case <-ctx.Done():
+						t.Fatal(ctx.Err())
+					}
+					if reset {
+						waitReadParked(t, ctx, resetDone, "Reset after synchronous timeout lease drain")
+					} else {
+						tx.Reset()
+					}
+					tx.beforeReadTimeoutPublication = nil
+					if code := fdbCodeOf(tx.readIncarnationCause(old)); code != want {
+						t.Errorf("old owner cause = %d, want %d", code, want)
+					}
+					if got, err := tx.Get(ctx, key); err != nil || string(got) != "seed" {
+						t.Fatalf("replacement read = %q, %v; want seed/nil, not retired timeout poison", got, err)
+					}
+					tx.Set(key, []byte("replacement"))
+					if err := tx.Commit(ctx); err != nil {
+						t.Fatalf("replacement commit: %v", err)
+					}
+					assertIndependentRead(t, ctx, db, key, []byte("replacement"))
+				})
+			}
+		})
+	}
+}

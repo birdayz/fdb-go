@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"fdb.dev/pkg/fdbgo/wire"
 )
 
 const lifetimeTestTimeout = time.Second
@@ -368,5 +370,76 @@ func TestExecutionLeaseOptionsAfterCancellationDoNotReviveRead(t *testing.T) {
 	tx.readErrMu.Unlock()
 	if users != 0 {
 		t.Fatalf("option or cleanup revived canceled admission: users=%d", users)
+	}
+}
+
+func TestCheckTimeoutBorrowsLeaseAndKeepsRetiredCause(t *testing.T) {
+	t.Parallel()
+	for _, oldCode := range []int{1025, 1031} {
+		name := "cancel-first"
+		if oldCode == 1031 {
+			name = "timeout-first"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			tx := newTestTx()
+			defer tx.Cancel()
+			ctx, release := tx.opContext(context.Background())
+			defer release()
+			op := tx.readOperation(ctx)
+			if err := tx.checkTimeout(ctx); err != nil {
+				t.Fatalf("clean captured timeout check: %v", err)
+			}
+			tx.readErrMu.Lock()
+			users, active := op.inc.users, op.lease.active
+			tx.readErrMu.Unlock()
+			if users != 1 || !active {
+				t.Fatalf("nested check changed the outer lease: users=%d active=%v", users, active)
+			}
+			tx.failCapturedIncarnation(op.inc, &wire.FDBError{Code: oldCode})
+			release()
+			tx.Reset()
+			newCode := 1031
+			if oldCode == 1031 {
+				newCode = 1025
+			}
+			current, releaseCurrent := tx.opContext(context.Background())
+			defer releaseCurrent()
+			replacement := tx.readOperation(current).inc
+			tx.failCapturedIncarnation(replacement, &wire.FDBError{Code: newCode})
+			tx.beforeReadTimeoutPublication = func() { t.Error("retired check inspected a replacement deadline") }
+			if err := tx.checkTimeout(ctx); fdbCodeOf(err) != oldCode {
+				t.Fatalf("retired check returned %v, want old owner %d rather than replacement %d", err, oldCode, newCode)
+			}
+			if code := fdbCodeOf(tx.readIncarnationCause(replacement)); code != newCode {
+				t.Fatalf("retired check changed replacement cause to %d, want %d", code, newCode)
+			}
+		})
+	}
+}
+
+func TestCheckTimeoutCanceledTurnoverWaiterDoesNotPublish(t *testing.T) {
+	t.Parallel()
+	tx := newTestTx()
+	defer tx.Cancel()
+	finish := tx.startTurnover()
+	// These are still the retiring owner's deadline fields. A canceled waiter
+	// captures the replacement but cannot obtain a lease on its unready state.
+	tx.timeoutNs.Store(int64(time.Second))
+	tx.deadlineNs.Store(time.Now().Add(-time.Second).UnixNano())
+	tx.beforeReadTimeoutPublication = func() { t.Error("unadmitted waiter published stale timeout") }
+	parent, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := tx.checkTimeout(parent)
+	tx.resetFields(true)
+	finish()
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled unadmitted waiter = %v, want context.Canceled", err)
+	}
+	tx.readErrMu.Lock()
+	cause, users := tx.readLife.cause, tx.readLife.users
+	tx.readErrMu.Unlock()
+	if cause != nil || users != 0 {
+		t.Fatalf("canceled waiter poisoned or leased the successor: cause=%v users=%d", cause, users)
 	}
 }

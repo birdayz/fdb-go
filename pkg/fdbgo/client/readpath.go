@@ -1282,7 +1282,7 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 	if cerr := ctx.Err(); cerr != nil {
 		return nil, 0, types.SpanContext{}, nil, nil, cerr // caller ctx already cancelled / past its deadline
 	}
-	if terr := tx.checkTimeout(); terr != nil {
+	if terr := tx.checkTimeout(ctx); terr != nil {
 		return nil, 0, types.SpanContext{}, nil, nil, terr // transaction_timed_out (1031)
 	}
 	// C++ RYW::watch: watches are disabled when RYW is disabled

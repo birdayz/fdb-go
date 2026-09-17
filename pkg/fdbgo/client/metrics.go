@@ -40,7 +40,7 @@ func (tx *Transaction) getEstimatedRangeSizeBytesImpl(ctx context.Context, begin
 	}
 	// resetPromise also carries the SetTimeout error → transaction_timed_out (1031). Gate it here too
 	// (this path bypasses ensureReadVersion's checkTimeout), matching C++'s resetPromise.isSet() check.
-	if err := tx.checkTimeout(); err != nil {
+	if err := tx.checkTimeout(ctx); err != nil {
 		return 0, err
 	}
 	// C++ uses std::numeric_limits<int>::max() — get ALL locations at once.
@@ -184,7 +184,7 @@ func (tx *Transaction) getRangeSplitPointsImpl(ctx context.Context, begin, end [
 	// (1031), not key_outside_legal_range. This path bypasses ensureReadVersion (where checkTimeout
 	// normally runs), so gate it explicitly — else the synchronous maxKey guard below would pre-empt
 	// 1031 with 2004.
-	if err := tx.checkTimeout(); err != nil {
+	if err := tx.checkTimeout(ctx); err != nil {
 		return nil, err
 	}
 	// C++ RYW::getRangeSplitPoints rejects an out-of-range key (ReadYourWrites.actor.cpp:1875-1877):

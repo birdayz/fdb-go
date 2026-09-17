@@ -1342,7 +1342,7 @@ func TestSetTimeout_CPort(t *testing.T) {
 	time.Sleep(2 * time.Millisecond)
 
 	// Now any operation should return 1031.
-	err := tx.checkTimeout()
+	err := tx.checkTimeout(context.Background())
 	if err == nil {
 		t.Fatal("expected timeout error after 1ms")
 	}
@@ -1462,7 +1462,7 @@ func TestSetTimeout_Preserved(t *testing.T) {
 	}
 
 	// And checkTimeout should not fire (we have 500ms).
-	if err := tx.checkTimeout(); err != nil {
+	if err := tx.checkTimeout(context.Background()); err != nil {
 		t.Errorf("timeout should not fire yet: %v", err)
 	}
 }
@@ -1479,7 +1479,7 @@ func TestSetTimeout_OverallBudget(t *testing.T) {
 	tx.SetTimeout(500) // 500ms budget from creationTime → deadline = 300ms from now
 
 	// Deadline should NOT have fired yet (300ms from now).
-	if err := tx.checkTimeout(); err != nil {
+	if err := tx.checkTimeout(context.Background()); err != nil {
 		t.Fatalf("timeout should not fire yet (300ms remaining): %v", err)
 	}
 
@@ -1493,14 +1493,14 @@ func TestSetTimeout_OverallBudget(t *testing.T) {
 	// After OnError, deadline is still anchored to the original creationTime.
 	// Verify creationTime was NOT updated by checking the deadline is the same.
 	// The deadline should be creationTime + 500ms = now - 200ms + 500ms = now + 300ms.
-	if err := tx.checkTimeout(); err != nil {
+	if err := tx.checkTimeout(context.Background()); err != nil {
 		t.Errorf("timeout should not fire after OnError (budget not exhausted): %v", err)
 	}
 
 	// Now simulate exhausted budget: set creationTime far in the past.
 	tx.creationTime = time.Now().Add(-1 * time.Second)                   // 1s ago
 	tx.deadlineNs.Store(tx.creationTime.Add(tx.timeoutDur()).UnixNano()) // deadline = 500ms ago
-	if err := tx.checkTimeout(); err == nil {
+	if err := tx.checkTimeout(context.Background()); err == nil {
 		t.Error("timeout should fire: budget exhausted (creationTime 1s ago, 500ms timeout)")
 	}
 }
@@ -1517,7 +1517,7 @@ func TestSetTimeout_ResetRestartsTimer(t *testing.T) {
 	tx.SetTimeout(500) // deadline = -10s + 500ms = -9.5s → already expired
 
 	// Should be timed out.
-	if err := tx.checkTimeout(); err == nil {
+	if err := tx.checkTimeout(context.Background()); err == nil {
 		t.Fatal("timeout should fire (budget exhausted from past creationTime)")
 	}
 
@@ -1526,7 +1526,7 @@ func TestSetTimeout_ResetRestartsTimer(t *testing.T) {
 	tx.SetTimeout(500) // re-apply → deadline = now() + 500ms
 
 	// After Reset, the full 500ms budget should be available.
-	if err := tx.checkTimeout(); err != nil {
+	if err := tx.checkTimeout(context.Background()); err != nil {
 		t.Errorf("timeout should not fire after Reset (fresh 500ms budget): %v", err)
 	}
 
@@ -1552,7 +1552,7 @@ func TestSetTimeout_Disabled(t *testing.T) {
 	}
 
 	// checkTimeout should always pass.
-	if err := tx.checkTimeout(); err != nil {
+	if err := tx.checkTimeout(context.Background()); err != nil {
 		t.Errorf("disabled timeout should not fire: %v", err)
 	}
 }

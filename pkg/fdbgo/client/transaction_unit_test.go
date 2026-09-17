@@ -164,7 +164,7 @@ func TestIsSpecialKey(t *testing.T) {
 func TestCheckTimeout_DisabledWhenZero(t *testing.T) {
 	t.Parallel()
 	tx := timedTx(0, time.Now().Add(-time.Hour)) // deadline long past
-	if err := tx.checkTimeout(); err != nil {
+	if err := tx.checkTimeout(context.Background()); err != nil {
 		t.Errorf("timeout=0 must always return nil, got %v", err)
 	}
 }
@@ -172,7 +172,7 @@ func TestCheckTimeout_DisabledWhenZero(t *testing.T) {
 func TestCheckTimeout_NotExpired(t *testing.T) {
 	t.Parallel()
 	tx := timedTx(5*time.Second, time.Now().Add(time.Hour))
-	if err := tx.checkTimeout(); err != nil {
+	if err := tx.checkTimeout(context.Background()); err != nil {
 		t.Errorf("future deadline: got %v, want nil", err)
 	}
 }
@@ -180,7 +180,7 @@ func TestCheckTimeout_NotExpired(t *testing.T) {
 func TestCheckTimeout_Expired(t *testing.T) {
 	t.Parallel()
 	tx := timedTx(5*time.Second, time.Now().Add(-time.Second))
-	err := tx.checkTimeout()
+	err := tx.checkTimeout(context.Background())
 	var fdbErr *wire.FDBError
 	if !errors.As(err, &fdbErr) || fdbErr.Code != ErrTransactionTimedOut {
 		t.Errorf("expired deadline: got %v, want FDBError %d", err, ErrTransactionTimedOut)
@@ -843,7 +843,7 @@ func TestOnError_RespectsTimeoutDeadline(t *testing.T) {
 	tx := newTestTx()
 	tx.creationTime = time.Now().Add(-1 * time.Second)
 	tx.SetTimeout(500) // deadline = creationTime+500ms → 500ms in the PAST
-	if tx.checkTimeout() == nil {
+	if tx.checkTimeout(context.Background()) == nil {
 		t.Fatal("setup: deadline should already be expired")
 	}
 	start := time.Now()

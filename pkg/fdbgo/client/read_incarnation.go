@@ -55,13 +55,6 @@ func recordReadCauseLocked(inc *readIncarnation, cause error) {
 	}
 }
 
-func (tx *Transaction) failReadIncarnation(cause error) {
-	tx.readErrMu.Lock()
-	inc := tx.readIncarnationLocked()
-	tx.readErrMu.Unlock()
-	tx.failCapturedIncarnation(inc, cause)
-}
-
 func (tx *Transaction) failCapturedIncarnation(inc *readIncarnation, cause error) {
 	tx.readErrMu.Lock()
 	recordReadCauseLocked(inc, cause)

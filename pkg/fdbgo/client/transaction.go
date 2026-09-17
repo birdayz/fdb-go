@@ -316,6 +316,9 @@ type txOptions struct {
 	beforeReadVersionLock func()
 	// beforeReadFailureDelivery observes terminal-state publication ordering.
 	beforeReadFailureDelivery func(error)
+	// beforeReadTimeoutPublication parks an expired synchronous check before
+	// publishing its terminal cause, without holding a transaction lock.
+	beforeReadTimeoutPublication func()
 	// beforeVersionstampLookup parks the synchronous getter after entry checks.
 	beforeVersionstampLookup func()
 	// beforeTurnoverRetirement parks conditional turnover before its leaf-lock
@@ -785,7 +788,7 @@ func (tx *Transaction) readVersionForOperation(parentCtx context.Context) (int64
 	// Interruption is classified against the captured incarnation by mapReadError.
 	// Deferred failure was captured by opContext at the outer entry, before
 	// RYW/resetPromise dispatch. Nested GRV work must not sample later poison.
-	if err := tx.checkTimeout(); err != nil {
+	if err := tx.checkTimeout(ctx); err != nil {
 		return 0, err
 	}
 	if tx.beforeReadVersionLock != nil {
@@ -1803,7 +1806,7 @@ func (tx *Transaction) commitEntryError(ctx context.Context) error {
 	if txState(tx.state.Load()) != txStateActive {
 		return fmt.Errorf("transaction not active")
 	}
-	return tx.checkTimeout()
+	return tx.checkTimeout(ctx)
 }
 
 func (tx *Transaction) commitAdmitted(parent context.Context, completion *versionstampCompletion) (rerr error) {
@@ -2482,7 +2485,7 @@ func (tx *Transaction) OnError(ctx context.Context, err error) (rerr error) {
 	// BUT a done CALLER ctx out-ranks the txn timeout:
 	// if both the SetTimeout deadline and the caller's ctx have expired, a TransactCtx caller must get
 	// their own context.Canceled/DeadlineExceeded, not 1031.
-	if cerr := tx.checkTimeout(); cerr != nil {
+	if cerr := tx.checkTimeout(ctx); cerr != nil {
 		tx.state.Store(int32(txStateErrored))
 		if ctxErr := callerCtx.Err(); ctxErr != nil {
 			return ctxErr // the caller's own cancellation/deadline out-ranks the txn timeout
@@ -2820,20 +2823,25 @@ func (tx *Transaction) GetAddressesForKey(parentCtx context.Context, key []byte)
 	return addrs, nil
 }
 
-// checkTimeout returns a timeout error if the deadline has passed.
-func (tx *Transaction) checkTimeout() error {
-	tx.readErrMu.Lock()
-	var cause error
-	if tx.readLife != nil {
-		cause = tx.readLife.cause
+// checkTimeout publishes synchronous expiry into the captured resetPromise.
+// The lease pins its deadline while Reset retires and drains that incarnation;
+// neither failure publication nor the returned cause may select its successor.
+func (tx *Transaction) checkTimeout(parent context.Context) error {
+	ctx, release := tx.opContext(parent)
+	defer release()
+	op := tx.readOperation(ctx)
+	if op.lease == nil {
+		return tx.readLifetimeError(ctx)
 	}
-	tx.readErrMu.Unlock()
-	if cause != nil {
+	if cause := tx.readIncarnationCause(op.inc); cause != nil {
 		return cause
 	}
 	if tx.timeoutNs.Load() > 0 && time.Now().After(tx.deadlineTime()) {
-		tx.failReadIncarnation(&wire.FDBError{Code: ErrTransactionTimedOut})
-		return tx.checkCancelled()
+		if tx.beforeReadTimeoutPublication != nil {
+			tx.beforeReadTimeoutPublication()
+		}
+		tx.failCapturedIncarnation(op.inc, &wire.FDBError{Code: ErrTransactionTimedOut})
+		return tx.readIncarnationCause(op.inc)
 	}
 	return nil
 }
