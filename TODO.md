@@ -12043,3 +12043,75 @@ of the mandated context-exhausted Torvalds/Codex sessions. No history reset,
 replacement reviewer or model substitution was performed. Graefe's 18-file
 scoped ACK precedes the three final test-file repairs; exact-HEAD confirmation
 remains required. This block does not authorize merge or close any QSC item.
+
+### Stress test 1M baseline — RFC-256 bound-query migration (2026-09-17)
+
+This compares committed `9b0b1042fe67975f58b9c5b1747158118d38d2c9` against
+`ed3504f7e410d8e2a4f4c46fd7b4c72fd0484869`, the PR merge-base on this date.
+It does not reuse the earlier release-working-tree comparison. Both checkouts
+are on the same `/var/tmp` filesystem (74% used); `/home` was 99% used and was
+not used for either checkout. Both `go.mod` files are byte-identical. Baseline:
+`/var/tmp/query-grind-cast/baseline`; current:
+`/var/tmp/query-grind-cast/cte-stress-current`. The two baseline runs finished
+before either current run; no other local verification run was started alongside
+them. One-minute load, start/end: baseline 3.85/10.92 and 10.37/3.95; current
+3.95/3.44 and 3.25/17.75. Machine load was not constant.
+
+Each command used the existing `//pkg/relational/sqldriver/stress:stress_test`
+with `--test.run=^TestFDB_Stress_1M$`, `--test.v`, `--nocache_test_results` and
+`--test_output=all`, with separate Bazel output bases. All four commands exited
+0, each with 24 RUN/PASS (root + 23 query cases), no FAIL/SKIP and no cached
+result. All 22 logged row counts agree across all four runs; the remaining
+COUNT(*) case asserts 1,000,000 separately. The unchanged test also retains its
+existing row assertions. No latency bound, timeout or golden was relaxed.
+
+Samples below are milliseconds, with n=2 per side; ratios divide the arithmetic
+means. They are observations, not a claim of performance parity or causality.
+
+| Query | Rows | Baseline samples ms | Current samples ms | Mean current/base |
+|---|---:|---:|---:|---:|
+| PK lookup id=0 | 1 | 11.265 / 17.512 | 8.590 / 8.681 | 0.600x |
+| PK lookup id=N/2 | 1 | 9.151 / 24.537 | 8.728 / 8.422 | 0.509x |
+| PK lookup id=N-1 | 1 | 7.871 / 36.871 | 6.548 / 5.218 | 0.263x |
+| idx_customer eq | 8 | 7.503 / 19.153 | 7.088 / 6.643 | 0.515x |
+| idx_amount range >9000 | 100017 | 272.706 / 321.323 | 240.427 / 257.383 | 0.838x |
+| idx_status count pending | 1 | 437.941 / 333.728 | 367.779 / 391.575 | 0.984x |
+| full scan filter amount>5000 | 1 | 927.111 / 561.985 | 679.471 / 706.544 | 0.931x |
+| GROUP BY status | 4 | 6.649 / 6.314 | 25.317 / 14.222 | 3.050x |
+| GROUP BY status COUNT only | 4 | 5.482 / 5.679 | 13.902 / 18.653 | 2.917x |
+| SUM by status (aggregate index) | 4 | 6.023 / 6.191 | 22.755 / 22.001 | 3.664x |
+| GROUP BY customer HAVING | 47271 | 627.455 / 754.337 | 752.904 / 664.768 | 1.026x |
+| JOIN 10 orders x customers | 10 | 20.417 / 32.478 | 21.485 / 21.109 | 0.805x |
+| ORDER BY PK (full) | 1000000 | 7681.128 / 3905.476 | 3885.252 / 3849.811 | 0.668x |
+| ORDER BY PK + index filter | 8 | 9.867 / 8.874 | 9.657 / 9.393 | 1.017x |
+| scan all rows ordered | 1000000 | 4081.957 / 3712.733 | 3701.414 / 3704.449 | 0.950x |
+| scan all rows wide | 1000000 | 4382.384 / 3952.603 | 3970.416 / 3980.001 | 0.954x |
+| IN-list 5 values | 46 | 21.654 / 19.750 | 19.862 / 19.954 | 0.962x |
+| PK needle id=999999 | 1 | 6.997 / 5.796 | 6.003 / 6.035 | 0.941x |
+| PK+filter needle id=500000 | 1 | 8.071 / 7.331 | 7.518 / 7.526 | 0.977x |
+| full scan sparse filter | 97 | 3553.146 / 3380.458 | 3361.724 / 3359.674 | 0.969x |
+| UPDATE by index | 8 | 9.495 / 9.303 | 9.749 / 9.942 | 1.048x |
+| DELETE single row | 1 | 6.890 / 6.662 | 7.105 / 7.140 | 1.051x |
+
+The small aggregate queries are slower in this sample: GROUP BY status,
+COUNT-only GROUP BY and SUM-by-status mean ratios are 3.050x, 2.917x and 3.664x.
+That is not hidden by the faster scan ratios. The baseline's first full ordered
+scan took 7.681s versus 3.905s in its second run, so the 0.668x comparison must
+not be presented as a demonstrated optimization. All 11 printed EXPLAIN plans
+per stress run are byte-identical across the four runs; this does not prove
+execution cost equality.
+
+The existing six `BenchmarkPlanStressShape_` benchmarks also ran sequentially
+on these same SHAs, count=3, benchtime=1s, benchmem: 18 samples per side, both
+commands exit 0. GROUP BY status planning samples were
+1.690/1.645/1.703 ms baseline versus 1.715/1.671/1.708 ms current; SUM planning
+was 1.583/1.587/1.599 versus 1.599/1.588/1.614 ms. These separate measurements
+do not attribute the end-to-end slowdown or erase it. No executor/performance
+fix was attempted under the existing review-repair-only scope.
+
+Artifacts: `/var/tmp/query-grind-cast/pr785-review/cte-final-stress-*` (all four
+complete logs, commands, SHAs, load, BEP, row samples and table), and
+`cte-final-planner-bench-*` (both complete logs and all benchmark samples).
+This result accompanies the fresh normal/race/determinism block above; it does
+not waive the five opt-in hunt omissions, absent Torvalds/Codex implementation
+reviews, final exact-HEAD review/CI or merge gate. No QSC item is closed.

@@ -3504,3 +3504,26 @@ absent; no reset/replacement has been authorized or performed. Graefe's scoped
 reconfirmation. Fresh stress/performance, final-HEAD reviews and CI remain
 separate gates; the historical release comparison is not evidence for this
 migration snapshot. No merge approval is claimed.
+
+### Legacy migration — committed stress comparison
+
+The implementation is committed as `9b0b1042fe67975f58b9c5b1747158118d38d2c9`;
+the normal pre-commit generate/lint/build/test hooks passed, with the previously
+recorded source hashes intact and a clean worktree. The fresh four-run stress
+comparison, complete 22-row timing table, both SHAs and follow-up planner
+benchmark samples are recorded at the end of `TODO.md` under **Stress test 1M
+baseline — RFC-256 bound-query migration (2026-09-17)**. It compares that
+committed tree to merge-base `ed3504f7e410d8e2a4f4c46fd7b4c72fd0484869`, not to
+the earlier release snapshot.
+
+Both checkouts used the same non-full filesystem and identical Go module/SDK;
+two baseline runs preceded two current runs. All four passed the existing 1M
+suite, each with 24 RUN/PASS and no FAIL/SKIP/cache hit. All logged row counts
+agree. Small aggregate queries remain slower in the observed end-to-end sample
+(3.050x/2.917x/3.664x mean ratios for GROUP BY status/COUNT-only/SUM); printed
+plans match, but that is not performance parity. The independent existing
+planner benchmarks have 18 samples per side and do not establish the cause of
+the end-to-end difference. No limits or executor/performance code changed.
+
+The companion TODO block retains the exact measurements and remaining review,
+no-skip and final-HEAD CI gates. These measurements do not authorize merge.
