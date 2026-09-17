@@ -114,11 +114,11 @@ func TestExistsBoundCTERebasesOnlyExportedBinding(t *testing.T) {
 	if _, present := original[bound]; !present {
 		t.Fatal("original join predicate mutated")
 	}
-	if carrier.Body != body || body.ProjectedValues[0] != bodyValue {
+	if carrier.Body() != body || body.ProjectedValues[0] != bodyValue {
 		t.Fatal("Body must never be renamed through its exported identity")
 	}
 	recursive := *carrier
-	recursive.Recursive = true
+	recursive.CTEProducer = logical.NewCTE(recursive.Name(), recursive.Body(), nil, true, logical.CTEColumns(recursive.ColumnAliases()...), logical.CTETraversal(recursive.TraversalOrder())).CTEProducer
 	envelope := *carrier
 	envelope.PreserveMainSource = true
 	unbound := *carrier

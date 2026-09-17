@@ -14,7 +14,10 @@ go_library(
     ],
     importpath = "fdb.dev/pkg/relational/core/query/semantic",
     visibility = ["//visibility:public"],
-    deps = ["//pkg/relational/core/parser/gen"],
+    deps = [
+        "//pkg/relational/core/parser/gen",
+        "//pkg/relational/core/query/logical",
+    ],
 )
 
 go_test(

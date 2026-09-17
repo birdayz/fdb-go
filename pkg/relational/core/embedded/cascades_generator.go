@@ -6821,44 +6821,38 @@ func demoteSchemaQualifiedUnnest(op logical.LogicalOperator, schemaName string, 
 // UNDEFINED_COLUMN — distinct from a present scalar) are NOT rejected here, so the
 // early pass never DIVERGES from the translator's per-case code. RFC-142.
 func rejectAtOrdinalityOnTable(op logical.LogicalOperator, md *recordlayer.RecordMetaData) error {
-	return rejectAtOrdinalityOnTableWithCTEs(op, md, nil)
+	return rejectAtOrdinalityOnTableWithCTEs(op, md, logical.CTERegistry{})
 }
 
-// rejectAtOrdinalityOnTableWithCTEs is the recursion carrying the set of WITH-CTE
-// names in scope at `op`. A FROM source whose segment 0 names an in-scope CTE binds
-// to the CTE's OUTPUT type, not a base-table descriptor — so it is the translator's
-// outerSourceIsCTE territory and is left to its UNSUPPORTED_QUERY rejection, never
-// the base-table AT check here (which would, when the CTE name ALSO matches a real
-// table, raise a WRONG_OBJECT_TYPE keyed on the SHADOWED base table and diverge from
-// the translator). A WITH CTE wraps the SELECT's join tree in an enclosing
-// LogicalCTE, so the CTE name is not visible from `j.Left` (only Scan(name) is
-// there) — it must be threaded down from the wrapper. Derived tables `(…) AS d`
-// instead lower to a LogicalCTE leg INSIDE j.Left and are caught structurally by
-// atOnNonArraySource's OuterSourceIsDerivedTable check.
-func rejectAtOrdinalityOnTableWithCTEs(op logical.LogicalOperator, md *recordlayer.RecordMetaData, cteNames map[string]struct{}) error {
+// Resolve constructor inputs once, then validate the retained producer graph.
+// Both selected CTEs and captured physical sources keep their defining ownership.
+func rejectAtOrdinalityOnTableWithCTEs(op logical.LogicalOperator, md *recordlayer.RecordMetaData, registry logical.CTERegistry) error {
+	logical.BindCTESources(op, registry)
+	return rejectAtOrdinalityOnTableInGraph(op, md, make(map[*logical.CTEProducer]bool))
+}
+
+func rejectAtOrdinalityOnTableInGraph(op logical.LogicalOperator, md *recordlayer.RecordMetaData, producers map[*logical.CTEProducer]bool) error {
 	if op == nil || md == nil {
 		return nil
 	}
-	if cte, ok := op.(*logical.LogicalCTE); ok {
-		// Extend the in-scope CTE set for this subtree (the CTE name is visible to
-		// its Main projection and any nested CTEs).
-		next := make(map[string]struct{}, len(cteNames)+1)
-		for k := range cteNames {
-			next[k] = struct{}{}
+	if scan, ok := op.(*logical.LogicalScan); ok {
+		if producer := scan.Source.Producer(); producer != nil && !producers[producer] {
+			producers[producer] = true
+			if err := rejectAtOrdinalityOnTableInGraph(producer.Body(), md, producers); err != nil {
+				return err
+			}
 		}
-		next[strings.ToUpper(cte.Name)] = struct{}{}
-		cteNames = next
 	}
 	if j, ok := op.(*logical.LogicalJoin); ok {
 		if u, ok := j.Right.(*logical.LogicalUnnest); ok && u.AtAlias != "" {
-			if atOnNonArraySource(j.Left, u, md, cteNames) {
+			if atOnNonArraySource(j.Left, u, md) {
 				return api.NewError(api.ErrCodeWrongObjectType,
 					"AT ordinality is only valid on a correlated array source, not a table")
 			}
 		}
 	}
 	for _, ch := range op.Children() {
-		if err := rejectAtOrdinalityOnTableWithCTEs(ch, md, cteNames); err != nil {
+		if err := rejectAtOrdinalityOnTableInGraph(ch, md, producers); err != nil {
 			return err
 		}
 	}
@@ -6866,7 +6860,7 @@ func rejectAtOrdinalityOnTableWithCTEs(op logical.LogicalOperator, md *recordlay
 	// (carried on side fields, not Children()) — Java's generateAccess runs at every
 	// FROM point. Reach those plans too, like demoteSchemaQualifiedUnnest. RFC-142.
 	for _, sub := range subqueryPlans(op) {
-		if err := rejectAtOrdinalityOnTableWithCTEs(sub, md, cteNames); err != nil {
+		if err := rejectAtOrdinalityOnTableInGraph(sub, md, producers); err != nil {
 			return err
 		}
 	}
@@ -6875,29 +6869,16 @@ func rejectAtOrdinalityOnTableWithCTEs(op logical.LogicalOperator, md *recordlay
 
 // atOnNonArraySource reports whether an AT-bearing LogicalUnnest is in truth an
 // AT on a TABLE / non-array source (cases (1)/(2) of rejectAtOrdinalityOnTable),
-// resolving segment 0 against the outer leg's visible scans (the shared
-// logical.FindOuterScanTable walk the translator's findOuterScanTable also uses).
+// resolving segment 0 against the outer leg's visible scans and their retained
+// producer identities.
 // RFC-142.
-func atOnNonArraySource(left logical.LogicalOperator, u *logical.LogicalUnnest, md *recordlayer.RecordMetaData, cteNames map[string]struct{}) bool {
+func atOnNonArraySource(left logical.LogicalOperator, u *logical.LogicalUnnest, md *recordlayer.RecordMetaData) bool {
 	if len(u.Segments) == 0 {
 		return false
 	}
-	// A CTE / derived-table source bound to segment 0 is the translator's
-	// outerSourceIsCTE / outerSourceIsDerivedTable territory: its OUTPUT type — not a
-	// base-table descriptor — governs whether the AT field is an array, and the
-	// translator rejects a CTE/derived-output unnest with UNSUPPORTED_QUERY. Detect
-	// that BEFORE the md.GetRecordType lookup below, so a CTE/derived source whose
-	// alias ALSO names a REAL same-named base table does NOT fall through to the
-	// base-table AT-on-non-array check (which would raise a 42809 keyed on the
-	// SHADOWED base table instead of the translator's intended UNSUPPORTED_QUERY).
-	// Two shapes:
-	//   - segment 0 names an in-scope WITH CTE (threaded down from the enclosing
-	//     LogicalCTE wrapper) — the translator's outerSourceIsCTE arm;
-	//   - segment 0 binds to a derived-table LogicalCTE leg INSIDE the outer plan
-	//     (`(SELECT …) AS d`) — the translator's structural outerSourceIsDerivedTable
-	//     arm (OuterSourceIsDerivedTable).
-	// Only a genuine REAL base table reaches the WRONG_OBJECT_TYPE check below.
-	if _, ok := cteNames[strings.ToUpper(u.Segments[0])]; ok {
+	// The selected producer's output owns this source even when its alias or
+	// declaration name also names a physical table. Physical absence is retained.
+	if scan := logical.FindVisibleScan(left, u.Segments[0]); scan != nil && scan.Source.Producer() != nil {
 		return false
 	}
 	if logical.OuterSourceIsDerivedTable(left, u.Segments[0]) {
@@ -7166,26 +7147,35 @@ func resolveQualifiedTableNames(op logical.LogicalOperator, schemaName string) e
 }
 
 func validateTablesAndColumns(op logical.LogicalOperator, md *recordlayer.RecordMetaData) error {
-	cteNames := collectCTENames(op)
-	return validateTablesAndColumnsInner(op, md, cteNames)
+	logical.BindCTESources(op, logical.CTERegistry{})
+	return validateTablesAndColumnsInner(op, md, make(map[*logical.CTEProducer]bool))
 }
 
-func validateTablesAndColumnsInner(op logical.LogicalOperator, md *recordlayer.RecordMetaData, cteNames map[string]bool) error {
+func validateTablesAndColumnsInner(op logical.LogicalOperator, md *recordlayer.RecordMetaData, cteNames map[*logical.CTEProducer]bool) error {
 	if op == nil {
 		return nil
 	}
 	if scan, ok := op.(*logical.LogicalScan); ok {
-		if !cteNames[strings.ToUpper(scan.Table)] {
+		if scan.Source.Producer() == nil {
 			rt := md.GetRecordType(scan.Table)
 			if rt == nil {
 				return api.NewErrorf(api.ErrCodeUndefinedTable, "table %q does not exist", scan.Table)
 			}
 		}
 	}
+	if scan, ok := op.(*logical.LogicalScan); ok && scan.Source.Producer() != nil {
+		producer := scan.Source.Producer()
+		if !cteNames[producer] {
+			cteNames[producer] = true
+			if err := validateTablesAndColumnsInner(producer.Body(), md, cteNames); err != nil {
+				return err
+			}
+		}
+	}
 	if proj, ok := op.(*logical.LogicalProject); ok && !hasJoin(op) && !hasAggregate(op) &&
 		!projectionInputRedefinesColumns(proj.Input) {
 		scan := findLogicalScan(op)
-		if scan != nil && !cteNames[strings.ToUpper(scan.Table)] {
+		if scan != nil && scan.Source.Producer() == nil {
 			rt := md.GetRecordType(scan.Table)
 			if rt != nil && rt.Descriptor != nil {
 				for i, col := range proj.Projections {
@@ -7248,24 +7238,6 @@ func validateTablesAndColumnsInner(op logical.LogicalOperator, md *recordlayer.R
 		}
 	}
 	return nil
-}
-
-func collectCTENames(op logical.LogicalOperator) map[string]bool {
-	names := make(map[string]bool)
-	collectCTENamesInner(op, names)
-	return names
-}
-
-func collectCTENamesInner(op logical.LogicalOperator, names map[string]bool) {
-	if op == nil {
-		return
-	}
-	if cte, ok := op.(*logical.LogicalCTE); ok {
-		names[strings.ToUpper(cte.Name)] = true
-	}
-	for _, ch := range op.Children() {
-		collectCTENamesInner(ch, names)
-	}
 }
 
 func hasAggregate(op logical.LogicalOperator) bool {
@@ -7761,16 +7733,8 @@ func (r *paginatingRows) env() *dst.Env {
 // exercises. Someone will eventually read that as dead weight and simplify it
 // away, so the reason is written down rather than inferred.
 //
-// IT ALSO REJECTED THREE VALID STATEMENTS until the CTE names were SCOPED. A
-// scalar subquery may define its own CTE on the same side field this walk
-// descends into, so descending with only the outer names rejected the CTE's own
-// scan with 42F01. The fix is per-plan scoping below -- NOT making
-// collectCTENames itself walk subqueries, which a first attempt did and which
-// leaked a CTE into a SIBLING subquery where it is out of scope. Within one
-// level the set is still flat, so a CTE is visible to every scan in that plan
-// regardless of lexical position: an over-accept, matching
-// validateTablesAndColumns, and the safe direction for a validator whose job is
-// rejection.
+// Source ownership is sealed before this walk. Retained producers are checked
+// by identity, while captured physical sources always require a catalog table.
 //
 // A DML EXISTS SUBQUERY IS NOT WHY THIS EXISTS. `DELETE ... WHERE EXISTS
 // (SELECT 1 FROM nosuchtable)` answers 0AF00 from the unsupported-shape check
@@ -7783,37 +7747,34 @@ func validateScanTables(op logical.LogicalOperator, md *recordlayer.RecordMetaDa
 	if op == nil || md == nil {
 		return nil
 	}
-	return validateScanTablesInner(op, md, collectCTENames(op))
+	logical.BindCTESources(op, logical.CTERegistry{})
+	return validateScanTablesInner(op, md, make(map[*logical.CTEProducer]bool))
 }
 
-func validateScanTablesInner(op logical.LogicalOperator, md *recordlayer.RecordMetaData, cteNames map[string]bool) error {
+func validateScanTablesInner(op logical.LogicalOperator, md *recordlayer.RecordMetaData, producers map[*logical.CTEProducer]bool) error {
 	if op == nil {
 		return nil
 	}
 	if scan, ok := op.(*logical.LogicalScan); ok {
-		if !cteNames[strings.ToUpper(scan.Table)] && md.GetRecordType(scan.Table) == nil {
+		if scan.Source.Producer() == nil && md.GetRecordType(scan.Table) == nil {
 			return api.NewErrorf(api.ErrCodeUndefinedTable, "table %q does not exist", scan.Table)
 		}
 	}
+	if scan, ok := op.(*logical.LogicalScan); ok {
+		if producer := scan.Source.Producer(); producer != nil && !producers[producer] {
+			producers[producer] = true
+			if err := validateScanTablesInner(producer.Body(), md, producers); err != nil {
+				return err
+			}
+		}
+	}
 	for _, child := range op.Children() {
-		if err := validateScanTablesInner(child, md, cteNames); err != nil {
+		if err := validateScanTablesInner(child, md, producers); err != nil {
 			return err
 		}
 	}
-	// Each attached plan gets its OWN scope: the CTE names visible here, plus the
-	// ones that plan declares -- never the ones a SIBLING declares. Unioning every
-	// side plan's definitions into one map before descending was simpler and
-	// wrong: for `id = (WITH x AS (...) SELECT MAX(id) FROM x) AND v = (SELECT
-	// MAX(id) FROM x)` it made `X` visible to the second subquery, which is
-	// outside the CTE's scope, so an invalid reference was accepted. A CTE is
-	// lexically scoped and a flat name set cannot express that.
 	for _, sub := range subqueryPlans(op) {
-		scoped := make(map[string]bool, len(cteNames))
-		for k, v := range cteNames {
-			scoped[k] = v
-		}
-		collectCTENamesInner(sub, scoped)
-		if err := validateScanTablesInner(sub, md, scoped); err != nil {
+		if err := validateScanTablesInner(sub, md, producers); err != nil {
 			return err
 		}
 	}

@@ -130,6 +130,7 @@ go_test(
         "correlated_scalar_cardinality_plan_test.go",
         "cost_selectivity_test.go",
         "covering_cost_ladder_test.go",
+        "cte_producer_test.go",
         "database_in_prefix_test.go",
         "ddl_fail_closed_test.go",
         "ddl_name_collision_test.go",
@@ -447,6 +448,7 @@ go_test(
         "subquery_clause_test.go",
         "bound_query_test.go",
         "bound_admission_test.go",
+        "cte_producer_test.go",
     ],
     deps = [
         "//gen",

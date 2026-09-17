@@ -466,7 +466,10 @@ func TestScalarSubqueryOutputTypeTraversesCTEMain(t *testing.T) {
 		Projections:             []string{"MIN(V)"},
 		AggregateOutputOrdinals: []int{0},
 	}
-	wrapped := &logical.LogicalCTE{Name: "HIGH", Main: project}
+	wrapped := &logical.LogicalCTE{
+		Main:        project,
+		CTEProducer: logical.NewCTE("HIGH", nil, nil, false).CTEProducer,
+	}
 
 	got, err := scalarSubqueryOutputTypeChecked(wrapped)
 	if err != nil {
@@ -831,7 +834,7 @@ func TestBuildLogicalPlanWithCatalog_CTEThreadsMd(t *testing.T) {
 	}
 	// The CTE body's filter should carry a Predicate.
 	var bodyFilter *logical.LogicalFilter
-	for cur := cte.Body; cur != nil; {
+	for cur := cte.Body(); cur != nil; {
 		if f, ok := cur.(*logical.LogicalFilter); ok {
 			bodyFilter = f
 			break
@@ -843,7 +846,7 @@ func TestBuildLogicalPlanWithCatalog_CTEThreadsMd(t *testing.T) {
 		cur = ch[0]
 	}
 	if bodyFilter == nil {
-		t.Fatalf("CTE body missing Filter:\n%s", cte.Body.Explain(""))
+		t.Fatalf("CTE body missing Filter:\n%s", cte.Body().Explain(""))
 	}
 	if bodyFilter.Predicate == nil {
 		t.Fatal("CTE body Filter missing Predicate (md not threaded?)")
@@ -1862,8 +1865,7 @@ func TestDerivedNestedEnumFieldKeepsExactTypeAndHomonym(t *testing.T) {
 	if !exact || field.Path().Len() != 2 || field.Path().Ordinals()[0] != 2 || field.Path().Ordinals()[1] != 0 {
 		t.Fatalf("t.p.color did not resolve the nested enum ordinals [2 0]: %v", projection.ProjectedValues[0])
 	}
-	sq := parseSelect(t, `SELECT t.p.color FROM t`)
-	src, ok := buildExactVirtualScopeSourceForSelect(md, "X", sq, nil, nil)
+	src, ok := exactVirtualScopeSource("X", body, md, nil, nil)
 	if !ok {
 		t.Fatal("the exact derivation declined the nested enum field")
 	}
@@ -1899,7 +1901,7 @@ func TestDerivedBindingMintReservesLexicalEnvironment(t *testing.T) {
 	visitor.enclosingScope = parent
 	visitor.cteScopes = map[string]semantic.ScopeSource{"Q$BOUND3": {}}
 	visitor.cteOnScopes = map[string]semantic.ScopeSource{"Q$BOUND4": {}}
-	visitor.cteBodies = map[string]logical.LogicalOperator{"Q$BOUND5": logical.NewScan("Order", "")}
+	visitor.cteProducers = testCTERegistry(map[string]logical.LogicalOperator{"Q$BOUND5": logical.NewScan("Order", "")})
 	for round := range 2 {
 		fs := &fromSource{
 			tableName: "D", tableAlias: "D", derivedQuery: inner, enclosingScope: parent,
@@ -1999,7 +2001,7 @@ func TestDerivedBindingCarrierAndScopeRebuilds(t *testing.T) {
 				binding, body = sq.joins[0].bindingID, sq.joins[0].catalogAwareInnerPlan
 			}
 			scan, ok := c.Main.(*logical.LogicalScan)
-			if binding == "" || c.Name != binding || c.Binding != binding || !ok || scan.Table != binding || c.Body != body {
+			if binding == "" || c.Name() != binding || c.Binding != binding || !ok || scan.Table != binding || c.Body() != body {
 				t.Fatalf("carrier lost identity or rebuilt Body: binding=%q carrier=%#v main=%#v", binding, c, c.Main)
 			}
 		}
@@ -2143,8 +2145,8 @@ func TestBuildScalarRetainsCorrelationCarriedByCTEBody(t *testing.T) {
 			}
 			planner := &existsSubqueryPlanner{
 				md: md, outerScope: parent,
-				cteScopes: map[string]semantic.ScopeSource{"C": source},
-				cteBodies: map[string]logical.LogicalOperator{"C": body},
+				cteScopes:    map[string]semantic.ScopeSource{"C": source},
+				cteProducers: testCTERegistry(map[string]logical.LogicalOperator{"C": body}),
 			}
 			q, err := parseQueryFromSelect(t, tc.scalarSQL)
 			if err != nil {
@@ -2328,7 +2330,7 @@ func TestPreparedPromotedDerivedBodyIsNotRevisited(t *testing.T) {
 			t.Fatal("CTE C has no exact schema")
 		}
 		visitor.cteScopes = map[string]semantic.ScopeSource{"C": cteSource}
-		visitor.cteBodies = map[string]logical.LogicalOperator{"C": cteBody}
+		visitor.cteProducers = testCTERegistry(map[string]logical.LogicalOperator{"C": cteBody})
 		q, err := parseQueryFromSelect(t, sql)
 		if err != nil {
 			t.Fatal(err)
@@ -2411,8 +2413,8 @@ func TestCorrelatedExistsDerivedBodyRetainsCTEEnvironment(t *testing.T) {
 	}
 	planner := &existsSubqueryPlanner{
 		md: md, outerScope: parent, outerScopes: []semantic.ScopeSource{outer},
-		cteScopes: map[string]semantic.ScopeSource{"C": source},
-		cteBodies: map[string]logical.LogicalOperator{"C": body},
+		cteScopes:    map[string]semantic.ScopeSource{"C": source},
+		cteProducers: testCTERegistry(map[string]logical.LogicalOperator{"C": body}),
 	}
 	q, err := parseQueryFromSelect(t, "SELECT o.id FROM (SELECT (SELECT MAX(v) FROM c) AS x FROM t) d WHERE d.x = o.id")
 	if err != nil {

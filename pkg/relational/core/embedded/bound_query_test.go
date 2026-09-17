@@ -94,7 +94,10 @@ func TestBoundDependenciesDoNotBindDefinitionToMain(t *testing.T) {
 	body := &logical.LogicalProject{Input: logical.NewScan("T", "S"), ProjectedValues: []values.Value{value}}
 	// Same spelling deliberately models a definition built in an earlier frame.
 	// Main's scan binds its own output, never the definition's free reference.
-	cte := &logical.LogicalCTE{Name: "C", Body: body, Main: logical.NewScan("C", "O")}
+	cte := &logical.LogicalCTE{
+		Main:        logical.NewScan("C", "O"),
+		CTEProducer: logical.NewCTE("C", body, nil, false).CTEProducer,
+	}
 	property, err := boundDependencies(cte, nil)
 	if err != nil {
 		t.Fatal(err)

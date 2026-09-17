@@ -23,14 +23,14 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**376 scenarios · 3084 query/assertion cases** across 18 feature areas — 2696 supported, 114 unsupported-feature pins, 274 error-path pins.
+**377 scenarios · 3104 query/assertion cases** across 18 feature areas — 2716 supported, 114 unsupported-feature pins, 274 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
 | Aggregates & GROUP BY | 55 | 349 | 314 | 19 | 16 |
 | Joins | 66 | 313 | 296 | 2 | 15 |
 | Subqueries (EXISTS / IN / scalar) | 46 | 321 | 260 | 38 | 23 |
-| CTEs | 14 | 179 | 139 | 5 | 35 |
+| CTEs | 15 | 199 | 159 | 5 | 35 |
 | Set operations (UNION / INTERSECT / EXCEPT) | 12 | 68 | 59 | 5 | 4 |
 | DML (INSERT / UPDATE / DELETE) | 26 | 238 | 202 | 3 | 33 |
 | Ordering & pagination | 18 | 138 | 133 | 0 | 5 |
@@ -45,7 +45,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
 | Other | 40 | 337 | 295 | 11 | 31 |
-| **Total** | **376** | **3084** | **2696** | **114** | **274** |
+| **Total** | **377** | **3104** | **2716** | **114** | **274** |
 
 ## Aggregates & GROUP BY
 
@@ -235,6 +235,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 |---|--:|--:|--:|--:|---|
 | `cte` | 41 | 30 | 0 | 11 | WITH ... |
 | `cte_aggregate` | 4 | 4 | 0 | 0 | CTE materialization + GROUP BY aggregation. |
+| `cte_defining_environment` | 20 | 20 | 0 | 0 | Java 4.12.11.0 QueryVisitor.visitCtes publishes definitions in declaration |
 | `cte_error_codes` | 6 | 2 | 0 | 4 | Java's cte.yamsql error tests: CTE-specific validation errors. |
 | `cte_java_patterns` | 8 | 6 | 0 | 2 | CTE patterns from Java's cte.yamsql. |
 | `cte_multi_reference` | 2 | 2 | 0 | 0 | CTE referenced multiple times |

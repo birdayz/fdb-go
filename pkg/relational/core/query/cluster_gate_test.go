@@ -39,10 +39,9 @@ func newGateTranslator(t *testing.T) *cascadesTranslator {
 	}
 	return &cascadesTranslator{
 		md:              md,
-		cteScope:        make(map[string]logical.LogicalOperator),
-		cteExprScope:    make(map[string]expressions.RelationalExpression),
-		cteColumnsScope: make(map[string][]values.Field),
-		cteShadowStack:  make(map[string][]logical.LogicalOperator),
+		cteScope:        logical.CTERegistry{},
+		cteExprScope:    make(map[*logical.CTEProducer]expressions.RelationalExpression),
+		cteColumnsScope: make(map[*logical.CTEProducer][]values.Field),
 	}
 }
 
@@ -129,8 +128,8 @@ func TestClusterArity_FlatteningEvasion(t *testing.T) {
 
 	// Derived tables register their body in cteScope (translateCTE); model the
 	// scope directly the way translation has it when the outer join is walked.
-	tr.cteScope["T1"] = inner(scan("Order", "o"), scan("Customer", "c"))
-	tr.cteScope["T2"] = inner(scan("TypedRecord", "t"), scan("Order", "o2"))
+	tr.cteScope = tr.cteScope.With(testCTEProducer("T1", inner(scan("Order", "o"), scan("Customer", "c"))))
+	tr.cteScope = tr.cteScope.With(testCTEProducer("T2", inner(scan("TypedRecord", "t"), scan("Order", "o2"))))
 
 	evasion := inner(scan("t1", "t1"), scan("t2", "t2"))
 	if got := tr.clusterArity(evasion); got != 4 {
@@ -152,7 +151,7 @@ func TestClusterArity_FlatteningEvasion(t *testing.T) {
 	}
 
 	// The scope must be restored after the walk (remove-while-deriving).
-	if _, ok := tr.cteScope["T1"]; !ok {
+	if tr.cteScope.Lookup("T1") == nil {
 		t.Fatal("clusterArity leaked the cteScope removal")
 	}
 }
@@ -441,7 +440,7 @@ func TestWedgeGate_Translation(t *testing.T) {
 func TestWalkArmParity(t *testing.T) {
 	t.Parallel()
 	tr := newGateTranslator(t)
-	tr.cteScope["BODYJOIN"] = inner(scan("Order", "ox"), scan("Customer", "cx"))
+	tr.cteScope = tr.cteScope.With(testCTEProducer("BODYJOIN", inner(scan("Order", "ox"), scan("Customer", "cx"))))
 
 	cases := []struct {
 		name         string

@@ -2267,7 +2267,7 @@ was not re-checked, so it is neither confirmed nor closed here.
     carve-out must MIGRATE INTO the normalizer when it lands, and the dotted-name divergences above
     interact with the same pass: one slice for all of it). The ordering half (round-11 review): the arc's
     real one-rule ending is a SINGLE shared source-name resolution function all four scope consumers call
-    (translateScan / cteLegKind / buildSelectScope.addSource / upgradeJoinOnPredicates.resolveTable — all
+    (translateScan / the former CTE-leg classifier / buildSelectScope.addSource / upgradeJoinOnPredicates.resolveTable — all
     four now individually CTE-first, but as four hand-mirrored copies). Two more riders, same family:
     (i) the ON-ONLY READ class (pre-existing; the SILENT residual is narrow — WHERE-based main-query
     reads are already LOUD 0AF00, only the leniency-path MAX/scalar-subquery reads stay silent):
@@ -2308,7 +2308,7 @@ was not re-checked, so it is neither confirmed nor closed here.
     fallback (0A000, pre-existing rounds 9-11); the normalization slice must catch it. (iv) CONSUMER
     CENSUS for the one-shared-resolution-function ending (round-11 review — the fifth copy was missed by
     the round dedicated to aligning copies, which is the argument for the collapse): LIVE-fixed CTE-first:
-    translateScan, cteLegKind, buildSelectScope.addSource, upgradeJoinOnPredicates.resolveTable,
+    translateScan, the former CTE-leg classifier, buildSelectScope.addSource, upgradeJoinOnPredicates.resolveTable,
     buildCTEColumnSource's inner-table resolution (round 13 — its metadata-first was LIVE-wrong: a
     shadowing body's schema derived from the TABLE, declined on the CTE-only column, and dumped the CTE
     into the ON-only marker path; the nested-shadow pin had been green only via the stale-outer accident
@@ -2330,7 +2330,7 @@ was not re-checked, so it is neither confirmed nor closed here.
     "metadata first, then CTE scopes") plus ~7 more ResolveTable sites in the same masked category
     (~:320, :912, :3754, :5790, :6083, :6206 — derived-carrier and exists-planner scope builders).
     NINTH-family (review, all three gates ACK on 60268dc9e + the follow-up): the ON-only CTE schema
-    (buildCTEOnOnlySource) is now COMPLETE-SCHEMA-OR-DECLINE — it installs ONLY when every runtime column
+    (the former ON-only source deriver) was COMPLETE-SCHEMA-OR-DECLINE at that revision — it installed ONLY when every runtime column
     (keyed by executeProjection's uppercased emit-name) is unique AND case-safe; ANY obstruction (a quoted
     case-sensitive alias `AS "x"`, or a duplicate runtime name incl. `AS "x", AS "X"` both emitting "X")
     declines the WHOLE source (caller's loud 0AF00), never a partial table. WHY complete-or-decline and not
@@ -12322,3 +12322,107 @@ merge approval or waiver of remaining review/CI/no-skip/performance gates.
   uncached (20,220 RUN/PASS, no skips). No production/wire change or new hunt.
   This closes the specific test defect, not the remaining full-PR findings or
   merge gates; published CI must confirm the pushed commit.
+
+
+### RFC-256 PR785 remaining ACKs — retained review repairs
+
+The owner requested the remaining ACKs and conditionally authorized merge only
+after all required ACKs exist. Companion: RFC-256 **PR785 retained CTE producer
+repair — defining environments**. Active DFS: retained Graefe P1, now witnessed
+by real FDB (13/14 targeted queries fail at `3e1b120e6`, including wrong rows).
+Retain resolved producer identity and its defining environment, not transitive
+name wrappers; design review precedes implementation. Next is the retained
+Codex UNNEST production-lowering assertion repair, then final-head full-PR
+Graefe/Torvalds/C++/Codex and published @claude/CI gates. Earlier timeout and
+mapped-read findings were repaired in their published commits; the historical
+queue above is not a claim that those remain broken. No new hunt or performance
+fix is started by this review-repair work. Evidence: the companion RFC and
+`/var/tmp/query-grind-cast/pr785-review/remaining-acks/`.
+
+### RFC-256 PR785 retained repair verification — 2026-09-18
+
+Companion: RFC-256 **Retained repairs: implementation and regression evidence**.
+CTE producer ownership and the retained UNNEST production-lowering assertions
+are implemented locally, not yet published or implementation-ACKed. Real-FDB
+20/20 CTE and 40/40 quoted-identifier queries pass; all 2,975 prior plan-golden
+entries remain byte-identical with 20 additive entries. Full affected core,
+explaindiff and docscheck targets pass. Four compiled semantic mutants fail and
+restore exactly; the companion scopes each population and artifact.
+
+Next: post-restoration full suite, affected race/determinism, final 1M stress,
+normal hooks, publish, and exact-head full-PR Graefe/Torvalds/C++/Codex plus
+published @claude LGTM and CI. No merge while any required ACK is absent. The
+owner then authorizes taking the next TODO entry after merge. Permission to run
+the five existing opt-in sweeps was explicitly requested; the earlier no-hunts
+restriction is not silently waived by this local repair.
+
+### RFC-256 PR785 read-only scan-resolution repair
+
+Companion: RFC-256 **Retained scan lookup race and non-publishing resolution**.
+The affected race run found a shared-scan write in read-side `ResolveScan`;
+construction now owns publication and lookup is read-only. A deterministic
+regression was observed red before repair. Full affected race: 2,804 RUN/PASS;
+ten selected repetitions: 430 RUN/PASS. Five final compiled mutants are killed
+and restored; an intermediate nogo-rejected mutant is explicitly excluded.
+The interrupted normal full-suite attempt is not a final green. The next full
+suite/stress/hook/review lap uses the restored non-publishing implementation.
+
+### Stress test 1M baseline — RFC-256 retained producer repair (2026-09-18)
+
+Companion: RFC-256 **Restored-source full verification**. Fresh normal suite:
+92/92 uncached targets; 40,022 Go RUN = 40,017 PASS + five existing opt-in SKIP,
+no unmatched outcomes. The sweep permission question remains open; this is not
+a no-skip or merge approval. All 51 frozen paths survived the suite and stress;
+subsequent gazelle/module tidy changed none. Closing documentation follows those
+measurements; hooks and final published-head reviews/CI remain required.
+
+Baseline commit: `ed3504f7e410d8e2a4f4c46fd7b4c72fd0484869`, the merge-base on
+2026-09-18. Repaired source: parent `3e1b120e6322bdb23a7c8f4cc7a2932a37b2c075`
+plus the 51-path frozen repair; exact tested Git **tree** object
+`364940ce4fcf72d255363b20d7c30e73c65cec5e` (not a published commit).
+The hash manifest and full commands are in
+`/var/tmp/query-grind-cast/pr785-review/remaining-acks/cte-readonly-final-freeze.json`
+and `cte-readonly-stress-records.json`. Baseline checkout
+`/var/tmp/query-grind-cast/baseline`; repaired checkout
+`/var/tmp/query-grind-cast/cte-producer-verify`. Both use the same filesystem
+with roughly 233 GB free and byte-identical `go.mod`. No other local test job
+was launched alongside these four serialized runs.
+
+Two baseline runs preceded two repaired runs. Every run completed 24 RUN/PASS
+(root plus 23 query cases), no failure/skip/cache hit. All 22 timed row counts
+match across all four runs; COUNT(*) separately asserts 1,000,000. Command wall
+times including build: baseline 180.312/179.289s; repaired 193.952/180.014s.
+One-minute load start/end: baseline 2.210/2.210 and 2.210/2.593; repaired
+2.593/2.955 and 2.955/3.855. Latencies below retain both samples; ratios divide
+arithmetic means. No parity or causality claim, no performance fix, no changed
+latency/workload limit. Slower observations remain visible.
+
+| Query | Rows | Baseline ms (n=2) | Repaired ms (n=2) | Mean repaired/base |
+|---|---:|---:|---:|---:|
+| PK lookup id=0 | 1 | 8.938 / 9.683 | 8.623 / 15.624 | 1.302x |
+| PK lookup id=N/2 | 1 | 8.516 / 8.829 | 9.042 / 15.898 | 1.438x |
+| PK lookup id=N-1 | 1 | 6.258 / 6.374 | 5.351 / 22.720 | 2.222x |
+| idx_customer eq | 8 | 7.045 / 6.546 | 6.859 / 31.811 | 2.845x |
+| idx_amount range >9000 | 100017 | 241.192 / 192.954 | 232.076 / 286.377 | 1.194x |
+| idx_status count pending | 1 | 407.402 / 434.174 | 376.283 / 318.196 | 0.825x |
+| full scan filter amount>5000 | 1 | 574.725 / 816.570 | 736.976 / 871.634 | 1.156x |
+| GROUP BY status | 4 | 6.664 / 5.962 | 22.327 / 6.446 | 2.279x |
+| GROUP BY status COUNT only | 4 | 5.368 / 5.451 | 22.126 / 5.419 | 2.546x |
+| SUM by status (aggregate index) | 4 | 5.833 / 5.632 | 13.972 / 5.783 | 1.723x |
+| GROUP BY customer HAVING | 47271 | 573.238 / 580.031 | 655.468 / 579.762 | 1.071x |
+| JOIN 10 orders x customers | 10 | 22.719 / 20.421 | 21.498 / 22.310 | 1.015x |
+| ORDER BY PK (full) | 1000000 | 7277.045 / 7353.015 | 3879.669 / 7479.113 | 0.776x |
+| ORDER BY PK + index filter | 8 | 9.504 / 9.150 | 9.209 / 9.033 | 0.978x |
+| scan all rows ordered | 1000000 | 3634.442 / 3616.518 | 3726.635 / 3736.883 | 1.029x |
+| scan all rows wide | 1000000 | 3884.176 / 3879.734 | 3990.025 / 3993.531 | 1.028x |
+| IN-list 5 values | 46 | 23.416 / 19.076 | 19.787 / 19.526 | 0.925x |
+| PK needle id=999999 | 1 | 6.252 / 5.985 | 5.870 / 5.901 | 0.962x |
+| PK+filter needle id=500000 | 1 | 7.673 / 7.522 | 7.640 / 7.715 | 1.011x |
+| full scan sparse filter | 97 | 3279.491 / 3283.829 | 3382.087 / 3402.709 | 1.034x |
+| UPDATE by index | 8 | 8.869 / 8.964 | 9.562 / 9.502 | 1.069x |
+| DELETE single row | 1 | 6.293 / 6.624 | 6.740 / 6.946 | 1.060x |
+
+Evidence: `cte-readonly-stress-{baseline,current}-{1,2}.{log,exit,bep.jsonl}`,
+`cte-readonly-stress-records.json`, `cte-readonly-stress-rows.json`, and the
+full-suite count/BEP/freeze verdict under the same artifact root. No new hunt
+was started, and no QSC-01–11 item is authorized or marked complete here.

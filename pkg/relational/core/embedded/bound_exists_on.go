@@ -27,7 +27,7 @@ func boundSourceNames(op logical.LogicalOperator) []boundSourceName {
 		}
 		name := node.Alias
 		if name == "" {
-			name = node.Name
+			name = node.Name()
 		}
 		return []boundSourceName{{strings.ToUpper(name), strings.ToUpper(sourceBindingName(node))}}
 	case *logical.LogicalUnnest:

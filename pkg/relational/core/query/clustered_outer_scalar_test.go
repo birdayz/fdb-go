@@ -659,9 +659,9 @@ func TestClusteredCTELexicalBoundary(t *testing.T) {
 	main := logical.NewProject(scan("D", "D"), []string{"free"}, nil)
 	main.ProjectedValues = []values.Value{free}
 	cte := logical.NewCTE("D", body, main, false)
-	cte.ColumnAliases = []string{"L", "F"}
+	cte.CTEProducer = logical.NewCTE(cte.Name(), cte.Body(), nil, cte.Recursive(), logical.CTEColumns([]string{"L", "F"}...), logical.CTETraversal(cte.TraversalOrder())).CTEProducer
 	cte.Binding = "PRIVATE"
-	cte.TraversalOrder = logical.TraversalPostOrder
+	cte.CTEProducer = logical.NewCTE(cte.Name(), cte.Body(), nil, cte.Recursive(), logical.CTEColumns(cte.ColumnAliases()...), logical.CTETraversal(logical.TraversalPostOrder)).CTEProducer
 	cte.PreserveMainSource = true
 	replacement := &values.ConstantValue{Value: int64(42)}
 	rebuilt, ok := rebuildInnerWithValues(cte, func(v values.Value) values.Value {
@@ -674,15 +674,15 @@ func TestClusteredCTELexicalBoundary(t *testing.T) {
 		t.Fatal("nonrecursive CTE Body/Main must be rebuildable")
 	}
 	got := rebuilt.(*logical.LogicalCTE)
-	gotBody := got.Body.(*logical.LogicalProject)
+	gotBody := got.Body().(*logical.LogicalProject)
 	gotMain := got.Main.(*logical.LogicalProject)
 	if gotBody.ProjectedValues[0] != owned || gotBody.ProjectedValues[1] != replacement || gotMain.ProjectedValues[0] != replacement {
 		t.Fatalf("lexical rewrite: body=%v main=%v; only free references may change", gotBody.ProjectedValues, gotMain.ProjectedValues)
 	}
-	if got == cte || got.Body == body || got.Main == main || body.ProjectedValues[1] != free || main.ProjectedValues[0] != free {
+	if got == cte || got.Body() == body || got.Main == main || body.ProjectedValues[1] != free || main.ProjectedValues[0] != free {
 		t.Fatal("CTE pull-up must copy changed nodes without mutating the original")
 	}
-	if got.Name != "D" || got.Binding != "PRIVATE" || !got.PreserveMainSource || got.Recursive || got.TraversalOrder != logical.TraversalPostOrder || strings.Join(got.ColumnAliases, ",") != "L,F" {
+	if got.Name() != "D" || got.Binding != "PRIVATE" || !got.PreserveMainSource || got.Recursive() || got.TraversalOrder() != logical.TraversalPostOrder || strings.Join(got.ColumnAliases(), ",") != "L,F" {
 		t.Fatalf("wrapper attributes lost: %#v", got)
 	}
 	aliases := outerSubtreeAliases(cte)
@@ -748,7 +748,7 @@ func TestClusteredCTEMainBindingDoesNotHideBodyFreeReference(t *testing.T) {
 		t.Fatal("CTE must be rebuildable")
 	}
 	got := rebuilt.(*logical.LogicalCTE)
-	if got.Body.(*logical.LogicalProject).ProjectedValues[0] != replacement || got.Main.(*logical.LogicalProject).ProjectedValues[0] != ref {
+	if got.Body().(*logical.LogicalProject).ProjectedValues[0] != replacement || got.Main.(*logical.LogicalProject).ProjectedValues[0] != ref {
 		t.Fatal("Body-free D must rewrite while Main-local D stays untouched")
 	}
 	localOnly := logical.NewCTE("D", scan("Order", "LOCAL"), main, false)
@@ -781,7 +781,7 @@ func TestClusteredCTEBindingNotDisplayAlias(t *testing.T) {
 	if !ok {
 		t.Fatal("bound CTE must rebuild")
 	}
-	projections := got.(*logical.LogicalCTE).Body.(*logical.LogicalProject).ProjectedValues
+	projections := got.(*logical.LogicalCTE).Body().(*logical.LogicalProject).ProjectedValues
 	if projections[0] != local || projections[1] != replacement {
 		t.Fatalf("binding/display rewrite mismatch: %v", projections)
 	}

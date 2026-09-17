@@ -98,9 +98,9 @@ func newChainedSpineTranslator(t *testing.T) *cascadesTranslator {
 	}
 	return &cascadesTranslator{
 		md:              md,
-		cteScope:        make(map[string]logical.LogicalOperator),
-		cteExprScope:    make(map[string]expressions.RelationalExpression),
-		cteColumnsScope: make(map[string][]values.Field),
+		cteScope:        logical.CTERegistry{},
+		cteExprScope:    make(map[*logical.CTEProducer]expressions.RelationalExpression),
+		cteColumnsScope: make(map[*logical.CTEProducer][]values.Field),
 	}
 }
 

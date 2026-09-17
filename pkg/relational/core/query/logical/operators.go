@@ -76,8 +76,9 @@ type CorrelatedScalarSubquery struct {
 // LogicalScan reads a single table. Empty Alias means "use the table
 // name as the source alias."
 type LogicalScan struct {
-	Table string
-	Alias string
+	Source ScanSource
+	Table  string
+	Alias  string
 	// TablePath preserves normalized identifier segments from the SQL parse
 	// boundary. A quoted dotted name is one segment, not a schema qualifier.
 	// Nil denotes legacy programmatic input; non-nil empty is malformed.
@@ -1051,26 +1052,18 @@ func (v *LogicalValues) Explain(indent string) string {
 
 // --- CTE -----------------------------------------------------------
 
-// LogicalCTE wraps a named Common Table Expression around a Main
-// query. The Body is the CTE's own plan; Main references Body via a
-// LogicalScan on Name. Recursive CTEs set Recursive=true — Body may
-// self-reference (the recursive evaluator lives at the executor
-// layer for now).
+// LogicalCTE retains a Common Table Expression declaration around a Main query.
+// Its consumers select the shared producer through LogicalScan.Source.
 type LogicalCTE struct {
+	*CTEProducer
 	// Alias retains a derived source's SQL qualifier independently of its
 	// private CTE registration Name (empty = Name is also the qualifier).
-	Alias          string
-	Name           string
-	Body           LogicalOperator
-	Main           LogicalOperator
-	Recursive      bool
-	ColumnAliases  []string // WITH c(a, b) AS (...) → renames body's output columns
-	TraversalOrder TraversalOrder
+	Alias string
+	Main  LogicalOperator
 	// PreserveMainSource marks a scope-only envelope: Name registers Body for
 	// scans in Main, but the envelope does not replace Main's outward source
-	// identity. Correlated EXISTS/Scalar plans use this when they copy enclosing
-	// CTE definitions into a self-contained subplan. Derived-table alias carriers
-	// leave it false because their binding is the outward source identity.
+	// identity. Derived-table alias carriers leave it false because their
+	// binding is the outward source identity.
 	PreserveMainSource bool
 	// Binding is the derived/CTE leg's binding correlation name when its
 	// FROM alias duplicates an earlier leg's ("" = Name binds). See
@@ -1094,21 +1087,26 @@ const (
 )
 
 // NewCTE constructs a LogicalCTE.
-func NewCTE(name string, body, main LogicalOperator, recursive bool) *LogicalCTE {
-	return &LogicalCTE{Name: name, Body: body, Main: main, Recursive: recursive}
+func NewCTE(name string, body, main LogicalOperator, recursive bool, options ...CTEOption) *LogicalCTE {
+	return &LogicalCTE{CTEProducer: newCTEProducer(name, body, recursive, options...), Main: main}
+}
+
+// NewCTEReference retains a prepared declaration without copying its metadata.
+func NewCTEReference(producer *CTEProducer, main LogicalOperator) *LogicalCTE {
+	return &LogicalCTE{CTEProducer: producer, Main: main}
 }
 
 func (c *LogicalCTE) Children() []LogicalOperator {
-	return []LogicalOperator{c.Body, c.Main}
+	return []LogicalOperator{c.Body(), c.Main}
 }
 
 func (c *LogicalCTE) Explain(indent string) string {
 	tag := "CTE"
-	if c.Recursive {
+	if c.Recursive() {
 		tag = "RecursiveCTE"
 	}
-	header := fmt.Sprintf("%s%s(%s)", indent, tag, c.Name)
-	return fmt.Sprintf("%s\n%s\n%s", header, c.Body.Explain(indent+"  "), c.Main.Explain(indent+"  "))
+	header := fmt.Sprintf("%s%s(%s)", indent, tag, c.Name())
+	return fmt.Sprintf("%s\n%s\n%s", header, c.Body().Explain(indent+"  "), c.Main.Explain(indent+"  "))
 }
 
 // --- DDL + passthrough ---------------------------------------------
@@ -1273,7 +1271,7 @@ func OuterSourceIsDerivedTable(op LogicalOperator, alias string) bool {
 	walk = func(o LogicalOperator) bool {
 		switch n := o.(type) {
 		case *LogicalCTE:
-			if strings.EqualFold(n.Name, want) {
+			if strings.EqualFold(n.Name(), want) {
 				return true
 			}
 			// Only the visible Main leg is in scope; never the Body.

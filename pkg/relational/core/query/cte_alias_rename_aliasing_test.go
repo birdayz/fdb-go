@@ -28,16 +28,14 @@ func TestCTEAliasRenameDoesNotRewriteTheDefinitionSchema(t *testing.T) {
 		{Name: "N", FieldType: values.NotNullLong, Ordinal: 0},
 		{Name: "M", FieldType: values.NotNullLong, Ordinal: 1},
 	}
+	producer := testCTEProducer(cteName, nil)
 	tr := &cascadesTranslator{
-		cteExprScope:    map[string]expressions.RelationalExpression{cteName: nil},
-		cteColumnsScope: map[string][]values.Field{cteName: stored},
+		cteScope:        logical.CTERegistry{}.With(producer),
+		cteExprScope:    map[*logical.CTEProducer]expressions.RelationalExpression{producer: nil},
+		cteColumnsScope: map[*logical.CTEProducer][]values.Field{producer: stored},
 	}
 
-	ref := &logical.LogicalCTE{
-		Name:          "D",
-		Body:          &logical.LogicalScan{Table: cteName},
-		ColumnAliases: []string{"a", "b"},
-	}
+	ref := &logical.LogicalCTE{CTEProducer: logical.NewCTE("D", &logical.LogicalScan{Table: cteName}, nil, false, logical.CTEColumns([]string{"a", "b"}...)).CTEProducer}
 
 	got := tr.derivedOutputColumns(ref)
 	if len(got) != 2 {

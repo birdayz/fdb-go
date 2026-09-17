@@ -483,6 +483,7 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 		op = derivedSourceCarrier(sq.tableName, sq.bindingID, innerOp)
 	} else {
 		scan := logical.NewScan(sq.tableName, sq.tableAlias, sq.sourceSegments...)
+		scan.Source = sq.resolvedSource
 		scan.Binding = sq.bindingID
 		op = scan
 	}
@@ -532,6 +533,7 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 			right = u
 		} else {
 			sc := logical.NewScan(j.tableName, j.alias, j.segments...)
+			sc.Source = j.resolvedSource
 			sc.Binding = j.bindingID
 			right = sc
 		}

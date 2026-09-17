@@ -181,7 +181,7 @@ func TestCTELabelsDoNotRequireUnionTypePromotion(t *testing.T) {
 			t.Parallel()
 			cte := logical.NewCTE("C", body, logical.NewJoin(
 				logical.NewScan("C", "L"), logical.NewScan("C", "R"), logical.JoinInner, ""), false)
-			cte.ColumnAliases = tc.aliases
+			cte.CTEProducer = logical.NewCTE(cte.Name(), cte.Body(), nil, cte.Recursive(), logical.CTEColumns(tc.aliases...), logical.CTETraversal(cte.TraversalOrder())).CTEProducer
 			labels, err := ExactLogicalOutputLabels(cte, nil, nil)
 			if err != nil || !slices.Equal(labels, tc.want) {
 				t.Fatalf("CTE labels = %v, %v; want %v independently of pending promotion", labels, err, tc.want)
@@ -190,24 +190,24 @@ func TestCTELabelsDoNotRequireUnionTypePromotion(t *testing.T) {
 				t.Fatalf("label derivation certified an unresolved UNION type: %v, %v", typ, err)
 			}
 			outer := logical.NewCTE("C", branch(values.NotNullLong, int64(1)), cte, false)
-			outer.ColumnAliases = []string{"OUTER_LEFT", "OUTER_RIGHT"}
+			outer.CTEProducer = logical.NewCTE(outer.Name(), outer.Body(), nil, outer.Recursive(), logical.CTEColumns([]string{"OUTER_LEFT", "OUTER_RIGHT"}...), logical.CTETraversal(outer.TraversalOrder())).CTEProducer
 			labels, err = ExactLogicalOutputLabels(outer, nil, nil)
 			if err != nil || !slices.Equal(labels, tc.want) {
 				t.Fatalf("inner pending binding did not shadow outer labels: %v, %v; want %v", labels, err, tc.want)
 			}
 			// The inner Body still sees the outer binding, not its own aliases.
 			inner := logical.NewCTE("C", logical.NewScan("C", "B"), logical.NewScan("C", "M"), false)
-			inner.ColumnAliases = []string{"INNER_LEFT", "INNER_RIGHT"}
+			inner.CTEProducer = logical.NewCTE(inner.Name(), inner.Body(), nil, inner.Recursive(), logical.CTEColumns([]string{"INNER_LEFT", "INNER_RIGHT"}...), logical.CTETraversal(inner.TraversalOrder())).CTEProducer
 			outer.Main = inner
 			labels, err = ExactLogicalOutputLabels(outer, nil, nil)
-			if err != nil || !slices.Equal(labels, inner.ColumnAliases) {
-				t.Fatalf("inner body scope = %v, %v; want %v", labels, err, inner.ColumnAliases)
+			if err != nil || !slices.Equal(labels, inner.ColumnAliases()) {
+				t.Fatalf("inner body scope = %v, %v; want %v", labels, err, inner.ColumnAliases())
 			}
 		})
 	}
 	for _, aliases := range [][]string{{"A"}, {"A", "B", "C"}} {
 		cte := logical.NewCTE("C", body, logical.NewScan("C", ""), false)
-		cte.ColumnAliases = aliases
+		cte.CTEProducer = logical.NewCTE(cte.Name(), cte.Body(), nil, cte.Recursive(), logical.CTEColumns(aliases...), logical.CTETraversal(cte.TraversalOrder())).CTEProducer
 		if labels, err := ExactLogicalOutputLabels(cte, nil, nil); err == nil || labels != nil {
 			t.Fatalf("mismatched aliases %v accepted for a pending two-column body: %v, %v", aliases, labels, err)
 		}

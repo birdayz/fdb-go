@@ -28,7 +28,7 @@ func ExactLogicalResultType(op logical.LogicalOperator, md *recordlayer.RecordMe
 func ExactLogicalResultTypeWithCTEs(
 	op logical.LogicalOperator,
 	md *recordlayer.RecordMetaData,
-	enclosing map[string]values.Type,
+	enclosing *logical.CTERegistry,
 ) (values.Type, error) {
 	return logicalResultTypeWithCTEs(op, md, enclosing, strictLogicalUnionResultType)
 }
@@ -40,7 +40,7 @@ func ExactLogicalResultTypeWithCTEs(
 func LogicalResultTypeAfterUnionPromotionWithCTEs(
 	op logical.LogicalOperator,
 	md *recordlayer.RecordMetaData,
-	enclosing map[string]values.Type,
+	enclosing *logical.CTERegistry,
 ) (values.Type, error) {
 	return logicalResultTypeWithCTEs(op, md, enclosing, promotedLogicalUnionResultType)
 }
@@ -50,19 +50,15 @@ type logicalUnionTypeDeriver func([]values.Type) (values.Type, error)
 func logicalResultTypeWithCTEs(
 	op logical.LogicalOperator,
 	md *recordlayer.RecordMetaData,
-	enclosing map[string]values.Type,
+	enclosing *logical.CTERegistry,
 	unionType logicalUnionTypeDeriver,
 ) (values.Type, error) {
-	var env cteRows
-	if len(enclosing) > 0 {
-		env = make(cteRows, len(enclosing))
-		for name, row := range enclosing {
-			if row == nil {
-				continue
-			}
-			env[strings.ToUpper(name)] = row
-		}
+	registry := logical.CTERegistry{}
+	if enclosing != nil {
+		registry = *enclosing
 	}
+	logical.BindCTESources(op, registry)
+	env := make(cteRows)
 	typ, err := deriveLogicalResultType(op, md, env, unionType)
 	if err != nil {
 		return nil, err
@@ -73,12 +69,8 @@ func logicalResultTypeWithCTEs(
 	return typ, nil
 }
 
-// cteRows binds each enclosing WITH name to the row its body flows, keyed
-// UPPERCASE. A scan of one of those names has no catalog entry, so without the
-// binding it cannot be typed — and the CTE case used to recover from that by
-// typing its BODY and reporting it as the whole statement's row, which is a
-// different, usually wider row than the query returns.
-type cteRows map[string]values.Type
+// cteRows memoizes rows and active recursive seeds by selected producer.
+type cteRows map[*logical.CTEProducer]values.Type
 
 func exactLogicalResultType(op logical.LogicalOperator, md *recordlayer.RecordMetaData, env cteRows) (values.Type, error) {
 	return deriveLogicalResultType(op, md, env, strictLogicalUnionResultType)
@@ -193,10 +185,8 @@ func deriveLogicalResultType(op logical.LogicalOperator, md *recordlayer.RecordM
 		}
 		return &values.RecordType{Fields: fields}, nil
 	case *logical.LogicalScan:
-		// A declared WITH name shadows a same-named table, the resolution order
-		// every other consumer in this family applies.
-		if row, bound := env[strings.ToUpper(typed.Table)]; bound {
-			return row, nil
+		if producer := typed.Source.Producer(); producer != nil {
+			return deriveCTEProducerType(producer, md, env, unionType)
 		}
 		return exactScanResultType(typed, md)
 	case *logical.LogicalInlineValues:
@@ -243,40 +233,9 @@ func deriveLogicalResultType(op logical.LogicalOperator, md *recordlayer.RecordM
 		}
 		return unionType(branches)
 	case *logical.LogicalCTE:
-		// A WITH statement's row is its MAIN query's row — the body is the CTE's
-		// INPUT. Main could not be typed on its own because it SCANS the CTE by
-		// name, which no catalog answers; the answer is to bind the name to the
-		// body's row for the descent, not to hand the body's row back as the
-		// statement's. Handing it back reported a scalar `SELECT COUNT(*) FROM v`
-		// as returning two columns, the two being v's, and Main's real failure
-		// never reached the user.
-		//
-		// A CTE's column list renames the BODY (`WITH c(x) AS ...` — the field
-		// on LogicalCTE says so, exactCTEDefinitionRecordType applies it that
-		// way, and the translator builds a Project over the body from it), so
-		// the rename belongs to the row bound under the CTE's NAME. Applying it
-		// to the statement's row instead overwrote the main query's own `AS`
-		// labels — `WITH c(x) AS (…) SELECT x AS y FROM c` reported X — and
-		// checked the alias arity against a row the aliases do not describe, so
-		// a main query projecting fewer columns than the CTE declares was
-		// rejected as an arity error.
-		bodyRow, bodyErr := deriveLogicalResultType(typed.Body, md, env, unionType)
-		if bodyErr != nil {
-			return nil, bodyErr
-		}
-		bound, bindErr := cteBoundRowType(bodyRow, typed)
-		if bindErr != nil {
-			return nil, bindErr
-		}
-		main := make(cteRows, len(env)+1)
-		for name, row := range env {
-			main[name] = row
-		}
-		main[strings.ToUpper(typed.Name)] = bound
-		return deriveLogicalResultType(typed.Main, md, main, unionType)
-	default:
-		return nil, fmt.Errorf("logical operator %T has no exact result-type derivation", op)
+		return deriveLogicalResultType(typed.Main, md, env, unionType)
 	}
+	return nil, fmt.Errorf("no exact logical result type for %T", op)
 }
 
 // ExactLogicalOutputLabels returns the SQL OUTPUT LABELS of op's row — one per
@@ -302,14 +261,14 @@ func deriveLogicalResultType(op logical.LogicalOperator, md *recordlayer.RecordM
 func ExactLogicalOutputLabels(
 	op logical.LogicalOperator,
 	md *recordlayer.RecordMetaData,
-	enclosing map[string]values.Type,
+	enclosing *logical.CTERegistry,
 ) ([]string, error) {
-	env := &logicalLabelScope{rows: make(cteRows, len(enclosing))}
-	for name, row := range enclosing {
-		if row != nil {
-			env.rows[strings.ToUpper(name)] = row
-		}
+	registry := logical.CTERegistry{}
+	if enclosing != nil {
+		registry = *enclosing
 	}
+	logical.BindCTESources(op, registry)
+	env := &logicalLabelScope{rows: make(cteRows), labels: make(map[*logical.CTEProducer][]string)}
 	return exactLogicalOutputLabels(op, md, env)
 }
 
@@ -318,7 +277,7 @@ func ExactLogicalOutputLabels(
 // label-only bindings must never manufacture an executable record type.
 type logicalLabelScope struct {
 	rows   cteRows
-	labels map[string][]string
+	labels map[*logical.CTEProducer][]string
 }
 
 func exactLogicalOutputLabels(
@@ -335,10 +294,33 @@ func exactLogicalOutputLabels(
 	}
 	switch typed := op.(type) {
 	case *logical.LogicalScan:
-		if env != nil {
-			if labels, ok := env.labels[strings.ToUpper(typed.Table)]; ok {
+		if producer := typed.Source.Producer(); producer != nil {
+			if labels, ok := env.labels[producer]; ok {
 				return append([]string(nil), labels...), nil
 			}
+			body := producer.Body()
+			if producer.Recursive() {
+				if union, ok := body.(*logical.LogicalUnion); ok {
+					for _, branch := range union.Inputs {
+						if !logical.ReferencesCTE(branch, producer) {
+							body = branch
+							break
+						}
+					}
+				}
+			}
+			labels, err := exactLogicalOutputLabels(body, md, env)
+			if err != nil {
+				return nil, err
+			}
+			if aliases := producer.ColumnAliases(); len(aliases) > 0 {
+				if len(aliases) != len(labels) {
+					return nil, fmt.Errorf("CTE %q column list has %d names but its body flows %d columns", producer.Name(), len(aliases), len(labels))
+				}
+				labels = aliases
+			}
+			env.labels[producer] = append([]string(nil), labels...)
+			return labels, nil
 		}
 	case *logical.LogicalProject:
 		// The SQL names, one per slot and NOT deduplicated: these labels are
@@ -388,38 +370,7 @@ func exactLogicalOutputLabels(
 		}
 		return append(append(make([]string, 0, len(left)+len(right)), left...), right...), nil
 	case *logical.LogicalCTE:
-		main := &logicalLabelScope{rows: make(cteRows, len(rows)+1), labels: make(map[string][]string)}
-		for name, row := range rows {
-			main.rows[name] = row
-		}
-		if env != nil {
-			for name, labels := range env.labels {
-				main.labels[name] = labels
-			}
-		}
-		key := strings.ToUpper(typed.Name)
-		delete(main.rows, key)
-		delete(main.labels, key)
-		if bodyRow, bodyErr := exactLogicalResultType(typed.Body, md, rows); bodyErr == nil {
-			bound, bindErr := cteBoundRowType(bodyRow, typed)
-			if bindErr != nil {
-				return nil, bindErr
-			}
-			main.rows[key] = bound
-		}
-		// Both derivations see the enclosing scope. Only Main sees the newly
-		// published binding; a nested definition may shadow an enclosing CTE.
-		if labels, labelErr := exactLogicalOutputLabels(typed.Body, md, env); labelErr == nil {
-			if len(typed.ColumnAliases) > 0 {
-				if len(labels) != len(typed.ColumnAliases) {
-					return nil, fmt.Errorf("CTE %q column list has %d names but its body flows %d columns",
-						typed.Name, len(typed.ColumnAliases), len(labels))
-				}
-				labels = append([]string(nil), typed.ColumnAliases...)
-			}
-			main.labels[key] = labels
-		}
-		return exactLogicalOutputLabels(typed.Main, md, main)
+		return exactLogicalOutputLabels(typed.Main, md, env)
 	}
 	// Every other node's exact row already carries its own labels: a
 	// projection's are its aliases, a scan's are its stored column names, an
@@ -509,24 +460,24 @@ func rowLabels(typ values.Type, op logical.LogicalOperator) ([]string, error) {
 // agree by construction. Ordinal is restamped and the leg layout carried:
 // the binding has to be the row the physical CTE actually produces, and an
 // exact consumer reads position and leg windows from it, not just names.
-func cteBoundRowType(bodyRow values.Type, cte *logical.LogicalCTE) (values.Type, error) {
-	if len(cte.ColumnAliases) == 0 {
+func cteBoundRowType(bodyRow values.Type, cte *logical.CTEProducer) (values.Type, error) {
+	if len(cte.ColumnAliases()) == 0 {
 		return bodyRow, nil
 	}
 	record, ok := bodyRow.(*values.RecordType)
 	if !ok {
-		return nil, fmt.Errorf("CTE %q has a column list but its body flows %v, not a record", cte.Name, bodyRow)
+		return nil, fmt.Errorf("CTE %q has a column list but its body flows %v, not a record", cte.Name(), bodyRow)
 	}
-	if len(record.Fields) != len(cte.ColumnAliases) {
+	if len(record.Fields) != len(cte.ColumnAliases()) {
 		return nil, fmt.Errorf("CTE %q column list has %d names but its body flows %d columns",
-			cte.Name, len(cte.ColumnAliases), len(record.Fields))
+			cte.Name(), len(cte.ColumnAliases()), len(record.Fields))
 	}
 	fields := append([]values.Field(nil), record.Fields...)
 	for i := range fields {
 		// A CTE column alias arrives already normalized by the parse capture,
 		// so it is applied verbatim — `WITH c("x") AS (…)` names the column x,
 		// and a fold here would make `c."x"` unable to name it.
-		fields[i].Name = cte.ColumnAliases[i]
+		fields[i].Name = cte.ColumnAliases()[i]
 		fields[i].Ordinal = i
 	}
 	return &values.RecordType{
@@ -736,4 +687,44 @@ func projectionSlotSQLName(typed *logical.LogicalProject, i int) string {
 		return name[dot+1:]
 	}
 	return name
+}
+
+// deriveCTEProducerType follows the same retained source as translation. The
+// temporary recursive row is scoped by producer identity, never by SQL name.
+func deriveCTEProducerType(producer *logical.CTEProducer, md *recordlayer.RecordMetaData, env cteRows, unionType logicalUnionTypeDeriver) (values.Type, error) {
+	if row, ok := env[producer]; ok {
+		if row == nil {
+			return nil, fmt.Errorf("CTE %q has no recursive seed row", producer.Name())
+		}
+		return row, nil
+	}
+	if env == nil {
+		env = make(cteRows)
+	}
+	env[producer] = nil
+	defer delete(env, producer)
+	if producer.Recursive() {
+		if union, ok := producer.Body().(*logical.LogicalUnion); ok {
+			for _, branch := range union.Inputs {
+				if logical.ReferencesCTE(branch, producer) {
+					continue
+				}
+				seed, err := deriveLogicalResultType(branch, md, env, unionType)
+				if err != nil {
+					return nil, err
+				}
+				row, err := cteBoundRowType(seed, producer)
+				if err != nil {
+					return nil, err
+				}
+				env[producer] = row
+				break
+			}
+		}
+	}
+	body, err := deriveLogicalResultType(producer.Body(), md, env, unionType)
+	if err != nil {
+		return nil, err
+	}
+	return cteBoundRowType(body, producer)
 }

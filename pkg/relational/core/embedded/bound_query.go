@@ -53,7 +53,7 @@ func (p *existsSubqueryPlanner) bindQuery(q antlrgen.IQueryContext) (*boundQuery
 	if err := resolveQualifiedTableNames(plan, p.effectiveSchemaName()); err != nil {
 		return nil, err
 	}
-	plan = p.wrapWithOuterCTEs(plan)
+	logical.BindCTESources(plan, p.cteProducers)
 	return newBoundQuery(plan, visitor.enclosingScope)
 }
 
@@ -61,7 +61,8 @@ func (p *existsSubqueryPlanner) bindQuery(q antlrgen.IQueryContext) (*boundQuery
 // consumers classify it. Both use the same logical dependency property; memo
 // translation is not a prerequisite for deciding whether a query is correlated.
 func newBoundQuery(plan logical.LogicalOperator, enclosing *semantic.Scope) (*boundQuery, error) {
-	property, err := boundDependencies(plan, nil)
+	logical.BindCTESources(plan, logical.CTERegistry{})
+	property, err := boundDependencies(plan, make(map[*logical.CTEProducer]bindingSet))
 	if err != nil {
 		return nil, err
 	}
@@ -128,7 +129,7 @@ func sourceBindingName(op logical.LogicalOperator) string {
 		if node.Binding != "" {
 			return node.Binding
 		}
-		return node.Name
+		return node.Name()
 	}
 	return ""
 }
@@ -144,7 +145,11 @@ func unionBindings(dst bindingSet, src bindingSet) {
 // cross non-correlating boundaries unchanged. CTE definitions are evaluated in
 // their defining registry and contribute only at an actual scan of that body.
 // No translation, parser walk, undefined-column retry, or SQL-name veto occurs.
-func boundDependencies(op logical.LogicalOperator, ctes map[string]bindingSet) (boundProperty, error) {
+func boundDependencies(op logical.LogicalOperator, ctes map[*logical.CTEProducer]bindingSet) (boundProperty, error) {
+	if ctes == nil {
+		logical.BindCTESources(op, logical.CTERegistry{})
+		ctes = make(map[*logical.CTEProducer]bindingSet)
+	}
 	r := boundProperty{free: make(bindingSet), local: make(bindingSet)}
 	own := make(bindingSet)
 	addValue := func(v values.Value) { unionBindings(own, values.GetCorrelatedToOfValue(v)) }
@@ -159,7 +164,17 @@ func boundDependencies(op logical.LogicalOperator, ctes map[string]bindingSet) (
 	var children []logical.LogicalOperator
 	switch node := op.(type) {
 	case *logical.LogicalScan:
-		unionBindings(r.free, ctes[strings.ToUpper(node.Table)])
+		if producer := node.Source.Producer(); producer != nil {
+			if _, found := ctes[producer]; !found {
+				ctes[producer] = make(bindingSet)
+				body, err := boundDependencies(producer.Body(), ctes)
+				if err != nil {
+					return r, err
+				}
+				ctes[producer] = body.free
+			}
+			unionBindings(r.free, ctes[producer])
+		}
 		r.local[values.NamedCorrelationIdentifier(strings.ToUpper(sourceBindingName(node)))] = struct{}{}
 	case *logical.LogicalInlineValues:
 		addValue(node.CollectionValue())
@@ -168,19 +183,7 @@ func boundDependencies(op logical.LogicalOperator, ctes map[string]bindingSet) (
 		addValue(node.CorrelatedCollection)
 		r.local[values.NamedCorrelationIdentifier(strings.ToUpper(sourceBindingName(node)))] = struct{}{}
 	case *logical.LogicalCTE:
-		definitions := maps.Clone(ctes)
-		if definitions == nil {
-			definitions = make(map[string]bindingSet)
-		}
-		if node.Recursive {
-			definitions[strings.ToUpper(node.Name)] = make(bindingSet)
-		}
-		body, err := boundDependencies(node.Body, definitions)
-		if err != nil {
-			return r, err
-		}
-		definitions[strings.ToUpper(node.Name)] = body.free
-		return boundDependencies(node.Main, definitions)
+		return boundDependencies(node.Main, ctes)
 	case *logical.LogicalUnion:
 		for _, branch := range node.Inputs {
 			property, err := boundDependencies(branch, ctes)

@@ -52,16 +52,20 @@ import (
 // upgrade, column validation, sort-key resolution) and any CTE column
 // schemas accumulated from WITH clause processing.
 type PlanVisitor struct {
-	bindings       *bindingAllocator
-	enclosingScope *semantic.Scope
-	md             *recordlayer.RecordMetaData
-	cteScopes      map[string]semantic.ScopeSource
-	cteBodies      map[string]logical.LogicalOperator // CTE name → body plan, for scalar subqueries referencing outer CTEs
+	// preparedQueryBodies is construction-only memoization for recursive seeds.
+	// The seed used to establish the temporary row is reused in the final UNION.
+	preparedQueryBodies map[antlrgen.IQueryExpressionBodyContext]logical.LogicalOperator
+	bindings            *bindingAllocator
+	enclosingScope      *semantic.Scope
+	md                  *recordlayer.RecordMetaData
+	cteScopes           map[string]semantic.ScopeSource
+	cteProducers        logical.CTERegistry
 	// cteOnScopes carries the ON-resolution-only sources for declared CTEs
 	// whose schema derivation declined the global cteScopes (join/unnest
 	// bodies) — consumed ONLY by upgradeJoinOnPredicates so an enclosing
 	// explicit join's ON resolves (or fails LOUD via the nil-Table marker)
-	// instead of being silently dropped. See buildCTEOnOnlySource.
+	// instead of being silently dropped. Prepared bodies publish exact schemas;
+	// an unrepresentable row retains a nil-Table marker.
 	cteOnScopes map[string]semantic.ScopeSource
 
 	// schemaName is the session schema (e.g. "s"). It is used ONLY to run Java's
@@ -157,280 +161,137 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 		return nil, nil
 	}
 	if v.md == nil {
-		return buildLogicalPlanForQuery(q), nil
+		plan := buildLogicalPlanForQuery(q)
+		logical.BindCTESources(plan, v.cteProducers)
+		return plan, nil
 	}
-
 	ctesCtx := q.Ctes()
-
-	// Pre-scan CTE definitions to extract column schemas and eagerly
-	// build CTE body plans. Process in declaration order so CTE B can
-	// reference CTE A's derived schema. The eager body plans are needed
-	// so scalar subqueries that reference outer CTEs can build
-	// self-contained logical plans (wrapped with LogicalCTE).
+	var declarations []*logical.CTEProducer
 	if ctesCtx != nil {
 		if v.cteScopes == nil {
 			v.cteScopes = make(map[string]semantic.ScopeSource)
 		}
-		if v.cteBodies == nil {
-			v.cteBodies = make(map[string]logical.LogicalOperator)
-		}
 		if v.cteOnScopes == nil {
 			v.cteOnScopes = make(map[string]semantic.ScopeSource)
 		}
-		// Detect all duplicate declarations before building any body. A first
-		// body can itself be unsupported (for example SELECT without FROM),
-		// but Java's duplicate-name error has declaration precedence.
-		predeclared := make(map[string]struct{}, len(ctesCtx.AllNamedQuery()))
+		predeclared := make(map[string]struct{})
 		for _, nq := range ctesCtx.AllNamedQuery() {
 			name := functions.FullIdToName(nq.GetName())
 			upper := strings.ToUpper(name)
 			if _, exists := predeclared[upper]; exists {
-				return nil, api.NewErrorf(api.ErrCodeDuplicateAlias,
-					"found '%s' more than once", name)
+				return nil, api.NewErrorf(api.ErrCodeDuplicateAlias, "found '%s' more than once", name)
 			}
 			predeclared[upper] = struct{}{}
 		}
-
-		// Duplicate detection is scoped to THIS WITH clause: a name already
-		// registered from an ENCLOSING query's WITH is legal lexical
-		// SHADOWING (a nested body's `WITH c1 …` shadows the outer c1 inside
-		// the body — buildCTEBodyQuery snapshots/restores the maps), not a
-		// duplicate. Consulting the shared maps here mis-fired 42712 on the
-		// shadowing shape Java accepts (cte.yamsql). ON-only registrations
-		// are declared names too, so one set covers both arms.
-		declaredHere := make(map[string]struct{}, len(ctesCtx.AllNamedQuery()))
+		recursive := ctesCtx.RECURSIVE() != nil
+		traversal := logical.TraversalAnyOrder
+		if toc := ctesCtx.TraversalOrderClause(); toc != nil {
+			traversal = logical.TraversalLevelOrder
+			if toc.PRE_ORDER() != nil {
+				traversal = logical.TraversalPreOrder
+			} else if toc.POST_ORDER() != nil {
+				traversal = logical.TraversalPostOrder
+			}
+		}
 		for _, nq := range ctesCtx.AllNamedQuery() {
 			name := functions.FullIdToName(nq.GetName())
 			upper := strings.ToUpper(name)
-			if _, exists := declaredHere[upper]; exists {
-				return nil, api.NewErrorf(api.ErrCodeDuplicateAlias,
-					"found '%s' more than once", name)
+			var aliases []string
+			if list, ok := nq.GetColumnAliases().(*antlrgen.FullIdListContext); ok && list != nil {
+				for _, id := range list.AllFullId() {
+					aliases = append(aliases, functions.FullIdToName(id))
+				}
 			}
-			declaredHere[upper] = struct{}{}
-			if ctesCtx.RECURSIVE() == nil {
-				// A definition sees the prior lexical registry. Publish its new
-				// name only after the full body succeeds; never reuse an older
-				// same-named body when construction of the new generation fails.
-				body, bodyErr := v.buildCTEBodyQuery(nq.Query())
-				if bodyErr != nil {
-					return nil, bodyErr
+			var seedContext antlrgen.IQueryExpressionBodyContext
+			var seed logical.LogicalOperator
+			if recursive {
+				if !containsTableRef(nq.Query().QueryExpressionBody(), upper) {
+					return nil, api.NewError(api.ErrCodeUnsupportedOperation, "condition is not met!")
 				}
-				if body == nil {
-					return nil, api.NewError(api.ErrCodeUnsupportedQuery, "CTE body has no logical plan")
+				if _, isSet := nq.Query().QueryExpressionBody().(*antlrgen.SetQueryContext); !isSet {
+					return nil, api.NewError(api.ErrCodeUnsupportedOperation, "recursive CTE requires UNION ALL body")
 				}
-				source, exact := exactVirtualScopeSource(name, body, v.md, nil, v.cteScopes)
+				if nq.Query().Ctes() != nil {
+					return nil, api.NewError(api.ErrCodeUnsupportedQuery, "nested WITH inside a recursive CTE body is not supported")
+				}
+				setQuery := nq.Query().QueryExpressionBody().(*antlrgen.SetQueryContext)
+				seedContext = setQuery.GetLeft()
+				previousRecursive := v.inRecursiveCTEBody
+				v.inRecursiveCTEBody = true
+				var seedErr error
+				seed, seedErr = v.visitUnionBranch(seedContext)
+				v.inRecursiveCTEBody = previousRecursive
+				if seedErr != nil {
+					return nil, seedErr
+				}
+				logical.BindCTESources(seed, v.cteProducers)
+				source, exact := exactVirtualScopeSource(name, seed, v.md, nil, v.cteScopes)
+				if exact {
+					if len(aliases) > 0 && len(aliases) != len(source.Table.Columns()) {
+						return nil, api.NewErrorf(api.ErrCodeInvalidColumnReference, "cte query has %d column(s), however %d aliases defined", len(source.Table.Columns()), len(aliases))
+					}
+					v.cteScopes[upper] = applyCTEColumnAliases(source, nq.GetColumnAliases())
+					delete(v.cteOnScopes, upper)
+				} else {
+					v.cteScopes[upper] = semantic.ScopeSource{}
+					v.cteOnScopes[upper] = semantic.ScopeSource{}
+				}
+			}
+
+			producer, err := logical.PrepareCTE(name, recursive, v.cteProducers, func(registry logical.CTERegistry) (logical.LogicalOperator, error) {
+				previous, wasRecursive, previousBodies := v.cteProducers, v.inRecursiveCTEBody, v.preparedQueryBodies
+				v.cteProducers, v.inRecursiveCTEBody = registry, recursive
+				if recursive {
+					v.preparedQueryBodies = map[antlrgen.IQueryExpressionBodyContext]logical.LogicalOperator{seedContext: seed}
+					source := v.cteScopes[upper]
+					source.CTE = registry.Lookup(name)
+					v.cteScopes[upper] = source
+				}
+				defer func() {
+					v.cteProducers, v.inRecursiveCTEBody, v.preparedQueryBodies = previous, wasRecursive, previousBodies
+				}()
+				return v.buildCTEBodyQuery(nq.Query())
+			}, logical.CTEColumns(aliases...), logical.CTETraversal(traversal))
+			if err != nil {
+				return nil, err
+			}
+			if producer.Body() == nil {
+				return nil, api.NewError(api.ErrCodeUnsupportedQuery, "CTE body has no logical plan")
+			}
+			if !recursive {
+				source, exact := exactVirtualScopeSource(name, producer.Body(), v.md, nil, v.cteScopes)
 				if !exact {
-					// Keep an underivable declaration as a tombstone, not the
-					// previous same-named schema. Consumers retain the existing
-					// correct-or-loud contract; execution still owns the full body.
 					delete(v.cteScopes, upper)
 					v.cteOnScopes[upper] = semantic.ScopeSource{}
-					v.cteBodies[upper] = body
-					continue
-				}
-				if aliases, ok := nq.GetColumnAliases().(*antlrgen.FullIdListContext); ok && aliases != nil &&
-					len(aliases.AllFullId()) != len(source.Table.Columns()) {
-					return nil, api.NewErrorf(api.ErrCodeInvalidColumnReference,
-						"cte query has %d column(s), however %d aliases defined",
-						len(source.Table.Columns()), len(aliases.AllFullId()))
-				}
-				v.cteScopes[upper] = applyCTEColumnAliases(source, nq.GetColumnAliases())
-				delete(v.cteOnScopes, upper)
-				v.cteBodies[upper] = body
-				continue
-			}
-			if src, ok, cteBodyErr := buildCTEColumnSource(v.md, name, nq.Query(), v.cteScopes); cteBodyErr != nil {
-				return nil, cteBodyErr
-			} else if ok {
-				// Apply CTE column aliases: WITH c1(x, y) AS (...)
-				if colAliases := nq.GetColumnAliases(); colAliases != nil {
-					if aliasList, ok := colAliases.(*antlrgen.FullIdListContext); ok && aliasList != nil {
-						aliases := aliasList.AllFullId()
-						if nAliases := len(aliases); nAliases > 0 && src.Table != nil {
-							nCols := len(src.Table.Columns())
-							if nAliases != nCols {
-								return nil, api.NewErrorf(api.ErrCodeInvalidColumnReference,
-									"cte query has %d column(s), however %d aliases defined",
-									nCols, nAliases)
-							}
-						}
+				} else {
+					if len(aliases) > 0 && len(aliases) != len(source.Table.Columns()) {
+						return nil, api.NewErrorf(api.ErrCodeInvalidColumnReference, "cte query has %d column(s), however %d aliases defined", len(source.Table.Columns()), len(aliases))
 					}
-					src = applyCTEColumnAliases(src, colAliases)
-				}
-				v.cteScopes[upper] = src
-				// SHADOWING an enclosing same-name CTE across derivability
-				// classes: the inner registration must also EVICT the outer's
-				// entry from the OPPOSITE map, or later resolution consults
-				// the stale outer schema through the map this registration
-				// did not write (false 42703 in JOIN ON / wrong slot —
-				// silent misread). Mirrors the catalog path's opposite-map
-				// deletions.
-				delete(v.cteOnScopes, upper)
-			} else {
-				// Declared but not globally derivable (join/unnest body): the
-				// ON-only registration keeps an enclosing explicit join's ON
-				// resolvable and supplies a complete sole-source block locally;
-				// marker entries remain unpromoted and loud.
-				if regErr := registerCTEOnOnlyScope(v.cteOnScopes, upper, nq.Query(), nq.GetColumnAliases(), v.md, v.schemaName, v.cteScopes); regErr != nil {
-					return nil, regErr
-				}
-				// Opposite-map eviction, ON-only arm: an underivable inner
-				// shadowing a DERIVABLE outer must displace the outer's
-				// cteScopes entry, or the body/main resolves named reads
-				// against the stale outer schema (the twin of the derivable
-				// arm's eviction above). A TOMBSTONE (nil Table), not
-				// deletion: absence falls back to the CATALOG and a
-				// same-named base table would silently bind its ordinals
-				// onto the CTE's rows; the tombstone keeps the name declared
-				// and resolution loud.
-				if _, hadOuter := v.cteScopes[upper]; hadOuter {
-					v.cteScopes[upper] = semantic.ScopeSource{}
+					v.cteScopes[upper] = applyCTEColumnAliases(source, nq.GetColumnAliases())
+					delete(v.cteOnScopes, upper)
 				}
 			}
-			// Eagerly build the CTE body plan so scalar subqueries
-			// that reference this CTE can wrap themselves with it.
-			// For recursive CTEs, set inRecursiveCTEBody so the
-			// union builder permits UNION DISTINCT.
-			if inner := nq.Query(); inner != nil {
-				isRecBody := ctesCtx.RECURSIVE() != nil && containsTableRef(inner.QueryExpressionBody(), upper)
-				if isRecBody {
-					v.inRecursiveCTEBody = true
-				}
-				// Self-invisible body build (buildCTEBodySelfHidden, both
-				// maps): SQL scoping makes `FROM T1` inside T1's body the
-				// TABLE, never the CTE being defined — CTE-first scope
-				// resolution would otherwise resolve the body against its
-				// own OUTPUT schema (the R5a shadow pin 42703'd on ID).
-				bodyOp, bodyErr := buildCTEBodySelfHidden(v.cteScopes, v.cteOnScopes, upper, nil, isRecBody, func() (logical.LogicalOperator, error) {
-					if isRecBody {
-						// Recursive bodies are SetQuery-shaped by contract and
-						// this arm builds the body WITHOUT its own ctes — a
-						// nested WITH inside one would be SILENTLY DROPPED
-						// (the exact bug class buildCTEBodyQuery fixes), so
-						// decline typed instead.
-						if inner.Ctes() != nil {
-							return nil, api.NewError(api.ErrCodeUnsupportedQuery,
-								"nested WITH inside a recursive CTE body is not supported")
-						}
-						return v.VisitQueryBody(inner.QueryExpressionBody())
-					}
-					return v.buildCTEBodyQuery(inner)
-				})
-				if isRecBody {
-					v.inRecursiveCTEBody = false
-				}
-				if bodyErr == nil && bodyOp != nil {
-					v.cteBodies[upper] = bodyOp
-				}
+			source, ok := v.cteScopes[upper]
+			if ok {
+				source.CTE = producer
+				v.cteScopes[upper] = source
 			}
+			onSource, ok := v.cteOnScopes[upper]
+			if ok {
+				onSource.CTE = producer
+				v.cteOnScopes[upper] = onSource
+			}
+			v.cteProducers = v.cteProducers.With(producer)
+			declarations = append(declarations, producer)
 		}
 	}
-
 	main, err := v.VisitQueryBody(q.QueryExpressionBody())
-	if err != nil {
-		return nil, err
+	if err != nil || main == nil {
+		return main, err
 	}
-	if main == nil {
-		return nil, nil
-	}
-	if ctesCtx == nil {
-		return main, nil
-	}
-	recursive := ctesCtx.RECURSIVE() != nil
-	// No clause = ANY (the planner picks); an explicit level_order pins
-	// the level union (the clause's only remaining alternative).
-	traversalOrder := logical.TraversalAnyOrder
-	if toc := ctesCtx.TraversalOrderClause(); toc != nil {
-		traversalOrder = logical.TraversalLevelOrder
-		if toc.PRE_ORDER() != nil {
-			traversalOrder = logical.TraversalPreOrder
-		} else if toc.POST_ORDER() != nil {
-			traversalOrder = logical.TraversalPostOrder
-		}
-	}
-	ctes := ctesCtx.AllNamedQuery()
-	for i := len(ctes) - 1; i >= 0; i-- {
-		nq := ctes[i]
-		name := functions.FullIdToName(nq.GetName())
-		upper := strings.ToUpper(name)
-		// Java alignment: fdb-relational's SemanticAnalyzer requires
-		// every CTE under WITH RECURSIVE to actually self-reference.
-		// Non-self-referencing bodies are rejected with "condition is
-		// not met!" (0A000). This check must run before the eagerly-
-		// built body is reused, because the eager builder doesn't
-		// validate recursive semantics.
-		if recursive {
-			if inner := nq.Query(); inner != nil {
-				qeb := inner.QueryExpressionBody()
-				if !containsTableRef(qeb, upper) {
-					return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-						"condition is not met!")
-				}
-			}
-		}
-		// Reuse eagerly-built body plans when available (non-recursive).
-		body := v.cteBodies[upper]
-		if body == nil {
-			if inner := nq.Query(); inner != nil {
-				if recursive {
-					qeb := inner.QueryExpressionBody()
-					if _, isSet := qeb.(*antlrgen.SetQueryContext); !isSet {
-						return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-							"recursive CTE requires UNION ALL body")
-					}
-					v.inRecursiveCTEBody = true
-				}
-				// Self-invisible rebuild (buildCTEBodySelfHidden). NOT the
-				// same scoping as the eager build: this arm runs after ALL
-				// registrations, so a body referencing a LATER-declared
-				// sibling resolves here where the eager build correctly
-				// failed — the rebuild converts SQL's forward-reference
-				// rejection into a non-SQL acceptance (review-caught,
-				// pre-existing; booked as the forward-visibility
-				// Java-conformance probe on the output-naming slice).
-				body, err = buildCTEBodySelfHidden(v.cteScopes, v.cteOnScopes, upper, nil, recursive, func() (logical.LogicalOperator, error) {
-					if recursive {
-						// Same silent-drop hazard as the eager arm: decline a
-						// nested WITH typed rather than build the body without
-						// its ctes.
-						if inner.Ctes() != nil {
-							return nil, api.NewError(api.ErrCodeUnsupportedQuery,
-								"nested WITH inside a recursive CTE body is not supported")
-						}
-						return v.VisitQueryBody(inner.QueryExpressionBody())
-					}
-					return v.buildCTEBodyQuery(inner)
-				})
-				if recursive {
-					v.inRecursiveCTEBody = false
-				}
-				if err != nil {
-					return nil, err
-				}
-			}
-		}
-		if body == nil {
-			return nil, nil
-		}
-		cte := logical.NewCTE(name, body, main, recursive)
-		cte.TraversalOrder = traversalOrder
-		if colAliases := nq.GetColumnAliases(); colAliases != nil {
-			if aliasList, ok := colAliases.(*antlrgen.FullIdListContext); ok && aliasList != nil {
-				aliases := aliasList.AllFullId()
-				names := make([]string, len(aliases))
-				for j, fid := range aliases {
-					// NormalizeIdentifier ALREADY applied SQL identifier
-					// semantics — an unquoted alias came back folded UPPER and a
-					// quoted one verbatim — so a second fold here can only
-					// destroy `WITH c("x")`. This is the CAPTURE, which is why
-					// it is fixed here rather than at the three sites that
-					// APPLY the list: they can only publish what this stored.
-					names[j] = functions.FullIdToName(fid)
-				}
-				cte.ColumnAliases = names
-			}
-		}
-		main = cte
+	logical.BindCTESources(main, v.cteProducers)
+	for i := len(declarations) - 1; i >= 0; i-- {
+		main = logical.NewCTEReference(declarations[i], main)
 	}
 	if err := bindExactCTEOutputMetadata(main, v.md); err != nil {
 		return nil, err
@@ -441,6 +302,9 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 // VisitQueryBody dispatches simple SELECT vs UNION, threading
 // metadata and CTE scopes through both arms.
 func (v *PlanVisitor) VisitQueryBody(body antlrgen.IQueryExpressionBodyContext) (logical.LogicalOperator, error) {
+	if prepared := v.preparedQueryBodies[body]; prepared != nil {
+		return prepared, nil
+	}
 	if body == nil {
 		return nil, nil
 	}
@@ -597,17 +461,7 @@ func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleT
 	// resolve) from MASKING the intended 42809. Mirrors the translator's
 	// translateUnnestJoin AT-rejection exactly. RFC-142.
 	if v.md != nil {
-		// Seed the in-scope CTE-name set from the WITH catalog: the FROM tree `op`
-		// here is built BEFORE the enclosing LogicalCTE wrapper is applied, so a
-		// segment-0 reference to an in-scope WITH CTE (`WITH D AS (…) … FROM D, D.arr
-		// AS x AT o`) is only knowable from v.cteScopes. An AT over such a CTE source
-		// is the translator's outerSourceIsCTE UNSUPPORTED_QUERY, NOT the base-table
-		// WRONG_OBJECT_TYPE — even when the CTE name ALSO matches a real table. RFC-142.
-		cteNames := make(map[string]struct{}, len(v.cteScopes))
-		for name := range v.cteScopes {
-			cteNames[strings.ToUpper(name)] = struct{}{}
-		}
-		if err := rejectAtOrdinalityOnTableWithCTEs(op, v.md, cteNames); err != nil {
+		if err := rejectAtOrdinalityOnTableWithCTEs(op, v.md, v.cteProducers); err != nil {
 			return nil, err
 		}
 	}
@@ -763,6 +617,13 @@ func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleT
 						var corrErr *CorrelatedExistsError
 						if errors.As(walkErr, &corrErr) {
 							return nil, corrErr
+						}
+						// A failed identifier is a semantic error, not an
+						// unsupported-shape decline. Keep the first projection's
+						// full reference instead of reporting a later column.
+						var missing *semantic.ColumnNotFoundError
+						if errors.As(walkErr, &missing) {
+							return nil, mapColumnResolveError(walkErr, missing.Reference())
 						}
 						// The plan-time cast-pair gate's own rejection
 						// (ResolveCast → 22F3H "No cast defined") must
@@ -1113,7 +974,7 @@ func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleT
 
 	// (9) Upgrade JOIN ON predicates.
 	if len(sq.joins) > 0 {
-		if err := upgradeJoinOnPredicates(op, sq, v.md, v.schemaName, queryCTEScopes, v.cteOnScopes, v.cteBodies); err != nil {
+		if err := upgradeJoinOnPredicates(op, sq, v.md, v.schemaName, queryCTEScopes, v.cteOnScopes, v.cteProducers); err != nil {
 			return nil, err
 		}
 	}
@@ -1127,14 +988,14 @@ func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleT
 
 	// (11) Create a unified SubqueryPlanner for EXISTS/scalar subqueries.
 	existsPlanner := &existsSubqueryPlanner{
-		bindings:    v.bindings,
-		md:          v.md,
-		schemaName:  v.schemaName,
-		outerScope:  resolverScope(resolver),
-		outerScopes: buildOuterScopeSources(sq, v.md, v.schemaName, queryCTEScopes),
-		cteScopes:   v.cteScopes,
-		cteOnScopes: v.cteOnScopes,
-		cteBodies:   v.cteBodies,
+		bindings:     v.bindings,
+		md:           v.md,
+		schemaName:   v.schemaName,
+		outerScope:   resolverScope(resolver),
+		outerScopes:  buildOuterScopeSources(sq, v.md, v.schemaName, queryCTEScopes),
+		cteScopes:    v.cteScopes,
+		cteOnScopes:  v.cteOnScopes,
+		cteProducers: v.cteProducers,
 	}
 
 	// (12) Upgrade projection values.
@@ -1361,7 +1222,7 @@ func (v *PlanVisitor) assignDerivedSourceBindings(fs *fromSource) {
 	for name := range v.cteOnScopes {
 		reserve(name)
 	}
-	for name := range v.cteBodies {
+	for _, name := range v.cteProducers.Names() {
 		reserve(name)
 	}
 	reserve(fs.tableName)
@@ -1456,6 +1317,9 @@ func (v *PlanVisitor) visitFrom(simpleTable *antlrgen.SimpleTableContext, fs *fr
 		op = derivedSourceCarrier(fs.tableName, fs.bindingID, innerOp)
 	} else {
 		scan := logical.NewScan(fs.tableName, fs.tableAlias, fs.sourceSegments...)
+		scan.Source = fs.resolvedSource
+		logical.BindCTESources(scan, v.cteProducers)
+		fs.resolvedSource = scan.Source
 		scan.Binding = fs.bindingID
 		op = scan
 	}
@@ -1487,6 +1351,9 @@ func (v *PlanVisitor) visitFrom(simpleTable *antlrgen.SimpleTableContext, fs *fr
 			right = u
 		} else {
 			sc := logical.NewScan(j.tableName, j.alias, j.segments...)
+			sc.Source = j.resolvedSource
+			logical.BindCTESources(sc, v.cteProducers)
+			fs.joins[i].resolvedSource = sc.Source
 			sc.Binding = j.bindingID
 			right = sc
 		}
@@ -1701,40 +1568,16 @@ func groupKeysEquivalent(a, b logical.GroupKey) bool {
 // the shadowing). The visitor's CTE maps are snapshotted and restored so the
 // nested registrations stay scoped to the body build.
 func (v *PlanVisitor) buildCTEBodyQuery(inner antlrgen.IQueryContext) (logical.LogicalOperator, error) {
+	previousScopes, previousOn, previousRegistry := v.cteScopes, v.cteOnScopes, v.cteProducers
+	v.cteScopes, v.cteOnScopes = maps.Clone(previousScopes), maps.Clone(previousOn)
+	defer func() { v.cteScopes, v.cteOnScopes, v.cteProducers = previousScopes, previousOn, previousRegistry }()
 	if inner.Ctes() == nil {
-		return v.VisitQueryBody(inner.QueryExpressionBody())
-	}
-	// Restore by MUTATING the original map objects, never by reassigning the
-	// fields to clones: this build runs inside buildCTEBodySelfHidden's
-	// self-hide window, whose own deferred restore writes the enclosing CTE's
-	// entry back into the map OBJECT it captured. A field reassignment here
-	// would strand that restore in an orphaned map — the enclosing CTE would
-	// vanish from scope after its own body build (a later reference to it
-	// resolves against the base catalog instead: unknown table, or a
-	// same-named base table silently). The two restore mechanisms compose
-	// only on shared object identity.
-	origScopes, origOn, origBodies := v.cteScopes, v.cteOnScopes, v.cteBodies
-	savedScopes := maps.Clone(origScopes)
-	savedOn := maps.Clone(origOn)
-	savedBodies := maps.Clone(origBodies)
-	restoreScope := func(dst, src map[string]semantic.ScopeSource) {
-		if dst == nil {
-			return
+		body, err := v.VisitQueryBody(inner.QueryExpressionBody())
+		if err == nil {
+			logical.BindCTESources(body, v.cteProducers)
 		}
-		clear(dst)
-		maps.Copy(dst, src)
+		return body, err
 	}
-	defer func() {
-		restoreScope(origScopes, savedScopes)
-		restoreScope(origOn, savedOn)
-		if origBodies != nil {
-			clear(origBodies)
-			maps.Copy(origBodies, savedBodies)
-		}
-		// Field identity: the nested VisitQuery may have lazily allocated a
-		// map onto a nil field; point the fields back at the originals.
-		v.cteScopes, v.cteOnScopes, v.cteBodies = origScopes, origOn, origBodies
-	}()
 	return v.VisitQuery(inner)
 }
 
@@ -2415,7 +2258,7 @@ func (v *PlanVisitor) visitFinalProjection(op logical.LogicalOperator, simpleTab
 }
 
 // visitUnion handles UNION ALL queries, threading CTE scopes through
-// both branches. Mirrors buildLogicalPlanForUnionWithCTECatalog.
+// both branches with the same retained producer registry.
 // Inside a recursive CTE body, UNION DISTINCT (bare UNION) is also
 // permitted for cycle detection.
 func (v *PlanVisitor) visitUnion(setQ *antlrgen.SetQueryContext) (logical.LogicalOperator, error) {

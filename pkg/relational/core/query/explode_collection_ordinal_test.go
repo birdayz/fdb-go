@@ -280,41 +280,100 @@ func TestNameModelCollectionIsRejectedByTheGate(t *testing.T) {
 func TestUnnestBakedRootCollectionFusesAMultiSegmentPath(t *testing.T) {
 	t.Parallel()
 
-	_, u, _ := nestedArrayUnnestFixture(t)
-	got := u.CorrelatedCollection
-
-	fv, isFV := values.AsFieldValue(got)
-	if !isFV || fv.Path() == nil {
-		t.Fatalf("multi-segment bake = %#v, want an admitted exact FieldValue", got)
+	tr := newGateTranslator(t)
+	outer, u, elementType := nestedArrayUnnestFixture(t, "ARR")
+	ownerType := tr.ordinalLegType(outer)
+	if ownerType == nil || len(ownerType.Fields) != 2 {
+		t.Fatalf("projected owner type = %v, want [PAD N]", ownerType)
 	}
-	if n := fv.Path().Len(); n != 2 {
-		t.Fatalf("accessors = %v, want exactly root+suffix", fv.Path().Ordinals())
+	// Two identically typed owner windows make a lost offset a valid read of
+	// the WRONG array. The second window starts at 2 and its N is at 3; the
+	// nested ARR stays at 0. This also exercises the production binder's exact
+	// carrier contract, which the higher-level bake does not expose as input.
+	mergedType := &values.RecordType{Fields: append(append([]values.Field(nil), ownerType.Fields...), ownerType.Fields...)}
+	for i := range mergedType.Fields {
+		mergedType.Fields[i].Ordinal = i
 	}
-	// N is the projected leg's first column. The root ordinal is supplied by the
-	// fixture's exact semantic binding; Segments is not consulted as an oracle.
-	root, ok := fv.Path().Accessor(0)
-	if !ok {
-		t.Fatal("multi-segment field has no root accessor")
-	}
-	if root.Ordinal() != 0 {
-		t.Fatalf("root accessor = %#v, want ordinal 0 (N's offset in the projected leg) — a "+
-			"root that is not positional is the name model with extra steps", root)
-	}
-	// The suffix descends an exact struct value and therefore carries the exact
-	// ARR field ordinal too; RFC-232 admits no name-only -1 accessor.
-	suffix, ok := fv.Path().Accessor(1)
-	if !ok {
-		t.Fatal("multi-segment field has no suffix accessor")
-	}
-	suffixName, _ := suffix.DisplayName()
-	if suffixName != "ARR" || suffix.Ordinal() != 0 {
-		t.Fatalf("suffix accessor = %#v, want exact {ARR 0}", suffix)
-	}
-	if corr := values.GetCorrelatedToOfValue(fv); len(corr) != 1 {
-		t.Fatalf("multi-segment collection correlates to %v, want exactly the owner D", corr)
-	}
-	if _, hasOwner := values.GetCorrelatedToOfValue(fv)[values.NamedCorrelationIdentifier("D")]; !hasOwner {
-		t.Fatal("multi-segment collection does not correlate to its owner D")
+	carrier := exactTestQOV(t, "D$BOX", mergedType)
+	for _, tc := range []struct {
+		name        string
+		lower       func() values.Value
+		owner       string
+		rootOrdinal int
+		columns     []string
+		rowType     *values.RecordType
+		carrier     values.QuantifiedObjectValue
+	}{
+		{
+			name: "projected root bake",
+			lower: func() values.Value {
+				return tr.unnestBakedRootCollection(outer, values.NamedCorrelationIdentifier("D"), u, -1)
+			},
+			owner: "D", rootOrdinal: 1, columns: []string{"PAD", "N"}, rowType: ownerType,
+		},
+		{
+			name: "second owner window",
+			lower: func() values.Value {
+				return resolveBoundSeedCollection(carrier, u, 2, false)
+			},
+			owner: "D$BOX", rootOrdinal: 3, columns: []string{"PAD", "N", "PAD", "N"}, rowType: mergedType, carrier: carrier,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := tc.lower()
+			fv, isFV := values.AsFieldValue(got)
+			if !isFV || fv.Path() == nil {
+				t.Fatalf("multi-segment bake = %#v, want an admitted exact FieldValue", got)
+			}
+			if n := fv.Path().Len(); n != 2 {
+				t.Fatalf("accessors = %v, want exactly root+suffix", fv.Path().Ordinals())
+			}
+			root, ok := fv.Path().Accessor(0)
+			if !ok {
+				t.Fatal("multi-segment field has no root accessor")
+			}
+			if root.Ordinal() != tc.rootOrdinal {
+				t.Fatalf("root accessor = %#v, want ordinal %d (N's physical offset) — a "+
+					"root that is not positional is the name model with extra steps", root, tc.rootOrdinal)
+			}
+			// The suffix descends an exact struct value and therefore carries the
+			// exact ARR field ordinal too; it must not acquire the owner's offset.
+			suffix, ok := fv.Path().Accessor(1)
+			if !ok {
+				t.Fatal("multi-segment field has no suffix accessor")
+			}
+			suffixName, named := suffix.DisplayName()
+			if !named || suffixName != "ARR" || suffix.Ordinal() != 0 {
+				t.Fatalf("suffix accessor = %#v, want exact {ARR 0}", suffix)
+			}
+			if corr := values.GetCorrelatedToOfValue(fv); len(corr) != 1 {
+				t.Fatalf("multi-segment collection correlates to %v, want exactly the owner %s", corr, tc.owner)
+			}
+			if _, hasOwner := values.GetCorrelatedToOfValue(fv)[values.NamedCorrelationIdentifier(tc.owner)]; !hasOwner {
+				t.Fatalf("multi-segment collection does not correlate to its owner %s", tc.owner)
+			}
+			if !fv.Path().IsFrontierPinned() {
+				t.Fatal("multi-segment collection lost its physical root's frontier pin")
+			}
+			wantDomain := values.OrdinalDomainOfColumnNames(tc.columns)
+			if domain := fv.Path().RootDomain(); !domain.IsKnown() || domain != wantDomain {
+				t.Fatalf("root domain = %v, want physical row %v domain %v", domain, tc.columns, wantDomain)
+			}
+			qov, ok := values.AsQuantifiedObjectValue(fv.ChildValue())
+			if !ok || qov.Correlation() != values.NamedCorrelationIdentifier(tc.owner) {
+				t.Fatalf("collection child = %T, want physical owner QOV %s", fv.ChildValue(), tc.owner)
+			}
+			if !qov.FlowedType().Equals(tc.rowType) || values.OrdinalDomainOfQuantified(qov) != wantDomain {
+				t.Fatalf("collection carrier type = %v, want exact physical row %v", qov.FlowedType(), tc.rowType)
+			}
+			if tc.carrier != nil && fv.ChildValue() != tc.carrier {
+				t.Fatal("collection did not retain the exact carrier supplied to production lowering")
+			}
+			if !got.Type().Equals(values.NewArrayType(true, elementType)) {
+				t.Fatalf("collection type = %v, want ARRAY<LONG NOT NULL>", got.Type())
+			}
+		})
 	}
 }
 

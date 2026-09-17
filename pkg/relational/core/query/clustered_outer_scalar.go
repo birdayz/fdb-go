@@ -288,7 +288,11 @@ func rebuildInnerWithValues(op logical.LogicalOperator, fn func(values.Value) va
 	return rebuildInnerInScope(op, fn, nil)
 }
 
-func rebuildInnerInScope(op logical.LogicalOperator, rewrite func(values.Value) values.Value, scope *innerBindingScope) (logical.LogicalOperator, bool) {
+func rebuildInnerInScope(op logical.LogicalOperator, rewrite func(values.Value) values.Value, scope *innerBindingScope, producerCopies ...map[*logical.CTEProducer]*logical.CTEProducer) (logical.LogicalOperator, bool) {
+	copies := make(map[*logical.CTEProducer]*logical.CTEProducer)
+	if len(producerCopies) > 0 {
+		copies = producerCopies[0]
+	}
 	fn := func(v values.Value) values.Value {
 		for correlation := range values.GetCorrelatedToOfValue(v) {
 			if scope.contains(strings.ToUpper(correlation.Name())) {
@@ -299,40 +303,61 @@ func rebuildInnerInScope(op logical.LogicalOperator, rewrite func(values.Value) 
 	}
 	switch o := op.(type) {
 	case *logical.LogicalScan:
-		return o, true
+		producer := o.Source.Producer()
+		if producer == nil {
+			return o, true
+		}
+		if producer.Recursive() {
+			return nil, false
+		}
+		copy, found := copies[producer]
+		if !found {
+			enclosing := scope.withoutCurrent(innerLexicalBindings(o))
+			bodyScope := &innerBindingScope{parent: enclosing, local: innerLexicalBindings(producer.Body())}
+			body, ok := rebuildInnerInScope(producer.Body(), rewrite, bodyScope, copies)
+			if !ok {
+				return nil, false
+			}
+			copy = producer.WithBody(body)
+			copies[producer] = copy
+		}
+		cp := *o
+		cp.Source = logical.CTEScanSource(copy)
+		return &cp, true
 	case *logical.LogicalCTE:
-		if o.Recursive {
+		if o.Recursive() {
 			return nil, false
 		}
 		mainBindings := innerLexicalBindings(o.Main)
 		exported := o.Binding
 		if exported == "" {
-			exported = o.Name
+			exported = o.Name()
 		}
 		mainBindings[strings.ToUpper(exported)] = struct{}{}
 		// The definition cannot see its own newly exported binding or Main's
 		// FROM locals. Other enclosing bindings remain visible, including an
 		// older same-named export in an enclosing lexical frame.
 		enclosing := scope.withoutCurrent(mainBindings)
-		bodyScope := &innerBindingScope{parent: enclosing, local: innerLexicalBindings(o.Body)}
-		body, ok := rebuildInnerInScope(o.Body, rewrite, bodyScope)
+		bodyScope := &innerBindingScope{parent: enclosing, local: innerLexicalBindings(o.Body())}
+		body, ok := rebuildInnerInScope(o.Body(), rewrite, bodyScope, copies)
 		if !ok {
 			return nil, false
 		}
+		copies[o.CTEProducer] = o.CTEProducer.WithBody(body)
 		mainScope := &innerBindingScope{parent: enclosing, local: mainBindings}
-		main, ok := rebuildInnerInScope(o.Main, rewrite, mainScope)
+		main, ok := rebuildInnerInScope(o.Main, rewrite, mainScope, copies)
 		if !ok {
 			return nil, false
 		}
 		cp := *o
-		cp.Body, cp.Main = body, main
+		cp.CTEProducer, cp.Main = copies[o.CTEProducer], main
 		return &cp, true
 	case *logical.LogicalJoin:
-		l, ok := rebuildInnerInScope(o.Left, rewrite, scope)
+		l, ok := rebuildInnerInScope(o.Left, rewrite, scope, copies)
 		if !ok {
 			return nil, false
 		}
-		r, ok := rebuildInnerInScope(o.Right, rewrite, scope)
+		r, ok := rebuildInnerInScope(o.Right, rewrite, scope, copies)
 		if !ok {
 			return nil, false
 		}
@@ -347,7 +372,7 @@ func rebuildInnerInScope(op logical.LogicalOperator, rewrite func(values.Value) 
 			len(o.CorrelatedScalarSubqueries) > 0 {
 			return nil, false
 		}
-		in, ok := rebuildInnerInScope(o.Input, rewrite, scope)
+		in, ok := rebuildInnerInScope(o.Input, rewrite, scope, copies)
 		if !ok {
 			return nil, false
 		}
@@ -361,7 +386,7 @@ func rebuildInnerInScope(op logical.LogicalOperator, rewrite func(values.Value) 
 		if len(o.ScalarSubqueries) > 0 || len(o.CorrelatedScalarSubqueries) > 0 {
 			return nil, false
 		}
-		in, ok := rebuildInnerInScope(o.Input, rewrite, scope)
+		in, ok := rebuildInnerInScope(o.Input, rewrite, scope, copies)
 		if !ok {
 			return nil, false
 		}
@@ -381,7 +406,7 @@ func rebuildInnerInScope(op logical.LogicalOperator, rewrite func(values.Value) 
 		if len(o.HavingExistsSubqueries) > 0 || len(o.HavingScalarSubqueries) > 0 {
 			return nil, false
 		}
-		in, ok := rebuildInnerInScope(o.Input, rewrite, scope)
+		in, ok := rebuildInnerInScope(o.Input, rewrite, scope, copies)
 		if !ok {
 			return nil, false
 		}
@@ -431,7 +456,7 @@ func rebuildInnerInScope(op logical.LogicalOperator, rewrite func(values.Value) 
 		}
 		return &cp, true
 	case *logical.LogicalSort:
-		in, ok := rebuildInnerInScope(o.Input, rewrite, scope)
+		in, ok := rebuildInnerInScope(o.Input, rewrite, scope, copies)
 		if !ok {
 			return nil, false
 		}
@@ -447,7 +472,7 @@ func rebuildInnerInScope(op logical.LogicalOperator, rewrite func(values.Value) 
 		cp.Keys = keys
 		return &cp, true
 	case *logical.LogicalLimit:
-		in, ok := rebuildInnerInScope(o.Input, rewrite, scope)
+		in, ok := rebuildInnerInScope(o.Input, rewrite, scope, copies)
 		if !ok {
 			return nil, false
 		}
@@ -458,7 +483,7 @@ func rebuildInnerInScope(op logical.LogicalOperator, rewrite func(values.Value) 
 		}
 		return &cp, true
 	case *logical.LogicalDistinct:
-		in, ok := rebuildInnerInScope(o.Input, rewrite, scope)
+		in, ok := rebuildInnerInScope(o.Input, rewrite, scope, copies)
 		if !ok {
 			return nil, false
 		}

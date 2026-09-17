@@ -140,7 +140,7 @@ func (a *Analyzer) ResolveColumnRefPath(scope *Scope, segs []Identifier) (Column
 		if len(segs) > 0 {
 			leaf = segs[len(segs)-1]
 		}
-		return Column{}, ScopeSource{}, nil, &ColumnNotFoundError{Id: leaf}
+		return Column{}, ScopeSource{}, nil, &ColumnNotFoundError{Id: leaf, Path: append([]Identifier(nil), segs...)}
 	}
 	return scope.ResolvePathNested(segs)
 }
@@ -270,6 +270,22 @@ func (e *TableNotFoundError) Error() string {
 type ColumnNotFoundError struct {
 	TableName QualifiedName
 	Id        Identifier
+	// Path retains the normalized reference, not the resolved table name: a
+	// source alias and nested segments must survive computed-expression errors.
+	Path []Identifier
+}
+
+// Reference renders the reference retained by path resolution. Direct column
+// lookups carry only Id, as they do not have a source-qualified reference.
+func (e *ColumnNotFoundError) Reference() string {
+	if len(e.Path) == 0 {
+		return e.Id.Name()
+	}
+	parts := make([]string, len(e.Path))
+	for i, part := range e.Path {
+		parts[i] = part.Name()
+	}
+	return joinStrings(parts, ".")
 }
 
 func (e *ColumnNotFoundError) Error() string {

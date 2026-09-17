@@ -26,7 +26,7 @@ func TestExistsRiderLegGates(t *testing.T) {
 		Input:            scan("Customer", "c"),
 		ExistsSubqueries: []logical.ExistsSubquery{{Plan: scan("Order", "x")}},
 	}
-	tr.cteScope["D"] = body
+	tr.cteScope = tr.cteScope.With(testCTEProducer("D", body))
 	j := logical.NewJoin(scan("Order", "o"), logical.NewScan("D", "d"), logical.JoinInner, "")
 
 	if got := tr.clusterArity(j); got != 2 {
@@ -48,7 +48,7 @@ func TestScalarRiderLegGates(t *testing.T) {
 		Input:            scan("Customer", "c"),
 		ScalarSubqueries: []logical.ScalarSubquery{{Plan: scan("Order", "x")}},
 	}
-	tr.cteScope["D"] = body
+	tr.cteScope = tr.cteScope.With(testCTEProducer("D", body))
 	j := logical.NewJoin(scan("Order", "o"), logical.NewScan("D", "d"), logical.JoinInner, "")
 
 	if got := tr.clusterArity(j); got != 2 {
@@ -71,7 +71,7 @@ func TestCorrelatedScalarRiderStaysPoisoned(t *testing.T) {
 			{InnerPlan: scan("Order", "x")},
 		},
 	}
-	tr.cteScope["D"] = body
+	tr.cteScope = tr.cteScope.With(testCTEProducer("D", body))
 	j := logical.NewJoin(scan("Order", "o"), logical.NewScan("D", "d"), logical.JoinInner, "")
 
 	if got := tr.clusterArity(j); got != arityPoison {

@@ -3,6 +3,8 @@ package semantic
 import (
 	"fmt"
 	"strings"
+
+	"fdb.dev/pkg/relational/core/query/logical"
 )
 
 // Scope is the set of named resolutions visible at a point during
@@ -28,6 +30,7 @@ type Scope struct {
 // alias it's visible under. Alias is always non-zero — when the
 // user doesn't write AS, the Table's own name fills in.
 type ScopeSource struct {
+	CTE *logical.CTEProducer
 	// Table is the resolved schema-level table.
 	Table Table
 	// Alias is the name used to reference this source in the
@@ -657,7 +660,7 @@ func (s *Scope) ResolvePathNested(segs []Identifier) (Column, ScopeSource, []Nes
 		}
 	}
 	if aliasSeen {
-		return Column{}, ScopeSource{}, nil, &ColumnNotFoundError{TableName: firstAliasTable, Id: leaf}
+		return Column{}, ScopeSource{}, nil, &ColumnNotFoundError{TableName: firstAliasTable, Id: leaf, Path: append([]Identifier(nil), segs...)}
 	}
 	// Collect all visible aliases across the chain for a better
 	// error message.
@@ -743,7 +746,7 @@ func (s *Scope) ResolveSourceQualifiedPath(segs []Identifier) (Column, ScopeSour
 		}
 	}
 	if aliasSeen {
-		return Column{}, ScopeSource{}, nil, &ColumnNotFoundError{TableName: firstAliasTable, Id: leaf}
+		return Column{}, ScopeSource{}, nil, &ColumnNotFoundError{TableName: firstAliasTable, Id: leaf, Path: append([]Identifier(nil), segs...)}
 	}
 	all := s.AllSourcesRecursive()
 	available := make([]Identifier, 0, len(all))

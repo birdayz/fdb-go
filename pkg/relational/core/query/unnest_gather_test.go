@@ -52,9 +52,9 @@ func newDisjointUnnestTranslator(t *testing.T) *cascadesTranslator {
 	}
 	return &cascadesTranslator{
 		md:              tmpl.Underlying(),
-		cteScope:        make(map[string]logical.LogicalOperator),
-		cteExprScope:    make(map[string]expressions.RelationalExpression),
-		cteColumnsScope: make(map[string][]values.Field),
+		cteScope:        logical.CTERegistry{},
+		cteExprScope:    make(map[*logical.CTEProducer]expressions.RelationalExpression),
+		cteColumnsScope: make(map[*logical.CTEProducer][]values.Field),
 	}
 }
 
@@ -1003,7 +1003,7 @@ func TestExactGatheredCTEGroupKeyValueUsesUniqueSeedField(t *testing.T) {
 	}}
 	seed := exactTestQOV(t, "q$seed", seedType)
 	body := logical.NewScan("A", "A")
-	tr := &cascadesTranslator{cteScope: map[string]logical.LogicalOperator{"D": body}}
+	tr := &cascadesTranslator{cteScope: testCTERegistry(map[string]logical.LogicalOperator{"D": body})}
 	bake := gatheredSeedBake{seedQOV: seed}
 
 	tests := []struct {
@@ -1118,7 +1118,7 @@ func TestExactGatheredCTEGroupKeyValueUsesUniqueSeedField(t *testing.T) {
 				tc.key.Qualified != beforeKey.Qualified || !slices.Equal(tc.key.Segs, beforeSegments) {
 				t.Fatalf("source group key mutated: before=%+v after=%+v", beforeKey, tc.key)
 			}
-			if tr.cteScope["D"] != body {
+			if tr.cteScope.Lookup("D").Body() != body {
 				t.Fatal("CTE source registration mutated")
 			}
 			if ok != tc.wantOK {
@@ -1221,7 +1221,7 @@ func projectedCTEOutputGroupKeyFixture(
 	}
 
 	input := logical.NewScan("D", "D")
-	tr.cteScope["D"] = logical.NewScan("SRC", "S")
+	tr.cteScope = tr.cteScope.With(testCTEProducer("D", logical.NewScan("SRC", "S")))
 	return tr, input, gatheredSeedBake{
 		quant: expressions.NamedForEachQuantifier(
 			values.NamedCorrelationIdentifier("D"), expressions.InitialOf(output)),
@@ -1259,7 +1259,7 @@ func TestExactProjectedCTEOutputGroupKeyValueUsesExactOutputRow(t *testing.T) {
 			beforeSegments := slices.Clone(key.Segs)
 			beforeRef := bake.quant.GetRangesOver()
 			beforeExpr := beforeRef.Get()
-			beforeBody := tr.cteScope["D"]
+			beforeBody := tr.cteScope.Lookup("D").Body()
 
 			got, ok, err := tr.exactProjectedCTEOutputGroupKeyValue(input, key, bake)
 			if err != nil {
@@ -1286,7 +1286,7 @@ func TestExactProjectedCTEOutputGroupKeyValueUsesExactOutputRow(t *testing.T) {
 				key.Qualified || !slices.Equal(key.Segs, beforeSegments) {
 				t.Fatalf("source key mutated: %+v", key)
 			}
-			if bake.quant.GetRangesOver() != beforeRef || beforeRef.Get() != beforeExpr || tr.cteScope["D"] != beforeBody {
+			if bake.quant.GetRangesOver() != beforeRef || beforeRef.Get() != beforeExpr || tr.cteScope.Lookup("D").Body() != beforeBody {
 				t.Fatal("source CTE/output expression graph was mutated")
 			}
 		})
@@ -1371,8 +1371,8 @@ func TestExactProjectedCTEOutputGroupKeyValueDeclinesOutsideExactContract(t *tes
 			beforeSegments := slices.Clone(key.Segs)
 			beforeRef := bake.quant.GetRangesOver()
 			beforeExpr := beforeRef.Get()
-			beforeScopeLen := len(tr.cteScope)
-			beforeCTEBody := tr.cteScope["D"]
+			beforeScopeLen := len(tr.cteScope.Names())
+			beforeCTEBody := tr.cteScope.Lookup("D").Body()
 
 			got, ok, err := tr.exactProjectedCTEOutputGroupKeyValue(input, key, bake)
 			if err != nil {
@@ -1387,7 +1387,7 @@ func TestExactProjectedCTEOutputGroupKeyValueDeclinesOutsideExactContract(t *tes
 				t.Fatalf("source key mutated: before=%+v after=%+v", beforeKey, key)
 			}
 			if bake.quant.GetRangesOver() != beforeRef || beforeRef.Get() != beforeExpr ||
-				len(tr.cteScope) != beforeScopeLen || tr.cteScope["D"] != beforeCTEBody {
+				len(tr.cteScope.Names()) != beforeScopeLen || tr.cteScope.Lookup("D").Body() != beforeCTEBody {
 				t.Fatal("source output expression or CTE scope was mutated")
 			}
 		})

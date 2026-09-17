@@ -599,9 +599,9 @@ func TestExactProjectionForLogicalProjectDoesNotLeakActiveCTEQualifier(t *testin
 	project.ProjectionRefs = []logical.ColumnRef{{
 		Present: true, Bare: "ID", Qualifier: "S", Qualified: true,
 	}}
-	translator := &cascadesTranslator{cteScope: map[string]logical.LogicalOperator{
+	translator := &cascadesTranslator{cteScope: testCTERegistry(map[string]logical.LogicalOperator{
 		"S": logical.NewScan("T", ""),
-	}}
+	})}
 	expr := translator.exactProjectionForLogicalProject([]values.Value{id}, project, inner)
 	proj, ok := expr.(*expressions.LogicalProjectionExpression)
 	if !ok {
@@ -914,6 +914,7 @@ func TestTranslateCTEChained(t *testing.T) {
 	mainA := logical.NewScan("B", "")
 	bodyB := logical.NewScan("A", "")
 	cteA := logical.NewCTE("A", bodyA, mainA, false)
+	bodyB.Source = logical.CTEScanSource(cteA.CTEProducer)
 	cteB := logical.NewCTE("B", bodyB, cteA, false)
 
 	ref, _ := TranslateToCascadesWithSubqueries(cteB, demoMetaData(t))
@@ -1417,7 +1418,7 @@ func TestLegColumns_CTEScopeResolvesBody(t *testing.T) {
 	md := demoMetaData(t) // has a real "Order" table
 
 	// Without a shadow, "Order" anchors from metadata (non-nil).
-	plain := &cascadesTranslator{md: md, cteScope: map[string]logical.LogicalOperator{}}
+	plain := &cascadesTranslator{md: md, cteScope: testCTERegistry(map[string]logical.LogicalOperator{})}
 	realCols := plain.legColumns(logical.NewScan("Order", ""))
 	if realCols == nil {
 		t.Fatal("setup: a real table must derive columns from metadata")
@@ -1428,7 +1429,7 @@ func TestLegColumns_CTEScopeResolvesBody(t *testing.T) {
 	body := logical.NewProject(logical.NewScan("Order", ""), []string{"ORDER_ID"}, []string{"OID"})
 	shadowed := &cascadesTranslator{
 		md:       md,
-		cteScope: map[string]logical.LogicalOperator{"ORDER": body},
+		cteScope: testCTERegistry(map[string]logical.LogicalOperator{"ORDER": body}),
 	}
 	cols := shadowed.legColumns(logical.NewScan("Order", ""))
 	if len(cols) != 1 || cols[0].Name != "OID" {
@@ -1441,16 +1442,18 @@ func TestLegColumns_CTEScopeResolvesBody(t *testing.T) {
 	selfBody := logical.NewScan("Order", "")
 	selfShadowed := &cascadesTranslator{
 		md:       md,
-		cteScope: map[string]logical.LogicalOperator{"ORDER": selfBody},
+		cteScope: testCTERegistry(map[string]logical.LogicalOperator{"ORDER": selfBody}),
 	}
 	if got := selfShadowed.legColumns(logical.NewScan("Order", "")); len(got) != len(realCols) {
 		t.Errorf("self-referential CTE body must resolve to the real table's columns (no recursion); got %v want %d cols", got, len(realCols))
 	}
 
 	// cteExprScope (a pre-translated recursive-CTE reference) still falls back to nil.
+	recursiveProducer := testCTEProducer("ORDER", nil)
 	exprShadowed := &cascadesTranslator{
 		md:           md,
-		cteExprScope: map[string]expressions.RelationalExpression{"ORDER": nil},
+		cteScope:     logical.CTERegistry{}.With(recursiveProducer),
+		cteExprScope: map[*logical.CTEProducer]expressions.RelationalExpression{recursiveProducer: nil},
 	}
 	if cols := exprShadowed.legColumns(logical.NewScan("Order", "")); cols != nil {
 		t.Errorf("cteExprScope-shadowed name must NOT anchor (recursive-CTE body unreadable); got %v", cols)

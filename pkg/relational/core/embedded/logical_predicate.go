@@ -302,7 +302,7 @@ func exactVirtualScopeSource(
 	if alias == "" || op == nil || md == nil {
 		return semantic.ScopeSource{}, false
 	}
-	typ, err := query.ExactLogicalResultTypeWithCTEs(op, md, cteRowTypes(cteScopes))
+	typ, err := query.ExactLogicalResultTypeWithCTEs(op, md, cteRegistryFromScopes(cteScopes))
 	if err != nil {
 		return semantic.ScopeSource{}, false
 	}
@@ -336,7 +336,7 @@ func virtualScopeSourceFromResultType(
 	// slot, the same rule preferredNames follows.
 	labels := preferredNames
 	if len(labels) == 0 {
-		derived, labelErr := query.ExactLogicalOutputLabels(op, md, cteRowTypes(cteScopes))
+		derived, labelErr := query.ExactLogicalOutputLabels(op, md, cteRegistryFromScopes(cteScopes))
 		if labelErr != nil || len(derived) != len(record.Fields) {
 			return semantic.ScopeSource{}, false
 		}
@@ -584,32 +584,20 @@ func projectionOutputNames(sq *selectQuery) []string {
 // names builds to a bare LogicalScan whose "table" has no catalog descriptor,
 // so without this the derivation reports `scan table "C" has no record
 // descriptor` and the whole derived source declines.
-func cteRowTypes(cteScopes map[string]semantic.ScopeSource) map[string]values.Type {
-	if len(cteScopes) == 0 {
-		return nil
-	}
-	rows := make(map[string]values.Type, len(cteScopes))
-	for name, src := range cteScopes {
-		if row := expr.SourceRowType(src); row != nil {
-			rows[name] = row
+func cteRegistryFromScopes(scopes ...map[string]semantic.ScopeSource) *logical.CTERegistry {
+	registry := logical.CTERegistry{}
+	for _, cteScopes := range scopes {
+		for _, source := range cteScopes {
+			if source.CTE != nil {
+				registry = registry.With(source.CTE)
+			}
 		}
 	}
-	return rows
+	return &registry
 }
 
-func buildExactVirtualScopeSourceForSelect(
-	md *recordlayer.RecordMetaData,
-	alias string,
-	sq *selectQuery,
-	cteScopes map[string]semantic.ScopeSource,
-	preferredNames []string,
-) (semantic.ScopeSource, bool) {
-	src, ok, _ := buildExactScopeSourceOrBodyError(md, alias, sq, cteScopes, preferredNames)
-	return src, ok
-}
-
-// buildExactScopeSourceOrBodyError is buildExactVirtualScopeSourceForSelect
-// with the two ways it can fail kept apart.
+// buildExactScopeSourceOrBodyError publishes a built body's exact schema
+// while keeping construction errors distinct from unrepresentable rows.
 //
 // A body that BUILDS but whose row semantic.Column cannot carry losslessly is a
 // DECLINE: nothing is wrong with the query, this derivation just has nothing to
@@ -676,7 +664,7 @@ func boundDerivedSource(md *recordlayer.RecordMetaData, alias, binding string, b
 	if body == nil {
 		return semantic.ScopeSource{}, api.NewErrorf(api.ErrCodeUnsupportedQuery, "derived source %q has no prepared logical body", alias)
 	}
-	rows := cteRowTypes(cteScopes)
+	rows := cteRegistryFromScopes(cteScopes)
 	typ, err := query.ExactLogicalResultTypeWithCTEs(body, md, rows)
 	if err != nil {
 		typ, err = query.LogicalResultTypeAfterUnionPromotionWithCTEs(body, md, rows)
@@ -706,6 +694,7 @@ func buildDerivedTableSourceWithCTEsChecked(
 	}
 	visitor := NewPlanVisitorWithSchema(md, schemaName)
 	visitor.cteScopes = maps.Clone(cteScopes)
+	visitor.cteProducers = *cteRegistryFromScopes(cteScopes)
 	op, err := visitor.buildCTEBodyQuery(inner)
 	if err != nil {
 		return semantic.ScopeSource{}, err
@@ -1087,7 +1076,7 @@ func bindingOrAlias(bindingID string, aliasID semantic.Identifier) string {
 // The join nodes are created in order matching sq.joins, so we match
 // them sequentially by walking the left-child spine (the builder chains
 // joins left-to-right with op = NewJoin(op, right, ...)).
-func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource, cteOnScopes map[string]semantic.ScopeSource, cteBodies ...map[string]logical.LogicalOperator) error {
+func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource, cteOnScopes map[string]semantic.ScopeSource, cteProducers ...logical.CTERegistry) error {
 	cat := rlcatalog.Wrap(md)
 	analyzer := semantic.NewAnalyzer(cat, false)
 
@@ -1110,7 +1099,7 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 
 	resolveTable := func(tableName string) semantic.Table {
 		// CTE-FIRST (execution's shadowing order — the same ordering
-		// cteLegKind and buildSelectScope apply): a declared CTE shadows a
+		// buildSelectScope applies): a declared CTE shadows a
 		// same-named catalog table; the prior analyzer-first order resolved
 		// an ON through a shadowing CTE against the TABLE's schema —
 		// over-declining valid ONs (42703 on the CTE's own columns) and, for
@@ -1375,8 +1364,8 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 					cteScopes:   cteScopes,
 					cteOnScopes: cteOnScopes,
 				}
-				if len(cteBodies) > 0 {
-					onPlanner.cteBodies = cteBodies[0]
+				if len(cteProducers) > 0 {
+					onPlanner.cteProducers = cteProducers[0]
 				}
 				pred, walkErr := walkSubqueryPredicate(resolver, onPlanner, sq.joins[sqIdx].onExpr)
 				if walkErr != nil {
@@ -1571,7 +1560,7 @@ func buildCTEColumnSource(
 		// duplicate in SELECT and the other in ORDER BY. A body whose row has
 		// a shape semantic.Column cannot carry losslessly declines: the
 		// enclosing join's ON clause then reads the separate cteOnScopes marker
-		// (registerCTEOnOnlyScope) and goes LOUD on drop risk, never a silent
+		// and goes LOUD on drop risk, never a silent
 		// ON drop. A body that does not BUILD raises its OWN error instead —
 		// the mistake is inside the CTE, and reporting it as the reader's
 		// generic drop-risk names the wrong query.
@@ -1638,581 +1627,6 @@ func buildCTEColumnSource(
 	return buildExactScopeSourceOrBodyError(
 		md, cteName, innerSQ, priorCTEs, projectionOutputNames(innerSQ),
 	)
-}
-
-// buildCTEOnOnlySource derives the ON-RESOLUTION-ONLY ScopeSource for a
-// declared CTE that buildCTEColumnSource keeps OUT of the global cteScopes (a
-// join/lateral-unnest-legged body — see the decline comment there). It is
-// registered in the separate cteOnScopes map at WITH registration. An enclosing
-// explicit join's ON resolves against it through upgradeJoinOnPredicates. A
-// complete entry can also be admitted locally by singleSourceQueryBlockCTEScopes
-// when that CTE is the query block's sole source; multi-leg blocks retain the
-// clean decline that prevents flatten-evasion misbinding.
-//
-// Output-name authority (must match what execution actually EMITS, or the
-// fabricated "CTE.col" merge keys miss): an explicit projection alias
-// (executeProjection always writes the alias key) or a BARE unqualified
-// non-computed reference (the runtime key mirrors the SQL spelling — a bare
-// ref plans as Project([AID],…) and keys bare). The bare-ref arm additionally
-// requires every FROM leg to be ENUMERABLE — a base table, a DERIVABLE CTE
-// (the resolver sees those via addSource's cteScopes fallback), or a lateral
-// unnest leg (binds one alias via the unnest source adder): the ambiguity
-// backstop (the body build 42702s an ambiguous bare ref before it can
-// execute) only holds when the resolver can see every leg's columns. A
-// derived-table leg among several hides its columns from that check, so a
-// textually-bare-but-ambiguous ref would silently resolve against the wrong
-// leg (review-caught, pinned by Q18) — and an ON-ONLY CTE leg is worse:
-// buildSelectScope hands the body a NIL resolver, which kills the 42703
-// unknown-column gate along with the ambiguity gate (review-caught,
-// Q27/Q28). Bodies whose single source IS a derived
-// table stay derivable, but every projection/aggregate INPUT read must
-// resolve in the derived source's provably-readable name set
-// (derivedEmittedBareNames): a join-shaped derived row keys by the INNER
-// spelling, so an inner qualified-spelled item makes an outer `D.col` read a
-// runtime malformed-plan failure (and an aggregate over it a silent NULL) —
-// decline to the plan-time marker instead (Q19/Q20). A single-BASE-TABLE
-// inner stays on the POSITIONAL frontier, where qualified items are readable
-// by last segment (review-caught over-decline, Q33). Everything else DECLINES
-// to the loud marker:
-//   - an unaliased QUALIFIED reference resolves to a FieldValue whose Field
-//     is the dotted source name ("D.ID" — see values.ProjectionColumnName),
-//     so the row carries no bare key and an advertised bare name would read
-//     a column the merged row never has;
-//   - `WITH c(x, y)` column aliases rename the SCOPE view only — the runtime
-//     row still keys by the body's own output names, so resolving `c.x` here
-//     would turn today's loud 42703 into a silent runtime miss (worse);
-//   - computed items without an alias key by their explain rendering.
-//
-// Aggregate bodies derive via buildDerivedTableSourceFromAgg (agg outputs key
-// by their canonical names at runtime — the existing derived-table pathway).
-// Columns type UNKNOWN/nullable (the same precedent — the scope needs NAMES,
-// not exact types). A false return means the caller registers a nil-Table
-// MARKER instead: the declared name still routes to the loud drop-risk 0AF00,
-// never a silent ON drop. Widening the derivable set (qualified/renamed
-// output schemas) is booked with the derived-table-twin item.
-// cteScopePreState snapshots a name's scope-map state as it was BEFORE the
-// CTE's own registration — what SQL scoping says the body sees: outer
-// scopes and earlier siblings, never itself. had=false is the common case
-// (the name was absent); the preserved VALUE is the nested-shadowing case —
-// a subquery WITH reusing an OUTER CTE's name overwrites the level map's
-// outer entry at registration, and a plain self-DELETE then lost BOTH
-// bindings, sending the inner body's reads to the base table (42703 on the
-// outer CTE's own column, review-caught).
-type cteScopePreState struct {
-	scopeVal semantic.ScopeSource
-	scopeHad bool
-	onVal    semantic.ScopeSource
-	onHad    bool
-}
-
-// buildCTEBodySelfHidden runs a CTE body build with the CTE's name mapped
-// to its PRE-REGISTRATION state in both scope maps: non-recursive SQL
-// scoping makes `FROM <own-name>` inside the body the outer binding (an
-// enclosing CTE) or the TABLE — never the CTE being defined. With CTE-FIRST
-// scope resolution a visible self entry resolves the body against its own
-// OUTPUT schema — on the chain paths that surfaced as a bogus
-// correlated-fallback misroute AND a silent base-table value substitution
-// through BuildScalar's 42703 arm; on the visitor path the R5a shadow pin
-// caught it (review-caught on all three, one shared helper so the pipelines
-// cannot diverge again). pre carries the pre-registration snapshots (nil ⇒
-// absent for every name — the top-level visitor case). Recursive bodies
-// keep self visible — their union machinery consumes the self-reference.
-// Restores are deferred (error-path safe).
-func buildCTEBodySelfHidden(
-	cteScopes, cteOnScopes map[string]semantic.ScopeSource,
-	upper string,
-	pre map[string]cteScopePreState,
-	recursive bool,
-	build func() (logical.LogicalOperator, error),
-) (logical.LogicalOperator, error) {
-	if !recursive {
-		st := pre[upper] // zero value: absent in both maps pre-registration
-		if cur, ok := cteScopes[upper]; ok || st.scopeHad {
-			if st.scopeHad {
-				cteScopes[upper] = st.scopeVal
-			} else {
-				delete(cteScopes, upper)
-			}
-			defer func() {
-				if ok {
-					cteScopes[upper] = cur
-				} else {
-					delete(cteScopes, upper)
-				}
-			}()
-		}
-		if cteOnScopes != nil {
-			if cur, ok := cteOnScopes[upper]; ok || st.onHad {
-				if st.onHad {
-					cteOnScopes[upper] = st.onVal
-				} else {
-					delete(cteOnScopes, upper)
-				}
-				defer func() {
-					if ok {
-						cteOnScopes[upper] = cur
-					} else {
-						delete(cteOnScopes, upper)
-					}
-				}()
-			}
-		}
-	}
-	return build()
-}
-
-// cteLegKind classifies a NAMED FROM leg of a CTE ON-only body by what
-// EXECUTION will resolve it to. Declared CTE names come FIRST — a CTE
-// shadows a same-named catalog table (review-caught: a metadata-first lookup
-// classified a shadowed leg by the TABLE's schema while runtime rows came
-// from the CTE). cteLegOpaque: an ON-ONLY CTE name (or unknown) — addSource
-// returns false and buildSelectScope hands the body a NIL resolver, which
-// skips BOTH the 42702 ambiguity gate and the 42703 unknown-column gate for
-// the WHOLE body (the backstop every bare-ref admission rests on).
-// cteLegDerivableCTE: a DERIVABLE CTE — addSource falls back to cteScopes,
-// so the resolver still sees its columns. cteLegBase: a base table — the
-// analyzer resolves it (the same ResolveTable call addSource makes), or the
-// active-schema-qualified form of one (this derivation runs at WITH
-// registration, BEFORE normalizeSchemaQualifiedSelectSources strips the
-// schema segment — mirror that strip or valid "s"."T" legs classify opaque,
-// review-caught).
-type cteLegKindT int
-
-const (
-	cteLegOpaque cteLegKindT = iota
-	cteLegBase
-	cteLegDerivableCTE
-)
-
-func cteLegKind(md *recordlayer.RecordMetaData, schemaName string, cteScopes, cteOnScopes map[string]semantic.ScopeSource, name string) cteLegKindT {
-	if name == "" || md == nil {
-		return cteLegOpaque
-	}
-	upper := strings.ToUpper(name)
-	if _, on := cteOnScopes[upper]; on {
-		return cteLegOpaque
-	}
-	if _, ok := cteScopes[upper]; ok {
-		return cteLegDerivableCTE
-	}
-	cat := rlcatalog.Wrap(md)
-	analyzer := semantic.NewAnalyzer(cat, false)
-	if _, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(name, "."), false)); err == nil {
-		return cteLegBase
-	}
-	if segs := strings.Split(name, "."); len(segs) == 2 && newUnnestTableResolver(md, schemaName)(segs) {
-		return cteLegBase
-	}
-	return cteLegOpaque
-}
-
-// cteBodyLegsEnumerable reports whether every named FROM leg of a multi-leg
-// body is visible to the resolver (base table or derivable CTE) — the
-// precondition for the 42702/42703 backstop the bare-ref admission relies
-// on. Comma legs classified as lateral unnests (segments[0] names a prior
-// source alias — RFC-142 R5: typed segments, never a tableName re-split) are
-// enumerable by construction: the element alias binds one name and
-// buildSelectScope adds it via the unnest source adder. An unnest leg's
-// binding name is its EFFECTIVE alias (unnestAliases: the explicit AS, else
-// the last segment) — recording the flattened dotted name instead broke
-// chained no-AS unnests (`FROM T4, T4.SARR, SARR.SUB AS Y`: the scope
-// exposes SARR, review-caught). Derived legs are the caller's decline, not
-// this check's.
-func cteBodyLegsEnumerable(md *recordlayer.RecordMetaData, schemaName string, cteScopes, cteOnScopes map[string]semantic.ScopeSource, sq *selectQuery) bool {
-	if sq.derivedQuery == nil && cteLegKind(md, schemaName, cteScopes, cteOnScopes, sq.tableName) == cteLegOpaque {
-		return false
-	}
-	tableFirst := newUnnestTableResolver(md, schemaName)
-	prior := map[string]bool{strings.ToUpper(sq.tableAlias): true}
-	for _, jc := range sq.joins {
-		bind := jc.alias
-		if bind == "" {
-			bind = jc.tableName
-		}
-		if jc.derivedQuery == nil {
-			priorHit := len(jc.segments) > 1 && prior[strings.ToUpper(jc.segments[0])]
-			switch {
-			case priorHit && len(jc.segments) == 2 && tableFirst(jc.segments):
-				// ALIAS-EQUALS-SCHEMA collision: buildSelectScope keeps its
-				// nil-resolver leniency for this class (the R5b Java-parity
-				// pins), so the 42702/42703 backstop is DEAD for the body —
-				// the enumerability premise fails; decline to the marker.
-				return false
-			case jc.fromComma && priorHit:
-				// genuine lateral unnest: binds its effective alias
-				if as, _ := unnestAliases(jc); as != "" {
-					bind = as
-				}
-			case cteLegKind(md, schemaName, cteScopes, cteOnScopes, jc.tableName) == cteLegOpaque:
-				return false
-			}
-		}
-		prior[strings.ToUpper(bind)] = true
-	}
-	return true
-}
-
-// derivedEmittedBareNames computes the set of names a derived source's
-// runtime row provably answers reads for — the read-authority for a CTE
-// ON-only body whose single FROM source is that derived table. ok=false
-// means the set is not statically closed and the caller must decline to the
-// loud marker: SELECT * (names unknown here — no catalog access),
-// aggregate/set-query bodies (their materialized-row keying is unverified on
-// this path), a derived leg among multiple legs (the same ambiguity-backstop
-// hole as the caller's own arm, one level down), any OPAQUE leg (an ON-only
-// CTE gives the body build a NIL resolver — no 42702/42703 backstop), or an
-// opaque/ON-only SINGLE source. The per-item rules mirror the caller's
-// admission loop: an explicit alias is always emitted (executeProjection
-// writes the alias key); a bare unqualified non-computed ref keys by its
-// spelling; a QUALIFIED-spelled item over a single-BASE-TABLE body is
-// readable by its LAST SEGMENT — and not merely because that body's
-// projection row stays positional: the resolver's SINGLE-SOURCE resolution
-// rewrites the projected FieldValue's Field to the BARE name at build time
-// (expr.go ResolveIdentifier, needsQualification = len(sources) > 1; pinned
-// by TestWalkExpression_SingleVsMultiSourceFieldQualification), so the key
-// is bare in BOTH representations — the positional row AND the name-keyed
-// Datum — which is what lets the claim survive a sort-continuation resume
-// that rebuilds rows without positional state (review-verified: only
-// join/merge-shaped inner rows are name-keyed; declining qualified items
-// here over-declined the positional class). Computed unaliased items key by
-// their explain rendering — nothing readable. Input reads recurse: when this
-// level's single source is itself derived, every item's read target must
-// resolve in the deeper set, else the body can never execute (a decline
-// beats the runtime malformed-plan error it would otherwise be); a
-// scalar-subquery's LOCAL refs are excluded from that check
-// (harvestColumnRefsOutsideSubqueries) — its own build resolves them in its
-// own scope, and a correlated read into the derived source surfaces loud at
-// translation.
-func derivedEmittedBareNames(md *recordlayer.RecordMetaData, schemaName string, cteScopes, cteOnScopes map[string]semantic.ScopeSource, q antlrgen.IQueryContext) (map[string]bool, bool) {
-	if q == nil {
-		return nil, false
-	}
-	body, ok := q.QueryExpressionBody().(*antlrgen.QueryTermDefaultContext)
-	if !ok {
-		return nil, false
-	}
-	sq, err := extractFromQueryTerm(body)
-	if err != nil || sq == nil {
-		return nil, false
-	}
-	if len(sq.aggCols) > 0 || sq.countStar || sq.projCols == nil {
-		return nil, false
-	}
-	legDerived := sq.derivedQuery != nil
-	for _, jc := range sq.joins {
-		if jc.derivedQuery != nil {
-			legDerived = true
-		}
-	}
-	if len(sq.joins) > 0 && (legDerived || !cteBodyLegsEnumerable(md, schemaName, cteScopes, cteOnScopes, sq)) {
-		return nil, false
-	}
-	positionalFrontier := false
-	if sq.derivedQuery == nil && len(sq.joins) == 0 {
-		switch cteLegKind(md, schemaName, cteScopes, cteOnScopes, sq.tableName) {
-		case cteLegBase:
-			positionalFrontier = true
-		case cteLegDerivableCTE:
-			// derivable CTE rows answer alias/bare-spelling reads (the same
-			// contract this function claims); NOT known-positional.
-		default:
-			return nil, false // ON-only CTE or unknown single source: opaque
-		}
-	}
-	var deeper map[string]bool
-	if sq.derivedQuery != nil {
-		if deeper, ok = derivedEmittedBareNames(md, schemaName, cteScopes, cteOnScopes, sq.derivedQuery); !ok {
-			return nil, false
-		}
-	}
-	set := make(map[string]bool, len(sq.projCols))
-	for i, col := range sq.projCols {
-		isComputed := i < len(sq.projExprs) && sq.projExprs[i] != nil
-		if deeper != nil {
-			if isComputed {
-				for _, r := range harvestBareColumnRefsOutsideSubqueries(sq.projExprs[i]) {
-					if !deeper[r] {
-						return nil, false
-					}
-				}
-			} else if !deeper[colBareOrName(col)] {
-				return nil, false
-			}
-		}
-		switch {
-		case i < len(sq.projAliases) && sq.projAliases[i] != "":
-			set[sq.projAliases[i]] = true
-		case isComputed:
-			// unaliased computed: keys by its rendering — nothing readable
-		case !col.qualified && col.bare != "":
-			// the "" guard: a mixed-star sentinel slot (name=="") must
-			// not deposit a junk claim in a soundness-critical set
-			set[col.bare] = true
-		case col.qualified && positionalFrontier:
-			set[col.bare] = true
-		}
-	}
-	return set, true
-}
-
-// cteBodyReadsResolvable reports whether every projection and aggregate INPUT
-// read of a single-derived-source CTE body resolves in the derived source's
-// emitted bare-key set. Aggregate outExpr entries are skipped: their refs
-// read the POST-aggregation rowMap (agg outputs and group columns), not the
-// input row — the group/arg inputs they depend on arrive via sibling aggCols
-// entries, which ARE checked.
-func cteBodyReadsResolvable(sq *selectQuery, emitted map[string]bool) bool {
-	for _, ac := range sq.aggCols {
-		if ac.groupCol != "" {
-			bare := ac.groupColBare
-			if bare == "" {
-				bare = ac.groupCol
-			}
-			if !emitted[bare] {
-				return false
-			}
-		}
-		if ac.aggArg != "" {
-			bare := ac.aggArgBare
-			if bare == "" {
-				bare = ac.aggArg
-			}
-			if !emitted[bare] {
-				return false
-			}
-		}
-		for _, r := range harvestBareColumnRefsOutsideSubqueries(ac.aggExpr) {
-			if !emitted[r] {
-				return false
-			}
-		}
-	}
-	for i, col := range sq.projCols {
-		if i < len(sq.projExprs) && sq.projExprs[i] != nil {
-			for _, r := range harvestBareColumnRefsOutsideSubqueries(sq.projExprs[i]) {
-				if !emitted[r] {
-					return false
-				}
-			}
-			continue
-		}
-		if !emitted[colBareOrName(col)] {
-			return false
-		}
-	}
-	return true
-}
-
-func buildCTEOnOnlySource(
-	cteName string,
-	cteQuery antlrgen.IQueryContext,
-	colAliases antlrgen.IFullIdListContext,
-	md *recordlayer.RecordMetaData,
-	schemaName string,
-	cteScopes map[string]semantic.ScopeSource,
-	cteOnScopes map[string]semantic.ScopeSource,
-) (semantic.ScopeSource, bool) {
-	if cteName == "" || cteQuery == nil {
-		return semantic.ScopeSource{}, false
-	}
-	if colAliases != nil {
-		// WITH c(x, y) renames are scope-level only; the runtime row keeps the
-		// body's keys — decline to the loud marker rather than resolve names
-		// the merged row will never carry.
-		return semantic.ScopeSource{}, false
-	}
-	var body *antlrgen.QueryTermDefaultContext
-	switch b := cteQuery.QueryExpressionBody().(type) {
-	case *antlrgen.QueryTermDefaultContext:
-		body = b
-	case *antlrgen.SetQueryContext:
-		seed, ok := b.GetLeft().(*antlrgen.QueryTermDefaultContext)
-		if !ok {
-			return semantic.ScopeSource{}, false
-		}
-		body = seed
-	default:
-		return semantic.ScopeSource{}, false
-	}
-	innerSQ, err := extractFromQueryTerm(body)
-	if err != nil || innerSQ == nil {
-		return semantic.ScopeSource{}, false
-	}
-	if len(innerSQ.joins) == 0 && innerSQ.derivedQuery == nil {
-		// Plain single-table bodies are buildCTEColumnSource territory; if
-		// THAT declined, this name-only derivation has nothing better to
-		// offer. Derived-source bodies (`FROM (SELECT …) d` — zero joins but
-		// declined globally for the derivedQuery reason) DO derive here: their
-		// projection names key the runtime row the same way.
-		return semantic.ScopeSource{}, false
-	}
-	legDerived := innerSQ.derivedQuery != nil
-	for _, jc := range innerSQ.joins {
-		if jc.derivedQuery != nil {
-			legDerived = true
-		}
-	}
-	if len(innerSQ.joins) > 0 && legDerived {
-		// A derived-table leg among MULTIPLE legs: the resolver cannot
-		// enumerate its columns, so the 42702 ambiguity backstop the bare-ref
-		// arm rests on does not run — a textually-bare-but-ambiguous ref
-		// silently resolves against the wrong leg (Q18). Decline the whole
-		// body to the loud marker.
-		return semantic.ScopeSource{}, false
-	}
-	if len(innerSQ.joins) > 0 && !cteBodyLegsEnumerable(md, schemaName, cteScopes, cteOnScopes, innerSQ) {
-		// An OPAQUE leg — an ON-ONLY CTE name — is worse than a derived leg:
-		// buildSelectScope's addSource knows base tables and cteScopes only,
-		// so the body gets a NIL resolver and BOTH the 42702 ambiguity gate
-		// and the 42703 unknown-column gate are skipped for the whole body
-		// (review-caught: an ambiguous bare ref AND a nonexistent column both
-		// planned fine). Decline — covers the aggregate arm below too (Q27,
-		// Q28).
-		return semantic.ScopeSource{}, false
-	}
-	var innerEmitted map[string]bool
-	if innerSQ.derivedQuery != nil {
-		// Single derived source: the runtime row keys by the INNER spelling.
-		// Every input read below must resolve in its provably-emitted set —
-		// a miss is a runtime malformed plan (projection read, Q19) or a
-		// silent NULL (aggregate arg, Q20) if admitted.
-		var ok bool
-		if innerEmitted, ok = derivedEmittedBareNames(md, schemaName, cteScopes, cteOnScopes, innerSQ.derivedQuery); !ok {
-			return semantic.ScopeSource{}, false
-		}
-	}
-	if innerEmitted != nil && !cteBodyReadsResolvable(innerSQ, innerEmitted) {
-		return semantic.ScopeSource{}, false
-	}
-	if len(innerSQ.aggCols) > 0 || innerSQ.countStar {
-		// COMPLETE-SCHEMA-OR-DECLINE applies here too: a DUPLICATE output name
-		// would silently mis-resolve an enclosing ON ref by first-matching one
-		// of the two. Decline the whole source on that obstruction, exactly
-		// like the projection path below. The dup check consumes aggOutputCols
-		// — the SAME visible-only authority buildDerivedTableSourceFromAgg
-		// builds from — so it counts exactly the names installed (a hidden
-		// HAVING aggregate is neither advertised nor counted).
-		//
-		// The CASE-SENSITIVITY obstruction that used to sit beside it is
-		// RETIRED with the fold it was built on: an output name is now emitted
-		// verbatim, so a quoted `AS "x"` is nameable and only a genuine
-		// repetition is ambiguous. The count is keyed verbatim for the same
-		// reason — `AS "x"` and `AS "X"` are two columns, not one collision.
-		aggSeen := make(map[string]int)
-		for _, c := range aggOutputCols(innerSQ, md) {
-			aggSeen[c.name]++
-		}
-		for _, n := range aggSeen {
-			if n > 1 {
-				return semantic.ScopeSource{}, false
-			}
-		}
-		return buildDerivedTableSourceFromAgg(cteName, innerSQ, md)
-	}
-	if innerSQ.projCols == nil {
-		return semantic.ScopeSource{}, false // SELECT * over a multi-leg/derived body: no name authority
-	}
-	// COMPLETE-SCHEMA-OR-DECLINE. This schema is installed as ONE source of the
-	// enclosing join; the resolver decides bare-ref ambiguity by which SOURCES
-	// carry a name (scope.ResolveColumn). A PARTIAL install — advertising some
-	// runtime columns and dropping others — is therefore UNSOUND: a dropped
-	// column whose runtime key another enclosing source ALSO carries would let a
-	// bare ref bind silently to that other source (the ref should be ambiguous),
-	// and this function cannot see the enclosing scope to know. So we install
-	// ONLY when every runtime column is advertised correctly and unambiguously;
-	// any obstruction declines the WHOLE source (caller's loud 0AF00), never a
-	// partial table. Two obstructions, each keyed by the RUNTIME-emitted name
-	// (executeProjection uppercases every output key):
-	//   (1) a quoted CASE-SENSITIVE alias (`AS "x"`, outName != its fold): the
-	//       runtime key is "X" but no correct-case ref can name it (a `C."x"`
-	//       plans then runtime-fails against the uppercased row; a `C."X"`
-	//       silently resolves the wrong case). Can't advertise it truthfully.
-	//   (2) a DUPLICATE runtime name (`… AS X, … AS X`, or `AS "x", AS "X"` —
-	//       both emit "X"): the schema is AMBIGUOUS on that name; advertising one
-	//       column silently joins on an arbitrary one and, when dropped, rebinds.
-	// (A partial "keep the unique columns, drop the bad one" was tried and is
-	// unsound for the rebind reason above — review-caught. The full-reach fix —
-	// keep unique columns AND make the bad name resolve ambiguous via a
-	// per-source poison marker in the resolver — is a booked conformance slice;
-	// until then a body with ANY obstruction declines wholesale, correct-or-loud.)
-	names := make([]string, 0, len(innerSQ.projCols))
-	seen := make(map[string]int, len(innerSQ.projCols))
-	for i, col := range innerSQ.projCols {
-		// The output name must be one execution PROVABLY emits: the explicit
-		// alias (executeProjection always writes the alias key), or a BARE
-		// unqualified non-computed reference (the runtime key mirrors the SQL
-		// spelling — a bare ref keys bare, verified by plan shape
-		// Project([AID],…)). The bare arm is sound here because every leg is
-		// enumerable at this point — multi-leg bodies with a derived leg
-		// declined above, so an ambiguous bare ref never EXECUTES: the body
-		// build 42702s it and the wrap rebuild re-raises the swallowed error.
-		// A QUALIFIED unaliased ref keys by its dotted source name and a
-		// computed item by its explain rendering — both decline (no bare key
-		// on the runtime row).
-		outName := ""
-		if i < len(innerSQ.projAliases) && innerSQ.projAliases[i] != "" {
-			outName = innerSQ.projAliases[i]
-		} else {
-			isComputed := i < len(innerSQ.projExprs) && innerSQ.projExprs[i] != nil
-			if !isComputed && !col.qualified && col.bare != "" {
-				outName = col.bare
-			}
-		}
-		if outName == "" {
-			return semantic.ScopeSource{}, false
-		}
-		// The runtime name is the output name VERBATIM. Obstruction (1) — a
-		// quoted alias whose fold differs from itself — is RETIRED: it existed
-		// because execution keyed its output slots upper-cased, so `AS "x"`
-		// emitted X and no reference could name it. Nothing folds an output
-		// name any more, so `AS "x"` emits x and `C."x"` resolves; the gate
-		// would now decline a source that works.
-		//
-		// Obstruction (2) survives, and its counting changes with it: two
-		// aliases that differ only by case are two DISTINCT columns now, not
-		// one ambiguous name, so the count is keyed verbatim.
-		seen[outName]++
-		names = append(names, outName)
-	}
-	for _, n := range seen {
-		if n > 1 { // obstruction (2): duplicate runtime name
-			return semantic.ScopeSource{}, false
-		}
-	}
-	if len(names) == 0 {
-		return semantic.ScopeSource{}, false
-	}
-	// The NAMES are decided above, by what execution provably emits. The TYPES
-	// come from the body's exact logical result type — the authority that
-	// actually produces the rows — never from a name-keyed walk of the body's
-	// legs. That walk had to mint UNKNOWN for every item it could not attribute
-	// to a source column (a computed item, an unnest element, an aliasless
-	// schema-qualified leg), and a single UNKNOWN field makes the WHOLE
-	// published row inexact: resolving ANY column of this source then fails,
-	// not merely the unattributed one. Deriving from the built body types the
-	// computed items correctly and declines wholesale where it cannot —
-	// semanticColumnFromExactType never publishes a placeholder.
-	return buildExactVirtualScopeSourceForSelect(md, cteName, innerSQ, cteScopes, names)
-}
-
-// registerCTEOnOnlyScope stores the ON-only source (or the nil-Table marker)
-// for a declared CTE that did NOT make it into the global cteScopes — the ONE
-// registration authority both build pipelines (the plan visitor and the
-// CTECatalog chain) share, so a declared CTE can never reach
-// upgradeJoinOnPredicates untracked (the silent ON-drop class).
-func registerCTEOnOnlyScope(dst map[string]semantic.ScopeSource, upperName string, cteQuery antlrgen.IQueryContext, colAliases antlrgen.IFullIdListContext, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource) error {
-	// Column-alias arity for underivable bodies is validated at the POINT OF
-	// TRUTH instead of here: translateCTE checks the BUILT body's real output
-	// width against the alias list (42F10) — a static width predictor at
-	// registration kept re-implementing source resolution (stars, shadowing,
-	// unnest, nested WITH) and drifting from the real resolver, the exact
-	// two-authorities anti-pattern.
-	if src, ok := buildCTEOnOnlySource(upperName, cteQuery, colAliases, md, schemaName, cteScopes, dst); ok {
-		dst[upperName] = src
-		return nil
-	}
-	dst[upperName] = semantic.ScopeSource{} // marker: declared, underivable → loud drop risk
-	return nil
 }
 
 // applyCTEColumnAliases renames the columns of a CTE ScopeSource
@@ -2614,6 +2028,7 @@ func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.Re
 	visitor.bindings = sq.bindings
 	visitor.enclosingScope = sq.enclosingScope
 	visitor.cteScopes, visitor.cteOnScopes = maps.Clone(cteScopes), maps.Clone(cteOnScopes)
+	visitor.cteProducers = *cteRegistryFromScopes(cteScopes, cteOnScopes)
 	return visitor.buildLogicalPlanForSelect(sq)
 }
 
@@ -2649,7 +2064,7 @@ func (visitor *PlanVisitor) buildLogicalPlanForSelect(sq *selectQuery) (logical.
 		if op == nil {
 			return nil, nil
 		}
-		return buildLogicalPlanForSelectWithCTECatalog_postBuild(op, sq, md, schemaName, cteScopes, cteOnScopes, visitor.cteBodies)
+		return buildLogicalPlanForSelectWithCTECatalog_postBuild(op, sq, md, schemaName, cteScopes, cteOnScopes, visitor.cteProducers)
 	}
 
 	// Strip the session-schema qualifier off the parser's schema-qualified FROM
@@ -2709,18 +2124,11 @@ func (visitor *PlanVisitor) buildLogicalPlanForSelect(sq *selectQuery) (logical.
 	// already-attached subquery tree, so it never sees a subquery whose construction
 	// fails first; running the same early rejection on the built FROM tree here, in
 	// EVERY SELECT build path, surfaces 42809 regardless of which path plans the
-	// SELECT. Reuses the same rejectAtOrdinalityOnTableWithCTEs helper, threading the
-	// in-scope WITH-CTE names from cteScopes (a CTE source is the translator's
-	// outerSourceIsCTE territory, never a base-table AT — same as the PlanVisitor
-	// seeds from v.cteScopes). RFC-142.
-	cteNames := make(map[string]struct{}, len(cteScopes))
-	for name := range cteScopes {
-		cteNames[strings.ToUpper(name)] = struct{}{}
-	}
-	if err := rejectAtOrdinalityOnTableWithCTEs(op, md, cteNames); err != nil {
+	// SELECT. Reuses the same source resolver as PlanVisitor. RFC-142.
+	if err := rejectAtOrdinalityOnTableWithCTEs(op, md, visitor.cteProducers); err != nil {
 		return nil, err
 	}
-	return buildLogicalPlanForSelectWithCTECatalog_postBuild(op, sq, md, schemaName, cteScopes, cteOnScopes, visitor.cteBodies)
+	return buildLogicalPlanForSelectWithCTECatalog_postBuild(op, sq, md, schemaName, cteScopes, cteOnScopes, visitor.cteProducers)
 }
 
 // normalizeSchemaQualifiedSelectSources strips the session-schema qualifier off
@@ -2795,8 +2203,8 @@ func normalizeSchemaQualifiedSelectSources(sq *selectQuery, schemaName string, m
 	}
 }
 
-func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource, cteOnScopes map[string]semantic.ScopeSource, cteBodies ...map[string]logical.LogicalOperator) (logical.LogicalOperator, error) {
-	built, err := buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op, sq, md, schemaName, cteScopes, cteOnScopes, cteBodies...)
+func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource, cteOnScopes map[string]semantic.ScopeSource, cteProducers ...logical.CTERegistry) (logical.LogicalOperator, error) {
+	built, err := buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op, sq, md, schemaName, cteScopes, cteOnScopes, cteProducers...)
 	if err != nil {
 		return nil, err
 	}
@@ -2814,7 +2222,7 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuild(op logical.LogicalOperato
 // buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded runs the upgrades;
 // buildLogicalPlanForSelectWithCTECatalog_postBuild folds the block's
 // ON-clause EXISTS afterwards.
-func buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource, cteOnScopes map[string]semantic.ScopeSource, cteBodies ...map[string]logical.LogicalOperator) (logical.LogicalOperator, error) {
+func buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource, cteOnScopes map[string]semantic.ScopeSource, cteProducers ...logical.CTERegistry) (logical.LogicalOperator, error) {
 	queryCTEScopes := singleSourceQueryBlockCTEScopes(sq, cteScopes, cteOnScopes)
 	// Build the semantic scope once. All identifier resolution below
 	// goes through this scope — same architecture as Java's
@@ -2893,6 +2301,10 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op logical.Logica
 						var corrErr *CorrelatedExistsError
 						if errors.As(walkErr, &corrErr) {
 							return nil, walkErr
+						}
+						var missing *semantic.ColumnNotFoundError
+						if errors.As(walkErr, &missing) {
+							return nil, mapColumnResolveError(walkErr, missing.Reference())
 						}
 					}
 					if walkErr == nil && v != nil {
@@ -3217,19 +2629,19 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op logical.Logica
 	// WHERE walks can build inner plans for EXISTS and scalar subqueries.
 	var existsPlanner *existsSubqueryPlanner
 	if md != nil {
-		var bodies map[string]logical.LogicalOperator
-		if len(cteBodies) > 0 {
-			bodies = cteBodies[0]
+		var bodies logical.CTERegistry
+		if len(cteProducers) > 0 {
+			bodies = cteProducers[0]
 		}
 		existsPlanner = &existsSubqueryPlanner{
-			bindings:    sq.bindings,
-			md:          md,
-			schemaName:  schemaName,
-			outerScope:  resolverScope(resolver),
-			outerScopes: buildOuterScopeSources(sq, md, schemaName, queryCTEScopes),
-			cteScopes:   cteScopes,
-			cteOnScopes: cteOnScopes,
-			cteBodies:   bodies,
+			bindings:     sq.bindings,
+			md:           md,
+			schemaName:   schemaName,
+			outerScope:   resolverScope(resolver),
+			outerScopes:  buildOuterScopeSources(sq, md, schemaName, queryCTEScopes),
+			cteScopes:    cteScopes,
+			cteOnScopes:  cteOnScopes,
+			cteProducers: bodies,
 		}
 	}
 
@@ -3569,8 +2981,8 @@ func buildSelectScopeChecked(
 			tableName = segs[1]
 		}
 		// CTE-FIRST: a declared CTE shadows a same-named catalog table
-		// (execution's translateScan contract; the same ordering cteLegKind
-		// applies). The prior catalog-first order analyzed the TABLE's
+		// (execution's translateScan contract). The prior catalog-first order
+		// analyzed the TABLE's
 		// schema for reads that execute against the CTE — 42703 on the
 		// CTE's own columns (review-caught; the plain-body variant of the
 		// shape was broken this way all along, masked only for
@@ -6434,183 +5846,8 @@ func aggResultTypeFromFunc(fn string, operand values.Value) values.Type {
 // of buildLogicalPlanForQuery. Recurses into CTE bodies and the
 // query body so WHERE clauses anywhere in the tree pick up the
 // metadata when available. md=nil collapses to the text builder.
-func buildLogicalPlanForQueryWithCatalog(
-	q antlrgen.IQueryContext,
-	md *recordlayer.RecordMetaData,
-) (logical.LogicalOperator, error) {
-	if q == nil {
-		return nil, nil
-	}
-	if md == nil {
-		return buildLogicalPlanForQuery(q), nil
-	}
-
-	ctesCtx := q.Ctes()
-	preState := map[string]cteScopePreState{}
-
-	// Pre-scan CTE definitions to extract column schemas. Process in
-	// declaration order so CTE B can reference CTE A's derived schema.
-	// This is the TOP-LEVEL (no external scope) variant — reached only from the
-	// EXPLAIN-only generators and the WithCTECatalog default-schema short-circuit,
-	// so it uses the default schema for the schema-qualified-table demotion. A
-	// non-default session schema flows through the WithCTECatalog path instead.
-	schemaName := defaultEmbeddedSchema
-	var cteScopes map[string]semantic.ScopeSource
-	var cteOnScopes map[string]semantic.ScopeSource
-	if ctesCtx != nil {
-		cteScopes = make(map[string]semantic.ScopeSource)
-		cteOnScopes = make(map[string]semantic.ScopeSource)
-		for _, nq := range ctesCtx.AllNamedQuery() {
-			name := functions.FullIdToName(nq.GetName())
-			upper := strings.ToUpper(name)
-			if _, exists := cteScopes[upper]; exists {
-				return nil, api.NewErrorf(api.ErrCodeDuplicateAlias,
-					"found '%s' more than once", name)
-			}
-			// An ON-only registration is a DECLARED name too — without this
-			// arm a join-bodied duplicate (never in cteScopes) silently
-			// last-wins here while the visitor and the WithCTECatalog loop
-			// both error (the review-caught third-loop copy of the same hole;
-			// reachable live via a subquery-nested WITH through the
-			// empty-scope short-circuit).
-			if _, exists := cteOnScopes[upper]; exists {
-				return nil, api.NewErrorf(api.ErrCodeDuplicateAlias,
-					"found '%s' more than once", name)
-			}
-			// Pre-registration snapshot (always ABSENT on this route — the
-			// maps are fresh — kept uniform with the WithCTECatalog loop so
-			// the shared wrap-loop block reads identically).
-			if _, seen := preState[upper]; !seen {
-				sv, sh := cteScopes[upper]
-				ov, oh := cteOnScopes[upper]
-				preState[upper] = cteScopePreState{scopeVal: sv, scopeHad: sh, onVal: ov, onHad: oh}
-			}
-			if src, ok, cteBodyErr := buildCTEColumnSource(md, name, nq.Query(), cteScopes); cteBodyErr != nil {
-				return nil, cteBodyErr
-			} else if ok {
-				// Apply CTE column aliases: WITH c1(x, y) AS (...)
-				// Java's SemanticAnalyzer.validateCteColumnAliases checks
-				// that the alias count matches the CTE body column count.
-				if colAliases := nq.GetColumnAliases(); colAliases != nil {
-					if aliasList, ok := colAliases.(*antlrgen.FullIdListContext); ok && aliasList != nil {
-						aliases := aliasList.AllFullId()
-						if nAliases := len(aliases); nAliases > 0 && src.Table != nil {
-							nCols := len(src.Table.Columns())
-							if nAliases != nCols {
-								return nil, api.NewErrorf(api.ErrCodeInvalidColumnReference,
-									"cte query has %d column(s), however %d aliases defined",
-									nCols, nAliases)
-							}
-						}
-					}
-					src = applyCTEColumnAliases(src, colAliases)
-				}
-				cteScopes[upper] = src
-			} else {
-				// Declared but not globally derivable (join/unnest body): the
-				// ON-only registration keeps an enclosing explicit join's ON
-				// resolvable and supplies a complete sole-source block locally;
-				// marker entries remain unpromoted and loud.
-				// The registration-time derivation runs BEFORE the shadow
-				// delete below: a body leg naming the outer same-name
-				// correctly classifies against the OUTER binding (which is
-				// what the body's reference means, pre-state scoping).
-				if regErr := registerCTEOnOnlyScope(cteOnScopes, upper, nq.Query(), nq.GetColumnAliases(), md, schemaName, cteScopes); regErr != nil {
-					return nil, regErr
-				}
-				// The mirror of the derivable arm's shadow delete: an inner
-				// ON-ONLY registration must EVICT a same-named OUTER
-				// derivable entry, or this level's MAIN query resolves the
-				// inner CTE's reads against the STALE OUTER schema
-				// (review-caught: MAX over a stale column returned the wrong
-				// generation; the pre-registration snapshot keeps the outer
-				// visible for the BODY build only). Post-evict the inner is
-				// ON-only (in cteOnScopes, not cteScopes). A complete source
-				// is admitted only by singleSourceQueryBlockCTEScopes for a
-				// sole-source query block; that local copy gives WHERE,
-				// projection, and ORDER BY the exact CTE boundary row without
-				// advertising the schema to sibling legs. NO-shadow still adds
-				// nothing to cteScopes, so comma/join flatten-evasion shapes
-				// keep their clean decline. Marker/underivable entries remain
-				// unpromoted.
-				delete(cteScopes, upper)
-			}
-		}
-	}
-
-	main, err := buildLogicalPlanForQueryBodyWithCTECatalog(q.QueryExpressionBody(), md, schemaName, cteScopes, cteOnScopes)
-	if err != nil {
-		return nil, err
-	}
-	if main == nil {
-		return nil, nil
-	}
-	if ctesCtx == nil {
-		return main, nil
-	}
-	recursive := ctesCtx.RECURSIVE() != nil
-	// No clause = ANY (the planner picks); an explicit level_order pins
-	// the level union (the clause's only remaining alternative).
-	traversalOrder := logical.TraversalAnyOrder
-	if toc := ctesCtx.TraversalOrderClause(); toc != nil {
-		traversalOrder = logical.TraversalLevelOrder
-		if toc.PRE_ORDER() != nil {
-			traversalOrder = logical.TraversalPreOrder
-		} else if toc.POST_ORDER() != nil {
-			traversalOrder = logical.TraversalPostOrder
-		}
-	}
-	ctes := ctesCtx.AllNamedQuery()
-	for i := len(ctes) - 1; i >= 0; i-- {
-		nq := ctes[i]
-		name := functions.FullIdToName(nq.GetName())
-		var body logical.LogicalOperator
-		if inner := nq.Query(); inner != nil {
-			if recursive {
-				qeb := inner.QueryExpressionBody()
-				if _, isSet := qeb.(*antlrgen.SetQueryContext); !isSet {
-					return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-						"recursive CTE requires UNION ALL body")
-				}
-			}
-			// Self-invisible body build (buildCTEBodySelfHidden): the
-			// registration loop completed BEFORE this build, so the maps
-			// carry the CTE's own entry — CTE-first resolution would
-			// resolve the body against its own output schema.
-			body, err = buildCTEBodySelfHidden(cteScopes, cteOnScopes, strings.ToUpper(name), preState, recursive, func() (logical.LogicalOperator, error) {
-				return buildLogicalPlanForQueryBodyWithCTECatalog(inner.QueryExpressionBody(), md, schemaName, cteScopes, cteOnScopes)
-			})
-			if err != nil {
-				return nil, err
-			}
-		}
-		if body == nil {
-			return nil, nil
-		}
-		cte := logical.NewCTE(name, body, main, recursive)
-		cte.TraversalOrder = traversalOrder
-		if colAliases := nq.GetColumnAliases(); colAliases != nil {
-			if aliasList, ok := colAliases.(*antlrgen.FullIdListContext); ok && aliasList != nil {
-				aliases := aliasList.AllFullId()
-				names := make([]string, len(aliases))
-				for j, fid := range aliases {
-					// NormalizeIdentifier ALREADY applied SQL identifier
-					// semantics — an unquoted alias came back folded UPPER and a
-					// quoted one verbatim — so a second fold here can only
-					// destroy `WITH c("x")`. This is the CAPTURE, which is why
-					// it is fixed here rather than at the three sites that
-					// APPLY the list: they can only publish what this stored.
-					names[j] = functions.FullIdToName(fid)
-				}
-				cte.ColumnAliases = names
-			}
-		}
-		main = cte
-	}
-	if err := bindExactCTEOutputMetadata(main, md); err != nil {
-		return nil, err
-	}
-	return main, nil
+func buildLogicalPlanForQueryWithCatalog(q antlrgen.IQueryContext, md *recordlayer.RecordMetaData) (logical.LogicalOperator, error) {
+	return NewPlanVisitorWithSchema(md, defaultEmbeddedSchema).VisitQuery(q)
 }
 
 // buildLogicalPlanForQueryBodyWithCatalog dispatches simple SELECT
@@ -6653,75 +5890,6 @@ func buildLogicalPlanForQueryBodyWithCatalog(
 		return buildLogicalPlanForUnionWithCatalog(b, md)
 	}
 	return nil, nil
-}
-
-// buildLogicalPlanForQueryBodyWithCTECatalog is like
-// buildLogicalPlanForQueryBodyWithCatalog but passes CTE-derived
-// column schemas to the predicate builder so WHERE clauses on CTE
-// references can produce real QueryPredicates.
-func buildLogicalPlanForQueryBodyWithCTECatalog(
-	body antlrgen.IQueryExpressionBodyContext,
-	md *recordlayer.RecordMetaData,
-	schemaName string,
-	cteScopes map[string]semantic.ScopeSource,
-	cteOnScopes map[string]semantic.ScopeSource,
-) (logical.LogicalOperator, error) {
-	if body == nil {
-		return nil, nil
-	}
-	if schemaName == "" {
-		schemaName = defaultEmbeddedSchema
-	}
-	// As in buildLogicalPlanForQueryWithCTECatalog: only short-circuit to the
-	// schema-less variant when the active schema IS the default; a non-default
-	// session schema must keep threading so the demotion uses the active schema.
-	// BOTH maps must be empty — a join/unnest-bodied outer CTE lives ONLY in
-	// cteOnScopes, and dropping it here silently dropped the enclosing join's
-	// ON on the subquery build path (cross-product rows).
-	if len(cteScopes) == 0 && len(cteOnScopes) == 0 && schemaName == defaultEmbeddedSchema {
-		return buildLogicalPlanForQueryBodyWithCatalog(body, md)
-	}
-	switch b := body.(type) {
-	case *antlrgen.QueryTermDefaultContext:
-		// Parenthesized UNION branch — recurse into the inner query body so
-		// the branch's LIMIT/clauses survive (RFC-128 §4.7); see the
-		// non-CTE variant above.
-		if paren, ok := b.QueryTerm().(*antlrgen.ParenthesisQueryContext); ok {
-			if inner := paren.Query(); inner != nil {
-				return buildLogicalPlanForQueryBodyWithCTECatalog(inner.QueryExpressionBody(), md, schemaName, cteScopes, cteOnScopes)
-			}
-			return nil, nil
-		}
-		simpleTable, ok := b.QueryTerm().(*antlrgen.SimpleTableContext)
-		if !ok {
-			return nil, nil
-		}
-		sq, err := extractFromSimpleTable(simpleTable)
-		if err != nil {
-			return nil, err
-		}
-		if fn := findUnsupportedFunctionInSelectQuery(sq); fn != "" {
-			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
-				"Unsupported operator "+fn)
-		}
-		return buildLogicalPlanForSelectWithCTECatalog(sq, md, schemaName, cteScopes, cteOnScopes)
-	case *antlrgen.SetQueryContext:
-		return buildLogicalPlanForUnionWithCTECatalog(b, md, schemaName, cteScopes, cteOnScopes, false)
-	}
-	return nil, nil
-}
-
-func buildLogicalPlanForUnionWithCTECatalog(
-	setQ *antlrgen.SetQueryContext,
-	md *recordlayer.RecordMetaData,
-	schemaName string,
-	cteScopes map[string]semantic.ScopeSource,
-	cteOnScopes map[string]semantic.ScopeSource,
-	allowDistinct bool,
-) (logical.LogicalOperator, error) {
-	visitor := NewPlanVisitorWithSchema(md, schemaName)
-	visitor.cteScopes, visitor.cteOnScopes = maps.Clone(cteScopes), maps.Clone(cteOnScopes)
-	return visitor.buildLogicalPlanForUnion(setQ, allowDistinct)
 }
 
 func (v *PlanVisitor) buildLogicalPlanForUnion(setQ *antlrgen.SetQueryContext, allowDistinct bool) (logical.LogicalOperator, error) {
@@ -6822,10 +5990,14 @@ func buildUnionRightBranchStrippingOrderBy(
 ) (logical.LogicalOperator, unionLiftedClauses, error) {
 	visitor := NewPlanVisitorWithSchema(md, schemaName)
 	visitor.cteScopes, visitor.cteOnScopes = maps.Clone(cteScopes), maps.Clone(cteOnScopes)
+	visitor.cteProducers = *cteRegistryFromScopes(cteScopes, cteOnScopes)
 	return visitor.buildUnionRightBranchStrippingOrderBy(body)
 }
 
 func (v *PlanVisitor) visitUnionBranch(body antlrgen.IQueryExpressionBodyContext) (logical.LogicalOperator, error) {
+	if prepared := v.preparedQueryBodies[body]; prepared != nil {
+		return prepared, nil
+	}
 	if term, ok := body.(*antlrgen.QueryTermDefaultContext); ok {
 		if paren, ok := term.QueryTerm().(*antlrgen.ParenthesisQueryContext); ok {
 			if inner := paren.Query(); inner != nil {
@@ -7285,37 +6457,57 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 // exact result type cannot be derived remain unset. translateSort then rejects
 // them loudly; no spelling is parsed or used as runtime identity here.
 func bindExactCTEOutputMetadata(op logical.LogicalOperator, md *recordlayer.RecordMetaData) error {
-	return bindExactCTEOutputMetadataInScope(op, md, make(map[string]*values.RecordType))
+	logical.BindCTESources(op, logical.CTERegistry{})
+	return bindExactCTEOutputMetadataInScope(op, md, make(map[*logical.CTEProducer]*values.RecordType))
 }
 
 func bindExactCTEOutputMetadataInScope(
 	op logical.LogicalOperator,
 	md *recordlayer.RecordMetaData,
-	cteTypes map[string]*values.RecordType,
+	cteTypes map[*logical.CTEProducer]*values.RecordType,
 ) error {
 	if op == nil {
 		return nil
 	}
+	// Discover referenced producers through retained edges, including ones whose
+	// declaration envelope belongs to another query. A nil entry breaks recursive
+	// self traversal while preserving the existing seed metadata path.
+	var prepare func(logical.LogicalOperator) error
+	prepare = func(current logical.LogicalOperator) error {
+		if current == nil {
+			return nil
+		}
+		if scan, ok := current.(*logical.LogicalScan); ok {
+			producer := scan.Source.Producer()
+			if producer != nil {
+				if _, visited := cteTypes[producer]; !visited {
+					cteTypes[producer] = nil
+					if err := bindExactCTEOutputMetadataInScope(producer.Body(), md, cteTypes); err != nil {
+						return err
+					}
+					if result, exact := exactCTEDefinitionRecordType(producer, md); exact {
+						cteTypes[producer] = result
+					}
+				}
+			}
+			return nil
+		}
+		if cte, ok := current.(*logical.LogicalCTE); ok {
+			return prepare(cte.Main)
+		}
+		for _, child := range current.Children() {
+			if err := prepare(child); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := prepare(op); err != nil {
+		return err
+	}
 	switch typed := op.(type) {
 	case *logical.LogicalCTE:
-		// The defining body sees the prior lexical binding, never itself.
-		if err := bindExactCTEOutputMetadataInScope(typed.Body, md, cteTypes); err != nil {
-			return err
-		}
-		name := strings.ToUpper(typed.Name)
-		previous, hadPrevious := cteTypes[name]
-		if result, ok := exactCTEDefinitionRecordType(typed, md); ok {
-			cteTypes[name] = result
-		} else {
-			delete(cteTypes, name)
-		}
-		err := bindExactCTEOutputMetadataInScope(typed.Main, md, cteTypes)
-		if hadPrevious {
-			cteTypes[name] = previous
-		} else {
-			delete(cteTypes, name)
-		}
-		return err
+		return bindExactCTEOutputMetadataInScope(typed.Main, md, cteTypes)
 	case *logical.LogicalProject:
 		if err := bindExactCTEProjection(typed, cteTypes); err != nil {
 			return err
@@ -7334,13 +6526,13 @@ func bindExactCTEOutputMetadataInScope(
 }
 
 func exactCTEDefinitionRecordType(
-	cte *logical.LogicalCTE,
+	cte *logical.CTEProducer,
 	md *recordlayer.RecordMetaData,
 ) (*values.RecordType, bool) {
-	if cte == nil || cte.Recursive {
+	if cte == nil || cte.Recursive() {
 		return nil, false
 	}
-	typ, err := query.ExactLogicalResultType(cte.Body, md)
+	typ, err := query.ExactLogicalResultType(cte.Body(), md)
 	if err != nil {
 		return nil, false
 	}
@@ -7350,11 +6542,11 @@ func exactCTEDefinitionRecordType(
 	}
 	fields := append([]values.Field(nil), record.Fields...)
 	switch {
-	case len(cte.ColumnAliases) > 0:
-		if len(cte.ColumnAliases) != len(fields) {
+	case len(cte.ColumnAliases()) > 0:
+		if len(cte.ColumnAliases()) != len(fields) {
 			return nil, false
 		}
-		for i, alias := range cte.ColumnAliases {
+		for i, alias := range cte.ColumnAliases() {
 			// VERBATIM — the THIRD site applying this same alias list, beside
 			// cteBoundRowType and cascades_translator's derivedOutputColumns.
 			// A CTE column alias arrives already normalized by the parse
@@ -7394,7 +6586,7 @@ func exactCTEDefinitionRecordType(
 		// rather than declining: that is the pre-existing behaviour for every
 		// shape whose labels and field names already agree, which is all of
 		// them except a multi-leg star.
-		if labels, labelErr := query.ExactLogicalOutputLabels(cte.Body, md, nil); labelErr == nil &&
+		if labels, labelErr := query.ExactLogicalOutputLabels(cte.Body(), md, nil); labelErr == nil &&
 			len(labels) == len(fields) {
 			for i := range fields {
 				fields[i].Name = labels[i]
@@ -7412,7 +6604,7 @@ func exactCTEDefinitionRecordType(
 
 func bindExactCTESortKeysOnSort(
 	sort *logical.LogicalSort,
-	cteTypes map[string]*values.RecordType,
+	cteTypes map[*logical.CTEProducer]*values.RecordType,
 ) error {
 	if sort == nil {
 		return nil
@@ -7421,7 +6613,7 @@ func bindExactCTESortKeysOnSort(
 	if scan == nil {
 		return nil
 	}
-	record := cteTypes[strings.ToUpper(scan.Table)]
+	record := cteTypes[scan.Source.Producer()]
 	if record == nil {
 		return nil
 	}
@@ -7494,7 +6686,7 @@ func bindExactCTESortKeysOnSort(
 // loudly.
 func bindExactCTEProjection(
 	project *logical.LogicalProject,
-	cteTypes map[string]*values.RecordType,
+	cteTypes map[*logical.CTEProducer]*values.RecordType,
 ) error {
 	if project == nil {
 		return nil
@@ -7525,7 +6717,7 @@ func bindExactCTEProjection(
 				continue
 			}
 		} else {
-			record = cteTypes[strings.ToUpper(scan.Table)]
+			record = cteTypes[scan.Source.Producer()]
 		}
 		if record == nil || (ref.Qualified && !cteSortQualifierMatchesScan(ref.Qualifier, scan)) {
 			continue
@@ -7583,7 +6775,7 @@ func bindExactCTEProjection(
 func uniqueQualifiedDirectCTEJoinInput(
 	op logical.LogicalOperator,
 	qualifier string,
-	cteTypes map[string]*values.RecordType,
+	cteTypes map[*logical.CTEProducer]*values.RecordType,
 ) (*logical.LogicalScan, *values.RecordType) {
 	if qualifier == "" || len(cteTypes) == 0 {
 		return nil, nil
@@ -7614,7 +6806,7 @@ func uniqueQualifiedDirectCTEJoinInput(
 				return
 			}
 			matches++
-			if record := cteTypes[strings.ToUpper(typed.Table)]; record != nil {
+			if record := cteTypes[typed.Source.Producer()]; record != nil {
 				matchedScan = typed
 				matchedRecord = record
 			}
@@ -8717,8 +7909,8 @@ type existsSubqueryPlanner struct {
 	outerScope                 *semantic.Scope
 	outerScopes                []semantic.ScopeSource
 	cteScopes                  map[string]semantic.ScopeSource
-	cteOnScopes                map[string]semantic.ScopeSource    // ON-resolution-only CTE sources (join/unnest bodies; see buildCTEOnOnlySource)
-	cteBodies                  map[string]logical.LogicalOperator // CTE name → body plan, for wrapping scalar subquery plans
+	cteOnScopes                map[string]semantic.ScopeSource // ON-resolution-only CTE schemas or underivable-body markers
+	cteProducers               logical.CTERegistry
 	subqueries                 []logical.ExistsSubquery
 	scalarSubqueries           []logical.ScalarSubquery
 	correlatedScalarSubqueries []logical.CorrelatedScalarSubquery
@@ -9210,7 +8402,7 @@ func (p *existsSubqueryPlanner) newSubqueryVisitor() (*PlanVisitor, error) {
 	visitor.enclosingScope = parent
 	visitor.cteScopes = maps.Clone(p.cteScopes)
 	visitor.cteOnScopes = maps.Clone(p.cteOnScopes)
-	visitor.cteBodies = maps.Clone(p.cteBodies)
+	visitor.cteProducers = p.cteProducers
 	return visitor, nil
 }
 
@@ -9242,7 +8434,7 @@ func (p *subqueryClause) BuildScalar(q antlrgen.IQueryContext) (values.Correlati
 		if err := resolveQualifiedTableNames(innerOp, schemaName); err != nil {
 			return values.CorrelationIdentifier{}, values.UnknownType, err
 		}
-		innerOp = p.wrapWithOuterCTEs(innerOp)
+		logical.BindCTESources(innerOp, p.cteProducers)
 		// Validation runs after wrapping so a scan of an outer CTE is known to
 		// be a CTE, while a genuinely missing scalar source still carries 42F01
 		// back through DML instead of becoming a generic translation failure.
@@ -9363,8 +8555,8 @@ func scalarSubqueryOutputTypeChecked(op logical.LogicalOperator) (values.Type, e
 	case *logical.LogicalDistinct:
 		return scalarSubqueryOutputTypeChecked(o.Input)
 	case *logical.LogicalCTE:
-		// wrapWithOuterCTEs places the scalar query in Main and carries the
-		// referenced CTE definition in Body.  The scalar's output contract is
+		// A declaration envelope places the scalar query in Main and retains
+		// the producer separately.  The scalar's output contract is
 		// therefore the Main result, not the wrapper node itself.  Omitting
 		// this transparent arm discarded the exact aggregate type for
 		// `(WITH ... SELECT MIN(...) FROM cte)` and minted an UNKNOWN
@@ -9499,7 +8691,7 @@ func innerSourceAliases(op logical.LogicalOperator) map[string]struct{} {
 			} else if o.PreserveMainSource {
 				walk(o.Main)
 			} else {
-				out[strings.ToUpper(o.Name)] = struct{}{}
+				out[strings.ToUpper(o.Name())] = struct{}{}
 			}
 			return
 		case *logical.LogicalUnnest:
@@ -9516,50 +8708,6 @@ func innerSourceAliases(op logical.LogicalOperator) map[string]struct{} {
 	}
 	walk(op)
 	return out
-}
-
-// wrapWithOuterCTEs wraps op with LogicalCTE nodes for every outer CTE
-// whose name appears as a LogicalScan in the plan tree. This makes the
-// plan self-contained so the Cascades translator can resolve CTE scan
-// references without external scope.
-func (p *existsSubqueryPlanner) wrapWithOuterCTEs(op logical.LogicalOperator) logical.LogicalOperator {
-	if len(p.cteBodies) == 0 {
-		return op
-	}
-	refs := collectScanTableNames(op)
-	for name, body := range p.cteBodies {
-		if refs[name] {
-			wrapped := logical.NewCTE(name, body, op, false)
-			// This is a lexical-scope envelope, not a derived-source alias
-			// carrier. The EXISTS/Scalar query's Main owns the outward source
-			// identity (e.g. BO in `FROM big_orders BO`); replacing it with the
-			// definition name BIG_ORDERS makes the correlation predicate and
-			// FlatMap binding disagree even though their rendered rows match.
-			wrapped.PreserveMainSource = true
-			op = wrapped
-		}
-	}
-	return op
-}
-
-// collectScanTableNames returns the set of UPPER-CASE table names
-// referenced by LogicalScan nodes in the plan tree.
-func collectScanTableNames(op logical.LogicalOperator) map[string]bool {
-	names := make(map[string]bool)
-	collectScanTableNamesInner(op, names)
-	return names
-}
-
-func collectScanTableNamesInner(op logical.LogicalOperator, names map[string]bool) {
-	if op == nil {
-		return
-	}
-	if scan, ok := op.(*logical.LogicalScan); ok {
-		names[strings.ToUpper(scan.Table)] = true
-	}
-	for _, ch := range op.Children() {
-		collectScanTableNamesInner(ch, names)
-	}
 }
 
 // sortOwnedBySelect reports whether sort is THIS select shell's own sort:

@@ -119,14 +119,14 @@ func (t *cascadesTranslator) legScanTableName(op logical.LogicalOperator) string
 	for {
 		switch o := op.(type) {
 		case *logical.LogicalScan:
-			key := strings.ToUpper(o.Table)
+			key := logical.ResolveScan(o, t.cteScope)
 			if _, ok := t.cteExprScope[key]; ok {
 				return ""
 			}
-			if _, ok := t.cteScope[key]; ok {
+			if key != nil {
 				return ""
 			}
-			return key
+			return strings.ToUpper(o.Table)
 		case *logical.LogicalInlineValues:
 			return ""
 		case *logical.LogicalFilter:

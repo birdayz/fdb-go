@@ -157,6 +157,20 @@ func planPhysicalForTest(
 	reach *cascades.ReachabilityCollector,
 	popts plannerOptions,
 ) (plans.RecordQueryPlan, *cascades.ExtractionVerificationReport, error) {
+	return planPhysicalForTestObserved(sql, schemaDDL, stats, verifyExtraction, reach, popts, nil)
+}
+
+// planPhysicalForTestObserved exposes the actual logical and translated inputs
+// before planning. The observer is per invocation: identity assertions must
+// follow this pipeline, not a separately built query or a test-minted carrier.
+func planPhysicalForTestObserved(
+	sql, schemaDDL string,
+	stats properties.StatisticsProvider,
+	verifyExtraction bool,
+	reach *cascades.ReachabilityCollector,
+	popts plannerOptions,
+	observe func(logical.LogicalOperator, *expressions.Reference),
+) (plans.RecordQueryPlan, *cascades.ExtractionVerificationReport, error) {
 	tmpl, err := buildSchemaTemplateFromDDL(schemaDDL)
 	if err != nil {
 		return nil, nil, fmt.Errorf("schema DDL: %w", err)
@@ -241,6 +255,10 @@ func planPhysicalForTest(
 	}
 	if buriedErr := query.CheckBuriedExistentialPredicate(ref); buriedErr != nil {
 		return nil, nil, api.NewError(api.ErrCodeUnsupportedQuery, buriedErr.Error())
+	}
+
+	if observe != nil {
+		observe(logicalOp, ref)
 	}
 
 	// SELECT plans with the SELECT planning rule set (Batch-A). The DML harness

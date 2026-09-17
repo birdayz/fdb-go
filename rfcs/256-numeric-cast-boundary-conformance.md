@@ -3995,3 +3995,184 @@ The source hash remained unchanged throughout. Artifacts in the same directory:
 `implementation-*-verdict.md`, `tenant-buffer-green.*`, `race-{cascades,rel,client}.*`,
 `race-target-verdict.json` and `race-freeze-verdict.json`. Ordinary commit hooks
 and published CI remain publication/merge gates, not implied by local ACKs.
+
+
+### PR785 retained CTE producer repair — defining environments
+
+Status: design accepted by the scoped Graefe and Torvalds reviews; the owner
+requested the remaining ACKs and authorized merge only once all required ACKs exist. This is the retained Graefe P1, not a
+new hunt. At `3e1b120e6322bdb23a7c8f4cc7a2932a37b2c075`, the new real-FDB
+`cte_defining_environment.yaml` reproduces 13 failures among 14 SQL queries.
+The exact reported catalog-collision EXISTS returns a row instead of none;
+its negation loses a row. No-catalog chains fail, and scalar, lexical-shadow,
+column-list and later-declaration cases expose the same missing ownership.
+The one passing control does not establish that the broader route is correct.
+Uncached Bazel log/BEP: `pr785-review/remaining-acks/cte-red.*` under the
+existing `/var/tmp/query-grind-cast` artifact root.
+
+Java 4.12.11.0 `QueryVisitor.java:161–181` prepares each declaration and its
+column list before publishing it. `SemanticAnalyzer.java:173–190` chooses
+from lexical fragments; `LogicalOperator.java:171–193` creates a new consumer
+quantifier over that producer's existing Reference. An existing producer cannot
+be rebound by a declaration in a later consumer. Go's raw body/name registry,
+direct-name wrappers and single-name translator shadow pop do not retain that
+contract. Sorting wrappers or collecting transitive names is rejected: neither
+protects a physical-table lookup or an earlier producer from a later shadow.
+
+**Chosen implementation:** retain a declaration/producer object containing its
+prepared body, exact column aliases, recursive/traversal metadata, identity and
+immutable defining CTE registry. Publish it only after successful preparation.
+Bind SQL scan sources while their lexical owner exists: a CTE scan retains the
+selected producer; a physical-table result is explicit, so it cannot later
+fall through to a same-named CTE. Logical declaration envelopes and consumer
+references share that producer rather than duplicating metadata authorities.
+Preserve the existing programmatic constructor interface through the same
+resolver, not a second planner. No parser replay, SQL-text matching, new
+execution strategy or query-admission expansion.
+
+Replace `wrapWithOuterCTEs` with those retained edges. Translation, exact
+row/label typing, validation and logical free-correlation derivation must consume
+the same source identity. Any lazy work runs against the producer's complete
+defining registry (replacement, never an overlay of the consumer environment).
+Unused declarations contribute no free bindings. Recursive self references
+retain the existing seed/temp-scan machinery with producer-owned scoped bindings;
+column renames remain positional. FROM reconstruction and lowering copies must
+preserve resolved source identity and existing correlation aliases.
+
+Proof: retain all 14 real-FDB cases (both EXISTS polarities, correlated and
+independent, missing/colliding catalog names, lexical shadowing, captured physical
+lookups, column lists and scalar handoffs). Add focused producer-identity,
+defining-scope and no-repreparation assertions; revert the binding/retention
+mechanism, compile and observe the same failures, then restore exact bytes.
+Existing CTE/recursive/derived/scalar/EXISTS suites, uncached affected race targets,
+normal hooks and before/after 1M stress checks remain required. No expectation,
+assertion, golden, workload limit or skip is weakened. Full-PR reviewers evaluate
+the completed repair together with the retained UNNEST test repair afterwards;
+this design gate is not a full-PR or merge ACK.
+
+Design reviews ACKed at the unchanged implementation HEAD. The promised focused
+coverage also includes producer-originating correlation (referenced versus
+unused declarations) and nested recursive ownership/restoration; the 14 SQL
+cases alone do not establish those dimensions. Review artifacts:
+`remaining-acks/cte-design-{graefe,torvalds}.{md,jsonl}`. No implementation ACK
+has yet been granted.
+
+Expanded regression population before implementation: **20 queries, 13 fail and
+seven pass** against the same published `3e1b120e6` in the isolated comparison
+worktree. The original 14 remain unchanged; added producer-origin correlation,
+unused correlated declaration, two-consumer and nested-recursive polarity cases
+pass before repair and must remain green afterward. Their rows complement, not
+replace, the promised structural ownership/free-dependency assertions. Evidence:
+`remaining-acks/cte-expanded-red.*`, its fixture hash and verdict JSON.
+
+#### Retained repairs: implementation and regression evidence (2026-09-18)
+
+The retained CTE implementation now stores a prepared producer and persistent
+lexical registry, with explicit physical or producer ownership on scans. Shared
+producer references remain separate from fresh consumer bindings. The full-suite
+failure investigation also restored Java's scoped `RforScan`/`RforInsert` names
+(`QueryVisitor.handleRecursiveNamedQuery`) and preserves typed missing-column
+errors from computed projections, including their normalized reference paths.
+The exact recursive computed-column reproducer continues to report `D.CC`, not a
+later `D.DD`. The existential identity assertion now observes the actual logical
+attachment and translated quantifier before checking the selected FlatMap;
+its selected-carrier pointer, nullable type and ordinal assertions remain.
+
+The retained UNNEST tests again invoke production lowering. They assert nonzero
+root positions `[1,0]` and `[3,0]`, exact suffix spelling, correlation, frontier
+pin/domain, and the supplied carrier's identity where the lowering API accepts
+that carrier. These are not reads of the fixture's pre-bound collection.
+
+Uncached real-FDB checks pass **20/20** defining-environment queries and **40/40**
+quoted-identifier queries. The new plan dump preserves all **2,975** existing
+entries (2,803 SELECT plus 172 DML) byte-for-byte; only the 20 new queries and
+population header are added. Full affected embedded/semantic/logical/explaindiff/
+docscheck targets and the full query target pass. These are local working-tree
+results, not final published-head approval.
+
+Four compiled semantic mutants were applied, executed and restored byte-exact:
+loss of the UNNEST owner-window offset fails the second-window assertion (two
+FAIL outcomes including its parent, among five RUN outcomes); re-resolving
+already-retained scan sources fails **19/20** SQL cases; unique recursive temp
+names fail both focused binding tests; swallowing computed-column failures fails
+all four focused RUN outcomes. The scan-rebinding mutant is distinct from the
+pre-implementation **13/20** red comparison and is not claimed to have the same
+failure population. Mutation script, changed-byte hashes, full logs and verdict:
+`remaining-acks/retained-mutations*`, `unnest-owner-offset-red.*`,
+`cte-rebind-retained-red.*`, `recursive-bindings-red.*`, and
+`computed-error-propagation-red.*`. Green evidence and golden preservation:
+`cte-second-green.*`, `cte-affected-second.*`, `cte-query-second.*`,
+`cte-plan-second-preservation.json` under the same artifact root.
+
+Full-suite post-restoration execution, affected race/determinism, final stress,
+normal commit hooks and exact published-head full-PR reviews remain required.
+The five opt-in sweep omissions remain an explicit permission question under
+the earlier no-hunts instruction; no skip or workload bound was altered.
+
+#### Retained scan lookup race and non-publishing resolution
+
+The first affected race run was **red**: parallel production-default and
+under-EXISTS UNNEST lowering shared the same boxed scan nodes, and
+`ResolveScan` wrote their captured source during a read-side gate. The ongoing
+normal full-suite run was cancelled, not banked as a final green.
+Java `SemanticAnalyzer.findCteMaybe` only reads the lexical fragments;
+`LogicalOperator.generateAccess` creates the consumer at construction. Go now
+likewise separates read-only resolution from `BindCTESources`, which seals
+ownership during construction. The SQL FROM construction sites explicitly bind
+before retaining/rebuilding their scans. Neither fixture serialization nor a
+lock around the test masks the write.
+
+`TestResolveScanDoesNotPublishConsumerScope` deterministically failed before
+repair and now checks independent unbound lookups, retained producer identity,
+and captured physical ownership. The complete four affected race targets passed
+**2,804/2,804** RUN/PASS; ten repetitions of the selected ownership/CTE/UNNEST/
+EXISTS tests passed **430/430**, with no skips or unmatched outcomes. Evidence:
+`cte-affected-race.log` (red), `cte-resolution-red.*`,
+`cte-affected-race-second.*`, `cte-race-repeat.*`, `cte-race-counts.json`.
+
+The updated five-mutant campaign compiled and failed all five mutants, then
+restored exact bytes (`retained-mutations-v3*`, `v3-*-red.*`). Ignoring retained
+ownership again fails 19/20 SQL cases; reintroducing the publishing lookup fails
+the deterministic test. An intermediate `v2` ownership mutant was rejected by
+nogo for a nil dereference and earns **no semantic mutation credit**. The final
+mutant removes the retained-source branch and compiles. The other three final
+mutants retain the populations stated above. Existing translator fuzz ran for
+15 seconds, **3,938,125 executions**, no failure; Bazel explicitly reported no
+coverage instrumentation, so this is unguided mutation fuzzing, not a coverage
+gain claim (`cte-translator-fuzz.*`). Final full suite, stress, hooks and review
+still follow the restored source, not the cancelled or mutant executions.
+
+#### Restored-source full verification (2026-09-18)
+
+The fresh normal suite completed in **1,039.949s**: **92/92 uncached Bazel
+targets passed**, with **40,022 Go RUN = 40,017 PASS + five SKIP**, no missing
+or extra outcomes. Thirteen embedded subprocess diagnostic outcomes are not
+counted as test results. The five omissions are the previously identified
+opt-in factory sweeps, not unavailable Docker; permission remains unanswered,
+so this is **not a no-skip gate**. All 51 frozen paths matched after execution.
+The compiled v3 mutation campaign restored its inputs, and the full suite
+subsequently exercised the restored implementation, including the new lookup
+regression. Artifacts: `remaining-acks/cte-final-just-test*` and
+`cte-readonly-final-freeze.json`.
+
+Gazelle and module tidy leave those bytes unchanged. The restored union builder
+also matches its entire original method body through the `unionLiftedClauses`
+comment at parent `3e1b120e6`; removed legacy CTE replay/leg-enumeration helpers
+are audited separately (`cte-current-deletion-audit.json`). Existing golden
+entries and retained lowering assertions were not weakened.
+
+Fresh 1M stress comparison ran **two merge-base samples, then two repaired
+samples**, serialized on the same `/var/tmp` filesystem, with identical
+`go.mod`. Each ran **24 RUN/PASS** (root plus 23 query cases), no skips; all
+22 logged row counts match, and the remaining COUNT(*) asserts 1,000,000.
+The exact trees and all timings are in TODO's **Stress test 1M baseline —
+RFC-256 retained producer repair (2026-09-18)** block. Timing variation and
+slower observations are retained, not averaged away into a parity claim.
+No performance fix or workload relaxation was made. Evidence:
+`remaining-acks/cte-readonly-stress*`.
+
+This closing documentation follows the frozen measurements; it does not
+pretend those executions read later documentation bytes. Normal hooks and
+exact published-head full-PR Graefe/Torvalds/C++/Codex approvals, published
+@claude LGTM, CI and the outstanding sweep-permission decision still precede
+merge. The earlier scoped design ACKs do not approve implementation.

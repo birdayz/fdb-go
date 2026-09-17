@@ -486,14 +486,9 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 	// "unresolvable table" non-drop-risk arm, and the ON was silently DROPPED
 	// — the join returned CROSS-PRODUCT rows (every C row matched every CC
 	// row; pre-existing, no unnest needed — a plain-join CTE body did it too).
-	// Fixed twice over: (a) buildCTEOnOnlySource derives an ON-RESOLUTION-ONLY
-	// schema from the explicitly-ALIASED projection list at WITH registration
-	// (the cteOnScopes map, consumed only by upgradeJoinOnPredicates — never
-	// the global cteScopes, so WHERE/projection resolution over comma-joined
-	// multi-leg CTEs keeps its clean decline, the flatten-evasion class);
-	// (b) a declared CTE whose derivation still declines registers a MARKER
-	// that routes to the loud DROP RISK 0AF00 (the derived-table twin's
-	// behavior), never a silent drop.
+	// Prepared CTE bodies publish their complete exact output schema, so ON
+	// resolves against the row the producer actually emits. An unrepresentable
+	// declaration retains a marker that fails loud rather than dropping ON.
 	t.Run("Q9a_on_over_unnest_cte_left_pads", func(t *testing.T) {
 		check(t, `WITH "C" AS (`+cteBodyNoWhere+`) SELECT "C"."AK", "CC2"."CV" FROM "C" LEFT JOIN CC AS "CC2" ON "C"."AK" = "CC2"."CID"`,
 			"100|<nil>", "100|<nil>", "110|<nil>")
@@ -729,7 +724,8 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 	// neither a base table nor a derivedQuery — and
 	// buildSelectScope returns a NIL resolver for it, killing BOTH the 42702
 	// ambiguity gate and the 42703 unknown-column gate for the whole body.
-	// The enumerability walk (cteBodyLegsEnumerable) declines such bodies.
+	// The former enumerability walk declined such bodies instead of publishing
+	// their prepared output row.
 	// V is join-bodied (ON-only); its alias AID collides with LA's column.
 	const onOnlyV = `"V" AS (SELECT LA."K" AS "AID", LB."K" AS "Q" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID")`
 	//
@@ -832,7 +828,7 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 	// Q37: SCHEMA-QUALIFIED legs. Three stacked
 	// fixes pin here: (1) the ON-only derivation ran BEFORE
 	// normalizeSchemaQualifiedSelectSources, so "s"."LA" classified opaque —
-	// spurious 0AF00 (cteLegKind now mirrors the normalizer's strip);
+	// spurious 0AF00 (prepared bodies now retain normalized source ownership);
 	// writing this pin then EXPOSED two pre-existing bugs independent of
 	// CTEs: (2) upgradeJoinOnPredicates' scope build silently declined the
 	// dotted source — the "unresolvable table errors precisely downstream"
@@ -892,7 +888,7 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 	// base table. The plain-name variant was broken this way ALL ALONG; the
 	// schema-qualified variant broke the same way once the Q39 resolver went
 	// live. CTE-first now, mirroring
-	// execution's shadowing (and cteLegKind's ordering). X = BID values
+	// execution's shadowing. X = BID values
 	// {1,3} × 2 B-rows.
 	t.Run("Q41_cte_shadow_scope_reads_cte_schema", func(t *testing.T) {
 		check(t, `WITH "LA" AS (SELECT "BID" AS "X" FROM LB) SELECT "LA"."X" FROM "LA", "s"."LB" AS "B"`,

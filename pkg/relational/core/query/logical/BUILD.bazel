@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "logical",
     srcs = [
+        "cte_producer.go",
         "exists_consumer.go",
         "exists_input.go",
         "inline_values.go",
@@ -21,6 +22,7 @@ go_library(
 go_test(
     name = "logical_test",
     srcs = [
+        "cte_producer_test.go",
         "inline_values_test.go",
         "operators_test.go",
     ],

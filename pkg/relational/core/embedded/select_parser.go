@@ -126,7 +126,8 @@ func stripGroupKeyLeadingSegment(k logical.GroupKey, stripped string) logical.Gr
 }
 
 type selectQuery struct {
-	bindings *bindingAllocator
+	resolvedSource logical.ScanSource
+	bindings       *bindingAllocator
 	// selectClassification holds all SELECT-list, GROUP BY, HAVING,
 	// ORDER BY, and aggregate classification fields. Embedded so that
 	// sq.projCols, sq.aggCols, etc. continue to work as before.
@@ -185,11 +186,12 @@ const (
 
 // joinClause describes a single JOIN part in a SELECT query.
 type joinClause struct {
-	tableName     string
-	joinType      joinType
-	alias         string
-	aliasExplicit bool
-	onExpr        antlrgen.IExpressionContext
+	resolvedSource logical.ScanSource
+	tableName      string
+	joinType       joinType
+	alias          string
+	aliasExplicit  bool
+	onExpr         antlrgen.IExpressionContext
 	// usingUids is the parsed `USING (col, ...)` column list, set when the
 	// JOIN used USING-syntax instead of ON. The equivalent ON predicate is
 	// synthesized in extractFromSimpleTable (after the left source alias is
@@ -871,6 +873,7 @@ func selectQueryFromClassification(cls *selectClassification, fs *fromSource) *s
 		sq.tableAliasExplicit = fs.tableAliasExplicit
 		sq.bindingID = fs.bindingID
 		sq.sourceSegments = fs.sourceSegments
+		sq.resolvedSource = fs.resolvedSource
 		sq.joins = fs.joins
 		sq.derivedQuery = fs.derivedQuery
 		sq.inlineValues = fs.inlineValues
@@ -2083,6 +2086,7 @@ func aggColFromAwf(awf *antlrgen.AggregateWindowedFunctionContext) (aggSelectCol
 // builds the operator tree directly from ANTLR) share a single parsing
 // path.
 type fromSource struct {
+	resolvedSource     logical.ScanSource
 	bindings           *bindingAllocator
 	enclosingScope     *semantic.Scope
 	tableName          string

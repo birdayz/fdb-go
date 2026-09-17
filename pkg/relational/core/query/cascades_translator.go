@@ -67,47 +67,39 @@ func TranslateToCascadesWithError(op logical.LogicalOperator, md *recordlayer.Re
 }
 
 func translateWithOwnedInputs(op logical.LogicalOperator, md *recordlayer.RecordMetaData, owned map[logical.LogicalOperator]*logical.ExistsInput) (*expressions.Reference, []ScalarSubqueryPlan, error) {
+	logical.BindCTESources(op, logical.CTERegistry{})
 	t := &cascadesTranslator{
 		ownedInputs:     owned,
 		md:              md,
-		cteScope:        make(map[string]logical.LogicalOperator),
-		cteShadowStack:  make(map[string][]logical.LogicalOperator),
-		cteExprScope:    make(map[string]expressions.RelationalExpression),
-		cteColumnsScope: make(map[string][]values.Field),
+		cteScope:        logical.CTERegistry{},
+		cteExprScope:    make(map[*logical.CTEProducer]expressions.RelationalExpression),
+		cteColumnsScope: make(map[*logical.CTEProducer][]values.Field),
 	}
 	ref := t.translateRef(op)
 	return ref, t.scalarSubqueries, t.translateErr
 }
 
 type cascadesTranslator struct {
-	md       *recordlayer.RecordMetaData
-	cteScope map[string]logical.LogicalOperator
+	md           *recordlayer.RecordMetaData
+	cteScope     logical.CTERegistry
+	producerRefs map[*logical.CTEProducer]*expressions.Reference
+	// Recursive lowering publishes this immutable row pair with its shared
+	// reference. Each consumer installs its own scoped correlation bridge.
+	recursiveProducerRows map[*logical.CTEProducer]recursiveCTEConsumerRow
 	// ownedInputs are explicit retained edges of an existential composition,
 	// not a translation cache. A child already lowered by its owner keeps its
 	// Reference and exact layout when a containing EXISTS becomes a product.
-	ownedInputs map[logical.LogicalOperator]*logical.ExistsInput
-	// cteShadowStack tracks, per upper-cased name, the OUTER bindings a
-	// same-named registration shadowed (translateCTE pushes; nil = the name
-	// was unbound outside). CTE bodies translate LAZILY at scan resolution,
-	// so lexical scoping must be reconstructed there: resolving a name to a
-	// registered body pops one level for the body's own translation — the
-	// body's references to its OWN name then resolve against the DEFINING
-	// scope (the shadowed outer binding: a derived-table alias-carrier
-	// wrapping `SELECT * FROM c` inside `WITH c AS (…)` reads the WITH
-	// body — or the real table when nothing was shadowed). Without this,
-	// the wrapper's registration silently rebound the outer name to itself
-	// and `WITH c … FROM (SELECT * FROM c) c` returned zero rows.
-	cteShadowStack map[string][]logical.LogicalOperator
-	cteExprScope   map[string]expressions.RelationalExpression
+	ownedInputs  map[logical.LogicalOperator]*logical.ExistsInput
+	cteExprScope map[*logical.CTEProducer]expressions.RelationalExpression
 	// cteColumnsScope holds the OUTPUT column schema of each pre-translated CTE
 	// (recursive CTE / temp-table self-reference) registered in cteExprScope,
-	// keyed by upper-cased CTE name (RFC-077 7.6). cteExprScope stores an opaque
+	// keyed by retained producer identity (RFC-077 7.6). cteExprScope stores an opaque
 	// RelationalExpression whose column names legColumns cannot recover; this
 	// parallel map records them so a CTE reference used as a JOIN LEG anchors
 	// (FieldValue(QOV(cteAlias), col) per column). nil/absent entry → not
 	// column-derivable → the leg cannot anchor (a join over it is untranslatable;
 	// the opaque-merge fallback was retired in RFC-077 7.6).
-	cteColumnsScope map[string][]values.Field
+	cteColumnsScope map[*logical.CTEProducer][]values.Field
 	// recursiveCTEConsumerRows records the seed-declared and common exact rows
 	// for aliases of a recursive CTE while its main query is translated. The
 	// logical resolver necessarily runs before the recursive fixed point is
@@ -496,8 +488,8 @@ func (t *cascadesTranslator) exactProjectionForLogicalProject(
 		if !ref.Present || !ref.Qualified {
 			continue
 		}
-		table := findOuterScanTable(p.Input, ref.Qualifier)
-		if table == "" || !t.outerSourceIsCTE(table) {
+		scan := logical.FindVisibleScan(p.Input, ref.Qualifier)
+		if scan == nil || logical.ResolveScan(scan, t.cteScope) == nil {
 			continue
 		}
 		authoredNames[i] = strings.ToUpper(ref.Qualifier) + "." + ref.Bare
@@ -711,38 +703,40 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 		}
 		return append([]values.Field(nil), row.Fields...)
 	case *logical.LogicalScan:
-		// A CTE/derived-table scan resolves to its BODY, not a real table —
-		// translateScan honors cteScope/cteExprScope (a CTE name SHADOWS a real
-		// table). legColumns mirrors that (RFC-077 7.6):
-		//   - cteExprScope holds a PRE-TRANSLATED body (recursive-CTE reference /
-		//     temp-table self-reference); its output columns are not readable from
-		//     the RelationalExpression, so cteColumnsScope records them alongside —
-		//     return that schema so the recursive-CTE leg anchors (nil entry → not
-		//     derivable → the leg cannot anchor, a join over it is untranslatable);
-		//   - cteScope holds the logical body: derive its output columns so the CTE
-		//     leg anchors. The CTE is REMOVED from scope while deriving the body
-		//     (exactly like translateScan) so a scan inside the body that references
-		//     the same name resolves to the REAL table, not back to the CTE —
-		//     otherwise legColumns recurses forever (the CTE-shadow stack overflow).
-		key := strings.ToUpper(o.Table)
-		if _, ok := t.cteExprScope[key]; ok {
-			return t.cteColumnsScope[key]
+		producer := logical.ResolveScan(o, t.cteScope)
+		if producer == nil {
+			return t.tableColumns(o.Table)
 		}
-		if body, ok := t.cteScope[key]; ok {
-			var cols []values.Field
-			t.inCTEDefiningScope(key, body, func() {
-				// A star-admitted unnest body normalizes to the bare projection
-				// of its boundary labels at translateScan; the boundary schema
-				// here is those SAME labels (one predicate, all consumers).
-				if starCols, star := t.derivedBodyStarOrdinalLeg(body); star {
-					cols = starCols
-					return
-				}
-				cols = t.derivedOutputColumns(body)
-			})
+		if cols, ok := t.cteColumnsScope[producer]; ok {
 			return cols
 		}
-		return t.tableColumns(o.Table)
+		if row, ok := t.recursiveProducerRows[producer]; ok {
+			return row.common.Fields
+		}
+		var cols []values.Field
+		t.inCTEDefiningScope(producer, func() {
+			body := producer.Body()
+			if producer.Recursive() {
+				if typ, err := LogicalResultTypeAfterUnionPromotionWithCTEs(o, t.md, nil); err == nil {
+					if row, ok := typ.(*values.RecordType); ok {
+						cols = row.Fields
+					}
+				}
+				return
+			}
+			if starCols, star := t.derivedBodyStarOrdinalLeg(body); star {
+				cols = starCols
+			} else {
+				cols = t.derivedOutputColumns(body)
+			}
+			if aliases := producer.ColumnAliases(); len(aliases) > 0 && len(aliases) == len(cols) {
+				cols = append([]values.Field(nil), cols...)
+				for i, alias := range aliases {
+					cols[i].Name = alias
+				}
+			}
+		})
+		return cols
 	case *logical.LogicalFilter:
 		return t.legColumns(o.Input)
 	case *logical.LogicalLimit:
@@ -865,22 +859,22 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 		// present (WITH b(x,y) AS …), exactly as translateCTE wraps the body in a
 		// renaming Project. A recursive CTE leg is not column-derivable here → nil
 		// (the leg cannot anchor; the opaque-merge fallback was retired).
-		if o.Recursive {
+		if o.Recursive() {
 			return nil
 		}
-		if len(o.ColumnAliases) > 0 {
+		if len(o.ColumnAliases()) > 0 {
 			// A column-alias list RENAMES the body's output; it does not erase
 			// what those columns ARE. Carry the body's own field types under the
 			// new names when the widths agree — an UnknownType here makes the
 			// leg inexact, which is enough for the ordinalization gate to
 			// decline the whole join.
-			fields := make([]values.Field, len(o.ColumnAliases))
-			for i, name := range o.ColumnAliases {
+			fields := make([]values.Field, len(o.ColumnAliases()))
+			for i, name := range o.ColumnAliases() {
 				fields[i] = values.Field{Name: name, FieldType: values.UnknownType, Ordinal: i}
 			}
-			bodyFields := t.derivedOutputColumns(o.Body)
+			bodyFields := t.derivedOutputColumns(o.Body())
 			if len(bodyFields) == 0 {
-				if starCols, star := t.derivedBodyStarOrdinalLeg(o.Body); star {
+				if starCols, star := t.derivedBodyStarOrdinalLeg(o.Body()); star {
 					bodyFields = starCols
 				}
 			}
@@ -897,10 +891,10 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 		// FROM t, t.arr AS x) AS s`) normalizes to the bare projection of its
 		// boundary labels when the registered body translates (translateScan);
 		// its leg schema is those labels.
-		if starCols, star := t.derivedBodyStarOrdinalLeg(o.Body); star {
+		if starCols, star := t.derivedBodyStarOrdinalLeg(o.Body()); star {
 			return starCols
 		}
-		return t.derivedOutputColumns(o.Body)
+		return t.derivedOutputColumns(o.Body())
 	default:
 		// Subquery / Explode / DML and other non-row-producing shapes are not
 		// column-derivable here → nil. A join seed with a non-derivable leg is
@@ -1006,8 +1000,8 @@ func (t *cascadesTranslator) derivedOutputColumns(op logical.LogicalOperator) []
 		// BODY's output columns, renamed by an explicit column-alias list
 		// (`… AS d(a, b)`). An unnest over such an outer bakes its collection
 		// against this layout.
-		cols := t.derivedOutputColumns(o.Body)
-		if len(o.ColumnAliases) == len(cols) {
+		cols := t.derivedOutputColumns(o.Body())
+		if len(o.ColumnAliases()) == len(cols) {
 			// Copy before renaming. legColumns hands back SHARED slices on two
 			// arms — a pre-translated CTE's schema comes straight out of
 			// cteColumnsScope, and a nested CTE body returns whatever its own
@@ -1025,7 +1019,7 @@ func (t *cascadesTranslator) derivedOutputColumns(op logical.LogicalOperator) []
 				// to the same alias list. Two sites doing one job must not
 				// spell it two ways: a fold here republished the CTE's columns
 				// under names the row it wraps does not carry.
-				renamed[i].Name = o.ColumnAliases[i]
+				renamed[i].Name = o.ColumnAliases()[i]
 			}
 			return renamed
 		}
@@ -1374,6 +1368,11 @@ func (t *cascadesTranslator) translateRef(op logical.LogicalOperator) *expressio
 	if expr == nil {
 		return nil
 	}
+	if scan, ok := op.(*logical.LogicalScan); ok {
+		if ref := t.producerRefs[scan.Source.Producer()]; ref != nil {
+			return ref
+		}
+	}
 	return expressions.InitialOf(expr)
 }
 
@@ -1419,45 +1418,10 @@ func (t *cascadesTranslator) translateCorrelatedPrimaryUnnest(
 	return explode
 }
 
-// findOuterScanTable resolves a lateral unnest's outer source alias to its
-// scanned table name among the VISIBLE FROM-scope sources of the outer leg.
-// It is the shared logical.FindOuterScanTable walk (the embedded cascades
-// generator's AT-on-table pass resolves the same way through the same helper),
-// so the translator and the early generator pass never diverge.
-func findOuterScanTable(op logical.LogicalOperator, alias string) string {
-	return logical.FindOuterScanTable(op, alias)
-}
-
-// outerSourceIsCTE reports whether `table` — the RESOLVED scan-table name the
-// unnest's segment-0 source binds to in `j.Left` (findOuterScanTable: the CTE
-// name for a CTE reference `FROM X`, the real table for `FROM T1 AS X`) — names a
-// CTE or derived-table source currently in scope, i.e. its OUTPUT is a
-// CTE-projected schema, not a base-table descriptor. Derived tables lower to a
-// `LogicalCTE` registered under their alias (translateCTE), so both common-table
-// expressions and `(SELECT …) AS d` derived tables appear in the CTE scope maps.
-// A `LogicalUnnest` whose outer BOUND source is such a CTE must be validated
-// against the CTE output type, not base-table metadata (P2a). It is keyed on
-// the resolved scan TABLE — never the segment-0 alias — so a real table aliased
-// with a CTE's name (`FROM T1 AS X` while a CTE `X` exists) does NOT match: the
-// visible scan `T1` shadows the unused CTE (over-rejection). RFC-142.
-func (t *cascadesTranslator) outerSourceIsCTE(table string) bool {
-	key := strings.ToUpper(table)
-	if _, ok := t.cteScope[key]; ok {
-		return true
-	}
-	if _, ok := t.cteExprScope[key]; ok {
-		return true
-	}
-	if _, ok := t.cteColumnsScope[key]; ok {
-		return true
-	}
-	return false
-}
-
 // outerBoundAliases collects the source aliases bound by the outer leg of a
 // lateral unnest (the scan/source aliases visible in `op`), so the unnest's
 // element/ordinal binding alias can be checked for a collision against them
-// (P1). Like findOuterScanTable, it does NOT descend into CTE/derived
+// (P1). It does NOT descend into CTE/derived
 // BODIES — only the visible Main leg — so it sees exactly the aliases the
 // unnest's merged outer row flows under. RFC-142.
 func outerBoundAliases(op logical.LogicalOperator) map[string]struct{} {
@@ -1658,11 +1622,11 @@ func unnestOuterLegAliases(op logical.LogicalOperator, mergedCorr values.Correla
 // BODY. A derived table `(SELECT v FROM T1, T1.arr AS v) AS d` is its OWN FROM
 // scope; its inner unnest belongs to that scope, not the outer one. The outer
 // FROM scope only sees the derived table's OUTPUT alias `d` (its Main leg). If
-// the walk descended into `LogicalCTE.Body` it would count the derived table's
+// the walk descended into `LogicalCTE.Body()` it would count the derived table's
 // own unnest and wrongly reject the outer query as "multiple lateral array
 // unnests in one FROM clause" — a valid query falsely rejected. So at a
 // LogicalCTE we inspect ONLY its Main (the visible alias projection), never its
-// Body — mirroring findOuterScanTable / outerBoundAliases, which resolve a
+// Body — mirroring outerBoundAliases, which resolves a
 // derived/CTE source against its Main only.
 func containsLateralUnnest(op logical.LogicalOperator) bool {
 	if op == nil {
@@ -2068,8 +2032,8 @@ func rewriteUnnestPredicate(p predicates.QueryPredicate, u *logical.LogicalUnnes
 // columns survive into the outer (NON-rightmost) join's merged row — i.e. an unnest
 // BURIED in the left subtree of a 3+-source FROM list (`FROM T1, T1.arr AS V, U`,
 // where the outer LogicalJoin's Right is U and the unnest is in its Left). Mirrors
-// the `containsLateralUnnest` recursion (and `outerBoundAliases` /
-// `findOuterScanTable`): it does NOT descend into a CTE / derived-table Body — a
+// the `containsLateralUnnest` recursion (and `outerBoundAliases`): it does NOT
+// descend into a CTE / derived-table Body — a
 // derived source is its own FROM scope, and its inner unnest belongs to that scope,
 // not the current one. RFC-142.
 func buriedUnnestLegs(op logical.LogicalOperator) []*logical.LogicalUnnest {
@@ -2384,19 +2348,24 @@ func (t *cascadesTranslator) translateOp(op logical.LogicalOperator) expressions
 }
 
 func (t *cascadesTranslator) translateScan(s *logical.LogicalScan) expressions.RelationalExpression {
-	key := strings.ToUpper(s.Table)
-	// Pre-translated expression scope (recursive CTE references).
-	if expr, ok := t.cteExprScope[key]; ok {
-		return expr
-	}
-	if body, ok := t.cteScope[key]; ok {
-		// Translate the body in its DEFINING scope (shadow-stack pop): its
-		// own references to this name resolve to the shadowed outer binding
-		// when one exists (the derived alias-carrier over `SELECT * FROM c`
-		// inside `WITH c AS (…)`), to the real table otherwise — never back
-		// to the CTE itself (infinite recursion).
+	producer := logical.ResolveScan(s, t.cteScope)
+	if producer != nil {
+		if expr, ok := t.cteExprScope[producer]; ok {
+			return expr
+		}
+		if ref := t.producerRefs[producer]; ref != nil {
+			return ref.Get()
+		}
 		var result expressions.RelationalExpression
-		t.inCTEDefiningScope(key, body, func() {
+		t.inCTEDefiningScope(producer, func() {
+			if producer.Recursive() {
+				result = t.translateRecursiveCTE(logical.NewCTEReference(producer, s))
+				return
+			}
+			body := t.cteTranslationBody(producer)
+			if body == nil {
+				return
+			}
 			// Star opaque ordinal leg: an ADMITTED projection-less
 			// unnest body (`WITH S AS (SELECT * FROM t, t.arr AS x)`) NORMALIZES
 			// to the explicit bare projection of its boundary labels — exactly
@@ -2456,6 +2425,12 @@ func (t *cascadesTranslator) translateScan(s *logical.LogicalScan) expressions.R
 			}
 			result = t.translateOp(toTranslate)
 		})
+		if result != nil && t.producerRefs[producer] == nil {
+			if t.producerRefs == nil {
+				t.producerRefs = make(map[*logical.CTEProducer]*expressions.Reference)
+			}
+			t.producerRefs[producer] = expressions.InitialOf(result)
+		}
 		return result
 	}
 	// Type the scan leaf with the table's canonical record type.
@@ -6028,8 +6003,8 @@ func (t *cascadesTranslator) exactGatheredCTEGroupKeyValue(
 	if !ok || scan == nil || scan.Table == "" {
 		return nil, false, nil
 	}
-	body, isCTE := t.cteScope[strings.ToUpper(scan.Table)]
-	if !isCTE || body == nil {
+	producer := logical.ResolveScan(scan, t.cteScope)
+	if producer == nil || producer.Body() == nil {
 		return nil, false, nil
 	}
 	seedQOV, ok := values.AsQuantifiedObjectValue(bake.seedQOV)
@@ -6081,8 +6056,8 @@ func (t *cascadesTranslator) exactProjectedCTEOutputGroupKeyValue(
 	if !ok || scan == nil || scan.Table == "" {
 		return nil, false, nil
 	}
-	body, isCTE := t.cteScope[strings.ToUpper(scan.Table)]
-	if !isCTE || body == nil || bake.quant.GetRangesOver() == nil {
+	producer := logical.ResolveScan(scan, t.cteScope)
+	if producer == nil || producer.Body() == nil || bake.quant.GetRangesOver() == nil {
 		return nil, false, nil
 	}
 	translatedInput := bake.quant.GetRangesOver().Get()
@@ -6845,6 +6820,14 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 	if innerRef == nil {
 		return nil
 	}
+	// A retained recursive producer can be lowered lazily by this input scan,
+	// without a declaration envelope enclosing the projection. Its row bridge
+	// belongs to these selected consumers for the duration of this projection.
+	var recursiveBindings []values.CorrelationIdentifier
+	for producer, row := range t.recursiveProducerRows {
+		recursiveBindings = append(recursiveBindings, t.pushRecursiveCTEConsumerRows(p.Input, producer, row.declaration, row.common)...)
+	}
+	defer t.popRecursiveCTEConsumerRows(recursiveBindings)
 	projectionQ := t.namedQuantifier(sourceBinding(p.Input), innerRef)
 	projectionInput, flowedErr := projectionQ.RequireFlowedObjectValue()
 	if flowedErr != nil {
@@ -8862,7 +8845,7 @@ func existsInnerSafeToRename(op logical.LogicalOperator) bool {
 		case *logical.LogicalCTE:
 			// An explicit derived export owns one outward binding. Its Body
 			// has a separate lexical scope and is not part of this rebase.
-			return o.Binding != "" && !o.Recursive && !o.PreserveMainSource
+			return o.Binding != "" && !o.Recursive() && !o.PreserveMainSource
 		case *logical.LogicalFilter:
 			ch := o.Children()
 			if len(ch) == 1 {
@@ -8911,7 +8894,7 @@ func sourceAlias(op logical.LogicalOperator) string {
 			// executor qualifies merged-row keys under the alias
 			// the user specified (e.g. "sq1"), not the underlying
 			// table name buried inside the CTE body.
-			return strings.ToUpper(o.Name)
+			return strings.ToUpper(o.Name())
 		default:
 			ch := cur.Children()
 			if len(ch) == 1 {
@@ -9016,11 +8999,18 @@ func sourceBinding(op logical.LogicalOperator) string {
 }
 
 func (t *cascadesTranslator) translateCTE(c *logical.LogicalCTE) expressions.RelationalExpression {
-	if c.Recursive {
-		return t.translateRecursiveCTE(c)
+	logical.BindCTESources(c, t.cteScope)
+	if c.Recursive() {
+		var result expressions.RelationalExpression
+		t.inCTEDefiningScope(c.CTEProducer, func() { result = t.translateRecursiveCTE(c) })
+		return result
 	}
-	body := c.Body
-	if len(c.ColumnAliases) > 0 {
+	return t.translateOp(c.Main)
+}
+
+func (t *cascadesTranslator) cteTranslationBody(c *logical.CTEProducer) logical.LogicalOperator {
+	body := c.Body()
+	if len(c.ColumnAliases()) > 0 {
 		origCols := extractOutputColumns(body)
 		exactWidth := cteBodyWidthIsExact(body)
 		if len(origCols) == 0 {
@@ -9050,13 +9040,13 @@ func (t *cascadesTranslator) translateCTE(c *logical.LogicalCTE) expressions.Rel
 			origCols, starBodied = t.starBodyColumns(body)
 		}
 		switch {
-		case len(origCols) == len(c.ColumnAliases):
+		case len(origCols) == len(c.ColumnAliases()):
 			// The re-aliasing projection reads POSITIONALLY (baked
 			// ordinals), not by name: CTE column lists are positional,
 			// and duplicate body output labels (`SELECT id AS x, v AS x`)
 			// would make both name-based reads bind the first slot,
 			// silently duplicating its values.
-			proj := logical.NewProject(body, origCols, c.ColumnAliases)
+			proj := logical.NewProject(body, origCols, c.ColumnAliases())
 			proj.ProjectedValues = make([]values.Value, len(origCols))
 			// No projection input quantifier exists in the logical layer. Carry
 			// only the positional metadata; translateProject resolves it against
@@ -9080,73 +9070,22 @@ func (t *cascadesTranslator) translateCTE(c *logical.LogicalCTE) expressions.Rel
 			// (`SELECT id, id … GROUP BY id` is 2 visible over 1 internal).
 			t.setTranslateErr(api.NewErrorf(api.ErrCodeInvalidColumnReference,
 				"cte query has %d column(s), however %d aliases defined",
-				len(origCols), len(c.ColumnAliases)))
+				len(origCols), len(c.ColumnAliases())))
 			return nil
 		}
 		// Unknown or inexact widths stay lenient — never reject a valid
 		// query on an unmodeled shape.
 	}
-	name := strings.ToUpper(c.Name)
-	// Save the OUTER binding this registration shadows (nil = unbound): the
-	// derived-table alias-carrier reuses cteScope, so a wrapper named like
-	// an enclosing WITH-CTE must not clobber it — the wrapper's body reads
-	// the outer binding (via the shadow-stack pop at scan resolution), and
-	// siblings after this CTE keep resolving the outer name.
-	prevBody, hadPrev := t.cteScope[name]
-	// Lazy init: unit tests build translators as bare struct literals,
-	// bypassing the constructor.
-	if t.cteShadowStack == nil {
-		t.cteShadowStack = make(map[string][]logical.LogicalOperator)
-	}
-	if hadPrev {
-		t.cteShadowStack[name] = append(t.cteShadowStack[name], prevBody)
-	} else {
-		t.cteShadowStack[name] = append(t.cteShadowStack[name], nil)
-	}
-	t.cteScope[name] = body
-	result := t.translateOp(c.Main)
-	st := t.cteShadowStack[name]
-	t.cteShadowStack[name] = st[:len(st)-1]
-	if hadPrev {
-		t.cteScope[name] = prevBody
-	} else {
-		delete(t.cteScope, name)
-	}
-	return result
+	return body
 }
 
-// inCTEDefiningScope runs fn with `key` resolving as it does in the DEFINING
-// scope of the cteScope body being expanded: the shadow stack pops one level
-// (the body's own references to `key` then hit the shadowed outer binding
-// when one exists, the real table otherwise) and is restored afterwards,
-// together with the body's registration. Every cteScope body expansion must
-// go through this — a bare delete-while-recursing loses the outer binding
-// (`WITH c AS (…) … FROM (SELECT * FROM c) c` read the real table instead of
-// the WITH body), and a bare re-register loops forever on self-reference.
-func (t *cascadesTranslator) inCTEDefiningScope(key string, body logical.LogicalOperator, fn func()) {
-	st := t.cteShadowStack[key]
-	var outer logical.LogicalOperator
-	popped := false
-	if n := len(st); n > 0 {
-		outer = st[n-1]
-		t.cteShadowStack[key] = st[:n-1]
-		popped = true
-	}
-	if outer != nil {
-		t.cteScope[key] = outer
-	} else {
-		delete(t.cteScope, key)
-	}
+// Lazy producer work replaces the entire consumer environment. Captured
+// absences and unrelated shadows are as significant as a same-name binding.
+func (t *cascadesTranslator) inCTEDefiningScope(producer *logical.CTEProducer, fn func()) {
+	previous := t.cteScope
+	t.cteScope = producer.DefiningRegistry()
+	defer func() { t.cteScope = previous }()
 	fn()
-	t.cteScope[key] = body
-	if popped {
-		// Restoring the pre-pop slice is safe despite sharing its backing
-		// array with any nested push during fn: a nested registration that
-		// appended into the freed slot wrote the SAME enclosing binding this
-		// restore reinstates (scope chains share their prefix), so the write
-		// is idempotent by construction.
-		t.cteShadowStack[key] = st
-	}
 }
 
 // starBodyColumns expands the output columns of a projection-less CTE body —
@@ -9166,7 +9105,7 @@ func (t *cascadesTranslator) starBodyColumns(op logical.LogicalOperator) ([]stri
 		case *logical.LogicalFilter:
 			op = o.Input
 		case *logical.LogicalScan:
-			fields := t.tableColumns(o.Table)
+			fields := t.legColumns(o)
 			if len(fields) == 0 {
 				return nil, false
 			}
@@ -9279,21 +9218,32 @@ func cteBodyWidthIsExact(op logical.LogicalOperator) bool {
 // backstop; recursive CTEs are excluded (their seed/recursive arms have
 // their own validation path).
 func ValidateCTEAliasArities(op logical.LogicalOperator) error {
+	logical.BindCTESources(op, logical.CTERegistry{})
+	return validateCTEAliasAritiesInGraph(op, make(map[*logical.CTEProducer]bool))
+}
+
+func validateCTEAliasAritiesInGraph(op logical.LogicalOperator, producers map[*logical.CTEProducer]bool) error {
 	if op == nil {
 		return nil
 	}
+	if scan, ok := op.(*logical.LogicalScan); ok {
+		if producer := scan.Source.Producer(); producer != nil && !producers[producer] {
+			producers[producer] = true
+			return validateCTEAliasAritiesInGraph(logical.NewCTEReference(producer, nil), producers)
+		}
+	}
 	if c, ok := op.(*logical.LogicalCTE); ok {
-		if len(c.ColumnAliases) > 0 && !c.Recursive {
-			if origCols := extractOutputColumns(c.Body); len(origCols) > 0 &&
-				len(origCols) != len(c.ColumnAliases) && cteBodyWidthIsExact(c.Body) {
+		if len(c.ColumnAliases()) > 0 && !c.Recursive() {
+			if origCols := extractOutputColumns(c.Body()); len(origCols) > 0 &&
+				len(origCols) != len(c.ColumnAliases()) && cteBodyWidthIsExact(c.Body()) {
 				return api.NewErrorf(api.ErrCodeInvalidColumnReference,
 					"cte query has %d column(s), however %d aliases defined",
-					len(origCols), len(c.ColumnAliases))
+					len(origCols), len(c.ColumnAliases()))
 			}
 		}
 	}
 	for _, child := range op.Children() {
-		if err := ValidateCTEAliasArities(child); err != nil {
+		if err := validateCTEAliasAritiesInGraph(child, producers); err != nil {
 			return err
 		}
 	}
@@ -9301,7 +9251,7 @@ func ValidateCTEAliasArities(op logical.LogicalOperator) error {
 	// HAVING, ON) are not Children() — a CTE declared inside one escaped
 	// the walk.
 	for _, sub := range logical.AttachedPlans(op) {
-		if err := ValidateCTEAliasArities(sub); err != nil {
+		if err := validateCTEAliasAritiesInGraph(sub, producers); err != nil {
 			return err
 		}
 	}
@@ -9371,7 +9321,7 @@ func (t *cascadesTranslator) recursiveCTECommonResultRow(
 // win over display aliases exactly as they do at quantifier construction.
 func recursiveCTEMainBindings(
 	op logical.LogicalOperator,
-	cteName string,
+	producer *logical.CTEProducer,
 	bindings map[values.CorrelationIdentifier]struct{},
 ) {
 	if op == nil {
@@ -9379,7 +9329,7 @@ func recursiveCTEMainBindings(
 	}
 	switch current := op.(type) {
 	case *logical.LogicalScan:
-		if strings.EqualFold(current.Table, cteName) {
+		if current.Source.Producer() == producer {
 			binding := sourceBinding(current)
 			if binding != "" {
 				bindings[values.NamedCorrelationIdentifier(binding)] = struct{}{}
@@ -9387,15 +9337,15 @@ func recursiveCTEMainBindings(
 		}
 		return
 	case *logical.LogicalCTE:
-		if strings.EqualFold(current.Name, cteName) {
+		if current.CTEProducer == producer {
 			return
 		}
 	}
 	for _, child := range op.Children() {
-		recursiveCTEMainBindings(child, cteName, bindings)
+		recursiveCTEMainBindings(child, producer, bindings)
 	}
 	for _, attached := range logical.AttachedPlans(op) {
-		recursiveCTEMainBindings(attached, cteName, bindings)
+		recursiveCTEMainBindings(attached, producer, bindings)
 	}
 }
 
@@ -9404,12 +9354,12 @@ func recursiveCTEMainBindings(
 // after main translation; stacks preserve an enclosing recursive definition.
 func (t *cascadesTranslator) pushRecursiveCTEConsumerRows(
 	main logical.LogicalOperator,
-	cteName string,
+	producer *logical.CTEProducer,
 	declaration *values.RecordType,
 	common *values.RecordType,
 ) []values.CorrelationIdentifier {
 	bindings := make(map[values.CorrelationIdentifier]struct{})
-	recursiveCTEMainBindings(main, cteName, bindings)
+	recursiveCTEMainBindings(main, producer, bindings)
 	if len(bindings) == 0 {
 		return nil
 	}
@@ -9553,7 +9503,33 @@ func (t *cascadesTranslator) normalizeRecursiveCTEConsumerValue(
 //  6. Translate the Main query with the CTE name resolving to the
 //     RecursiveUnionExpression.
 func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expressions.RelationalExpression {
-	cteName := strings.ToUpper(c.Name)
+	logical.BindCTESources(c, t.cteScope)
+	if ref := t.producerRefs[c.CTEProducer]; ref != nil {
+		row := t.recursiveProducerRows[c.CTEProducer]
+		bindings := t.pushRecursiveCTEConsumerRows(c.Main, c.CTEProducer, row.declaration, row.common)
+		defer t.popRecursiveCTEConsumerRows(bindings)
+		return t.translateOp(c.Main)
+	}
+	previousExpr, hadExpr := t.cteExprScope[c.CTEProducer]
+	previousColumns, hadColumns := t.cteColumnsScope[c.CTEProducer]
+	if t.cteExprScope == nil {
+		t.cteExprScope = make(map[*logical.CTEProducer]expressions.RelationalExpression)
+	}
+	if t.cteColumnsScope == nil {
+		t.cteColumnsScope = make(map[*logical.CTEProducer][]values.Field)
+	}
+	defer func() {
+		if hadExpr {
+			t.cteExprScope[c.CTEProducer] = previousExpr
+		} else {
+			delete(t.cteExprScope, c.CTEProducer)
+		}
+		if hadColumns {
+			t.cteColumnsScope[c.CTEProducer] = previousColumns
+		} else {
+			delete(t.cteColumnsScope, c.CTEProducer)
+		}
+	}()
 
 	// The recursive-CTE body ordinalizes where possible. An earlier blanket
 	// `t.inInnerCluster = true` forced every body join name-model; lifting it
@@ -9572,7 +9548,7 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	// riding alongside for UNION-DISTINCT dedup and Main name resolution.
 
 	// The body must be a UNION ALL or UNION DISTINCT.
-	union, ok := c.Body.(*logical.LogicalUnion)
+	union, ok := c.Body().(*logical.LogicalUnion)
 	if !ok || len(union.Inputs) < 2 {
 		return nil
 	}
@@ -9581,7 +9557,7 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	// (references the CTE name).
 	var seedBranches, recursiveBranches []logical.LogicalOperator
 	for _, branch := range union.Inputs {
-		if logicalOpReferencesCTE(branch, cteName) {
+		if logical.ReferencesCTE(branch, c.CTEProducer) {
 			recursiveBranches = append(recursiveBranches, branch)
 		} else {
 			seedBranches = append(seedBranches, branch)
@@ -9591,8 +9567,8 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 		return nil
 	}
 
-	scanAlias := values.NamedCorrelationIdentifier(cteName + "forScan")
-	insertAlias := values.NamedCorrelationIdentifier(cteName + "forInsert")
+	scanAlias := c.ScanBinding()
+	insertAlias := c.InsertBinding()
 
 	// Translate the seed leg. Multiple seed branches become a union.
 	var seedExpr expressions.RelationalExpression
@@ -9667,8 +9643,8 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 		}
 	}
 	outCols := seedOut
-	if len(c.ColumnAliases) > 0 && len(c.ColumnAliases) == len(outCols) {
-		outCols = c.ColumnAliases // normalized once, at the parse capture
+	if len(c.ColumnAliases()) > 0 && len(c.ColumnAliases()) == len(outCols) {
+		outCols = c.ColumnAliases() // normalized once, at the parse capture
 	}
 
 	// Derive the exact positional row shared by every iteration BEFORE creating
@@ -9715,16 +9691,16 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 		Nullable: seedType.Nullable,
 		Fields:   append([]values.Field(nil), seedFields...),
 	}
-	t.cteColumnsScope[cteName] = seedFields
+	t.cteColumnsScope[c.CTEProducer] = seedFields
 	commonRow, commonErr := t.recursiveCTECommonResultRow(seedType, recursiveBranches, outCols)
 	if commonErr != nil {
-		delete(t.cteColumnsScope, cteName)
+		delete(t.cteColumnsScope, c.CTEProducer)
 		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
 			"recursive CTE branches have no exact common result row: %v", commonErr))
 		return nil
 	}
 	tempFields := append([]values.Field(nil), commonRow.Fields...)
-	t.cteColumnsScope[cteName] = tempFields
+	t.cteColumnsScope[c.CTEProducer] = tempFields
 
 	// Normalize the seed onto that exact row. This is a no-op for the common
 	// same-schema case, preserving its plan shape; a rename, promotion, or
@@ -9732,7 +9708,7 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	if !seedType.Equals(commonRow) {
 		seedExpr = t.normalizeRecursiveLegToOutputRow(seedExpr, commonRow)
 		if seedExpr == nil {
-			delete(t.cteColumnsScope, cteName)
+			delete(t.cteColumnsScope, c.CTEProducer)
 			return nil
 		}
 	}
@@ -9745,7 +9721,7 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 		expressions.ForEachQuantifier(expressions.InitialOf(seedExpr)), insertAlias, true,
 	)
 	if err != nil {
-		delete(t.cteColumnsScope, cteName)
+		delete(t.cteColumnsScope, c.CTEProducer)
 		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
 			"recursive CTE seed insert has no exact flowed row: %v", err))
 		return nil
@@ -9756,17 +9732,17 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	// exact contract that both inserts publish (RFC-077 7.6).
 	tempScan, err := expressions.NewTempTableScanExpression(scanAlias, commonRow)
 	if err != nil {
-		delete(t.cteColumnsScope, cteName)
+		delete(t.cteColumnsScope, c.CTEProducer)
 		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
 			"recursive CTE temp scan has no exact row type: %v", err))
 		return nil
 	}
-	t.cteExprScope[cteName] = tempScan
-	t.cteColumnsScope[cteName] = tempFields
+	t.cteExprScope[c.CTEProducer] = tempScan
+	t.cteColumnsScope[c.CTEProducer] = tempFields
 	var recursiveConsumerBindings []values.CorrelationIdentifier
 	for _, branch := range recursiveBranches {
 		recursiveConsumerBindings = append(recursiveConsumerBindings,
-			t.pushRecursiveCTEConsumerRows(branch, cteName, declaredRow, commonRow)...)
+			t.pushRecursiveCTEConsumerRows(branch, c.CTEProducer, declaredRow, commonRow)...)
 	}
 	var recursiveExpr expressions.RelationalExpression
 	if len(recursiveBranches) == 1 {
@@ -9775,8 +9751,8 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 		recursiveExpr = t.translateUnion(&logical.LogicalUnion{Inputs: recursiveBranches, Distinct: false})
 	}
 	t.popRecursiveCTEConsumerRows(recursiveConsumerBindings)
-	delete(t.cteExprScope, cteName)
-	delete(t.cteColumnsScope, cteName)
+	delete(t.cteExprScope, c.CTEProducer)
+	delete(t.cteColumnsScope, c.CTEProducer)
 	if recursiveExpr == nil {
 		return nil
 	}
@@ -9831,7 +9807,7 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	seedInsertRef := expressions.InitialOf(seedInsert)
 	recursiveInsertRef := expressions.InitialOf(recursiveInsert)
 	strategy := expressions.TraversalAny
-	switch c.TraversalOrder {
+	switch c.TraversalOrder() {
 	case logical.TraversalLevelOrder:
 		// An EXPLICIT level_order pins the level union (Java LEVEL gates
 		// the DFS rule off); only the clause-less ANY leaves the choice
@@ -9869,18 +9845,26 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	// names (outCols) — the column-alias list, when present, was baked into
 	// outCols and applied to BOTH legs before the temp-table inserts.
 	cteResult := recUnion
+	if t.producerRefs == nil {
+		t.producerRefs = make(map[*logical.CTEProducer]*expressions.Reference)
+	}
+	if t.recursiveProducerRows == nil {
+		t.recursiveProducerRows = make(map[*logical.CTEProducer]recursiveCTEConsumerRow)
+	}
+	t.producerRefs[c.CTEProducer] = expressions.InitialOf(cteResult)
+	t.recursiveProducerRows[c.CTEProducer] = recursiveCTEConsumerRow{declaration: declaredRow, common: commonRow}
 
 	// Register the result so the Main query's scan of the CTE name resolves to
 	// it. The OUTWARD column schema is outCols — so a CTE reference used as a JOIN
 	// LEG in the Main query anchors instead of falling back to the opaque merge
 	// (RFC-077 7.6).
-	t.cteExprScope[cteName] = cteResult
-	t.cteColumnsScope[cteName] = tempFields
-	consumerBindings := t.pushRecursiveCTEConsumerRows(c.Main, cteName, declaredRow, commonRow)
+	t.cteExprScope[c.CTEProducer] = cteResult
+	t.cteColumnsScope[c.CTEProducer] = tempFields
+	consumerBindings := t.pushRecursiveCTEConsumerRows(c.Main, c.CTEProducer, declaredRow, commonRow)
 	result := t.translateOp(c.Main)
 	t.popRecursiveCTEConsumerRows(consumerBindings)
-	delete(t.cteExprScope, cteName)
-	delete(t.cteColumnsScope, cteName)
+	delete(t.cteExprScope, c.CTEProducer)
+	delete(t.cteColumnsScope, c.CTEProducer)
 	return result
 }
 
@@ -10021,27 +10005,6 @@ func (t *cascadesTranslator) normalizeRecursiveLegToOutputRow(
 		return nil
 	}
 	return projection
-}
-
-// logicalOpReferencesCTE walks a LogicalOperator tree and reports
-// whether any LogicalScan references the given CTE name (case-
-// insensitive). Used to partition UNION ALL branches into seed vs
-// recursive legs.
-func logicalOpReferencesCTE(op logical.LogicalOperator, cteName string) bool {
-	if op == nil {
-		return false
-	}
-	if scan, ok := op.(*logical.LogicalScan); ok {
-		if strings.EqualFold(scan.Table, cteName) {
-			return true
-		}
-	}
-	for _, child := range op.Children() {
-		if logicalOpReferencesCTE(child, cteName) {
-			return true
-		}
-	}
-	return false
 }
 
 func (t *cascadesTranslator) translateInsert(ins *logical.LogicalInsert) expressions.RelationalExpression {
