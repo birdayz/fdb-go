@@ -33,6 +33,14 @@ func deferredEntryCases(key, end []byte) []deferredEntryCase {
 			_, _, err := tx.GetRange(ctx, key, end, 10)
 			return err
 		}},
+		{"mapped-range", func(ctx context.Context, tx *Transaction) error {
+			_, _, err := tx.GetMappedRange(ctx, key, end, nil, 10, false)
+			return err
+		}},
+		{"mapped-special-key", func(ctx context.Context, tx *Transaction) error {
+			_, _, err := tx.GetMappedRange(ctx, []byte("\xff\xff/status/json"), []byte("\xff\xff/status/json\x00"), nil, 10, false)
+			return err
+		}},
 		{"estimated-size", func(ctx context.Context, tx *Transaction) error {
 			_, err := tx.GetEstimatedRangeSizeBytes(ctx, key, end)
 			return err
@@ -336,5 +344,121 @@ func TestWatch_DeferredErrorBeatsWatchesDisabled(t *testing.T) {
 	tx2.SetReadYourWritesDisable()
 	if err := tx2.Watch(ctx, k); deferredCodeOf(err) != 1034 {
 		t.Fatalf("Watch on RYW-disabled txn: want watches_disabled (1034), got %v", err)
+	}
+}
+
+func TestMappedRangeSpecialKeyOutranksLifetimeWithoutDeferredError(t *testing.T) {
+	t.Parallel()
+	for _, terminal := range []string{"cancel", "timeout"} {
+		t.Run(terminal, func(t *testing.T) {
+			t.Parallel()
+			tx := newTestTx()
+			defer tx.Cancel()
+			if terminal == "cancel" {
+				tx.Cancel()
+			} else {
+				tx.SetTimeout(60000)
+				tx.readErrMu.Lock()
+				inc, generation := tx.readLife, tx.readLife.timerGen
+				tx.readErrMu.Unlock()
+				tx.fireReadTimeout(inc, generation)
+			}
+			if tx.checkCancelled() == nil {
+				t.Fatal("terminal precondition not established")
+			}
+			_, _, err := tx.GetMappedRange(context.Background(), []byte("\xff\xff/status/json"), []byte("\xff\xff/status/json\x00"), nil, 10, false)
+			if fdbCodeOf(err) != 2000 {
+				t.Fatalf("special-key rejection must precede %s: got %v, want 2000", terminal, err)
+			}
+			want := 1025
+			if terminal == "timeout" {
+				want = 1031
+			}
+			_, _, err = tx.GetMappedRange(context.Background(), []byte("a"), []byte("b"), nil, 10, false)
+			if fdbCodeOf(err) != want {
+				t.Fatalf("ordinary mapped read lost %s: got %v, want %d", terminal, err, want)
+			}
+		})
+	}
+}
+
+func TestMappedRangeDeferredEntryDoesNotSampleLaterPoison(t *testing.T) {
+	t.Parallel()
+	for _, reacquire := range []bool{false, true} {
+		name := "borrow"
+		if reacquire {
+			name = "reacquire"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			tx := newTestTx()
+			defer tx.Cancel()
+			tx.SetReadVersion(42)
+			ctx, release := tx.opContext(context.Background())
+			defer release()
+			if reacquire {
+				tx.readOperation(ctx).lease.release()
+			}
+			key := []byte(t.Name())
+			tx.Atomic(MutationType(1), key, []byte("value"))
+			if rows, more, err := tx.GetMappedRange(ctx, key, key, nil, 10, false); err != nil || len(rows) != 0 || more {
+				t.Fatalf("clean admitted ordinary entry lost empty-range result: rows=%v more=%v err=%v", rows, more, err)
+			}
+			begin, end := []byte("\xff\xff/status/json"), []byte("\xff\xff/status/json\x00")
+			if _, _, err := tx.GetMappedRange(ctx, begin, end, nil, 10, false); fdbCodeOf(err) != 2000 {
+				t.Fatalf("clean admitted entry sampled later poison: got %v, want special-key 2000", err)
+			}
+			if _, _, err := tx.GetMappedRange(context.Background(), begin, end, nil, 10, false); fdbCodeOf(err) != 2018 {
+				t.Fatalf("new entry lost deferred error: got %v, want 2018", err)
+			}
+			if _, _, err := tx.GetMappedRange(context.Background(), key, key, nil, 10, false); fdbCodeOf(err) != 2018 {
+				t.Fatalf("new ordinary entry lost deferred error: got %v, want 2018", err)
+			}
+		})
+	}
+}
+
+func TestMappedRangeDeferredEntryDoesNotReadReplacement(t *testing.T) {
+	t.Parallel()
+	for _, oldPoison := range []bool{false, true} {
+		name, want := "clean-old-entry", 2000
+		if oldPoison {
+			name, want = "poisoned-old-entry", 2018
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			tx := newTestTx()
+			defer tx.Cancel()
+			key := []byte(t.Name())
+			if oldPoison {
+				tx.Atomic(MutationType(1), key, []byte("value"))
+			}
+			old, release := tx.opContext(context.Background())
+			release()
+			tx.Reset()
+			// An invalid atomic op on a system key records 2004 before checking
+			// the op code, distinct from both the old 2018 and special-key 2000.
+			tx.Atomic(MutationType(1), []byte("\xff/replacement-poison"), []byte("value"))
+			if _, err := tx.GetApproximateSize(); fdbCodeOf(err) != 2004 {
+				t.Fatalf("replacement poison precondition: got %v, want 2004", err)
+			}
+			begin, end := []byte("\xff\xff/status/json"), []byte("\xff\xff/status/json\x00")
+			if _, _, err := tx.GetMappedRange(old, begin, end, nil, 10, false); fdbCodeOf(err) != want {
+				t.Fatalf("old entry outcome changed after reset: got %v, want %d", err, want)
+			}
+			if _, _, err := tx.GetMappedRange(context.Background(), begin, end, nil, 10, false); fdbCodeOf(err) != 2004 {
+				t.Fatalf("new entry lost replacement failure: got %v, want 2004", err)
+			}
+			ordinaryWant := 1025
+			if oldPoison {
+				ordinaryWant = 2018
+			}
+			if _, _, err := tx.GetMappedRange(old, key, key, nil, 10, false); fdbCodeOf(err) != ordinaryWant {
+				t.Fatalf("old ordinary entry changed after reset: got %v, want %d", err, ordinaryWant)
+			}
+			if _, _, err := tx.GetMappedRange(context.Background(), key, key, nil, 10, false); fdbCodeOf(err) != 2004 {
+				t.Fatalf("new ordinary entry lost replacement failure: got %v, want 2004", err)
+			}
+		})
 	}
 }

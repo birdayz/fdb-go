@@ -312,8 +312,13 @@ const (
 func (tx *Transaction) GetMappedRange(ctx context.Context, begin, end, mapper []byte, limit int, reverse bool) ([]MappedKeyValue, bool, error) {
 	ctx, cancel := tx.opContext(ctx)
 	defer cancel()
-	// C++ :1786 — the special key space is not mapped-readable. Checked first,
-	// before even the read version is taken.
+	// ThreadSafeTransaction checks deferredError before RYW's special-key
+	// rejection, which still precedes resetPromise (C++ 7.3.77).
+	if err := tx.readOperation(ctx).entryErr; err != nil {
+		return nil, false, err
+	}
+	// C++ :1786 — the special key space is not mapped-readable. Checked after
+	// deferred errors, before lifetime errors or taking the read version.
 	if isSpecialKey(begin) && isSpecialKey(end) {
 		return nil, false, &wire.FDBError{Code: ErrClientInvalidOperation}
 	}

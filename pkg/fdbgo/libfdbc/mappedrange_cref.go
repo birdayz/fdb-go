@@ -352,6 +352,16 @@ func (tr CTxnHandle) Set(key, value []byte) {
 	runtime.KeepAlive(value)
 }
 
+// Atomic issues the raw mutation code, including invalid codes used to verify
+// deferred-error precedence against libfdb_c rather than a Go enum.
+func (tr CTxnHandle) Atomic(code int, key, value []byte) {
+	kp, kl := cBytes(key)
+	vp, vl := cBytes(value)
+	C.fdb_transaction_atomic_op(tr.ptr, kp, kl, vp, vl, C.FDBMutationType(code))
+	runtime.KeepAlive(key)
+	runtime.KeepAlive(value)
+}
+
 // ClearRange issues fdb_transaction_clear_range over [begin, end).
 func (tr CTxnHandle) ClearRange(begin, end []byte) {
 	bp, bl := cBytes(begin)
