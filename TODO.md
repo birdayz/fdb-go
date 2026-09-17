@@ -12309,3 +12309,16 @@ the client commits passed ordinary generate/lint/build/test hooks in a clean
 comparison worktree, preserving the main worktree's bytes. The companion RFC
 records their full SHAs and fresh/cached target populations. No new PR, hunt,
 merge approval or waiver of remaining review/CI/no-skip/performance gates.
+
+
+### RFC-256 PR785 red CI — pooled test-buffer lifetime (2026-09-17)
+
+- [x] Repair the pooled test-buffer lifetime defect witnessed by CI `35232274269`
+  at `c861d20be`: defer the tenant no-alias test's buffer return until all borrowed
+  field assertions finish. Both attempts, every assertion and parallelism remain.
+  Companion: RFC-256 **PR785 CI pooled-buffer lifetime repair**, with C++/Go
+  ownership references, witnessed red and 100/100 repeated race green. All three
+  scoped implementation reviews ACKed; all 31 CI-equivalent race targets passed
+  uncached (20,220 RUN/PASS, no skips). No production/wire change or new hunt.
+  This closes the specific test defect, not the remaining full-PR findings or
+  merge gates; published CI must confirm the pushed commit.

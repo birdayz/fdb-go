@@ -1,7 +1,7 @@
 # RFC-256: Numeric CAST boundary conformance
 
-Status: Implementation under review; the latest CI race gate is failing. The
-amendments and evidence ledger below supersede earlier local release gates.
+Status: Implementation under review. CI race failures and their repairs are
+recorded in the evidence ledger below, superseding earlier local release gates.
 PR review and CI approval are still required before merge.
 
 ## Finding and reference
@@ -3940,3 +3940,58 @@ hashes; 92 target results passed on each commit (43 freshly executed for timeout
 are separate from the uncached verification ledger above. Publication does not
 authorize merge or waive the remaining full-PR findings, final-HEAD review/CI,
 opt-in omissions or measured performance concerns. No new hunt was started.
+
+
+### PR785 CI pooled-buffer lifetime repair (2026-09-17)
+
+CI `35232274269` at `c861d20bef44418b6f963798fe6fc11f3182b4b7` fails the client
+race target. `TestBuildCommitRequest_TenantNoAlias` returns its marshal buffer
+before comparing `req.Transaction.Mutations[0].Param1`. The generated decoder
+uses `Reader.ReadBytes`, which returns a slice of the original body; a parallel
+commit reuses/clears that pool buffer while the assertion still reads it. The
+reported writer is `CommitTransactionRequest.MarshalFDBPooled`; the reader is
+`transaction_concurrent_unit_test.go:242`. This is a test-owned lifetime error,
+not a reason to change production marshaling or serialize parallel tests.
+
+C++ 7.3.77 `NativeAPI.actor.cpp:6523–6563` allocates prefixed mutations/ranges
+in the request arena. `ObjectSerializer.h:41–51,131–158` permits zero-copy reads
+only while retaining the backing arena; `Arena.h:734–747` constructs StringRef
+from that memory. Go's decoded byte slices likewise need their buffer retained
+until all reads finish. Move the test's pool return into a defer immediately
+after each build, retaining both buffers through the existing two-attempt
+assertions, including fatal paths. Preserve every tenant-prefix/non-aliasing
+assertion, loop bound and `t.Parallel`; no production/generated code changes.
+
+Local uncached Bazel `-race` reproduction runs
+`^(TestBuildCommitRequest_TenantNoAlias|TestConcurrent_ConflictReaders_NoRace)$`
+with `-test.count=50`: 100 RUN, 99 PASS / one FAIL, exit 3, with the same reader
+and pooled-marshal writer. Artifacts: `/var/tmp/query-grind-cast/pr785-review/ci-c861d20be/`
+(`race-job.log`, `tenant-buffer-red.*`). Keep this existing regression pair;
+a rerun without a fix is not remediation. Design review, repeated green,
+full client/CI race scopes, normal hooks and published CI remain required.
+
+
+Implementation verification for this test-only repair: the same two-function
+race filter/count50 passes **100 RUN/PASS**; each named test executes 50 times.
+No assertion, loop count, test parallelism or workload limit changed. Fresh
+C++/Torvalds/independent `gpt-6-astra/xhigh` design and scoped implementation
+reviews ACKed the one-file delta. The reviewed test-file SHA-256 is
+`137b5a5db46981779d21a7e7ad7beee247787274a0ea043a97bfb83f9fa2d485`.
+
+All three complete CI-equivalent race scopes then passed uncached, serially:
+
+| Scope | Executed targets | RUN/PASS | Skips |
+|---|---:|---:|---:|
+| Cascades | 8 | 7,442 | 0 |
+| Relational, excluding conformance and stress | 18 | 10,570 | 0 |
+| Client, transport and facade | 5 | 2,208 | 0 |
+
+The queried relational population is 19 targets; its sole filtered target is
+`//pkg/relational/sqldriver/stress:stress_test`, excluded by the existing CI
+`--test_tag_filters=-stress`, not a test skip. BEP and per-test log populations
+reconcile with no missing/extra outcomes or cached results. The ten embedded
+Cascades subprocess diagnostics are excluded from its Go outcome population.
+The source hash remained unchanged throughout. Artifacts in the same directory:
+`implementation-*-verdict.md`, `tenant-buffer-green.*`, `race-{cascades,rel,client}.*`,
+`race-target-verdict.json` and `race-freeze-verdict.json`. Ordinary commit hooks
+and published CI remain publication/merge gates, not implied by local ACKs.
