@@ -323,19 +323,14 @@ func (r *Resolver) resolveScopedColumn(col semantic.Column, src semantic.ScopeSo
 	// column). Derived-table/CTE quantifiers expose their columns under the
 	// OUTPUT name the projection emits — no reverse-map to a source column.
 	field := col.Id.Name()
-	needsQualification := len(r.scope.Sources()) > 1
-	if !needsQualification && src.CorrelationName != "" {
-		isLocal := false
-		for _, localSrc := range r.scope.Sources() {
-			if localSrc.CorrelationName == src.CorrelationName {
-				isLocal = true
-				break
-			}
-		}
-		if !isLocal {
-			needsQualification = true
+	isLocal := false
+	for _, localSrc := range r.scope.Sources() {
+		if localSrc.CorrelationName == src.CorrelationName {
+			isLocal = true
+			break
 		}
 	}
+	needsQualification := len(r.scope.Sources()) > 1 || src.CorrelationName != "" && !isLocal
 	if src.CorrelationName != "" && needsQualification {
 		// A PARENT-scope resolution (Java's zero-match fallthrough) whose
 		// correlation name is SHADOWED by a local source is
@@ -358,7 +353,11 @@ func (r *Resolver) resolveScopedColumn(col semantic.Column, src semantic.ScopeSo
 		// are pinned by an FDB integration test for duplicate FROM-alias
 		// handling.
 		for _, localSrc := range r.scope.Sources() {
-			if localSrc.CorrelationName != src.CorrelationName {
+			// Private source IDs do not expand the existing multi-source
+			// qualified-fallthrough contract. Local per-attribute matches remain
+			// legal, and single-source fallthrough remains supported.
+			lexicalShadow := !isLocal && len(r.scope.Sources()) > 1 && qualifier.Name() != "" && localSrc.Alias.EqualsIgnoreQuoting(qualifier)
+			if localSrc.CorrelationName != src.CorrelationName && !lexicalShadow {
 				continue
 			}
 			// Relaxed: this asks whether the LOCAL source could have answered

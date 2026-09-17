@@ -401,13 +401,14 @@ func buildLogicalPlanForUnion(setQ *antlrgen.SetQueryContext) logical.LogicalOpe
 //	            → LogicalProject (unless SELECT *)
 
 // derivedSourceCarrier exports a body under one runtime identity without
-// rewriting anything inside it. The SQL qualifier lives in the semantic scope;
-// Name here is the CTE registration key used by Main's scan.
+// rewriting anything inside it. Alias retains the SQL qualifier for admission;
+// Name is the private CTE registration key used by Main's scan.
 func derivedSourceCarrier(alias, binding string, body logical.LogicalOperator) *logical.LogicalCTE {
 	if binding == "" {
 		binding = alias
 	}
 	cte := logical.NewCTE(binding, body, logical.NewScan(binding, "", binding), false)
+	cte.Alias = alias
 	cte.Binding = binding
 	return cte
 }
@@ -451,7 +452,7 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 	var op logical.LogicalOperator
 	if sq.inlineValues != nil {
 		var err error
-		op, err = buildInlineValuesLogical(sq.inlineValues, sq.tableAlias, "", nil)
+		op, err = buildInlineValuesLogical(sq.inlineValues, sq.tableAlias, sq.bindingID, nil)
 		if err != nil {
 			return nil
 		}
@@ -481,7 +482,9 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 		// alias fidelity.
 		op = derivedSourceCarrier(sq.tableName, sq.bindingID, innerOp)
 	} else {
-		op = logical.NewScan(sq.tableName, sq.tableAlias, sq.sourceSegments...)
+		scan := logical.NewScan(sq.tableName, sq.tableAlias, sq.sourceSegments...)
+		scan.Binding = sq.bindingID
+		op = scan
 	}
 
 	// JOINs chain left-to-right from the primary scan. Each join wraps

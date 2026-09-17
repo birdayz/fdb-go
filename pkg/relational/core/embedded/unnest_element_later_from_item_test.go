@@ -53,9 +53,15 @@ func TestDuplicateUnnestAliasInsideExistsKeepsDistinctCorrelations(t *testing.T)
 		switch n := node.(type) {
 		case *logical.LogicalScan:
 			if n.Table == "U" {
+				if n.Alias != "V" {
+					t.Fatalf("private identity replaced the table's SQL alias: %q", n.Alias)
+				}
 				bindings = append(bindings, n.Binding)
 			}
 		case *logical.LogicalUnnest:
+			if n.Alias != "V" {
+				t.Fatalf("private identity replaced the unnest's SQL alias: %q", n.Alias)
+			}
 			bindings = append(bindings, logical.UnnestBindingName(n.Binding, n.Alias, n.AtAlias))
 		}
 		for _, child := range node.Children() {
@@ -66,7 +72,7 @@ func TestDuplicateUnnestAliasInsideExistsKeepsDistinctCorrelations(t *testing.T)
 		}
 	}
 	walk(op)
-	if len(bindings) != 2 || bindings[0] != "V" || bindings[1] != "Q$DUP2" {
+	if len(bindings) != 2 || bindings[0] != "Q$BOUND2" || bindings[1] != "Q$BOUND3" {
 		t.Fatalf("lateral and later table bindings: %v", bindings)
 	}
 }

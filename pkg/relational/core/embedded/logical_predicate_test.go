@@ -2,19 +2,23 @@ package embedded
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/parser"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
+	"fdb.dev/pkg/relational/core/query"
 	"fdb.dev/pkg/relational/core/query/expr"
 	"fdb.dev/pkg/relational/core/query/logical"
 	"fdb.dev/pkg/relational/core/query/semantic"
+	"github.com/antlr4-go/antlr/v4"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/types/descriptorpb"
@@ -172,7 +176,7 @@ func TestSingleSourceQueryBlockCTEScopes_DoesNotPromoteAcrossMultiLeg(t *testing
 	}
 }
 
-func TestCorrelatedExistsTruthAfterPagination(t *testing.T) {
+func TestBoundExistsTruthAfterPagination(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -183,81 +187,112 @@ func TestCorrelatedExistsTruthAfterPagination(t *testing.T) {
 	}{
 		{
 			name:      "non_grouped_aggregate_without_pagination",
-			sql:       "SELECT COUNT(*) FROM Order",
+			sql:       "SELECT COUNT(*) FROM t i WHERE i.id = o.id",
 			wantTruth: predicates.TriTrue,
 		},
 		{
 			name:      "non_grouped_aggregate_positive_limit",
-			sql:       "SELECT MAX(price) FROM Order LIMIT 5",
+			sql:       "SELECT MAX(id) FROM t i WHERE i.id = o.id LIMIT 5",
 			wantTruth: predicates.TriTrue,
 		},
 		{
 			name:      "non_grouped_aggregate_limit_zero",
-			sql:       "SELECT COUNT(*) FROM Order LIMIT 0",
+			sql:       "SELECT COUNT(*) FROM t i WHERE i.id = o.id LIMIT 0",
 			wantTruth: predicates.TriFalse,
 		},
 		{
 			name:      "non_grouped_aggregate_offset_one",
-			sql:       "SELECT COUNT(*) FROM Order LIMIT 1 OFFSET 1",
+			sql:       "SELECT COUNT(*) FROM t i WHERE i.id = o.id LIMIT 1 OFFSET 1",
 			wantTruth: predicates.TriFalse,
 		},
 		{
 			name:      "non_grouped_aggregate_offset_past_one",
-			sql:       "SELECT SUM(price) FROM Order LIMIT 5 OFFSET 2",
+			sql:       "SELECT SUM(id) FROM t i WHERE i.id = o.id LIMIT 5 OFFSET 2",
 			wantTruth: predicates.TriFalse,
 		},
 		{
 			name: "plain_limit_preserves_existence",
-			sql:  "SELECT order_id FROM Order LIMIT 1",
+			sql:  "SELECT id FROM t i WHERE i.id = o.id LIMIT 1",
 		},
 		{
 			name:      "plain_limit_zero_is_empty",
-			sql:       "SELECT order_id FROM Order LIMIT 0",
+			sql:       "SELECT id FROM t i WHERE i.id = o.id LIMIT 0",
 			wantTruth: predicates.TriFalse,
 		},
 		{
 			name:    "plain_offset_is_data_dependent",
-			sql:     "SELECT order_id FROM Order LIMIT 1 OFFSET 1",
+			sql:     "SELECT id FROM t i WHERE i.id = o.id LIMIT 1 OFFSET 1",
 			wantErr: true,
 		},
 		{
 			name: "grouped_limit_preserves_existence",
-			sql:  "SELECT COUNT(*) FROM Order GROUP BY customer_id LIMIT 1",
+			sql:  "SELECT COUNT(*) FROM t i WHERE i.id = o.id GROUP BY id LIMIT 1",
 		},
 		{
 			name: "group_key_only_is_not_exactly_one",
-			sql:  "SELECT customer_id FROM Order GROUP BY customer_id",
+			sql:  "SELECT id FROM t i WHERE i.id = o.id GROUP BY id",
 		},
 		{
-			name: "windowed_aggregate_is_not_exactly_one",
-			sql:  "SELECT COUNT(*) OVER () FROM Order",
+			name:    "windowed_aggregate_is_rejected_before_cardinality_classification",
+			sql:     "SELECT COUNT(*) OVER () FROM t i WHERE i.id = o.id",
+			wantErr: true,
 		},
 		{
-			name: "having_can_remove_the_global_group",
-			sql:  "SELECT COUNT(*) FROM Order HAVING COUNT(*) > 0",
+			name:    "having_can_remove_the_global_group",
+			wantErr: true,
+			sql:     "SELECT COUNT(*) FROM t i WHERE i.id = o.id HAVING COUNT(*) > 0",
 		},
 		{
-			name: "qualify_can_remove_the_global_group",
-			sql:  "SELECT COUNT(*) FROM Order QUALIFY 1 = 1",
+			name:    "qualify_can_remove_the_global_group",
+			wantErr: true,
+			sql:     "SELECT COUNT(*) FROM t i WHERE i.id = o.id QUALIFY 1 = 1",
+		},
+		{
+			name:    "false_qualify_cannot_be_folded_into_global_group_truth",
+			sql:     "SELECT COUNT(*) FROM t i WHERE i.id = o.id QUALIFY 1 = 0",
+			wantErr: true,
+		},
+		{
+			name:    "plain_correlated_qualify_retains_admission_boundary",
+			sql:     "SELECT id FROM t i WHERE i.id = o.id QUALIFY id > 0",
+			wantErr: true,
+		},
+		{
+			name:    "qualify_without_where_retains_admission_boundary",
+			sql:     "SELECT o.id FROM t i QUALIFY id > 0",
+			wantErr: true,
+		},
+		{
+			name:    "cte_envelope_retains_qualify_boundary",
+			sql:     "WITH c AS (SELECT id FROM t) SELECT COUNT(*) FROM c WHERE id = o.id QUALIFY 1 = 0",
+			wantErr: true,
+		},
+		{
+			name: "derived_qualify_does_not_change_owning_block_admission",
+			sql:  "SELECT d.id FROM (SELECT id FROM t QUALIFY id > 0) d WHERE d.id = o.id",
+		},
+		{
+			name: "independent_qualify_is_preserved",
+			sql:  "SELECT id FROM t QUALIFY id > 0",
 		},
 		{
 			name:      "grouped_limit_zero_is_empty",
-			sql:       "SELECT COUNT(*) FROM Order GROUP BY customer_id LIMIT 0",
+			sql:       "SELECT COUNT(*) FROM t i WHERE i.id = o.id GROUP BY id LIMIT 0",
 			wantTruth: predicates.TriFalse,
 		},
 		{
 			name:    "grouped_offset_is_data_dependent",
-			sql:     "SELECT COUNT(*) FROM Order GROUP BY customer_id LIMIT 1 OFFSET 1",
+			sql:     "SELECT COUNT(*) FROM t i WHERE i.id = o.id GROUP BY id LIMIT 1 OFFSET 1",
 			wantErr: true,
 		},
 		{
 			name:    "planning_time_unresolved_limit_is_unknown",
-			sql:     "SELECT COUNT(*) FROM Order LIMIT ?",
+			sql:     "SELECT COUNT(*) FROM t i WHERE i.id = o.id LIMIT ?",
 			wantErr: true,
 		},
 		{
 			name:    "planning_time_unresolved_offset_is_unknown",
-			sql:     "SELECT COUNT(*) FROM Order LIMIT 1 OFFSET ?",
+			sql:     "SELECT COUNT(*) FROM t i WHERE i.id = o.id LIMIT 1 OFFSET ?",
 			wantErr: true,
 		},
 	}
@@ -270,7 +305,13 @@ func TestCorrelatedExistsTruthAfterPagination(t *testing.T) {
 			if err != nil {
 				t.Fatalf("parse: %v", err)
 			}
-			got, err := correlatedExistsTruthAfterPagination(query)
+			owner, _ := clauseTestOwner(t)
+			bound, err := owner.bindQuery(query)
+			var lowered loweredExists
+			if err == nil {
+				lowered, err = lowerBoundExists(bound)
+			}
+			got := lowered.truth
 			if test.wantErr {
 				if err == nil {
 					t.Fatalf("expected typed unsupported error, got truth %v", got)
@@ -482,7 +523,14 @@ func TestBuildScalarValidatesSemanticOutputBeforeRegistration(t *testing.T) {
 				t.Fatalf("parse query: %v", err)
 			}
 			planner := &existsSubqueryPlanner{md: buildTestMetaData(t)}
-			_, gotType, gotErr := planner.BuildScalar(q)
+			clause := planner.newClause()
+			alias, gotType, gotErr := clause.BuildScalar(q)
+			if gotErr == nil {
+				if len(planner.scalarSubqueries) != 0 || len(planner.correlatedScalarSubqueries) != 0 {
+					t.Fatal("construction published before clause admission")
+				}
+				gotErr = clause.admitValues([]values.Value{values.NewScalarSubqueryValue(alias, gotType)})
+			}
 			if tc.wantCode != "" {
 				var apiErr *api.Error
 				if !errors.As(gotErr, &apiErr) || apiErr.Code != tc.wantCode {
@@ -1365,13 +1413,11 @@ func TestDerivedJoinBodyNullability_IsDerivedFromTheJoinAlgebra(t *testing.T) {
 	// the column has to be NOT NULL in the catalog first. If Order.TAGS ever
 	// stops reporting NOT NULL, every assertion below is satisfied by a column
 	// that was already nullable and the test proves nothing.
-	inner := &selectQuery{tableName: "Order", tableAlias: "A"}
-	innerSrc, ok := buildDerivedTableSourceFromJoinBody(md, "D", &selectQuery{
-		tableName: "Order", tableAlias: "A",
-		joins: []joinClause{{tableName: "Customer", alias: "B", joinType: joinTypeInner}},
-	}, defaultEmbeddedSchema, nil)
-	_ = inner
-	if !ok {
+	body := func(kind logical.JoinKind) logical.LogicalOperator {
+		return logical.NewJoin(logical.NewScan("Order", "A"), logical.NewScan("Customer", "B"), kind, "")
+	}
+	innerSrc, err := boundDerivedSource(md, "D", "D", body(logical.JoinInner), nil)
+	if err != nil {
 		t.Fatal("the INNER control body did not derive at all — nothing below is comparable")
 	}
 	tags, found := columnNamed(innerSrc.Table.Columns(), "tags")
@@ -1390,37 +1436,34 @@ func TestDerivedJoinBodyNullability_IsDerivedFromTheJoinAlgebra(t *testing.T) {
 		name string
 		// jt is the flavour of the ONE join clause; the body is
 		// `FROM Order AS A <jt> JOIN Customer AS B`.
-		jt joinType
+		jt logical.JoinKind
 		// wantNullable per leg: [left (Order.TAGS), right (Customer.*)].
 		wantTagsNullable bool
 		why              string
 	}{
 		{
-			"INNER preserves both legs", joinTypeInner, false,
+			"INNER preserves both legs", logical.JoinInner, false,
 			"an inner join pads nothing, so the catalog's NOT NULL survives. This is " +
 				"the direction a blanket \"mark every leg nullable\" fix destroys",
 		},
 		{
-			"LEFT preserves the LEFT leg", joinTypeLeft, false,
+			"LEFT preserves the LEFT leg", logical.JoinLeft, false,
 			"a LEFT JOIN pads only the RIGHT side; the preserved leg keeps its type",
 		},
 		{
-			"RIGHT pads the LEFT leg", joinTypeRight, true,
+			"RIGHT pads the LEFT leg", logical.JoinRight, true,
 			"a RIGHT JOIN pads everything to its left, and the left leg is where TAGS " +
 				"lives — this is the arm a fix that only handles LEFT would miss",
 		},
 		{
-			"FULL pads both legs", joinTypeFull, true,
+			"FULL pads both legs", logical.JoinFull, true,
 			"a FULL OUTER JOIN pads both sides",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			src, derived := buildDerivedTableSourceFromJoinBody(md, "D", &selectQuery{
-				tableName: "Order", tableAlias: "A",
-				joins: []joinClause{{tableName: "Customer", alias: "B", joinType: tc.jt}},
-			}, defaultEmbeddedSchema, nil)
-			if !derived {
+			src, err := boundDerivedSource(md, "D", "D", body(tc.jt), nil)
+			if err != nil {
 				t.Fatalf("the body did not derive — the case tests nothing")
 			}
 			got, ok := columnNamed(src.Table.Columns(), "tags")
@@ -1803,10 +1846,23 @@ func TestDerivedNestedEnumFieldKeepsExactTypeAndHomonym(t *testing.T) {
 			t.Fatalf("%s: plan %v, err %v", sql, plan, err)
 		}
 	}
-	sq := parseSelect(t, `SELECT t.p.color FROM t`)
-	if !nestedProjectedPath(sq.projCols[0], sq.tableName) {
-		t.Fatalf("t.p.color is not decided as a nested path; the arm under test is not the shape rule's")
+	q, err := parseQueryFromSelect(t, `SELECT t.p.color FROM t`)
+	if err != nil {
+		t.Fatal(err)
 	}
+	body, err := NewPlanVisitor(md).VisitQuery(q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection := findProjection(body)
+	if projection == nil || len(projection.ProjectedValues) != 1 {
+		t.Fatal("nested enum body lost its bound projection")
+	}
+	field, exact := values.AsFieldValue(projection.ProjectedValues[0])
+	if !exact || field.Path().Len() != 2 || field.Path().Ordinals()[0] != 2 || field.Path().Ordinals()[1] != 0 {
+		t.Fatalf("t.p.color did not resolve the nested enum ordinals [2 0]: %v", projection.ProjectedValues[0])
+	}
+	sq := parseSelect(t, `SELECT t.p.color FROM t`)
 	src, ok := buildExactVirtualScopeSourceForSelect(md, "X", sq, nil, nil)
 	if !ok {
 		t.Fatal("the exact derivation declined the nested enum field")
@@ -1830,8 +1886,8 @@ func TestDerivedBindingMintReservesLexicalEnvironment(t *testing.T) {
 	grand := semantic.NewScope(nil)
 	if err := grand.AddSource(semantic.ScopeSource{
 		Table: table,
-		Alias: semantic.FromNormalized("Q$DERIVED0"), CorrelationName: "Q$DERIVED1",
-		AdditionalQualifiers: []semantic.Identifier{semantic.FromNormalized("Q$DERIVED2")},
+		Alias: semantic.FromNormalized("Q$BOUND0"), CorrelationName: "Q$BOUND1",
+		AdditionalQualifiers: []semantic.Identifier{semantic.FromNormalized("Q$BOUND2")},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1841,29 +1897,36 @@ func TestDerivedBindingMintReservesLexicalEnvironment(t *testing.T) {
 	}
 	visitor := NewPlanVisitor(buildTestMetaData(t))
 	visitor.enclosingScope = parent
-	visitor.cteScopes = map[string]semantic.ScopeSource{"Q$DERIVED3": {}}
-	visitor.cteOnScopes = map[string]semantic.ScopeSource{"Q$DERIVED4": {}}
-	visitor.cteBodies = map[string]logical.LogicalOperator{"Q$DERIVED5": logical.NewScan("Order", "")}
-	for range 2 {
+	visitor.cteScopes = map[string]semantic.ScopeSource{"Q$BOUND3": {}}
+	visitor.cteOnScopes = map[string]semantic.ScopeSource{"Q$BOUND4": {}}
+	visitor.cteBodies = map[string]logical.LogicalOperator{"Q$BOUND5": logical.NewScan("Order", "")}
+	for round := range 2 {
 		fs := &fromSource{
 			tableName: "D", tableAlias: "D", derivedQuery: inner, enclosingScope: parent,
 			joins: []joinClause{
 				{alias: "D", derivedQuery: inner, bindingID: "Q$DUP1"},
 				{alias: "D", derivedQuery: inner, bindingID: "Q$DUP2"},
-				{alias: "Q$DERIVED6", tableName: "Order", bindingID: "Q$DERIVED7"},
-				{alias: "S.Q$DERIVED8", tableName: "S.Q$DERIVED8", segments: []string{"S", "Q$DERIVED8"}},
+				{alias: "Q$BOUND6", tableName: "Order", bindingID: "Q$BOUND7"},
+				{alias: "S.Q$BOUND8", tableName: "S.Q$BOUND8", segments: []string{"S", "Q$BOUND8"}},
 			},
 		}
 		visitor.assignDerivedSourceBindings(fs)
-		if fs.bindingID != "Q$DERIVED9" || fs.joins[0].bindingID != "Q$DERIVED10" || fs.joins[1].bindingID != "Q$DUP2" {
-			t.Fatalf("mint must reserve every lexical namespace and retain a disjoint duplicate identity: primary=%q joins=%+v", fs.bindingID, fs.joins)
+		wantPrimary := fmt.Sprintf("Q$BOUND%d", 9+5*round)
+		wantFirstJoin := fmt.Sprintf("Q$BOUND%d", 10+5*round)
+		if fs.bindingID != wantPrimary {
+			t.Fatalf("mint must reserve all lexical names and prior sibling IDs: primary=%q, want %q", fs.bindingID, wantPrimary)
+		}
+		for i, join := range fs.joins {
+			if want := fmt.Sprintf("Q$BOUND%d", 10+5*round+i); join.bindingID != want {
+				t.Fatalf("join %d identity = %q, want %q", i, join.bindingID, want)
+			}
 		}
 		sq := selectQueryFromClassification(&selectClassification{}, fs)
-		if sq.bindingID != "Q$DERIVED9" || sq.enclosingScope != parent || sq.tableAlias != "D" {
+		if sq.bindingID != wantPrimary || sq.enclosingScope != parent || sq.tableAlias != "D" {
 			t.Fatalf("FROM bridge lost runtime/lexical identity: %+v", sq)
 		}
 		visitor.assignDerivedSourceBindings(fs)
-		if fs.bindingID != "Q$DERIVED9" || fs.joins[0].bindingID != "Q$DERIVED10" {
+		if fs.bindingID != wantPrimary || fs.joins[0].bindingID != wantFirstJoin {
 			t.Fatal("repeated identity pass changed the carried bindings")
 		}
 	}
@@ -2030,6 +2093,570 @@ func TestProjectionKeepsScalarQOVSQLName(t *testing.T) {
 			publishInheritedProjectionNames(proj, sq)
 			if len(proj.Aliases) != 1 || proj.Aliases[0] != "v" {
 				t.Fatalf("SQL names = %v, want [v], not quantifier binding %q", proj.Aliases, binding)
+			}
+		})
+	}
+}
+
+func TestBuildScalarRetainsCorrelationCarriedByCTEBody(t *testing.T) {
+	t.Parallel()
+	template, err := buildSchemaTemplateFromDDL("CREATE TABLE seed (id BIGINT, PRIMARY KEY (id))")
+	if err != nil {
+		t.Fatal(err)
+	}
+	md := template.Underlying()
+	parent := semantic.NewScope(nil)
+	if err := parent.AddSource(semantic.ScopeSource{
+		Alias: semantic.FromNormalized("O"), CorrelationName: "O",
+		Table: &semantic.StaticTable{
+			TableName: semantic.FromSegments([]string{"O"}, false),
+			TableColumns: []semantic.Column{{
+				Id: semantic.FromNormalized("ID"), Type: "BIGINT", Nullable: true,
+			}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, bodySQL, scalarSQL string
+		correlated               bool
+	}{
+		{"outer_through_cte", "SELECT o.id AS v FROM seed", "SELECT MAX(v) FROM c", true},
+		{"scalar_alias_matches_captured_outer", "SELECT o.id AS v FROM seed", "SELECT MAX(v) FROM c o", true},
+		{"local_alias_shadows_outer", "SELECT o.id AS v FROM seed o", "SELECT MAX(v) FROM c", false},
+		{"local_column", "SELECT id AS v FROM seed", "SELECT MAX(v) FROM c", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bodyQuery, err := parseQueryFromSelect(t, tc.bodySQL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			bodyVisitor := NewPlanVisitor(md)
+			bodyVisitor.enclosingScope = parent
+			body, err := bodyVisitor.VisitQuery(bodyQuery)
+			if err != nil {
+				t.Fatalf("bind CTE body against O: %v", err)
+			}
+			source, exact := exactVirtualScopeSource("C", body, md, nil, nil)
+			if !exact {
+				t.Fatal("bound CTE body has no exact V column")
+			}
+			planner := &existsSubqueryPlanner{
+				md: md, outerScope: parent,
+				cteScopes: map[string]semantic.ScopeSource{"C": source},
+				cteBodies: map[string]logical.LogicalOperator{"C": body},
+			}
+			q, err := parseQueryFromSelect(t, tc.scalarSQL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clause := planner.newClause()
+			alias, resultType, err := clause.BuildScalar(q)
+			if err == nil {
+				err = clause.admitValues([]values.Value{values.NewScalarSubqueryValue(alias, resultType)})
+			}
+			if err != nil {
+				t.Fatalf("BuildScalar: %v", err)
+			}
+			if !resultType.Equals(values.NullableLong) {
+				t.Fatalf("scalar result type = %v, want nullable BIGINT", resultType)
+			}
+			var innerPlan logical.LogicalOperator
+			if len(planner.correlatedScalarSubqueries) == 1 {
+				innerPlan = planner.correlatedScalarSubqueries[0].InnerPlan
+			} else if len(planner.scalarSubqueries) == 1 {
+				innerPlan = planner.scalarSubqueries[0].Plan
+			}
+			ref, _, err := query.TranslateToCascadesWithError(innerPlan, md)
+			if err != nil || ref == nil {
+				t.Fatalf("translate registered scalar: ref=%v, err=%v", ref, err)
+			}
+			free := ref.GetCorrelatedTo()
+			t.Logf("registered scalar free correlations: %v", free)
+			wantCorrelated, wantIndependent := 0, 1
+			if tc.correlated {
+				wantCorrelated, wantIndependent = 1, 0
+			}
+			_, hasOuter := free[values.NamedCorrelationIdentifier("O")]
+			if len(free) != wantCorrelated || hasOuter != tc.correlated {
+				t.Fatalf("bound CTE free correlations = %v, want O present=%v and count=%d", free, tc.correlated, wantCorrelated)
+			}
+			if len(planner.correlatedScalarSubqueries) != wantCorrelated || len(planner.scalarSubqueries) != wantIndependent {
+				t.Fatalf("CTE scalar registered correlated=%d independent=%d, want %d/%d",
+					len(planner.correlatedScalarSubqueries), len(planner.scalarSubqueries), wantCorrelated, wantIndependent)
+			}
+		})
+	}
+}
+
+// A query-body access counter travels with the actual parsed query, including
+// through newly constructed visitors. It observes repeated body traversal without
+// a global hook or a production-side counter, and is local to one test tree.
+type countedDerivedQuery struct {
+	antlrgen.IQueryContext
+	bodyReads int
+}
+
+func (q *countedDerivedQuery) QueryExpressionBody() antlrgen.IQueryExpressionBodyContext {
+	q.bodyReads++
+	return q.IQueryContext.QueryExpressionBody()
+}
+
+func TestDerivedBindingQueryBodyAccessIsLinear(t *testing.T) {
+	t.Parallel()
+	template, err := buildSchemaTemplateFromDDL("CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for depth := 1; depth <= 4; depth++ {
+		t.Run(strings.Repeat("nested_", depth), func(t *testing.T) {
+			t.Parallel()
+			sql := "SELECT id FROM t"
+			for range depth {
+				sql = "SELECT id FROM (" + sql + ") d"
+			}
+			q, err := parseQueryFromSelect(t, sql)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var counters []*countedDerivedQuery
+			var wrap func(antlr.Tree) antlr.Tree
+			wrap = func(node antlr.Tree) antlr.Tree {
+				children := node.GetChildren()
+				for i, child := range children {
+					children[i] = wrap(child)
+				}
+				if query, ok := node.(antlrgen.IQueryContext); ok {
+					counted := &countedDerivedQuery{IQueryContext: query}
+					counters = append(counters, counted)
+					return counted
+				}
+				return node
+			}
+			wrapped := wrap(q).(antlrgen.IQueryContext)
+			if len(counters) != depth+1 {
+				t.Fatalf("counted %d query bodies at depth %d, want %d", len(counters), depth, depth+1)
+			}
+			if _, err := NewPlanVisitor(template.Underlying()).VisitQuery(wrapped); err != nil {
+				t.Fatal(err)
+			}
+			total := 0
+			for _, counted := range counters {
+				if counted.bodyReads == 0 {
+					t.Fatal("counter did not witness its query body")
+				}
+				total += counted.bodyReads
+			}
+			t.Logf("depth=%d query bodies=%d body accesses=%d", depth, len(counters), total)
+			if total > 2*(depth+1) {
+				t.Fatalf("depth %d rebuilt query bodies: %d accesses, want at most %d", depth, total, 2*(depth+1))
+			}
+		})
+	}
+}
+
+func TestPreparedDerivedBodyRetainsDuplicateNamesAndTypes(t *testing.T) {
+	t.Parallel()
+	template, err := buildSchemaTemplateFromDDL(
+		"CREATE TABLE a (id BIGINT, k BIGINT, PRIMARY KEY (id)) " +
+			"CREATE TABLE b (id BIGINT, k DOUBLE, PRIMARY KEY (id))")
+	if err != nil {
+		t.Fatal(err)
+	}
+	md := template.Underlying()
+	sql := "SELECT x.k, y.k FROM a x JOIN b y ON x.id = y.id"
+	for depth := 0; depth <= 3; depth++ {
+		q, err := parseQueryFromSelect(t, sql)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := NewPlanVisitor(md).buildCTEBodyQuery(q)
+		if err != nil {
+			t.Fatalf("depth %d body: %v", depth, err)
+		}
+		source, exact := exactVirtualScopeSource("D", body, md, nil, nil)
+		if !exact {
+			t.Fatalf("depth %d prepared body lost exact schema", depth)
+		}
+		columns := source.Table.Columns()
+		if len(columns) != 2 || columns[0].Id.Name() != "K" || columns[1].Id.Name() != "K" ||
+			columns[0].Type != "BIGINT" || columns[1].Type != "DOUBLE" {
+			t.Fatalf("depth %d prepared columns = %+v, want K BIGINT / K DOUBLE", depth, columns)
+		}
+		flowed := expr.SourceRowType(source)
+		if flowed == nil || len(flowed.Fields) != 2 || flowed.Fields[0].Name == "" || flowed.Fields[1].Name == "" ||
+			flowed.Fields[0].Name == flowed.Fields[1].Name ||
+			flowed.Fields[0].Ordinal != 0 || flowed.Fields[1].Ordinal != 1 ||
+			!flowed.Fields[0].FieldType.Equals(values.NullableLong) || !flowed.Fields[1].FieldType.Equals(values.NullableDouble) {
+			t.Fatalf("depth %d flowed row = %v, want distinct physical slots [0] BIGINT / [1] DOUBLE", depth, flowed)
+		}
+		scope := semantic.NewScope(nil)
+		if err := scope.AddSource(source); err != nil {
+			t.Fatal(err)
+		}
+		_, _, _, err = scope.ResolvePathNested([]semantic.Identifier{semantic.FromNormalized("D"), semantic.FromNormalized("K")})
+		var ambiguous *semantic.AmbiguousColumnError
+		if !errors.As(err, &ambiguous) {
+			t.Fatalf("depth %d lookup D.K = %v, want ambiguous duplicate SQL label", depth, err)
+		}
+		sql = "SELECT d.* FROM (" + sql + ") d"
+	}
+}
+
+func TestPreparedPromotedDerivedBodyIsNotRevisited(t *testing.T) {
+	t.Parallel()
+	template, err := buildSchemaTemplateFromDDL("CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
+	if err != nil {
+		t.Fatal(err)
+	}
+	md := template.Underlying()
+	for _, sql := range []string{
+		"SELECT (SELECT MAX(v) FROM c) AS x FROM t UNION ALL SELECT 9.5 AS other FROM t",
+		"WITH local_t AS (SELECT id FROM t) SELECT (SELECT MAX(v) FROM c) AS x FROM local_t UNION ALL SELECT 9.5 AS other FROM local_t",
+	} {
+		bodyQuery, err := parseQueryFromSelect(t, "SELECT id AS v FROM t")
+		if err != nil {
+			t.Fatal(err)
+		}
+		visitor := NewPlanVisitor(md)
+		cteBody, err := visitor.VisitQuery(bodyQuery)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cteSource, exact := exactVirtualScopeSource("C", cteBody, md, nil, nil)
+		if !exact {
+			t.Fatal("CTE C has no exact schema")
+		}
+		visitor.cteScopes = map[string]semantic.ScopeSource{"C": cteSource}
+		visitor.cteBodies = map[string]logical.LogicalOperator{"C": cteBody}
+		q, err := parseQueryFromSelect(t, sql)
+		if err != nil {
+			t.Fatal(err)
+		}
+		counted := &countedDerivedQuery{IQueryContext: q}
+		body, err := visitor.buildCTEBodyQuery(counted)
+		if err != nil {
+			t.Fatalf("prepare complete body: %v", err)
+		}
+		reads := counted.bodyReads
+		if reads == 0 {
+			t.Fatal("counter did not witness preparation")
+		}
+		source, err := boundDerivedSource(md, "D", "PRIVATE_D", body, visitor.cteScopes)
+		if counted.bodyReads != reads {
+			t.Errorf("bound source revisited prepared query: reads %d -> %d", reads, counted.bodyReads)
+		}
+		if err != nil {
+			t.Errorf("promoted retained body %q: %v", sql, err)
+			continue
+		}
+		columns := source.Table.Columns()
+		if source.CorrelationName != "PRIVATE_D" || len(columns) != 1 || columns[0].Id.Name() != "X" ||
+			columns[0].Type != "DOUBLE" || !columns[0].Nullable {
+			t.Errorf("promoted source = %+v columns=%+v, want PRIVATE_D(X DOUBLE NULL)", source, columns)
+		}
+	}
+}
+
+func TestLegacyDerivedBindingPreparesPromotedBodyOnce(t *testing.T) {
+	t.Parallel()
+	template, err := buildSchemaTemplateFromDDL("CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
+	if err != nil {
+		t.Fatal(err)
+	}
+	q, err := parseQueryFromSelect(t, "SELECT id AS x FROM t UNION ALL SELECT 9.5 AS other FROM t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	counted := &countedDerivedQuery{IQueryContext: q}
+	source, err := buildDerivedTableSourceWithCTEsChecked(template.Underlying(), "D", counted, defaultEmbeddedSchema, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counted.bodyReads != 1 {
+		t.Errorf("legacy adapter accessed body %d times, want one owner-side preparation", counted.bodyReads)
+	}
+	columns := source.Table.Columns()
+	if len(columns) != 1 || columns[0].Id.Name() != "X" || columns[0].Type != "DOUBLE" || !columns[0].Nullable {
+		t.Fatalf("promoted columns = %+v, want X DOUBLE NULL", columns)
+	}
+}
+
+func TestCorrelatedExistsDerivedBodyRetainsCTEEnvironment(t *testing.T) {
+	t.Parallel()
+	template, err := buildSchemaTemplateFromDDL("CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
+	if err != nil {
+		t.Fatal(err)
+	}
+	md := template.Underlying()
+	bodyQuery, err := parseQueryFromSelect(t, "SELECT id AS v FROM t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := NewPlanVisitor(md).VisitQuery(bodyQuery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, exact := exactVirtualScopeSource("C", body, md, nil, nil)
+	if !exact {
+		t.Fatal("CTE has no schema")
+	}
+	outer, exact := exactVirtualScopeSource("O", logical.NewScan("T", "O"), md, nil, nil)
+	if !exact {
+		t.Fatal("outer table has no schema")
+	}
+	parent := semantic.NewScope(nil)
+	if err := parent.AddSource(outer); err != nil {
+		t.Fatal(err)
+	}
+	planner := &existsSubqueryPlanner{
+		md: md, outerScope: parent, outerScopes: []semantic.ScopeSource{outer},
+		cteScopes: map[string]semantic.ScopeSource{"C": source},
+		cteBodies: map[string]logical.LogicalOperator{"C": body},
+	}
+	q, err := parseQueryFromSelect(t, "SELECT o.id FROM (SELECT (SELECT MAX(v) FROM c) AS x FROM t) d WHERE d.x = o.id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound, err := planner.bindQuery(q)
+	if err != nil {
+		t.Fatalf("bind correlated derived body: %v", err)
+	}
+	lowered, err := lowerBoundExists(bound)
+	op := lowered.plan
+	if err != nil || op == nil {
+		t.Fatalf("correlated derived body lost C's defining environment: op=%v err=%v", op, err)
+	}
+	ref, scalars, err := query.TranslateToCascadesWithError(op, md)
+	if err != nil || ref == nil {
+		t.Fatalf("translate retained correlated body: ref=%v err=%v", ref, err)
+	}
+	if len(scalars) != 1 {
+		t.Fatalf("pre-evaluated scalars = %d, want the retained MAX(V) plan", len(scalars))
+	}
+	free := ref.GetCorrelatedTo()
+	if _, present := free[scalars[0].Alias]; !present || len(free) != 1 {
+		t.Fatalf("body correlations = %v, want exactly retained scalar %v", free, scalars[0].Alias)
+	}
+	// EXISTS carries the outer/inner comparison on its attachment, not inside
+	// the returned FROM body. Both identities must survive that boundary.
+	carrier, ok := op.(*logical.LogicalCTE)
+	if !ok {
+		t.Fatalf("derived carrier = %T, want retained CTE body", op)
+	}
+	joinFree := predicates.GetCorrelatedToOfPredicate(lowered.join)
+	_, hasOuter := joinFree[values.NamedCorrelationIdentifier("O")]
+	_, hasInner := joinFree[values.NamedCorrelationIdentifier(carrier.Binding)]
+	if len(joinFree) != 2 || !hasOuter || !hasInner {
+		t.Fatalf("EXISTS comparison correlations = %v, want O and %s", joinFree, carrier.Binding)
+	}
+}
+
+func TestBoundDerivedSourcePreservesFailureClass(t *testing.T) {
+	t.Parallel()
+	template, err := buildSchemaTemplateFromDDL("CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection := func(typs ...values.Type) logical.LogicalOperator {
+		p := &logical.LogicalProject{}
+		for _, typ := range typs {
+			p.Projections = append(p.Projections, "X")
+			p.ProjectedValues = append(p.ProjectedValues, &values.ConstantValue{Typ: typ})
+		}
+		return p
+	}
+	for _, tc := range []struct {
+		name string
+		body logical.LogicalOperator
+		code api.ErrorCode
+	}{
+		{"missing_preparation", nil, api.ErrCodeUnsupportedQuery},
+		{"union_width", logical.NewUnion([]logical.LogicalOperator{
+			projection(values.NotNullLong), projection(values.NotNullDouble, values.NotNullLong),
+		}, false), api.ErrCodeUnionIncorrectColumnCount},
+		{"union_type", logical.NewUnion([]logical.LogicalOperator{
+			projection(values.NotNullLong), projection(values.NotNullString),
+		}, false), api.ErrCodeUnionIncompatibleColumns},
+		{"unrepresentable_nullable_array_element", projection(&values.ArrayType{
+			ElementType: values.NullableLong,
+		}), api.ErrCodeUnsupportedQuery},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			source, err := boundDerivedSource(template.Underlying(), "D", "PRIVATE_D", tc.body, nil)
+			var apiErr *api.Error
+			if source.Table != nil || !errors.As(err, &apiErr) || apiErr.Code != tc.code {
+				t.Fatalf("derived source=%+v err=%v, want empty source and typed %s", source, err, tc.code)
+			}
+		})
+	}
+}
+
+func TestExistsFinalAttachmentTypeMatchesTranslatedRow(t *testing.T) {
+	t.Parallel()
+	template, err := buildSchemaTemplateFromDDL(
+		"CREATE TABLE t (id BIGINT, PRIMARY KEY (id)) " +
+			"CREATE TABLE flags (k BIGINT, PRIMARY KEY (k)) " +
+			"CREATE TABLE seed (id BIGINT, PRIMARY KEY (id))")
+	if err != nil {
+		t.Fatal(err)
+	}
+	q, err := parseQueryFromSelect(t, `SELECT o.id FROM t o, flags f WHERE EXISTS (
+		SELECT 1 FROM seed s, t m WHERE f.k > 0 AND EXISTS (
+			SELECT 1 FROM flags nf WHERE nf.k > 0)) ORDER BY o.id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	md := template.Underlying()
+	op, err := NewPlanVisitor(md).VisitQuery(q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachments := 0
+	owned := make(map[values.CorrelationIdentifier]*expressions.Reference)
+	var visit func(logical.LogicalOperator)
+	visit = func(op logical.LogicalOperator) {
+		if filter, ok := op.(*logical.LogicalFilter); ok {
+			for _, attachment := range filter.ExistsSubqueries {
+				attachments++
+				if attachment.Input == nil {
+					t.Fatal("attachment has no owned producer")
+				}
+				owned[attachment.Alias] = attachment.Input.Reference()
+				ref, _, err := query.TranslateToCascadesWithError(attachment.Plan, md)
+				if err != nil || ref == nil {
+					t.Fatalf("translate attachment: ref=%v, err=%v", ref, err)
+				}
+				result := ref.Get().GetResultValue()
+				if result == nil || result.Type() == nil || attachment.FlowedType == nil {
+					t.Fatal("attachment has no exact result type")
+				}
+				t.Logf("attachment %s: declared=%s translated=%s", attachment.Alias.Name(),
+					values.DescribeType(attachment.FlowedType), values.DescribeType(result.Type()))
+				if !attachment.FlowedType.Equals(result.Type()) {
+					t.Errorf("attachment %s: declared row disagrees with translated result", attachment.Alias.Name())
+				}
+				visit(attachment.Plan)
+			}
+		}
+		for _, child := range op.Children() {
+			visit(child)
+		}
+	}
+	visit(op)
+	root, _, err := query.TranslateToCascadesWithError(op, md)
+	if err != nil || root == nil {
+		t.Fatalf("translate enclosing query: %v", err)
+	}
+	seen := make(map[values.CorrelationIdentifier]bool)
+	var visitReferences func(*expressions.Reference)
+	visitReferences = func(ref *expressions.Reference) {
+		for _, quantifier := range ref.Get().GetQuantifiers() {
+			if expected, ok := owned[quantifier.GetAlias()]; ok {
+				if quantifier.GetRangesOver() != expected {
+					t.Errorf("attachment %s rebuilt its owned producer", quantifier.GetAlias().Name())
+				}
+				seen[quantifier.GetAlias()] = true
+			}
+			visitReferences(quantifier.GetRangesOver())
+		}
+	}
+	visitReferences(root)
+	if len(seen) != len(owned) {
+		t.Fatalf("consumed %d owned references, want %d", len(seen), len(owned))
+	}
+	if attachments != 2 {
+		t.Fatalf("observed %d attachments, want middle and nested existential", attachments)
+	}
+}
+
+func TestPrimarySourceRetainsAssignedBinding(t *testing.T) {
+	t.Parallel()
+	template, err := buildSchemaTemplateFromDDL("CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
+	if err != nil {
+		t.Fatal(err)
+	}
+	md := template.Underlying()
+	for _, table := range []string{"t", "c", "inline_values"} {
+		t.Run(table, func(t *testing.T) {
+			t.Parallel()
+			statement := "SELECT x.id FROM " + table + " x"
+			if table == "inline_values" {
+				statement = "SELECT x.id FROM VALUES (1) AS x(id)"
+			}
+			q, err := parseQueryFromSelect(t, statement)
+			if err != nil {
+				t.Fatal(err)
+			}
+			simple := q.QueryExpressionBody().(*antlrgen.QueryTermDefaultContext).QueryTerm().(*antlrgen.SimpleTableContext)
+			fs, err := parseFromSource(simple)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fs.bindingID = "PRIVATE_X"
+			cls, err := classifySelectElements(simple, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sq := selectQueryFromClassification(cls, fs)
+			visitor := NewPlanVisitor(md)
+			if table == "c" {
+				source, ok := exactVirtualScopeSource("C", logical.NewScan("T", ""), md, nil, nil)
+				if !ok {
+					t.Fatal("CTE has no exact source")
+				}
+				visitor.cteScopes = map[string]semantic.ScopeSource{"C": source}
+			}
+			from, err := visitor.visitFrom(simple, fs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for name, root := range map[string]logical.LogicalOperator{
+				"visitor": from,
+				"adapter": buildLogicalPlanForSelect(sq),
+			} {
+				for len(root.Children()) > 0 {
+					root = root.Children()[0]
+				}
+				var binding, alias string
+				switch source := root.(type) {
+				case *logical.LogicalScan:
+					binding, alias = source.Binding, source.Alias
+				case *logical.LogicalInlineValues:
+					binding, alias = source.Binding, source.Alias
+				default:
+					t.Fatalf("%s unexpected primary source: %T", name, root)
+				}
+				if binding != "PRIVATE_X" || alias != "X" {
+					t.Errorf("%s primary source lost assigned binding or SQL alias: %#v", name, root)
+				}
+			}
+			resolver, err := buildSelectScopeChecked(sq, md, "", visitor.cteScopes)
+			if err != nil {
+				t.Fatal(err)
+			}
+			projection := buildProjectionResolverWithCTEScopes(sq, md, "", visitor.cteScopes)
+			if projection == nil {
+				t.Fatal("primary source has no projection resolver")
+			}
+			for name, sources := range map[string][]semantic.ScopeSource{
+				"select":     resolver.Scope().Sources(),
+				"projection": projection.Scope().Sources(),
+				"subquery":   buildOuterScopeSources(sq, md, "", visitor.cteScopes),
+			} {
+				if len(sources) != 1 || sources[0].CorrelationName != "PRIVATE_X" || sources[0].Alias.Name() != "X" {
+					t.Errorf("%s source disagrees with assigned binding: %+v", name, sources)
+					continue
+				}
+				column, err := expr.SourceColumnValue(sources[0], 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				free := values.GetCorrelatedToOfValue(column)
+				if _, bound := free[values.NamedCorrelationIdentifier("PRIVATE_X")]; !bound || len(free) != 1 {
+					t.Errorf("%s resolved column correlations=%v, want only PRIVATE_X", name, free)
+				}
 			}
 		})
 	}

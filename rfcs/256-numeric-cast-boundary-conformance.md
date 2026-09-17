@@ -2569,3 +2569,938 @@ unchanged (`timestamp-seed-full.log` and hash records). Target-level output does
 not establish per-test no-skip evidence. Only these TODO/RFC evidence paragraphs
 change afterward and still require the normal hook. Implementation/final-HEAD
 review gates remain required; the latest QSC-04/08 block tracks other PR blockers.
+
+### Retained bound CTE/derived bodies — review-repair design (DRAFT)
+
+This amendment resumes the open ed1f413 architectural findings, not a new hunt
+family. Implementation is gated on the existing tracked design reviewers.
+Current production HEAD is 90b026077cb08a028cf567e423d39bca86eb2ae4; only tests and
+tracking docs change during diagnosis. TODO's final QSC-04/07/08 block records
+execution evidence; artifacts are `/var/tmp/query-grind-cast/pr785-review`.
+
+**Observed lifecycle.** `PlanVisitor.prepareDerivedSourceBodies` calls
+`buildCTEBodyQuery` before the parent classifier or scope consumer. This uses the
+same visitor's lexical CTE scopes AND bodies, builds the complete query, and
+finishes `upgradeProjectionValues`/`publishInheritedProjectionNames` before
+returning. The prepared operator survives in `catalogAwareInnerPlan` and the
+alias carrier. `boundDerivedSource` nevertheless unconditionally rebuilds it
+using a new visitor with only cteScopes, losing cteBodies and repeating every
+nested body. The comment claiming prepared output names are premature is
+contradicted by the retained K/K BIGINT/DOUBLE control at nesting depths0–3.
+The query-body-access regression measures 5/21/85/341 accesses at depths1–4,
+not elapsed-time or parser-invocation counts.
+
+`BuildScalar` already translates the complete operator and obtains its free
+correlations. A CTE capturing O.ID yields exactly {O}; a local O shadow inside
+the definition yields {}. Both the direct parse-tree veto and the scalar Main's
+local-source blacklist can wrongly erase captured O. The definition's lexical
+binding does not change when its caller aliases the CTE scan O. Registration
+must not override the bound expression property with either heuristic.
+
+**Design revision 2 (still DRAFT).** All three tracked reviewers NAKed the first
+amendment's unchanged UNION fallback: it retains the same ownership defect,
+not merely extra traversal cost. The retained real-FDB crossing regression adds
+a DOUBLE branch to the CTE-backed BIGINT scalar and fails42F01 for C instead of
+float64 rows7,9.5 (`cte-promoted-union-red.log`, one RUN/FAIL). That counterexample
+supersedes the proposed fallback exclusion. No production edits have begun.
+
+Retain the prepared body for ALL derived metadata, including promotion. Move
+any necessary body construction to its owning visitor/builder boundary, where
+the complete parent/CTE-schema/CTE-body environment and binding identity exist.
+The bound-source conversion receives a completed operator, not permission to
+reconstruct it from syntax. A missing body is an explicit construction error;
+legacy parse-only adapters must prepare once through their owning visitor
+before conversion, never invent a partial environment in the scope consumer.
+Do not cache by SQL text or add mutable global caches.
+
+Concretely, factor the existing `exactUnionResultRow` positional type fold into
+one pure common-record-row helper used by both that translator and metadata
+derivation. Preserve its branch-width/incompatible-column SQL diagnostics,
+first-leg physical names, per-slot MaximumType/nullability, and exact validation.
+Add a distinct `LogicalResultTypeAfterUnionPromotionWithCTEs` property entry
+point over the retained logical tree. Share the existing recursive type walker;
+its UNION policy is explicit: the strict API requires branch agreement, while
+the new prospective-output API uses the SAME common-row helper the translator
+will normalize to. This is a derived output contract, not a claim that promotion
+has already rewritten the operator. Other operator rules and bound Values are
+unchanged. Local CTE Body is visited in its defining environment; only Main sees
+its new binding. Do not let an inference error fall through to a shadowed outer
+binding. Keep `ExactLogicalResultType`, its strict entry points and the existing
+negative UNION test unchanged.
+
+At the embedded boundary, try strict type derivation first, then derive the
+post-promotion row from the SAME body if needed. Factor the existing exact
+record-to-semantic-source conversion rather than add a second mapper. Derive
+SQL labels separately from that retained body's existing label property;
+never use promoted physical names as SQL labels. A promotion/type error remains
+its typed error, while a row that semantic.Column cannot represent remains a
+loud unsupported-schema error. Neither triggers parse-tree reconstruction or
+UNKNOWN synthesis. Keep cteSourceAs/private derived identity unchanged.
+
+Classify scalar correlation by intersecting the translated Reference's free
+identifier set with the parent's actual named binding identifiers (the same
+CorrelationName/Alias identity convention expr.resolvedSourceColumnAt uses).
+Use CorrelationIdentifier equality, not EqualFold on rendered names; remove
+both the source-name and syntax vetoes from BuildScalar. Keep cardinality,
+output arity/nullability, pagination and scalar attachment unchanged. Preserve
+`!col.qualified && (col.bound != nil || isField)` and AsFieldValue in projection
+publication. This revision does not authorize unrelated executor work.
+
+**Reference and oracle.** Java4.12.11.0 QueryVisitor:170–181,688–691 builds a
+query once and renames the resulting operator. AbstractRelationalExpression-
+WithChildren:57–77 derives free references from values/quantifiers. This is the
+architectural reference, not row evidence for nested scalar/CTE SQL: those
+queries are Go extensions. The independent real-FDB expected results are row7
+for the enclosing-CTE/derived query and (7,7),(9,9) for two outer identities.
+Java rejection does not validate either answer.
+
+**Required verification.** Retain the three original semantic RED regressions,
+the captured-outer/local-shadow controls, the nested-body access bound, and
+exact duplicate-label/type controls. Green must execute through the actual
+BuildScalar and real-FDB driver, not a substitute planner. Existing alias,
+CTE/derived, UNION, projection/metadata and scalar-cardinality controls remain
+mandatory. Compile mutants that restore rebuilding and each correlation veto;
+require the corresponding semantic/count failures, restore hashes, rerun green.
+Run affected uncached targets, ten determinism/race repetitions, full just test,
+and applicable published planner performance/stress gates without relaxing
+limits. Complete milestone reviews and final-HEAD CI after findings are folded.
+No wire/client, autocommit or executor-performance change is part of this design.
+UNNEST lowering and full-PR review gates remain open; no merge/new hunt authorized.
+
+### Retained-body implementation and EXISTS ownership follow-through
+
+**Revision-2 design accepted, implementation not approved.** The three tracked
+virtual reviewers returned scoped DESIGN ACKs for packet
+`3a79d427302f0a2a5a0c13c3bdd05e914d8702dc4fc5de1c705160d536bf1272`, against
+committed `90b026077cb08a028cf567e423d39bca86eb2ae4`. Those packet-only verdicts
+supersede the preceding historical “no production edits” checkpoint; they are
+not human, implementation, full-PR or merge approval. All seven CI checks on
+that committed HEAD are now successful (`cte-bound-pr-state-current.json`),
+not evidence about the uncommitted implementation.
+
+The worktree now retains derived bodies, shares strict/prospective UNION type
+inference and removes both scalar-correlation vetoes. Scalar ordinal seeding
+uses the translated inner's one-column flowed row, not a second `legColumns`
+walk that can read a WITH definition instead of Main. Initial affected focused
+execution passed; the pre-supplement full query/embedded run executed 2,462
+RUN/PASS, zero FAIL/SKIP. Post-packet supplements independently specify promoted
+slots `[X nullable DOUBLE, X_2 non-null BIGINT]`, duplicate SQL labels `[X,X]`,
+strict rejection after prospective inference, unchanged branch identities,
+local-shadow typed width/incompatibility errors and Main-versus-definition
+scalar typing. Their focused execution has seven RUN/PASS, zero FAIL/SKIP
+(`cte-bound-type-supplements-first.log`). These tests were not in the approved
+revision-2 packet.
+
+The required adapter audit found the same ownership defect in EXISTS. Two
+retained embedded regressions failed: the standalone UNION metadata adapter
+accessed its body twice, and the correlated-EXISTS source builder lost enclosing
+C's body and returned 42F01 (`cte-bound-legacy-supplements-red.log`). The
+standalone adapter now prepares once through its owner and calls the bound
+converter; the old derived-term/UNION/manual joined-schema fallback chain is
+removed. Its existing four-way join-nullability regression now exercises the
+retained logical join, with unchanged expected nullabilities. Correlated source
+carrier and metadata consumers now share a prepared body. Their direct builder
+pins pass. An initial supplementary assertion wrongly expected O in the returned
+FROM body's free set: this API carries the comparison on `lastJoinPredicate`
+and the body's independent scalar on the returned scalar-plan list. The pin now
+checks both exact attachment identities and the retained scalar binding. This
+was a probe-boundary mistake, not an engine regression or mutant kill.
+
+**Open end-to-end counterexample:** with `t(id)={(7),(9)}`,
+
+```sql
+WITH c AS (SELECT id AS v FROM t)
+SELECT o.id FROM t o WHERE EXISTS (
+  SELECT o.id FROM (SELECT (SELECT MAX(v) FROM c) AS x FROM t) d
+  WHERE d.x = o.id
+) ORDER BY o.id
+```
+
+Independent answer: `[9]`; replacing EXISTS by NOT EXISTS answers `[7]`.
+Both retained real-FDB arms still fail42F01 before the repaired correlated
+builder: `buildExists` first enters a schema-only query constructor. This nested
+composition is a Go extension, not a Java row comparison.
+
+A direct change to call the general visitor with its complete parent scope
+made those two arms pass but bypassed the current EXISTS correlation attachment
+and cardinality lowering. The focused EXISTS population executed **723 RUN,
+594 PASS, 129 FAIL, zero SKIP** (`cte-bound-exists-owner-first.log`, two targets).
+Failures include absent runtime outer bindings, lost indexed-probe shapes,
+N-way/projected EXISTS planning and changed deliberate pagination/ON rejections.
+The direct-switch experiment was reverted; no assertion or golden was relaxed.
+This is a phase-boundary defect in the attempted migration, not a reason to keep
+an old API for compatibility. The owner explicitly authorizes pre-release hard
+changes for correctness.
+
+**Supplementary design — DRAFT, implementation requires scoped design ACK.**
+Use the normal visitor as the sole query constructor in the complete defining
+scope, but preserve EXISTS lowering as an explicit consumer of the bound
+query, not an error-driven reconstruction of its syntax:
+
+1. Return an owner-produced bound-query result internally, carrying the final
+   operator and, for a SELECT block, its prepared source graph, exact semantic
+   scope/binding identities and already-resolved WHERE/ON Values plus nested
+   subquery attachments. Thread this result through the query/SELECT visitor's
+   return values; do not add mutable “last SELECT” state or cache by syntax/text.
+   Ordinary callers can consume its operator. CTE Body and Main retain their
+   different defining environments; nested construction cannot replace the
+   parent's result. This is a construction artifact, not a second planner.
+2. Classify dependence algebraically from the bound relational expression's
+   free identifiers intersected with actual parent binding identities, sharing
+   the scalar convention. A translation/typing failure remains its real error,
+   never evidence of correlation. No undefined-column retry, syntax reference
+   scan or source-name blacklist. Do not erase independent scalar attachments
+   from the free-set accounting.
+3. Lower a correlated EXISTS from that bound result into the existing
+   `logical.ExistsSubquery` contract: retain the prepared FROM bodies and private
+   identities; carry mixed inner/outer predicates on the attachment; keep
+   outer-only predicates under the existential in BOTH polarities; retain
+   nested EXISTS/scalar plans. Apply existing ON placement and unsupported-shape
+   rules to resolved predicates and the bound join graph, including current
+   RIGHT/FULL and multi-source rejection contracts. Never rebuild a derived
+   body or re-resolve a Value against a different frame during lowering.
+4. Projection elision is existence-specific and must preserve cardinality:
+   aggregate/HAVING/DISTINCT/LIMIT/OFFSET cannot be dropped indiscriminately.
+   Preserve current known-truth folding and typed unsupported contracts; the
+   retained typed pagination/source clauses may supply the existing acceptance
+   checks, but not correlation classification or body reconstruction. The
+   existing projected-EXISTS, indexed-probe, gather/UNNEST and negative plan
+   tests stay unchanged. No executor-performance repair is authorized.
+5. Remove superseded query construction/retry helpers once callers use the
+   owner result; do not leave a compatibility façade or competing schema walk.
+   If the bound result cannot express a required current attachment, complete
+   that representation before removing its old producer—never silently decline
+   a formerly supported query.
+
+Acceptance adds: the two real-FDB polarity rows above; actual entry-point
+preparation counts and retained-body identity in correlated primary/JOIN-leg
+sources; nested CTE capture/local shadow controls; original EXISTS population
+including its 129 failed outcomes restored without weaker assertions; typed
+invalid-body diagnostics; then separate compiled mutants, affected full suites,
+race/determinism, unchanged-limit stress/performance and milestone/final-HEAD
+reviews. Prior revision-2 implementation work is not being re-approved by this
+supplement. UNNEST lowering and full-PR gates remain open. No merge/new hunt.
+
+
+### EXISTS binding/lowering handoff — supplemental revision 2 (DRAFT)
+
+The supplemental virtual Graefe review NAKed packet
+`68a97641b83e9ef5cb3f1d56e3bacc96368454bc420e019d41a505a04f8cbc43`.
+The preceding five requirements did not specify when identities are assigned,
+where ON provenance survives folding, or how classification precedes lowering.
+This amendment replaces that underspecified handoff, not the accepted retained
+body/type work. **No phase-boundary implementation is authorized until the
+tracked supplemental design reviews ACK it.** Reviewer verdicts are scoped,
+virtual and packet-only, never human or full-PR approval.
+
+#### Two return values, one constructor
+
+The internal query visitor returns a `boundQuery`, not an operator plus mutable
+visitor scratch state. Its operator is the existing logical tree, constructed
+once. Additional fields record binding facts that the current tree loses:
+
+- SELECT frame: prepared FROM graph with original body pointers, each source's
+  SQL name, private binding identifier and exact output type; immutable parent
+  frame and CTE-definition handles; resolved projection/group/HAVING/order Values
+  already present on the operator, resolved WHERE predicate and ordered ON
+  records. Each ON record contains its join node, join kind, left-to-current
+  visible binding identifiers, resolved predicate and owned attachment edges.
+- Attachment edge: generated result identifier, EXISTS/scalar kind, owning
+  clause/frame, bound child query (or already-retained child Reference), and
+  the actual binding/evaluation boundary. A scalar's arity/cardinality contract
+  is separate from an existential's row type. Every generated alias used by a
+  Value has an edge or an explicitly inherited binding; missing ownership is
+  a typed construction error, not grounds to treat it as independent.
+- WITH/UNION/parenthesized nodes retain their child results, not the last SELECT
+  visited. Each WITH definition owns its defining frame; Main sees the completed
+  new definition. A CTE source points to that definition and its retained body,
+  not a future name lookup through a mutable registry. Recursive definitions
+  retain their existing explicit self-binding rather than creating a recursive
+  property walk through an unscoped registry.
+
+These are annotations/edges on the constructed logical expression, not another
+SQL planner or a second schema derivation. Internal query, SELECT, UNION and
+parenthesized return paths thread the result. Ordinary public callers unwrap
+its operator. No parse-node/text cache and no `lastBoundSelect` field.
+
+`lowerBoundExists(boundQuery, parentBindings)` returns a separate value:
+`{Plan, JoinPredicate, KnownTruth, FlowedType, owned attachment registrations}`.
+It receives no parser or resolver. Its outcome is complete or an error; it
+cannot append to the caller's planner lists. `BuildExists` validates this value,
+then publishes the existential and all required scalar/nested registrations in
+one success-only step. This removes `lastJoinPredicate` and its outer-only
+scratch flag, including partial append/rollback as a construction protocol.
+A failed bind, admission check, type derivation or lowering leaves the parent's
+three registration lists unchanged. Nested construction uses private results,
+not the parent's accumulating slices.
+
+#### Ordering and identities
+
+1. The owner allocates each source's runtime identifier before any Value is
+   resolved against it. Extend current `assignDerivedSourceBindings` ownership
+   to catalog/CTE sources and relevant JOIN/UNNEST legs in nested frames; the
+   correlated fallback's late single-source mint disappears. SQL qualifiers and
+   additional qualifiers remain lexical names. Scope `CorrelationName`, scan/
+   CTE/UNNEST `Binding`, and emitted named QOV identifiers use the SAME assigned
+   identity, including primary catalog scans (whose current visitFrom arm does
+   not carry `fs.bindingID`). No post-binding rename or qualifier stripping.
+   One deterministic construction-owned allocator is shared with child query
+   owners. It reserves supplied parent identifiers, lexical names and previous
+   generated identifiers; child/CTE preparation cannot restart its namespace.
+   Nested/returned artifacts keep their assignments. Do not depend on the global
+   planning counter or use a SQL alias as a substitute for private identity.
+2. Allocate identity before registration, but register sources incrementally:
+   ON(i) resolves against parent + primary + legs through i only. Preallocating
+   a later leg must not make it visible early. WHERE sees the completed local
+   frame. Save each resolved ON record and attachment ownership BEFORE
+   `foldInnerOnExistsIntoWhere`; the eventual fold may change the executable
+   tree but cannot erase the bound record's origin. WHERE and projection
+   attachments have their own origins. Nested visitors cannot overwrite them.
+3. Complete query binding and its attachment graph before dependency
+   classification or extraction of correlation conjuncts. Snapshot maps/frames
+   on return; restoring the visitor's WITH registries must not mutate a returned
+   definition's environment. Keep body-before-Main typing and propagate local
+   body errors; never fall back to an enclosing same-name CTE.
+
+#### Classification without a lowering cycle
+
+Dependency is a pure property of this bound graph, not a flag inferred from an
+error, syntax occurrence, missing source name, or a physical winner. Use the
+Java quantifier rule (`AbstractRelationalExpressionWithChildren.java:57–77`):
+local Values contribute their referenced identifiers minus identifiers bound
+at that node; child edges contribute their free dependencies, subtracting local
+binders only at boundaries that actually satisfy child correlation. The graph
+records those binders and edge boundaries while binding. A source/attachment
+alias is not globally subtracted merely because it appears somewhere below.
+
+For a SELECT's correlating frame this means unioning its resolved clause/output
+references with dependencies of its source and attachment edges, then removing
+its own satisfied bindings. At non-correlating boundaries, child dependencies
+remain free, as in Java's `canCorrelate` condition. CTE source edges contribute
+the referenced definition's free dependencies in its defining environment;
+unused definitions do not become runtime dependencies of Main. UNION contributes
+each bound branch's dependencies. Existing recursive feedback bindings remain
+local; they are not parent dependencies. No Cascades translation is needed to
+obtain this property, so classification cannot require successful correlated
+EXISTS lowering first. Unsupported bound operator/property cases fail typed;
+they do not retry another constructor.
+
+In particular, a generated scalar alias is accounted for through its actual
+attachment edge. An independent scalar contributes no parent dependency but
+its plan/registration is retained wherever its alias is read. A correlated
+scalar contributes its child's free identifiers. An attachment evaluated in an
+ancestor remains an inherited binding at inner nodes, rather than being erased
+there. Intersect the resulting free set with actual parent binding identifiers
+using identifier equality and the resolver's named-identifier convention
+(`expr.go:536–548`), not SQL source spellings. This preserves a CTE body's outer
+capture even when Main aliases the CTE with that same SQL name.
+
+Capture the pre-normalization property before extracting predicates. After
+existence-specific projection elision, derive the residual property again from
+the retained plan AND attachment predicates/edges. A discarded output-only
+outer reference cannot demand a runtime outer binding. Drop a projection-owned
+attachment only when no retained Value or cardinality operator requires it;
+never indiscriminately discard an independent scalar used by WHERE/ON/HAVING.
+Nested EXISTS children use the same bind/property/lower sequence recursively;
+classification of each child is available before its own lowering, not inferred
+from whether that lowering happened to succeed.
+
+#### Explicit normalization and admission
+
+The lowerer consumes resolved predicates and retained source identities. INNER
+ON's inner-only conjuncts stay at their original join node. A permitted mixed
+correlation becomes the attachment join predicate. Outer-only predicates stay
+under the existential in both polarities. A nested existential's middle FROM
+and non-EXISTS predicate cannot be dropped just because a child edge exists.
+If an existing composition has no valid attachment placement, preserve its
+current typed unsupported result instead of outer-routing it under negation.
+No executor or performance workaround is authorized by this amendment.
+
+Admission and dependency are separate. Preserve current typed rejections for
+nested subqueries in correlated ON, correlated OUTER ON, an earlier correlated
+ON before a later RIGHT/FULL join, the existing multi-source/shadow-collision
+controls, correlated scalar in unsupported EXISTS WHERE positions, and current
+projected-known-truth/pagination restrictions. Identity repair does not
+implicitly authorize expanding these shapes. Evaluate these contracts from the
+bound join/source/clause-origin records, never by detecting correlation from
+SQL names or re-walking query syntax. A source's lexical name may be retained
+for an explicit admission contract, but cannot override its bound free set.
+
+Retain aggregate/HAVING/DISTINCT/pagination operators unless the existing
+existence/cardinality rule proves their removal or known truth. Capture typed
+pagination facts once in owner construction; unresolved parameter, positive
+OFFSET and non-grouped aggregate contracts remain unchanged. Derive FlowedType
+from the FINAL attachment Plan after normalization and CTE wrapping, before
+publication; prospective UNION metadata is not automatically an exact final
+row. Preserve scalar one-column/nullability/cardinality barriers separately.
+No final type error may leave an admitted alias without a plan.
+
+The Java anchors were reread: `LogicalOperator.java:263–293` constructs source
+quantifiers before their FieldValues; `:404–420` binds local quantifiers with
+resolved predicates; `QueryVisitor.java:257–275,670–691` keeps constructed
+operators through clause construction/derived renaming; and
+`ExpressionVisitor.java:558–574` constructs the query before attaching an
+existential. Go's typed pagination and the reproducer's nested WITH composition
+remain explicitly Go extensions, not Java row evidence.
+
+#### Acceptance additions and current evidence
+
+Add entry-point checks for catalog/derived/CTE/JOIN source identity BEFORE
+resolution, left-to-current ON visibility with a later alias shadow, and
+unchanged retained-body pointers/preparation counts. Assert complete attachment
+free sets for independent and outer-dependent scalars, nested EXISTS, CTE
+capture/local shadow and unused definitions. Assert projection-only outer
+references leave no residual runtime binding. Force final-type and unsupported
+ON failures and verify all parent registration lists are unchanged, then build
+a valid sibling through the same planner. Existing negative cases/goldens stay
+unchanged. Separate compiled mutants must remove early identity assignment,
+ON provenance, a scalar attachment edge, and atomic publication; these are in
+addition to the still-open rebuild and each-veto mutants, not substitutes.
+
+Current restored-source verification (no boundary implementation): full query
+and embedded targets ran uncached with **2,476 RUN/PASS, zero FAIL/SKIP**
+(`cte-bound-query-embedded-supplement-revision2.log`, 12.786s). This includes the
+new failure-class parent plus four cases (missing body, UNION width, UNION
+incompatibility, unrepresentable type), whose earlier focused run had five
+RUN/PASS. SHA256 checks of every dirty Go file matched before/after both runs
+in this continuation. The real-FDB counterexample rerun remains RED: parent
+and both polarities, **3 RUN/FAIL, zero PASS/SKIP**, each SQL arm reporting
+`42F01: table "C" does not exist`
+(`cte-bound-exists-owner-restored-red.log`). The reverted experiment's new rows
+were genuinely green but its 129 failed outcomes remain a migration acceptance
+population, not current implementation approval. Race/determinism, mutations,
+full driver/just test, unchanged-limit performance/stress, UNNEST and final
+reviews/CI remain open. No commit, push, merge, new hunt or broad QSC closure.
+
+
+#### Retained-body mutation proof after supplemental packet creation
+
+Supplemental revision2 packet
+`ef8291fe3c881a97ae0f3e4942cdbf68543e5fd501e525ca87ec60299a7acb12`
+(71,768bytes/1,107lines) received a scoped virtual Graefe DESIGN ACK (task74).
+It explicitly covers the design, not implementation, and retains the identity,
+ON/definition lifetime, complete dependency, atomic registration, residual
+FlowedType and unchanged-semantic acceptance requirements. The other two
+tracked requests (tasks75/76) are pending. Preceding tasks70/71 returned no
+verdict amid repeated websocket idle retries and were cancelled; they are not
+NAKs or ACKs. No boundary implementation started.
+
+After that packet was fixed, the existing real-FDB outer-capture regression
+was extended with `FROM c o` alongside `FROM c`: a scalar Main's local SQL
+alias O must not capture the already-bound O in C's defining environment.
+Both arms independently require rows(7,7),(9,9). This is the execution twin of
+the existing BuildScalar registration/free-set control, not a new family.
+Baseline focused embedded+driver execution:13RUN/PASS,0FAIL/SKIP,2/2targets
+(`cte-bound-mutation-baseline.log`,13.804s). The packet predates this test delta.
+
+Three separate source mutations then compiled and executed that SAME13-outcome
+population; none was a build failure:
+
+| Mutant | RUN/PASS/FAIL/SKIP | Observed detector |
+|---|---|---|
+| Restore direct-syntax correlation veto plus its old helper | 13/7/6/0 | Both capture registration arms incorrectly become0correlated/1independent; both real-FDB arms report unbound scalar-result aliases. Local-shadow/local-column controls remain green. |
+| Restore local-FROM-name veto only | 13/9/4/0 | Same-name capture registration and real-FDB `c o` fail; unaliased capture remains green. |
+| Remove prepared-body reuse guard | 13/9/4/0 | Query-body reads at depths1–4 become3/7/15/31; depths2–4 exceed6/8/10. This is traversal detection, not runtime/row performance proof. |
+
+Counts include failing parents. Exact commands, applied diffs, nonempty RUNs,
+build results and hashes are retained in `cte-bound-mutants-report.json` and
+`cte-mutant-{syntax-veto,local-name-veto,repeat-body-preparation}.{diff,log}`.
+Each production file was restored immediately and its SHA256 verified:
+`logical_predicate.go`73164d71c269cc310b3b0ce13e43ca8804f50b1e8c5d4780df9af76665b5b0e7;
+`plan_visitor.go`a8d85fe8b619b2b5c4c88c45da650aa01884bacc4b0712d41a2a735726d2c0cc.
+Restored focused execution:13RUN/PASS,0FAIL/SKIP
+(`cte-bound-mutants-restored-green.log`). These close those three bounded
+mutation obligations only; they do not prove the unimplemented EXISTS handoff.
+Its early-identity/ON-origin/attachment-edge/publication mutants remain open.
+
+`just gazelle` and `bazelisk mod tidy` completed. Gazelle added the direct ANTLR
+dependency used by the counted-query embedded tests; no module changes. The
+new BUILD dependency and driver test delta require current-tree execution;
+prior2476/full and13/focused logs predate the BUILD change. Full driver/just test,
+race/determinism, performance/stress, UNNEST, implementation and final-HEAD
+reviews remain open, as does the real-FDB correlated-EXISTS42F01 failure.
+
+
+### EXISTS consumer admission — supplemental revision 3 (DRAFT)
+
+Tasks74/75 returned scoped virtual Graefe/Torvalds DESIGN ACKs on packet
+ef8291fe…; task76 Codex returned a scoped DESIGN NAK. Its concrete objection is
+valid: removing `lastJoinPredicateOuterOnly` without retaining consumer
+eligibility loses the different outcomes of positive predicate, negated
+predicate and projected uses of the SAME child. Dependency is not eligibility.
+This amendment adds that missing mechanism; all revision2 ownership, identity,
+attachment, cardinality, typing and proof requirements remain. No boundary
+implementation before the scoped design gate closes.
+
+**This supersedes revision2's claim that BuildExists itself validates and
+publishes the returned attachment.** An expression callback sees only the child
+query; the completed parent clause supplies polarity and value-use context.
+The chosen contract is delayed, success-only parent publication, not passing
+parse syntax or an imperative polarity flag down into query construction.
+
+1. The lowerer's return adds `ConsumerConstraints` to
+   `{Plan, JoinPredicate, KnownTruth, FlowedType, owned attachments}`. Constraints
+   are semantic admission requirements, distinct from dependency and predicate
+   placement. For the existing nested-middle/non-inner-conjunct restriction,
+   the requirement is **positive predicate consumption only**: WHERE/ON positive
+   is admitted; normalized negated predicate and projected Value uses of either
+   polarity retain their current typed0A000 rejection. A reference-free
+   filterable conjunct participates; a statically-true tautology does not.
+   Existing known-truth/unsupported-consumer rules remain separate requirements.
+   Neither better predicate placement nor fresh identities removes these
+   declared admission restrictions in this repair.
+2. Every prepared attachment edge retains its constraints, original owner
+   frame/clause and exact result identifier. The expression callback returns
+   its provisional alias/final row type and records that edge in the owning
+   clause's PRIVATE construction result, not in the parent's admitted
+   `subqueries`/`scalarSubqueries`/`correlatedScalarSubqueries` lists. This is a
+   clause-local result builder: it cannot escape on failure and is not a
+   mutable last-query slot or a competing registration authority. Source and
+   scalar dependencies remain represented on these edges for graph-property
+   derivation, regardless of whether consumer validation has occurred yet.
+3. After the parent resolves and normalizes the entire clause predicate or
+   projection Value, the owner computes each edge's use context from those
+   bound nodes and its saved clause origin. Predicate polarity is taken from
+   normalized existential/not-existential predicates; projected use is read
+   from the Value tree, including `NotValue(ExistsValue)`. Parentheses or nested
+   NOT do not get guessed from the child SQL. If an identifier has multiple
+   retained uses, EVERY use must satisfy its constraints. Unknown/unhandled
+   use shapes retain the existing typed rejection, not default permission.
+   Capture ON use before ON-to-WHERE folding; any later transformation must
+   keep the edge's consumer context/provenance. Admission facts cannot be
+   discarded by predicate extraction or middle-level rewriting.
+4. Validate consumer constraints at that parent completion boundary, with all
+   nested edges and final attachment types available, BEFORE publishing any
+   parent registrations. A failed consumer, unresolved type, source error or
+   nested attachment failure discards the private clause result. A successful
+   complete result is published once by the parent owner. `BuildExists` is
+   therefore construction-only; adjust its interface/callers rather than
+   preserving eager publication behind a rollback facade. The current
+   expression callbacks at `expr/walk.go:2633,2661` are the shared construction
+   sites; their owning predicate/projection/ON builders finalize admission.
+   Direct programmatic construction must supply an explicit resolved consumer
+   context or keep the result private until one exists; there is no implicit
+   positive-consumer default to bypass validation.
+5. The legacy `OuterOnlyJoinConjuncts` placement boolean and its mutable scratch
+   transfer retire only after the positive/negative/projected matrix has moved
+   to this edge-owned constraint and parent validation. The two translator
+   declines (`cascades_translator.go:8697–8764`) are not simply deleted; their
+   admission contract is migrated to the single owning validation boundary.
+   No duplicate frontend/translator policy, syntax correlation veto, silent
+   acceptance expansion or unconditional child rejection. The algebraic free
+   set remains identical for an identical bound child across all consumers.
+
+The proof adds one retained child/attachment graph used in positive WHERE/ON,
+negated WHERE/ON and positive/negated projection contexts: distinct current
+admission outcomes, identical child identity/free set/FlowedType, and no parent
+registrations after each rejected use. Construct a valid sibling with the same
+planner after each failure. Nested NOT, reference-free false and tautology
+controls remain unchanged. Mutation must separately drop the constraint,
+invert its polarity/use test, and publish before parent validation; each must
+compile and fail the corresponding test. These augment, not replace, the
+revision2 identity/provenance/attachment/publication proof requirements.
+
+**Current evidence, not implementation approval:** post-Gazelle full query+
+embedded2476RUN/PASS,0FAIL/SKIP,15.664s; focused retained-body driver controls
+5RUN/PASS,0FAIL/SKIP,6.527s. The13-outcome retained-body mutation population ran
+with race10:130RUN/PASS,0FAIL/SKIP,89.614s; source/BUILD SHA256 checks matched.
+These logs predate the new consumer-control test below, and do not cover the
+unimplemented boundary. Artifacts:cte-bound-post-mutants-{full-query-embedded,
+driver-controls,race10}.log and current/race10 hash checks.
+
+The existing real-FDB `TestFDB_ExistsInnerShadow` passes unchanged (one RUN/PASS,
+cte-bound-consumer-existing-control.log), including its current positive and
+negative/projected controls. The newly retained
+`TestFDB_NestedExistsConsumerAdmission` holds one child SQL fixed across four
+consumers. Its positive-row oracle is independent: t={7,9}, flags={50}, seed={1};
+the middle and its nested EXISTS are nonempty, so positive consumption returns
+7,9. The new test is RED, parent+4 arms, because the positive execution (also
+rechecked after each declined use) fails exact attachment row typing:
+`read as RECORD(S.ID:LONG?,M.ID:LONG?), declared RECORD(ID:LONG?,ID:LONG?)`.
+This is an additional final-attachment type/duplicate-slot counterexample within
+the active ownership repair, not permission to weaken its expected rows or
+executor type checks. `exactJoinResultType`/`logicalLegFields` publish qualified
+fields (`logical_result_type.go:612–662`); the runtime edge declares unqualified
+fields. The producer of that runtime declaration still needs tracing; this is
+not yet a complete root-cause claim. Retain and resolve it before closure.
+No new hunt, executor-performance repair, full-PR approval, commit, push or merge.
+
+
+### Supplemental revision 3 design gate — accepted; implementation open
+
+All three SAME tracked virtual sessions returned scoped DESIGN ACKs for packet
+`063df42aebba11a6bb8cefe6684b66173eb2e25688e977f7060cea1888b46531`
+(54,832bytes/770lines), tasks78Graefe/79Torvalds/80Codex. Revision3 supersedes
+eager BuildExists publication in revision2: private typed attachment edges,
+edge-owned consumer constraints, parent use validation, then complete atomic
+publication. The full revision2 identity/frame/property/type obligations remain.
+These are packet-only design ACKs, not human/implementation/full-PR approval.
+The new phase boundary may now be implemented; none is implemented yet.
+
+The row-type counterexample is now localized before execution, not merely at
+the executor check. Retained unit
+`TestExistsFinalAttachmentTypeMatchesTranslatedRow` visits the actual owner-
+constructed attachments: middle FlowedType is RECORD(S.ID:LONG?,M.ID:LONG?) but
+its translated Reference's result is RECORD(ID:LONG?,ID:LONG?). The nested
+one-column attachment agrees at RECORD(1:INT). SQL-driver control logs separately
+confirm all three restricted consumers reject0A000; each then fails its fresh
+positive row check, like the positive-only arm. Combined run:6RUN/6FAIL,0PASS/SKIP
+(`cte-bound-consumer-attachment-types-red.log`). A fresh driver query does NOT
+prove same-planner publication isolation; that remains explicit work.
+
+Producer trace: `BuildExists` captures `ExactLogicalResultType` before returning
+the ExistsValue. `logical_result_type.go:612–662` qualifies merged logical fields
+via source aliases. In contrast `cascades_translator.go:8512` builds the joined
+EXISTS output through `ordinal_seed.go:627–704`: ordinalJoinSeedFields uses each
+resolved field's DisplayName and NewRawRecordConstructorValue preserves the
+bare duplicate ID names. The declared runtime edge agrees with that translated
+producer. Reconcile final attachment typing at its producer/owner boundary;
+do not rename SQL labels into physical slots, relax row equality, add executor
+fallbacks or falsely attribute the mismatch to missing data. The unit and7/9
+row oracle remain retained. This test was added after the design packet, not
+reviewed implementation proof. Original derived-EXISTS42F01 remains open too.
+
+
+### Primary binding-carrier prerequisite — implemented, EXISTS boundary still open
+
+Resumed on committed90b026077; task80 had already been collected. Reread all
+three revision3 verdicts and verified packet SHA256063df42a… unchanged. Their
+scope remains DESIGN only. Also read the prior race10 hash-check log: all ten
+listed Go/BUILD files were unchanged for that historical run.
+
+`TestPrimarySourceRetainsAssignedBinding` first reproduced loss of an already
+assigned PRIVATE_X for primary catalog and CTE sources: both FROM constructors
+emitted Binding="" while SELECT/projection/subquery scopes resolved X instead
+of PRIVATE_X. The visitor and legacy adapter now carry fs/sq.bindingID into
+LogicalScan and inline VALUES; existing scope builders use the same identity.
+SQL alias X is preserved. The test also covers inline VALUES and checks the
+resolved column's exact singleton correlation set. This does NOT implement
+all-source allocation, shared deterministic identity ownership, boundQuery,
+consumer validation/publication, or final EXISTS attachment typing.
+
+Artifacts under `/var/tmp/query-grind-cast/pr785-review`:
+- Initial catalog/CTE regression:3RUN/3FAIL,0PASS/SKIP in
+  `cte-primary-binding-carriers-red.log`.
+- Expanded regression + two retained derived-binding controls:6RUN/PASS,
+  0FAIL/SKIP (`cte-primary-binding-carriers-restored.log`).
+- Two independent compiled mutants, `drop-primary-carriers` and
+  `drop-primary-scope-bindings`: each4RUN/4FAIL,0PASS/SKIP for the intended
+  binding-loss assertion. Both applied diffs/logs and restored SHA256s are in
+  `cte-primary-binding-mutants-report.json`. An initial script inventory check
+  stopped on a wrong expected occurrence count, restored all source bytes, and
+  was corrected from observed counts before rerunning both mutants. That
+  aborted inventory check is not a semantic mutant kill.
+- Focused race10:60RUN/PASS,0FAIL/SKIP (`cte-primary-binding-race10.log`).
+- Full query+embedded:2481RUN/2480PASS/1FAIL/0SKIP in
+  `cte-primary-binding-full-query-embedded.log`. Sole failure remains
+  TestExistsFinalAttachmentTypeMatchesTranslatedRow: declared S.ID/M.ID versus
+  translated ID/ID. This is NOT a green suite.
+- Driver `Exists|EXISTS|ScalarCTE|InlineValues`:641RUN/633PASS/8FAIL/0SKIP
+  (`cte-primary-binding-driver-controls.log`). Failures comprise the original
+  derived EXISTS42F01 parent/two polarities and consumer-admission parent/four
+  arms. All four positive controls still hit layout11; three restricted
+  consumers still explicitly reject0A000. This is not full driver coverage.
+
+Next action remains the accepted boundQuery-to-EXISTS migration, preserving
+ON provenance, private exact typed edges, all-use consumer constraints and
+success-only publication. Retain both active REDs and129 earlier migration
+regressions. These transport mutants do not satisfy the required early-mint,
+ON/scalar-edge or consumer/publication mutants. No assertions/goldens weakened;
+no executor changes, new hunt, commit, push or merge. Full implementation,
+just test, performance/stress, UNNEST and exact-HEAD review/CI gates remain open.
+
+
+### Owned EXISTS producer/type — implemented sub-step; binding/admission migration open
+
+The active row-type RED is fixed at the producer/attachment boundary, not by
+renaming fields or weakening executor.layout. Read Java's retained query
+Reference/existential construction (ExpressionVisitor:558–574) and retained
+quantifier result construction (LogicalOperator:404–420). New logical.ExistsInput
+owns the lowered Reference, a snapshot of its actual result type, and independent
+scalar edges. LowerExistsInput consumes an already-bound logical plan; it does
+not publish parent registrations. BuildExists now gets FlowedType from that
+producer. SQL attachment consumers reuse the very same Reference; programmatic
+logical-only callers still have their first lowering at translator entry.
+
+The retained logical Plan still supplies source/placement information. Gathered
+and UNNEST outer-reference rebases now update the owned relational predicate
+node as well, over the SAME child References, retaining its row and scalar
+edges. They do not clear the owned input or retranslate its plan. A declaration
+that disagrees with an owned producer fails typed before scalar registration.
+No SQL label substitution, executor/layout fallback, unknown type, or relaxed
+row comparison. This is not a complete boundQuery or consumer-admission repair:
+the legacy constructor/retry, late source mint, scratch JoinPredicate/constraint
+flag and eager clause-publication paths still need the accepted migration.
+
+New/strengthened retained tests assert final row equality, pointer identity of
+both consumed existential References, scalar-edge ownership, private scalar
+slice copies, unchanged children/result type through filter/select predicate
+rebases, exact old/new free sets, and failure without input replacement. The
+original positive7/9 real-FDB checks now pass; all three restricted consumers
+still explicitly reject0A000. They still do not prove same-planner admission
+atomicity. The original derived-EXISTS/NOT EXISTS42F01 remains RED.
+
+Current artifacts under `/var/tmp/query-grind-cast/pr785-review`:
+- `cte-owned-input-ownership-tests.log`, `cte-owned-input-pre-mutants.log` and
+  `cte-owned-input-restored.log`:10RUN/PASS,0FAIL/SKIP over query, embedded and
+  driver targets (four ownership/rebase outcomes, one attachment graph test,
+  five consumer-matrix outcomes including its parent).
+- `cte-owned-input-mutants-report.json`, `cte-owned-mutant-*.{diff,log}`:
+  separately compiled logical-row-not-producer10RUN/4PASS/6FAIL;
+  retranslate-owned-producer10/8/2; drop-owned-predicate-rebase10/7/3;
+  drop-owned-scalar-edges10/9/1; all0SKIP. Source hashes restored after each;
+  the same10 outcomes reran green. An initial unconditional-return rebase
+  mutant was rejected by nogo as unreachable code, not killed semantically;
+  its `*-unreachable.{diff,log}` is retained separately. The corrected compiled
+  mutant is the reported10/7/3 run.
+- `cte-owned-input-race10.log`: initial100RUN/70PASS/30FAIL with a fixture race.
+  The new filter/select parallel cases shared one memo Reference, racing its
+  lazy GetCorrelatedTo property at reference.go:1195/1240. Both accesses were
+  those two cases, not SQL execution. Each case now constructs its own graph;
+  no test serialization, production lock, assertion or population change.
+  `cte-owned-input-race10-isolated.log`:100RUN/PASS,0FAIL/SKIP, all three targets.
+- `cte-owned-input-full-current.log`: unfiltered query+embedded+logical+driver
+  9235RUN/9232PASS/3FAIL/0SKIP. Only failures are the existing CTE-scope regression
+  parent and its EXISTS/NOT EXISTS arms, both42F01 at driver line359. Four targets
+  executed; this is NOT an all-green suite or an implementation approval.
+- `cte-owned-input-full-race.log`: my ad-hoc900s override expired with9220RUN,
+  9216PASS/3FAIL/0SKIP and ONE unfinished test, MetamorphicPagingAtScale. Timeout
+  stack is runnable protobuf sort-continuation serialization through LIMIT,
+  matching the already-recorded full-race budget issue, not a new deadlock.
+  Source confirms this paging population has no EXISTS. Published eternal
+  budget is3600s (.bazelrc), not900s; no repository gate changed. Task81 has
+  completed/been collected: the SAME four-target full race scope at the published
+  budget yields9235RUN/9232PASS/3FAIL/0SKIP with no missing outcomes or DATA RACE.
+  The only failures are the CTE-scope regression parent/two arms. Paging completes
+  all140checks in1878.21s; total1990.384s. All18 changed Go/BUILD hashes match
+  (`cte-owned-input-full-race-published{.log,.sha256,-hashes.log}`). This is still
+  RED from42F01, not a full green gate, and not performance-parity evidence.
+
+These supersede the earlier checkpoint's open row-type counterexample ONLY.
+BoundQuery/immutable defining frames, pure dependency derivation, shared early
+identities, ON provenance, consumer constraints and success-only private
+publication remain open, with their own mutants and same-planner proofs. No
+new hunt, executor-performance work, commit, push, merge or approval claim.
+
+
+### Bound-query/admission migration — implementation and restored boundary proofs
+
+This supersedes the earlier open-migration/42F01 status (not the final review,
+race, full-suite, stress or merge gates). EXISTS now binds once against the real
+parent and retained CTE/derived bodies, classifies the complete logical graph,
+then lowers privately. Scalar classification uses the same pure bound property;
+translation supplies scalar cardinality, not correlation classification. Missing
+attachment owners fail typed. Residual dependencies are derived again from the
+normalized input, attachment predicate and surviving scalar edges. Independent
+scalars bind surviving input predicates; projection-only dependencies disappear.
+The original derived EXISTS/NOT EXISTS rows 9/7 and exact producer-row controls
+are green. The middle FROM survives nested existential composition, including
+an empty-middle EXISTS/NOT EXISTS real-FDB control. Child Reference identities
+are retained across composition and attachment; no executor/type-check bypass.
+
+The query-owned allocator carries early bindings through catalog/CTE/derived,
+JOIN and primary UNNEST construction, keeping SQL aliases separate. ON records
+retain the original predicate, existential edges and left-to-current bindings.
+All-use consumer constraints are discharged in a private clause result before
+success-only publication. HAVING now owns its own result rather than stealing
+projection/WHERE registrations. Rejected admission/ON/resolution is followed by
+a valid sibling on the same owner in retained tests. Existing restricted shapes,
+projection-label guard, fan-out/gather checks and negative goldens are unchanged.
+
+Boundary regressions exposed and fixed during migration:
+- Unresolved LIMIT/OFFSET disappeared in UNION's right-branch and root/derived
+  constructors. The shared atom parser now rejects remaining parameters; driver
+  literal substitution is unchanged. Twelve root/nested cases retain this Go
+  extension contract. Initial test run:23 RUN/14 PASS/9 FAIL, including parent;
+  restored bounded pagination population:78 PASS,0 FAIL/SKIP.
+- Primary UNNEST used its lexical alias while binding predicate Values. It now
+  allocates its private source identity first; the regression checks two builds,
+  deliberate Q$BOUND1 lexical collision, exact predicate and owner free sets.
+- An early ON referring to a later-shadowed alias keeps the actual parent ID;
+  its admission rule reads preserved provenance, not the generated ID's text.
+- HAVING moved prior projection registrations into its aggregate; the new
+  isolation regression was red before the clause-owner fix.
+
+One investigation hypothesis was rejected: ordinary private parents must NOT be
+called scope-ambiguous merely for repeating a lexical name. The unchanged driver
+minted-middle control requires its existing0AF00 outcome, not0A000. The overly
+broad guard was removed; the new control distinguishes that ordinary private
+case from the separate UNNEST-frame lexical restriction. No existing assertion
+was relaxed or golden changed.
+
+Verification artifacts in /var/tmp/query-grind-cast/pr785-review:
+- cte-clause-full-restored.log: six affected targets,11869 distinct test names,
+  all green (historical pre-boundary additions).
+- cte-bound-final-full.log: all six targets uncached,11908 package-scoped Go
+  test/subtest outcomes,11908 PASS,0 FAIL/SKIP,218.927s; no missing outcomes.
+  Counting excludes ten indented subprocess diagnostic PASS lines from the
+  allocation-isolation tests, not actual tests. TestLikeMatch occurs in two
+  packages. The earlier cte-migration-clause-full.log is reconciled as11546 RUN,
+  11544 PASS,2 FAIL (not11554 PASS); same ten diagnostic lines explained its
+  discrepancy. Scripts/details:count_go_log.py,cte-reconciled-counts.jsons.
+- cte-clause-mutants-report.json: five compiled admission/publication/product
+  mutants killed; original31 source/BUILD hashes restored,19 focused PASS.
+- cte-boundary-mutants-report.json: seven separately compiled mutants killed:
+  unresolved-pagination76 RUN/63 PASS/13 FAIL; late-primary-ID76/75/1;
+  drop-early-source-ID74/72/2; drop-ON-provenance76/69/7; drop-scalar-edge76/73/3;
+  stale residual-free-set76/72/4; HAVING-steals-projection76/75/1; all0 SKIP.
+  Each applied diff/log and original/mutant hash is retained. All33 changed
+  Go/BUILD hashes restored, followed by76 RUN/PASS,0 FAIL/SKIP. An initial
+  pre-write script assertion expected a replacement string to be globally
+  unique; it aborted without editing/running tests, was corrected to check the
+  occurrence delta, and is NOT a mutant kill.
+
+The six-target full-race command (task82, cte-bound-final-race.log) ended with
+Bazel INTERRUPTED, exit8. Recovered logs contain11908 RUN/PASS over the six
+targets, but that is NOT a successful command gate. Its cte-boundary-freeze.json
+snapshot also predates the subsequent admission/helper repairs below. No
+repository limit was raised. Current-source normal/race/determinism, unchanged-
+limit stress/performance, implementation review and exact-HEAD review/CI remain
+required; no commit/push/merge or final implementation approval is claimed here.
+
+### Legacy migration gate repairs — live coverage and retained clause provenance
+
+This continues the approved bound-query/admission migration, not QSC expansion
+or executor/performance work. The worktree is still based on
+`90b026077cb08a028cf567e423d39bca86eb2ae4`; prior reviewed freezes do not include
+these repairs. The companion current-status block is at the end of `TODO.md`.
+Artifacts below are in `/var/tmp/query-grind-cast/pr785-review`.
+
+The first `just test` after migration failed five targets. The source-resolution
+repair preserves the real missing-table error rather than restoring the legacy
+text fallback: retained `BoundExistsSourceConformance` asserts Java and Go
+42F01 for SELECT/DELETE/UPDATE EXISTS over a missing source, with valid-source
+controls (12 observations in `cte-missing-source-java-final.log`). The changed
+DML yamsql error expectation is based on that cross-engine proof, not on Go's
+new output. Correlated UNION bodies retain their typed admission restriction;
+independent UNION and a correlated query over a derived UNION remain controls.
+The full javacorpus target passed in `cte-setop-javacorpus-green.log`.
+
+The docscheck failure exposed retired compatibility functions. Nine definitions
+were removed from `logical_predicate.go` and `select_parser.go`, including the
+newly orphaned pre-pagination/window classifiers. Their tests now use live
+binding allocation, bound-query lowering, bound scope ambiguity, error mapping,
+and resolved nested FieldValue paths. No dead-helper ledger exception was added.
+The migrated cardinality tests initially failed: the bound entry could erase
+OVER before classifying an aggregate, and it no longer retained QUALIFY's
+admission provenance. The bound constructor now runs the existing typed window
+validation. Both SELECT builders preserve QUALIFY provenance on its owning
+filter; correlated EXISTS rejects it before publication instead of folding a
+global aggregate to TRUE. The owning-filter helper cannot cross a derived-source
+boundary and fails typed if no owner exists.
+
+The UNION right-branch coverage also exposed a live migration defect: its
+post-builder threw away a successful predicate walk when no subquery attachment
+was present, rebuilt under SQL aliases, and produced an orphan `T` rather than
+the retained query-local source identity. It now keeps the resolved predicate.
+The subquery-bearing path also combines QUALIFY rather than returning early and
+losing it. `exists_with_aggregate.yaml` retains the nonempty/empty UNION controls
+and the right-branch scalar/false-QUALIFY exact reproducer. All12 cases passed
+against real FDB in `cte-qualify-shared-green.log`. This is the existing Go
+admission policy, not a claim that Java lacks correlated aggregate support:
+Java QueryVisitor.java:318-321 combines QUALIFY with the resolved predicate,
+ExpressionVisitor.java:569 wraps the retained child Reference existentially,
+and LogicalOperator.java:604-646 retains both UNION producers and first-leg
+output labels. No C++ client behavior or wire format changed in these repairs.
+
+The restored live-helper baseline ran107 tests/subtests under Bazel,107 PASS,
+0 FAIL/SKIP (`cte-helper-mutant-baseline.log`). Six separately applied, compiled
+mutants were killed (`cte-helper-mutants-report.json`): window validation,
+QUALIFY provenance, QUALIFY admission, right-WHERE rebinding, scalar-QUALIFY loss,
+and right-branch provenance loss. Five used the107-outcome embedded population;
+the scalar-QUALIFY mutant used the real-FDB12-case scenario and returned three
+rows where zero were required. All45 files in `cte-helper-freeze.json` were
+restored byte-for-byte. The first script run stopped because its expected error
+wording did not match the runner's actual `row set mismatch` wording; it restored
+the tree, retained that log, and the corrected full six-mutant run completed.
+Post-mutation full-suite evidence is recorded separately, not inferred here.
+
+The golden changes were inspected in full before refreshing:
+- `correlated_subquery_probes.yaml#21` retains the middle FROM producer in the
+  nested existential product. Removing that producer violates empty-middle
+  semantics; the retained driver/owned-producer regressions pin it.
+- `union_join_leg_aggregate_forms.yaml#0` loses an intermediate identity
+  projection in the left branch now built by PlanVisitor. Public labels and
+  ordinals remain unchanged. The corresponding SimFDB `unionjoinleg` capture
+  has four query/ROWS blocks and16 datum lines: one PLAN line changes, and every
+  non-PLAN byte is identical (`cte-golden-shape-verdict.json`).
+- The measured missing-source42F01 and six new yamsql cases are recorded without
+  changing any existing successful-row expectations. Generated feature/coverage
+  ledgers are regenerated from the corpus, not hand-adjusted.
+
+Review remains a real owner-decision gate. The existing virtual Graefe session
+subsequently ACKed all 18 supplied source/test/BUILD/golden deltas in
+`cte-helper-graefe-verdict.md`; four documentation files were not byte-reviewed.
+That scoped ACK predates the final three test-file repairs recorded below and is
+not final-HEAD or full-PR approval. The mandated existing Torvalds and Codex
+sessions both return `context window`
+exhaustion (`cte-bound-implementation-{torvalds,codex}-recovered.jsonl`). No
+replacement session, history reset, model substitution or approval bypass has
+been performed. Context-reset permission for those same session IDs is required
+before completing their implementation reviews. No merge approval is claimed.
+
+### Legacy migration — final assertion repairs and fresh local gates
+
+This is the same PR785 migration, based on committed
+`90b026077cb08a028cf567e423d39bca86eb2ae4`, not a new hunt or an executor/performance
+repair. The companion block at the end of `TODO.md` records remaining gates.
+Artifacts named below are under `/var/tmp/query-grind-cast/pr785-review`.
+
+The 47-file uncached full run (`cte-repair-full.log`) executed all 92 targets:
+90 passed and two failed. Its reconciled Go population was 39,937 RUN,
+39,919 PASS, 13 FAIL, five SKIP, with no missing/extra outcomes. Those failures
+were repaired rather than retried away:
+
+- `TestExplainOnlyMode_KeepsCrossDerivedPredicate` now requires the resolved
+  `Filter(T1.AID#0 = T2.CID#0)`, not raw SQL spelling. Each derived key occupies
+  slot zero; the owner/ordinal assertion detects a lost semantic walk.
+- No-argument Cobra command tests set an explicit empty argument slice instead
+  of inheriting Bazel's `--test.v` through `os.Args`. Commands under test and
+  tests supplying real arguments are unchanged; no production CLI code changed.
+
+Both repairs are revert-proven (`cte-final-assertion-mutants.json`). Removing
+resolved-WHERE retention compiles and fails the EXPLAIN assertion; removing
+explicit arguments compiles and fails `TestVersionCmd_Text` with
+`unknown flag: --test.v`. Each narrowed mutant executes one test and fails it.
+Original hashes were restored and both tests then passed. The complete affected
+CLI/embedded/docscheck targets passed 3,388 Go tests/subtests, no FAIL/SKIP
+(`cte-final-tests-green.log`, reconciled counts alongside it).
+
+Fresh checks on the unchanged 50-file `cte-final-tests-freeze.json` snapshot:
+
+| Check | Executed population | Result |
+|---|---|---|
+| `just test` | 92 nonstress targets, zero cached; 39,937 Go tests/subtests | Command exit 0; 39,932 PASS, five SKIP, zero FAIL |
+| Seven affected targets with race detection | Seven targets, zero cached; 12,323 Go tests/subtests | Command exit 0; 12,323 PASS, zero FAIL/SKIP |
+| Ten process runs of migration regressions | 22 embedded + eight driver root tests in every run; 1,430 total tests/subtests | Command exit 0; 1,430 PASS, zero FAIL/SKIP |
+
+The normal run took 1,005.256s; race took 1,953.745s. Race uses the six earlier
+migration targets (`values`, `query/logical`, `query/expr`, `query`, `embedded`,
+`sqldriver`) plus `cmd/frl/internal/cmd`, with
+`--@rules_go//go/config:race --test_arg=--test.v --nocache_test_results
+--test_output=all` and the dedicated `/var/tmp/query-hunt-254/race` output base.
+The eternal timeout remains 3,600s. The narrowed determinism command uses
+`--runs_per_test=10 --nocache_test_results`; its exact filter and root-name
+inventory are in `cte-final-determinism.log` and
+`cte-final-determinism-selected.json`. BEP independently verifies every target's
+run count and cache status; each of the 30 selected root names appears in all ten
+runs. These repeated assertions do not replace the full-suite census floors.
+The `cte-final-{just-test,race,determinism}-verdict.json` files verify all 50
+hashes stayed unchanged through each run. Documentation updates follow that
+freeze and require their own docscheck/hook verification.
+
+The normal run is **not a clean no-skip gate**. The five skips are existing
+factory opt-in sweeps: ExcludedShapeHunt, FullShapeHunt, NestedShapeHunt,
+PlanDiversityHunt and PredicateEquivalenceHunt. Their reason is `sweep not
+requested`, not unavailable Docker. No skip was introduced or counted as a pass;
+no new hunt was started. Their non-execution remains explicit rather than being
+hidden by Bazel's green target summary.
+
+Review is still an owner-decision stop: the existing Torvalds and Codex sessions
+return `Codex ran out of room in the model's context window. Start a new thread
+or clear earlier history before retrying.` Their implementation approvals are
+absent; no reset/replacement has been authorized or performed. Graefe's scoped
+18-file ACK needs the final test/documentation delta and committed-HEAD
+reconfirmation. Fresh stress/performance, final-HEAD reviews and CI remain
+separate gates; the historical release comparison is not evidence for this
+migration snapshot. No merge approval is claimed.

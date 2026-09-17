@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=376 queries=2797 dml=172 non_query=109 plan_errors=309 unexpected_errors=4
+# files=376 queries=2803 dml=172 non_query=109 plan_errors=312 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -3250,14 +3250,16 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === correlated_subquery_probes.yaml#21
 sql:   SELECT fname FROM emp WHERE EXISTS ( SELECT 1 FROM project WHERE EXISTS (SELECT 1 FROM project WHERE emp_id = emp.id) ) ORDER BY id
-plan:  Project([_current.FNAME#1], FlatMap(outer=Scan(EMP), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(PROJECT), [1 preds])), [1 preds])))
+plan:  Project([_current.FNAME#1], FlatMap(outer=Scan(EMP), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(NestedLoopJoin(INNER, Scan(PROJECT), Scan(PROJECT)), [1 preds])), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryFlatMapPlan
 shape:     RecordQueryScanPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryFirstOrDefaultPlan
 shape:         RecordQueryPredicatesFilterPlan
-shape:           RecordQueryScanPlan
+shape:           RecordQueryNestedLoopJoinPlan
+shape:             RecordQueryScanPlan
+shape:             RecordQueryScanPlan
 === count_distinct.yaml#0 expect-error=0AF00
 sql:   SELECT COUNT(DISTINCT n) FROM t
 plan:  <PLAN-ERROR: 0AF00: DISTINCT aggregates are not supported>
@@ -6800,7 +6802,62 @@ shape:             RecordQueryScanPlan
 === exists_with_aggregate.yaml#0 expect-error=0AF00
 sql:   SELECT c.name FROM customers c WHERE EXISTS ( SELECT 1 FROM orders o WHERE o.customer_id = c.id GROUP BY o.customer_id HAVING SUM(o.amount) > 150 )
 plan:  <PLAN-ERROR: 0AF00: correlated EXISTS over a GROUP BY / HAVING subquery is not supported>
-=== exists_with_aggregate.yaml#1
+=== exists_with_aggregate.yaml#1 expect-error=0AF00
+sql:   SELECT c.name FROM customers c WHERE EXISTS ( SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id QUALIFY 1 = 0 )
+plan:  <PLAN-ERROR: 0AF00: correlated EXISTS over a GROUP BY / HAVING subquery is not supported>
+=== exists_with_aggregate.yaml#2 expect-error=0AF00
+sql:   SELECT c.name FROM customers c WHERE NOT EXISTS ( SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id QUALIFY 1 = 0 )
+plan:  <PLAN-ERROR: 0AF00: correlated EXISTS over a GROUP BY / HAVING subquery is not supported>
+=== exists_with_aggregate.yaml#3 expect-error=0AF00
+sql:   SELECT c.name FROM customers c WHERE EXISTS ( SELECT COUNT(*) OVER () FROM orders o WHERE o.customer_id = c.id )
+plan:  <PLAN-ERROR: 0AF00: windowed aggregate (aggregate function with an OVER clause) is not supported>
+=== exists_with_aggregate.yaml#4
+sql:   SELECT c.name FROM customers c WHERE EXISTS ( SELECT id FROM orders WHERE amount > 150 UNION ALL SELECT id FROM orders WHERE amount > 1000 ) ORDER BY c.name
+plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(CUSTOMERS), inner=PredicatesFilter(FirstOrDefault(UnorderedUnion(Project([_current.ID#0], PredicatesFilter(Scan(ORDERS), [1 preds])), Project([_current.ID#0], PredicatesFilter(Scan(ORDERS), [1 preds])))), [1 preds]))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryScanPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryFirstOrDefaultPlan
+shape:           RecordQueryUnorderedUnionPlan
+shape:             RecordQueryProjectionPlan
+shape:               RecordQueryPredicatesFilterPlan
+shape:                 RecordQueryScanPlan
+shape:             RecordQueryProjectionPlan
+shape:               RecordQueryPredicatesFilterPlan
+shape:                 RecordQueryScanPlan
+=== exists_with_aggregate.yaml#5
+sql:   SELECT c.name FROM customers c WHERE EXISTS ( SELECT id FROM orders WHERE amount > 1000 UNION ALL SELECT id FROM orders WHERE amount > 1000 )
+plan:  Project([_current.NAME#1], FlatMap(outer=Scan(CUSTOMERS), inner=PredicatesFilter(FirstOrDefault(UnorderedUnion(Project([_current.ID#0], PredicatesFilter(Scan(ORDERS), [1 preds])), Project([_current.ID#0], PredicatesFilter(Scan(ORDERS), [1 preds])))), [1 preds])))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryUnorderedUnionPlan
+shape:           RecordQueryProjectionPlan
+shape:             RecordQueryPredicatesFilterPlan
+shape:               RecordQueryScanPlan
+shape:           RecordQueryProjectionPlan
+shape:             RecordQueryPredicatesFilterPlan
+shape:               RecordQueryScanPlan
+=== exists_with_aggregate.yaml#6
+sql:   SELECT c.name FROM customers c WHERE EXISTS ( SELECT id FROM orders WHERE amount < 0 UNION ALL SELECT id FROM orders WHERE id = (SELECT MAX(id) FROM orders) QUALIFY 1 = 0 )
+plan:  Project([_current.NAME#1], FlatMap(outer=Scan(CUSTOMERS), inner=PredicatesFilter(FirstOrDefault(UnorderedUnion(Project([_current.ID#0], PredicatesFilter(Scan(ORDERS), [1 preds])), Project([_current.ID#0], PredicatesFilter(Scan(ORDERS, [=]), [1 preds])))), [1 preds])))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryFirstOrDefaultPlan
+shape:         RecordQueryUnorderedUnionPlan
+shape:           RecordQueryProjectionPlan
+shape:             RecordQueryPredicatesFilterPlan
+shape:               RecordQueryScanPlan
+shape:           RecordQueryProjectionPlan
+shape:             RecordQueryPredicatesFilterPlan
+shape:               RecordQueryScanPlan
+=== exists_with_aggregate.yaml#7
 sql:   SELECT c.name FROM customers c WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id) ORDER BY c.name
 plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(CUSTOMERS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(ORDERS), [1 preds])), [1 preds]))))
 shape: RecordQueryProjectionPlan
@@ -6811,27 +6868,27 @@ shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryFirstOrDefaultPlan
 shape:           RecordQueryPredicatesFilterPlan
 shape:             RecordQueryScanPlan
-=== exists_with_aggregate.yaml#2
+=== exists_with_aggregate.yaml#8
 sql:   SELECT c.name FROM customers c WHERE EXISTS ( SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id LIMIT 1 OFFSET 1 ) ORDER BY c.name
 plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], PredicatesFilter(Scan(CUSTOMERS), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
-=== exists_with_aggregate.yaml#3
+=== exists_with_aggregate.yaml#9
 sql:   SELECT c.name FROM customers c WHERE EXISTS ( SELECT MAX(o.amount) FROM orders o WHERE o.customer_id = c.id LIMIT 0 ) ORDER BY c.name
 plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], PredicatesFilter(Scan(CUSTOMERS), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
-=== exists_with_aggregate.yaml#4
+=== exists_with_aggregate.yaml#10
 sql:   SELECT c.name FROM customers c WHERE NOT EXISTS ( SELECT SUM(o.amount) FROM orders o WHERE o.customer_id = c.id LIMIT 1 OFFSET 1 ) ORDER BY c.name
 plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], Scan(CUSTOMERS)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryScanPlan
-=== exists_with_aggregate.yaml#5
+=== exists_with_aggregate.yaml#11
 sql:   SELECT c.name FROM customers c WHERE EXISTS ( SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id LIMIT 1 OFFSET 0 ) ORDER BY c.name
 plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], Scan(CUSTOMERS)))
 shape: RecordQueryProjectionPlan
@@ -17993,16 +18050,15 @@ shape:       RecordQueryScanPlan
 shape:       RecordQueryScanPlan
 === union_join_leg_aggregate_forms.yaml#0
 sql:   WITH u AS (SELECT g, SUM(ga.v) AS s FROM ga GROUP BY g UNION ALL SELECT h, SUM(gb.v) AS s2 FROM gb GROUP BY h) SELECT c.w, u.s FROM u, c WHERE u.g = c.id
-plan:  Project([_current.W#3, _current.S#1], FlatMap(outer=UnorderedUnion(Project([_current.G#0, _current.S#1], Project([_current.G#0, _current.SUM(GA.V)#1], Project([_current.G#0, _current.SUM(V)#1], GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_G, [G], GA, live_groups_only), AggregateIndex(SUM, SUM_BY_G, [G], GA); keys=[G#0], driving=0)))), Project([_current.H#0, _current.S2#1], Project([_current.H#0, _current.SUM(GB.V)#1], Project([_current.H#0, _current.SUM(V)#1], GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_H, [H], GB, live_groups_only), AggregateIndex(SUM, SUM_BY_H, [H], GB); keys=[H#0], driving=0))))), inner=Scan(C, [=])))
+plan:  Project([_current.W#3, _current.S#1], FlatMap(outer=UnorderedUnion(Project([_current.G#0, _current.S#1], Project([_current.G#0, _current.SUM(V)#1], GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_G, [G], GA, live_groups_only), AggregateIndex(SUM, SUM_BY_G, [G], GA); keys=[G#0], driving=0))), Project([_current.H#0, _current.S2#1], Project([_current.H#0, _current.SUM(GB.V)#1], Project([_current.H#0, _current.SUM(V)#1], GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_H, [H], GB, live_groups_only), AggregateIndex(SUM, SUM_BY_H, [H], GB); keys=[H#0], driving=0))))), inner=Scan(C, [=])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryFlatMapPlan
 shape:     RecordQueryUnorderedUnionPlan
 shape:       RecordQueryProjectionPlan
 shape:         RecordQueryProjectionPlan
-shape:           RecordQueryProjectionPlan
-shape:             RecordQueryMultiIntersectionOnValuesPlan
-shape:               RecordQueryAggregateIndexPlan
-shape:               RecordQueryAggregateIndexPlan
+shape:           RecordQueryMultiIntersectionOnValuesPlan
+shape:             RecordQueryAggregateIndexPlan
+shape:             RecordQueryAggregateIndexPlan
 shape:       RecordQueryProjectionPlan
 shape:         RecordQueryProjectionPlan
 shape:           RecordQueryProjectionPlan
@@ -18289,9 +18345,9 @@ plan:  <PLAN-ERROR: 0AF00: DML Cascades translation failed>
 === unquoted_dml_against_a_quoted_table.yaml#19 expect-error=0AF00
 sql:   DELETE FROM "Customer" WHERE id IN (SELECT id FROM "Customer" WHERE id = 9)
 plan:  <PLAN-ERROR: 0AF00: DML Cascades translation failed>
-=== unquoted_dml_against_a_quoted_table.yaml#20 expect-error=0AF00
+=== unquoted_dml_against_a_quoted_table.yaml#20 expect-error=42F01
 sql:   DELETE FROM "Customer" WHERE EXISTS (SELECT 1 FROM nosuchtable)
-plan:  <PLAN-ERROR: 0AF00: DML Cascades translation failed>
+plan:  <PLAN-ERROR: 42F01: scan "NOSUCHTABLE" has no exact catalog row type>
 === unquoted_dml_against_a_quoted_table.yaml#21
 sql:   SELECT id, name FROM "Customer" ORDER BY id
 plan:  Project([_current.ID#0, _current.NAME#1], Scan(Customer))

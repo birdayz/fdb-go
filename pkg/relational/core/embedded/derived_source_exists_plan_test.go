@@ -139,10 +139,11 @@ func TestDerivedSourceCorrelatedExistsPlans(t *testing.T) {
 					t.Fatal("CTE-inner EXISTS plan has no FlatMap")
 				}
 
-				// CorrelationIdentifier equality includes the private kind. This
-				// therefore pins a NAMED F carrier, not merely a matching string,
-				// and proves the synthetic CTE definition name did not replace it.
-				wantInner := values.NamedCorrelationIdentifier("F")
+				// F is the lexical source name, not its runtime identity. This
+				// first child FROM owns the allocator's first private source ID.
+				// Exact equality pins the named kind too; the definition name must
+				// not replace Main's binding when the CTE wrapper is translated.
+				wantInner := values.NamedCorrelationIdentifier("Q$BOUND1")
 				definition := values.NamedCorrelationIdentifier("FILTERED")
 				if got := flatMap.GetInnerAlias(); got != wantInner || got == definition {
 					t.Fatalf("FlatMap inner identity = %#v, want exact main alias %#v (not definition %#v)",

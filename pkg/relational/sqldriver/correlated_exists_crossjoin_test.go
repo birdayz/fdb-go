@@ -82,7 +82,8 @@ func TestFDB_NestedCorrelatedExists(t *testing.T) {
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA TEMPLATE nestexists_tmpl "+
 			"CREATE TABLE emp (id BIGINT, fname STRING, PRIMARY KEY (id)) "+
-			"CREATE TABLE project (pid BIGINT, emp_id BIGINT, pname STRING, PRIMARY KEY (pid))")).Error().NotTo(gomega.HaveOccurred())
+			"CREATE TABLE project (pid BIGINT, emp_id BIGINT, pname STRING, PRIMARY KEY (pid)) "+
+			"CREATE TABLE empty_project (pid BIGINT, PRIMARY KEY (pid))")).Error().NotTo(gomega.HaveOccurred())
 	g.Expect(setup.ExecContext(ctx,
 		"CREATE SCHEMA /testdb_nestexists/s WITH TEMPLATE nestexists_tmpl")).Error().NotTo(gomega.HaveOccurred())
 
@@ -114,4 +115,36 @@ func TestFDB_NestedCorrelatedExists(t *testing.T) {
 	}
 	g.Expect(rows.Err()).NotTo(gomega.HaveOccurred())
 	g.Expect(names).To(gomega.Equal([]string{"Alice", "Bob"}))
+
+	// Existential associativity must retain the middle FROM's emptiness.
+	// Replacing that level by the correlated innermost query would return
+	// Alice/Bob for the positive form and only Charlie for the negative form.
+	for _, tc := range []struct {
+		name, polarity string
+		want           []string
+	}{
+		{"empty_middle_exists", "EXISTS", nil},
+		{"empty_middle_not_exists", "NOT EXISTS", []string{"Alice", "Bob", "Charlie"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, err := db.QueryContext(ctx, "SELECT fname FROM emp WHERE "+tc.polarity+
+				" (SELECT 1 FROM empty_project WHERE EXISTS (SELECT 1 FROM project WHERE emp_id = emp.id)) ORDER BY id")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer r.Close()
+			var got []string
+			for r.Next() {
+				var name string
+				if err := r.Scan(&name); err != nil {
+					t.Fatal(err)
+				}
+				got = append(got, name)
+			}
+			if err := r.Err(); err != nil {
+				t.Fatal(err)
+			}
+			gomega.NewWithT(t).Expect(got).To(gomega.Equal(tc.want))
+		})
+	}
 }

@@ -2,11 +2,14 @@ package embedded
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/core/query/semantic"
 )
 
 const unnestExistsOuterOnlyDDL = `
@@ -175,34 +178,36 @@ func TestSplitConjunctsByOuterRef_Shadowing(t *testing.T) {
 	}
 }
 
-// TestWrapCorrelatedExistsWalkErr_PropagatesUnsupported pins that wrapping a
-// walk failure PROPAGATES the Unsupported flag when the wrapped error is itself
-// a deliberate Unsupported decline (a nested correlated EXISTS whose JOIN ON hit
-// the RIGHT/FULL / nested-subquery decline). Without propagation the outer
-// wrapper defaults Unsupported=false → mapPredicateWalkError reports 42703
-// instead of the intended 0A000. Red-first: return a plain wrapper and
-// unsupported_inner flips to false.
-func TestWrapCorrelatedExistsWalkErr_PropagatesUnsupported(t *testing.T) {
+// Bound construction carries errors without manufacturing a second correlated
+// classification. The public mapper must retain the original classification
+// through an ordinary error wrapper. Recognized semantic causes take precedence
+// over message-only correlated-shape rejections.
+func TestPredicateWalkErrorRetainsCorrelatedClassification(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name string
 		in   error
-		want bool
+		want api.ErrorCode
 	}{
-		{"unsupported_inner", &CorrelatedExistsError{Message: "decline", Unsupported: true}, true},
-		{"supported_inner", &CorrelatedExistsError{Message: "resolution failure", Unsupported: false}, false},
-		{"non_corr_inner", errors.New("some other walk error"), false},
-		// The OUTERMOST classification wins: a supported wrapper already decided
-		// this is a resolution failure, so the flag stays false even over an
-		// unsupported cause (errors.As matches the outer first). This shape does
-		// not arise in practice — the wrap sites propagate consistently.
-		{"supported_outer_wins", &CorrelatedExistsError{Message: "outer", Unsupported: false, Cause: &CorrelatedExistsError{Message: "inner decline", Unsupported: true}}, false},
+		{"unsupported_inner", &CorrelatedExistsError{Message: "decline", Unsupported: true}, api.ErrCodeUnsupportedOperation},
+		{"message_only_inner", &CorrelatedExistsError{Message: "resolution failure", Unsupported: false}, api.ErrCodeUnsupportedOperation},
+		{"non_corr_inner", errors.New("some other walk error"), ""},
+		{"message_only_outer", &CorrelatedExistsError{Message: "outer", Unsupported: false, Cause: &CorrelatedExistsError{Message: "inner decline", Unsupported: true}}, api.ErrCodeUnsupportedOperation},
+		{"semantic_cause", &CorrelatedExistsError{Message: "outer", Unsupported: true, Cause: &semantic.ColumnNotFoundError{Id: semantic.NewUnquoted("MISSING")}}, api.ErrCodeUndefinedColumn},
+		{"carried_query_rejection", &CorrelatedExistsError{Message: "outer", Unsupported: true, Cause: api.NewError(api.ErrCodeUnsupportedQuery, "query shape")}, api.ErrCodeUnsupportedQuery},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := wrapCorrelatedExistsWalkErr("wrapped", c.in)
-			if got.Unsupported != c.want {
-				t.Errorf("wrapCorrelatedExistsWalkErr(%s).Unsupported = %v, want %v", c.name, got.Unsupported, c.want)
+			t.Parallel()
+			got := mapPredicateWalkError(fmt.Errorf("wrapped: %w", c.in))
+			if c.want == "" {
+				if got != nil {
+					t.Fatalf("unclassified error gained a correlated SQLSTATE: %v", got)
+				}
+				return
+			}
+			if got == nil || got.Code != c.want {
+				t.Fatalf("mapped classification = %v, want %s", got, c.want)
 			}
 		})
 	}

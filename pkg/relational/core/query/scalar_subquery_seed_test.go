@@ -36,7 +36,7 @@ func TestScalarSeed_Shape(t *testing.T) {
 	tr := newGateTranslator(t)
 	inner := exactScalarInner(t, "MAXORDER", values.NotNullLong)
 
-	seed := tr.scalarSubqueryOrdinalSeed("C", scan("Customer", "c"), inner, values.UniqueCorrelationIdentifier(), "MAXORDER")
+	seed := tr.scalarSubqueryOrdinalSeed("C", scan("Customer", "c"), tr.legColumns(inner), values.UniqueCorrelationIdentifier(), "MAXORDER")
 	if seed == nil {
 		t.Fatal("single-source outer must ordinalize, got nil (declined)")
 	}
@@ -85,7 +85,7 @@ func TestScalarSeed_AggregateDisplayTitleUsesTheOnlyExactSlot(t *testing.T) {
 	tr := newGateTranslator(t)
 	inner := exactScalarInner(t, "SUM(C.VAL)", values.NullableLong)
 
-	seed := tr.scalarSubqueryOrdinalSeed("C", scan("Customer", "c"), inner,
+	seed := tr.scalarSubqueryOrdinalSeed("C", scan("Customer", "c"), tr.legColumns(inner),
 		values.UniqueCorrelationIdentifier(), "SUM(C.VAL)")
 	if seed == nil {
 		t.Fatal("one-field aggregate projection must ordinalize by its exact slot, not parse its display title")
@@ -133,7 +133,7 @@ func TestScalarSeed_UniqueInnerCorrelation(t *testing.T) {
 	inner := exactScalarInner(t, "MAXORDER", values.NotNullLong)
 
 	innerCorr := values.UniqueCorrelationIdentifier()
-	seed := tr.scalarSubqueryOrdinalSeed("C", scan("Customer", "c"), inner, innerCorr, "MAXORDER")
+	seed := tr.scalarSubqueryOrdinalSeed("C", scan("Customer", "c"), tr.legColumns(inner), innerCorr, "MAXORDER")
 	if seed == nil {
 		t.Fatal("single-source outer must ordinalize")
 	}
@@ -156,7 +156,7 @@ func TestScalarSeed_UniqueInnerCorrelation(t *testing.T) {
 
 	// Two seeds must never share an inner correlation (uniqueness is the whole
 	// decouple).
-	seed2 := tr.scalarSubqueryOrdinalSeed("C", scan("Customer", "c"), inner, values.UniqueCorrelationIdentifier(), "MAXORDER")
+	seed2 := tr.scalarSubqueryOrdinalSeed("C", scan("Customer", "c"), tr.legColumns(inner), values.UniqueCorrelationIdentifier(), "MAXORDER")
 	secondField := exactTestFieldView(t, seed2.(*values.RecordConstructorValue).Fields[len(rc.Fields)-1].Value)
 	qov2, ok := values.AsQuantifiedObjectValue(secondField.ChildValue())
 	if !ok {
@@ -191,7 +191,7 @@ func TestScalarSeed_InnerScalarTypeFlowsFromInner(t *testing.T) {
 	tr := newGateTranslator(t)
 
 	innerOp := scan("Order", "sq")
-	seed := tr.scalarSubqueryOrdinalSeed("C", scan("Customer", "c"), innerOp,
+	seed := tr.scalarSubqueryOrdinalSeed("C", scan("Customer", "c"), tr.legColumns(innerOp),
 		values.UniqueCorrelationIdentifier(), "PRICE")
 	if seed == nil {
 		t.Fatal("single-source outer must ordinalize")
@@ -250,7 +250,7 @@ func TestScalarSeedLabelsDoNotContainPrivateIdentity(t *testing.T) {
 					if clustered {
 						seed = clusteredOuterOrdinalSeed(pu, correlation, label, values.NullableLong)
 					} else {
-						seed = tr.scalarSubqueryOrdinalSeed("C", scan("Customer", "c"), exactScalarInner(t, label, values.NullableLong), correlation, label)
+						seed = tr.scalarSubqueryOrdinalSeed("C", scan("Customer", "c"), tr.legColumns(exactScalarInner(t, label, values.NullableLong)), correlation, label)
 					}
 					if seed == nil {
 						t.Fatal("seed declined")
@@ -271,5 +271,32 @@ func TestScalarSeedLabelsDoNotContainPrivateIdentity(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestScalarSeed_CTEMainTypeNotDefinitionType(t *testing.T) {
+	t.Parallel()
+	tr := newGateTranslator(t)
+	body := &logical.LogicalProject{
+		Input: scan("Order", "O"), Projections: []string{"BODY"},
+		ProjectedValues: []values.Value{&values.ConstantValue{Value: int64(7), Typ: values.NotNullLong}},
+	}
+	main := &logical.LogicalProject{
+		Input: logical.NewScan("C", "R"), Projections: []string{"SCALAR"},
+		ProjectedValues: []values.Value{&values.ConstantValue{Value: float64(9.5), Typ: values.NotNullDouble}},
+	}
+	inner := logical.NewCTE("C", body, main, false)
+	selectExpr, merged, outer := tr.translateSingleSourceCorrelatedScalarJoin(scan("Customer", "A"), logical.CorrelatedScalarSubquery{
+		InnerPlan: inner, InnerAlias: "R", ScalarCol: "SCALAR", StrictSingle: true,
+	})
+	if selectExpr == nil || merged == nil || outer == nil {
+		t.Fatalf("CTE scalar join declined: %v", tr.translateErr)
+	}
+	if len(merged.Fields) != len(outer.Fields)+1 {
+		t.Fatalf("merged width = %d, want outer %d plus scalar", len(merged.Fields), len(outer.Fields))
+	}
+	scalar := merged.Fields[len(outer.Fields)]
+	if scalar.Name != "SCALAR" || !scalar.FieldType.Equals(values.NullableDouble) {
+		t.Fatalf("scalar field = %+v, want SCALAR nullable DOUBLE from Main, not BODY BIGINT", scalar)
 	}
 }

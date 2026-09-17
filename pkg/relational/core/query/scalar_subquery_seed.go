@@ -46,7 +46,7 @@ import (
 // widenLegTypesFromPlan (DIVERGENT baked types). With the unique id the two
 // correlations are distinct and JOIN-inners ordinalize. The RC field's label is
 // the scalar output title; identities never become part of that display label.
-func (t *cascadesTranslator) scalarSubqueryOrdinalSeed(outerAlias string, outerOp logical.LogicalOperator, innerOp logical.LogicalOperator, innerCorr values.CorrelationIdentifier, scalarCol string) values.Value {
+func (t *cascadesTranslator) scalarSubqueryOrdinalSeed(outerAlias string, outerOp logical.LogicalOperator, innerColumns []values.Field, innerCorr values.CorrelationIdentifier, scalarCol string) values.Value {
 	outerType := t.ordinalLegType(outerOp)
 	if outerType == nil || len(outerType.Fields) == 0 {
 		return nil // decline → caller loud-declines
@@ -72,9 +72,10 @@ func (t *cascadesTranslator) scalarSubqueryOrdinalSeed(outerAlias string, outerO
 	}
 
 	// INNER scalar leg: ONE nullable ordinal-0 field with its exact output title.
-	// The field's TYPE is the inner subquery's OWN flowed output type, read off
-	// the inner logical operator — the same catalog-backed derivation every other
-	// leg uses. Java never re-derives a column's type downstream: client metadata
+	// The field's TYPE is supplied by the translated inner's flowed output, not
+	// by a second logical-column walk. In particular, a WITH query returns its
+	// Main's row, not its definition's row. Java never re-derives a column's type
+	// downstream: client metadata
 	// is positional over the plan's flowed record type, so the type must be
 	// present on the value here (QueryPlan.getResultType →
 	// RelationalStructMetaData.of).
@@ -88,7 +89,7 @@ func (t *cascadesTranslator) scalarSubqueryOrdinalSeed(outerAlias string, outerO
 	// The full scalar query exposes exactly ONE materialized output value, so
 	// its derivable row type has exactly one field. A missing exact scalar
 	// type declines below rather than guessing a column or an UNKNOWN type.
-	scalarType := scalarColumnType(t.legColumns(innerOp), scalarCol)
+	scalarType := scalarColumnType(innerColumns, scalarCol)
 	if scalarType == nil || scalarType.Code() == values.TypeCodeUnknown {
 		return nil
 	}

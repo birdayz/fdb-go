@@ -23,16 +23,16 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**376 scenarios · 3078 query/assertion cases** across 18 feature areas — 2693 supported, 112 unsupported-feature pins, 273 error-path pins.
+**376 scenarios · 3084 query/assertion cases** across 18 feature areas — 2696 supported, 114 unsupported-feature pins, 274 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
 | Aggregates & GROUP BY | 55 | 349 | 314 | 19 | 16 |
 | Joins | 66 | 313 | 296 | 2 | 15 |
-| Subqueries (EXISTS / IN / scalar) | 46 | 315 | 257 | 35 | 23 |
+| Subqueries (EXISTS / IN / scalar) | 46 | 321 | 260 | 38 | 23 |
 | CTEs | 14 | 179 | 139 | 5 | 35 |
 | Set operations (UNION / INTERSECT / EXCEPT) | 12 | 68 | 59 | 5 | 4 |
-| DML (INSERT / UPDATE / DELETE) | 26 | 238 | 202 | 4 | 32 |
+| DML (INSERT / UPDATE / DELETE) | 26 | 238 | 202 | 3 | 33 |
 | Ordering & pagination | 18 | 138 | 133 | 0 | 5 |
 | Scalar functions & expressions | 34 | 381 | 330 | 21 | 30 |
 | Predicates & WHERE | 12 | 104 | 102 | 0 | 2 |
@@ -45,7 +45,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
 | Other | 40 | 337 | 295 | 11 | 31 |
-| **Total** | **376** | **3078** | **2693** | **112** | **273** |
+| **Total** | **376** | **3084** | **2696** | **114** | **274** |
 
 ## Aggregates & GROUP BY
 
@@ -197,7 +197,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `exists` | 8 | 7 | 1 | 0 | EXISTS / NOT EXISTS subquery predicates. |
 | `exists_multi_table_inner` | 2 | 2 | 0 | 0 | EXISTS with multi-table inner query |
 | `exists_subquery_java` | 8 | 8 | 0 | 0 | EXISTS and NOT EXISTS subquery patterns. |
-| `exists_with_aggregate` | 6 | 5 | 1 | 0 | EXISTS subquery with aggregate |
+| `exists_with_aggregate` | 12 | 8 | 4 | 0 | EXISTS subquery with aggregate |
 | `exists_with_or` | 3 | 1 | 2 | 0 | EXISTS subqueries combined with OR predicates. |
 | `having_not_exists` | 1 | 1 | 0 | 0 | HAVING with NOT EXISTS subquery |
 | `in_list_advanced` | 10 | 8 | 0 | 2 | Advanced IN-list scenarios from Java's in-predicate.yamsql: |
@@ -287,7 +287,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `insert_select_transform` | 2 | 2 | 0 | 0 | INSERT ... |
 | `insert_values_expr` | 27 | 22 | 1 | 4 | INSERT INTO t VALUES with expressions (arithmetic, CASE, CAST, etc). |
 | `multi_insert_delete` | 6 | 6 | 0 | 0 | Multiple INSERT/DELETE/UPDATE operations |
-| `unquoted_dml_against_a_quoted_table` | 28 | 10 | 3 | 15 | AN UNQUOTED DML TARGET MUST NOT REACH A TABLE THAT ONLY QUOTES CAN NAME. |
+| `unquoted_dml_against_a_quoted_table` | 28 | 10 | 2 | 16 | AN UNQUOTED DML TARGET MUST NOT REACH A TABLE THAT ONLY QUOTES CAN NAME. |
 | `update_case_when` | 10 | 9 | 0 | 1 | UPDATE SET col = CASE ... |
 | `update_comprehensive` | 8 | 8 | 0 | 0 | Comprehensive UPDATE patterns |
 | `update_computed_multi` | 5 | 5 | 0 | 0 | Verifies multi-column UPDATE with self-referencing SET expressions. |

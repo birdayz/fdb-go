@@ -30,6 +30,29 @@ func ExactLogicalResultTypeWithCTEs(
 	md *recordlayer.RecordMetaData,
 	enclosing map[string]values.Type,
 ) (values.Type, error) {
+	return logicalResultTypeWithCTEs(op, md, enclosing, strictLogicalUnionResultType)
+}
+
+// LogicalResultTypeAfterUnionPromotionWithCTEs derives the row the existing
+// UNION normalization will publish, without rewriting or rebinding the body.
+// Unlike ExactLogicalResultTypeWithCTEs, compatible UNION inputs need not yet
+// have identical types. Both paths derive all other operators identically.
+func LogicalResultTypeAfterUnionPromotionWithCTEs(
+	op logical.LogicalOperator,
+	md *recordlayer.RecordMetaData,
+	enclosing map[string]values.Type,
+) (values.Type, error) {
+	return logicalResultTypeWithCTEs(op, md, enclosing, promotedLogicalUnionResultType)
+}
+
+type logicalUnionTypeDeriver func([]values.Type) (values.Type, error)
+
+func logicalResultTypeWithCTEs(
+	op logical.LogicalOperator,
+	md *recordlayer.RecordMetaData,
+	enclosing map[string]values.Type,
+	unionType logicalUnionTypeDeriver,
+) (values.Type, error) {
 	var env cteRows
 	if len(enclosing) > 0 {
 		env = make(cteRows, len(enclosing))
@@ -40,7 +63,7 @@ func ExactLogicalResultTypeWithCTEs(
 			env[strings.ToUpper(name)] = row
 		}
 	}
-	typ, err := exactLogicalResultType(op, md, env)
+	typ, err := deriveLogicalResultType(op, md, env, unionType)
 	if err != nil {
 		return nil, err
 	}
@@ -58,18 +81,22 @@ func ExactLogicalResultTypeWithCTEs(
 type cteRows map[string]values.Type
 
 func exactLogicalResultType(op logical.LogicalOperator, md *recordlayer.RecordMetaData, env cteRows) (values.Type, error) {
+	return deriveLogicalResultType(op, md, env, strictLogicalUnionResultType)
+}
+
+func deriveLogicalResultType(op logical.LogicalOperator, md *recordlayer.RecordMetaData, env cteRows, unionType logicalUnionTypeDeriver) (values.Type, error) {
 	if op == nil {
 		return nil, fmt.Errorf("cannot type a nil logical operator")
 	}
 	switch typed := op.(type) {
 	case *logical.LogicalFilter:
-		return exactLogicalResultType(typed.Input, md, env)
+		return deriveLogicalResultType(typed.Input, md, env, unionType)
 	case *logical.LogicalSort:
-		return exactLogicalResultType(typed.Input, md, env)
+		return deriveLogicalResultType(typed.Input, md, env, unionType)
 	case *logical.LogicalLimit:
-		return exactLogicalResultType(typed.Input, md, env)
+		return deriveLogicalResultType(typed.Input, md, env, unionType)
 	case *logical.LogicalDistinct:
-		return exactLogicalResultType(typed.Input, md, env)
+		return deriveLogicalResultType(typed.Input, md, env, unionType)
 	case *logical.LogicalProject:
 		if len(typed.Projections) != len(typed.ProjectedValues) {
 			return nil, fmt.Errorf("projection result has %d labels but %d resolved values", len(typed.Projections), len(typed.ProjectedValues))
@@ -87,7 +114,7 @@ func exactLogicalResultType(op logical.LogicalOperator, md *recordlayer.RecordMe
 			if len(ordinals) != len(typed.Projections) {
 				return nil, fmt.Errorf("post-aggregate projection has an incomplete output-slot layout")
 			}
-			inputType, inputErr := exactLogicalResultType(typed.Input, md, env)
+			inputType, inputErr := deriveLogicalResultType(typed.Input, md, env, unionType)
 			if inputErr != nil {
 				return nil, inputErr
 			}
@@ -193,11 +220,11 @@ func exactLogicalResultType(op logical.LogicalOperator, md *recordlayer.RecordMe
 			{Name: strings.ToUpper(typed.AtAlias), Ordinal: 1, FieldType: values.NotNullInt},
 		}}, nil
 	case *logical.LogicalJoin:
-		left, err := exactLogicalResultType(typed.Left, md, env)
+		left, err := deriveLogicalResultType(typed.Left, md, env, unionType)
 		if err != nil {
 			return nil, err
 		}
-		right, err := exactLogicalResultType(typed.Right, md, env)
+		right, err := deriveLogicalResultType(typed.Right, md, env, unionType)
 		if err != nil {
 			return nil, err
 		}
@@ -206,20 +233,15 @@ func exactLogicalResultType(op logical.LogicalOperator, md *recordlayer.RecordMe
 		if len(typed.Inputs) == 0 {
 			return nil, fmt.Errorf("union has no inputs")
 		}
-		first, err := exactLogicalResultType(typed.Inputs[0], md, env)
-		if err != nil {
-			return nil, err
-		}
-		for i := 1; i < len(typed.Inputs); i++ {
-			branch, branchErr := exactLogicalResultType(typed.Inputs[i], md, env)
-			if branchErr != nil {
-				return nil, branchErr
+		branches := make([]values.Type, len(typed.Inputs))
+		for i, input := range typed.Inputs {
+			branch, err := deriveLogicalResultType(input, md, env, unionType)
+			if err != nil {
+				return nil, err
 			}
-			if !unionBranchTypesAgree(first, branch) {
-				return nil, fmt.Errorf("union branch %d result type disagrees with branch 0", i)
-			}
+			branches[i] = branch
 		}
-		return first, nil
+		return unionType(branches)
 	case *logical.LogicalCTE:
 		// A WITH statement's row is its MAIN query's row — the body is the CTE's
 		// INPUT. Main could not be typed on its own because it SCANS the CTE by
@@ -238,19 +260,20 @@ func exactLogicalResultType(op logical.LogicalOperator, md *recordlayer.RecordMe
 		// checked the alias arity against a row the aliases do not describe, so
 		// a main query projecting fewer columns than the CTE declares was
 		// rejected as an arity error.
-		main := env
-		if bodyRow, bodyErr := exactLogicalResultType(typed.Body, md, env); bodyErr == nil {
-			bound, bindErr := cteBoundRowType(bodyRow, typed)
-			if bindErr != nil {
-				return nil, bindErr
-			}
-			main = make(cteRows, len(env)+1)
-			for name, row := range env {
-				main[name] = row
-			}
-			main[strings.ToUpper(typed.Name)] = bound
+		bodyRow, bodyErr := deriveLogicalResultType(typed.Body, md, env, unionType)
+		if bodyErr != nil {
+			return nil, bodyErr
 		}
-		return exactLogicalResultType(typed.Main, md, main)
+		bound, bindErr := cteBoundRowType(bodyRow, typed)
+		if bindErr != nil {
+			return nil, bindErr
+		}
+		main := make(cteRows, len(env)+1)
+		for name, row := range env {
+			main[name] = row
+		}
+		main[strings.ToUpper(typed.Name)] = bound
+		return deriveLogicalResultType(typed.Main, md, main, unionType)
 	default:
 		return nil, fmt.Errorf("logical operator %T has no exact result-type derivation", op)
 	}
@@ -641,6 +664,19 @@ func logicalLegFields(op logical.LogicalOperator, typ values.Type) ([]values.Fie
 		return nil, fmt.Errorf("scalar logical leg %T has no source alias", op)
 	}
 	return []values.Field{{Name: alias, Ordinal: 0, FieldType: typ}}, nil
+}
+
+func strictLogicalUnionResultType(branches []values.Type) (values.Type, error) {
+	if len(branches) == 0 {
+		return nil, fmt.Errorf("union has no inputs")
+	}
+	first := branches[0]
+	for i, branch := range branches[1:] {
+		if !unionBranchTypesAgree(first, branch) {
+			return nil, fmt.Errorf("union branch %d result type disagrees with branch 0", i+1)
+		}
+	}
+	return first, nil
 }
 
 // unionBranchTypesAgree compares two set-operation branch rows by everything

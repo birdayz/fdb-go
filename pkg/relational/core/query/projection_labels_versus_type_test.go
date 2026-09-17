@@ -1,10 +1,12 @@
 package query
 
 import (
+	"errors"
 	"slices"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/query/logical"
 )
 
@@ -209,5 +211,135 @@ func TestCTELabelsDoNotRequireUnionTypePromotion(t *testing.T) {
 		if labels, err := ExactLogicalOutputLabels(cte, nil, nil); err == nil || labels != nil {
 			t.Fatalf("mismatched aliases %v accepted for a pending two-column body: %v, %v", aliases, labels, err)
 		}
+	}
+}
+
+func TestExactLogicalTypeDoesNotReuseShadowedCTEAfterBodyFailure(t *testing.T) {
+	t.Parallel()
+	projection := func(name string, value any, typ values.Type) logical.LogicalOperator {
+		return &logical.LogicalProject{
+			Projections: []string{name}, Aliases: []string{name},
+			ProjectedValues: []values.Value{&values.ConstantValue{Value: value, Typ: typ}},
+		}
+	}
+	for _, tc := range []struct {
+		name string
+		body logical.LogicalOperator
+	}{
+		{"pending_promotion", logical.NewUnion([]logical.LogicalOperator{
+			projection("INNER", int64(7), values.NotNullLong),
+			projection("OTHER", float64(9.5), values.NotNullDouble),
+		}, false)},
+		{"incompatible_union", logical.NewUnion([]logical.LogicalOperator{
+			projection("INNER", int64(7), values.NotNullLong),
+			projection("OTHER", "nine", values.NotNullString),
+		}, false)},
+		{"unresolved_projection", &logical.LogicalProject{Projections: []string{"INNER"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			inner := logical.NewCTE("C", tc.body, logical.NewScan("C", "R"), false)
+			outer := logical.NewCTE("C", projection("OUTER", "old", values.NotNullString), inner, false)
+			if typ, err := ExactLogicalResultType(outer, nil); err == nil || typ != nil {
+				t.Fatalf("failed local CTE body reused an outer binding: type=%v err=%v", typ, err)
+			}
+		})
+	}
+}
+
+func TestLogicalUnionPromotionPreservesSlotsAndShadowing(t *testing.T) {
+	t.Parallel()
+	branch := func(firstType values.Type, first any, names []string) logical.LogicalOperator {
+		return &logical.LogicalProject{
+			Input: scan("Order", "O"), Projections: names, Aliases: names,
+			ProjectedValues: []values.Value{
+				&values.ConstantValue{Value: first, Typ: firstType},
+				&values.ConstantValue{Value: int64(2), Typ: values.NotNullLong},
+			},
+		}
+	}
+	for _, shadowed := range []bool{false, true} {
+		name := "union"
+		if shadowed {
+			name = "shadowed_cte"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			left := branch(values.NullableLong, nil, []string{"X", "X"})
+			right := branch(values.NotNullDouble, float64(9.5), []string{"OTHER", "LAST"})
+			union := logical.NewUnion([]logical.LogicalOperator{left, right}, false)
+			var op logical.LogicalOperator = union
+			if shadowed {
+				inner := logical.NewCTE("C", union, logical.NewScan("C", "R"), false)
+				op = logical.NewCTE("C", &logical.LogicalProject{
+					Input: scan("Order", "O"), Projections: []string{"OLD"},
+					ProjectedValues: []values.Value{&values.ConstantValue{Value: "old", Typ: values.NotNullString}},
+				}, inner, false)
+			}
+			tr := newGateTranslator(t)
+			if typ, err := ExactLogicalResultType(op, tr.md); err == nil || typ != nil {
+				t.Fatalf("strict typing accepted pending promotion: %v, %v", typ, err)
+			}
+			typ, err := LogicalResultTypeAfterUnionPromotionWithCTEs(op, tr.md, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := &values.RecordType{Fields: []values.Field{
+				{Name: "X", Ordinal: 0, FieldType: values.NullableDouble},
+				{Name: "X_2", Ordinal: 1, FieldType: values.NotNullLong},
+			}}
+			if !typ.Equals(want) {
+				t.Fatalf("prospective row = %v, want %v", typ, want)
+			}
+			labels, err := ExactLogicalOutputLabels(op, tr.md, nil)
+			if err != nil || !slices.Equal(labels, []string{"X", "X"}) {
+				t.Fatalf("SQL labels = %v, %v; want [X X]", labels, err)
+			}
+			if union.Inputs[0] != left || union.Inputs[1] != right {
+				t.Fatal("type inference replaced a retained branch")
+			}
+			if typ, err := ExactLogicalResultType(op, tr.md); err == nil || typ != nil {
+				t.Fatalf("prospective inference rewrote the pending union: %v, %v", typ, err)
+			}
+			ref := tr.translateRef(op)
+			if ref == nil {
+				t.Fatalf("translation declined: %v", tr.translateErr)
+			}
+			if actual := ref.Get().GetResultValue().Type(); !actual.Equals(want) {
+				t.Fatalf("translated row = %v, want independently specified %v", actual, want)
+			}
+		})
+	}
+}
+
+func TestLogicalUnionPromotionPreservesTypedErrors(t *testing.T) {
+	t.Parallel()
+	projection := func(typs ...values.Type) logical.LogicalOperator {
+		p := &logical.LogicalProject{Input: scan("Order", "O")}
+		for _, typ := range typs {
+			p.Projections = append(p.Projections, "X")
+			p.ProjectedValues = append(p.ProjectedValues, exactTestNamedField(t, "O", "X", typ))
+		}
+		return p
+	}
+	for _, tc := range []struct {
+		name  string
+		right logical.LogicalOperator
+		code  api.ErrorCode
+	}{
+		{"width", projection(values.NotNullLong, values.NotNullLong), api.ErrCodeUnionIncorrectColumnCount},
+		{"incompatible", projection(values.NotNullString), api.ErrCodeUnionIncompatibleColumns},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			body := logical.NewUnion([]logical.LogicalOperator{projection(values.NotNullLong), tc.right}, false)
+			inner := logical.NewCTE("C", body, logical.NewScan("C", "R"), false)
+			outer := logical.NewCTE("C", projection(values.NotNullLong), inner, false)
+			typ, err := LogicalResultTypeAfterUnionPromotionWithCTEs(outer, nil, nil)
+			var apiErr *api.Error
+			if typ != nil || !errors.As(err, &apiErr) || apiErr.Code != tc.code {
+				t.Fatalf("failed local CTE: type=%v err=%v; want typed %s, not an outer binding", typ, err, tc.code)
+			}
+		})
 	}
 }

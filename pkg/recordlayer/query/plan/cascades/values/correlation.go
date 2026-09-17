@@ -65,6 +65,19 @@ func UniqueCorrelationIdentifier() CorrelationIdentifier {
 	return CorrelationIdentifier{name: b.String(), kind: correlationKindUnique}
 }
 
+// CorrelationIdentifierAllocator allocates deterministic identities within one
+// query construction. Owners share it with their child scopes, not with other
+// queries. Like Java's debugger-local uniqueId index, its sequence is independent
+// of earlier planning in the process. The namespace is disjoint from the global
+// rewrite allocator, and the private kind remains distinct from SQL names.
+// This construction-local allocator is not safe for concurrent use.
+type CorrelationIdentifierAllocator struct{ next uint64 }
+
+func (a *CorrelationIdentifierAllocator) Next() CorrelationIdentifier {
+	a.next++
+	return CorrelationIdentifier{name: "q$bound" + uitoa(a.next), kind: correlationKindUnique}
+}
+
 // NamedCorrelationIdentifier wraps an explicit name (e.g. a SQL
 // alias). Two NamedCorrelationIdentifiers with the same name are
 // equal — unlike UniqueCorrelationIdentifier which always allocates.

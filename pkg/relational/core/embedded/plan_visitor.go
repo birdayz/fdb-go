@@ -52,6 +52,7 @@ import (
 // upgrade, column validation, sort-key resolution) and any CTE column
 // schemas accumulated from WITH clause processing.
 type PlanVisitor struct {
+	bindings       *bindingAllocator
 	enclosingScope *semantic.Scope
 	md             *recordlayer.RecordMetaData
 	cteScopes      map[string]semantic.ScopeSource
@@ -502,6 +503,11 @@ func (v *PlanVisitor) visitSimpleTableBody(simpleTable *antlrgen.SimpleTableCont
 	if err != nil {
 		return nil, err
 	}
+	if simpleTable.QualifyClause() != nil {
+		if err := retainQualifyProvenance(op); err != nil {
+			return nil, err
+		}
+	}
 	// The block's last step: an inner join's ON-clause EXISTS becomes a
 	// WHERE-EXISTS (on_exists_fold.go), so no plan leaves the builder with a
 	// join carrying its own existential.
@@ -513,11 +519,6 @@ func (v *PlanVisitor) visitSimpleTableBody(simpleTable *antlrgen.SimpleTableCont
 func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleTableContext) (logical.LogicalOperator, error) {
 	// Step 1: FROM → parse the source first. Java's QueryVisitor
 	// rejects FROM-less SELECTs before any function dispatch, so
-	if v.enclosingScope != nil {
-		if err := requireResolvedLimitClause(simpleTable); err != nil {
-			return nil, err
-		}
-	}
 	// parseFromSource must run before classification/validation.
 	fs, err := parseFromSource(simpleTable)
 	if err != nil {
@@ -1112,7 +1113,7 @@ func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleT
 
 	// (9) Upgrade JOIN ON predicates.
 	if len(sq.joins) > 0 {
-		if err := upgradeJoinOnPredicates(op, sq, v.md, v.schemaName, queryCTEScopes, v.cteOnScopes); err != nil {
+		if err := upgradeJoinOnPredicates(op, sq, v.md, v.schemaName, queryCTEScopes, v.cteOnScopes, v.cteBodies); err != nil {
 			return nil, err
 		}
 	}
@@ -1126,6 +1127,7 @@ func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleT
 
 	// (11) Create a unified SubqueryPlanner for EXISTS/scalar subqueries.
 	existsPlanner := &existsSubqueryPlanner{
+		bindings:    v.bindings,
 		md:          v.md,
 		schemaName:  v.schemaName,
 		outerScope:  resolverScope(resolver),
@@ -1159,16 +1161,6 @@ func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleT
 	if sq.havingExpr != nil {
 		if herr := upgradeHavingPredicate(op, sq, v.md, v.schemaName, queryCTEScopes, existsPlanner); herr != nil {
 			return nil, herr
-		}
-		// RFC-180 correct-or-loud: a CORRELATED scalar subquery minted by the
-		// HAVING walk has no grouped-output lowering. WHERE has its own
-		// LEFT-scalar materialization, but HAVING would need to preserve the
-		// grouped row while exposing and then hiding the private scalar slot.
-		// The projection attach (13) already ran and cleared its lists, so an
-		// unattached alias here would reach runtime unbound. Decline typed.
-		if len(existsPlanner.correlatedScalarSubqueries) > 0 {
-			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
-				"correlated scalar subquery in a HAVING predicate is not supported")
 		}
 	}
 
@@ -1220,10 +1212,6 @@ func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleT
 		return op, nil
 	}
 
-	if resolver != nil {
-		resolver.SetSubqueryPlanner(existsPlanner)
-	}
-
 	// RFC-141 R4: an EXISTS atom in the WHERE clause is directly-handled
 	// only when it is a top-level boolean term (the whole WHERE, an AND conjunct,
 	// or a single-NOT). An EXISTS nested inside a SCALAR expression — `WHERE CASE
@@ -1241,7 +1229,7 @@ func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleT
 
 	var preWalkPred predicates.QueryPredicate
 	if resolver != nil && sq.whereExpr.Expression() != nil {
-		walked, walkErr := resolver.WalkPredicate(sq.whereExpr.Expression())
+		walked, walkErr := walkSubqueryPredicate(resolver, existsPlanner, sq.whereExpr.Expression())
 		if walkErr != nil {
 			// Classify the walk failure through the SHARED mapper (the same one the
 			// projected-EXISTS path and every mapPredicateWalkError caller use) so
@@ -1347,21 +1335,23 @@ func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleT
 // sources cannot share runtime correlations with any enclosing frame. A local
 // deterministic mint avoids exposing global planning history in carrier labels.
 func (v *PlanVisitor) assignDerivedSourceBindings(fs *fromSource) {
-	if fs == nil || v.enclosingScope == nil {
+	if fs == nil {
 		return
 	}
-	visible := make(map[string]struct{})
-	reserve := func(name string) {
-		if name != "" {
-			visible[strings.ToUpper(name)] = struct{}{}
-		}
+	if v.bindings == nil {
+		v.bindings = &bindingAllocator{}
 	}
+	if fs.bindings == v.bindings {
+		return
+	}
+	fs.bindings = v.bindings
+	reserve := v.bindings.reserve
 	for frame := v.enclosingScope; frame != nil; frame = frame.Parent() {
 		for _, source := range frame.Sources() {
 			reserve(source.Alias.Name())
 			reserve(source.CorrelationName)
-			for _, qualifier := range source.AdditionalQualifiers {
-				reserve(qualifier.Name())
+			for _, name := range source.AdditionalQualifiers {
+				reserve(name.Name())
 			}
 		}
 	}
@@ -1374,45 +1364,26 @@ func (v *PlanVisitor) assignDerivedSourceBindings(fs *fromSource) {
 	for name := range v.cteBodies {
 		reserve(name)
 	}
-	enclosing := maps.Clone(visible)
-	reserveSource := func(table, alias, binding string, segments []string, explicit bool) {
-		reserve(table)
-		reserve(alias)
-		reserve(binding)
-		// A default schema-qualified table/array alias names its final
-		// captured segment, not the rendered path. Explicit aliases are literal.
-		if !explicit && (alias == "" || alias == table) && len(segments) > 0 {
-			reserve(segments[len(segments)-1])
-		}
+	reserve(fs.tableName)
+	reserve(fs.tableAlias)
+	reserve(fs.bindingID)
+	for _, segment := range fs.sourceSegments {
+		reserve(segment)
 	}
-	reserveSource(fs.tableName, fs.tableAlias, fs.bindingID, fs.sourceSegments, fs.tableAliasExplicit)
 	for _, j := range fs.joins {
-		reserveSource(j.tableName, j.alias, j.bindingID, j.segments, j.aliasExplicit)
+		reserve(j.tableName)
+		reserve(j.alias)
+		reserve(j.bindingID)
+		for _, segment := range j.segments {
+			reserve(segment)
+		}
 	}
-	candidate := 0
-	mint := func() string {
-		id := mintDistinctUpper(visible, func() values.CorrelationIdentifier {
-			name := "Q$DERIVED" + strconv.Itoa(candidate)
-			candidate++
-			return values.NamedCorrelationIdentifier(name)
-		})
-		reserve(id)
-		return id
+	if v.enclosingScope == nil {
+		return
 	}
-	if fs.derivedQuery != nil && fs.bindingID == "" {
-		fs.bindingID = mint()
-	}
+	fs.bindingID = strings.ToUpper(v.bindings.mint().Name())
 	for i := range fs.joins {
-		j := &fs.joins[i]
-		if j.derivedQuery == nil {
-			continue
-		}
-		// Same-level duplicate assignment already distinguishes these legs.
-		// Keep it unless the enclosing environment occupies that identity.
-		_, collision := enclosing[strings.ToUpper(j.bindingID)]
-		if j.bindingID == "" || collision {
-			j.bindingID = mint()
-		}
+		fs.joins[i].bindingID = strings.ToUpper(v.bindings.mint().Name())
 	}
 }
 
@@ -1459,7 +1430,7 @@ func (v *PlanVisitor) visitFrom(simpleTable *antlrgen.SimpleTableContext, fs *fr
 	var op logical.LogicalOperator
 	if fs.inlineValues != nil {
 		var err error
-		op, err = buildInlineValuesLogical(fs.inlineValues, fs.tableAlias, "", v.md)
+		op, err = buildInlineValuesLogical(fs.inlineValues, fs.tableAlias, fs.bindingID, v.md)
 		if err != nil {
 			return nil, err
 		}
@@ -1484,7 +1455,9 @@ func (v *PlanVisitor) visitFrom(simpleTable *antlrgen.SimpleTableContext, fs *fr
 		// query with "projection slot 0 has no resolved Value".
 		op = derivedSourceCarrier(fs.tableName, fs.bindingID, innerOp)
 	} else {
-		op = logical.NewScan(fs.tableName, fs.tableAlias, fs.sourceSegments...)
+		scan := logical.NewScan(fs.tableName, fs.tableAlias, fs.sourceSegments...)
+		scan.Binding = fs.bindingID
+		op = scan
 	}
 
 	// JOINs chain left-to-right from the primary scan. Each join wraps
@@ -2277,15 +2250,15 @@ func qualifyShadowedSortKeys(op logical.LogicalOperator, resolver *expr.Resolver
 // syntax error: the grammar accepts any decimalLiteral here, but a
 // non-integer one is invalid and must be REJECTED, never silently dropped
 // (the old code left the no-limit / zero-offset sentinel, so `LIMIT 0.0`
-// returned ALL rows instead of none). A preparedStatementParameter (`LIMIT
-// ?`) is not resolvable at plan time; it returns ok=false with no error so the
-// caller keeps its sentinel (parameter binding is a separate concern).
+// returned ALL rows instead of none). Driver parameters are substituted before
+// query construction. A remaining parameter is unresolved and must fail here,
+// never become the absent-limit/zero-offset sentinel on another builder path.
 func resolveLimitAtom(atom antlrgen.ILimitClauseAtomContext) (val int64, ok bool, err error) {
 	if atom == nil {
 		return 0, false, nil
 	}
 	if atom.PreparedStatementParameter() != nil {
-		return 0, false, nil
+		return 0, false, api.NewError(api.ErrCodeUnsupportedQuery, "a query with a planning-time unresolved LIMIT/OFFSET is not supported")
 	}
 	text := atom.GetText()
 	v, perr := strconv.ParseInt(text, 10, 64)
@@ -2449,12 +2422,7 @@ func (v *PlanVisitor) visitUnion(setQ *antlrgen.SetQueryContext) (logical.Logica
 	if setQ == nil {
 		return nil, nil
 	}
-	// BOTH maps must be empty to short-circuit to the scope-less variant — the
-	// THIRD instance of the empty-scope hole (the review-proven union-branch
-	// cross-product): a join/unnest-bodied CTE lives ONLY in cteOnScopes, and
-	// dropping it here silently dropped a union branch's join ON.
-	if len(v.cteScopes) == 0 && len(v.cteOnScopes) == 0 && (v.schemaName == "" || v.schemaName == defaultEmbeddedSchema) {
-		return buildLogicalPlanForUnionWithCatalog(setQ, v.md)
-	}
-	return buildLogicalPlanForUnionWithCTECatalog(setQ, v.md, v.schemaName, v.cteScopes, v.cteOnScopes, v.inRecursiveCTEBody)
+	// Branches are built by this same owner: schemas alone cannot preserve an
+	// enclosing CTE definition or the lexical parent of a scalar in a branch.
+	return v.buildLogicalPlanForUnion(setQ, v.inRecursiveCTEBody)
 }

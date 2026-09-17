@@ -126,6 +126,7 @@ func stripGroupKeyLeadingSegment(k logical.GroupKey, stripped string) logical.Gr
 }
 
 type selectQuery struct {
+	bindings *bindingAllocator
 	// selectClassification holds all SELECT-list, GROUP BY, HAVING,
 	// ORDER BY, and aggregate classification fields. Embedded so that
 	// sq.projCols, sq.aggCols, etc. continue to work as before.
@@ -864,6 +865,7 @@ func selectQueryFromClassification(cls *selectClassification, fs *fromSource) *s
 	}
 	if fs != nil {
 		sq.enclosingScope = fs.enclosingScope
+		sq.bindings = fs.bindings
 		sq.tableName = fs.tableName
 		sq.tableAlias = fs.tableAlias
 		sq.tableAliasExplicit = fs.tableAliasExplicit
@@ -2052,70 +2054,6 @@ func harvestAggregates(expr antlrgen.IExpressionContext) []aggSelectCol {
 	return out
 }
 
-// queryInnerIsExactlyOneRowBeforePagination reports whether an EXISTS subquery
-// body is a NON-GROUPED aggregate that produces EXACTLY ONE row before its
-// LIMIT/OFFSET is applied. A non-grouped COUNT(*)/MAX/SUM yields one row even
-// over an empty (post-WHERE) input (COUNT->0, MAX/SUM->NULL). GROUP BY and
-// HAVING/QUALIFY can change that cardinality, while a WINDOWED aggregate is
-// row-preserving (one output per input row), so those shapes are excluded.
-//
-// Pagination is deliberately not inspected here. The caller first establishes
-// this one-row cardinality and only then applies LIMIT/OFFSET, matching SQL's
-// operator order.
-func queryInnerIsExactlyOneRowBeforePagination(q antlrgen.IQueryContext) bool {
-	if q == nil {
-		return false
-	}
-	body, ok := q.QueryExpressionBody().(*antlrgen.QueryTermDefaultContext)
-	if !ok {
-		return false
-	}
-	if _, stOk := body.QueryTerm().(*antlrgen.SimpleTableContext); !stOk {
-		return false
-	}
-	sq, err := extractFromQueryTerm(body)
-	if err != nil || sq == nil {
-		return false
-	}
-	if len(sq.groupBy) > 0 || sq.havingExpr != nil || sq.qualifyExpr != nil {
-		return false
-	}
-	hasRealAggregate := sq.countStar
-	for i := range sq.aggCols {
-		if sq.aggCols[i].aggFunc != "" {
-			hasRealAggregate = true
-			break
-		}
-	}
-	if !hasRealAggregate {
-		return false
-	}
-	return !queryScopeHasWindowedAggregate(body)
-}
-
-// queryScopeHasWindowedAggregate reports whether THIS query's own SELECT (not a
-// nested subquery's) contains a windowed aggregate (`… OVER (…)`). Stops at
-// nested query scopes — their window functions belong to them.
-func queryScopeHasWindowedAggregate(n antlr.Tree) bool {
-	if n == nil {
-		return false
-	}
-	if awf, ok := n.(*antlrgen.AggregateWindowedFunctionContext); ok && awf.OverClause() != nil {
-		return true
-	}
-	for i := 0; i < n.GetChildCount(); i++ {
-		c := n.GetChild(i)
-		switch c.(type) {
-		case *antlrgen.QueryContext, antlrgen.IQueryExpressionBodyContext:
-			continue // a nested subquery scope
-		}
-		if queryScopeHasWindowedAggregate(c) {
-			return true
-		}
-	}
-	return false
-}
-
 // aggColFromAwf reconstructs an aggSelectCol from an AggregateWindowedFunction
 // context via the shared extractAwfFields helper. Output name matches the
 // HAVING resolver's lookup name and the SELECT-list default alias
@@ -2145,6 +2083,7 @@ func aggColFromAwf(awf *antlrgen.AggregateWindowedFunctionContext) (aggSelectCol
 // builds the operator tree directly from ANTLR) share a single parsing
 // path.
 type fromSource struct {
+	bindings           *bindingAllocator
 	enclosingScope     *semantic.Scope
 	tableName          string
 	tableAlias         string

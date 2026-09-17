@@ -350,12 +350,6 @@ func (t *cascadesTranslator) translateExistsOverGatheredCluster(
 	if !t.gatesAsFreshCluster(join) {
 		return nil
 	}
-	if t.declineNegatedOuterOnlyEsqValue(resultOverride, f.ExistsSubqueries) {
-		return nil
-	}
-	if t.declineNegatedOuterOnlyEsq(f.Predicate, f.ExistsSubqueries) {
-		return nil
-	}
 
 	// From here on, translation has a SIDE EFFECT the fallback path would repeat:
 	// translateSubqueryRef registers any uncorrelated scalar subquery nested in
@@ -441,12 +435,21 @@ func (t *cascadesTranslator) translateExistsOverGatheredCluster(
 		// (rebaseUnnestOuterLegPredicateOrdinal). A leg reference the rebase cannot
 		// resolve (a shape deeper than the top-level filter) still survives and the
 		// post-translation check below declines it — correct-or-decline.
+		if filter, ok := esq.Plan.(*logical.LogicalFilter); ok && filter.Predicate != nil {
+			var rebased bool
+			esq, rebased = rebaseExistsInputPredicates(esq, func(pred predicates.QueryPredicate) (predicates.QueryPredicate, bool) {
+				return rebaseLegRefsToBoxPred(pred, windows, mergedType, boxQOV)
+			})
+			if !rebased {
+				return nil
+			}
+		}
 		if baked, ok := rebaseBuriedExistsPlanLegRefs(esq.Plan, windows, mergedType, boxQOV); ok {
 			esq.Plan = baked
 		} else {
 			return nil
 		}
-		subRef := t.translateSubqueryRef(esq.Plan)
+		subRef := t.existsInputRef(esq)
 		if subRef == nil {
 			return nil
 		}

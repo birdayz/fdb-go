@@ -17,7 +17,11 @@ type ExistsSubquery struct {
 	// FlowedType is the exact whole-row type of Plan. It is captured when the
 	// subquery is built so every ExistsValue and existential Quantifier use one
 	// stable type authority rather than re-deriving a placeholder type.
-	FlowedType    values.Type
+	FlowedType values.Type
+	// Input owns the lowered producer and its scalar edges. Plan retains the
+	// bound logical source/placement information; it is not rebuilt to type or
+	// translate an attachment that already owns Input.
+	Input         *ExistsInput
 	Plan          LogicalOperator
 	JoinPredicate predicates.QueryPredicate
 	// KnownTruth is non-nil when the front-end can prove the EXISTS result from
@@ -28,22 +32,10 @@ type ExistsSubquery struct {
 	// substitutes the constant in positive and negated WHERE consumers instead
 	// of building a correlated semi-join. Nil means the result is data-dependent.
 	KnownTruth predicates.TriBool
-	// OuterOnlyJoinConjuncts marks a JoinPredicate carrying conjuncts with
-	// NO inner-source reference that can FILTER (a nested-EXISTS middle
-	// routes them here; the inside placement does not plan for that
-	// composition; statically-TRUE tautologies are excluded - routing TRUE
-	// is a no-op). The outer-routing validity matrix, enforced by
-	// declineNegatedOuterOnlyEsq (predicate side) and
-	// declineNegatedOuterOnlyEsqValue (value side) in the translator:
-	//
-	//	WHERE/ON + positive  -> VALID   (P AND EXISTS(Q) == EXISTS(P AND Q))
-	//	WHERE/ON + negative  -> DECLINE (would compute P AND NOT-EXISTS(Q))
-	//	projected + either   -> DECLINE (outer-routing filters the row
-	//	                        stream; a projected boolean must not)
-	//
-	// HAVING is kept out of the surface by translateAggregate's blanket
-	// rejection of HavingExistsSubqueries.
-	OuterOnlyJoinConjuncts bool
+	// Constraint is an admission requirement, independent of dependency and
+	// predicate placement. Only the completed owning clause can discharge it.
+	Constraint ExistsConstraint
+	consumers  ExistsConsumer
 }
 
 // ScalarSubquery pairs a correlation alias with the logical plan for
@@ -202,6 +194,10 @@ func (u *LogicalUnnest) Explain(indent string) string {
 // builder is constructed without a metadata-backed catalog (the
 // catalog-less Explain path, which has no transaction in scope).
 type LogicalFilter struct {
+	// HasQualify preserves the owning block's clause provenance when QUALIFY
+	// is combined with WHERE. Correlated EXISTS admission must not infer that
+	// provenance from a predicate that may already have folded to a constant.
+	HasQualify                 bool
 	Input                      LogicalOperator
 	Predicate                  predicates.QueryPredicate  // preferred when non-nil
 	PredicateText              string                     // source-text fallback
@@ -829,7 +825,16 @@ func (k JoinKind) String() string {
 // predicate). OnPredicate is the optional structured form (used by
 // the catalog-aware walker); when non-nil, it takes precedence over
 // OnText for Cascades lowering.
+// BoundJoinPredicate retains ON provenance before existential folding. The
+// source identities describe the left-to-current frame, never later joins.
+type BoundJoinPredicate struct {
+	Predicate       predicates.QueryPredicate
+	Exists          []ExistsSubquery
+	VisibleBindings []values.CorrelationIdentifier
+}
+
 type LogicalJoin struct {
+	BoundOn     *BoundJoinPredicate
 	Left        LogicalOperator
 	Right       LogicalOperator
 	Kind        JoinKind
@@ -1052,6 +1057,9 @@ func (v *LogicalValues) Explain(indent string) string {
 // self-reference (the recursive evaluator lives at the executor
 // layer for now).
 type LogicalCTE struct {
+	// Alias retains a derived source's SQL qualifier independently of its
+	// private CTE registration Name (empty = Name is also the qualifier).
+	Alias          string
 	Name           string
 	Body           LogicalOperator
 	Main           LogicalOperator
@@ -1062,7 +1070,7 @@ type LogicalCTE struct {
 	// scans in Main, but the envelope does not replace Main's outward source
 	// identity. Correlated EXISTS/Scalar plans use this when they copy enclosing
 	// CTE definitions into a self-contained subplan. Derived-table alias carriers
-	// leave it false because their CTE name deliberately IS the outward alias.
+	// leave it false because their binding is the outward source identity.
 	PreserveMainSource bool
 	// Binding is the derived/CTE leg's binding correlation name when its
 	// FROM alias duplicates an earlier leg's ("" = Name binds). See
