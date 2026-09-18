@@ -944,10 +944,9 @@ func (t *cascadesTranslator) derivedOutputColumns(op logical.LogicalOperator) []
 				// A qualified-but-unaliased passthrough (`SELECT t.arr FROM t`)
 				// flows under the BARE column name — the resolver emits the
 				// verbatim OUTPUT attribute (col.Id.Name(), qualifier-free), so
-				// the runtime slot is keyed bare. Mirrors projectionOutputNames
-				// (the class-3 derived-unnest authority); keeping the dotted
-				// spelling here mis-keys the boundary layout and silently declines
-				// the qualified-passthrough unnest case.
+				// the runtime slot is keyed bare. This is the legacy name-only
+				// fallback; a typed or ordinal projection uses exactFields above,
+				// preserving its actual runtime field names.
 				name = name[dot+1:]
 			}
 			fieldType := values.Type(values.UnknownType)

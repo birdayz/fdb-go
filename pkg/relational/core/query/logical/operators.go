@@ -123,9 +123,9 @@ type LogicalUnnest struct {
 	// Binding carries the comma source's duplicate-alias binding id
 	// (see LogicalScan.Binding) so the
 	// TABLE-FIRST demotion (demoteSchemaQualifiedUnnest) can restore it on
-	// the demoted LogicalScan — a mis-classified schema-qualified TABLE leg
-	// is a table leg for binding purposes. A GENUINE unnest never consumes
-	// it: a duplicate unnest AS/AT alias is rejected outright (RFC-142).
+	// the demoted LogicalScan. A genuine unnest consumes the same identity;
+	// repeated SQL labels do not replace it or collapse element/ordinal
+	// slots (RFC-256).
 	Binding string
 	// Alias is the AS alias (`x` in `... AS x`) bound to each unnested
 	// element. Empty when the AS alias is omitted (AT-only form).

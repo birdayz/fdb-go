@@ -5012,3 +5012,176 @@ hunts, performance acceptance, final published-SHA review/CI, Claude or merge
 authority. The reviewed/tested tree predates this closing documentation, so normal
 hooks and final SHA confirmation still apply. The known numeric-record-array
 failures and immediate stacked Java-upgrade/parity obligation remain unchanged.
+
+### Published-review follow-up: quoted lexical aliases in EXISTS admission
+
+At published `6b833ba3c28b8266c00670e778f7497d07a188b7`, the retained
+`BoundExistsSourceConformance` reproduction demonstrates false rejection of
+quoted lowercase `"a"` versus unquoted `A`. Java 4.12.11.0 returns `[[1]]` for
+both outer/inner orientations and for an early correlated ON followed by a
+later `A` source; Go reports the scope-ambiguous or later-source-collision error.
+The distinct-letter control succeeds on both engines. This is not authorization
+to remove the existing multi-source EXISTS admission boundaries.
+
+Java reference: `SemanticAnalyzer.normalizeString` preserves quoted case;
+`Identifier.equals` compares normalized names exactly; `SemanticAnalyzer.lookup`
+compares identifiers, not a second uppercase rendering. Go's semantic scope
+already has that contract. `bound_exists_on.go` folds the captured lexical names
+again, conflating distinct identifiers after correct binding.
+
+**Design:** preserve normalized lexical spellings in `boundSourceNames`,
+`parentLexicalNames` and the inherited-name map in `lowerBoundOn`. Leave canonical
+runtime correlation names and predicate identity comparisons unchanged. The
+compatibility-only `boundScopeAmbiguous` check must require BOTH the same lexical
+alias and the existing parent-binding collision from the SAME parent source;
+private/minted parents must not start failing merely because their display name
+repeats. Do not combine independently populated lexical/binding sets: two parents
+could otherwise supply different halves of a false collision. Preserve identical
+quoted aliases, identical unquoted aliases, lexical aliases equal after SQL
+normalization, and the existing private-parent/no-predicate/single-source guards.
+
+The UNNEST frame check also conflates the lexical names. Its independent inner
+query should be accepted for `"a"` versus `A`. A correlated multi-source child
+reading the outer element still reaches the separate translator restriction
+(`EXISTS with a multi-table FROM referencing the unnest element is not supported`),
+just like the distinct-letter control. Retain both original correlated probes
+with that exact existing error; add independent inner controls that test the
+lexical fix without claiming broader correlated-UNNEST support.
+
+Executable scope: retained dual-engine SQL probes plus unit coverage of the
+source-name shapes, quoted/unquoted pairs, minted parents and later-ON visibility.
+Capture the red run, then compiled semantic reversions and fixed-source runs.
+Design ACKs precede the production edit; implementation/final-head reviews and
+full verification remain mandatory. Artifacts:
+`/var/tmp/query-grind-cast/pr785-review/owner-split/claude-followup/`.
+
+### Published-review follow-up: shared producer classification scope
+
+The reported `rebuildInnerInScope` cache concern is in
+`pkg/relational/core/query/clustered_outer_scalar.go`, not `embedded`.
+`TestClusteredCTESharedProducerConsumerOrder` reproduces it on the public logical
+representation: two joined scans retain the same producer; its definition reads
+outer A, while one consumer is itself aliased A. The classifier passes the whole
+consumer frame as its skip set. The first scan removes only its own name before
+walking the definition, then caches that rewritten producer. Reversing A/X scan
+order changes whether definition-time A is seen. Initial run: three Go outcomes,
+one PASS and two FAIL (root plus colliding-consumer-last). This is an actual
+classification defect, not a reproduced SQL wrong-row claim.
+
+The retained SQL probe for both scan orders and bare/quoted aliases already
+returns `[[1,1],[2,NULL]]` in Go at the unchanged implementation: construction
+mints distinct consumer bindings and retains the defining envelope. Java
+4.12.11.0 rejects WITH inside the scalar expression with 42601; retain that
+observed grammar boundary, not a manufactured Java-success expectation. Go's
+existing read-side shape has an independent seeded-row oracle. No new syntax or
+admission is introduced by this repair.
+
+Java's `QueryVisitor.visitNamedQuery` constructs the body before registering the
+named operator; `LogicalOperator.withNewSharedReferenceAndAlias` creates a fresh
+consumer quantifier over the shared definition. `Value.translateCorrelations`
+uses bound correlation identities. A consumer's current FROM bindings therefore
+cannot become the definition's lexical environment.
+
+**Design:** in the retained-scan branch, build an uncached producer's body scope
+from the enclosing frame (`scope.parent`, nil-safe), not the current consumer
+frame minus only this occurrence's alias. Still mask the body's own bindings and
+retain all ancestor frames. An explicit LogicalCTE envelope continues preparing
+its definition before Main and supplies the cached snapshot. Keep one immutable
+snapshot per producer within this traversal; keying by consumer spelling would
+preserve the erroneous dependence rather than fix it. Preserve recursive and
+unknown-carrier declines and never mutate the shared original.
+
+Regression scope includes both scan orders, multiple definition-time free refs,
+body-local/inherited masks, distinct private consumer bindings, shared rewritten
+producer identity, and unchanged originals. Compiled reversion must lose the
+free references again. The existing lexical-boundary/nested-scope tests and SQL
+probe remain. Design ACKs are required before this production edit; full-suite,
+race, implementation review and published-head gates remain outstanding.
+Artifacts share `owner-split/claude-followup/` with the quoted-alias repair.
+
+#### Follow-up implementation evidence before full verification
+
+Both bounded designs received Graefe/Torvalds ACKs in their existing read-only
+`gpt-6-astra/xhigh` sessions. The quoted-name fix is confined to lexical admission
+comparisons; runtime canonicalization is unchanged. The CTE fix removes the whole
+consumer frame only on an uncached retained-producer visit, preserving ancestors,
+body locals and explicit-envelope cache reuse.
+
+- Restored quoted-name scope: 50 Go RUN/PASS. Three selected Ginkgo specs pass,
+  including 20 named quoted-alias engine outcomes. Unordered multi-row controls
+  use exact multiset comparison; the separately retained ordered variants pin
+  Java's existing UnableToPlanException and Go's in-memory-sort extension.
+- Seven quoted-name semantic mutants compile and fail retained assertions:
+  full revert, binding-only classification, parent/source/ON lexical folds,
+  EqualFold in place of runtime uppercase identity, and independently populated
+  parent sets. Fixed bytes were restored and rerun green. The dotless-i/Kelvin
+  unit controls distinguish canonical uppercase from Unicode EqualFold.
+- Restored clustered-CTE scope: 12 Go RUN/PASS, including both consumer orders,
+  private bindings, two free refs, ancestor/body-local masks, nil entry and
+  explicit-envelope cache reuse. Four final mutants compile and fail: original
+  exclusion, dropped ancestors, dropped body masks and ignored cache. The first
+  cache mutant was rejected by nogo and earns no semantic credit; corrected v2
+  ran and failed. The four-case SQL probe passes its independent Go row oracle
+  and explicitly pins Java's 42601 scalar-WITH grammar boundary.
+- An early combined-target command passed Ginkgo-only flags to the plain Go
+  target, so that target ran no tests. Its separate corrected run supplies the
+  unit red evidence. An initial fix spelling triggered SA6005; the final code
+  caches the exact uppercase identity instead of changing it to EqualFold.
+
+RFC-142 now explicitly reconciles the superseded AS==AT rejection and UNNEST
+shadowing contract; remaining deleted-guard references are marked historical.
+Transport pooling and projection-boundary comments describe the actual current
+mechanisms. No client code or wire behavior changes in this follow-up.
+
+The PR body's three-snapshot statement now explicitly refers to the 43-file
+`6b833ba3c` repair, not the entire PR. Against `ed3504f7e4`, published `6b833ba3c`
+changes ten `.golden` files (the accumulated plan-shape work and nine simulation
+output-label files). This follow-up changes none. The plan-shape digest remains
+`8f8b13c16a055347c698230810cd22a2dcf05d73bdd661f68a937edf67538b14`.
+Full verification, milestone delta reviews, publication and new-head CI/review
+are not claimed by these focused results.
+
+### Final follow-up verification and owner merge authorization
+
+On 2026-09-18 the owner explicitly requested merging PR #785. This supersedes
+all earlier publication-only/no-merge authorization checkpoints in this RFC and
+TODO; it is not a claim that unrun tests passed. The accepted pinned-parent
+structured-promotion limitation and immediate full-parity Java successor remain.
+The common 4.14.2.0 candidate still needs the requested version confirmation;
+there are no upgrade-pin, Java-checkout, golden or upstream-PR changes here.
+
+Graefe, Torvalds, C++ and independent Codex ACKed the complete 17-path follow-up
+at `285739a5f8d1837cee2523d57aa4426f03f51d82`, retaining prior full-PR coverage.
+The full 92-target execution then found one stale-citation regression: 40,362 Go
+RUN = 40,356 PASS + one FAIL + five restricted opt-in SKIP. RFC-238's moved
+references now point at the field-name assignments; the existing test and census
+floor are unchanged. Three focused uncached citation/census tests pass. The
+failed full run is retained, not relabeled green. The first subsequent hook
+rejected the closing TODO's future-version citation under the current-pin-only
+living-doc contract. The candidate remains recorded in this RFC; TODO now links
+here rather than naming a non-current pin. No test or census assertion changed;
+that failed hook is retained under `claude-followup/publish/attempt1/`.
+
+The corrected tree `33744cee59417c1d8bf341b3faf0534e7cce9b8b`, over published
+`6b833ba3c28b8266c00670e778f7497d07a188b7`, differs from the reviewed tree only
+by those documentation citations. Five complete affected race targets pass
+9,600 RUN/PASS with no skips or unmatched outcomes. Two baseline and two current
+million-row samples pass 24 RUN/PASS each; all 22 timed row populations agree and
+COUNT(*) independently asserts 1,000,000. All nine race/stress target results are
+uncached by both BEP summary and per-result cache fields, and all 6,186 source
+hashes stayed fixed. Baseline `ed3504f7e410d8e2a4f4c46fd7b4c72fd0484869` is
+the 2026-09-18 merge-base, not moving master. The checkouts share filesystem and
+SDK input, with serialized samples and no concurrent local test jobs. Full
+individual timings, loads and slower observations are in TODO **PR #785 final
+follow-up verification and owner merge authorization** and the matching
+`owner-split/claude-followup/v2/stress-rows.json`. No performance parity or
+causal attribution is asserted and no performance work was added.
+
+Closing evidence still precedes the unbypassed commit hook and exact published
+SHA; those full-suite/CI/delta-review gates and completion of Claude's unread
+scope are not pre-claimed. The five restricted factory hunts remain unrun and
+unapproved; ordinary skips are not Docker checks or passing coverage. The owner
+merge request does not manufacture new paging140/eternal3600 or transaction,
+watch and retry evidence. Runtime records and hashes are in
+`owner-split/claude-followup/v2/verified-runtime-results.json`; full failed-run,
+mutation and focused-regression evidence remains in the parent directory.

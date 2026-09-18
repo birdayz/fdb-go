@@ -207,3 +207,172 @@ func TestBoundOnFailureDoesNotPublish(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestBoundAdmissionQuotedLexicalNames(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, outer, inner, binding string
+		extraParent                 bool
+		ordinaryReject              bool
+		unnestReject                bool
+	}{
+		{"quoted_outer", `"a"`, "A", "A", false, false, false},
+		{"quoted_inner", "A", `"a"`, "A", false, false, false},
+		{"identical_quoted", `"a"`, `"a"`, "A", false, true, true},
+		{"identical_unquoted", "a", "A", "A", false, true, true},
+		{"equivalent_quoted_upper", "A", `"A"`, "A", false, true, true},
+		{"private_parent", "A", "A", "PRIVATE_A", false, false, true},
+		{"dotless_i_runtime_uppercase", `"ı"`, `"ı"`, "I", false, true, true},
+		{"kelvin_is_not_runtime_k", `"K"`, `"K"`, "K", false, false, true},
+		{"different_parent_cannot_supply_binding", "A", "A", "PRIVATE_A", true, false, true},
+	} {
+		for _, shadowing := range []bool{false, true} {
+			kind := "ordinary"
+			if shadowing {
+				kind = "unnest"
+			}
+			t.Run(test.name+"/"+kind, func(t *testing.T) {
+				t.Parallel()
+				owner, md := clauseTestOwner(t)
+				scope := semantic.NewScope(nil)
+				add := func(alias semantic.Identifier, binding string, shadow bool) {
+					t.Helper()
+					source, ok := exactVirtualScopeSource(alias.Name(), logical.NewScan("T", alias.Name()), md, nil, nil)
+					if !ok {
+						t.Fatal("missing source type")
+					}
+					source.Alias, source.CorrelationName, source.Shadowing = alias, binding, shadow
+					if err := scope.AddSource(source); err != nil {
+						t.Fatal(err)
+					}
+				}
+				add(semantic.New(test.outer, false), test.binding, shadowing)
+				add(semantic.NewUnquoted("P"), "P", false)
+				if test.extraParent {
+					add(semantic.New(`"a"`, false), "A", false)
+				}
+				owner.outerScope, owner.outerScopes = scope, scope.Sources()
+				q, err := parseQueryFromSelect(t, "SELECT p.id FROM t "+test.inner+", t j WHERE "+test.inner+".id > 0")
+				if err != nil {
+					t.Fatal(err)
+				}
+				bound, err := owner.bindQuery(q)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bound.correlated() {
+					t.Fatal("projection must retain the independent P correlation before EXISTS lowering")
+				}
+				_, err = lowerBoundExists(bound)
+				reject := test.ordinaryReject
+				if shadowing {
+					reject = test.unnestReject
+				}
+				if !reject {
+					if err != nil {
+						t.Fatalf("distinct lexical name or private parent was rejected: %v", err)
+					}
+					return
+				}
+				want := "correlated EXISTS: inner FROM source " + semantic.New(test.inner, false).Name() + " reuses an outer FROM name referenced by the subquery predicate (scope-ambiguous)"
+				if shadowing {
+					want = "EXISTS with a multi-source inner reusing an outer UNNEST-frame source name is not supported"
+				}
+				var unsupported *CorrelatedExistsError
+				if !errors.As(err, &unsupported) || !unsupported.Unsupported || unsupported.Message != want {
+					t.Fatalf("same-name admission changed: got %v, want %q", err, want)
+				}
+			})
+		}
+	}
+}
+
+func TestBoundOnQuotedLaterAlias(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, outer, later string
+		reject             bool
+	}{
+		{"quoted_outer", `"a"`, "A", false},
+		{"quoted_later", "A", `"a"`, false},
+		{"identical_quoted", `"a"`, `"a"`, true},
+		{"identical_unquoted", "a", "A", true},
+		{"equivalent_quoted_upper", "A", `"A"`, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			owner, md := clauseTestOwner(t)
+			alias := semantic.New(test.outer, false)
+			source, ok := exactVirtualScopeSource(alias.Name(), logical.NewScan("T", alias.Name()), md, nil, nil)
+			if !ok {
+				t.Fatal("missing source type")
+			}
+			source.Alias, source.CorrelationName = alias, "PRIVATE_A"
+			scope := semantic.NewScope(nil)
+			if err := scope.AddSource(source); err != nil {
+				t.Fatal(err)
+			}
+			owner.outerScope, owner.outerScopes = scope, scope.Sources()
+			q, err := parseQueryFromSelect(t, "SELECT x.id FROM t x JOIN t b ON b.id = "+test.outer+".id JOIN t "+test.later+" ON "+test.later+".id = x.id")
+			if err != nil {
+				t.Fatal(err)
+			}
+			bound, err := owner.bindQuery(q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lowered, err := lowerBoundExists(bound)
+			if !test.reject {
+				if err != nil {
+					t.Fatalf("distinct later alias was rejected: %v", err)
+				}
+				if _, found := predicates.GetCorrelatedToOfPredicate(lowered.join)[values.NamedCorrelationIdentifier("PRIVATE_A")]; !found {
+					t.Fatal("early ON lost its actual outer binding")
+				}
+				return
+			}
+			var unsupported *CorrelatedExistsError
+			if !errors.As(err, &unsupported) || !unsupported.Unsupported || unsupported.Message != "correlated EXISTS: a JOIN ON references an alias reused as a later inner join source (outer/inner alias collision) is not supported" {
+				t.Fatalf("later-shadow admission changed: %v", err)
+			}
+		})
+	}
+}
+
+func TestBoundSourceNamesKeepLexicalCase(t *testing.T) {
+	t.Parallel()
+	cte := logical.NewCTE("a", logical.NewScan("T", "BODY"), logical.NewScan("T", "MAIN"), false)
+	aliasedCTE := logical.NewCTE("PRIVATE_CTE", logical.NewScan("T", "BODY"), logical.NewScan("T", "MAIN"), false)
+	aliasedCTE.Alias, aliasedCTE.Binding = "a", "private_a"
+	envelope := logical.NewCTE("envelope", logical.NewScan("T", "BODY"), logical.NewScan("T", "a"), false)
+	envelope.PreserveMainSource = true
+	for _, test := range []struct {
+		name string
+		op   logical.LogicalOperator
+		want []boundSourceName
+	}{
+		{"scan", logical.NewScan("T", "a"), []boundSourceName{{"a", "A"}}},
+		{"scan_implicit_alias", logical.NewScan("a", ""), []boundSourceName{{"a", "A"}}},
+		{"scan_private_binding", &logical.LogicalScan{Table: "T", Alias: "a", Binding: "private_a"}, []boundSourceName{{"a", "PRIVATE_A"}}},
+		{"cte", cte, []boundSourceName{{"a", "A"}}},
+		{"cte_private_binding", aliasedCTE, []boundSourceName{{"a", "PRIVATE_A"}}},
+		{"cte_envelope", envelope, []boundSourceName{{"a", "A"}}},
+		{"unnest", &logical.LogicalUnnest{Alias: "a", Binding: "private_a"}, []boundSourceName{{"a", "PRIVATE_A"}}},
+		{"inline_values", &logical.LogicalInlineValues{Alias: "a", Binding: "private_a"}, []boundSourceName{{"a", "PRIVATE_A"}}},
+		{"projection", &logical.LogicalProject{Input: logical.NewScan("T", "a")}, []boundSourceName{{"a", "A"}}},
+		{"join", logical.NewJoin(logical.NewScan("T", "a"), logical.NewScan("T", "B"), logical.JoinInner, ""), []boundSourceName{{"a", "A"}, {"B", "B"}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got := boundSourceNames(test.op)
+			if len(got) != len(test.want) {
+				t.Fatalf("source names = %v, want %v", got, test.want)
+			}
+			for i, want := range test.want {
+				if got[i] != want {
+					t.Fatalf("source %d = %v, want %v (lexical case must not alter runtime canonicalization)", i, got[i], want)
+				}
+			}
+		})
+	}
+}

@@ -312,7 +312,13 @@ func rebuildInnerInScope(op logical.LogicalOperator, rewrite func(values.Value) 
 		}
 		copy, found := copies[producer]
 		if !found {
-			enclosing := scope.withoutCurrent(innerLexicalBindings(o))
+			// The definition predates this entire consumer FROM frame, not
+			// just the first scan's alias. Sibling consumers cannot mask its
+			// free references before the shared snapshot is cached.
+			var enclosing *innerBindingScope
+			if scope != nil {
+				enclosing = scope.parent
+			}
 			bodyScope := &innerBindingScope{parent: enclosing, local: innerLexicalBindings(producer.Body())}
 			body, ok := rebuildInnerInScope(producer.Body(), rewrite, bodyScope, copies)
 			if !ok {

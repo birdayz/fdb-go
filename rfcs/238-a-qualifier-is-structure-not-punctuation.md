@@ -64,8 +64,8 @@ Anything later found to mint a key joins it rather than being argued out of it.
 | `legColumns` | `ToUpper(alias) + "." + ToUpper(col)` (two lines; sweep misses it) | GONE |
 | `logicalLegFields` | `ToUpper(alias) + "." + col` | THE ONE |
 | `scalarSubqueryOrdinalSeed` | `ToUpper(innerAlias) + "." + scalarCol` | GONE |
-| `clustered_outer_scalar.go:626` | `leg.binding + "." + leg.typ.Fields[i].Name` | GONE |
-| `clustered_outer_scalar.go:652` | `ToUpper(innerAlias) + "." + scalarCol` | GONE |
+| `clustered_outer_scalar.go:632` | `leg.binding + "." + leg.typ.Fields[i].Name` | GONE |
+| `clustered_outer_scalar.go:658` | `ToUpper(innerAlias) + "." + scalarCol` | GONE |
 | `qualifyAndMergeColumns` (two sites) | `alias + "." + ToUpper(c.Name)` | GONE |
 | `cascades_translator.go:3609` (unnest leg mint) | `leg + "." + ToUpper(rootName)` | GONE |
 
@@ -313,7 +313,7 @@ than at the end.
 2. Move label derivation off the split, onto the structured qualifier.
 3. Collapse ALL EIGHT renderers, not the first two — including `qualifyAndMergeColumns` (two sites) and the UNNEST leg mint at `cascades_translator.go:3609`, which the table marks GONE and an earlier step list silently left standing: `legColumns`' join arm defers
    to `logicalLegFields`, and `scalarSubqueryOrdinalSeed`,
-   `clustered_outer_scalar.go:626` and `:652` defer to the same boundary, where
+   `clustered_outer_scalar.go:632` and `:658` defer to the same boundary, where
    the descriptor-name decision also moves. Collapsing a subset leaves live
    paths spelling keys independently — and those three already disagree with
    each other on case.

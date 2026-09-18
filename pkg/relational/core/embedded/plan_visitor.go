@@ -465,11 +465,9 @@ func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleT
 			return nil, err
 		}
 	}
-	// An unnest binding two things to ONE range-variable name (`AS X AT X`) is
-	// a binding error, and it belongs here — at FROM analysis, before any
-	// reference is resolved against the scope that binding would build. Left to
-	// translation it survives long enough for a SELECT-list reference to see
-	// the name twice in one source and report an ambiguity instead. RFC-142.
+	// Repeated SQL labels (including AS X AT X) are legal here. Resolution
+	// reports ambiguity only when a reference selects competing attributes;
+	// the element and ordinal retain separate physical slots. RFC-256.
 
 	// Step 2: WHERE → wrap with filter directly from ANTLR.
 	op = v.visitWhere(op, simpleTable)

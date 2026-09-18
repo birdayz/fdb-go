@@ -20,7 +20,7 @@ func boundSourceNames(op logical.LogicalOperator) []boundSourceName {
 		if name == "" {
 			name = node.Table
 		}
-		return []boundSourceName{{strings.ToUpper(name), strings.ToUpper(sourceBindingName(node))}}
+		return []boundSourceName{{name, strings.ToUpper(sourceBindingName(node))}}
 	case *logical.LogicalCTE:
 		if node.PreserveMainSource {
 			return boundSourceNames(node.Main)
@@ -29,11 +29,11 @@ func boundSourceNames(op logical.LogicalOperator) []boundSourceName {
 		if name == "" {
 			name = node.Name()
 		}
-		return []boundSourceName{{strings.ToUpper(name), strings.ToUpper(sourceBindingName(node))}}
+		return []boundSourceName{{name, strings.ToUpper(sourceBindingName(node))}}
 	case *logical.LogicalUnnest:
-		return []boundSourceName{{strings.ToUpper(node.Alias), strings.ToUpper(sourceBindingName(node))}}
+		return []boundSourceName{{node.Alias, strings.ToUpper(sourceBindingName(node))}}
 	case *logical.LogicalInlineValues:
-		return []boundSourceName{{strings.ToUpper(node.Alias), strings.ToUpper(sourceBindingName(node))}}
+		return []boundSourceName{{node.Alias, strings.ToUpper(sourceBindingName(node))}}
 	}
 	if children := op.Children(); len(children) == 1 {
 		return boundSourceNames(children[0])
@@ -44,7 +44,7 @@ func boundSourceNames(op logical.LogicalOperator) []boundSourceName {
 func parentLexicalNames(parent []semantic.ScopeSource) map[string]struct{} {
 	names := make(map[string]struct{}, len(parent))
 	for _, source := range parent {
-		names[strings.ToUpper(source.Alias.Name())] = struct{}{}
+		names[source.Alias.Name()] = struct{}{}
 	}
 	return names
 }
@@ -66,14 +66,26 @@ func boundScopeAmbiguous(pred predicates.QueryPredicate, from logical.LogicalOpe
 	if len(sources) < 2 || pred == nil {
 		return ""
 	}
-	outer := parentBindingNames(parent)
 	refs := predicates.GetCorrelatedToOfPredicate(pred)
 	for _, source := range sources {
-		if _, collision := outer[source.lexical]; !collision {
+		if _, read := refs[values.NamedCorrelationIdentifier(source.binding)]; !read {
 			continue
 		}
-		if _, read := refs[values.NamedCorrelationIdentifier(source.binding)]; read {
-			return source.lexical
+		lexicalBinding := strings.ToUpper(source.lexical)
+		for _, outer := range parent {
+			// Lexical names are already SQL-normalized; quoted case remains
+			// significant. The same parent must also supply the runtime-name
+			// collision, so private bindings keep their existing exemption.
+			if outer.Alias.Name() != source.lexical {
+				continue
+			}
+			binding := outer.CorrelationName
+			if binding == "" {
+				binding = outer.Alias.Name()
+			}
+			if strings.ToUpper(binding) == lexicalBinding {
+				return source.lexical
+			}
 		}
 	}
 	return ""
@@ -90,7 +102,7 @@ func lowerBoundOn(from logical.LogicalOperator, parent []semantic.ScopeSource) (
 		if binding == "" {
 			binding = source.Alias.Name()
 		}
-		parentNames[values.NamedCorrelationIdentifier(binding)] = strings.ToUpper(source.Alias.Name())
+		parentNames[values.NamedCorrelationIdentifier(binding)] = source.Alias.Name()
 	}
 	allSources := boundSourceNames(from)
 	var lifted []predicates.QueryPredicate

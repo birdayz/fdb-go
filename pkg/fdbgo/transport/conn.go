@@ -111,9 +111,10 @@ func (h *ReplyHandle) KeepReadyOrCancel() bool {
 
 // Release returns the handle to the pool. Call EITHER after a successful receive
 // (no Cancel) OR after Cancel. On the success path h.ch is still set and is
-// pooled here: readLoop deletes the token from the pending map BEFORE delivering,
-// so once the caller has received its reply no further send can race the pool
-// Put. Cancel nils h.ch, so the cancel path never double-pools.
+// pooled here: response publication and token deletion share pendingMu, in that
+// order. Once the caller receives the response, that publisher has no further
+// channel send, and the lock excludes another publisher until deletion. Cancel
+// nils h.ch, so the cancel path never double-pools.
 func (h *ReplyHandle) Release() {
 	if h.ch != nil {
 		putReplyChannel(h.ch)

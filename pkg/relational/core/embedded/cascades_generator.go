@@ -7721,7 +7721,7 @@ func (r *paginatingRows) env() *dst.Env {
 //
 // THAT MAKES IT THE ODD ONE OUT AND THE NOTE IS DELIBERATE. Every other
 // harness-vs-production divergence here was closed by making the HARNESS mirror
-// production -- the target guard, this sweep, rejectDuplicateUnnestAlias. This
+// production -- the target guard and this sweep. This
 // walk is the reverse: production carries it for a path only the harness
 // exercises. Someone will eventually read that as dead weight and simplify it
 // away, so the reason is written down rather than inferred.

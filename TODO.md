@@ -13008,3 +13008,153 @@ parent without claiming recursive structured promotion fixed, then immediately
 verify/confirm the Java release and implement all parity in the stacked successor,
 including the unchanged preserved desired-success tests. No merge is authorized.
 Companion: RFC-256 **Accepted-parent verification completed**.
+
+### PR #785 published-review follow-up (active; parent Java pin unchanged)
+
+Published `6b833ba3c28b8266c00670e778f7497d07a188b7` has seven successful CI
+checks and four exact-published-SHA virtual reviewer confirmations. The published
+Claude review is **not LGTM** and discloses unread test/testdata/docs scope.
+
+- Fresh retained `NumericCastBoundaryConformance` against Java 4.12.11.0 confirms
+  legal unused AS==AT, 42702 when referenced, separate element/ordinal values
+  behind duplicate labels, and ordinary ambiguity for competing UNNEST columns.
+  RFC-142/source prose was stale; the behavior already follows RFC-256's reviewed
+  design. The focused run executed one Ginkgo spec; excluded specs are not pass
+  credit. Its source hashes were stable.
+- The quoted-alias finding is reproduced: quoted `"a"` and bare `A` are distinct
+  SQL names but `bound_exists_on.go` upper-folds lexical admission comparisons.
+  Both orientations and later-source ON fail in Go, succeed in Java; the
+  distinct-letter control succeeds in both. The UNNEST-frame collision also
+  needs lexical equality without removing the separately retained correlated
+  multi-source UNNEST restriction. Design and exact regression scope are in
+  RFC-256, **Published-review follow-up: quoted lexical aliases in EXISTS
+  admission**. Production is unchanged pending design ACKs.
+- Remaining review work: locate/check the reported CTE rewrite-cache concern,
+  correct PR-wide versus latest-repair golden scope and stale transport/type-flow
+  comments, obtain complete published coverage and final-head verification.
+
+Logs/probes/review artifacts are under
+`/var/tmp/query-grind-cast/pr785-review/owner-split/claude-followup/`.
+No additional hunt, performance change, upgrade pin, upstream PR or merge is
+started. The accepted structured-promotion split, five restricted hunts and
+performance/merge gates remain unchanged.
+
+### PR #785 shared-CTE follow-up (active; same published-review repair)
+
+Located the reported cache in `core/query/clustered_outer_scalar.go`. A retained
+logical regression now reproduces order-dependent outer-reference classification
+for two consumers of one producer: first consumer's alias exclusion contaminated
+the cached definition. The exact public SQL probe passes Go before the fix
+(private bindings/defining envelope); pinned Java rejects scalar-expression WITH
+with 42601, so this is not claimed as a Java SQL success or reproduced SQL wrong
+rows. The negative SQL result is retained too.
+
+RFC-256 **Published-review follow-up: shared producer classification scope**
+records the Java definition-versus-consumer contract, nil-safe parent-frame
+repair, test scope and mandatory design gate. The preceding quoted-name repair
+has restored-source green evidence (50 focused Go outcomes; three focused
+Ginkgo specs including 20 quoted-alias engine outcomes) and seven compiled
+semantic mutants, all restored. No implementation/full-PR approval is inferred.
+
+### PR #785 follow-up implementation (focused evidence; full gates pending)
+
+The quoted-alias and shared-CTE repairs described in the two preceding blocks are
+implemented after both design ACKs. RFC-256's **Follow-up implementation evidence
+before full verification** records exact scope and failed intermediate commands.
+Restored-source focused verification: 50 quoted-admission Go outcomes and 12
+clustered-CTE outcomes pass; three selected alias/source/numeric Ginkgo specs and
+one selected CTE-scope spec pass. Seven alias mutants and four final CTE mutants
+compile and fail; exact source restoration is verified. Java scalar-WITH and
+ordered-lateral limitations remain explicit, not conflated with Go's row oracle.
+
+Corrected stale alias/pooling/type-flow prose and the PR body's snapshot scope.
+The three authorized snapshot refreshes belong to `6b833ba3c`'s 43-file repair;
+the full `ed3504f7e4`→`6b833ba3c` diff includes ten golden files (accumulated
+plan-shape work plus nine simulation files). No golden changes in this follow-up.
+Both fresh merge-base million-row samples passed 24 outcomes each; current-tree
+samples, complete suite/race, implementation reviews and final-head gates remain
+pending. No merge or upgrade-pin change is authorized by these results.
+
+### PR #785 final follow-up verification and owner merge authorization
+
+The owner explicitly requested merging PR #785 on 2026-09-18. That supersedes the
+publication-only/no-merge authorization statements in earlier checkpoints here
+and in RFC-256; it does not turn unrun coverage into passes or select an upgrade
+version. The accepted Java 4.12.11.0 structured-promotion/mixed-numeric-record-array
+split and mandatory immediate Java-upgrade/parity successor remain unchanged.
+The verified common-release candidate is recorded in RFC-256 and still awaits
+explicit version confirmation. No pin, Java checkout, golden, new hunt or upstream
+PR changed; this living document names only the current Java pin.
+
+All four existing read-only gpt-6-astra/xhigh reviewers ACKed the complete 17-path
+follow-up at virtual tree `285739a5f8d1837cee2523d57aa4426f03f51d82`, retaining
+their prior full-PR coverage. The fresh 92-target full run then reported 40,362 Go
+RUN = 40,356 PASS + one FAIL + five restricted opt-in SKIP. Its sole failed test,
+`TestRFC238WeakCitesAreTheOnesSection7dNames`, caught line references moved by the
+CTE repair. Corrected the RFC citations to the actual field-name assignments;
+no test expectation or census floor changed. The retained resolution, weak-set
+and repository-census tests reran uncached: three RUN/PASS. Old references are
+absent from tracked Go/Markdown blobs, with both replacement citations as positive
+controls. The failed full run remains evidence, not a passing gate. The first
+commit-hook run next rejected this closing block's literal future Java version:
+living TODO version citations must match the current pin. Moved that candidate
+citation to RFC-256, retaining the successor obligation here. The failed hook is
+preserved under `claude-followup/publish/attempt1/`; no assertion was weakened.
+
+The resulting 18-path tree `33744cee59417c1d8bf341b3faf0534e7cce9b8b`, over
+published `6b833ba3c28b8266c00670e778f7497d07a188b7`, differs from the reviewed
+tree only in those RFC-238 citations. All 6,186 regular-file hashes stayed fixed
+through the complete affected race targets (embedded, core/query, logical,
+SQL driver and transport): five uncached targets, 9,600 RUN/PASS, no skips or
+unmatched outcomes. Two current 1M samples passed 24 RUN/PASS each. Normal
+unmodified generate/lint/build/just-test commit hooks, final published-SHA delta
+confirmation, seven exact-head CI checks and completion of Claude's previously
+unread scope are still required after this closing record; no future result is
+claimed here. Artifacts: `owner-split/claude-followup/` and its `v2/` directory,
+including complete logs/BEP, frozen hashes and `verified-runtime-results.json`.
+
+**Stress test 1M baseline — published-review follow-up.** Baseline commit
+`ed3504f7e410d8e2a4f4c46fd7b4c72fd0484869` (merge-base on 2026-09-18), versus
+parent `6b833ba3c28b8266c00670e778f7497d07a188b7` plus exact 18-path tree
+`33744cee59417c1d8bf341b3faf0534e7cce9b8b`. Both checkouts are on the same
+filesystem under `/var/tmp/query-grind-cast/`, with identical `go.mod` and more
+than 200 GB free. Two baseline samples precede two current samples, serialized;
+no other local test job was launched alongside them. All four runs passed 24
+outcomes; their 22 timed row counts agree, and COUNT(*) independently asserts
+1,000,000. The four stress targets plus five race targets are uncached in both
+BEP summary and individual-result cache fields. Wall time includes build;
+load below is one-minute load at start/end.
+
+baseline-1: 182.269s, load 1.829/4.054; baseline-2: 181.064s, load 4.054/4.202; current-1: 250.693s, load 3.962/4.852; current-2: 188.081s, load 4.852/6.331.
+
+| Query | Rows | Baseline ms (n=2) | Current ms (n=2) | Mean current/base |
+|---|---:|---:|---:|---:|
+| PK lookup id=0 | 1 | 9.745 / 8.762 | 8.750 / 8.597 | 0.937x |
+| PK lookup id=N/2 | 1 | 8.347 / 8.537 | 8.958 / 8.669 | 1.044x |
+| PK lookup id=N-1 | 1 | 7.503 / 5.440 | 6.666 / 6.450 | 1.013x |
+| idx_customer eq | 8 | 8.953 / 7.208 | 7.211 / 6.743 | 0.863x |
+| idx_amount range >9000 | 100017 | 217.882 / 273.791 | 298.246 / 243.721 | 1.102x |
+| idx_status count pending | 1 | 397.232 / 409.385 | 335.196 / 388.595 | 0.897x |
+| full scan filter amount>5000 | 1 | 820.379 / 802.818 | 827.352 / 582.460 | 0.869x |
+| GROUP BY status | 4 | 12.974 / 5.963 | 25.042 / 6.314 | 1.656x |
+| GROUP BY status COUNT only | 4 | 12.706 / 5.693 | 18.511 / 5.907 | 1.327x |
+| SUM by status (aggregate index) | 4 | 22.507 / 5.920 | 13.767 / 5.967 | 0.694x |
+| GROUP BY customer HAVING | 47271 | 726.538 / 683.030 | 649.365 / 605.409 | 0.890x |
+| JOIN 10 orders x customers | 10 | 23.963 / 42.477 | 20.880 / 22.203 | 0.648x |
+| ORDER BY PK (full) | 1000000 | 3946.169 / 3979.620 | 4004.413 / 6900.132 | 1.376x |
+| ORDER BY PK + index filter | 8 | 9.581 / 9.143 | 9.749 / 9.405 | 1.023x |
+| scan all rows ordered | 1000000 | 3789.993 / 3828.593 | 3803.942 / 3870.351 | 1.007x |
+| scan all rows wide | 1000000 | 4052.879 / 4103.485 | 4104.493 / 4121.170 | 1.008x |
+| IN-list 5 values | 46 | 20.870 / 23.966 | 20.240 / 23.597 | 0.978x |
+| PK needle id=999999 | 1 | 5.980 / 6.382 | 6.157 / 6.141 | 0.995x |
+| PK+filter needle id=500000 | 1 | 7.641 / 8.663 | 8.468 / 8.166 | 1.020x |
+| full scan sparse filter | 97 | 3480.230 / 3495.816 | 3476.757 / 3489.646 | 0.999x |
+| UPDATE by index | 8 | 9.411 / 9.624 | 10.271 / 9.613 | 1.045x |
+| DELETE single row | 1 | 6.629 / 6.776 | 7.310 / 7.243 | 1.086x |
+
+All individual samples, including slower observations, are retained in
+`v2/stress-rows.json`. No performance parity or causal attribution is claimed,
+and no performance repair was made. The five restricted factory hunts remain
+unapproved/unrun, not Docker skips or passing coverage. Prior paging140/eternal3600
+and transaction/watch/retry obligations are not newly executed by this follow-up.
+Companion: RFC-256 **Final follow-up verification and owner merge authorization**.
