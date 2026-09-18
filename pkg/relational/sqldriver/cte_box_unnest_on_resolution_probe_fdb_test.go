@@ -218,6 +218,41 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe(t *testing.T) {
 	t.Run("P6_mixed_subquery_and_leg_conjunct", func(t *testing.T) {
 		want(t, `SELECT LA."K", LB."K", "X" `+leftBox+` WHERE LA."K" = 100 AND LB."K" = (SELECT MAX("CV") FROM CC)`)
 	})
+	t.Run("CTE_qualified_path/qualified_declaration", func(t *testing.T) {
+		t.Parallel()
+		want(t, `WITH s.LA AS (SELECT CID AS AID FROM CC) SELECT COUNT(*) FROM s.LA`, "1")
+	})
+	for _, test := range []struct {
+		name, query string
+		rows        []string
+	}{
+		{"literal_projection", `WITH "S.LA" AS (SELECT CID AS OWN_ID FROM CC) SELECT OWN_ID FROM "S.LA"`, []string{"1"}},
+		{"literal_qualified_star", `WITH "S.LA" AS (SELECT CID AS OWN_ID FROM CC) SELECT p.* FROM "S.LA" p`, []string{"1"}},
+		{"literal_join_predicate", `WITH "S.LA" AS (SELECT CID AS OWN_ID FROM CC) SELECT p.OWN_ID FROM CC c JOIN "S.LA" p ON c.CID = p.OWN_ID`, []string{"1"}},
+		{"physical_under_unqualified_cte", `WITH LA AS (SELECT CID AS OWN_ID FROM CC) SELECT AID FROM s.LA ORDER BY AID`, []string{"1", "2"}},
+		{"qualified_declaration_projection", `WITH s.LA AS (SELECT CID AS OWN_ID FROM CC) SELECT p.OWN_ID FROM s.LA p`, []string{"1"}},
+	} {
+		t.Run("CTE_qualified_path/"+test.name, func(t *testing.T) {
+			t.Parallel()
+			want(t, test.query, test.rows...)
+		})
+	}
+	// LA has two rows and CC has one. A quoted-dot CTE must not replace the
+	// schema-qualified physical table, including derived/star reconstruction
+	// and joined-source construction. The quoted reference remains the CTE.
+	for _, test := range []struct {
+		name, query, count string
+	}{
+		{"physical", `SELECT COUNT(*) FROM s.LA`, "2"},
+		{"quoted_cte", `SELECT COUNT(*) FROM "S.LA"`, "1"},
+		{"derived_star_rebuild", `SELECT COUNT(*) FROM (SELECT p.* FROM s.LA p) d`, "2"},
+		{"joined_source", `SELECT COUNT(*) FROM CC c, s.LA p`, "2"},
+	} {
+		t.Run("CTE_qualified_path/"+test.name, func(t *testing.T) {
+			t.Parallel()
+			want(t, `WITH "S.LA" AS (SELECT CID AS AID FROM CC) `+test.query, test.count)
+		})
+	}
 }
 
 // Isolation probes for the P1 failures: single ENCLOSED reference (no double

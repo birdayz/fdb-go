@@ -4176,3 +4176,108 @@ pretend those executions read later documentation bytes. Normal hooks and
 exact published-head full-PR Graefe/Torvalds/C++/Codex approvals, published
 @claude LGTM, CI and the outstanding sweep-permission decision still precede
 merge. The earlier scoped design ACKs do not approve implementation.
+
+#### Published binding-boundary findings at `eea214b7d`
+
+The full-PR sessions returned NAK and explicitly incomplete coverage, not ACKs.
+The metadata entry points and cluster gates still called the mutating binder;
+metadata-free derived reconstruction also sealed a child before its enclosing
+WITH existed. New permanent regressions reproduced both defects: **26/26 Go
+RUN outcomes failed**, with compiled tests, at published `eea214b7d` in the
+isolated `cte-property-boundary` worktree. The initial attempt failed during
+Gazelle tool compilation because `/tmp`'s per-user quota was exhausted and
+receives no regression credit. Re-running with repository-tool TMPDIR under
+`/var/tmp` compiled and exposed the actual failures. Evidence:
+`remaining-acks/cte-property-boundary-{red,built-red}.*`.
+
+The repair preserves the accepted construction/read boundary: property readers
+carry a private lexical registry and row/label caches. A prepared producer uses
+its retained defining registry; an unprepared constructor obtains its defining
+frame from that reader's persistent registry, without publishing into the graph.
+Recursive reference classification uses the same read-only source lookup.
+Metadata-free nested construction must retain an unbound complete graph until
+its enclosing query owns binding. No clone-based parallel planner or locking
+of readers is introduced.
+
+The same review found flattened CTE-name lookup confusing a quoted dot with a
+schema qualifier, and an obsolete `unnestFallbackOrReject` helper. Declarations
+now retain normalized identifier segments; lookup compares those segments when
+the scan carries a parsed path. Legacy string-only constructors retain their
+existing interface. Captured producer and physical ownership still take priority.
+The unused helper is removed, its source descriptions corrected, and the old
+RFC-142/RFC-173 accounts explicitly identified as historical.
+
+The distinguishing FDB regression was compiled red: physical and joined `s.LA`
+returned one CTE row instead of two physical rows; derived/star reconstruction
+failed binding. The quoted CTE control passed. All five initial FDB cells then
+passed, including an already-working qualified declaration control. Follow-up
+projection coverage found the same information loss in SELECT and JOIN ON scope
+construction: a quoted-dot CTE's `OWN_ID` was resolved against physical LA.
+Those scope builders and the catalog normalizer now consume captured segments
+and retained scan ownership, including explicit physical absence. A retained
+producer lacking matching schema metadata is a tombstone, never a physical-table
+fallback. The final ten-cell FDB population passes, including CTE-only projection,
+qualified star, JOIN ON, and physical access beneath an unqualified CTE shadow.
+Evidence: `remaining-acks/cte-qualified-path-red.*`,
+`cte-qualified-declaration-before.*`, `cte-literal-projection-boundary.*`,
+`cte-qualified-scope-fdb*`, and `cte-qualified-scope-fdb-green.*`.
+
+Completing metadata-free construction also exposed dropped nested WITH bodies,
+column aliases, and recursive traversal metadata. Compiled red pins now cover
+those omissions; the builder retains the complete query and declaration options.
+Evidence: `cte-nested-metadata-free-red.*`,
+`cte-nested-alias-metadata-free-red.*`, and `cte-recursive-metadata-free-red.*`.
+The Java basis is QueryVisitor.visitNamedQuery/handleRecursiveNamedQuery and
+Identifier.equals/SemanticAnalyzer.findCteMaybe at tag 4.12.11.0.
+
+The first full-suite attempt (`cte-boundaries-just-test.*`) was cancelled after
+the projection-scope finding and earns no final-tree credit. Eight compiled
+mutants of that earlier frozen binding repair failed and restored exact bytes
+(`cte-boundaries-mutation-verdict.json`); that population predates the SELECT/ON
+scope repair and does not validate those later edits. A transient case-sensitive
+physical-catalog lookup introduced during that repair was caught by the existing
+mixed-case/DML/correlation tests; restoring their established lookup policy made
+the three affected targets pass again (`cte-scope-boundaries-affected-green.*`).
+No expectations, admission guards, or goldens were weakened.
+
+Published `eea214b7d` has seven successful CI checks, but that is not verification
+of these later edits. Final-tree suite/race/mutation/hook evidence and exact
+published-head full-PR approvals remain required; the five opt-in sweeps still
+await permission. Companion: TODO **RFC-256 published binding-boundary findings**.
+
+#### Binding-boundary verification before publication
+
+The next full suite (`cte-scope-boundaries-just-test.*`) completed with
+**91/92 passing targets**: docscheck alone failed because deleting the obsolete
+helper shifted an RFC-238 numeric citation away from its intended mint.
+All three occurrences now cite that mint's current line; the uncached docscheck
+rerun passes without changing the gate or weak-cite floor. The full-run Go
+population was 40,114 RUN = 40,108 PASS + one FAIL + five opt-in SKIP, with no
+unmatched outcomes; 13 captured subprocess diagnostics are not test outcomes.
+This red run plus a docs-only pass is not a final full-tree green.
+
+The repaired executable files subsequently passed the affected four-target
+race population (**2,886 RUN/PASS**) and focused ten-repeat race population
+(**830 RUN/PASS**), with balanced outcomes. **Eleven v4 semantic mutants**
+compiled, failed the intended tests, and restored exact bytes; the restored
+three-target run passed **2,729 RUN/PASS**. Earlier compile/nogo-rejected mutant
+attempts receive no semantic credit. Existing `FuzzTranslateToCascades` executed
+**3,758,546 cases in 15 seconds**, with **no coverage guidance**. The fresh
+real-FDB qualified-source rerun passed its root and all ten cases after the
+case-normalization correction. Evidence under `remaining-acks/`:
+`cte-scope-boundaries-{race,repeat,restored,fuzz,docs-green}.*`,
+`cte-scope-boundaries-v4-mutation-verdict.json`, and `cte-boundary-final-fdb.*`.
+
+Two baseline and two repaired 1M stress runs were serialized on the same
+filesystem, all **24 RUN/PASS** with matching row populations and no skips.
+Baseline was commit `ed3504f7e410d8e2a4f4c46fd7b4c72fd0484869`; repaired input
+was parent `eea214b7dfc5a49a96af05d32a37f1d53afeea2c` plus the frozen 20-path
+repair, Git tree `50c8315b280564fd313995d3c45828b466038913` (before this
+closing documentation). TODO **RFC-256 binding-boundary verification and
+stress (2026-09-18)** records both samples of every measured row, command wall
+times, load and artifact paths. Slower observations are retained; this does
+not establish performance parity or acceptance. No performance fix was made.
+
+Final normal hooks/full-suite execution and published-head full-PR approvals,
+@claude LGTM and CI remain required. The five restricted sweeps still need owner
+permission; these measurements do not waive the no-skip or merge gates.

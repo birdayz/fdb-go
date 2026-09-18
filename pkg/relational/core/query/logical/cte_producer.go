@@ -21,13 +21,43 @@ func (r CTERegistry) With(p *CTEProducer) CTERegistry {
 	return extended
 }
 
-func (r CTERegistry) Lookup(name string) *CTEProducer {
+// Lookup compares captured, normalized identifier segments when supplied.
+// Only legacy string-only callers use a flattened, case-insensitive name.
+func (r CTERegistry) Lookup(name string, path ...string) *CTEProducer {
 	for p := &r; p != nil; p = p.parent {
-		if p.producer != nil && strings.EqualFold(p.producer.name, name) {
+		if p.producer == nil {
+			continue
+		}
+		if path != nil {
+			if len(path) > 0 && slices.Equal(p.producer.namePath, path) {
+				return p.producer
+			}
+		} else if strings.EqualFold(p.producer.name, name) {
 			return p.producer
 		}
 	}
 	return nil
+}
+
+// BodyScope selects a producer's defining frame without publishing it. Prepared
+// declarations retain their frame; constructor inputs are interpreted in the
+// lexical frame that introduced them in this reader's persistent registry.
+func (r CTERegistry) BodyScope(producer *CTEProducer) CTERegistry {
+	defining := producer.defining
+	if !producer.prepared {
+		for frame := &r; frame != nil; frame = frame.parent {
+			if frame.producer == producer {
+				if frame.parent != nil {
+					defining = *frame.parent
+				}
+				break
+			}
+		}
+	}
+	if producer.recursive {
+		return defining.With(producer)
+	}
+	return defining
 }
 
 func (r CTERegistry) Names() []string {
@@ -51,6 +81,7 @@ type CTEProducer struct {
 	scanBinding    values.CorrelationIdentifier
 	insertBinding  values.CorrelationIdentifier
 	name           string
+	namePath       []string
 	body           LogicalOperator
 	columnAliases  []string
 	recursive      bool
@@ -63,6 +94,7 @@ func (p *CTEProducer) Identity() *CTEIdentity                      { return p.id
 func (p *CTEProducer) ScanBinding() values.CorrelationIdentifier   { return p.scanBinding }
 func (p *CTEProducer) InsertBinding() values.CorrelationIdentifier { return p.insertBinding }
 func (p *CTEProducer) Name() string                                { return p.name }
+func (p *CTEProducer) NamePath() []string                          { return slices.Clone(p.namePath) }
 func (p *CTEProducer) Body() LogicalOperator                       { return p.body }
 func (p *CTEProducer) ColumnAliases() []string                     { return slices.Clone(p.columnAliases) }
 func (p *CTEProducer) Recursive() bool                             { return p.recursive }
@@ -71,8 +103,15 @@ func (p *CTEProducer) DefiningRegistry() CTERegistry               { return p.de
 
 type CTEOption struct {
 	columns                  []string
+	namePath                 []string
 	traversal                TraversalOrder
 	hasColumns, hasTraversal bool
+}
+
+// CTENamePath captures the declaration's normalized name and qualifier without
+// flattening quoted dots. Synthetic declarations default to one literal name.
+func CTENamePath(path ...string) CTEOption {
+	return CTEOption{namePath: slices.Clone(path)}
 }
 
 func CTEColumns(names ...string) CTEOption {
@@ -106,7 +145,7 @@ func PrepareCTE(name string, recursive bool, defining CTERegistry,
 }
 
 func newCTEProducer(name string, body LogicalOperator, recursive bool, options ...CTEOption) *CTEProducer {
-	p := &CTEProducer{name: name, body: body, recursive: recursive, identity: &CTEIdentity{}}
+	p := &CTEProducer{name: name, namePath: []string{name}, body: body, recursive: recursive, identity: &CTEIdentity{}}
 	if recursive {
 		// Java QueryVisitor.handleRecursiveNamedQuery scopes these named
 		// bindings to each recursive execution; declaration identity is separate.
@@ -114,6 +153,9 @@ func newCTEProducer(name string, body LogicalOperator, recursive bool, options .
 		p.insertBinding = values.NamedCorrelationIdentifier(name + "forInsert")
 	}
 	for _, option := range options {
+		if option.namePath != nil {
+			p.namePath = slices.Clone(option.namePath)
+		}
 		if option.hasColumns {
 			p.columnAliases = slices.Clone(option.columns)
 		}
@@ -144,7 +186,7 @@ func ResolveScan(scan *LogicalScan, registry CTERegistry) *CTEProducer {
 	if scan.Source.resolved {
 		return scan.Source.producer
 	}
-	return registry.Lookup(scan.Table)
+	return registry.Lookup(scan.Table, scan.TablePath...)
 }
 
 // BindCTESources seals source ownership during construction, before the graph
@@ -203,39 +245,45 @@ func BindCTESources(op LogicalOperator, registry CTERegistry) {
 
 // ReferencesCTE follows selected identities, including retained dependencies.
 func ReferencesCTE(op LogicalOperator, producer *CTEProducer) bool {
+	return ReferencesCTEInScope(op, producer, CTERegistry{})
+}
+
+// ReferencesCTEInScope also resolves unbound constructor inputs in the reader's
+// lexical scope. It never seals scan ownership or prepares declarations.
+func ReferencesCTEInScope(op LogicalOperator, producer *CTEProducer, registry CTERegistry) bool {
 	seen := make(map[*CTEProducer]bool)
-	var walk func(LogicalOperator) bool
-	walk = func(current LogicalOperator) bool {
+	var walk func(LogicalOperator, CTERegistry) bool
+	walk = func(current LogicalOperator, scope CTERegistry) bool {
 		if current == nil {
 			return false
 		}
 		if scan, ok := current.(*LogicalScan); ok {
-			selected := scan.Source.Producer()
+			selected := ResolveScan(scan, scope)
 			if selected == producer {
 				return true
 			}
 			if selected != nil && !seen[selected] {
 				seen[selected] = true
-				return walk(selected.Body())
+				return walk(selected.Body(), scope.BodyScope(selected))
 			}
 			return false
 		}
 		if cte, ok := current.(*LogicalCTE); ok {
-			return walk(cte.Main)
+			return walk(cte.Main, scope.With(cte.CTEProducer))
 		}
 		for _, child := range current.Children() {
-			if walk(child) {
+			if walk(child, scope) {
 				return true
 			}
 		}
 		for _, child := range AttachedPlans(current) {
-			if walk(child) {
+			if walk(child, scope) {
 				return true
 			}
 		}
 		return false
 	}
-	return walk(op)
+	return walk(op, registry)
 }
 
 // FindVisibleScan resolves a FROM qualifier without entering a definition.

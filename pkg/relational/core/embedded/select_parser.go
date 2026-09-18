@@ -2383,7 +2383,11 @@ func unnestAliases(j joinClause) (asAlias, atAlias string) {
 // segment-by-segment against the scope without re-splitting a joined string
 // — no text-heuristic re-split. RFC-142.
 func uidSegments(tableName antlrgen.ITableNameContext) []string {
-	uids := tableName.FullId().AllUid()
+	return fullIDSegments(tableName.FullId())
+}
+
+func fullIDSegments(id antlrgen.IFullIdContext) []string {
+	uids := id.AllUid()
 	parts := make([]string, len(uids))
 	for i, u := range uids {
 		parts[i] = functions.NormalizeIdentifier(u.GetText())

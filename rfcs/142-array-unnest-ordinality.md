@@ -643,6 +643,9 @@ HAVING twin of the round-18 ORDER-BY rebase:
   control, and the no-shadow projection control pass both ways.
 
 **AT-on-a-table source must surface WRONG_OBJECT_TYPE, not a masking undefined-column (codex round-22).**
+Historical implementation account: RFC-256 has since removed
+`unnestFallbackOrReject`. The early AT rejection remains; the current translator
+requires an exact semantic collection binding, with no text-to-scan recovery.
 One bug:
 - **P1 (wrong SQLSTATE / error masking): an AT on a single-segment TABLE source bound a virtual unnest scope,
   masking 42809.** `SELECT U.ID FROM T1, U AT O` — a comma source `U` that is a REAL distinct TABLE (a

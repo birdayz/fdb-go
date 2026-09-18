@@ -694,3 +694,39 @@ func TestGatedJoinLegTypes_BuriedConsistency(t *testing.T) {
 		t.Fatalf("WHERE-pred buried window %+v disagrees with the seed's %+v", s, seedS)
 	}
 }
+
+func TestClusterCTEPropertyReadsDoNotPublishBindings(t *testing.T) {
+	t.Parallel()
+	for _, property := range []string{"eligibility", "arity"} {
+		t.Run(property, func(t *testing.T) {
+			t.Parallel()
+			body, result := scan("C", "BODY"), scan("D", "RESULT")
+			input := logical.NewCTE("D", body, result, false)
+			plain := testCTEProducer("C", scan("Order", "O"))
+			correlated := testCTEProducer("C", &logical.LogicalFilter{
+				Input: scan("Order", "O"), CorrelatedScalarSubqueries: []logical.CorrelatedScalarSubquery{{}},
+			})
+			for _, test := range []struct {
+				producer *logical.CTEProducer
+				eligible bool
+				arity    int
+			}{{plain, true, 1}, {correlated, false, arityPoison}, {plain, true, 1}} {
+				tr := newGateTranslator(t)
+				tr.cteScope = tr.cteScope.With(test.producer)
+				if property == "eligibility" {
+					if got := tr.ordinalEligible(input); got != test.eligible {
+						t.Fatalf("eligibility = %t, want %t under this reader's registry", got, test.eligible)
+					}
+				} else if got := tr.clusterArity(input); got != test.arity {
+					t.Fatalf("arity = %d, want %d under this reader's registry", got, test.arity)
+				}
+				if body.Source.Resolved() || result.Source.Resolved() || input.DefiningRegistry().Lookup("C") != nil {
+					t.Fatal("cluster property read prepared or bound its caller's CTE graph")
+				}
+				if tr.cteScope.Lookup("C") != test.producer || tr.cteScope.Lookup("D") != nil {
+					t.Fatal("cluster property read leaked its nested lexical scope")
+				}
+			}
+		})
+	}
+}

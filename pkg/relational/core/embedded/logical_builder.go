@@ -267,6 +267,15 @@ func buildLogicalPlanForQuery(q antlrgen.IQueryContext) logical.LogicalOperator 
 		return main
 	}
 	recursive := ctesCtx.RECURSIVE() != nil
+	traversal := logical.TraversalAnyOrder
+	if clause := ctesCtx.TraversalOrderClause(); clause != nil {
+		traversal = logical.TraversalLevelOrder
+		if clause.PRE_ORDER() != nil {
+			traversal = logical.TraversalPreOrder
+		} else if clause.POST_ORDER() != nil {
+			traversal = logical.TraversalPostOrder
+		}
+	}
 	// Wrap each named CTE around the accumulated main. Reverse
 	// iteration so the first-declared CTE ends up at the root (read
 	// top-down in Explain output, matching the SQL text order).
@@ -276,14 +285,21 @@ func buildLogicalPlanForQuery(q antlrgen.IQueryContext) logical.LogicalOperator 
 		name := functions.FullIdToName(nq.GetName())
 		var body logical.LogicalOperator
 		if inner := nq.Query(); inner != nil {
-			body = buildLogicalPlanForQueryBody(inner.QueryExpressionBody())
+			body = buildLogicalPlanForQuery(inner)
 		}
 		if body == nil {
 			// CTE body out of builder scope — bail rather than emit
 			// a partial tree.
 			return nil
 		}
-		main = logical.NewCTE(name, body, main, recursive)
+		var aliases []string
+		if list, ok := nq.GetColumnAliases().(*antlrgen.FullIdListContext); ok && list != nil {
+			for _, id := range list.AllFullId() {
+				aliases = append(aliases, functions.FullIdToName(id))
+			}
+		}
+		main = logical.NewCTE(name, body, main, recursive,
+			logical.CTENamePath(fullIDSegments(nq.GetName())...), logical.CTEColumns(aliases...), logical.CTETraversal(traversal))
 	}
 	return main
 }
@@ -463,9 +479,9 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 		// resolved plan exists loses every ProjectedValue in the body.
 		innerOp := sq.catalogAwareInnerPlan
 		if innerOp == nil && sq.enclosingScope == nil {
-			// Metadata-free programmatic construction still retains the full
-			// query. A parent-scoped source requires its already-resolved body.
-			innerOp, _ = NewPlanVisitor(nil).VisitQuery(sq.derivedQuery)
+			// Build the complete metadata-free child without sealing it before
+			// its enclosing WITH exists. The owner binds the assembled graph.
+			innerOp = buildLogicalPlanForQuery(sq.derivedQuery)
 		}
 		if innerOp == nil {
 			// Derived query is out of the inner builder's scope — bail
@@ -512,7 +528,7 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 		} else if j.derivedQuery != nil {
 			var innerRight logical.LogicalOperator
 			if sq.enclosingScope == nil {
-				innerRight, _ = NewPlanVisitor(nil).VisitQuery(j.derivedQuery)
+				innerRight = buildLogicalPlanForQuery(j.derivedQuery)
 			}
 			if innerRight == nil {
 				return nil

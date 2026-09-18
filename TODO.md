@@ -12426,3 +12426,110 @@ Evidence: `cte-readonly-stress-{baseline,current}-{1,2}.{log,exit,bep.jsonl}`,
 `cte-readonly-stress-records.json`, `cte-readonly-stress-rows.json`, and the
 full-suite count/BEP/freeze verdict under the same artifact root. No new hunt
 was started, and no QSC-01–11 item is authorized or marked complete here.
+
+### RFC-256 published binding-boundary findings
+
+Companion: RFC-256 **Published binding-boundary findings at `eea214b7d`**.
+Full-PR reviews at that SHA are NAK/incomplete, never ACKs. Active repair:
+non-publishing metadata/cluster properties and metadata-free derived construction
+(compiled 26/26 RUN failures reproduced); structured CTE lookup distinguishing
+quoted dots from schema qualification; removal of the obsolete unnest fallback
+and its active descriptions. Tests are retained in the existing test files;
+comparison worktree `/var/tmp/query-grind-cast/cte-property-boundary`, evidence
+`pr785-review/remaining-acks/cte-property-boundary-built-red.*`.
+
+The source-selection repair now preserves normalized declaration/scan segments
+and explicit physical ownership through metadata/SELECT/ON scope construction.
+The original physical/joined/derived quoted-dot collisions were compiled red;
+CTE-only projection and JOIN ON exposed the remaining scope-side split and are
+also retained. Ten FDB cells pass on the current repair, including quoted and
+qualified CTE controls and schema-qualified physical access under a CTE shadow.
+Metadata-free nested bodies, aliases and recursive traversal metadata also have
+compiled red regressions and repairs. The unused unnest helper is deleted;
+source descriptions and historical RFC accounts are reconciled. See the linked
+RFC block for exact artifact names and the superseded/cancelled runs.
+
+The initial full-suite attempt was cancelled after the scope-side finding;
+its earlier eight-mutant/race evidence does not certify the later scope edits.
+Final-tree suite/race/mutation/hook verification and published-head reviews still
+follow. Published `eea214b7d` has seven successful CI checks, not implementation
+approval for this repair. No new hunt, performance change, admission expansion
+or QSC authorization is implied; the five opt-in sweep permissions remain open.
+
+
+### RFC-256 binding-boundary verification and stress (2026-09-18)
+
+Companion: RFC-256 **Binding-boundary verification before publication**.
+The subsequent normal suite ran 92 targets: 91 passed, docscheck failed on a
+stale RFC-238 numeric source citation after the unused helper was deleted.
+Its Go population was 40,114 RUN = 40,108 PASS + one FAIL + five opt-in SKIP;
+13 captured subprocess diagnostic outcomes are excluded. All three occurrences
+of the citation now point at the same intended mint, and the uncached docscheck
+target passes. No citation gate or weak-cite floor changed. That partial repair
+is not a replacement for a final full-suite run through the normal commit hook.
+
+On the frozen executable repair, the four affected race targets passed with
+2,886 RUN/PASS; the focused ten-repeat race population passed 830 RUN/PASS,
+with no missing/extra outcomes. Eleven v4 semantic mutants compiled and failed
+the intended regressions; all input bytes were restored and the three affected
+restored targets passed 2,729 RUN/PASS. Earlier compile/nogo failures receive no
+semantic mutation credit. The existing translator fuzzer ran 3,758,546 executions
+in 15 seconds, without coverage guidance. A fresh real-FDB qualified-source run
+passed the root and all ten cases after the physical-catalog case-policy repair.
+Artifacts under `/var/tmp/query-grind-cast/pr785-review/remaining-acks/`:
+`cte-scope-boundaries-{race,repeat,restored,fuzz,docs-green}.*`, the v4 mutation
+verdict, and `cte-boundary-final-fdb.*`.
+
+**Stress test 1M baseline — binding-boundary repair.** Baseline commit
+`ed3504f7e410d8e2a4f4c46fd7b4c72fd0484869`, the merge-base on 2026-09-18;
+repaired parent `eea214b7dfc5a49a96af05d32a37f1d53afeea2c` plus the frozen
+20-path repair, exact Git tree `50c8315b280564fd313995d3c45828b466038913`.
+This tree predates this closing documentation; it is not a published commit.
+The manifest is `cte-scope-boundaries-stress-freeze.json`. Baseline checkout
+`/var/tmp/query-grind-cast/baseline`; repaired checkout
+`/var/tmp/query-grind-cast/cte-property-boundary`. Both are on the same filesystem
+with more than 231 GB free at each run start and byte-identical `go.mod`.
+Two baseline runs preceded two repaired runs, with no other local test job
+launched alongside them. Each ran 24 RUN/PASS (root plus 23 query cases),
+no failure/skip/cache hit. All 22 timed row counts match across the four runs;
+COUNT(*) separately asserted 1,000,000.
+
+Command wall times including build: baseline 174.245/177.244s;
+repaired 185.485/178.213s. One-minute load start/end:
+baseline 1: 0.577/2.614; baseline 2: 2.614/3.573; current 1: 3.573/2.928; current 2: 2.928/2.529.
+Individual timings and mean ratios follow; slower observations remain visible.
+No performance parity, causal attribution, acceptance or performance fix is claimed.
+
+| Query | Rows | Baseline ms (n=2) | Repaired ms (n=2) | Mean repaired/base |
+|---|---:|---:|---:|---:|
+| PK lookup id=0 | 1 | 8.510 / 14.313 | 8.567 / 15.953 | 1.074x |
+| PK lookup id=N/2 | 1 | 8.497 / 24.420 | 8.504 / 24.204 | 0.994x |
+| PK lookup id=N-1 | 1 | 6.352 / 23.229 | 5.215 / 22.411 | 0.934x |
+| idx_customer eq | 8 | 6.450 / 19.996 | 6.477 / 20.165 | 1.007x |
+| idx_amount range >9000 | 100017 | 243.221 / 270.953 | 236.185 / 281.938 | 1.008x |
+| idx_status count pending | 1 | 415.469 / 325.337 | 353.664 / 324.856 | 0.916x |
+| full scan filter amount>5000 | 1 | 653.380 / 657.405 | 842.622 / 776.852 | 1.235x |
+| GROUP BY status | 4 | 6.205 / 5.890 | 6.374 / 6.527 | 1.067x |
+| GROUP BY status COUNT only | 4 | 5.376 / 5.304 | 5.680 / 5.469 | 1.044x |
+| SUM by status (aggregate index) | 4 | 5.974 / 5.931 | 6.151 / 5.887 | 1.011x |
+| GROUP BY customer HAVING | 47271 | 576.842 / 580.053 | 576.810 / 588.606 | 1.007x |
+| JOIN 10 orders x customers | 10 | 20.296 / 19.991 | 20.712 / 21.592 | 1.050x |
+| ORDER BY PK (full) | 1000000 | 3893.751 / 7158.409 | 3959.583 / 3957.982 | 0.716x |
+| ORDER BY PK + index filter | 8 | 8.772 / 9.270 | 9.083 / 9.098 | 1.008x |
+| scan all rows ordered | 1000000 | 3647.145 / 3631.477 | 3760.381 / 3783.042 | 1.036x |
+| scan all rows wide | 1000000 | 3886.356 / 3887.554 | 4013.442 / 3999.472 | 1.031x |
+| IN-list 5 values | 46 | 18.722 / 22.009 | 19.690 / 19.714 | 0.967x |
+| PK needle id=999999 | 1 | 6.772 / 6.128 | 5.979 / 5.969 | 0.926x |
+| PK+filter needle id=500000 | 1 | 7.641 / 8.258 | 7.591 / 7.589 | 0.955x |
+| full scan sparse filter | 97 | 3295.407 / 3278.796 | 3462.302 / 3460.599 | 1.053x |
+| UPDATE by index | 8 | 9.025 / 9.161 | 9.761 / 9.815 | 1.076x |
+| DELETE single row | 1 | 6.635 / 6.481 | 6.898 / 6.928 | 1.054x |
+
+Full commands, timestamps, tree identities, load and outcomes are retained in
+`cte-scope-boundaries-stress-records.json`; row measurements in
+`cte-scope-boundaries-stress-rows.json`; raw logs/BEPs in
+`cte-scope-boundaries-stress-{baseline,current}-{1,2}.*` under the artifact root.
+Normal hooks and exact published-head full-PR Graefe/Torvalds/C++/Codex approvals,
+published @claude LGTM, CI and the owner decision on the five restricted sweeps
+still precede merge. No admission/expectation/golden weakening, performance work,
+new hunt, or QSC-01–11 authorization is implied.

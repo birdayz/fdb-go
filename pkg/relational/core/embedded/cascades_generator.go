@@ -6803,23 +6803,17 @@ func demoteSchemaQualifiedUnnest(op logical.LogicalOperator, schemaName string, 
 // projection column resolution — surfaces the intended 42809 regardless of what the
 // query references.
 //
-// This MIRRORS the translator's `translateUnnestJoin` AT-rejection EXACTLY (it is
-// the authority; the early pass is a faithful echo): an AT source is WRONG_OBJECT_
-// TYPE when
+// This early check covers AT candidates before semantic collection binding:
 //
-//	(1) segment 0 does NOT resolve to a visible in-scope SCAN in the outer leg
-//	    (a table / schema-qualified / unknown qualifier — Java's findOuterScanTable
-//	    == "" → unnestFallbackOrReject), OR
-//	(2) segment 0 resolves to a REAL base table whose remaining segment(s) name a
-//	    field that is MISSING / a single-segment bare source / a PRESENT SCALAR
-//	    (Java's generateCorrelatedFieldAccess "repeated type" assert).
+//	(1) segment 0 does NOT resolve to a visible outer owner (scan, retained CTE,
+//	    derived source, prior unnest or inline VALUES), OR
+//	(2) a real-table owner is named without a field or with a present scalar
+//	    field instead of an array.
 //
-// A GENUINE array (planned), a CTE/derived-output source (record type not in md, OR
-// an in-scope WITH-CTE / derived-table source shadowing a real same-named table →
-// left to the translator's outerSourceIsCTE / outerSourceIsDerivedTable
-// UNSUPPORTED_QUERY), and a missing field on a real table (the translator's
-// UNDEFINED_COLUMN — distinct from a present scalar) are NOT rejected here, so the
-// early pass never DIVERGES from the translator's per-case code. RFC-142.
+// CTE/derived outputs, prior elements, inline VALUES, missing fields and nested
+// field paths are left to semantic collection resolution. The translator consumes
+// that exact binding; it no longer reconstructs a table scan as a fallback.
+// RFC-142.
 func rejectAtOrdinalityOnTable(op logical.LogicalOperator, md *recordlayer.RecordMetaData) error {
 	return rejectAtOrdinalityOnTableWithCTEs(op, md, logical.CTERegistry{})
 }
@@ -6903,15 +6897,14 @@ func atOnNonArraySource(left logical.LogicalOperator, u *logical.LogicalUnnest, 
 	}
 	outerTable := logical.FindOuterScanTable(left, u.Segments[0])
 	if outerTable == "" {
-		// (1) segment 0 not a visible in-scope scan: a table / schema-qualified /
-		//     unknown qualifier — the translator's unnestFallbackOrReject AT path.
+		// (1) No visible correlated owner: reject AT on a table or unknown
+		// qualifier before projection resolution can mask the diagnostic.
 		return true
 	}
 	rt := md.GetRecordType(outerTable)
 	if rt == nil || rt.Descriptor == nil {
-		// segment 0 binds to a source whose record type is not a base table (a
-		// CTE / derived output): the translator handles it (outerSourceIsCTE →
-		// UNSUPPORTED_QUERY). Leave it — do NOT raise WRONG_OBJECT_TYPE.
+		// No physical descriptor authorizes a table/scalar rejection. Leave
+		// exact source and collection resolution to the semantic binder.
 		return false
 	}
 	// (2) Real base table. A bare source (single segment, no field) or a field

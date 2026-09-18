@@ -4469,8 +4469,9 @@ The real blocker is NOT the sibling guard (containsLateralUnnest, which fires
 for `t.arr, t.arr2` — SAME table, stays rejected) but OWNER RESOLUTION: a
 chained `FROM t, t.arr AS x, x.sub AS y` has the second unnest's owner `x` =
 the FIRST unnest's element, so seg0=`X` is not a scan → findOuterScanTable
-returns "" → unnestFallbackOrReject rebuilds with Scan("X.SUB") →
-table-not-found. Class 4 fixes this path.
+returned "" → the former unnestFallbackOrReject rebuilt Scan("X.SUB") →
+table-not-found. Class 4 fixed this path. RFC-256 subsequently removed the
+fallback entirely: current lowering requires a semantic collection binding.
 
 **Mechanism (residual recursive composition, gather declines):**
 - The nested-FlatMap shape is ALREADY wired: translateUnnestJoin builds its
@@ -4551,8 +4552,9 @@ dual-window, 1M stress, rfc153 verbatim, live-Java classification.
    yielded + correct rows), revert-proven.
 2. Gate the dispatch POSITIVELY on findOwnerUnnest(j.Left, seg0) matching a
    LogicalUnnest by Alias/AtAlias — never merely outerTable=="" (which also
-   covers schema-qualified + derived-hidden); else fall through to
-   unnestFallbackOrReject. Keep !unnestUnderExistential.
+   covers schema-qualified + derived-hidden). The historical fallback was
+   removed by RFC-256; current lowering rejects missing semantic bindings.
+   Keep !unnestUnderExistential.
 3. Build the chained accessor layout [{seg0,-1},{seg1,-1},…] with
    Child=QOV(sourceAlias(j.Left)); do NOT just lower the len(Segments)>2
    threshold (class-2's root is seg1; the chained root is seg0).

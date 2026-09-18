@@ -39,6 +39,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"strings"
 
 	"github.com/antlr4-go/antlr/v4"
@@ -1080,50 +1081,6 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 	cat := rlcatalog.Wrap(md)
 	analyzer := semantic.NewAnalyzer(cat, false)
 
-	// isDeclaredCTE: the name IS a WITH-declared CTE, even when its
-	// column-schema derivation declined and cteScopes has no entry (every
-	// declared CTE not in cteScopes gets a cteOnScopes entry at WITH
-	// registration — a derived source or a nil-Table marker). The distinction
-	// is load-bearing for the drop-risk taxonomy below: an unresolvable REAL
-	// table errors precisely downstream, but a declared CTE resolves fine at
-	// translation — nothing downstream errors, so a silent scope decline here
-	// silently DROPS the join's ON and the query returns cross-product rows.
-	isDeclaredCTE := func(tableName string) bool {
-		key := strings.ToUpper(tableName)
-		if _, ok := cteOnScopes[key]; ok {
-			return true
-		}
-		_, ok := cteScopes[key]
-		return ok
-	}
-
-	resolveTable := func(tableName string) semantic.Table {
-		// CTE-FIRST (execution's shadowing order — the same ordering
-		// buildSelectScope applies): a declared CTE shadows a
-		// same-named catalog table; the prior analyzer-first order resolved
-		// an ON through a shadowing CTE against the TABLE's schema —
-		// over-declining valid ONs (42703 on the CTE's own columns) and, for
-		// an ON naming a table-only column, ADMITTING the upgrade and moving
-		// the failure to a runtime malformed plan (review-caught). The
-		// ON-ONLY scope (join/unnest bodies kept out of the GLOBAL cteScopes
-		// — the flatten-evasion class) resolves here so the enclosing join's
-		// ON is never silently dropped; a marker entry (nil Table) falls
-		// through to the loud drop-risk arm in addTableSource.
-		if src, found := cteOnScopes[strings.ToUpper(tableName)]; found {
-			return src.Table
-		}
-		if cteScopes != nil {
-			if src, found := cteScopes[strings.ToUpper(tableName)]; found {
-				return src.Table
-			}
-		}
-		tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(tableName, "."), false))
-		if err == nil {
-			return tbl
-		}
-		return nil
-	}
-
 	// Collect LogicalJoin nodes from the left-child spine. The builder
 	// chains joins left-to-right: Join(Join(Scan, R0), R1), so the
 	// outermost join wraps the LAST sq.joins entry. We collect them
@@ -1145,7 +1102,7 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 
 	// Build the full scope for predicate resolution. A lateral array unnest
 	// leg (`FROM T1 INNER JOIN U ON …, T1.ARR AS V`) is NOT a real table —
-	// resolveTable("T1.ARR") fails. Without registering its virtual element/
+	// Catalog lookup of T1.ARR fails. Without registering its virtual element/
 	// ordinal source, the scope build would abort, the ON resolver would never
 	// run, and the EXPLICIT JOIN's ON predicate (`U.ID = T1.ID`) would be silently
 	// DROPPED → the T1/U join degrades to a CROSS join (silent-wrong). Register the
@@ -1161,7 +1118,9 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 	// the downstream scan produces its precise UndefinedDatabase/Table error,
 	// which the fail-closed check below must not preempt with a generic one.
 	var scopeDropRisk bool
-	addTableSource := func(tableName, alias, bindingID string) bool {
+	addTableSource := func(tableName, alias, bindingID string, path []string, source logical.ScanSource) bool {
+		cte, isCTE := selectSourceCTEScope(tableName, path, source, cteOnScopes, cteScopes)
+		segments := selectSourceSegments(tableName, path)
 		// ACTIVE-SCHEMA-QUALIFIED source (`"s"."LA"`): the visitor path's sq
 		// keeps the dotted spelling (normalizeSchemaQualifiedSelectSources
 		// runs only on the catalog sub-build path), so resolveTable failed
@@ -1172,13 +1131,19 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 		// explicit join with a schema-qualified leg silently cross-producted
 		// (review-caught by the Q37 pin). Strip the schema segment the same
 		// way the normalizer does, keeping a defaulted alias in lockstep.
-		if segs := strings.Split(tableName, "."); len(segs) == 2 && resolvesToTable(segs) {
+		if len(segments) == 2 && resolvesToTable(segments) {
 			if alias == tableName {
-				alias = segs[1]
+				alias = segments[1]
 			}
-			tableName = segs[1]
+			tableName = segments[1]
+			segments = segments[1:]
 		}
-		tbl := resolveTable(tableName)
+		var tbl semantic.Table
+		if isCTE {
+			tbl = cte.Table
+		} else {
+			tbl, _ = analyzer.ResolveTable(semantic.FromSegments(segments, false))
+		}
 		if tbl == nil {
 			// A DECLARED CTE whose schema derivation declined (join/unnest
 			// body the deriver cannot type) is resolvable-but-unscopable —
@@ -1188,7 +1153,7 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 			// a silent cross product. An unresolvable REAL table stays a
 			// silent decline (the downstream scan raises the precise
 			// UndefinedTable error this generic one must not preempt).
-			if isDeclaredCTE(tableName) {
+			if isCTE {
 				scopeDropRisk = true
 			}
 			return false
@@ -1276,7 +1241,7 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 			scopeDropRisk = true
 		}
 	} else {
-		scopeOK = addTableSource(sq.tableName, sq.tableAlias, sq.bindingID)
+		scopeOK = addTableSource(sq.tableName, sq.tableAlias, sq.bindingID, sq.sourceSegments, sq.resolvedSource)
 	}
 	for i, j := range sq.joins {
 		if !scopeOK {
@@ -1295,7 +1260,7 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 			scopeOK = addUnnestSource(j)
 			continue
 		}
-		scopeOK = addTableSource(j.tableName, j.alias, j.bindingID)
+		scopeOK = addTableSource(j.tableName, j.alias, j.bindingID, j.segments, j.resolvedSource)
 	}
 	if !scopeOK {
 		// FAIL-CLOSED (guards a silent-wrong-rows bug class): the scope could
@@ -2151,15 +2116,15 @@ func normalizeSchemaQualifiedSelectSources(sq *selectQuery, schemaName string, m
 		return
 	}
 	resolvesToTable := newUnnestTableResolver(md, schemaName)
-	strip := func(name string) string {
-		segs := strings.Split(name, ".")
+	strip := func(name string, path []string) string {
+		segs := selectSourceSegments(name, path)
 		if len(segs) == 2 && resolvesToTable(segs) {
 			return segs[1]
 		}
 		return name
 	}
 	if sq.derivedQuery == nil {
-		bare := strip(sq.tableName)
+		bare := strip(sq.tableName, sq.sourceSegments)
 		if bare != sq.tableName {
 			if sq.tableAlias == sq.tableName {
 				sq.tableAlias = bare
@@ -2175,7 +2140,7 @@ func normalizeSchemaQualifiedSelectSources(sq *selectQuery, schemaName string, m
 		if j.derivedQuery != nil || j.catalogAwareInnerPlan != nil {
 			continue
 		}
-		bare := strip(j.tableName)
+		bare := strip(j.tableName, j.segments)
 		if bare != j.tableName {
 			if j.alias == j.tableName {
 				j.alias = bare
@@ -2914,6 +2879,55 @@ func singleSourceQueryBlockCTEScopes(
 	return local
 }
 
+// selectSourceSegments preserves parse-time identifier boundaries. Only legacy
+// programmatic inputs without a captured path use the flattened spelling.
+func selectSourceSegments(name string, path []string) []string {
+	if path != nil {
+		return path
+	}
+	return strings.Split(name, ".")
+}
+
+// selectSourceCTEScope reads schema metadata for the selected declaration. A
+// retained physical source cannot be shadowed by a same-named CTE after schema
+// normalization. Missing metadata for a retained producer remains a tombstone,
+// never a catalog fallback.
+func selectSourceCTEScope(name string, path []string, source logical.ScanSource, scopes ...map[string]semantic.ScopeSource) (semantic.ScopeSource, bool) {
+	producer := source.Producer()
+	if source.Resolved() {
+		if producer == nil {
+			return semantic.ScopeSource{}, false
+		}
+		name = producer.Name()
+	}
+	for _, registry := range scopes {
+		src, found := registry[strings.ToUpper(name)]
+		if !found {
+			continue
+		}
+		if source.Resolved() {
+			if src.CTE != nil && src.CTE.Identity() == producer.Identity() {
+				return src, true
+			}
+			continue
+		}
+		if path != nil {
+			declaredPath := []string{name}
+			if src.CTE != nil {
+				declaredPath = src.CTE.NamePath()
+			}
+			if !slices.Equal(path, declaredPath) {
+				continue
+			}
+		}
+		return src, true
+	}
+	if producer != nil {
+		return semantic.ScopeSource{CTE: producer}, true
+	}
+	return semantic.ScopeSource{}, false
+}
+
 // buildSelectScope builds a semantic scope + resolver from the FROM
 // clause of a selectQuery. This is the single point of scope
 // construction — all identifier resolution (projection, ORDER BY,
@@ -2964,7 +2978,9 @@ func buildSelectScopeChecked(
 	// from the same helper, because a query block and that block read as a derived
 	// table must agree on their row.
 	padded := nullSupplyingFromLegs(sq.joins)
-	addSource := func(tableName, alias, bindingID string, hidden []string, position int) error {
+	addSource := func(tableName, alias, bindingID string, path []string, source logical.ScanSource, hidden []string, position int) error {
+		cte, isCTE := selectSourceCTEScope(tableName, path, source, cteScopes)
+		segments := selectSourceSegments(tableName, path)
 		// ACTIVE-SCHEMA-QUALIFIED source (`"s"."LA"`): on the visitor path
 		// sq keeps the dotted spelling (normalizeSchemaQualifiedSelectSources
 		// runs only on the catalog sub-build path), and a raw ResolveTable
@@ -2974,11 +2990,12 @@ func buildSelectScopeChecked(
 		// schema-qualified explicit joins. Strip the schema segment with a
 		// defaulted alias in lockstep, mirroring the ON-upgrade scope build
 		// and the normalizer.
-		if segs := strings.Split(tableName, "."); len(segs) == 2 && schemaStrip(segs) {
+		if len(segments) == 2 && schemaStrip(segments) {
 			if alias == tableName {
-				alias = segs[1]
+				alias = segments[1]
 			}
-			tableName = segs[1]
+			tableName = segments[1]
+			segments = segments[1:]
 		}
 		// CTE-FIRST: a declared CTE shadows a same-named catalog table
 		// (execution's translateScan contract). The prior catalog-first order
@@ -2987,28 +3004,27 @@ func buildSelectScopeChecked(
 		// CTE's own columns (review-caught; the plain-body variant of the
 		// shape was broken this way all along, masked only for
 		// schema-qualified bodies by the pre-round-9 nil resolver).
-		if cteScopes != nil {
-			if src, found := cteScopes[strings.ToUpper(tableName)]; found {
-				// TOMBSTONE (nil Table): a DECLARED CTE whose schema is not
-				// derivable in this context (underivable nested shadow). It
-				// must NOT fall through to the catalog — a same-named base
-				// table would bind ITS ordinals onto the CTE's rows (silent
-				// wrong slots). Declining the scope add keeps resolution
-				// loud downstream.
-				if src.Table == nil {
-					return api.NewErrorf(api.ErrCodeUnsupportedQuery, "CTE %q has no exact semantic schema", tableName)
-				}
-				aliasID := semantic.FromNormalized(alias)
-				if alias == "" {
-					aliasID = semantic.FromNormalized(tableName)
-				}
-				cteSrc := cteSourceAs(src, aliasID, bindingOrAlias(bindingID, aliasID))
-				cteSrc.AdditionalQualifiers = additionalTableQualifiers(tableName, alias)
-				cteSrc.HiddenColumns = hiddenColumnSet(hidden)
-				return scope.AddSource(nullSupplyingSource(cteSrc, paddedAt(padded, position)))
+		if isCTE {
+			src := cte
+			// TOMBSTONE (nil Table): a DECLARED CTE whose schema is not
+			// derivable in this context (underivable nested shadow). It
+			// must NOT fall through to the catalog — a same-named base
+			// table would bind ITS ordinals onto the CTE's rows (silent
+			// wrong slots). Declining the scope add keeps resolution
+			// loud downstream.
+			if src.Table == nil {
+				return api.NewErrorf(api.ErrCodeUnsupportedQuery, "CTE %q has no exact semantic schema", tableName)
 			}
+			aliasID := semantic.FromNormalized(alias)
+			if alias == "" {
+				aliasID = semantic.FromNormalized(tableName)
+			}
+			cteSrc := cteSourceAs(src, aliasID, bindingOrAlias(bindingID, aliasID))
+			cteSrc.AdditionalQualifiers = additionalTableQualifiers(tableName, alias)
+			cteSrc.HiddenColumns = hiddenColumnSet(hidden)
+			return scope.AddSource(nullSupplyingSource(cteSrc, paddedAt(padded, position)))
 		}
-		tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(tableName, "."), false))
+		tbl, err := analyzer.ResolveTable(semantic.FromSegments(segments, false))
 		if err != nil {
 			if mapped := mapPredicateWalkError(err); mapped != nil {
 				return mapped
@@ -3044,7 +3060,7 @@ func buildSelectScopeChecked(
 		if err := scope.AddSource(nullSupplyingSource(src, paddedAt(padded, 0))); err != nil {
 			return nil, err
 		}
-	} else if err := addSource(sq.tableName, sq.tableAlias, sq.bindingID, nil, 0); err != nil {
+	} else if err := addSource(sq.tableName, sq.tableAlias, sq.bindingID, sq.sourceSegments, sq.resolvedSource, nil, 0); err != nil {
 		return nil, err
 	}
 	resolvesToTable := newUnnestTableResolver(md, schemaName)
@@ -3090,7 +3106,7 @@ func buildSelectScopeChecked(
 			}
 			continue
 		}
-		if err := addSource(j.tableName, j.alias, j.bindingID, j.usingHiddenCols, i+1); err != nil {
+		if err := addSource(j.tableName, j.alias, j.bindingID, j.segments, j.resolvedSource, j.usingHiddenCols, i+1); err != nil {
 			return nil, err
 		}
 	}

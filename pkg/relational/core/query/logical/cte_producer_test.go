@@ -135,3 +135,128 @@ func TestResolveScanDoesNotPublishConsumerScope(t *testing.T) {
 		t.Fatal("captured physical ownership fell through to a reader's CTE")
 	}
 }
+
+func TestResolveScanIdentifierSegments(t *testing.T) {
+	t.Parallel()
+	literal := NewCTE("S.T", NewScan("CTE_ROWS", ""), nil, false).CTEProducer
+	registry := CTERegistry{}.With(literal)
+	for _, test := range []struct {
+		name string
+		path []string
+		want *CTEProducer
+	}{
+		{"quoted_dot", []string{"S.T"}, literal},
+		{"schema_qualified", []string{"S", "T"}, nil},
+		{"malformed_not_legacy", []string{}, nil},
+		{"legacy", nil, literal},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			scan := NewScan("S.T", "", test.path...)
+			if got := ResolveScan(scan, registry); got != test.want {
+				t.Fatalf("path %q selected %p, want %p", test.path, got, test.want)
+			}
+			if scan.Source.Resolved() {
+				t.Fatal("identifier lookup published a scan binding")
+			}
+			BindCTESources(scan, registry)
+			if !scan.Source.Resolved() || scan.Source.Producer() != test.want {
+				t.Fatal("construction captured a different identifier")
+			}
+			if got := ResolveScan(scan, CTERegistry{}); got != test.want {
+				t.Fatal("a later scope changed captured ownership")
+			}
+		})
+	}
+}
+
+func TestPreparedCTEIdentifierSegments(t *testing.T) {
+	t.Parallel()
+	literal := NewCTE("S.T", NewScan("LITERAL_ROWS", ""), nil, false).CTEProducer
+	path := []string{"S", "T"}
+	option := CTENamePath(path...)
+	path[0] = "CHANGED"
+	qualified, err := PrepareCTE("S.T", false, CTERegistry{}.With(literal), func(CTERegistry) (LogicalOperator, error) {
+		return NewScan("QUALIFIED_ROWS", ""), nil
+	}, option)
+	if err != nil {
+		t.Fatal(err)
+	}
+	returned := qualified.NamePath()
+	returned[0] = "CHANGED"
+	snapshot := qualified.WithBody(NewScan("LOWERED_ROWS", ""))
+	for _, producer := range []*CTEProducer{qualified, snapshot} {
+		if !slices.Equal(producer.NamePath(), []string{"S", "T"}) {
+			t.Fatalf("declaration name path changed through a caller's slice: %q", producer.NamePath())
+		}
+		registry := CTERegistry{}.With(literal).With(producer)
+		for _, test := range []struct {
+			path []string
+			want *CTEProducer
+		}{
+			{[]string{"S.T"}, literal},
+			{[]string{"S", "T"}, producer},
+			{[]string{"s", "T"}, nil},
+			{[]string{"T"}, nil},
+		} {
+			scan := NewScan("S.T", "CONSUMER", test.path...)
+			if got := ResolveScan(scan, registry); got != test.want {
+				t.Fatalf("normalized path %q selected %p, want %p", test.path, got, test.want)
+			}
+		}
+	}
+}
+
+func TestCTEBodyScopeIsReadOnlyAndLexical(t *testing.T) {
+	t.Parallel()
+	for _, prepared := range []bool{false, true} {
+		for _, recursive := range []bool{false, true} {
+			name := "unprepared"
+			if prepared {
+				name = "prepared"
+			}
+			if recursive {
+				name += "_recursive"
+			}
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				first := NewCTE("A", NewScan("FIRST", ""), nil, false).CTEProducer
+				shadow := NewCTE("A", NewScan("SHADOW", ""), nil, false).CTEProducer
+				defining := CTERegistry{}.With(first)
+				producer := NewCTE("C", NewScan("A", ""), nil, recursive).CTEProducer
+				if prepared {
+					var err error
+					producer, err = PrepareCTE("C", recursive, defining, func(CTERegistry) (LogicalOperator, error) {
+						return NewScan("A", ""), nil
+					})
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				registry := defining.With(producer).With(shadow)
+				if prepared {
+					// Prepared ownership must not depend on the producer still
+					// being introduced in the reader's current registry.
+					registry = CTERegistry{}.With(shadow)
+				}
+				scope := registry.BodyScope(producer)
+				if scope.Lookup("A") != first {
+					t.Fatal("body inherited a consumer shadow instead of its defining A")
+				}
+				var self *CTEProducer
+				if recursive {
+					self = producer
+				}
+				if scope.Lookup("C") != self {
+					t.Fatal("body scope lost recursive self or exposed a non-recursive self")
+				}
+				if producer.prepared != prepared || (!prepared && producer.defining.Lookup("A") != nil) {
+					t.Fatal("body-scope lookup published preparation into its input")
+				}
+				if registry.Lookup("A") != shadow {
+					t.Fatal("body-scope lookup changed the consumer's registry")
+				}
+			})
+		}
+	}
+}

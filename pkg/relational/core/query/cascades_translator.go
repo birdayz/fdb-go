@@ -1664,16 +1664,13 @@ func containsLateralUnnest(op logical.LogicalOperator) bool {
 // SelectExpression as RecordQueryFlatMapPlan(outer, explode, …, resultValue,
 // false) — the review-confirmed non-existential, no-FirstOrDefault path.
 //
-// Returns nil (untranslatable) for a non-scan outer or an unresolvable field;
-// when the source carries an AT alias but is NOT a correlated array, it
-// records ErrCodeWrongObjectType (Java's WRONG_OBJECT_TYPE) and returns nil so
-// the planner surfaces the faithful diagnostic. RFC-142.
+// Requires an exact, semantically bound array collection. Missing bindings or
+// exact non-array values return the corresponding boundUnnestBindingError;
+// lowering never reconstructs a table scan from the diagnostic spelling.
 func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logical.LogicalUnnest) expressions.RelationalExpression {
-	// The entire unnest lowering (FlatMap-over-Explode, dotted-prefix
-	// bipartition machinery, multi-source fallback rebuilds via
-	// unnestFallbackOrReject) stays on the name model — every join
-	// translated beneath it, including the fallback's rebuilt LogicalJoins,
-	// is marked enclosed so it cannot gate ordinal.
+	// Mark nested lowering enclosed initially. Gathered clusters and the exact
+	// seed-owner path below select positional construction explicitly; the
+	// remaining nested joins must not independently gate ordinal.
 	//
 	// prevEnclosure captures the ENCLOSED bit on entry (t.inInnerCluster BEFORE
 	// this unnest sets it): true iff THIS unnest is itself a leg of a larger
@@ -1893,39 +1890,6 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 		return nil
 	}
 	return selectExpr
-}
-
-// unnestFallbackOrReject handles a candidate comma source whose segment 0 did
-// NOT resolve to a real in-scope TABLE source (it is a schema-qualified table,
-// a name hidden behind a derived-table boundary, or a derived-table alias whose
-// record type can't be inspected for an array field). The dotted name is then
-// treated as a genuine table cross-join: re-translate the join with the right
-// child as a plain scan of the joined name (the table-not-found path surfaces
-// later if it is unknown). An AT alias here is still invalid — AT requires a
-// correlated array (Java's WRONG_OBJECT_TYPE).
-//
-// The PRESENT-but-scalar and missing-field-on-a-known-source cases are handled
-// inline by translateUnnestJoin (WRONG_OBJECT_TYPE / UNDEFINED_COLUMN) before
-// this is ever reached. RFC-142.
-func (t *cascadesTranslator) unnestFallbackOrReject(j *logical.LogicalJoin, u *logical.LogicalUnnest) expressions.RelationalExpression {
-	if u.AtAlias != "" {
-		t.setTranslateErr(api.NewError(api.ErrCodeWrongObjectType,
-			"AT ordinality is only valid on a correlated array source (FROM t, t.arr AS x AT ord)"))
-		return nil
-	}
-	tableName := strings.Join(u.Segments, ".")
-	alias := u.Alias
-	if alias == "" {
-		alias = tableName
-	}
-	rebuilt := &logical.LogicalJoin{
-		Left:        j.Left,
-		Right:       logical.NewScan(tableName, alias),
-		Kind:        j.Kind,
-		OnText:      j.OnText,
-		OnPredicate: j.OnPredicate,
-	}
-	return t.translateJoin(rebuilt)
 }
 
 // rewriteUnnestPredicate rewrites a WHERE predicate's references to a lateral
@@ -9083,7 +9047,7 @@ func (t *cascadesTranslator) cteTranslationBody(c *logical.CTEProducer) logical.
 // absences and unrelated shadows are as significant as a same-name binding.
 func (t *cascadesTranslator) inCTEDefiningScope(producer *logical.CTEProducer, fn func()) {
 	previous := t.cteScope
-	t.cteScope = producer.DefiningRegistry()
+	t.cteScope = previous.BodyScope(producer)
 	defer func() { t.cteScope = previous }()
 	fn()
 }

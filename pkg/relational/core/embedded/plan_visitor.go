@@ -244,14 +244,14 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 				if recursive {
 					v.preparedQueryBodies = map[antlrgen.IQueryExpressionBodyContext]logical.LogicalOperator{seedContext: seed}
 					source := v.cteScopes[upper]
-					source.CTE = registry.Lookup(name)
+					source.CTE = registry.Lookup(name, fullIDSegments(nq.GetName())...)
 					v.cteScopes[upper] = source
 				}
 				defer func() {
 					v.cteProducers, v.inRecursiveCTEBody, v.preparedQueryBodies = previous, wasRecursive, previousBodies
 				}()
 				return v.buildCTEBodyQuery(nq.Query())
-			}, logical.CTEColumns(aliases...), logical.CTETraversal(traversal))
+			}, logical.CTEColumns(aliases...), logical.CTETraversal(traversal), logical.CTENamePath(fullIDSegments(nq.GetName())...))
 			if err != nil {
 				return nil, err
 			}

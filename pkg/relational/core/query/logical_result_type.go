@@ -57,8 +57,7 @@ func logicalResultTypeWithCTEs(
 	if enclosing != nil {
 		registry = *enclosing
 	}
-	logical.BindCTESources(op, registry)
-	env := make(cteRows)
+	env := cteRows{types: make(map[*logical.CTEProducer]values.Type), registry: registry}
 	typ, err := deriveLogicalResultType(op, md, env, unionType)
 	if err != nil {
 		return nil, err
@@ -70,7 +69,10 @@ func logicalResultTypeWithCTEs(
 }
 
 // cteRows memoizes rows and active recursive seeds by selected producer.
-type cteRows map[*logical.CTEProducer]values.Type
+type cteRows struct {
+	types    map[*logical.CTEProducer]values.Type
+	registry logical.CTERegistry
+}
 
 func exactLogicalResultType(op logical.LogicalOperator, md *recordlayer.RecordMetaData, env cteRows) (values.Type, error) {
 	return deriveLogicalResultType(op, md, env, strictLogicalUnionResultType)
@@ -185,7 +187,7 @@ func deriveLogicalResultType(op logical.LogicalOperator, md *recordlayer.RecordM
 		}
 		return &values.RecordType{Fields: fields}, nil
 	case *logical.LogicalScan:
-		if producer := typed.Source.Producer(); producer != nil {
+		if producer := logical.ResolveScan(typed, env.registry); producer != nil {
 			return deriveCTEProducerType(producer, md, env, unionType)
 		}
 		return exactScanResultType(typed, md)
@@ -233,6 +235,7 @@ func deriveLogicalResultType(op logical.LogicalOperator, md *recordlayer.RecordM
 		}
 		return unionType(branches)
 	case *logical.LogicalCTE:
+		env.registry = env.registry.With(typed.CTEProducer)
 		return deriveLogicalResultType(typed.Main, md, env, unionType)
 	}
 	return nil, fmt.Errorf("no exact logical result type for %T", op)
@@ -267,8 +270,10 @@ func ExactLogicalOutputLabels(
 	if enclosing != nil {
 		registry = *enclosing
 	}
-	logical.BindCTESources(op, registry)
-	env := &logicalLabelScope{rows: make(cteRows), labels: make(map[*logical.CTEProducer][]string)}
+	env := &logicalLabelScope{
+		rows:   cteRows{types: make(map[*logical.CTEProducer]values.Type), registry: registry},
+		labels: make(map[*logical.CTEProducer][]string),
+	}
 	return exactLogicalOutputLabels(op, md, env)
 }
 
@@ -294,22 +299,24 @@ func exactLogicalOutputLabels(
 	}
 	switch typed := op.(type) {
 	case *logical.LogicalScan:
-		if producer := typed.Source.Producer(); producer != nil {
+		if producer := logical.ResolveScan(typed, rows.registry); producer != nil {
 			if labels, ok := env.labels[producer]; ok {
 				return append([]string(nil), labels...), nil
 			}
+			bodyScope := *env
+			bodyScope.rows.registry = rows.registry.BodyScope(producer)
 			body := producer.Body()
 			if producer.Recursive() {
 				if union, ok := body.(*logical.LogicalUnion); ok {
 					for _, branch := range union.Inputs {
-						if !logical.ReferencesCTE(branch, producer) {
+						if !logical.ReferencesCTEInScope(branch, producer, bodyScope.rows.registry) {
 							body = branch
 							break
 						}
 					}
 				}
 			}
-			labels, err := exactLogicalOutputLabels(body, md, env)
+			labels, err := exactLogicalOutputLabels(body, md, &bodyScope)
 			if err != nil {
 				return nil, err
 			}
@@ -370,7 +377,9 @@ func exactLogicalOutputLabels(
 		}
 		return append(append(make([]string, 0, len(left)+len(right)), left...), right...), nil
 	case *logical.LogicalCTE:
-		return exactLogicalOutputLabels(typed.Main, md, env)
+		nested := *env
+		nested.rows.registry = rows.registry.With(typed.CTEProducer)
+		return exactLogicalOutputLabels(typed.Main, md, &nested)
 	}
 	// Every other node's exact row already carries its own labels: a
 	// projection's are its aliases, a scan's are its stored column names, an
@@ -692,21 +701,22 @@ func projectionSlotSQLName(typed *logical.LogicalProject, i int) string {
 // deriveCTEProducerType follows the same retained source as translation. The
 // temporary recursive row is scoped by producer identity, never by SQL name.
 func deriveCTEProducerType(producer *logical.CTEProducer, md *recordlayer.RecordMetaData, env cteRows, unionType logicalUnionTypeDeriver) (values.Type, error) {
-	if row, ok := env[producer]; ok {
+	if row, ok := env.types[producer]; ok {
 		if row == nil {
 			return nil, fmt.Errorf("CTE %q has no recursive seed row", producer.Name())
 		}
 		return row, nil
 	}
-	if env == nil {
-		env = make(cteRows)
+	if env.types == nil {
+		env.types = make(map[*logical.CTEProducer]values.Type)
 	}
-	env[producer] = nil
-	defer delete(env, producer)
+	env.registry = env.registry.BodyScope(producer)
+	env.types[producer] = nil
+	defer delete(env.types, producer)
 	if producer.Recursive() {
 		if union, ok := producer.Body().(*logical.LogicalUnion); ok {
 			for _, branch := range union.Inputs {
-				if logical.ReferencesCTE(branch, producer) {
+				if logical.ReferencesCTEInScope(branch, producer, env.registry) {
 					continue
 				}
 				seed, err := deriveLogicalResultType(branch, md, env, unionType)
@@ -717,7 +727,7 @@ func deriveCTEProducerType(producer *logical.CTEProducer, md *recordlayer.Record
 				if err != nil {
 					return nil, err
 				}
-				env[producer] = row
+				env.types[producer] = row
 				break
 			}
 		}

@@ -137,3 +137,116 @@ func TestRetainedRecursiveCTEConsumerCommonRow(t *testing.T) {
 		})
 	}
 }
+
+func TestCTEMetadataReadsDoNotPublishBindings(t *testing.T) {
+	t.Parallel()
+	for _, reader := range []string{"exact", "promoted", "labels"} {
+		for _, envelope := range []bool{false, true} {
+			for _, failFirst := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/envelope_%t/failure_first_%t", reader, envelope, failFirst), func(t *testing.T) {
+					t.Parallel()
+					first, second := metadataReaderRegistries(t)
+					input, scans := metadataReaderInput(envelope)
+					if failFirst {
+						checkCTEMetadataRead(t, reader, input, nil, "", nil)
+					}
+					for _, test := range []struct {
+						registry *logical.CTERegistry
+						name     string
+						typ      values.Type
+					}{{&first, "FIRST", values.NotNullInt}, {&second, "SECOND", values.NotNullString}, {nil, "", nil}} {
+						checkCTEMetadataRead(t, reader, input, test.registry, test.name, test.typ)
+						for _, scan := range scans {
+							if scan.Source.Resolved() {
+								t.Fatal("metadata read published source ownership into its caller's graph")
+							}
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestCTEMetadataReadersShareUnboundInput(t *testing.T) {
+	t.Parallel()
+	first, second := metadataReaderRegistries(t)
+	input, scans := metadataReaderInput(true)
+	for _, reader := range []string{"exact", "promoted", "labels"} {
+		for _, test := range []struct {
+			registry *logical.CTERegistry
+			name     string
+			typ      values.Type
+		}{{&first, "FIRST", values.NotNullInt}, {&second, "SECOND", values.NotNullString}} {
+			t.Run(reader+"/"+test.name, func(t *testing.T) {
+				t.Parallel()
+				for range 10 {
+					checkCTEMetadataRead(t, reader, input, test.registry, test.name, test.typ)
+					for _, scan := range scans {
+						if scan.Source.Resolved() {
+							t.Fatal("parallel metadata reader published a binding")
+						}
+					}
+				}
+			})
+		}
+	}
+}
+
+func metadataReaderRegistries(t *testing.T) (logical.CTERegistry, logical.CTERegistry) {
+	t.Helper()
+	producer := func(name string, typ values.Type) *logical.CTEProducer {
+		t.Helper()
+		row := &values.RecordType{Fields: []values.Field{{Name: name, Ordinal: 0, FieldType: typ}}}
+		body, err := logical.NewInlineValues("ROWS", values.NewArrayConstructorValue(row, nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return testCTEProducer("C", body)
+	}
+	return logical.CTERegistry{}.With(producer("FIRST", values.NotNullInt)), logical.CTERegistry{}.With(producer("SECOND", values.NotNullString))
+}
+
+func metadataReaderInput(envelope bool) (logical.LogicalOperator, []*logical.LogicalScan) {
+	body := logical.NewScan("C", "BODY")
+	if !envelope {
+		return body, []*logical.LogicalScan{body}
+	}
+	main := logical.NewScan("D", "RESULT")
+	return logical.NewCTE("D", body, main, false), []*logical.LogicalScan{body, main}
+}
+
+func checkCTEMetadataRead(t *testing.T, reader string, input logical.LogicalOperator, registry *logical.CTERegistry, wantName string, wantType values.Type) {
+	t.Helper()
+	if reader == "labels" {
+		labels, err := ExactLogicalOutputLabels(input, nil, registry)
+		if registry == nil {
+			if err == nil {
+				t.Fatalf("absent CTE registry unexpectedly labelled the input: %v", labels)
+			}
+			return
+		}
+		if err != nil || !slices.Equal(labels, []string{wantName}) {
+			t.Fatalf("labels = %v, %v; want [%s] from this reader's registry", labels, err, wantName)
+		}
+		return
+	}
+	derive := ExactLogicalResultTypeWithCTEs
+	if reader == "promoted" {
+		derive = LogicalResultTypeAfterUnionPromotionWithCTEs
+	}
+	typ, err := derive(input, nil, registry)
+	if registry == nil {
+		if err == nil {
+			t.Fatalf("absent CTE registry unexpectedly typed the input: %v", typ)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, ok := typ.(*values.RecordType)
+	if !ok || len(row.Fields) != 1 || row.Fields[0].Name != wantName || row.Fields[0].Ordinal != 0 || !row.Fields[0].FieldType.Equals(wantType) {
+		t.Fatalf("row = %v; want exactly %s %v from this reader's registry", typ, wantName, wantType)
+	}
+}

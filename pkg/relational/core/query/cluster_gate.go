@@ -436,7 +436,9 @@ func (t *cascadesTranslator) ordinalEligible(op logical.LogicalOperator) bool {
 		if o.Recursive() {
 			return false
 		}
-		logical.BindCTESources(o, t.cteScope)
+		previous := t.cteScope
+		t.cteScope = previous.With(o.CTEProducer)
+		defer func() { t.cteScope = previous }()
 		return t.ordinalEligible(o.Main)
 	default:
 		// Non-join leaves and opaque boxes (aggregate, union, sort, limit,
@@ -883,7 +885,9 @@ func (t *cascadesTranslator) clusterArity(op logical.LogicalOperator) int {
 		if o.Recursive() {
 			return arityPoison
 		}
-		logical.BindCTESources(o, t.cteScope)
+		previous := t.cteScope
+		t.cteScope = previous.With(o.CTEProducer)
+		defer func() { t.cteScope = previous }()
 		return t.clusterArity(o.Main)
 	case *logical.LogicalAggregate, *logical.LogicalDistinct, *logical.LogicalSort,
 		*logical.LogicalLimit, *logical.LogicalUnion:

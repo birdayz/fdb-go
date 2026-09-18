@@ -232,3 +232,108 @@ func TestRetainedNestedRecursiveCTEPlanBindings(t *testing.T) {
 		t.Fatalf("nested recursive plan has %d recursive producers and %d temp scans, want 2 of each", recursive, scans)
 	}
 }
+
+func TestMetadataFreeDerivedCTEUsesEnclosingDeclaration(t *testing.T) {
+	t.Parallel()
+	for _, sql := range []string{
+		"WITH C AS (SELECT * FROM T) SELECT * FROM (SELECT * FROM C) D",
+		"WITH C AS (SELECT * FROM T) SELECT * FROM T X JOIN (SELECT * FROM C) D ON X.ID = D.ID",
+	} {
+		t.Run(sql, func(t *testing.T) {
+			t.Parallel()
+			q, err := parseQueryFromSelect(t, sql)
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan, err := NewPlanVisitor(nil).VisitQuery(q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			outer, ok := plan.(*logical.LogicalCTE)
+			if !ok || outer.Name() != "C" {
+				t.Fatalf("outer declaration = %T, want C", plan)
+			}
+			found := 0
+			var walk func(logical.LogicalOperator)
+			walk = func(op logical.LogicalOperator) {
+				if scan, ok := op.(*logical.LogicalScan); ok && scan.Table == "C" {
+					found++
+					if !scan.Source.Resolved() || scan.Source.Producer() != outer.CTEProducer {
+						t.Fatal("derived reconstruction captured physical C before its enclosing declaration existed")
+					}
+				}
+				for _, child := range op.Children() {
+					walk(child)
+				}
+			}
+			walk(plan)
+			if found != 1 {
+				t.Fatalf("visited %d derived C reads, want exactly one", found)
+			}
+		})
+	}
+}
+
+func TestMetadataFreeCTEBodyRetainsNestedDeclaration(t *testing.T) {
+	t.Parallel()
+	q, err := parseQueryFromSelect(t, `WITH C AS (WITH A("k.k") AS (SELECT ID FROM T) SELECT * FROM A) SELECT * FROM (SELECT * FROM C) D`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := NewPlanVisitor(nil).VisitQuery(q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outer, ok := plan.(*logical.LogicalCTE)
+	if !ok || outer.Name() != "C" {
+		t.Fatalf("outer declaration = %T, want C", plan)
+	}
+	inner, ok := outer.Body().(*logical.LogicalCTE)
+	if !ok || inner.Name() != "A" {
+		t.Fatalf("C body = %T, want retained nested A declaration", outer.Body())
+	}
+	aliases := inner.ColumnAliases()
+	if len(aliases) != 1 || aliases[0] != "k.k" {
+		t.Fatalf("nested column aliases = %q, want [k.k]", aliases)
+	}
+	scan, ok := inner.Main.(*logical.LogicalScan)
+	if !ok || scan.Source.Producer() != inner.CTEProducer {
+		t.Fatalf("A consumer = %T, want its nested declaration, not physical ownership", inner.Main)
+	}
+}
+
+func TestMetadataFreeRecursiveCTEMetadata(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		clause string
+		order  logical.TraversalOrder
+	}{
+		{"", logical.TraversalAnyOrder},
+		{"TRAVERSAL ORDER pre_order", logical.TraversalPreOrder},
+		{"TRAVERSAL ORDER post_order", logical.TraversalPostOrder},
+		{"TRAVERSAL ORDER level_order", logical.TraversalLevelOrder},
+	} {
+		t.Run(test.clause, func(t *testing.T) {
+			t.Parallel()
+			q, err := parseQueryFromSelect(t, `WITH RECURSIVE R("n.n") AS (SELECT ID FROM T UNION ALL SELECT "n.n" FROM R) `+test.clause+` SELECT * FROM R`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan, err := NewPlanVisitor(nil).VisitQuery(q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			declaration, ok := plan.(*logical.LogicalCTE)
+			if !ok || !declaration.Recursive() {
+				t.Fatalf("recursive declaration = %T", plan)
+			}
+			if declaration.TraversalOrder() != test.order {
+				t.Errorf("traversal = %v, want %v", declaration.TraversalOrder(), test.order)
+			}
+			aliases := declaration.ColumnAliases()
+			if len(aliases) != 1 || aliases[0] != "n.n" {
+				t.Errorf("recursive aliases = %q, want [n.n]", aliases)
+			}
+		})
+	}
+}
