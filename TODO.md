@@ -12533,3 +12533,478 @@ Normal hooks and exact published-head full-PR Graefe/Torvalds/C++/Codex approval
 published @claude LGTM, CI and the owner decision on the five restricted sweeps
 still precede merge. No admission/expectation/golden weakening, performance work,
 new hunt, or QSC-01–11 authorization is implied.
+
+### RFC-256 remaining reader/USING ownership findings at `7483327ce`
+
+Full-PR Graefe, Torvalds and C++ sessions read all 389 files / 68,299 diff
+lines and returned NAK. Independent Codex timed out after two hours; no
+approval is inferred. Exact-head CI has seven successful checks. Evidence:
+`/var/tmp/query-grind-cast/pr785-review/remaining-acks/published-boundary-*`
+and `cte-boundary-ci-pass.json`. Companion: RFC-256 **Remaining reader and
+USING ownership findings**.
+
+The source-derived finding was flattened-name selection in
+projection/aggregate/sort readers and subquery outer-source capture. The
+uncommitted repair now shares SELECT scope construction; focused verification
+and the remaining publication gates are recorded below.
+The retained physical LA scan in
+`WITH "S.LA" AS (SELECT CID AS OWN_ID FROM CC) SELECT p.AID + 0 FROM s.LA p`
+is reinterpreted using CTE schema metadata. The design is to consume the checked
+SELECT scope rather than maintain separate reader-specific source-selection
+algorithms. Java Identifier.equals/findCteMaybe preserves name plus qualifier;
+all expression consumers read that same chosen source.
+
+The other finding in this ownership repair was USING-star expansion emitting
+name lookups rather than bound attribute slots. The uncommitted repair below
+removes that separate path in favor of the checked star expander. A derived/CTE row with two X
+outputs must preserve both ordinals when USING hides only the right ID. The
+existing checked star expander implements Java expandStar's visible-attribute
+contract and must own this path too. Both findings require compiled regression
+reds, restored green runs, complete verification and exact-head review before
+merge. No new hunt, admission expansion, performance fix or QSC authorization.
+
+### RFC-256 FirstOrDefault type mismatch exposed by reader repair
+
+Active correctness finding under the remaining reader/USING repair, not new
+QSC work: the admitted correlated `EXISTS (SELECT x FROM p.ARR x WHERE x = 7)`
+fails with and without the CTE collision. `FirstOrDefault` publishes the
+non-nullable scalar child's type while emitting its typed NULL default. Java's
+constructor derives the output root nullability from the default. Evidence:
+`/var/tmp/query-grind-cast/pr785-review/remaining-acks/cte-reader-array-runtime-red.*`.
+Design and regression obligations: RFC-256 **FirstOrDefault result-type contract
+uncovered by the reader regressions**. Design v2 accepted, implementation
+verification ongoing; no binder bypass,
+SQL admission change, performance work or merge waiver is authorized.
+
+### RFC-256 default-result lineage verification continuation
+
+Design v2 has Graefe/Torvalds design-only ACKs; implementation/full-PR approval
+is still open. The correlated-array/EXISTS reader FDB cells now pass without
+relaxing exact carrier authority. Extraction had read an old owner from a
+mutable memo reference after it ceased to be a selected singleton. Filter
+relinking now uses its immutable admitted carrier, pinned by the live-reference
+red/green (`remaining-acks/default-filter-live-relink-{red,green}.*`).
+
+The next retained lineage matrix exposed a real NOT NULL-field read failure:
+null-extending its record changes the read result to nullable (Java FieldValue
+computeResultType), while `TranslateNullExtendedPhaseRoot` incorrectly requires
+an unchanged result type. Follow RFC-256 **Null-extension field lineage
+clarification** before closing the active DFS path. `default-lineage.log` holds
+the compiled failure. Four affected full suites passed before this new test
+(`first-default-affected-v5.*`), not proof for the subsequent edit. USING and
+checked-scope reader audit remain in the parent ownership repair above; no new
+QSC work, performance repair, admission expansion or merge waiver.
+
+### RFC-256 default-result plan-shape refresh (owner-approved)
+
+The field-lineage implementation now passes its focused values/plans/executor
+regressions; its previous compiled failure and design-only ACKs remain recorded
+above, not a current unresolved field-read failure. The first full default-result
+run failed docscheck, embedded fixtures and explaindiff. Focused docs/fixture
+repairs pass; the pre-refresh full-suite result is recorded below.
+
+The pre-refresh `TestPlanShapeGolden` failure affected three join orientations,
+not SQL result expectations: `projected_exists_over_a_derived_source.yaml#2/#5` and
+`subquery_in.yaml#11`. The type correction changes the final hash between
+otherwise equal-cost orientations. All 19 queries in a bounded two-YAML replay
+match their old goldens when only FirstOrDefault and quantifier code is restored
+to published `7483327ce`; reinstating the repair restores the three differences.
+The permanent `TestPlanHarness_ExistsDefaultTypesAndSymmetricJoinCosts` pins the
+three exact SQL/type/cost premises, passes four RUN/PASS, and compiled red under
+that two-file rollback. Every diagnostic edit was restored; the cost model
+remains unchanged. Companion RFC-256 **Default-result metadata and owner-approved
+plan-shape refresh** contains the scope, Java reference, artifact paths and
+limitations.
+
+**Owner approved the three-snapshot refresh.** A fresh complete dump changed
+exactly those three of 2,995 entries; the header, SQL and per-entry node
+populations are unchanged. The full EXPLAIN target passed three uncached runs:
+159/159 Go RUN/PASS, including three executions each of the exact golden and
+determinism checks (`default-result-approved-shapes-test.*`). Full-suite
+verification follows. No type weakening, cost/hash retuning, admission change,
+new hunt/QSC work, skip waiver, push or merge is authorized by this approval. Reader scope/error and USING slot pins now pass in the continuation below;
+final full/race/mutation verification and exact-head review remain incomplete.
+This block does not mark the parent ownership repair done.
+
+Pre-refresh full verification: uncached `just test` completed **91/92
+targets passed**, only `TestPlanShapeGolden` red; **40,213 RUN = 40,207 PASS +
+one FAIL + five restricted-hunt SKIP**, zero cached results and no source
+changes during the frozen run. The unchanged two YAML scenarios passed all
+6+13 assertions; the new type/cost pin passed parent plus three cells. Logs,
+BEP and hashes: `remaining-acks/default-cost-full.*` under the PR785 review
+artifact directory above. The five-skip gate remains unmet. This result was
+recorded after the measured run; it is not a final-tree green or an approval.
+
+### RFC-256 reader/USING repair continuation after the approved golden refresh
+
+The uncommitted USING repair deletes the separate name-based bare-star expander
+and its two entry-point calls. Both SELECT construction entries now use the
+existing checked visible-attribute expansion, so duplicate X slots, quoted-dot
+labels and unnamed outputs remain separate while only the right USING key is
+hidden. No name-based binder fallback or additional golden change was added.
+
+Real-FDB driver coverage first compiled red: 25 RUN, 15 PASS / 10 FAIL (nine
+new SQL cells plus the parent); the restored repair passed 25/25. A first
+catalog-entry mutant survived the driver tests, exposing a coverage gap rather
+than earning mutation credit. The retained catalog-constructor unit test now
+pins exact source ownership and ordinals for duplicate, quoted and unnamed
+attributes. Independent final mutants fail 4/4 catalog outcomes and 14/16
+visitor outcomes (the two qualified-star controls stay green); both original
+sources are restored byte-for-byte. The initial catalog test fixture used a
+nonexistent Order field and assumed an automatically minted binding; that run
+is a fixture failure, not engine regression evidence.
+
+Scope/error audit retained the adapters' nil-on-source-failure compatibility
+contract and removed retries of the identical SELECT scope builder. New unit
+pins refuse missing primary/join metadata, a CTE tombstone and absent catalog,
+without publishing a partial scope; real-FDB diagnostic pins preserve 42703
+for undefined projection/aggregate/sort columns and 42702 for ambiguity under
+the quoted-dot CTE collision. The scalar-array rejection remains 42F00. The
+two temporary EXPLAIN logs are removed.
+
+The restored focused embedded/driver/EXPLAIN run passed **77/77 RUN/PASS**,
+including the approved exact golden and determinism checks. Evidence under
+`/var/tmp/query-grind-cast/pr785-review/remaining-acks`:
+`using-attribute-slots-{red,green}.*`, `using-attribute-catalog-green-v2.*`,
+`using-attribute-slots-{catalog,visitor}-mutant-v2.*`,
+`verify-using-slot-mutations.py`, and `reader-using-focused*`.
+Companion: RFC-256 **Bound-attribute USING expansion and reader failure contract**.
+Full-suite, race, wider default-result mutation, stress and final review gates
+remain open. Five restricted hunts, performance fixes, push and merge are not
+newly authorized by the three-golden approval.
+
+### RFC-256 array constructor rebuild correction
+
+Local milestone implementation review at published HEAD
+`7483327ce1d91c14c2256740c19fbd97a3d67345` plus working-diff SHA256
+`5b943d92990558c0ec2228d37abc8e5b0291cc85592c160d72572afc75304b16`
+returned Graefe ACK / Torvalds NAK. Both reviews read the complete 33-file,
+3,004-line local diff; neither is a full-PR approval. The outstanding finding
+is constructed arrays retaining NOT NULL element metadata after a field read
+widens across a default-plan absent-record root. Java's checked reconstruction
+contract and the exact repair/test scope are recorded in RFC-256 **Array-constructor
+reconstruction after null extension**; fix that finding before publication.
+
+Before these new tests/docs, the frozen tree passed actual uncached `just test`:
+92/92 targets, 40,241 RUN = 40,236 PASS + five restricted-hunt SKIP,
+13 embedded diagnostics excluded, no missing/extra outcomes, zero cached results.
+The separate uncached race run passed all seven affected targets in 1,942.767s:
+17,930 RUN/PASS, no SKIP/FAIL or missing/extra outcomes, 11 embedded diagnostics
+excluded, zero cached results. All 6,185 tracked regular-file hashes still
+matched the full-run freeze after both runs. These results describe the
+pre-correction tree and are not proof of the new array-rebuild fix. Artifacts:
+`/var/tmp/query-grind-cast/pr785-review/remaining-acks/reader-using-{full,race}.*`
+and `reader-using-impl-{graefe,torvalds}.*`.
+
+The five restricted hunts, wider default-result mutations, stress, final
+exact-published-head full-PR Graefe/Torvalds/C++/Codex approvals, published
+Claude LGTM and CI remain unwaived. No performance fix, push or merge is
+newly authorized. Next: compiled red regressions, checked reconstruction,
+restored green/mutation/full verification and final local review confirmation.
+
+### RFC-256 array/default reconstruction verification
+
+The array-constructor finding is implemented under the reviewed Java
+reconstruction contract: common element type must equal retained metadata,
+then promotions are injected; no silent widening. Mixed default lineage keeps
+typed errors. Field mapping now rejects a typed-nil array and partial enclosing
+record. Numeric reconstruction exposed missing `PromoteValue` INT→LONG carrier
+widening; reusing the existing primitive promotion helper fixes it without
+changing the conversion lattice or scalar/simplifier typing. RFC-256 **Array-constructor
+reconstruction after null extension** contains the Java references, source scope
+and fixture/build failures (not credited as semantic reds).
+
+Verification before the final full/race runs: three uncached package targets
+passed 5,036/5,036 outcomes; five array-boundary mutants compiled/red over 56
+outcomes each (32/3/2/6/7 FAIL), then exact restoration passed 56/56. Expanded
+field-lineage fuzz passed four seeds and 6,648,152 executions/15s without coverage
+guidance. Ten wider default-result mutants compiled/red: construction/rebuild
+17 outcomes each (17/5 FAIL); eight remaining mutants 255 outcomes each
+(55/15/23/20/4/1/1/4 FAIL). v2 is the complete credited run; v1 stopped on a
+mutation-verification harness assertion before its last two cases. A separate
+permanent nonmutation pin passed 10/10 and both borrowed-row/borrowed-slot
+mutants failed all ten outcomes. All source files were restored byte-for-byte.
+
+Artifacts under `/var/tmp/query-grind-cast/pr785-review/remaining-acks`:
+`default-array-*`, `default-result-mutant-v2-*`,
+`default-result-mutation-counts-v2.jsonl`, `default-result-mutations-v2.*`,
+`default-row-*` and the three `verify-default-*-mutations.py` scripts.
+The design delta has Graefe/Torvalds ACKs, not implementation/full-PR approval.
+Final full/race/stress and implementation confirmation remain; five restricted
+hunts and published-head review/Claude/CI gates stay unwaived. No push or merge.
+
+### RFC-256 structured promotion — owner expectation decision
+
+**Historical owner-decision stop, resolved by the owner-ordered split at the
+end of this section.** At this checkpoint the reproduced recursive-promotion
+defect and failing pins prevented publication. The owner subsequently chose to
+retain the known limitation in this pinned-version PR and repair it in the
+immediate Java-upgrade/parity successor. This is not a defect-closure claim.
+Companion: RFC-256 **Structured promotion reproducer and expectation-approval STOP**.
+
+Both local implementation-delta reviews returned NAK on virtual tree
+`472bff1b40276a3f7738331c7470deb593b44de3`, diff SHA256
+`dd52a2e1fd50aab77395f1ac881baa03033470c1690671f6a568d2671d5132dc`,
+published HEAD `7483327ce1d91c14c2256740c19fbd97a3d67345`.
+The checked array reconstruction now inserts promotions that the primitive-only
+evaluator cannot perform recursively. The independent local Codex run has no
+completed verdict; its process/task is gone and its log ends during source
+inspection. Cause unknown, no review credit. The newer race run was cancelled;
+stress was not run. The preceding frozen full run did pass 92 uncached targets,
+40,299 RUN = 40,294 PASS + five restricted SKIP, with 13 embedded diagnostics
+excluded and all 6,185 frozen file hashes unchanged. It predates the new pins
+and does not fulfill the no-skips gate.
+
+Two values test roots added at that checkpoint assert actual nested INT→LONG/LONG→DOUBLE
+array carriers, additional array depth, nullable elements, protobuf field
+kinds/values, NULL fields, empty arrays and source immutability. Uncached Bazel
+compiled and reproduced **12 outcomes = 11 FAIL + one PASS** (nine failing
+cases plus two parents; the empty-array control passed). `just gazelle` and
+`bazelisk mod tidy` passed. No recursive production fix has been made.
+
+The existing real-FDB `TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes` passed
+unchanged (one Go RUN/PASS; plain-loop SQL cases). Its table explicitly requires
+`SELECT ([(1 AS A), (2.5 AS A)] AS CH) FROM t` and
+`SELECT ([(1 AS A), (2.5 AS B)] AS CH) FROM t` to fail with
+`but double in the target`. Those refusals arise because the record promotion
+leaves an INT message under DOUBLE target metadata. Completing the Go conversion
+would remove that failure; the three approved shape snapshots do not authorize
+changing these expectations. The subsequent live-Java verification below
+corrects the premise of the initial request: Java 4.12.11.0 also fails these
+exact queries, so successful rows would be a deliberate upstream-bug workaround,
+not measured Java SQL parity. Other admission/error/representation expectations
+remain unchanged.
+
+Evidence under `/var/tmp/query-grind-cast/pr785-review/remaining-acks`:
+`structured-promotion-red.*`, `structured-promotion-admission-controls.*`,
+`structured-promotion-{gazelle,tidy}.log`,
+`default-array-impl-codex.incomplete.json`, `default-array-impl-{graefe,torvalds}.*`,
+and `default-array-full.*`. The owner-ordered split below carries those exact
+success assertions and recursive-coercion implementation together into the
+immediate successor. The five restricted hunts, published-head full-PR reviews,
+Claude LGTM, CI and performance acceptance remain unwaived; the new instruction
+authorizes finishing/publishing the parent, not merging it.
+
+### RFC-256 live Java numeric record-array correction
+
+**Correction to the preceding owner-decision premise:** Java 4.12.11.0 also
+fails BOTH exact mixed-width array-of-record queries with
+`IllegalArgumentException: ... field java type: DOUBLE, value type: java.lang.Integer`.
+Changing Go to return rows would therefore be an upstream-bug workaround, not
+restoration of observed Java SQL behavior. The prior Go refusal expectations
+remain unchanged. Companion: RFC-256 **Live Java outcome correction for numeric
+record arrays**.
+
+A retained spec in `conformance/record_constructor_java_probe_test.go` pins
+both errors and successful controls replacing only `1` with `1.0`. The controls
+return `{CH: [{A: 1.0}, {A: 2.5}]}` or `{CH: [{_0: 1.0}, {_0: 2.5}]}`, respectively.
+The HTTP row representation does not expose nested JDBC primitive widths; no
+such coverage is claimed. Root cause: pinned `ExpressionVisitor.java:1094–1110`
+uses the raw array factory rather than the promotion-injecting encapsulator;
+its TODO names that missing step. The live Java stack reaches
+`MessageHelpers.deepCopyMessage:292` through `RecordConstructorValue` and
+confirms unpromoted Integer copying into the DOUBLE descriptor.
+
+The initial assumed-success probe failed at its FIRST case, so it is not
+four-case evidence. The completed normal and debug runs each passed one
+focused Ginkgo spec and emitted all four case outputs; 1,441 other specs were
+excluded by the focus filter, not exercised. Artifacts under the existing
+PR785 review directory: `remaining-acks/structured-promotion-java.log`,
+`structured-promotion-java-v2.*`, `structured-promotion-java-traced.*`, and
+`structured-promotion-java-final-{gazelle,tidy}.log`. That investigation made no
+production fix or publication. The owner subsequently ordered the parent/successor
+split recorded below; it does not authorize a changed SQL outcome in the parent.
+
+### RFC-256 owner-ordered parent and Java-upgrade successor
+
+The owner resolved the preceding stop: finish/publish PR785 on Java **4.12.11.0**,
+accept the known broken promotion behavior here, then make the immediate stacked
+Java-upgrade PR including the required parity work. No upstream Java PR: #4171
+already fixed the SQL construction path; RFC-256 records its release history.
+Existing Go SQL refusal expectations and the four-case pinned-Java regression remain.
+No merge, new QSC hunt, performance fix or unrelated expectation change follows.
+
+The retained limitation is explicit: structured `PromoteValue` evaluation still
+leaves nested carriers/descriptors unchanged, including promotions inserted by
+checked reconstruction. Java 4.12.11's library already recurses; its SQL path
+bypasses that library operation. SQL failure agreement is not library parity.
+A fresh uncached baseline run at the PR merge-base `ed3504f7e410d8e2a4f4c46fd7b4c72fd0484869`
+reproduced the same nine failing carrier/descriptor cases, plus two failed
+parents and the passing empty-array control (12 outcomes total). Only the array
+baseline's entry point and promotion-node assertions were adapted to the old
+unchecked API; carrier/type/nonmutation assertions and the record root stayed
+unchanged. No newly introduced wrong-result regression was established within
+this measured boundary. Graefe/Torvalds ACKed the bounded split's design, not
+implementation/full-PR correctness or any verification waiver.
+
+The two desired-success roots are reserved unchanged for the immediate successor:
+`TestArrayConstructorValue_CheckedRebuildNestedNumericCarriers` and
+`TestPromoteValue_EvaluateRecordNumericCarriers`. They must be committed with
+recursive ARRAY/RECORD promotion there, not weakened, skipped or discarded.
+Their checked application patch is
+`/var/tmp/query-grind-cast/pr785-review/owner-split/successor-tests.patch`, SHA256
+`b7384c77cfba0885ccb321f1552bbce620d474d105b3ae96c629d8b2295d9724`; the adjacent
+manifest records exact test-function/file hashes. All previously green array,
+primitive-promotion, default-result and ownership repairs/tests stay in PR785.
+Fresh focused Go/Java pins passed uncached, with all four Java query outputs;
+these are not full-suite evidence. Final parent full/race/stress/review/CI gates
+and the five restricted hunts remain distinct requirements.
+
+Companion: RFC-256 **Owner-ordered pinned-version parent and stacked parity upgrade**.
+Evidence: `owner-split/{before.*,design.txt,graefe.*,torvalds.*,baseline-*,pinned-*,successor-tests.*}`
+under the PR785 review directory. Next: finish parent verification/publication,
+then verify and confirm the common Maven release before successor pin edits;
+include proto/grammar/generated changes and the complete required behavioral
+parity delta, including the retained recursive-promotion tests and SQL success
+expectations. Do not claim the accepted defect closed by finishing the parent.
+
+### RFC-256 read-lifetime cancellation observation flake
+
+The repeated frozen parent full run passed the corrected documentation guard but
+failed `TestGetReadVersion_ConcurrentWithCommit_RaceFree`: concurrent GRV leaked
+plain `context canceled` during commit reuse instead of FDB 1025. Population:
+92 uncached targets, 91 passed; 40,299 Go outcomes = 40,293 PASS + one FAIL + five
+restricted SKIP. Sequential race/stress verification stopped before starting.
+This is a real client defect, not part of the accepted promotion limitation.
+
+Root cause: `readLifetimeError` sampled incarnation cause before context error;
+retirement could record/deliver cancellation in between. The fix reads context
+error first, then the captured cause, still returning that cause preferentially. The
+record-before-delivery ordering makes that observation order sound. No surface
+error remapping, new production hook or weakened race expectation. Retain a
+controlled real-FDB regression across cancel/timeout/reset/commit reuse and caller
+cancellation, with replacement/committed-data controls, then loop under race.
+C++/Torvalds and independent design reviews ACKed this repair before the production
+edit. Final local implementation ACKs and broad verification are recorded below.
+Companion: RFC-256 **Read-lifetime cancellation-observation ordering**. Evidence:
+`/var/tmp/query-grind-cast/pr785-review/owner-split/v2/parent-full.*` and
+`verification-records.json`; the preceding docs-only failure is retained under
+`owner-split/parent-full.*`. Complete final verification before parent publication
+or upgrade work.
+
+The deterministic test compiled and failed before the fix and again with the fix
+reverted: six outcomes, four retirement-case failures plus the failed parent and
+a passing caller-cancellation control. Each failure exposed raw context cancellation
+instead of literal 1025/1031. The restored fix and unchanged concurrent test passed
+50 repetitions normally and 50 under `-race`: 350 RUN/PASS in each uncached run,
+zero skipped/missing outcomes; source hashes matched before/after. The test also
+checks live callers, positive replacement GRVs and independently persisted commit
+data. Evidence: `owner-split/read-cancel/{red.*,revert.*,revert-present.json,revert-verified.json,green-repeat.*,race-repeat.*,green-focused.freeze.sha256}`.
+The initial revert-output postprocessor expected helper code 0 rather than the
+actual non-FDB sentinel -1; the complete compiled failure log was rechecked, not
+rerun or altered to produce the expected proof. Full/race-package/stress and final
+review gates are separate from this focused repair evidence; the completed local
+rerun and code ACKs are recorded below.
+
+### RFC-256 watch-setup cancellation classification
+
+The implementation reviewer found another raw-context bypass in `WatchSetup`
+after the GRV observation repair. Internal cancellation between its first lifetime
+gates and direct `ctx.Err()` check can escape without the captured FDB 1025/1031.
+The v3 broad run was stopped after 87 completed passing targets; no full-suite,
+race-package or stress completion is claimed for it. This is outside the accepted
+promotion limitation and had to be fixed before publication or upgrade work.
+
+The raw check now uses the existing captured `readLifetimeError`, preserving watch
+option/key/cap precedence and timeout publication. C++, Torvalds and independent
+design ACKs preceded the production edit. The expanded real-FDB fixture retains
+the GRV assertions and covers both watch gates, four retirement paths and caller
+control, with slot, replacement and independently persisted commit checks.
+
+Compiled red before repair and on raw-watch-gate reversion: 19 outcomes = 13 PASS
++ six FAIL (four follow-up retirement cases plus their two parents). Restoring the
+old cause-before-context observation instead failed all twelve retirement cases
+and four parents, with three caller controls passing (19 outcomes). Both mutants
+were verified present and fixed hashes restored. The regressions plus unchanged
+concurrent test passed 50 repetitions normally and under `-race`: 1,000 RUN/PASS
+in each uncached execution, zero skips/missing outcomes, all source hashes stable.
+Implementation delta ACKs and the complete full/race-package/stress rerun are
+recorded below; focused evidence alone is not a complete-suite claim.
+Companion: RFC-256 **Watch setup must retain captured cancellation classification**.
+Evidence: `/var/tmp/query-grind-cast/pr785-review/owner-split/v3/cpp-delta.md`
+and `interrupted.json`; `owner-split/watch-cancel/{red.*,records.json,complete.json,source.freeze.json,*-present.json,green-repeat.*,watch-raw-gate.*,cause-first-observation.*,race-repeat.*}`.
+
+### RFC-256 accepted parent — complete repaired-tree verification
+
+The read/watch cancellation findings are fixed and revert-proven; they are not
+part of the accepted structured-promotion limitation. Graefe, Torvalds, the C++
+maintainer and independent Codex each ACKed code through virtual Git tree
+`71501a0b216ee0a2a52a66bea8a9cfafbcaef587`: retained complete full-PR review plus
+final deltas, covering 418 changed files / 72,460 diff lines. No merge approval
+follows. Those identities predate this closing documentation; final published-SHA
+confirmation, Claude and CI remain separate gates.
+
+Uncached verification completed against that frozen tree, with all 6,185 tracked
+regular-file hashes matching afterwards:
+
+- Actual `just test`: 92/92 targets passed; 40,318 Go RUN = 40,313 PASS + five
+  restricted opt-in SKIP, no missing/extra outcomes. Thirteen embedded diagnostic
+  outcomes were excluded by their test-output framing. This is not a no-skips gate.
+- Complete race targets for client, values, expressions, plans, executor, Cascades,
+  embedded and SQL driver: eight passed; 19,812 RUN/PASS, no skipped/missing/extra
+  outcomes (eleven embedded diagnostic outcomes excluded).
+- Two merge-base and two repaired-tree 1M runs, serialized on one filesystem and
+  identical `go.mod`: 24 RUN/PASS each, no skips; all 22 timed row populations agree
+  across all four samples, and COUNT(*) separately asserts 1,000,000.
+- BEP reconciliation independently checked every test summary and result: zero
+  `totalNumCached`, local-cache or remote-cache results across the 104 executed
+  target results in these six runs. Commands explicitly disabled test caching.
+
+Evidence under `/var/tmp/query-grind-cast/pr785-review/owner-split/v4/`:
+`parent.scope.json`, `parent.freeze.json`, `verification-complete.json`,
+`verification-records.json`, `verified-results.json`, complete logs/BEPs/counts
+and four `*-delta.md` reviews. The previous v1/v2 failures and v3 canceled run
+remain preserved; none is relabeled as a complete green. All four focused client
+source hashes and both compiled semantic mutations are retained in the sibling
+`watch-cancel/` evidence. The original concurrent test remains unchanged.
+
+**Stress test 1M baseline — final accepted-parent repairs.** Baseline commit
+`ed3504f7e410d8e2a4f4c46fd7b4c72fd0484869`, the merge-base on 2026-09-18, versus
+parent `7483327ce1d91c14c2256740c19fbd97a3d67345` plus the frozen 43-path repair,
+exact Git tree `71501a0b216ee0a2a52a66bea8a9cfafbcaef587`. This is a comparison of
+those two trees, not moving master or the later documentation/commit tree.
+Both checkouts reside under `/var/tmp/query-grind-cast/` on one filesystem, with
+more than 222 GB available at each run start. Two baseline samples preceded two
+repaired samples; no other local test job was launched alongside them.
+
+Command wall times including build: baseline-1 189.652s; baseline-2 182.119s; current-1 261.706s; current-2 186.351s.
+One-minute load start/end: baseline-1 5.183/4.643; baseline-2 4.643/4.077; current-1 4.077/4.751; current-2 4.751/5.377.
+
+Individual observations and slower rows remain explicit. No performance parity,
+causal attribution, performance acceptance or performance fix is claimed.
+
+| Query | Rows | Baseline ms (n=2) | Repaired ms (n=2) | Mean repaired/base |
+|---|---:|---:|---:|---:|
+| PK lookup id=0 | 1 | 15.366 / 9.497 | 9.535 / 30.159 | 1.597x |
+| PK lookup id=N/2 | 1 | 27.201 / 8.922 | 9.284 / 15.869 | 0.696x |
+| PK lookup id=N-1 | 1 | 20.236 / 6.505 | 8.039 / 15.117 | 0.866x |
+| idx_customer eq | 8 | 18.747 / 7.167 | 7.411 / 24.342 | 1.225x |
+| idx_amount range >9000 | 100017 | 294.465 / 263.989 | 268.091 / 265.400 | 0.955x |
+| idx_status count pending | 1 | 339.138 / 408.621 | 357.179 / 359.375 | 0.958x |
+| full scan filter amount>5000 | 1 | 836.040 / 797.637 | 690.911 / 669.576 | 0.833x |
+| GROUP BY status | 4 | 12.601 / 27.069 | 6.410 / 12.449 | 0.475x |
+| GROUP BY status COUNT only | 4 | 22.579 / 12.573 | 5.766 / 22.856 | 0.814x |
+| SUM by status (aggregate index) | 4 | 12.230 / 13.654 | 5.895 / 17.823 | 0.916x |
+| GROUP BY customer HAVING | 47271 | 666.799 / 663.976 | 606.752 / 729.099 | 1.004x |
+| JOIN 10 orders x customers | 10 | 20.228 / 40.079 | 21.151 / 22.100 | 0.717x |
+| ORDER BY PK (full) | 1000000 | 3923.656 / 3884.824 | 7219.723 / 4013.498 | 1.439x |
+| ORDER BY PK + index filter | 8 | 8.984 / 8.973 | 9.785 / 9.390 | 1.068x |
+| scan all rows ordered | 1000000 | 7226.670 / 3735.729 | 3889.861 / 3886.304 | 0.709x |
+| scan all rows wide | 1000000 | 4072.873 / 4014.798 | 4136.531 / 4169.673 | 1.027x |
+| IN-list 5 values | 46 | 19.706 / 20.144 | 20.420 / 19.872 | 1.011x |
+| PK needle id=999999 | 1 | 5.980 / 6.058 | 6.083 / 6.211 | 1.021x |
+| PK+filter needle id=500000 | 1 | 7.524 / 7.527 | 8.229 / 7.626 | 1.053x |
+| full scan sparse filter | 97 | 3409.280 / 3411.116 | 3533.631 / 3632.709 | 1.051x |
+| UPDATE by index | 8 | 9.837 / 9.266 | 9.965 / 9.503 | 1.019x |
+| DELETE single row | 1 | 7.139 / 7.272 | 7.221 / 7.406 | 1.015x |
+
+Row measurements are retained in `stress-rows.json`; all source identities,
+commands, cache checks and loads are in `verified-results.json`. The five restricted
+factory hunts remain unapproved, not Docker skips or passing coverage. Prior
+paging140/eternal3600 and transaction/watch/retry obligations remain unchanged.
+
+The owner's parent/successor split still governs: publish this pinned-version
+parent without claiming recursive structured promotion fixed, then immediately
+verify/confirm the Java release and implement all parity in the stacked successor,
+including the unchanged preserved desired-success tests. No merge is authorized.
+Companion: RFC-256 **Accepted-parent verification completed**.

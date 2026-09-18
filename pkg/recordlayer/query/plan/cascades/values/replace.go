@@ -171,10 +171,16 @@ func replaceLeavesOnceMaybeChecked(v Value, replaceFn func(Value) (Value, error)
 	return visit(v)
 }
 
-// WithChildren is the exported entry point for reconstructing a Value
-// with new children. Delegates to the unexported withChildren.
+// WithChildren reconstructs a Value with new children. Array and non-leaf
+// field reconstruction failures return nil; unchanged leaves are retained.
 func WithChildren(v Value, newChildren []Value) Value {
 	return withChildrenUnchecked(v, newChildren)
+}
+
+// WithChildrenChecked reconstructs a Value while retaining typed field/array
+// reconstruction errors for callers outside this package.
+func WithChildrenChecked(v Value, newChildren []Value) (Value, error) {
+	return withChildrenChecked(v, newChildren)
 }
 
 // withChildren reconstructs a Value with new children. Dispatches
@@ -203,6 +209,13 @@ func withChildrenChecked(v Value, newChildren []Value) (Value, error) {
 		}
 		return rebuildFieldValueOnChangedChild(field, newChildren[0])
 	}
+	if array, ok := v.(*ArrayConstructorValue); ok {
+		rebuilt, err := array.withChildrenChecked(newChildren)
+		if err != nil {
+			return nil, err
+		}
+		return rebuilt, nil
+	}
 	return withChildrenUnchecked(v, newChildren), nil
 }
 
@@ -224,7 +237,8 @@ func withChildrenUnchecked(v Value, newChildren []Value) Value {
 	case *UdfValue:
 		return vt.WithChildren(newChildren)
 	case *ArrayConstructorValue:
-		return vt.WithChildren(newChildren)
+		rebuilt, _ := withChildrenChecked(vt, newChildren)
+		return rebuilt
 	case *IndexOnlyAggregateValue:
 		return vt.WithChildren(newChildren)
 	case *RankValue:

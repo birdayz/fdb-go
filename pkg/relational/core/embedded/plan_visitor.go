@@ -549,12 +549,6 @@ func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleT
 		normalizeSoleQualifiedStar(sq)
 		needRebuild = true
 	}
-	// A bare `SELECT *` over a JOIN … USING expands explicitly so the
-	// right-side USING copies drop out (Java hides them; expandStar
-	// filters hidden).
-	if expandBareStarOverUsingJoins(sq, v.md, v.schemaName, queryCTEScopes) {
-		needRebuild = true
-	}
 	// A bare `SELECT *` over version-storing base tables expands into an
 	// explicit non-ephemeral projection (the __ROW_VERSION pseudo-field must
 	// not surface through the star — Java's nonEphemeralVisible star over the

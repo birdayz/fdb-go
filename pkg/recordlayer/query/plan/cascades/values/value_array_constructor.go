@@ -6,15 +6,13 @@ package values
 // `LightArrayConstructorValue` (the simple, non-protobuf-message
 // variant of `AbstractArrayConstructorValue`).
 //
-// All children must produce values compatible with the declared
-// `ElementType`. Go does NOT enforce per-element type
-// validation at construction — Java's `injectPromotions` chain
-// handles type-coercion via `PromoteValue` wrappers; the planner is
-// expected to pre-resolve children to compatible types before
-// reaching this constructor. Mismatched child types surface at
-// evaluation as nil-typed elements in the produced slice.
+// The explicit-type constructor, like Java's of(children, elementType),
+// expects the planner to resolve and promote its children first. It does
+// not validate them; Evaluate returns their values verbatim. Reconstruction
+// validates the retained element type before injecting promotions, so a
+// rewrite cannot silently attach incompatible children to that metadata.
 //
-// Result type: nullable Array(ElementType). Java's getResultType()
+// Result type: non-nullable Array(ElementType). Java's getResultType()
 // returns `Type.Array(elementType)` (always non-nullable since the
 // constructor produces a concrete array literal); Go
 // matches by emitting `&ArrayType{Nullable: false, ElementType: ...}`.
@@ -76,8 +74,8 @@ func (v *ArrayConstructorValue) Type() Type {
 // can distinguish empty-array from NULL-array via `len(result) ==
 // 0 && result != nil`.
 //
-// Nil child Values are tolerated — produce a nil element. Per Java,
-// this is the same as a child evaluating to NULL.
+// The raw Go constructor tolerates nil child Values as nil elements.
+// Java rejects nil children when copying its constructor arguments.
 func (v *ArrayConstructorValue) Evaluate(evalCtx any) (any, error) {
 	out := make([]any, len(v.Elements))
 	for i, child := range v.Elements {
@@ -92,9 +90,71 @@ func (v *ArrayConstructorValue) Evaluate(evalCtx any) (any, error) {
 	return out, nil
 }
 
-// WithChildren returns a fresh ArrayConstructorValue with new
-// elements. Element type carries through unchanged — caller is
-// responsible for ensuring new children's types are compatible.
+// WithChildren retains the declared element type, rejecting incompatible
+// replacement children with nil. Checked planners use WithChildrenChecked
+// to retain the reconstruction diagnostic.
 func (v *ArrayConstructorValue) WithChildren(newChildren []Value) *ArrayConstructorValue {
-	return NewArrayConstructorValue(v.ElementType, newChildren)
+	rebuilt, _ := v.withChildrenChecked(newChildren)
+	return rebuilt
+}
+
+func (v *ArrayConstructorValue) withChildrenChecked(newChildren []Value) (*ArrayConstructorValue, error) {
+	if v == nil {
+		return nil, resolutionError(RewriteNilReplacement, "array.rebuild", "cannot rebuild a nil array constructor")
+	}
+	// Java LightArrayConstructorValue.withChildren retains the original for
+	// an empty replacement, including the untyped NONE literal.
+	if len(newChildren) == 0 {
+		return v, nil
+	}
+	if isNilBinding(v.ElementType) {
+		return nil, resolutionError(TypeNil, "array.rebuild", "array element type is nil")
+	}
+	for _, child := range newChildren {
+		if isNilBinding(child) {
+			return nil, resolutionError(RewriteNilReplacement, "array.rebuild", "array child is nil")
+		}
+	}
+	children := append([]Value(nil), newChildren...)
+	if !IsAny(v.ElementType) {
+		// Java resolves the common type BEFORE injecting promotions and requires
+		// exact equality, including nullability and nested element/field types.
+		var common Type
+		for i, child := range children {
+			childType := child.Type()
+			if isNilBinding(childType) {
+				return nil, resolutionError(TypeNil, "array.rebuild", "array child type is nil")
+			}
+			if i == 0 {
+				common = childType
+			} else {
+				common = MaximumType(common, childType)
+			}
+			if common == nil {
+				return nil, resolutionError(ReanchorResultTypeMismatch, "array.rebuild", "replacement children have no common element type")
+			}
+		}
+		if !common.Equals(v.ElementType) {
+			return nil, resolutionError(ReanchorResultTypeMismatch, "array.rebuild", "replacement children change the declared element type or nullability")
+		}
+		nullableElement := WithNullability(v.ElementType, true)
+		for i, child := range children {
+			if !WithNullability(child.Type(), true).Equals(nullableElement) {
+				children[i] = NewPromoteValue(child, v.ElementType)
+			}
+		}
+	}
+	unchanged := len(children) == len(v.Elements)
+	if unchanged {
+		for i, child := range children {
+			if child != v.Elements[i] {
+				unchanged = false
+				break
+			}
+		}
+	}
+	if unchanged {
+		return v, nil
+	}
+	return &ArrayConstructorValue{ElementType: v.ElementType, Elements: children}, nil
 }

@@ -813,6 +813,34 @@ func TestPromoteValue_EvaluateNumericCarrier(t *testing.T) {
 		want   any
 	}{
 		{
+			name:   "int32 min to long",
+			value:  int32(-1 << 31),
+			source: NotNullInt,
+			target: NotNullLong,
+			want:   int64(-1 << 31),
+		},
+		{
+			name:   "int32 max to long",
+			value:  int32(1<<31 - 1),
+			source: NotNullInt,
+			target: NotNullLong,
+			want:   int64(1<<31 - 1),
+		},
+		{
+			name:   "go int to long",
+			value:  int(3),
+			source: NotNullInt,
+			target: NotNullLong,
+			want:   int64(3),
+		},
+		{
+			name:   "null int to long",
+			value:  nil,
+			source: NullableInt,
+			target: NullableLong,
+			want:   nil,
+		},
+		{
 			name:   "int to double",
 			value:  int64(3),
 			source: NotNullInt,

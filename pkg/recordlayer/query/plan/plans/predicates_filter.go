@@ -286,8 +286,26 @@ func (p *RecordQueryPredicatesFilterPlan) WithQuantifiers(qs []expressions.Quant
 			oldInput.FlowedType(), newInput.FlowedType())
 	}
 
+	oldLayout := p.admittedProvidedOutputLayout()
+	newLayout, newSelected, err := selectedInputOrdinalLayout(qs[0])
+	if err != nil {
+		return nil, err
+	}
 	rebased := make([]predicates.QueryPredicate, len(p.predicates))
 	for i, predicate := range p.predicates {
+		if oldLayout != nil && newSelected {
+			// Admission may already have anchored the predicate on this exact
+			// pass-through carrier rather than the named edge. The child memo
+			// reference can grow or select another member afterwards, so the old
+			// authority is the immutable admitted layout, not its current winner.
+			// A rebuilt producer owns a different handle even for an equal type.
+			predicate, err = predicates.TransformEmbeddedValuesChecked(predicate, func(value values.Value) (values.Value, error) {
+				return values.TranslatePhaseRoot(value, oldLayout.Carrier(), newLayout.Carrier())
+			})
+			if err != nil {
+				return nil, fmt.Errorf("RecordQueryPredicatesFilterPlan.WithQuantifiers predicate %d current carrier: %w", i, err)
+			}
+		}
 		rebased[i], err = translatePredicatePhysicalEdge(predicate, oldInput.Correlation(), newInput)
 		if err != nil {
 			return nil, fmt.Errorf("RecordQueryPredicatesFilterPlan.WithQuantifiers predicate %d: %w", i, err)

@@ -3,8 +3,10 @@ package client
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1000,6 +1002,174 @@ func TestReadIncarnation_SynchronousTimeoutCannotPoisonReplacement(t *testing.T)
 					}
 					assertIndependentRead(t, ctx, db, key, []byte("replacement"))
 				})
+			}
+		})
+	}
+}
+
+// errObservationContext interposes before observing the real context error.
+// It preserves the operation binding and never fabricates an error or reply.
+type errObservationContext struct {
+	context.Context
+	cleanObservations int32
+	observations      atomic.Int32
+	once              sync.Once
+	before            func()
+}
+
+func (c *errObservationContext) Err() error {
+	if c.observations.Add(1) > c.cleanObservations {
+		c.once.Do(c.before)
+	}
+	return c.Context.Err()
+}
+
+func TestReadIncarnation_EntryCancellationObservationKeepsCause(t *testing.T) {
+	t.Parallel()
+	testReadCancellationObservation(t, false, 0)
+}
+
+func TestReadIncarnation_WatchCancellationObservationKeepsCause(t *testing.T) {
+	t.Parallel()
+	for clean, name := range []string{"entry", "follow-up"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			testReadCancellationObservation(t, true, int32(clean))
+		})
+	}
+}
+
+func testReadCancellationObservation(t *testing.T, watch bool, cleanObservations int32) {
+	t.Helper()
+	for _, action := range []string{"cancel", "timeout", "reset", "commit-reuse", "caller"} {
+		t.Run(action, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(context.Background(), readIncarnationTestTimeout)
+			defer cancel()
+			db := openTestDB(t, ctx)
+			defer db.Close()
+			tx := db.CreateTransaction()
+			defer tx.Cancel()
+			if rv, err := tx.GetReadVersion(ctx); err != nil || rv <= 0 {
+				t.Fatalf("initial real GRV = %d, %v", rv, err)
+			}
+			key := []byte(t.Name())
+			value := []byte("confirmed before reuse")
+			if watch {
+				if err := db.SetMaxWatches(1); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if action == "commit-reuse" {
+				tx.Set(key, value)
+			}
+			if action == "timeout" {
+				tx.SetTimeout(60000)
+			}
+			caller, cancelCaller := context.WithCancel(ctx)
+			defer cancelCaller()
+			operation, release := tx.opContext(caller)
+			defer release()
+			inc := tx.readOperation(operation).inc
+			turnoverDone := make(chan error, 1)
+			var observed atomic.Bool
+			entry := &errObservationContext{Context: operation, cleanObservations: cleanObservations, before: func() {
+				observed.Store(true)
+				switch action {
+				case "cancel":
+					tx.Cancel()
+				case "timeout":
+					tx.readErrMu.Lock()
+					gen, timer := inc.timerGen, inc.timer
+					tx.readErrMu.Unlock()
+					timer.Stop()
+					tx.fireReadTimeout(inc, gen)
+				case "reset":
+					go func() { tx.Reset(); turnoverDone <- nil }()
+				case "commit-reuse":
+					go func() { turnoverDone <- tx.Commit(ctx) }()
+				case "caller":
+					cancelCaller()
+				}
+				// Retirement records the typed cause before delivering cancellation.
+				// The active lease prevents Reset/commit reuse from publishing the
+				// replacement until this entry check has returned and released it.
+				waitReadParked(t, ctx, operation.Done(), "entry cancellation delivery")
+			}}
+			var rv int64
+			var err error
+			if watch {
+				var watchCtx context.Context
+				var watchCancel context.CancelFunc
+				_, rv, _, watchCtx, watchCancel, err = tx.WatchSetup(entry, key)
+				if watchCtx != nil || watchCancel != nil {
+					t.Error("interrupted watch setup returned a live watch")
+				}
+				if watchCancel != nil {
+					watchCancel()
+					tx.db.releaseWatch()
+				}
+				if slots := tx.db.outstandingWatches.Load(); slots != 0 {
+					t.Errorf("interrupted watch setup retained %d slots", slots)
+				}
+			} else {
+				rv, err = tx.GetReadVersion(entry)
+			}
+			release()
+			if action == "reset" || action == "commit-reuse" {
+				select {
+				case turnoverErr := <-turnoverDone:
+					if turnoverErr != nil {
+						t.Fatalf("%s failed: %v", action, turnoverErr)
+					}
+				case <-ctx.Done():
+					t.Fatalf("%s did not finish after releasing the old read: %v", action, ctx.Err())
+				}
+			}
+			if !observed.Load() {
+				t.Fatal("the read did not exercise the context-error observation boundary")
+			}
+			if rv != 0 {
+				t.Errorf("interrupted read returned version %d, want zero", rv)
+			}
+			if action == "caller" {
+				if !errors.Is(err, context.Canceled) {
+					t.Errorf("caller cancellation = %v, want context.Canceled", err)
+				}
+			} else {
+				if callerErr := caller.Err(); callerErr != nil {
+					t.Fatalf("transaction retirement canceled the caller: %v", callerErr)
+				}
+				want := 1025
+				if action == "timeout" {
+					want = 1031
+				}
+				if code := fdbCodeOf(err); code != want {
+					t.Errorf("entry cancellation = %v (code %d), want FDB %d", err, code, want)
+				}
+			}
+			if action == "cancel" || action == "timeout" {
+				tx.Reset()
+			}
+			if fresh, freshErr := tx.GetReadVersion(ctx); freshErr != nil || fresh <= 0 {
+				t.Fatalf("replacement/caller-independent GRV = %d, %v", fresh, freshErr)
+			}
+			if action == "commit-reuse" {
+				assertIndependentRead(t, ctx, db, key, value)
+			}
+			if watch {
+				_, version, _, watchCtx, watchCancel, setupErr := tx.WatchSetup(ctx, key)
+				if setupErr != nil {
+					t.Fatalf("replacement watch setup: %v", setupErr)
+				}
+				defer tx.db.releaseWatch()
+				defer watchCancel()
+				if version <= 0 || watchCtx.Err() != nil {
+					t.Errorf("replacement watch = version %d, error %v", version, watchCtx.Err())
+				}
+				if slots := tx.db.outstandingWatches.Load(); slots != 1 {
+					t.Errorf("replacement watch reserved %d slots, want 1", slots)
+				}
 			}
 		})
 	}

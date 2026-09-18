@@ -259,7 +259,7 @@ func (e *FlowedObjectTypeUnavailableError) Error() string {
 // GetFlowedObjectType returns the exact object or scalar type flowing along this
 // quantifier. It follows Java's Quantifier.getFlowedObjectType(): every member's
 // relational result is represented as exactly RELATION<result>, that one
-// wrapper is removed, and NullOnEmpty widens the object once at this edge.
+// wrapper is removed, and existential or NullOnEmpty edges widen the object once.
 //
 // Java resolves it from the Reference, whose getResultType() REDUCES over every
 // member expression and verifies each pair agrees (Reference.java:504-513). That
@@ -287,7 +287,7 @@ func (q Quantifier) GetFlowedObjectType() (values.Type, error) {
 	// this per match, so without the memo the same unchanged member set is
 	// re-snapshotted continuously; see Reference.flowedType.
 	if cached, ok := ref.cachedFlowedType(); ok {
-		return q.widenFlowedTypeForNullOnEmpty(cached)
+		return q.widenFlowedType(cached)
 	}
 	// Java's getAllMemberExpressions() — exploratory AND final. A final member is
 	// the one a physical plan is built from, so excluding it would verify the
@@ -382,24 +382,23 @@ func (q Quantifier) GetFlowedObjectType() (values.Type, error) {
 	if found == nil {
 		return nil, &FlowedObjectTypeUnavailableError{Alias: q.alias, Reason: "Reference has no usable members"}
 	}
-	// Cached BEFORE the NullOnEmpty widening, which is the quantifier's
-	// property and not the Reference's: two quantifiers can range over one
-	// Reference with different NullOnEmpty, so caching the widened row would
-	// hand the second one the first one's nullability.
+	// Cache BEFORE edge-local widening: existential and null-on-empty edges
+	// can share a Reference with ordinary for-each/physical quantifiers.
+	// Caching the widened row would leak one edge's nullability into another.
 	ref.setCachedFlowedType(found)
-	return q.widenFlowedTypeForNullOnEmpty(found)
+	return q.widenFlowedType(found)
 }
 
-// widenFlowedTypeForNullOnEmpty applies this quantifier's NullOnEmpty to a
+// widenFlowedType applies existential/NullOnEmpty nullability to a
 // Reference-derived row. Kept separate from the derivation so the memo can hold
 // the part that belongs to the Reference and this part stays per-quantifier.
-func (q Quantifier) widenFlowedTypeForNullOnEmpty(found values.Type) (values.Type, error) {
-	if !q.nullOnEmpty {
+func (q Quantifier) widenFlowedType(found values.Type) (values.Type, error) {
+	if !q.nullOnEmpty && q.kind != QuantifierExistential {
 		return found, nil
 	}
 	widened := values.WithNullability(found, true)
 	if _, err := values.SnapshotExactType(widened); err != nil {
-		return nil, fmt.Errorf("quantifier %s NullOnEmpty flowed type: %w", q.alias.Name(), err)
+		return nil, fmt.Errorf("quantifier %s nullable flowed type: %w", q.alias.Name(), err)
 	}
 	return widened, nil
 }

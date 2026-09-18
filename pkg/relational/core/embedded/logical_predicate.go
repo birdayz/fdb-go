@@ -1839,17 +1839,6 @@ func unnestElementColumn(scope *semantic.Scope, j joinClause) (semantic.Column, 
 	return col, true
 }
 
-func unnestElementColumnFromSources(sources []semantic.ScopeSource, j joinClause) (semantic.Column, bool) {
-	scope := semantic.NewScope(nil)
-	for _, src := range sources {
-		if src.Table == nil {
-			continue
-		}
-		_ = scope.AddSource(src)
-	}
-	return unnestElementColumn(scope, j)
-}
-
 // unnestVirtualScopeSourceWithElement publishes a lateral source from its bound
 // element declaration. Non-ordinal record elements expose their fields; scalar
 // elements expose one column, and WITH ORDINALITY adds a separate integer slot.
@@ -2209,12 +2198,6 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op logical.Logica
 	needRebuild := false
 	if sq.projQualifier != "" && sq.projCols == nil {
 		normalizeSoleQualifiedStar(sq)
-		needRebuild = true
-	}
-	// A bare `SELECT *` over a JOIN … USING expands explicitly so the
-	// right-side USING copies drop out (Java hides them; expandStar
-	// filters hidden).
-	if expandBareStarOverUsingJoins(sq, md, schemaName, queryCTEScopes) {
 		needRebuild = true
 	}
 	if expanded, err := expandBareStarFromScope(sq, md, schemaName, queryCTEScopes); err != nil {
@@ -3728,9 +3711,6 @@ func resolveProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 	if len(sq.postAggExprs) > 0 {
 		resolver := buildProjectionResolverWithCTEScopes(sq, md, schemaName, cteScopes)
 		if resolver == nil {
-			resolver = buildSelectScope(sq, md, schemaName, cteScopes)
-		}
-		if resolver == nil {
 			return nil
 		}
 		if subqPlanner != nil {
@@ -3810,9 +3790,6 @@ func resolveProjectionValues(op logical.LogicalOperator, sq *selectQuery, md *re
 		return nil
 	}
 	resolver := buildProjectionResolverWithCTEScopes(sq, md, schemaName, cteScopes)
-	if resolver == nil {
-		resolver = buildSelectScope(sq, md, schemaName, cteScopes)
-	}
 	if resolver == nil {
 		return nil
 	}
@@ -4087,9 +4064,6 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 		return err
 	}
 	resolver := buildProjectionResolverWithCTEScopes(sq, md, schemaName, cteScopes)
-	if resolver == nil {
-		resolver = buildSelectScope(sq, md, schemaName, cteScopes)
-	}
 	if resolver == nil {
 		return nil
 	}
@@ -4432,9 +4406,6 @@ func upgradeHavingPredicate(op logical.LogicalOperator, sq *selectQuery, md *rec
 		return nil
 	}
 	resolver := buildProjectionResolverWithCTEScopes(sq, md, schemaName, cteScopes)
-	if resolver == nil {
-		resolver = buildSelectScope(sq, md, schemaName, cteScopes)
-	}
 	if resolver == nil {
 		return nil
 	}
@@ -5153,109 +5124,7 @@ func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData) 
 }
 
 func buildProjectionResolverWithCTEScopes(sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource) *expr.Resolver {
-	if sq.tableName == "" && len(cteScopes) == 0 && sq.enclosingScope == nil {
-		return nil
-	}
-	cat := rlcatalog.Wrap(md)
-	analyzer := semantic.NewAnalyzer(cat, false)
-	scope := semantic.NewScope(sq.enclosingScope)
-	// hidden carries this leg's USING-hidden column names, exactly as
-	// buildSelectScope threads them. Without it this scope answers an
-	// unqualified reference to a USING column AMBIGUOUS while the other scope
-	// builder resolves it to the left copy — and the two builders serve the same
-	// query: buildSelectScope validates it, this one resolves its ORDER BY keys.
-	// `SELECT b2 FROM ja JOIN jb USING (c1) ORDER BY c1` therefore parsed,
-	// validated and planned, then failed at the sort with "ORDER BY key C1 has
-	// no resolved Value".
-	// One entry per FROM position (0 = the primary source): does an outer join
-	// pad this leg with NULLs? A padded leg's columns are nullable in this query
-	// block's row, so every reference resolved through this scope carries the type
-	// the join actually produces. Same derivation the derived-table body uses,
-	// from the same helper, because a query block and that block read as a derived
-	// table must agree on their row.
-	padded := nullSupplyingFromLegs(sq.joins)
-	addSource := func(tableName, alias, bindingID string, hidden []string, position int) bool {
-		aliasID := semantic.FromNormalized(alias)
-		if alias == "" {
-			aliasID = semantic.FromNormalized(tableName)
-		}
-		// The binding correlation: the parser-minted duplicate-leg id when
-		// present, else the alias.
-		binding := bindingOrAlias(bindingID, aliasID)
-		if src, ok := cteScopes[strings.ToUpper(tableName)]; ok {
-			cteSrc := cteSourceAs(src, aliasID, binding)
-			cteSrc.HiddenColumns = hiddenColumnSet(hidden)
-			return scope.AddSource(nullSupplyingSource(cteSrc, paddedAt(padded, position))) == nil
-		}
-		tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(tableName, "."), false))
-		if err != nil {
-			return false
-		}
-		return scope.AddSource(nullSupplyingSource(semantic.ScopeSource{
-			Table:           tbl,
-			Alias:           aliasID,
-			CorrelationName: binding,
-			HiddenColumns:   hiddenColumnSet(hidden),
-		}, paddedAt(padded, position))) == nil
-	}
-	addDerived := func(alias string, body logical.LogicalOperator, bindingID string, hidden []string, position int) bool {
-		if src, err := boundDerivedSource(md, alias, bindingID, body, cteScopes); err == nil {
-			src.HiddenColumns = hiddenColumnSet(hidden)
-			return scope.AddSource(nullSupplyingSource(src, paddedAt(padded, position))) == nil
-		}
-		return false
-	}
-	// A lateral array unnest leg is not a real table — register its virtual
-	// element/ordinal source via the SAME shared helper buildSelectScope uses, so
-	// a projection / GROUP BY / HAVING / ORDER BY over an unnest column resolves
-	// here directly (the callers' buildSelectScope fallback becomes belt-and-
-	// suspenders, no longer load-bearing). RFC-142.
-	addUnnestSource := unnestScopeSourceAdder(scope)
-	resolvesToTable := newUnnestTableResolver(md, schemaName)
-	if sq.tableName != "" {
-		if sq.inlineValues != nil {
-			src, ok := parsedInlineValuesScopeSource(sq.inlineValues, sq.tableAlias, sq.bindingID, md)
-			if !ok || scope.AddSource(nullSupplyingSource(src, paddedAt(padded, 0))) != nil {
-				return nil
-			}
-		} else if sq.derivedQuery != nil {
-			if !addDerived(sq.tableName, sq.catalogAwareInnerPlan, sq.bindingID, nil, 0) {
-				return nil
-			}
-		} else if !addSource(sq.tableName, sq.tableAlias, sq.bindingID, nil, 0) {
-			return nil
-		}
-	}
-	for i, j := range sq.joins {
-		if j.inlineValues != nil {
-			src, ok := parsedInlineValuesScopeSource(j.inlineValues, j.alias, j.bindingID, md)
-			if !ok {
-				return nil
-			}
-			src.HiddenColumns = hiddenColumnSet(j.usingHiddenCols)
-			if scope.AddSource(nullSupplyingSource(src, paddedAt(padded, i+1))) != nil {
-				return nil
-			}
-			continue
-		}
-		if j.derivedQuery != nil {
-			if !addDerived(j.alias, j.catalogAwareInnerPlan, j.bindingID, j.usingHiddenCols, i+1) {
-				return nil
-			}
-			continue
-		}
-		visible := visibleFromAliases(sq.tableName, sq.tableAlias, sq.joins[:i], resolvesToTable)
-		if isLateralUnnestJoin(j, visible, resolvesToTable) {
-			if !addUnnestSource(j) {
-				return nil
-			}
-			continue
-		}
-		if !addSource(j.tableName, j.alias, j.bindingID, j.usingHiddenCols, i+1) {
-			return nil
-		}
-	}
-	return expr.New(analyzer, scope)
+	return buildSelectScope(sq, md, schemaName, cteScopes)
 }
 
 // buildLogicalPlanForDeleteWithCatalog is the catalog-aware variant
@@ -6370,19 +6239,7 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 
 	resolver := buildProjectionResolverWithCTEScopes(sq, md, schemaName, cteScopes)
 	if resolver == nil {
-		// A lateral array unnest (`FROM t, t.arr AS v`) makes
-		// buildProjectionResolverWithCTEScopes return nil: it tries to resolve the
-		// dotted unnest source (`t.arr`) as a TABLE and fails, never registering the
-		// unnest's AS/AT virtual columns. buildSelectScope is the single scope
-		// builder that knows the unnest virtual source (unnestScopeSourceAdder), so
-		// a COMPUTED ORDER BY over an unnest column (`ORDER BY v + 0 DESC`) can only
-		// resolve there. Fall back to it; without this the sort key stays raw text
-		// and the executor compares a non-existent field → a silent no-op sort.
-		// RFC-142 (P2a).
-		resolver = buildSelectScope(sq, md, schemaName, cteScopes)
-		if resolver == nil {
-			return nil
-		}
+		return nil
 	}
 	exactAggregateBoundary := agg != nil && proj != nil &&
 		len(proj.AggregateOutputOrdinals) == len(proj.Projections)
@@ -7070,161 +6927,6 @@ func expandQualifiedStars(sq *selectQuery, md *recordlayer.RecordMetaData, schem
 	return nil
 }
 
-// expandBareStarOverUsingJoins expands a bare `SELECT *` into explicit
-// projCols when a JOIN … USING is present, so the RIGHT side's copy of
-// each USING column drops out of the star — Java's star expansion filters
-// hidden expressions (SemanticAnalyzer.expandStar → nonEphemeralVisible;
-// the right copy was hidden by resolveJoinUsingClause). Without this the
-// nil-projCols path projects every leg column and the row is wider than
-// Java's (`SELECT * FROM ja JOIN jb USING (c1)` must be C1, A2, B2).
-//
-// Returns true when it expanded (caller rebuilds the plan). A DERIVED
-// leg enumerates from its own select list (buildDerivedTableSource — the
-// same deriver the semantic scope uses), so `JA JOIN (SELECT c1, b2 FROM
-// JB) AS X USING (c1)` hides X's c1 exactly like a base-table leg
-// (measured live: Java answers [C1 A2 B2]). Declines — keeping the
-// legacy full-width star — only when a leg genuinely cannot be
-// enumerated (an UNDERIVABLE derived body such as a join-bodied one,
-// a lateral unnest, a catalog-aware sub-plan): a partial expansion would
-// silently drop that leg's columns. Measured today that decline is
-// UNREACHABLE for USING legs — the one underivable derived shape
-// (join-bodied) fail-closes 0AF00 at the ON-scope drop-risk gate before
-// any star expansion; TestFDB_JoinUsingStarHidesRightColumns's
-// underivable-leg subtest pins that unreachability and re-arms the
-// hidden-star expectation if the shape ever plans.
-func expandBareStarOverUsingJoins(sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource) bool {
-	if sq == nil || md == nil || sq.projCols != nil || sq.projQualifier != "" ||
-		sq.countStar || len(sq.aggCols) > 0 {
-		return false
-	}
-	anyHidden := false
-	for _, j := range sq.joins {
-		if len(j.usingHiddenCols) > 0 {
-			anyHidden = true
-			break
-		}
-	}
-	if !anyHidden {
-		return false
-	}
-	resolvesToTable := newUnnestTableResolver(md, schemaName)
-	columnsFor := func(tableName string) ([]string, bool) {
-		if src, found := cteScopes[strings.ToUpper(tableName)]; found {
-			if src.Table == nil {
-				return nil, false
-			}
-			cteCols := src.Table.Columns()
-			cols := make([]string, len(cteCols))
-			for i, c := range cteCols {
-				cols[i] = strings.ToUpper(c.Id.Name())
-			}
-			return cols, true
-		}
-		rt := md.GetRecordType(tableName)
-		if rt == nil || rt.Descriptor == nil {
-			return nil, false
-		}
-		fields := rt.Descriptor.Fields()
-		cols := make([]string, fields.Len())
-		for i := 0; i < fields.Len(); i++ {
-			cols[i] = strings.ToUpper(string(fields.Get(i).Name()))
-		}
-		return cols, true
-	}
-	type leg struct {
-		qual   string
-		cols   []string
-		hidden map[string]struct{}
-	}
-	derivedColumns := func(alias string, body logical.LogicalOperator) ([]string, bool) {
-		src, err := boundDerivedSource(md, alias, "", body, cteScopes)
-		if err != nil || src.Table == nil {
-			return nil, false
-		}
-		srcCols := src.Table.Columns()
-		cols := make([]string, len(srcCols))
-		for i, c := range srcCols {
-			cols[i] = strings.ToUpper(c.Id.Name())
-		}
-		return cols, true
-	}
-	primaryAlias := sq.tableAlias
-	if primaryAlias == "" {
-		primaryAlias = sq.tableName
-	}
-	var primaryCols []string
-	var ok bool
-	if sq.inlineValues != nil {
-		if src, found := parsedInlineValuesScopeSource(sq.inlineValues, sq.tableAlias, sq.bindingID, md); found && src.Table != nil {
-			srcCols := src.Table.Columns()
-			primaryCols = make([]string, len(srcCols))
-			for i, c := range srcCols {
-				primaryCols[i] = strings.ToUpper(c.Id.Name())
-			}
-			ok = true
-		}
-	} else if sq.derivedQuery != nil {
-		primaryCols, ok = derivedColumns(sq.tableName, sq.catalogAwareInnerPlan)
-	} else {
-		primaryCols, ok = columnsFor(sq.tableName)
-	}
-	if !ok {
-		return false
-	}
-	legs := []leg{{qual: primaryAlias, cols: primaryCols}}
-	for i, j := range sq.joins {
-		alias := j.alias
-		if alias == "" {
-			alias = j.tableName
-		}
-		var cols []string
-		switch {
-		case j.inlineValues != nil:
-			src, found := parsedInlineValuesScopeSource(j.inlineValues, j.alias, j.bindingID, md)
-			if !found || src.Table == nil {
-				return false
-			}
-			srcCols := src.Table.Columns()
-			cols = make([]string, len(srcCols))
-			for k, c := range srcCols {
-				cols[k] = strings.ToUpper(c.Id.Name())
-			}
-			ok = true
-		case j.derivedQuery != nil:
-			// A catalog-aware inner plan may coexist with the parsed
-			// derived body; the SELECT LIST is still the column
-			// authority, so enumerate from it.
-			cols, ok = derivedColumns(alias, j.catalogAwareInnerPlan)
-		case j.catalogAwareInnerPlan != nil:
-			return false
-		default:
-			visible := visibleFromAliases(sq.tableName, sq.tableAlias, sq.joins[:i], resolvesToTable)
-			if isLateralUnnestJoin(j, visible, resolvesToTable) {
-				return false
-			}
-			cols, ok = columnsFor(j.tableName)
-		}
-		if !ok {
-			return false
-		}
-		legs = append(legs, leg{qual: alias, cols: cols, hidden: hiddenColumnSet(j.usingHiddenCols)})
-	}
-	var projCols []projCol
-	for _, l := range legs {
-		for _, c := range l.cols {
-			if _, hide := l.hidden[c]; hide {
-				continue
-			}
-			projCols = append(projCols, projCol{name: l.qual + "." + c, bare: c, qualifier: l.qual, qualified: true})
-		}
-	}
-	sq.projCols = projCols
-	sq.projAliases = make([]string, len(projCols))
-	sq.projExprs = make([]antlrgen.IExpressionContext, len(projCols))
-	sq.projStarQualifiers = make([]string, len(projCols))
-	return true
-}
-
 // expandProjQualifier handles `SELECT <qualifier>.*` when it is the
 // only SELECT element (projQualifier set, projCols nil). Expands the
 // qualifier into explicit projCols with qualified column names
@@ -7780,133 +7482,13 @@ func buildLogicalPlanForUnionWithCatalog(
 // (alias, plan) pairs that the LogicalFilter/LogicalProject need to
 // carry to the Cascades translator.
 func buildOuterScopeSources(sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource) []semantic.ScopeSource {
-	// A DUPLICATE-PRESERVING slice in FROM order, never an alias-keyed map:
-	// duplicate outer aliases are legal, and a
-	// map collapsed them last-wins — an inner correlated reference then saw
-	// only ONE leg (false 42703 for the lost leg's columns; a missed terminal
-	// ambiguity for shared ones) and bound the survivor under the DISPLAY
-	// alias, mis-correlating a later duplicate leg whose row namespace is its
-	// minted BINDING. Every source carries bindingOrAlias — the same
-	// convention as the SELECT/WHERE scope builders — so per-attribute
-	// resolution and QOV emission work across scope depth exactly as at the
-	// top level (the ladder: 1→bind, 0→fallthrough, ≥2→terminal 42702).
-	if sq == nil || md == nil || sq.tableName == "" {
+	resolver := buildSelectScope(sq, md, schemaName, cteScopes)
+	if resolver == nil {
 		return nil
 	}
-	cat := rlcatalog.Wrap(md)
-	analyzer := semantic.NewAnalyzer(cat, false)
-	var sources []semantic.ScopeSource
-	addSrc := func(tableName, alias, bindingID string) {
-		a := semantic.FromNormalized(alias)
-		if alias == "" {
-			a = semantic.FromNormalized(tableName)
-		}
-		// CTE-FIRST, in lockstep with buildSelectScope's addSource, because a
-		// subquery's outer scope must see the SAME FROM clause as the query it is
-		// nested in. A WITH leg is not a catalog table, so a catalog-only lookup
-		// returned silently here: the outer scope held every REAL leg and no CTE
-		// leg, and a correlated reference to the CTE alias died 42703 ("no FROM
-		// source aliased as C") while the identical correlation to a base-table
-		// alias resolved. The DERIVED-table leg below was registered for exactly
-		// this reason; the CTE leg was the residual gap left beside it.
-		//
-		// The ORDER is not incidental. A declared CTE SHADOWS a same-named catalog
-		// table, and resolving the table instead would analyze the TABLE's schema
-		// for reads that execute against the CTE. A TOMBSTONE entry (nil Table — a
-		// declared CTE whose schema is not derivable here) must therefore DECLINE
-		// rather than fall through, or a same-named base table would bind its
-		// ordinals onto the CTE's rows.
-		//
-		// The registry supplies the COLUMN SCHEMA only: alias and correlation come
-		// from THIS reference, so `FROM c AS x` binds under X and a duplicated CTE
-		// leg keeps its own binding id, exactly as a duplicated real table does.
-		if src, found := cteScopes[strings.ToUpper(tableName)]; found {
-			if src.Table == nil {
-				return
-			}
-			sources = append(sources, cteSourceAs(src, a, bindingOrAlias(bindingID, a)))
-			return
-		}
-		tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(tableName, "."), false))
-		if err != nil {
-			return
-		}
-		sources = append(sources, semantic.ScopeSource{
-			Table: tbl, Alias: a, CorrelationName: bindingOrAlias(bindingID, a),
-		})
-	}
-	// A DERIVED-TABLE source (`FROM (SELECT ...) e`) is NOT a real table
-	// either — register its VIRTUAL column schema (the SAME
-	// buildDerivedTableSource the SELECT scope uses) so a CORRELATED
-	// subquery referencing the derived alias resolves it. Without this,
-	// addSrc's ResolveTable fails silently and the correlated reference
-	// dies 42703 ("no FROM source aliased as E" single-source, `qualifier
-	// "E" cannot be resolved` join form) — while the identical correlation
-	// to a REAL table alias works. Mirrors the lateral-unnest leg
-	// registration below.
-	addDerived := func(alias, bindingID string, body logical.LogicalOperator) {
-		if src, err := boundDerivedSource(md, alias, bindingID, body, cteScopes); err == nil {
-			sources = append(sources, src)
-		}
-	}
-	if sq.inlineValues != nil {
-		if src, ok := parsedInlineValuesScopeSource(sq.inlineValues, sq.tableAlias, sq.bindingID, md); ok {
-			sources = append(sources, src)
-		}
-	} else if sq.derivedQuery != nil {
-		// The primary derived source: the parser carries the alias in
-		// tableAlias when present, else in tableName (the same convention
-		// buildWherePredicateForDerived resolves against). Its runtime binding
-		// may differ when this query block has an enclosing row scope.
-		alias := sq.tableAlias
-		if alias == "" {
-			alias = sq.tableName
-		}
-		addDerived(alias, sq.bindingID, sq.catalogAwareInnerPlan)
-	} else {
-		addSrc(sq.tableName, sq.tableAlias, sq.bindingID)
-	}
-	resolvesToTable := newUnnestTableResolver(md, schemaName)
-	for i, j := range sq.joins {
-		if j.inlineValues != nil {
-			if src, ok := parsedInlineValuesScopeSource(j.inlineValues, j.alias, j.bindingID, md); ok {
-				sources = append(sources, src)
-			}
-			continue
-		}
-		// A lateral array unnest leg (`FROM t, t.arr AS x [AT ord]`) is NOT a real
-		// table; register its VIRTUAL Shadowing source (the SAME one the SELECT scope
-		// uses, via unnestVirtualScopeSourceWithElement) so a CORRELATED subquery referencing the
-		// unnested element/ordinal resolves it. Without this the inner EXISTS / scalar
-		// subquery's outer scope sees only the REAL tables and the correlated
-		// reference (`WHERE U.V = VAL`) fails → a generic Cascades translation failure
-		// (P2c). The existing EXISTS-over-unnest lowering binds it at
-		// execution. RFC-142.
-		visible := visibleFromAliases(sq.tableName, sq.tableAlias, sq.joins[:i], resolvesToTable)
-		if isLateralUnnestJoin(j, visible, resolvesToTable) {
-			// The element's DECLARED FIELDS travel with the binding, exactly as
-			// they do on the SELECT scope (unnestScopeSourceAdder). Without them
-			// the outer scope exposes a fieldless element column and a correlated
-			// reference to a STRUCT member (`… WHERE m.id = x.ek`) died 42703
-			// while the identical reference resolved outside the subquery — one
-			// binding described two ways.
-			element, typed := unnestElementColumnFromSources(sources, j)
-			var elementPtr *semantic.Column
-			if typed {
-				elementPtr = &element
-			}
-			if src, ok := unnestVirtualScopeSourceWithElement(j, elementPtr); ok {
-				sources = append(sources, src)
-			}
-			continue
-		}
-		if j.derivedQuery != nil {
-			addDerived(j.alias, j.bindingID, j.catalogAwareInnerPlan)
-			continue
-		}
-		addSrc(j.tableName, j.alias, j.bindingID)
-	}
-	return sources
+	// Sources preserves FROM order, duplicate aliases, hidden attributes,
+	// nullability and each selected source's retained runtime binding.
+	return resolver.Scope().Sources()
 }
 
 type existsSubqueryPlanner struct {

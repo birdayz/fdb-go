@@ -1279,8 +1279,8 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 	if cerr := tx.checkCancelled(); cerr != nil {
 		return nil, 0, types.SpanContext{}, nil, nil, cerr // transaction_cancelled (1025)
 	}
-	if cerr := ctx.Err(); cerr != nil {
-		return nil, 0, types.SpanContext{}, nil, nil, cerr // caller ctx already cancelled / past its deadline
+	if cerr := tx.readLifetimeError(ctx); cerr != nil {
+		return nil, 0, types.SpanContext{}, nil, nil, cerr
 	}
 	if terr := tx.checkTimeout(ctx); terr != nil {
 		return nil, 0, types.SpanContext{}, nil, nil, terr // transaction_timed_out (1031)

@@ -75,7 +75,9 @@ func TestRFC195_CorrectedShapes(t *testing.T) {
 		build: func(t testing.TB) plans.RecordQueryPlan {
 			seedInput := scan(t, "LU_SEED")
 			seed := mustBuild(t, captureBuild(plans.NewRecordQueryFirstOrDefaultPlan(seedInput, cardinalityNull(seedInput))))
-			rec := mustBuild(t, captureBuild(plans.NewRecordQueryLimitPlan(scan(t, "LU_REC_ZERO"), 0, 0)))
+			recInput := mustBuild(t, captureBuild(plans.NewRecordQueryScanPlan(
+				[]string{"LU_REC_ZERO"}, values.WithNullability(cardinalityRowType(), true), false)))
+			rec := mustBuild(t, captureBuild(plans.NewRecordQueryLimitPlan(recInput, 0, 0)))
 			return mustBuild(t, captureBuild(plans.NewRecordQueryRecursiveLevelUnionPlan(seed, rec,
 				values.NamedCorrelationIdentifier("lu_scan"), values.NamedCorrelationIdentifier("lu_insert"))))
 		},
@@ -123,7 +125,9 @@ func TestRFC195_CorrectedShapes(t *testing.T) {
 		build: func(t testing.TB) plans.RecordQueryPlan {
 			seedInput := scan(t, "DFS_SEED")
 			seed := mustBuild(t, captureBuild(plans.NewRecordQueryFirstOrDefaultPlan(seedInput, cardinalityNull(seedInput))))
-			rec := mustBuild(t, captureBuild(plans.NewRecordQueryLimitPlan(scan(t, "DFS_REC_ZERO"), 0, 0)))
+			recInput := mustBuild(t, captureBuild(plans.NewRecordQueryScanPlan(
+				[]string{"DFS_REC_ZERO"}, values.WithNullability(cardinalityRowType(), true), false)))
+			rec := mustBuild(t, captureBuild(plans.NewRecordQueryLimitPlan(recInput, 0, 0)))
 			return mustBuild(t, captureBuild(plans.NewRecordQueryRecursiveDfsJoinPlan(seed, rec,
 				values.NamedCorrelationIdentifier("dfs_prior"), plans.DfsPreorder)))
 		},
@@ -246,7 +250,13 @@ func TestRFC195_BoundsCompositionIsMemberOrderIndependent(t *testing.T) {
 	// Proves ExactlyOne, same as the values plan, at the same cost.
 	oneRowProven := func(t testing.TB) plans.RecordQueryPlan {
 		child := oneRowLiteral(t)
-		return mustBuild(t, captureBuild(plans.NewRecordQueryFirstOrDefaultPlan(child, cardinalityNull(child))))
+		// Use the same non-nullable row on either arm so this member is
+		// type-compatible with VALUES as well as equal in cost/cardinality.
+		fallback, err := values.ProjectionResultValue([]values.Value{cardinalityLong(1)}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return mustBuild(t, captureBuild(plans.NewRecordQueryFirstOrDefaultPlan(child, fallback)))
 	}
 
 	// costOverGroup wires a Distinct over a child group holding both members in
@@ -1406,7 +1416,10 @@ func TestRFC195_WholeCostConsistency_LevelUnionBuffer(t *testing.T) {
 	}
 	seedInput := scan("SEED")
 	seed := mustBuild(t, captureBuild(plans.NewRecordQueryFirstOrDefaultPlan(seedInput, cardinalityNull(seedInput))))
-	rec := mustBuild(t, captureBuild(plans.NewRecordQueryLimitPlan(scan("REC_ZERO"), 0, 0)))
+	// Both recursion legs must expose the seed's nullable row contract.
+	recInput := mustBuild(t, captureBuild(plans.NewRecordQueryScanPlan(
+		[]string{"REC_ZERO"}, values.WithNullability(cardinalityRowType(), true), false)))
+	rec := mustBuild(t, captureBuild(plans.NewRecordQueryLimitPlan(recInput, 0, 0)))
 	levelUnion := mustBuild(t, captureBuild(plans.NewRecordQueryRecursiveLevelUnionPlan(seed, rec,
 		values.NamedCorrelationIdentifier("lu_scan"), values.NamedCorrelationIdentifier("lu_insert"))))
 

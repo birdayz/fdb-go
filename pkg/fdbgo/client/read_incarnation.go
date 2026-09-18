@@ -209,6 +209,9 @@ func (tx *Transaction) readEntryError(ctx context.Context) error {
 // deferred gate. Unlike completion mapping, an already-failed incarnation wins
 // over an already-canceled caller at entry.
 func (tx *Transaction) readLifetimeError(ctx context.Context) error {
+	// Failure is published before cancellation is delivered. Observe the context
+	// first so a delivered cancellation cannot follow a stale clean cause read.
+	ctxErr := ctx.Err()
 	if op := tx.readOperation(ctx); op != nil {
 		tx.readErrMu.Lock()
 		cause := op.inc.cause
@@ -217,7 +220,7 @@ func (tx *Transaction) readLifetimeError(ctx context.Context) error {
 			return cause
 		}
 	}
-	return ctx.Err()
+	return ctxErr
 }
 
 // mapReadError changes only interruption errors. Completed protocol/transport

@@ -33,7 +33,9 @@ func TestFDB_JoinUsingStarHidesRightColumns(t *testing.T) {
 		"CREATE SCHEMA TEMPLATE usingstar "+
 			"CREATE TABLE ja (c1 BIGINT, a2 STRING, PRIMARY KEY (c1)) "+
 			"CREATE TABLE jb (c1 BIGINT, b2 STRING, PRIMARY KEY (c1)) "+
-			"CREATE TABLE jd (c1 BIGINT, d2 STRING, PRIMARY KEY (c1))")
+			"CREATE TABLE jd (c1 BIGINT, d2 STRING, PRIMARY KEY (c1)) "+
+			"CREATE TABLE t (id BIGINT, a BIGINT, b BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE u (id BIGINT, PRIMARY KEY (id))")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_usingstar/s WITH TEMPLATE usingstar")
 	dsn := fmt.Sprintf("fdbsql:///testdb_usingstar?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
@@ -45,6 +47,8 @@ func TestFDB_JoinUsingStarHidesRightColumns(t *testing.T) {
 	mwjoMustExec(t, db, ctx, "INSERT INTO ja VALUES (1, 'a1'), (2, 'a2')")
 	mwjoMustExec(t, db, ctx, "INSERT INTO jb VALUES (1, 'b1'), (3, 'b3')")
 	mwjoMustExec(t, db, ctx, "INSERT INTO jd VALUES (1, 'd1'), (2, 'd2')")
+	mwjoMustExec(t, db, ctx, "INSERT INTO t VALUES (1, 10, 20), (2, 30, 40)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO u VALUES (1)")
 
 	// run returns (column labels, rows-as-strings).
 	run := func(t *testing.T, q string) ([]string, []string) {
@@ -214,6 +218,43 @@ func TestFDB_JoinUsingStarHidesRightColumns(t *testing.T) {
 		if len(got) != 1 || got[0] != "1|a1|d1" {
 			t.Fatalf("rows = %v, want [1|a1|d1]", got)
 		}
+	})
+
+	// Star publishes attributes, not a sequence of name lookups. The two X
+	// outputs are distinct slots even though an explicit D.X is ambiguous.
+	for _, tc := range []struct {
+		name string
+		sql  string
+		cols string
+		rows string
+	}{
+		{"derived_left", "SELECT * FROM (SELECT id, a AS x, b AS x FROM t) d JOIN u USING (id)", "ID,X,X", "1|10|20"},
+		{"derived_right", "SELECT * FROM u JOIN (SELECT id, a AS x, b AS x FROM t) d USING (id)", "ID,X,X", "1|10|20"},
+		{"cte_left", "WITH d AS (SELECT id, a AS x, b AS x FROM t) SELECT * FROM d JOIN u USING (id)", "ID,X,X", "1|10|20"},
+		{"cte_right", "WITH d AS (SELECT id, a AS x, b AS x FROM t) SELECT * FROM u JOIN d USING (id)", "ID,X,X", "1|10|20"},
+		{"quoted_duplicate", `SELECT * FROM (SELECT id, a AS "x.y", b AS "x.y" FROM t) d JOIN u USING (id)`, "ID,x.y,x.y", "1|10|20"},
+		{"unnamed", "SELECT * FROM (SELECT id, 7, 9 FROM t) d JOIN u USING (id)", "", "1|7|9"},
+		{"nested_derived", "SELECT * FROM (SELECT * FROM (SELECT id, a AS x, b AS x FROM t) d JOIN u USING (id)) e", "ID,X,X", "1|10|20"},
+		{"cte_body", "WITH e AS (SELECT * FROM (SELECT id, a AS x, b AS x FROM t) d JOIN u USING (id)) SELECT * FROM e", "ID,X,X", "1|10|20"},
+		{"qualified_control", "SELECT d.* FROM u JOIN (SELECT id, a AS x, b AS x FROM t) d USING (id)", "X,X", "10|20"},
+		{"mixed_star_control", "SELECT d.*, u.id FROM u JOIN (SELECT id, a AS x, b AS x FROM t) d USING (id)", "X,X,ID", "10|20|1"},
+		{"left_outer", "SELECT * FROM (SELECT id, a AS x, b AS x FROM t) d LEFT JOIN u USING (id) ORDER BY id", "ID,X,X", "1|10|20;2|30|40"},
+	} {
+		t.Run("attribute_slots/"+tc.name, func(t *testing.T) {
+			t.Parallel()
+			cols, got := run(t, tc.sql)
+			if tc.cols != "" && strings.Join(cols, ",") != tc.cols {
+				t.Fatalf("columns = %v, want %q", cols, tc.cols)
+			}
+			if strings.Join(got, ";") != tc.rows {
+				t.Fatalf("rows = %v, want %q", got, tc.rows)
+			}
+		})
+	}
+
+	t.Run("duplicate attributes remain ambiguous by name", func(t *testing.T) {
+		t.Parallel()
+		assertErrorCode(t, db, "SELECT d.x FROM (SELECT id, a AS x, b AS x FROM t) d JOIN u USING (id)", "42702")
 	})
 
 	t.Run("ON join keeps both copies", func(t *testing.T) {

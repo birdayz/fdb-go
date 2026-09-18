@@ -4281,3 +4281,734 @@ not establish performance parity or acceptance. No performance fix was made.
 Final normal hooks/full-suite execution and published-head full-PR approvals,
 @claude LGTM and CI remain required. The five restricted sweeps still need owner
 permission; these measurements do not waive the no-skip or merge gates.
+
+#### Remaining reader and USING ownership findings
+
+At published `7483327ce1d91c14c2256740c19fbd97a3d67345`, all seven CI checks
+passed. Graefe, Torvalds and C++ completed the full 389-file / 68,299-line read
+and withheld approval: projection/aggregate/sort and outer-source readers still
+select schema through flattened names, and USING-star expansion still emits
+ambiguous name references instead of preserving duplicate output-slot identity.
+Independent Codex timed out after two hours with no verdict/approval.
+
+The repair follows the existing bound-source design: reuse checked SELECT scope
+construction for expression readers and outer-source capture, then reuse the
+checked visible-attribute star expander for USING. Java 4.12.11.0's
+Identifier.equals and SemanticAnalyzer.findCteMaybe/expandStar are the reference;
+there is no new planner, source-selection fallback or name-derived slot mapping.
+The exact reproducer and active verification state live in TODO **RFC-256
+remaining reader/USING ownership findings at `7483327ce`**. Source-traced findings
+receive regression credit only after the retained cases compile and fail.
+
+#### FirstOrDefault result-type contract uncovered by the reader regressions
+
+**Design revision 2 accepted; implementation and verification in progress.**
+Graefe and Torvalds ACKed the v2 design only (`remaining-acks/first-default-design-v2-{graefe,torvalds}.md`). The admitted correlated
+array query `SELECT p.AID FROM s.LA p WHERE EXISTS (SELECT x FROM p.ARR x
+WHERE x = 7)` fails both with and without the colliding CTE. Both compiled runs
+reach `FlatMap(Scan(LA), PredicatesFilter(FirstOrDefault(PredicatesFilter(Explode))))`
+and fail with `edge 0 non-nullable scalar is SQL NULL` on the empty inner arm.
+Evidence: `remaining-acks/cte-reader-array-runtime-red.{log,bep.jsonl,exit}`.
+
+Java 4.12.11.0 `RecordQueryFirstOrDefaultPlan` constructor verifies equal child
+and default types after making their roots nullable, then derives its result
+from both alternatives with **the default's root nullability**. Go instead
+publishes the child's unmodified type and exact layout. A typed NULL default
+therefore violates the scalar output contract. Do not relax the runtime binder's
+non-null check or invent a scalar absence exemption to hide the incorrect type.
+
+The repair will use the existing `DefaultOnEmpty` result-contract architecture:
+validate both exact types, require the selected child's exact input layout,
+publish a fresh identity output layout of the derived type, and revalidate when
+rebuilding the child edge. Java's nullable-child/non-null-default quadrant is
+unsound: execution returns a nonempty NULL child unchanged despite declaring
+NOT NULL. Preserve that actual value semantics and the existing Go acceptance:
+use the nullable union of both alternatives for the physical result contract,
+exactly as DefaultOnEmpty already does. This deliberately differs from Java's
+understated root-nullability metadata in that quadrant only; it changes no
+stored bytes or SQL admission. Do not reject a formerly valid NULL-valued child,
+replace it with the default, or weaken the non-null runtime guard. The exact physical QOV
+remains the stable output carrier, as for DefaultOnEmpty; this is not an
+attempt to evaluate Java's non-evaluable DerivedValue at runtime. Only proven
+child lineage may cross the root-nullability boundary; no source-name fallback
+or retained child windows are exported from the default alternative.
+
+Both returned alternatives must carry the plan's declared type. Reuse and extend
+the existing default-result normalization for record and one-slot scalar
+transport, with exact shape checks and non-mutating rebasing of whole-record
+absence. Keep matched all-NULL records distinct from empty/default records.
+Do not change cardinality, continuations, skip/limit ordering or out-of-band
+checkpoint/restart semantics. A nil Go default is invalid construction, not a
+second untyped SQL-NULL representation; callers must supply a typed default.
+
+Regression obligations: constructor/type/default compatibility and rebuild
+checks for scalar and record inputs; default/nonempty scalar output and parent
+IS NULL/IS NOT NULL evaluation; empty vs matched all-NULL record presence;
+strict cardinality and consumed/checkpoint/restart continuations; the exact
+real-FDB correlated-array query with and without the quoted-dot CTE; rejection
+of the already out-of-envelope scalar correlated-array SUM remains unchanged.
+Existing tests that construct nil defaults must use typed defaults or explicitly
+assert constructor rejection, without reducing their original assertions.
+
+Both initial design reviews withheld approval over the nullable-child/non-null
+default quadrant. Revision 2 resolves it with the conservative physical type
+above and adds nonempty SQL-NULL scalar/record controls; constructor/rebuild
+checks assert that NULL remains admissible. A new compiled parent-predicate
+control also exposed scalar filter layout binding being conditional on the
+optional extra alias (`scalar-filter-alias-red.*`): both no-alias cases fail
+UnboundCorrelation while the aliased controls pass. Select the scalar binder by
+its declared carrier kind, independently of that optional alias. The same exact
+layout and declared-edge validation still apply; no ambient fallback is added.
+
+##### Null-extension field lineage clarification (design accepted; verification in progress)
+
+The new retained `TestDefaultResultLineageUsesOnlyExactChildAndOutputCarriers`
+exposes a second boundary defect: `TranslateNullExtendedPhaseRoot` rejects a
+NOT NULL field read when the owning record becomes nullable. Its generic
+`RebuildFieldValue` call requires an unchanged read-result type, and its comment
+incorrectly asserts that the read cannot become nullable. Java
+`FieldValue.java:145-148` instead derives read nullability from both the child
+record and every field in the path; `withNewChild` at 159-161 recomputes it.
+The stored field descriptor does not change, but reading that field from a
+possibly absent record necessarily has nullable result type. The compiled red
+is `remaining-acks/default-lineage.log` (non-null record-child cells); the
+already-nullable record controls must explicitly expect nullable field reads.
+
+Within this exact null-extension bridge only, resolve the original complete
+ordinal path against the proven target carrier, retaining frontier provenance.
+Require the rebuilt result to equal the original result with root nullability
+widened to true. Keep the existing exact source-handle, same-row-shape and
+one-way root-widening preconditions; foreign handles remain pointer-stable,
+shape/nested-type drift and narrowing remain errors. Do not loosen generic
+`RebuildFieldValue` or exact runtime binding. Rebuild enclosing Values
+copy-on-write so their types derive from their children. Tests must cover
+scalar and record outputs, nested field paths, non-null and nullable child
+roots, mixed already-output/input programs, foreign same-shaped carriers,
+unchanged source metadata and invalid shape/narrowing. This is a clarification
+of the approved root-nullability boundary, not permission to alter stored
+field nullability, ordinal identity, source windows, SQL admission or wire data.
+
+Separately, the reader FDB cells are green after preserving the filter's
+immutable admitted carrier during extraction relinking, rather than reading
+its mutable child reference for the old owner. The compiled live-reference
+red and restored green are `default-filter-live-relink-{red,green}.*`.
+Four affected Bazel suites passed in `first-default-affected-v5.*` before the
+new field-lineage test; that green does not cover this still-open boundary.
+
+Graefe and Torvalds ACKed this design delta, not the implementation, in
+`remaining-acks/default-field-lineage-design-{graefe,torvalds}.md`. The targeted
+value/plan/executor regressions now pass (`default-field-lineage-green.*`),
+including both empty and matched records. The ordinary field rebuild remains
+strict. Full-suite/race/mutation verification still precedes implementation
+approval; no earlier whole-PR approval is inferred.
+
+#### Default-result metadata and owner-approved plan-shape refresh
+
+The first complete `just test` run of the uncommitted default-result repair
+failed three targets (`remaining-acks/default-result-full.*`), not a green
+verification. The docs census/dead-helper and hand-built CTE fixture failures
+were repaired and their focused tests passed (`default-full-docs-fixture-green.*`).
+The remaining `TestPlanShapeGolden` difference is exactly these three entries
+in the complete generated corpus dump (`default-result-plan-shapes.diff`):
+
+- `projected_exists_over_a_derived_source.yaml#2` (CTE / WHERE EXISTS);
+- `projected_exists_over_a_derived_source.yaml#5` (derived / WHERE EXISTS);
+- `subquery_in.yaml#11` (correlated plus uncorrelated NOT EXISTS).
+
+Each changes only the orientation of an INNER NestedLoopJoin and its ordered
+shape children. Both corresponding yamsql scenarios passed in the full run;
+this is not a new query-admission failure. Instrumenting the existing final
+hash rung showed the compared orientations had identical preceding criteria
+and scalar costs: cardinality `2.5e11`, CPU `1.30621313655e11` for the first
+pair, and cardinality `62500`, CPU `7.233521890595822e10` for the NOT EXISTS
+pair. These are **cost-model estimates**, not latency measurements. The lower
+hash now selects the other orientation. The trace is
+`remaining-acks/default-result-cost-trace.log`; the cost-model source was
+restored byte-for-byte and is unchanged from published HEAD.
+
+The mechanism is `stablePlanNodeHash` folding predicate/result semantic hashes,
+which include the QOV's exact flowed type in `values/semantic_hash.go`.
+Correctly widening FirstOrDefault's output and existential flowed types
+therefore changes a cost-tied plan's final hash without changing its cost.
+Java 4.12.11.0 `PlanningCostModel.java:320–326` likewise uses plan hash only
+after its cost criteria tie; Go's semantic hash is not Java's numeric hash
+(`QuantifiedObjectValue.java:115–123` hashes only the base tag in Java).
+No cost formula, selection criterion, or semantic-hash implementation was
+changed to recover a previous arbitrary orientation.
+
+For causal isolation, the bounded replay contains all 19 queries from those
+two unchanged YAML files. Restoring **only** `first_or_default.go` and
+`expressions/quantifier.go` to published `7483327ce` in the otherwise-current
+working tree restores every one of those 19 checked-in shapes; restoring the
+repair produces precisely the three differences above. This mixed-tree
+experiment is not a full published-HEAD replay. Evidence:
+`default-result-published-types-shapes.*` and `default-result-cost-trace.plans.txt`.
+A constructor-only rollback (`default-result-legacy-carrier-shapes.*`) left
+new-type relinking in place and failed planning; it earns no isolation credit.
+
+The permanent SQL pin is
+`TestPlanHarness_ExistsDefaultTypesAndSymmetricJoinCosts`: all three exact SQL
+shapes require non-null children, nullable defaults and nullable output types,
+plus the nonzero, equal estimated cost of the two join orientations. It passed
+four Go RUN/PASS (parent plus three cells). Restoring the two published files
+compiled and failed all three cells on the incorrect non-null output, then
+both files were restored byte-for-byte (`default-cost-premise-{green,red}.*`,
+`default-cost-premise-restored.json`). This pin does not replace or relax the
+existing exact-orientation golden sentinel, nor prove runtime equivalence of
+an unexecuted constructed reverse plan.
+
+**Owner approved refreshing these three exact shape snapshots.** Reverting
+truthful metadata merely to recover the old tie-break is not a correctness
+fix, and retuning the cost/hash selection to preserve those orientations is
+outside the authorized work. A fresh complete dump changed exactly the three
+named entries out of 2,995, preserving the header, SQL and each entry's node
+population (`remaining-acks/default-result-approved-shapes.*`). The full
+EXPLAIN target then passed three uncached runs, **159/159 Go RUN/PASS**,
+including three executions each of `TestPlanShapeGolden` and
+`TestBaselineIsDeterministic` (`default-result-approved-shapes-test.*`).
+Full-suite verification follows; no broader expectation, admission, skip,
+performance, push or merge waiver follows from the approval. The reader/USING code repairs now have the focused and mutation coverage
+recorded below; final verification and reviews remain incomplete. See TODO
+**RFC-256 default-result plan-shape refresh (owner-approved)**.
+
+The field-lineage fuzz run completed three seeds and **7,303,410 executions in
+15 seconds without coverage guidance**, with no failure
+(`remaining-acks/default-field-fuzz.*`). That is bounded fuzz evidence, not a
+substitute for full-suite/race/mutation verification of the final tree.
+
+A subsequent complete uncached `just test` run against the frozen working tree
+completed in **954.831 seconds: 91/92 targets passed**, with only
+`TestPlanShapeGolden` failing. The nonempty Go population reconciles as
+**40,213 RUN = 40,207 PASS + one FAIL + five SKIP**, with 13 captured subprocess
+diagnostics excluded and no missing/extra outcomes. BEP records 92 summaries,
+91 PASSED / one FAILED, zero cached results. All tracked regular-file hashes
+were unchanged across the run. Both affected yamsql scenarios passed unchanged
+(`projected_exists_over_a_derived_source` 6/6, `subquery_in` 13/13), as did all
+four outcomes of the retained SQL/type/cost pin. The five skips are the still
+restricted opt-in hunts; no waiver is inferred. Evidence:
+`remaining-acks/default-cost-full.{log,exit,bep.jsonl,freeze.json,changed.json,counts.json}`.
+This paragraph and the corresponding TODO result were recorded after that run;
+the full-run hash claim refers to the preceding frozen tree, not these later
+documentation bytes.
+
+#### Bound-attribute USING expansion and reader failure contract
+
+The existing accepted source-ownership design now covers the final separate
+bare-star path: both `PlanVisitor` and the catalog SELECT constructor call the
+same `expandBareStarFromScope` / `starColumnsFromScopeChecked` machinery.
+`expandBareStarOverUsingJoins` and its two calls were removed, not patched to
+invent unique lookup names. Java 4.12.11.0
+`SemanticAnalyzer.java:321–368` returns visible output attributes;
+`Expressions.java:164–166` filters visibility without deduplicating names;
+`visitors/QueryVisitor.java:397–420` hides the particular right-hand USING
+attribute. Go's checked expander already carries the corresponding resolved
+ordinal Values and hidden-attribute filtering.
+
+The driver regression retains left/right derived and CTE legs, quoted-dot
+duplicate labels, unnamed literals, nested derived/CTE bodies, qualified and
+mixed-star controls, and an outer-join arm. The data distinguishes slots
+(`10` versus `20`), not merely duplicate labels. Explicit `d.x` remains an
+ambiguous named reference (42702). The initial compiled run failed nine new
+SQL cells plus the parent (25 RUN = 15 PASS + 10 FAIL); after removing the
+legacy path, the full root passed 25/25.
+
+Restoring only the catalog-entry call initially survived these driver tests.
+This is recorded as missing coverage, not a killed mutant. The permanent
+`TestCatalogUsingStarPublishesAttributeOrdinals` therefore drives that actual
+constructor, asserting the retained owner and ordinal 0/1/2 explicitly for
+duplicate, quoted and unnamed outputs. The first fixture revision used a
+nonexistent Order column and assumed a binding was minted for an unambiguous
+alias; those failures are not engine evidence. With a real `quantity` field
+and an explicitly carried binding, the test passes, and restoring the legacy
+catalog call fails all four outcomes on 42702. Independently restoring the
+visitor call fails 14 of 16 focused driver outcomes; the two qualified-star
+controls remain green. Both mutations compiled and restored exact source
+bytes (`using-attribute-slots-*-mutant-v2.*`, `verify-using-slot-mutations.py`).
+
+The reader adapters deliberately retain their existing nil-on-source-failure
+signature; this is not a new promise to return the checked constructor's
+error. They now obtain source identity from that single constructor and never
+publish an incomplete prefix or substitute catalog source. Four negative unit
+cells pin missing primary/join metadata, a CTE tombstone and missing catalog.
+Redundant retries of the same scope builder were deleted. Four FDB diagnostic
+cells pin undefined computed projection/aggregate/sort columns as 42703 and
+ambiguous projection as 42702 beneath the original quoted-dot collision;
+existing scalar-array rejection remains 42F00. This bounds the error-compatibility
+claim rather than claiming every conceivable invalid source was exercised.
+
+The final restored focused three-target run passed **77/77 RUN/PASS**, including
+both exact-golden and determinism tests; no additional golden entry changed.
+Evidence: `remaining-acks/reader-using-focused*` and the explicit artifacts in
+TODO **RFC-256 reader/USING repair continuation after the approved golden
+refresh**. Full-suite/race/default-result mutation/stress and implementation /
+exact-published-head review remain required; the prior full-PR NAKs are not
+converted into approvals by these local runs.
+
+#### Array-constructor reconstruction after null extension
+
+The local implementation review found an enclosing-Value contract hole:
+`ARRAY[child.ID]`, declared with NOT NULL LONG elements, retained that declared
+element type after the exact default-plan lineage crossing widened `child.ID`
+to nullable. An absent record could therefore produce `[NULL]` under nonnullable
+element metadata. The existing array-field pins do not construct an array and
+do not cover this case. The correction and its regression evidence are recorded
+below; the earlier full-suite green did not detect the defect.
+
+The correction is Java's constructor reconstruction contract, not propagation
+of arbitrary new types through a parent. In Java 4.12.11.0,
+`AbstractArrayConstructorValue.java:155–177,213–228`, nonempty, non-ANY children
+resolve their common type with `Type.maximumType`; it must equal the retained
+element type, including nullability and nested shape. Only then are promotions
+injected for children whose types differ modulo root nullability. Empty rebuilds
+retain the original constructor; ANY retains its explicit heterogeneous
+contract. The raw explicit-type constructor remains unchanged, just as Java's
+`of(children, elementType)` at lines 290–295 does not validate its arguments.
+
+Implement one checked array rebuilder under the existing atomic checked Value
+reconstruction authority. The array's Value-only compatibility method and the
+generic Value-only wrapper fail closed on reconstruction errors, without
+returning a typed-nil interface. Expose the existing checked authority for the
+mixed input/output lineage branch, so that branch propagates the same typed
+error instead of discarding it. Do not relax exact field rebuilding, silently
+widen the array's declared element type, add a runtime name fallback, or change
+costs, hashes, admission expectations or the three approved snapshots.
+
+Retain regressions for empty and matched FOD, strict FOD and DOE, both simple
+input-only and mixed input/output expressions. Invalid NOT NULL-element arrays
+must fail planning; arrays explicitly declared with nullable elements must
+retain nonnull array metadata and evaluate to `[NULL]` or `[7]` (two elements in
+the mixed case), then END. Both outcomes must leave source descriptors, field
+reads and the original constructor unchanged. Unit coverage also pins the Java
+empty/ANY/exact/numeric-promotion branches, nullability narrowing and widening,
+incompatible primitives, nested-array drift, nil children and defensive copies.
+Mutation evidence must restore the old element-preserving reconstruction and
+observe semantic failures, not merely compilation failures.
+
+This is the implementation-review correction within the accepted default-result
+workstream, not new SQL feature admission. Companion: TODO **RFC-256 array
+constructor rebuild correction**. The new design delta and final implementation
+confirmation do not approve the full PR or waive its remaining gates.
+
+Implementation of the array reconstruction correction now uses the single
+checked array method from both compatibility reconstruction and the checked
+Value dispatcher. The mixed default-lineage path retains its typed diagnostic.
+The field mapper's array arm also returns an actual nil on failure and its
+parents propagate that failure rather than publishing a partly rebuilt record.
+The general Value-only wrapper retains its pre-existing unchanged-leaf behavior;
+routing every leaf through the checked FieldValue arity gate was caught by
+`TestWithChildren_LeafField_EmptySlice` and corrected without changing that test.
+
+The numeric reconstruction control exposed a second real defect:
+`PromoteValue` inserted for INT→LONG did not widen an `int32` carrier. It now
+reuses `promoteConstant`, already used by `ConstantObjectValue`, before the
+existing FLOAT row-domain normalization. Java `PromoteValue.java:76`
+(`INT_TO_LONG`) is the reference. No new numeric conversion lattice, change to
+`coerceNumericResult`, or changes to scalar-function/simplifier typing were made.
+The retained pins require int32 minimum/maximum and Go int to produce int64,
+NULL to remain NULL, and the constructed numeric array to contain int64 values.
+Initial numeric fixtures used `LiteralValue`, which deliberately assigns UNKNOWN;
+they now declare their intended INT/LONG types explicitly. A field-map fixture
+also initially miscalled a variadic constructor; its compile failure is not
+semantic-red evidence. Raw constructor behavior and its heterogeneous/nil-child
+tests remain unchanged; comments no longer attribute nil-child tolerance to Java.
+
+Array correction verification: all three values/plans/executor targets passed
+uncached (5,036 RUN/PASS, 11 embedded diagnostics excluded). Five independently
+applied/compiled semantic mutants, each over 56 RUN outcomes, failed as follows:
+unchecked array elements 32 FAIL; field-mapper typed-nil return 3; partially
+rebuilt record parent 2; omitted INT→LONG promotion 6; mixed-lineage diagnostic
+loss 7. All source bytes were restored, followed by 56/56 restored RUN/PASS.
+The expanded field-lineage fuzzer completed four seeds and 6,648,152 executions
+in 15 seconds without coverage guidance, with no failure. Its additional axis
+constructs nested arrays around widened field reads and preserves foreign-root
+identity rather than asserting only array-field access.
+
+Wider default-result mutation verification also compiled semantic reds for both
+FOD construction/rebuild contracts (17 RUN each, 17 and 5 FAIL respectively),
+child-only/default-only union nullability (255 RUN each, 55 and 15 FAIL), missing
+matched-FOD normalization (23 FAIL), alias-gated scalar filtering (20 FAIL),
+mutable-reference filter relinking (4 FAIL), missing existential widening and
+shared-cache contamination (1 FAIL each), and lost absent-record presence
+(4 FAIL); the last six also ran 255 outcomes each. The first harness revision
+stopped before cache/presence mutations because its edit-presence assertion did
+not allow an insertion retaining the old line; the complete v2 run is the
+credited run. Earlier broad first-contract mutants could abort execution; v2
+uses the complete finite 17-outcome contract test instead. All v2 outcomes
+reconcile without missing results and every production file was restored.
+
+A permanent direct normalization pin additionally covers FOD/strict-FOD/DOE
+with present nonnull fields, present all-NULL fields and whole-record absence.
+It requires a separate output row/slot slice and unchanged source type, layout
+and presence. Both borrowed-row and borrowed-slot mutants compiled and failed
+all ten outcomes; the unmutated test passed 10/10. This pins the nonmutation
+property separately from the existing end-to-end value/presence assertions.
+
+Evidence: `remaining-acks/default-array-*`, `verify-default-array-mutations.py`,
+`default-result-mutant-v2-*`, `default-result-mutations-v2.*`,
+`verify-default-result-mutations.py`, `default-row-*` and
+`verify-default-row-mutations.py`. Design-delta ACKs are in
+`default-array-design-{graefe,torvalds}.*`; they are not implementation approvals.
+Final frozen-tree full/race/stress verification and local delta review follow;
+none of these bounded runs replace the exact-published-head full-PR gates.
+
+#### Structured promotion reproducer and expectation-approval STOP
+
+Historical checkpoint: the owner-decision stop below is superseded by **Owner-ordered
+pinned-version parent and stacked parity upgrade** at the end of this RFC. The
+reproduced defect remains real; it is not repaired by accepting the split.
+
+The array reconstruction implementation-delta reviews both returned **NAK**
+for the frozen virtual tree `472bff1b40276a3f7738331c7470deb593b44de3`
+(published HEAD `7483327ce1d91c14c2256740c19fbd97a3d67345` plus diff
+SHA256 `dd52a2e1fd50aab77395f1ac881baa03033470c1690671f6a568d2671d5132dc`).
+Both completed the 11-file / 748-line delta. The original array-nullability
+finding is repaired, but a newly injected structured `PromoteValue` still
+only changes metadata: its evaluator's primitive helpers do not recurse.
+The independent full-local-diff Codex review did **not** complete: on resumption
+there was no tracked task or matching review process, no verdict or exit
+artifact, and its log ended during source inspection. The termination cause
+is unknown; no approval is credited. The newer race run was cancelled after
+the NAK and receives no completion credit. No stress run was started.
+
+Before the following regression additions, that frozen tree completed uncached
+`just test`: 92/92 targets, 40,299 RUN = 40,294 PASS + five restricted-hunt SKIP,
+13 embedded diagnostics excluded, zero cached results, all 6,185 tracked
+regular-file hashes unchanged. That is a real run over an incomplete semantic
+population, not evidence against the newly reproduced bug and not a no-skips
+pass. Evidence remains `remaining-acks/default-array-full.*`.
+
+Permanent new regressions now drive the missing dimension:
+
+- `TestArrayConstructorValue_CheckedRebuildNestedNumericCarriers`: the checked
+  constructor must retain its declared element type, insert `PromoteValue`,
+  and actually widen ARRAY<INT> to ARRAY<LONG>, ARRAY<LONG> to ARRAY<DOUBLE>,
+  and another nested array level. Nullable elements must retain NULL and the
+  empty-array control must remain empty. Source arrays are copied independently
+  for the nonmutation assertion; comparing two aliases would not prove it.
+- `TestPromoteValue_EvaluateRecordNumericCarriers`: protobuf record fields
+  require target descriptor kinds and actual values for INT→LONG, LONG→DOUBLE,
+  NULL fields, array fields and empty repeated fields. Source message bytes
+  and descriptor identity must remain unchanged.
+
+The uncached sandboxed values target compiled and ran **12 outcomes: 11 FAIL
+(nine cases plus both parents), one PASS (the empty-array control)**, with no
+missing or extra outcomes. Failure diffs show retained int32/int64 array
+leaves and old Int32Kind/Int64Kind message fields under promoted metadata.
+`just gazelle` and `bazelisk mod tidy` completed; no new test file was needed.
+There was no implementation of recursive conversion at this checkpoint. The
+working tree then retained these failing regression pins and was not ready to
+commit or publish. The owner-ordered split below carries these exact success
+assertions into the immediate successor rather than weakening them.
+
+Java 4.12.11.0 `PromoteValue.java:353–429` constructs array-element and
+record-field coercions; `MessageHelpers.java:488–529,546–599` applies them
+recursively, builds a target-descriptor message, preserves absent optional
+fields and treats repeated fields as present even when empty. The repair must
+use those recursive promotion semantics and existing primitive operators,
+not route implicit promotions through the broader explicit CAST lattice.
+Go's existing nullable array-element behavior must remain admitted; Java's
+null-element rejection is not permission to shrink Go's current contract.
+
+**Historical STOP for an owner decision, subsequently resolved by the split below.**
+This repair also reaches existing SQL refusal expectations outside the three
+owner-approved plan-shape refreshes. The unchanged
+`TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes` table in
+`pkg/relational/sqldriver/wrapper_hidden_child_fdb_test.go` requires the
+following queries to fail with `but double in the target`:
+
+```sql
+SELECT ([(1 AS A), (2.5 AS A)] AS CH) FROM t;
+SELECT ([(1 AS A), (2.5 AS B)] AS CH) FROM t;
+```
+
+The table's uncached real-FDB test ran and passed (one Go RUN/PASS; its SQL
+cases are a plain loop, not Go subtests). Its checks require those error
+substrings and would fail if either query answered. The failure is the same
+missing record-field conversion: the stamped parent receives an unpromoted
+INT message where its common type requires DOUBLE. A recursive record conversion would remove that Go refusal. Subsequent live
+Java verification below shows the exact SQL also fails in Java 4.12.11.0:
+this proposed SQL outcome change would be an upstream-bug workaround, not
+restoration of Java's observed SQL behavior. The Go impact remains source-traced,
+not a claim that an unimplemented repair has already been run. Other
+refusal/representation cases in that table have not been approved for change.
+
+The initial request to replace these two numeric-width refusal expectations
+with successful rows must be read with the live-Java correction below: such a
+change would deliberately go beyond Java 4.12.11.0's observed behavior. It is
+not justified merely by the presence of recursive coercion helpers in Java.
+The recursive ARRAY/RECORD promotion repair must assert rows, DOUBLE
+metadata/carriers and source immutability. It must not introduce a record/array
+rejection merely to hide an accepted promotion. The owner subsequently chose
+the immediate Java-upgrade/parity successor for that repair, rather than an
+upstream-bug workaround in this pinned-version PR; see the split below. That
+instruction authorizes finishing and publishing this PR, not new QSC work,
+performance repair, unrelated expectation changes or merge.
+
+Artifacts under `/var/tmp/query-grind-cast/pr785-review/remaining-acks`:
+`default-array-impl-{graefe,torvalds}.*`,
+`default-array-impl-codex.incomplete.json`,
+`structured-promotion-red.{log,exit,counts.json}`,
+`structured-promotion-admission-controls.{log,exit,counts.json,bep.jsonl}`,
+and `structured-promotion-{gazelle,tidy}.log`.
+Companion: TODO **RFC-256 structured promotion — owner expectation decision**.
+
+#### Live Java outcome correction for numeric record arrays
+
+The owner's request to distinguish FRL Java from ANSI semantics exposed an
+incorrect inference in the preceding repair discussion. **Java 4.12.11.0 also
+fails both exact mixed-width SQL queries.** The existence of the correct
+recursive coercion helper is not evidence that the SQL path calls it.
+
+The permanent `RecordConstructorJavaProbe` spec **records Java numeric array
+record promotion outcomes** executes four queries against a nonempty real-FDB
+table. Both original `(1 AS A)` / `(2.5 AS A|B)` cases raise this exact Java
+`IllegalArgumentException`:
+
+```
+Wrong object type used with protocol message reflection.
+Field number: 1, field java type: DOUBLE, value type: java.lang.Integer
+```
+
+Replacing only `1` with `1.0` makes both controls succeed. Their exact retained
+rows are `{CH: [{A: 1.0}, {A: 2.5}]}` for agreeing field names, and
+`{CH: [{_0: 1.0}, {_0: 2.5}]}` for differing field names. The HTTP runner exposes
+outer STRUCT metadata and JSON values, not nested JDBC primitive metadata;
+those row assertions do not independently prove nested numeric carrier widths.
+The required DOUBLE kind in the failure and Java's common-type source establish
+the mixed-width target separately.
+
+Root cause in the pinned Java source: `ExpressionVisitor.java:1094–1110`
+`handleArray` calls `LightArrayConstructorValue.of(children)`, bypassing the
+encapsulator that injects promotions. Its own TODO at lines 1098–1107 explicitly
+identifies that missing promotion step. `AbstractArrayConstructorValue.java:285–287`
+constructs without injecting; by contrast, the encapsulator at lines 144–176
+resolves the common type and injects element promotions. Java's debug stack
+confirms this actual failure path: `MessageHelpers.deepCopyMessage:292` ←
+`RecordConstructorValue.deepCopyIfNeeded:216,202` ← `eval:124`. It copies the
+unpromoted Integer into the common DOUBLE descriptor. This is an upstream
+execution defect, not a SQL typing rule forbidding compatible numeric fields.
+
+The first new probe incorrectly expected success and failed on its first
+query; it did not run the second query or the later controls. The retained
+measurement now pins the observed Java failure explicitly alongside exact
+successful control rows. Both the normal and stack-traced uncached focused
+runs passed one Ginkgo spec with all four probe outputs present. The other
+1,441 specs were excluded by the focus filter; these runs are not full-suite
+or no-skips evidence. No existing Go error expectation was changed, and no
+production repair or upstream report was made in this investigation.
+
+ANSI caveat: `[ ... ]` and `(expression AS field)` are FRL-specific syntax,
+not portable standard SQL. The analogous typed ARRAY/ROW construction uses
+compatible common field types and converted values. It does not require a
+protobuf reflection failure. Nor does ANSI require DOUBLE for bare `2.5`:
+an unsuffixed decimal literal is exact numeric, while FRL chooses DOUBLE.
+Java's anonymous-field spelling `_0` is likewise not an ANSI naming guarantee.
+Do not collapse intended common-type semantics, Java helper behavior, and
+observed Java SQL outcomes into one parity claim.
+
+Artifacts: `remaining-acks/structured-promotion-java.log` (initial refuted
+success expectation), `structured-promotion-java-v2.*` (four-case pin),
+`structured-promotion-java-traced.*` (repeat with Java stack), and
+`structured-promotion-java-final-{gazelle,tidy}.log`.
+Companion: TODO **RFC-256 live Java numeric record-array correction**. This
+measurement alone did not authorize a shared-surface behavior change. The
+subsequent owner instruction below resolves the publication stop by retaining
+the pinned-version failures here and ordering an immediate upgrade/parity PR;
+review and verification requirements remain.
+
+#### Owner-ordered pinned-version parent and stacked parity upgrade
+
+The owner instructed: finish our Go PR, accept this as broken, then open the
+next PR on top to bump the Java version we map against, including all parity
+work. No upstream Java PR is requested: upstream already fixed SQL array
+promotion in #4171 (`851712f14364cb99d7dfd2f410ce56d7bcba4fb8`, first released
+in 4.12.13.0). PR785 stays pinned to **4.12.11.0**. Its existing mixed-numeric
+record-array refusal expectations and the four-case live-Java regression stay
+unchanged. This instruction supersedes the preceding publication STOP, not
+unrelated review findings or verification requirements.
+
+The accepted limitation includes the same pre-existing structured evaluator
+incompleteness exposed by checked reconstruction. Java 4.12.11 already has
+recursive library coercion, while Go still leaves nested numeric carriers and
+record descriptors unchanged beneath promoted metadata. Java's SQL construction
+bypasses its working coercion. Thus matching SQL errors is **not** proof of
+library parity, and this PR does not claim that recursive promotion is repaired.
+No compatibility flag, rejection guard, SQL-text match or new expectation is
+introduced to preserve the error.
+
+The split was checked against the actual merge-base
+`ed3504f7e410d8e2a4f4c46fd7b4c72fd0484869`, not just inferred from old helpers.
+The same ten carrier/descriptor cases executed under uncached Bazel there:
+12 Go outcomes = 11 FAIL (nine cases and two parents) + one PASS (empty array).
+The record test is identical; the array baseline uses the old `WithChildren`
+entry point and omits only assertions about the newly inserted promotion node.
+Its input values, target type, runtime carrier and nonmutation assertions are
+unchanged. The old unchecked rebuild already returned those same incorrect
+nested carriers under the retained outer metadata. This establishes that the
+measured defect predates PR785; it does not prove arbitrary old/new equivalence.
+
+Graefe and Torvalds both ACKed this bounded architectural split after inspecting
+HEAD `7483327ce1d91c14c2256740c19fbd97a3d67345` plus the frozen 40-file diff
+SHA256 `4bea7c6a60f432fae792e939953a02d7f7a7c19195e38823197efce1395c3393`.
+Those are **design/scope ACKs only**, not implementation or full-PR approval.
+
+The two newly added desired-success roots travel **verbatim** with the recursive
+ARRAY/RECORD implementation into the immediate stacked successor:
+`TestArrayConstructorValue_CheckedRebuildNestedNumericCarriers` and
+`TestPromoteValue_EvaluateRecordNumericCarriers`. They are neither skipped nor
+rewritten to assert incorrect carriers; their removal from the parent's pending
+changes is a PR split, not a green claim for that contract. Preserve and apply
+`/var/tmp/query-grind-cast/pr785-review/owner-split/successor-tests.patch`
+(SHA256 `b7384c77cfba0885ccb321f1552bbce620d474d105b3ae96c629d8b2295d9724`),
+whose manifest records function/file hashes and whose application was checked.
+They must be committed as tests with the successor's implementation. The existing
+checked-rebuild, primitive-promotion, null-extension and SQL-failure regressions
+remain in this parent. No other SQL refusal/representation expectation changes.
+
+Fresh focused real-FDB verification executed the unchanged Go refusal table
+(one Go root, SQL cases in its plain loop) and the pinned Java spec (one Ginkgo
+spec, all four outputs; 1,441 other specs excluded). Both targets executed
+uncached. These are focused outcome proofs, not full-suite/no-skips evidence.
+Artifacts: `owner-split/{before.*,design.txt,graefe.*,torvalds.*,baseline-*,pinned-*,successor-tests.*}`
+under the existing PR785 review directory. Final parent full/race/stress runs and
+reviews use the newly frozen parent tree; five restricted hunts, published-head
+reviews, Claude LGTM and CI are not waived. Publication is authorized; merge is
+not inferred. No new QSC hunt or performance fix is authorized.
+
+After the parent is published, verify and confirm the highest common published
+Java release before changing pins. The successor must include dependency pins,
+reference checkout, proto/grammar/generated changes as applicable, the upstream
+behavioral delta and all required Go parity—not merely a jar version change.
+Companion: TODO **RFC-256 owner-ordered parent and Java-upgrade successor**.
+
+#### Read-lifetime cancellation-observation ordering
+
+The first parent verification run exposed the living-document version gate;
+its historical release citation now points from TODO to this RFC. The next
+uncached full run passed that guard but reproduced a real client flake:
+`TestGetReadVersion_ConcurrentWithCommit_RaceFree` reported
+`concurrent GetReadVersion: context canceled`. It completed 92 targets with
+91 passed, and 40,299 Go outcomes = 40,293 PASS + one FAIL + five restricted
+SKIP. This is not covered by acceptance of the structured-promotion limitation.
+Evidence: `owner-split/v2/{parent-full.*,failures.txt,verification-records.json}`.
+Neither stopped run reached the sequential race/stress stages.
+
+Before the fix, `readLifetimeError` sampled the captured incarnation's cause,
+unlocked, then sampled `ctx.Err()`. Retirement could record 1025 and deliver cancellation
+between those observations, leaking the internal context cancellation instead
+of its FDB cause. Timeout has the same ordering hole for 1031. C++ 7.3.77
+`ReadYourWrites.actor.cpp:1537–1547` races the GRV future against resetPromise;
+`resetRyow`/`cancel` at 2699–2732 publish transaction_cancelled through that
+promise, while `timebomb` at 1567–1574 publishes transaction_timed_out.
+`ThreadSafeTransaction.cpp:419–425` checks deferred failure before dispatch.
+
+The implemented design captures the context error **before** reading the recorded
+incarnation cause, retaining cause-first return precedence. Cause publication always
+precedes internal cancellation delivery, so an observed cancellation cannot be
+paired with an earlier, clean cause sample. If neither has happened yet, entry
+may proceed; existing downstream lifetime/completion gates retain their roles.
+Do not translate at GetReadVersion's surface, change caller/deferred precedence,
+borrow the replacement incarnation, relax the existing race test, or add a new
+production hook. There is no wire-format/conflict-range change.
+
+The retained deterministic real-FDB test intercepts only the observation of the
+real operation context's `Err`, triggering Cancel, timeout, Reset or successful
+commit reuse there, then forwarding the actual context error. This pins the
+missing ordering dimension through public GetReadVersion. Caller cancellation
+is a control; replacement GRV and committed-data controls prove no poisoning or
+lost commit. Keep the original concurrent stress test unchanged and loop both
+under race. C++/Torvalds and independent design ACKs preceded the production
+edit; final implementation delta reviews include this finding and the
+documentation fix. These design ACKs do not approve implementation or merge.
+
+Verification: the six-outcome deterministic test failed before the fix and on
+explicit reversion with the same four retirement failures (1025/1031 replaced by
+raw context cancellation), failed parent and passing caller control. Restoring
+the fix passed 50 repetitions of that test plus the unchanged concurrent test,
+both normally and under `-race`: 350 RUN/PASS per uncached target execution, no
+skips/missing outcomes, and matching source hashes. Each case preserves real FDB
+setup/GRV, live-caller and replacement checks; commit reuse additionally verifies
+persisted data through an independent transaction. Artifacts under
+`owner-split/read-cancel/` include full logs/BEPs, outcome counts, mutation presence
+and restored hashes. An initial proof-log postprocessor guessed non-FDB code 0;
+the helper actually returns -1. Rechecking the retained log confirmed the intended
+semantic failures; that postprocessor error is not test or race evidence.
+The completed local full/race/stress rerun and code ACKs are recorded below;
+final published-head gates remain separate.
+Companion: TODO **RFC-256 read-lifetime cancellation observation flake**.
+
+#### Watch setup must retain captured cancellation classification
+
+The client implementation review found a second bypass after the GRV observation
+repair: `WatchSetup` calls `readEntryError` and `checkCancelled`, then directly
+returns `ctx.Err()`. Cancellation delivered after the preceding gates therefore
+escapes as a raw context error rather than the captured incarnation's 1025/1031.
+The v3 broad verification was deliberately stopped on this finding after 87
+completed passing target summaries; it is not a complete full/race/stress result.
+Evidence: `owner-split/v3/{cpp-delta.md,interrupted.json,parent-full.*}`.
+
+C++ `ReadYourWrites.actor.cpp:2445–2446` returns the reset-promise error before
+watch options and key checks; its watch actor at 1301–1304 preserves that typed
+failure during setup, and the timebomb at 1567–1574 delivers 1031. The selected
+repair replaces the raw context gate with the existing `readLifetimeError`, not
+a watch-specific error translation. This preserves captured ownership, typed
+cause-first entry precedence, deferred admission and caller-only cancellation.
+Watch option/key/cap order, synchronous timeout publication, asynchronous watch
+lifetime and persisted wire/conflict behavior are unchanged.
+
+Extend the real-FDB cancellation-observation fixture with watch entry and watch
+follow-up gates across cancel, actual timeout callback, Reset, successful commit
+reuse and caller cancellation. The test-only context interposes on the first or
+second error observation, preserving the actual context binding and error. Pin
+literal error codes, no acquired/leaked watch slot, positive replacement GRV,
+successful replacement setup under a one-watch cap and independent commit data.
+The original GRV assertions and concurrent GRV stress are retained. C++, Torvalds
+and independent design ACKs preceded the one-gate production repair. The expanded
+fixture compiled red before that repair: 19 outcomes = 13 PASS + six FAIL (four
+follow-up retirement cases and their two parents). Entry and caller controls
+passed. Explicitly restoring the raw watch gate reproduced those same failures;
+restoring the old cause-before-context observation compiled and failed all twelve
+retirement cases across GRV entry and both watch gates, plus four parents, while
+all three caller controls passed (19 outcomes = 16 FAIL + three PASS).
+
+Restoring exact fixed bytes then passed the GRV/watch regressions and unchanged
+concurrent stress at 50 repetitions normally and under `-race`: 1,000 RUN/PASS
+per uncached target execution, no skips/missing outcomes. Both mutations were
+verified present before testing; all four client/test source hashes matched after
+restoration. Artifacts: `owner-split/watch-cancel/{red.*,records.json,complete.json,source.freeze.json,*-present.json,green-repeat.*,watch-raw-gate.*,cause-first-observation.*,race-repeat.*}`.
+Completed implementation delta ACKs and full/race-package/stress verification
+are recorded below. Companion: TODO **RFC-256 watch-setup cancellation classification**.
+
+#### Accepted-parent verification completed
+
+The preceding client findings are repaired, with code ACKs from Graefe, Torvalds,
+the C++ maintainer and independent Codex at virtual tree
+`71501a0b216ee0a2a52a66bea8a9cfafbcaef587` (418 changed files / 72,460 diff lines,
+retained complete full-PR coverage plus final deltas). The read/watch regressions
+and compiled reversion evidence remain part of the parent; accepted structured
+promotion remains unresolved and assigned to the immediate parity successor.
+
+At that frozen tree, actual uncached `just test` passed all 92 targets: 40,318 Go
+RUN = 40,313 PASS + five restricted opt-in SKIP. Eight complete affected race
+targets passed 19,812 RUN/PASS, no skips. Counts exclude 13/11 embedded diagnostic
+outcomes respectively and reconcile every executed name. Four serialized 1M
+runs (two baseline, then two repaired) passed 24 RUN/PASS each with matching
+22 timed row counts and independent COUNT(*)=1,000,000. Every one of the 104
+target results across these six executions was uncached, verified using BEP
+summary and individual-result cache fields. All 6,185 frozen source hashes matched
+afterwards. Full logs, commands, identities, counts, loads and cache reconciliation
+are under `owner-split/v4/`, notably `verified-results.json`.
+
+Stress compares merge-base commit `ed3504f7e410d8e2a4f4c46fd7b4c72fd0484869`
+against published parent `7483327ce1d91c14c2256740c19fbd97a3d67345` plus the
+43-path repair at the exact virtual tree above, on one filesystem with identical
+SDK input and more than 222 GB free at each run start. The full two-sample timing
+table lives in TODO **RFC-256 accepted parent — complete repaired-tree verification**
+and `owner-split/v4/stress-rows.json`; it includes slower observations and claims
+no performance parity, attribution or acceptance. No performance fix was made.
+
+This closes the local full/race/stress rerun requirement, not the five restricted
+hunts, performance acceptance, final published-SHA review/CI, Claude or merge
+authority. The reviewed/tested tree predates this closing documentation, so normal
+hooks and final SHA confirmation still apply. The known numeric-record-array
+failures and immediate stacked Java-upgrade/parity obligation remain unchanged.

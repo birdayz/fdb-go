@@ -5186,7 +5186,9 @@ func (p *PromoteValue) Evaluate(evalCtx any) (any, error) {
 		return childResult, nil
 	}
 	if !IsUuid(p.Target) {
-		return coerceNumericResult(childResult, p.Target), nil
+		// Apply the primitive promotion operators (including INT_TO_LONG),
+		// then normalize FLOAT's representation to the row-domain carrier.
+		return coerceNumericResult(promoteConstant(childResult, p.Target), p.Target), nil
 	}
 	switch v := childResult.(type) {
 	case nil:

@@ -16,15 +16,17 @@ package conformance_test
 // `AS` name inside a targeted literal is ignored; whether that surfaces as a
 // silent positional override or an error is what this measures.
 //
-// It makes NO assertions; it prints both engines' outcomes so the pins in
+// The original diagnostic spec prints both engines' outcomes so the pins in
 // pkg/relational/sqldriver/record_constructor_expression_fdb_test.go can be
-// re-checked against the live JVM.
+// re-checked against the live JVM. The numeric-array spec additionally pins
+// Java's mixed-width failure and explicitly uniform-width success controls.
 
 import (
 	"context"
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/conformance/plandiff"
@@ -102,6 +104,47 @@ var _ = Describe("RecordConstructorJavaProbe", func() {
 			gr := goRunner.RunWithSetup(ctx, schema, setup, p.sql)
 			fmt.Fprintf(GinkgoWriter, "PROBE %s\n  %s\n  %s\n  sql: %s\n",
 				p.name, render("JAVA", jr), render("GO  ", gr), p.sql)
+		}
+	})
+
+	It("records Java numeric array record promotion outcomes", func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
+		env, err := SetupTenantEnvironment(ctx, sharedContainer, "record_array_promotion_"+uuid.NewString())
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = env.Cleanup(ctx) }()
+		srv, err := NewIsolatedJavaInvoker()
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = srv.Close() }()
+		runner := plandiff.NewJavaRunnerHTTP(javaBaseURL(srv), env.ClusterFile).(plandiff.SetupRunner)
+		const schema = "CREATE TABLE t (id BIGINT, PRIMARY KEY (id))"
+		setup := []string{"INSERT INTO t VALUES (1)"}
+		for _, probe := range []struct {
+			name, query, field string
+			wantWidthError     bool
+		}{
+			{"matching_names", "SELECT ([(1 AS A), (2.5 AS A)] AS CH) FROM t", "A", true},
+			{"differing_names", "SELECT ([(1 AS A), (2.5 AS B)] AS CH) FROM t", "_0", true},
+			{"matching_names_double_control", "SELECT ([(1.0 AS A), (2.5 AS A)] AS CH) FROM t", "A", false},
+			{"differing_names_double_control", "SELECT ([(1.0 AS A), (2.5 AS B)] AS CH) FROM t", "_0", false},
+		} {
+			result := runner.RunWithSetup(ctx, schema, setup, probe.query)
+			fmt.Fprintf(GinkgoWriter, "RECORD-ARRAY-PROMOTION %s columns=%#v rows=%#v error=%v\n", probe.name, result.Rows.Columns, result.Rows.Rows, result.Err)
+			if probe.wantWidthError {
+				// This is an upstream runtime boxing failure, not an SQL rule
+				// disallowing arrays of compatible numeric records. The uniform
+				// DOUBLE controls below keep the same names and container shape.
+				var javaErr *plandiff.JavaError
+				Expect(errors.As(result.Err, &javaErr)).To(BeTrue(), probe.query)
+				Expect(javaErr.ExceptionClass).To(Equal("IllegalArgumentException"), probe.query)
+				Expect(javaErr.Message).To(Equal("Wrong object type used with protocol message reflection.\nField number: 1, field java type: DOUBLE, value type: java.lang.Integer\n"), probe.query)
+				continue
+			}
+			Expect(result.Err).NotTo(HaveOccurred(), probe.query)
+			Expect(result.Rows.Rows).To(Equal([][]any{{map[string]any{"CH": []any{
+				map[string]any{probe.field: float64(1)},
+				map[string]any{probe.field: float64(2.5)},
+			}}}}), probe.query)
 		}
 	})
 })

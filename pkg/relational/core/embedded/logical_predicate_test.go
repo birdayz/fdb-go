@@ -2143,10 +2143,12 @@ func TestBuildScalarRetainsCorrelationCarriedByCTEBody(t *testing.T) {
 			if !exact {
 				t.Fatal("bound CTE body has no exact V column")
 			}
+			registry := testCTERegistry(map[string]logical.LogicalOperator{"C": body})
+			source.CTE = registry.Lookup("C")
 			planner := &existsSubqueryPlanner{
 				md: md, outerScope: parent,
 				cteScopes:    map[string]semantic.ScopeSource{"C": source},
-				cteProducers: testCTERegistry(map[string]logical.LogicalOperator{"C": body}),
+				cteProducers: registry,
 			}
 			q, err := parseQueryFromSelect(t, tc.scalarSQL)
 			if err != nil {
@@ -2329,8 +2331,9 @@ func TestPreparedPromotedDerivedBodyIsNotRevisited(t *testing.T) {
 		if !exact {
 			t.Fatal("CTE C has no exact schema")
 		}
-		visitor.cteScopes = map[string]semantic.ScopeSource{"C": cteSource}
 		visitor.cteProducers = testCTERegistry(map[string]logical.LogicalOperator{"C": cteBody})
+		cteSource.CTE = visitor.cteProducers.Lookup("C")
+		visitor.cteScopes = map[string]semantic.ScopeSource{"C": cteSource}
 		q, err := parseQueryFromSelect(t, sql)
 		if err != nil {
 			t.Fatal(err)
@@ -2411,10 +2414,12 @@ func TestCorrelatedExistsDerivedBodyRetainsCTEEnvironment(t *testing.T) {
 	if err := parent.AddSource(outer); err != nil {
 		t.Fatal(err)
 	}
+	registry := testCTERegistry(map[string]logical.LogicalOperator{"C": body})
+	source.CTE = registry.Lookup("C")
 	planner := &existsSubqueryPlanner{
 		md: md, outerScope: parent, outerScopes: []semantic.ScopeSource{outer},
 		cteScopes:    map[string]semantic.ScopeSource{"C": source},
-		cteProducers: testCTERegistry(map[string]logical.LogicalOperator{"C": body}),
+		cteProducers: registry,
 	}
 	q, err := parseQueryFromSelect(t, "SELECT o.id FROM (SELECT (SELECT MAX(v) FROM c) AS x FROM t) d WHERE d.x = o.id")
 	if err != nil {
@@ -2659,6 +2664,83 @@ func TestPrimarySourceRetainsAssignedBinding(t *testing.T) {
 				if _, bound := free[values.NamedCorrelationIdentifier("PRIVATE_X")]; !bound || len(free) != 1 {
 					t.Errorf("%s resolved column correlations=%v, want only PRIVATE_X", name, free)
 				}
+			}
+		})
+	}
+}
+
+// The catalog SELECT constructor is a separate entry to the same star
+// expansion. Driver queries alone do not prove that this entry keeps slots.
+func TestCatalogUsingStarPublishesAttributeOrdinals(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, selectList string }{
+		{"duplicate", "order_id AS id, price AS x, quantity AS x"},
+		{"quoted_duplicate", `order_id AS id, price AS "x.y", quantity AS "x.y"`},
+		{"unnamed", "order_id AS id, 7, 9"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			md := buildTestMetaData(t)
+			sq := parseSelect(t, "SELECT * FROM (SELECT "+tc.selectList+" FROM Order) d JOIN (SELECT customer_id AS id FROM Customer) u USING (id)")
+			sq.bindingID = "USING_LEFT_SLOT_OWNER"
+			op, err := buildLogicalPlanForSelectWithCatalog(sq, md, defaultEmbeddedSchema)
+			if err != nil {
+				t.Fatal(err)
+			}
+			project := findProjection(op)
+			if project == nil || len(project.Projections) != 3 || len(project.ProjectedValues) != 3 {
+				t.Fatalf("USING star must keep the left three attributes and hide only the right ID: %v", op)
+			}
+			for ordinal, value := range project.ProjectedValues {
+				field, ok := values.AsFieldValue(value)
+				if !ok {
+					t.Fatalf("attribute %d is not a bound FieldValue: %T", ordinal, value)
+				}
+				path := field.Path().Ordinals()
+				if len(path) != 1 || path[0] != ordinal {
+					t.Fatalf("attribute %d resolved to ordinals %v, want [%d]", ordinal, path, ordinal)
+				}
+				free := values.GetCorrelatedToOfValue(value)
+				if _, ok := free[values.NamedCorrelationIdentifier(sq.bindingID)]; !ok || len(free) != 1 {
+					t.Fatalf("attribute %d lost its retained derived-source owner: %v, want %s", ordinal, free, sq.bindingID)
+				}
+			}
+		})
+	}
+}
+
+// The compatibility readers return no resolver on source failure, never a
+// partially populated scope or a same-named catalog substitute. Checked source
+// construction remains the owner of the diagnostic; this test pins the adapters'
+// existing nil-on-failure contract rather than broadening SQL admission.
+func TestReaderScopesDoNotPublishIncompleteSources(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		query     *selectQuery
+		cteScopes map[string]semantic.ScopeSource
+		noCatalog bool
+	}{
+		{name: "missing_primary", query: &selectQuery{tableName: "MISSING"}},
+		{name: "missing_join", query: &selectQuery{tableName: "Order", joins: []joinClause{{tableName: "MISSING"}}}},
+		{name: "cte_tombstone", query: &selectQuery{tableName: "Order"}, cteScopes: map[string]semantic.ScopeSource{"ORDER": {}}},
+		{name: "no_catalog", query: &selectQuery{tableName: "Order"}, noCatalog: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			md := buildTestMetaData(t)
+			if tc.noCatalog {
+				md = nil
+			}
+			checked, err := buildSelectScopeChecked(tc.query, md, defaultEmbeddedSchema, tc.cteScopes)
+			if err == nil || checked != nil {
+				t.Fatalf("checked source construction = (%v, %v), want no scope and an error", checked, err)
+			}
+			if got := buildProjectionResolverWithCTEScopes(tc.query, md, defaultEmbeddedSchema, tc.cteScopes); got != nil {
+				t.Fatal("projection reader published a partial or substitute source")
+			}
+			if got := buildOuterScopeSources(tc.query, md, defaultEmbeddedSchema, tc.cteScopes); got != nil {
+				t.Fatalf("outer-source reader published a partial or substitute source: %+v", got)
 			}
 		})
 	}

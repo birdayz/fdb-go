@@ -471,7 +471,11 @@ func TestResultTypeConsumersFailClosed(t *testing.T) {
 	// RFC-243 merges the default materializers: the GUARDED read in
 	// defaultOnEmptyResultFromValue disappears, while the PROPAGATED read in
 	// firstOrDefaultResultFromValue survives in shared defaultResultFromValue.
-	const wantForward, wantGuarded, wantPropagated = 1, 9, 27
+	// RFC-256 shares matched-result normalization between FirstOrDefault and
+	// DefaultOnEmpty. normalizeDefaultResult stores the declared type before
+	// branching between exact scalar and record guards, moving that one read
+	// from syntactically GUARDED to PROPAGATED without changing the population.
+	const wantForward, wantGuarded, wantPropagated = 1, 8, 28
 	if counts["FORWARD"] != wantForward || counts["GUARDED"] != wantGuarded || counts["PROPAGATED"] != wantPropagated {
 		t.Fatalf("consumer split moved: FORWARD=%d (want %d) GUARDED=%d (want %d) "+
 			"PROPAGATED=%d (want %d), total %d.\n"+

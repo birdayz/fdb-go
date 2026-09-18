@@ -2247,3 +2247,100 @@ func TestPlanHarness_RotFix_CompoundResidualUsesIndex(t *testing.T) {
 	assertPlanNotContains(t, joinPlan, "<nil>")
 	assertPlanContains(t, joinPlan, "IndexScan(IDX_K") // t drives via idx_k, residual applied
 }
+
+// These are the SQL shapes whose symmetric join orientation changed when
+// FirstOrDefault stopped publishing a NOT NULL child type for its NULL default.
+// Keep the type correction and the equal-cost premise separate from the exact
+// orientation sentinel in explaindiff's plan_shape.golden. Neither assertion is
+// a latency claim or permission to erase result types from semantic hashes.
+func TestPlanHarness_ExistsDefaultTypesAndSymmetricJoinCosts(t *testing.T) {
+	t.Parallel()
+	const derivedSchema = `
+CREATE TABLE t1 (id BIGINT, v BIGINT, PRIMARY KEY (id))
+CREATE TABLE t2 (id BIGINT, t1_id BIGINT, PRIMARY KEY (id))
+CREATE TABLE t3 (id BIGINT, t1_id BIGINT, PRIMARY KEY (id))`
+	const antiSchema = `
+CREATE TABLE a (id BIGINT, v BIGINT, PRIMARY KEY (id))
+CREATE TABLE b (id BIGINT, v BIGINT, PRIMARY KEY (id))`
+	for _, tc := range []struct {
+		name        string
+		schema      string
+		sql         string
+		defaults    int
+		cardinality float64
+	}{
+		{
+			name: "cte_exists", schema: derivedSchema,
+			sql: `WITH c AS (SELECT id, v FROM t1)
+SELECT c.id, t1_id FROM c, t3 WHERE t3.t1_id = c.id
+AND EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = c.id) ORDER BY c.id`,
+			defaults: 1, cardinality: 2.5e11,
+		},
+		{
+			name: "derived_exists", schema: derivedSchema,
+			sql: `SELECT d.id, t1_id FROM (SELECT id, v FROM t1) AS d, t3
+WHERE t3.t1_id = d.id AND EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = d.id)
+ORDER BY d.id`,
+			defaults: 1, cardinality: 2.5e11,
+		},
+		{
+			name: "correlated_and_uncorrelated_not_exists", schema: antiSchema,
+			sql: `SELECT id FROM a WHERE a.v IS NOT NULL
+AND NOT EXISTS (SELECT 1 FROM b AS sub WHERE sub.id = 101 AND sub.v = a.v)
+AND NOT EXISTS (SELECT 1 FROM b AS sub WHERE sub.id = 101 AND sub.v IS NULL)
+ORDER BY id`,
+			defaults: 2, cardinality: 62500,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			plan, err := PlanPhysicalForTest(tc.sql, tc.schema, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var joins []*plans.RecordQueryNestedLoopJoinPlan
+			defaults := 0
+			var walk func(plans.RecordQueryPlan)
+			walk = func(p plans.RecordQueryPlan) {
+				switch p := p.(type) {
+				case *plans.RecordQueryFirstOrDefaultPlan:
+					defaults++
+					if p.GetInner().GetResultType().IsNullable() {
+						t.Error("premise changed: FirstOrDefault no longer has a NOT NULL child")
+					}
+					if !p.GetDefaultValue().Type().IsNullable() || !p.GetResultType().IsNullable() {
+						t.Errorf("nullable default must widen the exact output: default=%s output=%s",
+							p.GetDefaultValue().Type(), p.GetResultType())
+					}
+				case *plans.RecordQueryNestedLoopJoinPlan:
+					joins = append(joins, p)
+				}
+				for _, child := range p.GetChildren() {
+					walk(child)
+				}
+			}
+			walk(plan)
+			if defaults != tc.defaults || len(joins) != 1 {
+				t.Fatalf("type/cost probe lost its population: defaults=%d want=%d joins=%d want=1; %s",
+					defaults, tc.defaults, len(joins), plan.Explain())
+			}
+			join := joins[0]
+			if join.GetJoinType() != plans.JoinInner {
+				t.Fatal("symmetric cost comparison requires an INNER join")
+			}
+			qs := join.GetQuantifiers()
+			reversed, err := plans.NewRecordQueryNestedLoopJoinPlanFromQuantifiers(
+				qs[1], qs[0], join.GetPredicates(), join.GetJoinType(),
+				join.GetInnerAlias(), join.GetOuterAlias(), join.GetResultValue())
+			if err != nil {
+				t.Fatal(err)
+			}
+			cost := properties.EstimateCostWith(join, nil)
+			reversedCost := properties.EstimateCostWith(reversed, nil)
+			if cost.Cardinality != tc.cardinality || cost.CPU <= 0 || cost != reversedCost {
+				t.Fatalf("equal-cost premise changed: selected=%+v reversed=%+v want cardinality=%g and equal positive CPU",
+					cost, reversedCost, tc.cardinality)
+			}
+		})
+	}
+}

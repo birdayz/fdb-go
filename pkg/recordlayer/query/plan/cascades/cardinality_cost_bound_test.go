@@ -608,7 +608,9 @@ func cardinalityCostShapes() []cardinalityCostShape {
 	add("recursiveDfsJoin/recursiveLegCollapsesTowardZero", func(t *testing.T) plans.RecordQueryPlan {
 		seedInput := scan(t, "DFS_SEED")
 		seed := mustBuild(t, captureBuild(plans.NewRecordQueryFirstOrDefaultPlan(seedInput, cardinalityNull(seedInput))))
-		rec := mustBuild(t, captureBuild(plans.NewRecordQueryLimitPlan(scan(t, "DFS_REC_ZERO"), 0, 0)))
+		recInput := mustBuild(t, captureBuild(plans.NewRecordQueryScanPlan(
+			[]string{"DFS_REC_ZERO"}, values.WithNullability(cardinalityRowType(), true), false)))
+		rec := mustBuild(t, captureBuild(plans.NewRecordQueryLimitPlan(recInput, 0, 0)))
 		return mustBuild(t, captureBuild(plans.NewRecordQueryRecursiveDfsJoinPlan(
 			seed, rec, values.NamedCorrelationIdentifier("dfs_prior2"), plans.DfsPreorder)))
 	})
@@ -645,7 +647,9 @@ func cardinalityCostShapes() []cardinalityCostShape {
 	add("recursiveLevelUnion/recursiveLegCollapsesTowardZero", func(t *testing.T) plans.RecordQueryPlan {
 		seedInput := scan(t, "LU_SEED")
 		seed := mustBuild(t, captureBuild(plans.NewRecordQueryFirstOrDefaultPlan(seedInput, cardinalityNull(seedInput))))
-		rec := mustBuild(t, captureBuild(plans.NewRecordQueryLimitPlan(scan(t, "LU_REC_ZERO"), 0, 0)))
+		recInput := mustBuild(t, captureBuild(plans.NewRecordQueryScanPlan(
+			[]string{"LU_REC_ZERO"}, values.WithNullability(cardinalityRowType(), true), false)))
+		rec := mustBuild(t, captureBuild(plans.NewRecordQueryLimitPlan(recInput, 0, 0)))
 		return mustBuild(t, captureBuild(plans.NewRecordQueryRecursiveLevelUnionPlan(
 			seed, rec, values.NamedCorrelationIdentifier("lu_scan2"), values.NamedCorrelationIdentifier("lu_insert2"))))
 	})

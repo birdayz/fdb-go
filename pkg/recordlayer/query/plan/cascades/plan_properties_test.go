@@ -550,7 +550,7 @@ func TestComputeCardinalities_InUnionMultipliesChildAndDegradesOverflow(t *testi
 func TestComputeDistinctRecords_FirstOrDefaultIsTrue(t *testing.T) {
 	t.Parallel()
 	scan := planPropertiesScan("T")
-	fod := mustPropertiesConstruct(plans.NewRecordQueryFirstOrDefaultPlan(scan, nil))
+	fod := mustPropertiesConstruct(plans.NewRecordQueryFirstOrDefaultPlan(scan, values.NewNullValue(scan.GetResultType())))
 	w := scan
 	if !computeDistinctRecords(w, fod) {
 		t.Fatal("FirstOrDefault should be distinct")
@@ -560,7 +560,7 @@ func TestComputeDistinctRecords_FirstOrDefaultIsTrue(t *testing.T) {
 func TestComputeStoredRecord_FirstOrDefaultIsFalse(t *testing.T) {
 	t.Parallel()
 	scan := planPropertiesScan("T")
-	fod := mustPropertiesConstruct(plans.NewRecordQueryFirstOrDefaultPlan(scan, nil))
+	fod := mustPropertiesConstruct(plans.NewRecordQueryFirstOrDefaultPlan(scan, values.NewNullValue(scan.GetResultType())))
 	if computeStoredRecord(fod) {
 		t.Fatal("FirstOrDefault should NOT produce stored records")
 	}

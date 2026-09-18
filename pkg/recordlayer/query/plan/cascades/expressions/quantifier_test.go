@@ -197,3 +197,23 @@ func TestQuantifierZeroValueHasNoRangesOver(t *testing.T) {
 		t.Fatal("zero-value quantifier unexpectedly has a reference or correlation")
 	}
 }
+
+func TestExistentialQuantifierWidensOnlyItsOwnFlowedType(t *testing.T) {
+	t.Parallel()
+	ref := InitialOf(&typedStubExpr{name: "source", typ: values.NotNullLong})
+	// Alternate quantifiers over one cached Reference. The existential edge
+	// represents the empty-to-NULL arm; a for-each or physical edge does not.
+	for _, q := range []Quantifier{ExistentialQuantifier(ref), ForEachQuantifier(ref), NewPhysicalQuantifier(ref), ExistentialQuantifier(ref)} {
+		result, err := q.RequireFlowedObjectValue()
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := values.NotNullLong
+		if q.Kind() == QuantifierExistential {
+			want = values.NullableLong
+		}
+		if !result.FlowedType().Equals(want) || !result.Type().Equals(want) {
+			t.Fatalf("quantifier kind %v type = %s, want %s; existential nullability must not contaminate the Reference cache", q.Kind(), result.Type(), want)
+		}
+	}
+}

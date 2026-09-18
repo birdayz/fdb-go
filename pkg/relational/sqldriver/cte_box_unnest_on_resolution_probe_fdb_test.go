@@ -24,6 +24,7 @@ package sqldriver_test
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strings"
 	"testing"
@@ -235,6 +236,66 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe(t *testing.T) {
 		t.Run("CTE_qualified_path/"+test.name, func(t *testing.T) {
 			t.Parallel()
 			want(t, test.query, test.rows...)
+		})
+	}
+	for _, test := range []struct {
+		name, query string
+		rows        []string
+	}{
+		{"computed_bare", `SELECT AID + 0 FROM s.LA`, []string{"1", "2"}},
+		{"computed_qualified", `SELECT p.AID + 1 FROM s.LA p`, []string{"2", "3"}},
+		{"computed_joined", `SELECT p.AID + 1 FROM CC c JOIN s.LA p ON c.CID = p.AID`, []string{"2"}},
+		{"aggregate_operand", `SELECT SUM(p.AID + 0) FROM s.LA p`, []string{"3"}},
+		{"group_having_sort", `SELECT p.AID + 0 FROM s.LA p GROUP BY p.AID HAVING SUM(p.AID) > 0 ORDER BY p.AID + 0 DESC`, []string{"1", "2"}},
+		{"computed_sort", `SELECT p.AID FROM s.LA p ORDER BY p.AID + 0 DESC`, []string{"1", "2"}},
+		{"correlated_exists", `SELECT p.AID FROM s.LA p WHERE EXISTS (SELECT c.CID FROM CC c WHERE c.CID = p.AID)`, []string{"1"}},
+		{"correlated_array", `SELECT p.AID FROM s.LA p WHERE EXISTS (SELECT x FROM p.ARR x WHERE x = 7)`, []string{"1"}},
+		{"literal_control", `SELECT p.OWN_ID + 1 FROM "S.LA" p`, []string{"2"}},
+	} {
+		t.Run("CTE_reader_ownership/"+test.name, func(t *testing.T) {
+			t.Parallel()
+			want(t, `WITH "S.LA" AS (SELECT CID AS OWN_ID FROM CC) `+test.query, test.rows...)
+		})
+	}
+	for _, tc := range []struct{ name, query, state string }{
+		{"undefined_projection", `SELECT p.OWN_ID + 0 FROM s.LA p`, "42703"},
+		{"undefined_aggregate", `SELECT SUM(p.OWN_ID) FROM s.LA p`, "42703"},
+		{"undefined_order", `SELECT p.AID FROM s.LA p ORDER BY p.OWN_ID + 0`, "42703"},
+		{"ambiguous_projection", `SELECT "K" + 0 FROM s.LA p, LB b`, "42702"},
+	} {
+		t.Run("CTE_reader_ownership/"+tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := run(t, `WITH "S.LA" AS (SELECT CID AS OWN_ID FROM CC) `+tc.query)
+			var sqlErr *api.Error
+			if !errors.As(err, &sqlErr) || string(sqlErr.Code) != tc.state {
+				t.Fatalf("reader diagnostic = %v, want SQLSTATE %s", err, tc.state)
+			}
+		})
+	}
+	t.Run("CTE_reader_ownership/correlated_array_without_cte", func(t *testing.T) {
+		t.Parallel()
+		want(t, `SELECT p.AID FROM s.LA p WHERE EXISTS (SELECT x FROM p.ARR x WHERE x = 7)`, "1")
+	})
+	t.Run("CTE_reader_ownership/scalar_array_outside_envelope", func(t *testing.T) {
+		t.Parallel()
+		// Primary correlated arrays are admitted in EXISTS, not scalar
+		// aggregate subqueries. Scope repair must not broaden that envelope.
+		for _, prefix := range []string{"", `WITH "S.LA" AS (SELECT CID AS OWN_ID FROM CC) `} {
+			_, err := run(t, prefix+`SELECT p.AID, (SELECT SUM(x) FROM p.ARR x) FROM s.LA p`)
+			var sqlErr *api.Error
+			if !errors.As(err, &sqlErr) || sqlErr.Code != api.ErrCodeUndefinedDatabase {
+				t.Fatalf("scalar correlated array changed admission: %v", err)
+			}
+		}
+	})
+	for _, tc := range []struct{ name, query string }{
+		{"derived", `SELECT * FROM (SELECT AID AS ID, "K" AS X, AID AS X FROM LA) d JOIN (SELECT CID AS ID FROM CC) u USING (ID)`},
+		{"cte", `WITH d AS (SELECT AID AS ID, "K" AS X, AID AS X FROM LA) SELECT * FROM d JOIN (SELECT CID AS ID FROM CC) u USING (ID)`},
+		{"quoted", `SELECT * FROM (SELECT AID AS ID, "K" AS "x.y", AID AS "x.y" FROM LA) d JOIN (SELECT CID AS ID FROM CC) u USING (ID)`},
+	} {
+		t.Run("USING_attribute_slots/"+tc.name, func(t *testing.T) {
+			t.Parallel()
+			want(t, tc.query, "1|100|1")
 		})
 	}
 	// LA has two rows and CC has one. A quoted-dot CTE must not replace the

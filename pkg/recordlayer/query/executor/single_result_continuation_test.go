@@ -98,6 +98,7 @@ func TestFirstOrDefault_RecordNullKeepsExactCarrierAndAbsence(t *testing.T) {
 		t.Fatalf("matched control type = %s, want exact %s", matchedAllNull.GetResultType(), recordType)
 	}
 
+	outputType := values.WithNullability(recordType, true)
 	for _, test := range []struct {
 		name            string
 		inner           plans.RecordQueryPlan
@@ -125,14 +126,14 @@ func TestFirstOrDefault_RecordNullKeepsExactCarrierAndAbsence(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if row == nil || row.Type == nil || !row.Type.Equals(recordType) ||
+			if row == nil || row.Type == nil || !row.Type.Equals(outputType) ||
 				row.Layout != layout || len(row.Slots) != len(recordType.Fields) {
 				t.Fatalf("row carrier = (%v, %v, width %d), want exact type %s/layout %v/width %d",
-					row, row.Layout, len(row.Slots), recordType, layout, len(recordType.Fields))
+					row, row.Layout, len(row.Slots), outputType, layout, len(recordType.Fields))
 			}
 
 			edge, err := values.NewQuantifiedObjectValue(
-				values.NamedCorrelationIdentifier("EXISTENTIAL_RECORD"), recordType)
+				values.NamedCorrelationIdentifier("EXISTENTIAL_RECORD"), outputType)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -160,7 +161,7 @@ func TestFirstOrDefault_RecordNullKeepsExactCarrierAndAbsence(t *testing.T) {
 			// existential look like a present all-NULL record and turns EXISTS
 			// into an unconditional TRUE.
 			innerAlias := values.NamedCorrelationIdentifier("FOLDED_EXISTENTIAL")
-			existsValue := mustExecutorConstruct(values.NewExistsValue(innerAlias, recordType))
+			existsValue := mustExecutorConstruct(values.NewExistsValue(innerAlias, outputType))
 			foldValue := values.NewRawRecordConstructorValue(values.RecordConstructorField{
 				Name: "H", Value: existsValue,
 			})
@@ -220,9 +221,10 @@ func TestFirstOrDefaultAsFlatMapOuterPreservesWholeObjectPresence(t *testing.T) 
 	empty := mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{
 		Value: []any{}, Typ: values.NewArrayType(false, recordType),
 	}))
-	matchedAllNull := mustExecutorConstruct(plans.NewRecordQueryValuesPlan([]values.Value{
-		values.NewNullValue(values.NullableLong),
+	matchedAllNull := mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{
+		Value: []any{map[string]any{"V": nil}}, Typ: values.NewArrayType(false, recordType),
 	}))
+	outputType := values.WithNullability(recordType, true).(*values.RecordType)
 
 	for _, test := range []struct {
 		name       string
@@ -240,8 +242,8 @@ func TestFirstOrDefaultAsFlatMapOuterPreservesWholeObjectPresence(t *testing.T) 
 				test.inner, values.NewNullValue(recordType)))
 			outerAlias := values.NamedCorrelationIdentifier("FOD_OUTER")
 			innerAlias := values.NamedCorrelationIdentifier("FOD_PROBE")
-			outerObject := mustTestQOV(t, outerAlias, recordType)
-			exists := mustExecutorConstruct(values.NewExistsValue(outerAlias, recordType))
+			outerObject := mustTestQOV(t, outerAlias, outputType)
+			exists := mustExecutorConstruct(values.NewExistsValue(outerAlias, outputType))
 			probe := mustExecutorConstruct(plans.NewRecordQueryValuesPlan([]values.Value{exists}))
 			probeObject := mustTestQOV(t, innerAlias, probe.GetResultType())
 			flatMap := mustExecutorConstruct(plans.NewRecordQueryFlatMapPlan(
@@ -249,7 +251,7 @@ func TestFirstOrDefaultAsFlatMapOuterPreservesWholeObjectPresence(t *testing.T) 
 
 			// Seed a stale enclosing exact value for the same declaration. The
 			// local FlatMap outer must replace it, including its absence bit.
-			stale := NewPositionalRow(recordType)
+			stale := NewPositionalRow(outputType)
 			evalCtx, err := EmptyEvaluationContext().withQuantifiedBinding(outerObject, stale, false)
 			if err != nil {
 				t.Fatal(err)
@@ -381,7 +383,7 @@ func TestFirstOrDefault_StrictRequestBoundary(t *testing.T) {
 func TestFirstOrDefault_EmptyRecordRequestMatchesJava(t *testing.T) {
 	t.Parallel()
 	inner := mustExecutorConstruct(plans.NewRecordQueryValuesPlan(nil))
-	first := mustExecutorConstruct(plans.NewRecordQueryFirstOrDefaultPlan(inner, nil))
+	first := mustExecutorConstruct(plans.NewRecordQueryFirstOrDefaultPlan(inner, values.NewNullValue(inner.GetResultType())))
 	plan := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan([]values.Value{
 		&values.ConstantValue{Value: int64(42), Typ: values.NotNullLong},
 	}, first))
@@ -692,4 +694,341 @@ func FuzzDefaultRecordMaterialization(f *testing.F) {
 			t.Fatalf("default value %v, want %d", result.Positional.Slots[0], n)
 		}
 	})
+}
+
+func TestFirstOrDefaultScalarResultContract(t *testing.T) {
+	t.Parallel()
+	for _, strict := range []bool{false, true} {
+		for _, test := range []struct {
+			name      string
+			input     []any
+			inputType values.Type
+			fallback  values.Value
+			want      any
+			wantType  values.Type
+		}{
+			{"empty_null", nil, values.NotNullLong, values.NewNullValue(values.NotNullLong), nil, values.NullableLong},
+			{"matched_null_default", []any{int64(7)}, values.NotNullLong, values.NewNullValue(values.NotNullLong), int64(7), values.NullableLong},
+			{"empty_constant", nil, values.NotNullLong, &values.ConstantValue{Value: int64(9), Typ: values.NotNullLong}, int64(9), values.NotNullLong},
+			{"matched_constant_default", []any{int64(7)}, values.NotNullLong, &values.ConstantValue{Value: int64(9), Typ: values.NotNullLong}, int64(7), values.NotNullLong},
+			{"matched_null_constant_default", []any{nil}, values.NullableLong, &values.ConstantValue{Value: int64(9), Typ: values.NotNullLong}, nil, values.NullableLong},
+			{"empty_nullable_constant_default", nil, values.NullableLong, &values.ConstantValue{Value: int64(9), Typ: values.NotNullLong}, int64(9), values.NullableLong},
+		} {
+			t.Run(fmt.Sprintf("%s/strict=%t", test.name, strict), func(t *testing.T) {
+				t.Parallel()
+				inner := mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{
+					Value: test.input, Typ: values.NewArrayType(false, test.inputType),
+				}))
+				construct := plans.NewRecordQueryFirstOrDefaultPlan
+				if strict {
+					construct = plans.NewRecordQueryFirstOrDefaultPlanStrict
+				}
+				plan := mustExecutorConstruct(construct(inner, test.fallback))
+				ctx := context.Background()
+				props := recordlayer.DefaultExecuteProperties()
+				cur, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), nil, props)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer cur.Close()
+				result, err := cur.OnNext(ctx)
+				if err != nil || !result.HasNext() {
+					t.Fatalf("first/default row: %v, %v", result, err)
+				}
+				row := result.GetValue().Positional
+				if row == nil || row.Type == nil || len(row.Type.Fields) != 1 || len(row.Slots) != 1 ||
+					!row.Type.Fields[0].FieldType.Equals(test.wantType) || row.Slots[0] != test.want {
+					t.Fatalf("scalar transport = %#v, want one %s slot = %v", row, test.wantType, test.want)
+				}
+				for _, isNull := range []bool{false, true} {
+					edge := plans.QuantifierOverPlan(plan)
+					object, err := edge.RequireFlowedObjectValue()
+					if err != nil {
+						t.Fatal(err)
+					}
+					comparison := predicates.ComparisonIsNotNull
+					if isNull {
+						comparison = predicates.ComparisonIsNull
+					}
+					filter := mustExecutorConstruct(plans.NewRecordQueryPredicatesFilterPlanFromQuantifier(edge,
+						[]predicates.QueryPredicate{predicates.NewComparisonPredicate(object, predicates.Comparison{Type: comparison})}))
+					filtered, err := ExecutePlan(ctx, filter, nil, EmptyEvaluationContext(), nil, props)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer filtered.Close()
+					got, err := filtered.OnNext(ctx)
+					wantRow := isNull == (test.want == nil)
+					if err != nil || got.HasNext() != wantRow {
+						t.Fatalf("parent IS NULL=%t: row=%t err=%v, want row=%t", isNull, got.HasNext(), err, wantRow)
+					}
+				}
+				consumed, err := result.GetContinuation().ToBytes()
+				if err != nil {
+					t.Fatal(err)
+				}
+				resumed, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext(), consumed, props)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer resumed.Close()
+				next, err := resumed.OnNext(ctx)
+				if err != nil || next.HasNext() || !next.GetContinuation().IsEnd() {
+					t.Fatalf("consumed scalar replayed: %v, %v", next, err)
+				}
+			})
+		}
+	}
+}
+
+func TestFirstOrDefaultPreservesNullableRecordChild(t *testing.T) {
+	t.Parallel()
+	for _, strict := range []bool{false, true} {
+		for _, matched := range []bool{false, true} {
+			t.Run(fmt.Sprintf("matched=%t/strict=%t", matched, strict), func(t *testing.T) {
+				t.Parallel()
+				rt := values.NewRecordType("", false, []values.Field{{Name: "D", FieldType: values.NullableLong, Ordinal: 0}})
+				var elements []any
+				if matched {
+					elements = []any{map[string]any{"D": nil}}
+				}
+				explode := mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{
+					Value: elements, Typ: values.NewArrayType(false, rt),
+				}))
+				child := mustExecutorConstruct(plans.NewRecordQueryFirstOrDefaultPlan(explode, values.NewNullValue(rt)))
+				fallback := values.NewRawRecordConstructorValue(values.RecordConstructorField{
+					Name: "D", Value: &values.ParameterValue{Ordinal: 1, Typ: values.NullableLong},
+				})
+				if fallback.Type().IsNullable() {
+					t.Fatal("control must use a non-nullable record default")
+				}
+				construct := plans.NewRecordQueryFirstOrDefaultPlan
+				if strict {
+					construct = plans.NewRecordQueryFirstOrDefaultPlanStrict
+				}
+				plan := mustExecutorConstruct(construct(child, fallback))
+				wantType := values.WithNullability(rt, true)
+				if !plan.GetResultType().Equals(wantType) {
+					t.Fatalf("result type = %s, want nullable %s despite non-null default", plan.GetResultType(), wantType)
+				}
+				ctx := context.Background()
+				cur, err := ExecutePlan(ctx, plan, nil, EmptyEvaluationContext().WithParams([]any{int64(9)}), nil, recordlayer.DefaultExecuteProperties())
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer cur.Close()
+				result, err := cur.OnNext(ctx)
+				if err != nil || !result.HasNext() {
+					t.Fatalf("record child: %v, %v", result, err)
+				}
+				row := result.GetValue().Positional
+				whole, absent, err := row.wholeObjectBinding()
+				if err != nil || absent != !matched || (whole == nil) != !matched || !row.Type.Equals(wantType) || row.Slots[0] != nil {
+					t.Fatalf("record child changed: whole=%v absent=%t row=%#v err=%v, want matched=%t/NULL slot/nullable type", whole, absent, row, err, matched)
+				}
+			})
+		}
+	}
+}
+
+func TestDefaultResultNormalizationDoesNotMutateChildRow(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"first", "strict", "all"} {
+		for _, state := range []string{"value", "null_fields", "absent"} {
+			t.Run(kind+"/"+state, func(t *testing.T) {
+				t.Parallel()
+				absent := state == "absent"
+				rt := values.NewRecordType("", absent, []values.Field{{Name: "D", FieldType: values.NullableLong}})
+				child := mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{
+					Value: []any{}, Typ: values.NewArrayType(false, rt),
+				}))
+				childLayout := mustExecutorConstruct(child.ProvidedOutputLayout())
+				childPresence := mustExecutorConstruct(values.NewOrdinalCarrierMatchPresence(childLayout, !absent))
+				var slot any
+				if state == "value" {
+					slot = int64(7)
+				}
+				original := &PositionalRow{Type: rt, Slots: []any{slot}, Layout: childLayout, LayoutPresence: childPresence}
+				plan := defaultContextPlan(t, kind, child, values.NewNullValue(rt))
+				normalized, err := normalizeDefaultResult(plan, QueryResult{Positional: original})
+				if err != nil {
+					t.Fatal(err)
+				}
+				row := normalized.Positional
+				if row == original || row == nil || !row.Type.Equals(values.WithNullability(rt, true)) || row.Slots[0] != slot {
+					t.Fatalf("normalization must publish a distinct nullable row without changing slots: %#v", row)
+				}
+				_, gotAbsent, err := row.wholeObjectBinding()
+				if err != nil || gotAbsent != absent {
+					t.Fatalf("normalized presence = %t, %v; want absent=%t", gotAbsent, err, absent)
+				}
+				row.Slots[0] = int64(99)
+				if original.Type != rt || original.Layout != childLayout || original.LayoutPresence != childPresence || original.Slots[0] != slot {
+					t.Fatal("normalization borrowed or mutated the child's row metadata or slots")
+				}
+			})
+		}
+	}
+}
+
+func TestDefaultScalarFilterRelinkRetainsCurrentCarrier(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"first", "strict", "all"} {
+		for _, live := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/live=%t", kind, live), func(t *testing.T) {
+				t.Parallel()
+				child := mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{
+					Value: []any{int64(7)}, Typ: values.NewArrayType(false, values.NotNullLong),
+				}))
+				original := defaultContextPlan(t, kind, child, values.NewNullValue(values.NotNullLong))
+				q := plans.QuantifierOverPlan(original)
+				root := mustExecutorConstruct(q.RequireFlowedObjectValue())
+				filter := mustExecutorConstruct(plans.NewRecordQueryPredicatesFilterPlanFromQuantifier(q,
+					[]predicates.QueryPredicate{predicates.NewComparisonPredicate(root, predicates.Comparison{Type: predicates.ComparisonIsNotNull})}))
+				if live {
+					// Memo exploration can make a formerly selected singleton live.
+					// The retained predicate still belongs to its admitted carrier,
+					// not whichever child the mutable reference names at relink time.
+					if !q.GetRangesOver().Insert(original) {
+						t.Fatal("fixture did not add an exploratory member")
+					}
+				}
+				rebuilt := mustExecutorConstruct(original.WithQuantifiers([]expressions.Quantifier{plans.QuantifierOverPlan(child)}))
+				relinked := mustExecutorConstruct(filter.WithInner(rebuilt.(plans.RecordQueryPlan)))
+				for _, candidate := range []*plans.RecordQueryPredicatesFilterPlan{filter, relinked} {
+					ctx := context.Background()
+					cur, err := ExecutePlan(ctx, candidate, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer cur.Close()
+					row, err := cur.OnNext(ctx)
+					if err != nil || !row.HasNext() || row.GetValue().Positional.Slots[0] != int64(7) {
+						t.Fatalf("filter after default-plan relink: %v, %v; old and replacement carriers must stay independent", row, err)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestDefaultArrayConstructorAcrossEmptyRecord(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"first", "strict", "all"} {
+		for _, matched := range []bool{false, true} {
+			for _, nullableElement := range []bool{false, true} {
+				for _, mixed := range []bool{false, true} {
+					t.Run(fmt.Sprintf("%s/matched=%t/nullable_element=%t/mixed=%t", kind, matched, nullableElement, mixed), func(t *testing.T) {
+						t.Parallel()
+						rt := values.NewRecordType("", false, []values.Field{{Name: "ID", FieldType: values.NotNullLong}})
+						var elements []any
+						var want any
+						if matched {
+							elements, want = []any{map[string]any{"ID": int64(7)}}, int64(7)
+						}
+						child := mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{
+							Value: elements, Typ: values.NewArrayType(false, rt),
+						}))
+						childLayout := mustExecutorConstruct(child.ProvidedOutputLayout())
+						field := mustExecutorConstruct(values.ResolveFieldOrdinals(childLayout.Carrier(), []int{0}))
+						defaultPlan := defaultContextPlan(t, kind, child, values.NewNullValue(rt))
+						arrayElements := []values.Value{field}
+						wantArray := []any{want}
+						if mixed {
+							output := mustExecutorConstruct(defaultPlan.ProvidedOutputLayout())
+							outputField := mustExecutorConstruct(values.ResolveFieldOrdinals(output.Carrier(), []int{0}))
+							arrayElements = append(arrayElements, outputField)
+							wantArray = append(wantArray, want)
+						}
+						elementType := values.WithNullability(values.NotNullLong, nullableElement)
+						array := values.NewArrayConstructorValue(elementType, arrayElements)
+						projection, err := plans.NewRecordQueryProjectionPlan([]values.Value{array}, defaultPlan)
+						if !field.Type().Equals(values.NotNullLong) || rt.IsNullable() || !rt.Fields[0].FieldType.Equals(values.NotNullLong) ||
+							!array.ElementType.Equals(elementType) || array.Elements[0] != field {
+							t.Fatal("array translation mutated its source field, descriptor or constructor")
+						}
+						if !nullableElement {
+							if err == nil || projection != nil {
+								t.Fatalf("accepted ARRAY<LONG NOT NULL> around a nullable default-record read: plan=%v error=%v", projection, err)
+							}
+							var resolutionErr *values.ResolutionError
+							if !errors.As(err, &resolutionErr) || resolutionErr.ErrorCode != values.ReanchorResultTypeMismatch {
+								t.Fatalf("array reconstruction lost its typed mismatch error: %v", err)
+							}
+							return
+						}
+						if err != nil {
+							t.Fatal(err)
+						}
+						outputType := projection.GetResultType().(*values.RecordType)
+						if len(outputType.Fields) != 1 || !outputType.Fields[0].FieldType.Equals(values.NewArrayType(false, values.NullableLong)) {
+							t.Fatalf("constructed array metadata = %v, want nonnull ARRAY<nullable LONG>", outputType)
+						}
+						ctx := context.Background()
+						cur, err := ExecutePlan(ctx, projection, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+						if err != nil {
+							t.Fatal(err)
+						}
+						defer cur.Close()
+						row, err := cur.OnNext(ctx)
+						if err != nil || !row.HasNext() || !reflect.DeepEqual(row.GetValue().Positional.Slots[0], wantArray) {
+							t.Fatalf("constructed array after null extension = %v, %v; want %v", row, err, wantArray)
+						}
+						end, err := cur.OnNext(ctx)
+						if err != nil || end.HasNext() || !end.GetContinuation().IsEnd() {
+							t.Fatalf("array projection did not end after one row: %v, %v", end, err)
+						}
+					})
+				}
+			}
+		}
+	}
+}
+
+func TestDefaultNonNullFieldReadAcrossEmptyRecord(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"first", "strict", "all"} {
+		for _, matched := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/matched=%t", kind, matched), func(t *testing.T) {
+				t.Parallel()
+				rt := values.NewRecordType("", false, []values.Field{{Name: "ID", FieldType: values.NotNullLong}})
+				var elements []any
+				var want any
+				if matched {
+					elements, want = []any{map[string]any{"ID": int64(7)}}, int64(7)
+				}
+				child := mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{
+					Value: elements, Typ: values.NewArrayType(false, rt),
+				}))
+				childLayout := mustExecutorConstruct(child.ProvidedOutputLayout())
+				field := mustExecutorConstruct(values.ResolveFieldOrdinals(childLayout.Carrier(), []int{0}))
+				if !field.Type().Equals(values.NotNullLong) {
+					t.Fatalf("control child field type = %v, want NOT NULL LONG", field.Type())
+				}
+				defaultPlan := defaultContextPlan(t, kind, child, values.NewNullValue(rt))
+				projection, err := plans.NewRecordQueryProjectionPlan([]values.Value{field}, defaultPlan)
+				if err != nil {
+					t.Fatal(err)
+				}
+				outputType := projection.GetResultType().(*values.RecordType)
+				if len(outputType.Fields) != 1 || !outputType.Fields[0].FieldType.Equals(values.NullableLong) {
+					t.Fatalf("null-extended field output = %v, want one nullable LONG", outputType)
+				}
+				ctx := context.Background()
+				cur, err := ExecutePlan(ctx, projection, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer cur.Close()
+				row, err := cur.OnNext(ctx)
+				if err != nil || !row.HasNext() || row.GetValue().Positional.Slots[0] != want {
+					t.Fatalf("field after null extension = %v, %v; want %v", row, err, want)
+				}
+				end, err := cur.OnNext(ctx)
+				if err != nil || end.HasNext() || !end.GetContinuation().IsEnd() {
+					t.Fatalf("field projection did not end after one row: %v, %v", end, err)
+				}
+			})
+		}
+	}
 }
