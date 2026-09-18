@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"errors"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -285,8 +286,9 @@ func TestRFC190ExistsResidualUsesWholeFODCarrierBesideSameAliasRetainedWindow(t 
 			whole.Correlation(), whole, fodLayout.Carrier().Correlation(), fodLayout.Carrier())
 	}
 	provided, err := values.LayoutProvides(fodLayout, wRoot)
-	if err != nil || !provided {
-		t.Fatalf("FOD retained W/AWARDS window = (%v, %v), want (true, nil)", provided, err)
+	var resolution *values.ResolutionError
+	if provided || !errors.As(err, &resolution) || resolution.ErrorCode != values.LayoutSourceNotProvided {
+		t.Fatalf("FOD leaked child W/AWARDS window = (%v, %v), want LayoutSourceNotProvided: its default provides only the whole result", provided, err)
 	}
 	if whole == wRoot || whole.FlowedType().Equals(wRoot.FlowedType()) {
 		t.Fatalf("whole residual collapsed onto narrow W/AWARDS window: whole=%v W=%v",

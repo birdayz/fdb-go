@@ -10,7 +10,6 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/protoname"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -64,42 +63,43 @@ func TranslateToCascadesWithSubqueries(op logical.LogicalOperator, md *recordlay
 // RFC-142) that a bare nil ref (untranslatable → UNSUPPORTED_QUERY) cannot.
 // The caller surfaces it verbatim instead of the generic "could not plan".
 func TranslateToCascadesWithError(op logical.LogicalOperator, md *recordlayer.RecordMetaData) (*expressions.Reference, []ScalarSubqueryPlan, error) {
+	return translateWithOwnedInputs(op, md, nil)
+}
+
+func translateWithOwnedInputs(op logical.LogicalOperator, md *recordlayer.RecordMetaData, owned map[logical.LogicalOperator]*logical.ExistsInput) (*expressions.Reference, []ScalarSubqueryPlan, error) {
+	logical.BindCTESources(op, logical.CTERegistry{})
 	t := &cascadesTranslator{
+		ownedInputs:     owned,
 		md:              md,
-		cteScope:        make(map[string]logical.LogicalOperator),
-		cteShadowStack:  make(map[string][]logical.LogicalOperator),
-		cteExprScope:    make(map[string]expressions.RelationalExpression),
-		cteColumnsScope: make(map[string][]values.Field),
+		cteScope:        logical.CTERegistry{},
+		cteExprScope:    make(map[*logical.CTEProducer]expressions.RelationalExpression),
+		cteColumnsScope: make(map[*logical.CTEProducer][]values.Field),
 	}
 	ref := t.translateRef(op)
 	return ref, t.scalarSubqueries, t.translateErr
 }
 
 type cascadesTranslator struct {
-	md       *recordlayer.RecordMetaData
-	cteScope map[string]logical.LogicalOperator
-	// cteShadowStack tracks, per upper-cased name, the OUTER bindings a
-	// same-named registration shadowed (translateCTE pushes; nil = the name
-	// was unbound outside). CTE bodies translate LAZILY at scan resolution,
-	// so lexical scoping must be reconstructed there: resolving a name to a
-	// registered body pops one level for the body's own translation — the
-	// body's references to its OWN name then resolve against the DEFINING
-	// scope (the shadowed outer binding: a derived-table alias-carrier
-	// wrapping `SELECT * FROM c` inside `WITH c AS (…)` reads the WITH
-	// body — or the real table when nothing was shadowed). Without this,
-	// the wrapper's registration silently rebound the outer name to itself
-	// and `WITH c … FROM (SELECT * FROM c) c` returned zero rows.
-	cteShadowStack map[string][]logical.LogicalOperator
-	cteExprScope   map[string]expressions.RelationalExpression
+	md           *recordlayer.RecordMetaData
+	cteScope     logical.CTERegistry
+	producerRefs map[*logical.CTEProducer]*expressions.Reference
+	// Recursive lowering publishes this immutable row pair with its shared
+	// reference. Each consumer installs its own scoped correlation bridge.
+	recursiveProducerRows map[*logical.CTEProducer]recursiveCTEConsumerRow
+	// ownedInputs are explicit retained edges of an existential composition,
+	// not a translation cache. A child already lowered by its owner keeps its
+	// Reference and exact layout when a containing EXISTS becomes a product.
+	ownedInputs  map[logical.LogicalOperator]*logical.ExistsInput
+	cteExprScope map[*logical.CTEProducer]expressions.RelationalExpression
 	// cteColumnsScope holds the OUTPUT column schema of each pre-translated CTE
 	// (recursive CTE / temp-table self-reference) registered in cteExprScope,
-	// keyed by upper-cased CTE name (RFC-077 7.6). cteExprScope stores an opaque
+	// keyed by retained producer identity (RFC-077 7.6). cteExprScope stores an opaque
 	// RelationalExpression whose column names legColumns cannot recover; this
 	// parallel map records them so a CTE reference used as a JOIN LEG anchors
 	// (FieldValue(QOV(cteAlias), col) per column). nil/absent entry → not
 	// column-derivable → the leg cannot anchor (a join over it is untranslatable;
 	// the opaque-merge fallback was retired in RFC-077 7.6).
-	cteColumnsScope map[string][]values.Field
+	cteColumnsScope map[*logical.CTEProducer][]values.Field
 	// recursiveCTEConsumerRows records the seed-declared and common exact rows
 	// for aliases of a recursive CTE while its main query is translated. The
 	// logical resolver necessarily runs before the recursive fixed point is
@@ -382,56 +382,7 @@ func exactLogicalProjectionOutputNames(p *logical.LogicalProject, projected []va
 	}
 	fields := make([]values.RecordConstructorField, len(projected))
 	for i, projectedValue := range projected {
-		alias := ""
-		if i < len(p.Aliases) {
-			alias = p.Aliases[i]
-		}
-		// values.ProjectionSlotName is this rule; it is named there so the
-		// consumer that re-derives the natural schema (deriveColumnsFromProjection)
-		// cannot drift from it.
-		name := values.ProjectionSlotName(projectedValue, alias)
-		if alias == "" {
-			// A COLUMN REFERENCE takes the DISPLAY name. The dotted rendering
-			// (`A.W.X`) is an internal slot key that disambiguates two members of
-			// one struct root inside a projection; it is not a name any scope
-			// outside this projection knows. A derived table's columns ARE such a
-			// scope: `(SELECT A.B, C AS Q, W.X FROM …) AS u` registers U(B, Q, X),
-			// because that is what `u.x` and `WHERE b < 8` resolve against, and
-			// Java agrees — its plan for this query reads
-			// `MAP (_.B AS B, _.C AS Q, _.W.X AS X)`.
-			//
-			// Publishing the dotted key here made the two authorities disagree
-			// about the SAME row: the scope minted U as RECORD(B,Q,X) while the
-			// plan flowed RECORD(B,Q,A.W.X). Nothing compared them as long as
-			// every U-rooted value happened to be rewritten away before execution,
-			// so the disagreement sat latent and surfaced only once the producer
-			// bridge stopped resolving unowned roots by name — as a runtime
-			// `edge lookup U: read as RECORD(B:INT,Q:DOUBLE,X:INT), declared
-			// RECORD(B:INT,Q:DOUBLE,A.W.X:INT)` on valid SQL.
-			//
-			// This is the same rule extractOutputProjectionNames applies to a
-			// recursive CTE's output columns, for the same reason and after the
-			// same symptom.
-			// An exact scalar leg is represented by its whole QOV. Its Value
-			// display name identifies the leg (VAL/ARR1), not necessarily the
-			// SQL item projected from it (UNNEST AT "AT"). Only the captured
-			// parse-tree reference may override that name: punctuation in the
-			// rendered expression cannot distinguish a qualified A.B from the
-			// one-segment quoted identifier "A.B".
-			if values.QuantifierFlowsAScalarRow(projectedValue) {
-				if ref := projectionRefAt(p, i); ref.Present {
-					// splitColumnRef already applied SQL identifier semantics:
-					// unquoted names are folded, while quoted names retain their
-					// authored case. Folding again here changes a quoted scalar
-					// UNNEST output label ("val" -> VAL) even though the projection
-					// reference is the output-name authority.
-					name = ref.Bare
-				}
-			}
-		}
-		if name == "" {
-			name = values.OrdinalFieldName(i)
-		}
+		name := exactLogicalProjectionSlotName(p, i, projectedValue)
 		fields[i] = values.RecordConstructorField{Name: name, Value: projectedValue}
 	}
 	resultValue := values.NewRecordConstructorValue(fields...)
@@ -440,6 +391,64 @@ func exactLogicalProjectionOutputNames(p *logical.LogicalProject, projected []va
 		names[i] = resultValue.Fields[i].Name
 	}
 	return names, nil
+}
+
+// exactLogicalProjectionSlotName is shared by logical row publication and
+// Cascades projection construction. Published aliases and Value slot names,
+// not the executor keys in Projections, determine the physical row. The SQL
+// frontend supplies ordinal aliases for anonymous computed outputs.
+func exactLogicalProjectionSlotName(p *logical.LogicalProject, i int, projectedValue values.Value) string {
+	alias := ""
+	if i < len(p.Aliases) {
+		alias = p.Aliases[i]
+	}
+	// values.ProjectionSlotName is this rule; it is named there so the
+	// consumer that re-derives the natural schema (deriveColumnsFromProjection)
+	// cannot drift from it.
+	name := values.ProjectionSlotName(projectedValue, alias)
+	if alias == "" {
+		// A COLUMN REFERENCE takes the DISPLAY name. The dotted rendering
+		// (`A.W.X`) is an internal slot key that disambiguates two members of
+		// one struct root inside a projection; it is not a name any scope
+		// outside this projection knows. A derived table's columns ARE such a
+		// scope: `(SELECT A.B, C AS Q, W.X FROM …) AS u` registers U(B, Q, X),
+		// because that is what `u.x` and `WHERE b < 8` resolve against, and
+		// Java agrees — its plan for this query reads
+		// `MAP (_.B AS B, _.C AS Q, _.W.X AS X)`.
+		//
+		// Publishing the dotted key here made the two authorities disagree
+		// about the SAME row: the scope minted U as RECORD(B,Q,X) while the
+		// plan flowed RECORD(B,Q,A.W.X). Nothing compared them as long as
+		// every U-rooted value happened to be rewritten away before execution,
+		// so the disagreement sat latent and surfaced only once the producer
+		// bridge stopped resolving unowned roots by name — as a runtime
+		// `edge lookup U: read as RECORD(B:INT,Q:DOUBLE,X:INT), declared
+		// RECORD(B:INT,Q:DOUBLE,A.W.X:INT)` on valid SQL.
+		//
+		// This is the same rule extractOutputProjectionNames applies to a
+		// recursive CTE's output columns, for the same reason and after the
+		// same symptom.
+		// An exact scalar leg is represented by its whole QOV. Its Value
+		// display name identifies the leg (VAL/ARR1), not necessarily the
+		// SQL item projected from it (UNNEST AT "AT"). Only the captured
+		// parse-tree reference may override that name: punctuation in the
+		// rendered expression cannot distinguish a qualified A.B from the
+		// one-segment quoted identifier "A.B".
+		if values.QuantifierFlowsAScalarRow(projectedValue) {
+			if ref := projectionRefAt(p, i); ref.Present {
+				// splitColumnRef already applied SQL identifier semantics:
+				// unquoted names are folded, while quoted names retain their
+				// authored case. Folding again here changes a quoted scalar
+				// UNNEST output label ("val" -> VAL) even though the projection
+				// reference is the output-name authority.
+				name = ref.Bare
+			}
+		}
+	}
+	if name == "" {
+		name = values.OrdinalFieldName(i)
+	}
+	return name
 }
 
 func (t *cascadesTranslator) exactProjectionForLogicalProject(
@@ -479,8 +488,8 @@ func (t *cascadesTranslator) exactProjectionForLogicalProject(
 		if !ref.Present || !ref.Qualified {
 			continue
 		}
-		table := findOuterScanTable(p.Input, ref.Qualifier)
-		if table == "" || !t.outerSourceIsCTE(table) {
+		scan := logical.FindVisibleScan(p.Input, ref.Qualifier)
+		if scan == nil || logical.ResolveScan(scan, t.cteScope) == nil {
 			continue
 		}
 		authoredNames[i] = strings.ToUpper(ref.Qualifier) + "." + ref.Bare
@@ -694,38 +703,40 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 		}
 		return append([]values.Field(nil), row.Fields...)
 	case *logical.LogicalScan:
-		// A CTE/derived-table scan resolves to its BODY, not a real table —
-		// translateScan honors cteScope/cteExprScope (a CTE name SHADOWS a real
-		// table). legColumns mirrors that (RFC-077 7.6):
-		//   - cteExprScope holds a PRE-TRANSLATED body (recursive-CTE reference /
-		//     temp-table self-reference); its output columns are not readable from
-		//     the RelationalExpression, so cteColumnsScope records them alongside —
-		//     return that schema so the recursive-CTE leg anchors (nil entry → not
-		//     derivable → the leg cannot anchor, a join over it is untranslatable);
-		//   - cteScope holds the logical body: derive its output columns so the CTE
-		//     leg anchors. The CTE is REMOVED from scope while deriving the body
-		//     (exactly like translateScan) so a scan inside the body that references
-		//     the same name resolves to the REAL table, not back to the CTE —
-		//     otherwise legColumns recurses forever (the CTE-shadow stack overflow).
-		key := strings.ToUpper(o.Table)
-		if _, ok := t.cteExprScope[key]; ok {
-			return t.cteColumnsScope[key]
+		producer := logical.ResolveScan(o, t.cteScope)
+		if producer == nil {
+			return t.tableColumns(o.Table)
 		}
-		if body, ok := t.cteScope[key]; ok {
-			var cols []values.Field
-			t.inCTEDefiningScope(key, body, func() {
-				// A star-admitted unnest body normalizes to the bare projection
-				// of its boundary labels at translateScan; the boundary schema
-				// here is those SAME labels (one predicate, all consumers).
-				if starCols, star := t.derivedBodyStarOrdinalLeg(body); star {
-					cols = starCols
-					return
-				}
-				cols = t.derivedOutputColumns(body)
-			})
+		if cols, ok := t.cteColumnsScope[producer]; ok {
 			return cols
 		}
-		return t.tableColumns(o.Table)
+		if row, ok := t.recursiveProducerRows[producer]; ok {
+			return row.common.Fields
+		}
+		var cols []values.Field
+		t.inCTEDefiningScope(producer, func() {
+			body := producer.Body()
+			if producer.Recursive() {
+				if typ, err := LogicalResultTypeAfterUnionPromotionWithCTEs(o, t.md, nil); err == nil {
+					if row, ok := typ.(*values.RecordType); ok {
+						cols = row.Fields
+					}
+				}
+				return
+			}
+			if starCols, star := t.derivedBodyStarOrdinalLeg(body); star {
+				cols = starCols
+			} else {
+				cols = t.derivedOutputColumns(body)
+			}
+			if aliases := producer.ColumnAliases(); len(aliases) > 0 && len(aliases) == len(cols) {
+				cols = append([]values.Field(nil), cols...)
+				for i, alias := range aliases {
+					cols[i].Name = alias
+				}
+			}
+		})
+		return cols
 	case *logical.LogicalFilter:
 		return t.legColumns(o.Input)
 	case *logical.LogicalLimit:
@@ -848,22 +859,22 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 		// present (WITH b(x,y) AS …), exactly as translateCTE wraps the body in a
 		// renaming Project. A recursive CTE leg is not column-derivable here → nil
 		// (the leg cannot anchor; the opaque-merge fallback was retired).
-		if o.Recursive {
+		if o.Recursive() {
 			return nil
 		}
-		if len(o.ColumnAliases) > 0 {
+		if len(o.ColumnAliases()) > 0 {
 			// A column-alias list RENAMES the body's output; it does not erase
 			// what those columns ARE. Carry the body's own field types under the
 			// new names when the widths agree — an UnknownType here makes the
 			// leg inexact, which is enough for the ordinalization gate to
 			// decline the whole join.
-			fields := make([]values.Field, len(o.ColumnAliases))
-			for i, name := range o.ColumnAliases {
+			fields := make([]values.Field, len(o.ColumnAliases()))
+			for i, name := range o.ColumnAliases() {
 				fields[i] = values.Field{Name: name, FieldType: values.UnknownType, Ordinal: i}
 			}
-			bodyFields := t.derivedOutputColumns(o.Body)
+			bodyFields := t.derivedOutputColumns(o.Body())
 			if len(bodyFields) == 0 {
-				if starCols, star := t.derivedBodyStarOrdinalLeg(o.Body); star {
+				if starCols, star := t.derivedBodyStarOrdinalLeg(o.Body()); star {
 					bodyFields = starCols
 				}
 			}
@@ -880,10 +891,10 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 		// FROM t, t.arr AS x) AS s`) normalizes to the bare projection of its
 		// boundary labels when the registered body translates (translateScan);
 		// its leg schema is those labels.
-		if starCols, star := t.derivedBodyStarOrdinalLeg(o.Body); star {
+		if starCols, star := t.derivedBodyStarOrdinalLeg(o.Body()); star {
 			return starCols
 		}
-		return t.derivedOutputColumns(o.Body)
+		return t.derivedOutputColumns(o.Body())
 	default:
 		// Subquery / Explode / DML and other non-row-producing shapes are not
 		// column-derivable here → nil. A join seed with a non-derivable leg is
@@ -933,10 +944,9 @@ func (t *cascadesTranslator) derivedOutputColumns(op logical.LogicalOperator) []
 				// A qualified-but-unaliased passthrough (`SELECT t.arr FROM t`)
 				// flows under the BARE column name — the resolver emits the
 				// verbatim OUTPUT attribute (col.Id.Name(), qualifier-free), so
-				// the runtime slot is keyed bare. Mirrors projectionOutputNames
-				// (the class-3 derived-unnest authority); keeping the dotted
-				// spelling here mis-keys the boundary layout and silently declines
-				// the qualified-passthrough unnest case.
+				// the runtime slot is keyed bare. This is the legacy name-only
+				// fallback; a typed or ordinal projection uses exactFields above,
+				// preserving its actual runtime field names.
 				name = name[dot+1:]
 			}
 			fieldType := values.Type(values.UnknownType)
@@ -989,8 +999,8 @@ func (t *cascadesTranslator) derivedOutputColumns(op logical.LogicalOperator) []
 		// BODY's output columns, renamed by an explicit column-alias list
 		// (`… AS d(a, b)`). An unnest over such an outer bakes its collection
 		// against this layout.
-		cols := t.derivedOutputColumns(o.Body)
-		if len(o.ColumnAliases) == len(cols) {
+		cols := t.derivedOutputColumns(o.Body())
+		if len(o.ColumnAliases()) == len(cols) {
 			// Copy before renaming. legColumns hands back SHARED slices on two
 			// arms — a pre-translated CTE's schema comes straight out of
 			// cteColumnsScope, and a nested CTE body returns whatever its own
@@ -1008,7 +1018,7 @@ func (t *cascadesTranslator) derivedOutputColumns(op logical.LogicalOperator) []
 				// to the same alias list. Two sites doing one job must not
 				// spell it two ways: a fold here republished the CTE's columns
 				// under names the row it wraps does not carry.
-				renamed[i].Name = o.ColumnAliases[i]
+				renamed[i].Name = o.ColumnAliases()[i]
 			}
 			return renamed
 		}
@@ -1347,9 +1357,20 @@ func underlyingGroupBy(expr expressions.RelationalExpression) *expressions.Group
 }
 
 func (t *cascadesTranslator) translateRef(op logical.LogicalOperator) *expressions.Reference {
+	if input := t.ownedInputs[op]; input != nil {
+		for _, scalar := range input.Scalars() {
+			t.scalarSubqueries = append(t.scalarSubqueries, ScalarSubqueryPlan{Alias: scalar.Alias, Plan: scalar.Plan})
+		}
+		return input.Reference()
+	}
 	expr := t.translateOp(op)
 	if expr == nil {
 		return nil
+	}
+	if scan, ok := op.(*logical.LogicalScan); ok {
+		if ref := t.producerRefs[scan.Source.Producer()]; ref != nil {
+			return ref
+		}
 	}
 	return expressions.InitialOf(expr)
 }
@@ -1372,8 +1393,8 @@ func (t *cascadesTranslator) translateSubqueryRef(op logical.LogicalOperator) *e
 // translateCorrelatedPrimaryUnnest lowers the standalone unnest used by a
 // correlated EXISTS primary source. Its collection was resolved in the outer
 // semantic scope and therefore carries the exact external correlation that the
-// enclosing ForEach quantifier binds. Regular lateral FROM unnests leave
-// CorrelatedCollection nil and are translated only through translateUnnestJoin.
+// enclosing ForEach quantifier binds. Regular lateral FROM unnests carry
+// the same binding and are translated through translateUnnestJoin.
 func (t *cascadesTranslator) translateCorrelatedPrimaryUnnest(
 	u *logical.LogicalUnnest,
 ) expressions.RelationalExpression {
@@ -1396,72 +1417,10 @@ func (t *cascadesTranslator) translateCorrelatedPrimaryUnnest(
 	return explode
 }
 
-// findOuterScanTable resolves a lateral unnest's outer source alias to its
-// scanned table name among the VISIBLE FROM-scope sources of the outer leg.
-// It is the shared logical.FindOuterScanTable walk (the embedded cascades
-// generator's AT-on-table pass resolves the same way through the same helper),
-// so the translator and the early generator pass never diverge.
-func findOuterScanTable(op logical.LogicalOperator, alias string) string {
-	return logical.FindOuterScanTable(op, alias)
-}
-
-// outerSourceIsCTE reports whether `table` — the RESOLVED scan-table name the
-// unnest's segment-0 source binds to in `j.Left` (findOuterScanTable: the CTE
-// name for a CTE reference `FROM X`, the real table for `FROM T1 AS X`) — names a
-// CTE or derived-table source currently in scope, i.e. its OUTPUT is a
-// CTE-projected schema, not a base-table descriptor. Derived tables lower to a
-// `LogicalCTE` registered under their alias (translateCTE), so both common-table
-// expressions and `(SELECT …) AS d` derived tables appear in the CTE scope maps.
-// A `LogicalUnnest` whose outer BOUND source is such a CTE must be validated
-// against the CTE output type, not base-table metadata (P2a). It is keyed on
-// the resolved scan TABLE — never the segment-0 alias — so a real table aliased
-// with a CTE's name (`FROM T1 AS X` while a CTE `X` exists) does NOT match: the
-// visible scan `T1` shadows the unused CTE (over-rejection). RFC-142.
-func (t *cascadesTranslator) outerSourceIsCTE(table string) bool {
-	key := strings.ToUpper(table)
-	if _, ok := t.cteScope[key]; ok {
-		return true
-	}
-	if _, ok := t.cteExprScope[key]; ok {
-		return true
-	}
-	if _, ok := t.cteColumnsScope[key]; ok {
-		return true
-	}
-	return false
-}
-
-// outerSourceIsDerivedTable reports whether `alias` (the unnest's segment-0
-// outer source name) is bound, in the outer sub-plan `op`, to a DERIVED-TABLE /
-// CTE leg. This is the STRUCTURAL twin of outerSourceIsCTE: it reads the logical
-// tree directly rather than the cteScope maps, so it fires INDEPENDENT of
-// cteScope population order.
-//
-// CRITICAL (silent-wrong): a derived table `(SELECT … ) AS D` lowers to a
-// `LogicalCTE{Name:D, Main:Scan(D)}` inside `j.Left`, but that CTE's body is only
-// registered into cteScope when `j.Left` is *translated* (translateCTE) — which
-// happens AFTER the metadata-validation guard in translateUnnestJoin. So
-// outerSourceIsCTE returns false at the guard, and findOuterScanTable's walk into
-// `Main` resolves `D` to its alias-scan → the REAL table `D` of the same name (if
-// one exists). The unnest then validates `ARR` against the real table's ARRAY
-// metadata while the FlatMap reads the SCALAR `ARR` of the derived row → one
-// wrong scalar row per outer row. Detecting the derived/CTE leg STRUCTURALLY —
-// by the in-scope quantifier alias, exactly as Java's
-// generateCorrelatedFieldAccess resolves the in-scope source, not the catalog
-// table — rejects the derived-output unnest cleanly in ALL cases, even when a
-// real same-named table exists.
-//
-// Delegates to the shared logical.OuterSourceIsDerivedTable walk so the
-// translator's CTE/derived guard and the embedded generator's early AT-on-table
-// pass detect a derived source identically.
-func outerSourceIsDerivedTable(op logical.LogicalOperator, alias string) bool {
-	return logical.OuterSourceIsDerivedTable(op, alias)
-}
-
 // outerBoundAliases collects the source aliases bound by the outer leg of a
 // lateral unnest (the scan/source aliases visible in `op`), so the unnest's
 // element/ordinal binding alias can be checked for a collision against them
-// (P1). Like findOuterScanTable, it does NOT descend into CTE/derived
+// (P1). It does NOT descend into CTE/derived
 // BODIES — only the visible Main leg — so it sees exactly the aliases the
 // unnest's merged outer row flows under. RFC-142.
 func outerBoundAliases(op logical.LogicalOperator) map[string]struct{} {
@@ -1469,28 +1428,16 @@ func outerBoundAliases(op logical.LogicalOperator) map[string]struct{} {
 	var walk func(logical.LogicalOperator)
 	walk = func(o logical.LogicalOperator) {
 		switch n := o.(type) {
-		case *logical.LogicalInlineValues:
-			if n.Alias != "" {
-				set[strings.ToUpper(n.Alias)] = struct{}{}
-			}
-		case *logical.LogicalScan:
-			a := n.Alias
-			if a == "" {
-				a = n.Table
-			}
-			if a != "" {
-				set[strings.ToUpper(a)] = struct{}{}
-			}
-		case *logical.LogicalUnnest:
-			// A prior unnest leg binds its element/ordinal alias.
-			if n.Alias != "" {
-				set[strings.ToUpper(n.Alias)] = struct{}{}
-			}
-			if n.AtAlias != "" {
-				set[strings.ToUpper(n.AtAlias)] = struct{}{}
+		case *logical.LogicalInlineValues, *logical.LogicalScan, *logical.LogicalUnnest:
+			if binding := sourceBinding(o); binding != "" {
+				set[binding] = struct{}{}
 			}
 		case *logical.LogicalCTE:
-			walk(n.Main)
+			if n.PreserveMainSource {
+				walk(n.Main)
+			} else if binding := sourceBinding(n); binding != "" {
+				set[binding] = struct{}{}
+			}
 		default:
 			for _, c := range o.Children() {
 				walk(c)
@@ -1666,158 +1613,6 @@ func unnestOuterLegAliases(op logical.LogicalOperator, mergedCorr values.Correla
 	return all
 }
 
-// unnestArrayElementType returns the element type for a lateral unnest's
-// array field, whether the field resolves to an array, AND whether the field
-// EXISTS on the outer source at all. It walks the outer source's proto
-// descriptor along the unnest's field segments (`u.Segments[1:]`; segment 0 is
-// the outer source alias) and asserts the final field is repeated
-// (`IsList()`). For a scalar-element array the element type is the scalar;
-// for a struct array (message element) or an unrecognized kind it is
-// UnknownType (the runtime flows the raw element).
-//
-// The `fieldPresent` return distinguishes Java's two failure modes
-// (`generateCorrelatedFieldAccess` / `resolveCorrelatedIdentifier`):
-//
-//   - field MISSING on the source (`fieldPresent == false`): the dotted name
-//     is not a column of the source → the caller treats it as a genuine table
-//     (table-not-found path), mirroring Java falling through from
-//     `resolveCorrelatedIdentifier` to an undefined-table error.
-//   - field PRESENT but NON-array (`fieldPresent == true, isArray == false`):
-//     a real scalar column referenced as an unnest source → Java's
-//     `INVALID_COLUMN_REFERENCE`/`WRONG_OBJECT_TYPE` ("repeated type" assert).
-//
-// RFC-142.
-func (t *cascadesTranslator) unnestArrayElementType(outerTable string, fieldSegments []string) (elementType values.Type, fieldName string, isArray, fieldPresent bool) {
-	rt := t.resolveRecordType(outerTable)
-	if rt == nil || rt.Descriptor == nil {
-		return values.UnknownType, "", false, false
-	}
-	return arrayFieldFromDescriptor(rt.Descriptor.Fields(), fieldSegments)
-}
-
-// protoFieldLookup resolves a field by SQL identifier: EXACT spelling first,
-// then an unqualified case-insensitive scan.
-//
-// The exact pass has to come first, and it is not an optimization. A quoted
-// identifier keeps its case, so `"aB"` must reach the field literally named
-// `aB` even when a sibling `Ab` exists; a fold-first lookup answers whichever
-// of the two the descriptor happens to list first. The case-insensitive scan
-// behind it is the same read-side extension rlcatalog documents: a hand-written
-// .proto never went through DDL normalization, so its names are lower/snake
-// while an unquoted SQL reference arrives folded upper.
-func protoFieldLookup(fs protoreflect.FieldDescriptors, name string) protoreflect.FieldDescriptor {
-	if fd := fs.ByName(protoreflect.Name(name)); fd != nil {
-		return fd
-	}
-	for i := 0; i < fs.Len(); i++ {
-		if f := fs.Get(i); strings.EqualFold(string(f.Name()), name) {
-			return f
-		}
-	}
-	// THE ARGUMENT IS A SQL NAME AND THE DESCRIPTOR HOLDS STORAGE NAMES, so a
-	// name DDL had to escape is invisible to both attempts above. A column
-	// declared `"a.b"` is stored as `a__2b`; it comes back through
-	// ToUserIdentifier everywhere a user sees it, and arrives here spelled
-	// `a.b`, which is neither an exact nor a case-insensitive match for
-	// anything.
-	//
-	// DECODE THE STORAGE NAMES, DO NOT ENCODE THE QUERY NAME. The escaping is
-	// documented NON-INJECTIVE, so encoding the query name and fold-comparing
-	// the result accepts fields the identifier does not name: storage
-	// `___1__2foo` decodes to the SQL name `_$.foo`, while a quoted
-	// `t."___1.FOO"` encodes to `___1__2FOO`, which EqualFolds it. The unnest
-	// path treats a semantic miss as an untyped fallback rather than an
-	// undefined column, so it would explode an unrelated field. Decoding has no
-	// such collision — ToUserIdentifier is the mapping every consumer already
-	// uses to answer "what is this column called".
-	//
-	// TWO PASSES, NOT ONE, and the split is the same strict-then-relaxed rule
-	// as the unescaped attempts above. Deciding ambiguity inside a single pass
-	// makes the answer depend on DESCRIPTOR ORDER: over `a__2b`, `A__2b`,
-	// `A__2B` a lookup of `A.B` meets two folded candidates and declines before
-	// ever reaching the exact one. An exact answer is never made ambiguous by
-	// case variants existing, whatever order they are listed in.
-	//
-	// AMBIGUITY DECLINES IN BOTH PASSES, and the exact one needs it just as much
-	// as the folded one — a first draft checked only the folded pass, which
-	// reads as though decoding were injective. It is not: `foo___0bar` and
-	// `foo__0_bar` BOTH decode to `foo___bar`, so a descriptor can hold two
-	// fields answering exactly to one SQL identifier. Returning the first is a
-	// bind decided by descriptor order, which is not a property of the query,
-	// and the unnest path would then classify or explode whichever came first.
-	//
-	// So each pass scans to completion before it answers.
-	var exact protoreflect.FieldDescriptor
-	for i := 0; i < fs.Len(); i++ {
-		f := fs.Get(i)
-		if protoname.ToUserIdentifier(string(f.Name())) != name {
-			continue
-		}
-		if exact != nil {
-			return nil // two fields decode to this exact name; decline
-		}
-		exact = f
-	}
-	if exact != nil {
-		return exact
-	}
-	var folded protoreflect.FieldDescriptor
-	for i := 0; i < fs.Len(); i++ {
-		f := fs.Get(i)
-		if !strings.EqualFold(protoname.ToUserIdentifier(string(f.Name())), name) {
-			continue
-		}
-		if folded != nil {
-			return nil // ambiguous under folding; decline rather than guess
-		}
-		folded = f
-	}
-	return folded
-}
-
-// arrayFieldFromDescriptor classifies a lateral unnest's array field by
-// per-segment descent over a proto record's fields (Java's
-// SemanticAnalyzer.lookupNestedField STRUCT rule): every INTERMEDIATE segment
-// must be a singular MESSAGE field; the FINAL segment must be repeated. Shared
-// by the base-table path (unnestArrayElementType) and the chained path (which
-// descends the OWNER unnest's element message). Returns:
-//   - (elemType, name, true, true) for a repeated final — a valid array;
-//   - (Unknown, "", false, true) for a present-but-scalar final, or a
-//     non-record/repeated intermediate — Java's "repeated type" assert;
-//   - (Unknown, "", false, false) for an absent field.
-func arrayFieldFromDescriptor(fields protoreflect.FieldDescriptors, fieldSegments []string) (elementType values.Type, fieldName string, isArray, fieldPresent bool) {
-	if len(fieldSegments) == 0 {
-		return values.UnknownType, "", false, false
-	}
-	for _, seg := range fieldSegments[:len(fieldSegments)-1] {
-		fd := protoFieldLookup(fields, seg)
-		if fd == nil {
-			return values.UnknownType, "", false, false
-		}
-		// An intermediate must be a singular STRUCT: flat repeated fields
-		// and NullableArrayWrapper fields are both arrays here.
-		if fd.IsList() || fd.Kind() != protoreflect.MessageKind || values.IsWrappedArrayDescriptor(fd.Message()) {
-			return values.UnknownType, "", false, true
-		}
-		fields = fd.Message().Fields()
-	}
-	fd := protoFieldLookup(fields, fieldSegments[len(fieldSegments)-1])
-	if fd == nil {
-		return values.UnknownType, "", false, false
-	}
-	// The final segment is an array either as a flat repeated field or
-	// through the NullableArrayWrapper; the element type comes from the
-	// EFFECTIVE repeated field, the column name from the outer field.
-	inner, _, ok := values.EffectiveListField(fd)
-	if !ok {
-		return values.UnknownType, "", false, true
-	}
-	// The column name is the SLOT name the row layout carries for this field,
-	// so it must be minted by the same authority the layout uses. Folding it
-	// here made it miss for any descriptor whose names are not already upper.
-	return arrayFieldElementType(inner), values.FieldNameForProtoField(fd), true, true
-}
-
 // containsLateralUnnest reports whether a logical sub-plan contains a
 // LogicalUnnest in the SAME (current) FROM scope — i.e. this is a CHAINED /
 // multi-unnest FROM list (`FROM t, t.arr1 AS v1, t.arr2 AS v2`). RFC-142.
@@ -1826,11 +1621,11 @@ func arrayFieldFromDescriptor(fields protoreflect.FieldDescriptors, fieldSegment
 // BODY. A derived table `(SELECT v FROM T1, T1.arr AS v) AS d` is its OWN FROM
 // scope; its inner unnest belongs to that scope, not the outer one. The outer
 // FROM scope only sees the derived table's OUTPUT alias `d` (its Main leg). If
-// the walk descended into `LogicalCTE.Body` it would count the derived table's
+// the walk descended into `LogicalCTE.Body()` it would count the derived table's
 // own unnest and wrongly reject the outer query as "multiple lateral array
 // unnests in one FROM clause" — a valid query falsely rejected. So at a
 // LogicalCTE we inspect ONLY its Main (the visible alias projection), never its
-// Body — mirroring findOuterScanTable / outerBoundAliases, which resolve a
+// Body — mirroring outerBoundAliases, which resolves a
 // derived/CTE source against its Main only.
 func containsLateralUnnest(op logical.LogicalOperator) bool {
 	if op == nil {
@@ -1852,20 +1647,6 @@ func containsLateralUnnest(op logical.LogicalOperator) bool {
 	return false
 }
 
-// arrayFieldElementType returns the exact executable element type of an
-// effective repeated proto field. The values package owns descriptor-to-row
-// typing; this purpose helper only removes the enclosing repetition and makes
-// the element non-null, matching FieldTypeForProtoField's ARRAY convention.
-// Keeping a second nullable scalar-kind switch here made the same stored array
-// disagree with itself at unnest admission.
-func arrayFieldElementType(fd protoreflect.FieldDescriptor) values.Type {
-	element := values.ScalarTypeForProtoKind(fd)
-	if values.IsUnresolved(element) {
-		return values.UnknownType
-	}
-	return values.WithNullability(element, false)
-}
-
 // translateUnnestJoin lowers a lateral array unnest source (`FROM t, t.arr AS
 // x [AT ord]`) — a LogicalJoin whose Right is a LogicalUnnest — into a
 // correlated FlatMap-over-Explode SelectExpression, mirroring Java's
@@ -1882,16 +1663,13 @@ func arrayFieldElementType(fd protoreflect.FieldDescriptor) values.Type {
 // SelectExpression as RecordQueryFlatMapPlan(outer, explode, …, resultValue,
 // false) — the review-confirmed non-existential, no-FirstOrDefault path.
 //
-// Returns nil (untranslatable) for a non-scan outer or an unresolvable field;
-// when the source carries an AT alias but is NOT a correlated array, it
-// records ErrCodeWrongObjectType (Java's WRONG_OBJECT_TYPE) and returns nil so
-// the planner surfaces the faithful diagnostic. RFC-142.
+// Requires an exact, semantically bound array collection. Missing bindings or
+// exact non-array values return the corresponding boundUnnestBindingError;
+// lowering never reconstructs a table scan from the diagnostic spelling.
 func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logical.LogicalUnnest) expressions.RelationalExpression {
-	// The entire unnest lowering (FlatMap-over-Explode, dotted-prefix
-	// bipartition machinery, multi-source fallback rebuilds via
-	// unnestFallbackOrReject) stays on the name model — every join
-	// translated beneath it, including the fallback's rebuilt LogicalJoins,
-	// is marked enclosed so it cannot gate ordinal.
+	// Mark nested lowering enclosed initially. Gathered clusters and the exact
+	// seed-owner path below select positional construction explicitly; the
+	// remaining nested joins must not independently gate ordinal.
 	//
 	// prevEnclosure captures the ENCLOSED bit on entry (t.inInnerCluster BEFORE
 	// this unnest sets it): true iff THIS unnest is itself a leg of a larger
@@ -1901,214 +1679,20 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 	prevEnclosure := t.inInnerCluster
 	t.inInnerCluster = true
 	defer func() { t.inInnerCluster = prevEnclosure }()
-	var inlineOwner *logical.LogicalInlineValues
-	if len(u.Segments) > 0 {
-		inlineOwner = findInlineValuesOwner(j.Left, u.Segments[0])
-	}
-	// A lateral unnest is classified by walking the outer source's PROTO
-	// descriptor for the array field (unnestArrayElementType → resolveRecordType
-	// → t.md). The metadata-less translation path (TranslateToCascades /
-	// TranslateToCascadesWithSubqueries(op, nil) — used by scalar-subquery / DML
-	// translation and unit tests) has no descriptor to classify against. Java
-	// never reaches an unnest without a SemanticAnalyzer/metadata in scope, so
-	// rather than dereference nil metadata (a panic) we decline cleanly: an
-	// unnest genuinely needs metadata to classify. No production caller unnests
-	// without metadata (every SQL plan path passes real md). RFC-142.
-	if t.md == nil && inlineOwner == nil {
-		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
-			"lateral array unnest requires record metadata to classify the array field"))
+	owner, _, array := boundUnnestCollection(u)
+	if owner == nil {
+		t.setTranslateErr(boundUnnestBindingError(u))
 		return nil
 	}
-	// The multiple-unnest guard (CHAINED `FROM t, t.arr1 AS v1, t.arr2 AS v2`)
-	// is applied LATER — only AFTER the right side is confirmed a VALID array
-	// unnest (past the !isArray validation below). Running it here, before the
-	// array-source validation, would mask an invalid right-side candidate after a
-	// prior unnest: `FROM T1, T1.arr AS V, U AT O` (AT on a non-array table) or
-	// `FROM T1, T1.arr AS V, T1.id AS X` (a scalar field) would wrongly report
-	// "multiple unnests" (UNSUPPORTED_QUERY) instead of the faithful
-	// WRONG_OBJECT_TYPE the array validation produces. So: an AT-on-non-array or
-	// scalar candidate after an unnest → the array-validation error fires first; a
-	// genuine SECOND array unnest → the multiple-unnest guard. RFC-142.
-
-	// The FlatMap binds the outer row under sourceAlias(j.Left), which is the
-	// rightmost FROM leg. For a single outer source this IS segment 0
-	// (`FROM t, t.arr`); when the unnest follows MORE THAN ONE prior source
-	// (`FROM A, B, A.arr AS X`) the outer is the merged `A × B` row flowed under
-	// B's alias, and segment 0 (A) is not the flow leg — the array field is read
-	// QUALIFIED to A below.
-	outerAlias := sourceAlias(j.Left)
-	// Resolve segment 0 to the SCAN it actually binds to in `j.Left` FIRST — the
-	// CTE/derived rejection below is tied to that BOUND source, not to the segment-0
-	// alias name (over-rejection). `findOuterScanTable` returns the
-	// scan's TABLE name for the alias: a real table `T1` for `T1 AS X`, the CTE name
-	// `X` for a CTE reference `FROM X` (the scan's Table holds the CTE name), or `d`
-	// for a derived table `(…) AS d` (its Main alias-scan). When segment 0 does not
-	// resolve to a visible scan it is not a correlated source at all (schema-
-	// qualified table, or a name hidden behind a derived-table boundary) — the table
-	// path handles it; an AT alias is then invalid.
-	outerTable := findOuterScanTable(j.Left, u.Segments[0])
-	if outerTable == "" && inlineOwner == nil {
-		// Unnest-residual class 4 (chained unnest): segment 0 names a
-		// PRIOR lateral unnest's element, not a scan. Positively gated on
-		// findOwnerUnnest (never merely
-		// outerTable==""), and only for INNER-comma chains
-		// (!unnestUnderExistential — an under-existential chain keeps its own
-		// EXISTS-composition binders). A resolvable chain routes to translateChainedUnnestJoin;
-		// anything else (schema-qualified, derived-hidden) falls through to the
-		// existing fallback.
-		//
-		// NOT gated on prevEnclosure: a chained unnest is always name-model
-		// residual, and a 3+-link chain translates its OUTER (which contains the
-		// PRIOR chained link) with the enclosure bit set — so an inner chained
-		// link would observe prevEnclosure=true. Gating on !prevEnclosure would
-		// collapse the chain there (the inner link declines and the outer's
-		// translateRef returns nil). The chain shape is decided by
-		// isChainedUnnest alone, exactly as Java nests each link the same way.
-		if !t.unnestUnderExistential && isChainedUnnest(j.Left, u) {
-			if sel := t.translateChainedUnnestJoin(j, u, prevEnclosure); sel != nil {
-				return sel
-			}
-			// A chained unnest that classified to a loud error set the
-			// translate error; return nil so the caller surfaces it.
-			if t.translateErr != nil {
-				return nil
-			}
-		}
-		// segment 0 names a prior unnest's AT ORDINAL alias (`t.arr AS x AT o,
-		// o.sub AS y`): `o` binds a scalar integer, so `o.sub` is a field access
-		// on a scalar — Java rejects it at resolution (UNDEFINED_COLUMN). Surface
-		// that honest error instead of the generic fallback reject (which would
-		// rebuild `o.sub` as a phantom scan and fail with 0AF00). Only the
-		// field-access shape (a sub-path past the ordinal name) reaches here — a
-		// bare `o AS y` is a different, earlier-handled shape.
-		if len(u.Segments) >= 2 && logical.IsUnnestOrdinalAlias(j.Left, u.Segments[0]) {
-			t.setTranslateErr(api.NewErrorf(api.ErrCodeUndefinedColumn,
-				"column %q does not exist on source %q",
-				strings.Join(u.Segments[1:], "."), u.Segments[0]))
-			return nil
-		}
-		return t.unnestFallbackOrReject(j, u)
+	if err := unnestCorrelationReject(j.Left, u); err != nil {
+		t.setTranslateErr(err)
+		return nil
 	}
-	// Java's `generateCorrelatedFieldAccess` validates the array field against the
-	// in-scope source's OUTPUT type (its quantifier's flowed columns), NOT a base-
-	// table descriptor. When the BOUND source is a CTE / derived-table, that output
-	// is the CTE's PROJECTED columns — a renamed/computed schema that may differ from
-	// any base table (`WITH T1 AS (SELECT ID AS ARR FROM T1) … FROM T1, T1.ARR`: the
-	// CTE output `ARR` is the SCALAR renamed `ID`, even though a real base table `T1`
-	// has an ARRAY column `ARR`). Validating `ARR` against the base-table descriptor
-	// here would explode the WRONG column (silent-wrong, P2a). The leg-column
-	// TYPES the translator derives for a CTE/derived output are best-effort
-	// `UnknownType` (legColumns), so the element type is not recoverable at this
-	// point; rather than validate against the wrong base-table metadata, reject a
-	// CTE/derived-source unnest cleanly. Single-array unnest over a REAL table (the
-	// R5 core) is unaffected. RFC-142.
-	//
-	// The rejection is tied to the ACTUAL source bound in `j.Left` for segment 0,
-	// NOT to a CTE that merely SHARES segment 0's name in the global WITH scope
-	// (over-rejection): a real table aliased with a CTE's name
-	// (`WITH X AS (…) SELECT V FROM T1 AS X, X.ARR AS V`) SHADOWS the unused CTE — the
-	// VISIBLE scan `T1 AS X` is the source, so the unnest is valid and MUST plan.
-	// Both arms therefore key on the resolved bound source:
-	//   - outerSourceIsCTE(outerTable): the scan's resolved table name IS a CTE in
-	//     scope. For a CTE used as the source, findOuterScanTable returns the CTE
-	//     name (the scan's Table), so this fires; for `T1 AS X` it returns the real
-	//     table `T1`, so it does NOT fire even when a CTE `X` exists globally.
-	//   - outerSourceIsDerivedTable(j.Left, segment 0): a LogicalCTE leg in j.Left
-	//     whose Name == segment 0 — the STRUCTURAL twin, load-bearing for the
-	//     DERIVED-PRIMARY shape `FROM (SELECT ID AS ARR FROM T1) AS D, D.ARR AS V`.
-	//     A derived table's LogicalCTE body is registered into cteScope only when
-	//     j.Left is *translated* (translateCTE), which is AFTER this guard — so
-	//     outerSourceIsCTE(outerTable) is still false there; the structural arm reads
-	//     the logical tree directly so it fires regardless of cteScope timing and
-	//     regardless of whether the alias also names a real table. The in-scope
-	//     derived source is preferred over the catalog table, exactly as Java
-	//     resolves the in-scope quantifier alias. RFC-142.
-	var elementType values.Type
-	var fieldName string
-	if inlineOwner != nil {
-		var isArray, fieldPresent bool
-		elementType, fieldName, isArray, fieldPresent = inlineValuesArrayElementType(inlineOwner, u.Segments[1:])
-		if !isArray {
-			if fieldPresent {
-				t.setTranslateErr(api.NewError(api.ErrCodeInvalidColumnReference,
-					"join correlation can occur only on a column of repeated (array) type"))
-			} else {
-				t.setTranslateErr(api.NewErrorf(api.ErrCodeUndefinedColumn,
-					"column %q does not exist on source %q",
-					strings.Join(u.Segments[1:], "."), u.Segments[0]))
-			}
-			return nil
-		}
-	} else if t.outerSourceIsCTE(outerTable) || outerSourceIsDerivedTable(j.Left, u.Segments[0]) {
-		// Unnest-residual class 3: resolve the array field through the
-		// CTE/derived body's projection to a base-table array column (the
-		// flowed type is UnknownType — see classifyDerivedUnnestArray below). A
-		// bare passthrough classifies; every other body shape declines loudly.
-		et, outName, disp := t.classifyDerivedUnnestArray(j.Left, u)
-		switch disp {
-		case derivedUnnestArray:
-			elementType, fieldName = et, outName
-			// Fall through to the shared build path below (skip the base-table
-			// unnestArrayElementType classification — already done via the body).
-		case derivedUnnestWrongType:
-			t.setTranslateErr(api.NewError(api.ErrCodeInvalidColumnReference,
-				"join correlation can occur only on a column of repeated (array) type"))
-			return nil
-		case derivedUnnestUndefined:
-			t.setTranslateErr(api.NewErrorf(api.ErrCodeUndefinedColumn,
-				"column %q does not exist on source %q",
-				strings.Join(u.Segments[1:], "."), u.Segments[0]))
-			return nil
-		default: // derivedUnnestUnsupported
-			t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
-				"unnest over a computed/non-passthrough CTE/derived-table output is not yet supported"))
-			return nil
-		}
-	} else {
-		var isArray, fieldPresent bool
-		elementType, fieldName, isArray, fieldPresent = t.unnestArrayElementType(outerTable, u.Segments[1:])
-		if !isArray {
-			// Segment 0 matched a scan whose table is `outerTable`. Three sub-cases,
-			// matching Java's `generateAccess`/`resolveCorrelatedIdentifier`:
-			//
-			//   - PRESENT-but-scalar (fieldPresent): a real non-array correlated
-			//     source → Java's `generateCorrelatedFieldAccess` "repeated type"
-			//     assert → WRONG_OBJECT_TYPE (P2c).
-			//   - source is a REAL table but the field is MISSING: an unresolvable
-			//     correlated field on a known source — Java's `resolveCorrelatedIdentifier`
-			//     fails the field lookup → a clean UNDEFINED_COLUMN, NOT a silent table
-			//     fallback that produces a generic translation failure (P2c).
-			//   - source is NOT a real table (a derived-table alias `d` whose record
-			//     type doesn't resolve): the field can't be checked here → table path.
-			if fieldPresent {
-				t.setTranslateErr(api.NewError(api.ErrCodeInvalidColumnReference,
-					"join correlation can occur only on a column of repeated (array) type"))
-				return nil
-			}
-			// AT on a BARE source (`FROM T1, T1 AT ord`): segment 0 names a visible
-			// scan, but there are NO field segments to resolve — the source is the
-			// TABLE/alias itself, not an array field on it. AT is valid only on a
-			// correlated array, so this converges with the other AT-on-a-table
-			// rejection paths (unnestFallbackOrReject, demoteSchemaQualifiedUnnest) on
-			// Java's WRONG_OBJECT_TYPE — NOT an UNDEFINED_COLUMN for an empty field
-			// name. (Without the AT this single-segment shape isn't even classified as
-			// an unnest; the AT forces it here so it can be rejected faithfully.)
-			// RFC-142.
-			if u.AtAlias != "" && len(u.Segments) < 2 {
-				t.setTranslateErr(api.NewError(api.ErrCodeWrongObjectType,
-					"AT ordinality is only valid on a correlated array source (FROM t, t.arr AS x AT ord)"))
-				return nil
-			}
-			if t.resolveRecordType(outerTable) != nil {
-				// Known source, missing field: unresolvable correlated field.
-				t.setTranslateErr(api.NewErrorf(api.ErrCodeUndefinedColumn,
-					"column %q does not exist on source %q",
-					strings.Join(u.Segments[1:], "."), u.Segments[0]))
-				return nil
-			}
-			return t.unnestFallbackOrReject(j, u)
-		}
+	if !t.unnestUnderExistential && isChainedUnnest(j.Left, u) {
+		return t.translateChainedUnnestJoin(j, u, prevEnclosure)
 	}
+	outerAlias := sourceBinding(j.Left)
+	elementType := array.ElementType
 
 	// CHAINED unnest (`FROM t, t.arr1 AS v1, t.arr2 AS v2`) lowers to a nested
 	// FlatMap whose inner Explode correlates to the OUTERMOST scan while its
@@ -2143,44 +1727,6 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 	innerCorr := unnestSourceCorrelation(u)
 	innerAlias := innerCorr.Name()
 
-	// P1 (silent-wrong): the unnest's element/ordinal binding alias MUST
-	// NOT collide with the outer FlatMap correlation or any already-bound outer
-	// source alias. If it did (`FROM T1 AS X, X.arr AS X`, or the aliasless
-	// `FROM T1 AS ARR, ARR.arr` where the defaulted field-name alias ARR equals
-	// the outer alias), innerCorr would equal outerCorr and the flatMapCursor
-	// would bind BOTH the outer row and the inner element under one name — the
-	// inner element overwrites the outer row, silently corrupting projections
-	// and predicates. Reject cleanly instead. Java never reaches this because a
-	// duplicate quantifier alias is a binding error upstream. RFC-142.
-	collide := func(name string) bool {
-		if name == "" {
-			return false
-		}
-		if strings.EqualFold(name, outerAlias) {
-			return true
-		}
-		_, ok := outerBoundAliases(j.Left)[strings.ToUpper(name)]
-		return ok
-	}
-	if collide(u.Alias) || collide(u.AtAlias) {
-		t.setTranslateErr(api.NewError(api.ErrCodeDuplicateAlias,
-			"lateral unnest alias collides with an outer FROM-source alias; use a distinct AS/AT alias"))
-		return nil
-	}
-	// P2b (silent-wrong, overwrite): the AS element alias and the AT
-	// ordinal alias MUST be distinct. `FROM t, t.arr AS X AT X` would append the
-	// element and the ordinal under the SAME bare+qualified names;
-	// RecordConstructorValue.Evaluate stores fields in a map, so the ordinal
-	// (appended last) silently OVERWRITES the element — `SELECT X` returns the
-	// ordinal, not the unnested value. Reject cleanly BEFORE constructing the result,
-	// consistent with the unnest-alias-vs-outer-alias rejection above. Java's
-	// visitAtomTableItem binds AS and AT to two distinct quantifier columns; a
-	// duplicate alias is a binding error upstream. RFC-142.
-	if rejectErr := unnestAliasReject(u); rejectErr != nil {
-		t.setTranslateErr(rejectErr)
-		return nil
-	}
-
 	// A MULTI-SOURCE outer over a gated inner cluster gathers FLAT — the Explode
 	// becomes an ordinary quantifier of one (N+1)-way select whose collection is
 	// a genuine baked correlation to the OWNING source's own quantifier, matching
@@ -2206,7 +1752,7 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 	// (unnestExistentialGatherOK false) — that shape keeps the name-model residual
 	// (the scalar-subquery reach class).
 	if !prevEnclosure && (!t.unnestUnderExistential || t.unnestExistentialGatherOK) {
-		if sel := t.translateGatheredUnnestCluster(j, u, innerCorr, elementType, fieldName, unnestTrailing); sel != nil {
+		if sel := t.translateGatheredUnnestCluster(j, u, innerCorr, elementType, unnestTrailing); sel != nil {
 			return sel
 		}
 	}
@@ -2223,7 +1769,13 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 	// already-enclosed unnest name-model (matching the seed's own !prevEnclosure
 	// gate below): the box only builds positional when this unnest is un-enclosed.
 	savedEnclosure := t.inInnerCluster
-	t.inInnerCluster = prevEnclosure || !t.boxOuterBuildsPositional(j.Left)
+	// A one-source derived/CTE owner is positional for the same reason the seed
+	// gate below admits it. Using only boundUnnestSingleSource here translated
+	// that outer under the name model, then paired it with an ordinal seed; upper
+	// D.* projections had no runtime binding. Keep the build and seed gates in
+	// lockstep, with resolveBoundSeedCollection validating the exact owner type.
+	singleSourceOuter := boundUnnestSingleSource(j.Left, u) || t.clusterArity(j.Left) == 1
+	t.inInnerCluster = prevEnclosure || !(singleSourceOuter || t.boxOuterBuildsPositional(j.Left))
 	outerRef := t.translateRef(j.Left)
 	t.inInnerCluster = savedEnclosure
 	if outerRef == nil {
@@ -2290,7 +1842,7 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 	// single-segment case — the suffix-free instance of the same root. When the
 	// bake declines (nil), the whole shape is untranslatable and the decline
 	// below is LOUD.
-	if t.clusterArity(j.Left) == 1 && !prevEnclosure && t.unnestExistsSeedSafe(j.Left, false) && len(u.Segments) >= 2 {
+	if (boundUnnestSingleSource(j.Left, u) || t.clusterArity(j.Left) == 1) && !prevEnclosure && t.unnestExistsSeedSafe(j.Left, false) {
 		resultValue = t.unnestOrdinalSeed(j.Left, outerCorr, innerCorr, u, elementType)
 		// The COLLECTION bakes positionally under the ordinal-seed build for
 		// EVERY segment arity: the single-segment `t.arr`
@@ -2299,7 +1851,7 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 		// build, so a name-keyed collection read has nothing to resolve
 		// against (the runtime name fallback is deleted).
 		if resultValue != nil {
-			if baked := t.unnestBakedRootCollection(j.Left, outerCorr, u, fieldName, elementType, 1, -1); baked != nil {
+			if baked := t.unnestBakedRootCollection(j.Left, outerCorr, u, -1); baked != nil {
 				bakedExplode, explodeErr := expressions.NewExplodeExpressionWithOrdinality(baked, withOrdinality)
 				if explodeErr != nil {
 					t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
@@ -2337,39 +1889,6 @@ func (t *cascadesTranslator) translateUnnestJoin(j *logical.LogicalJoin, u *logi
 		return nil
 	}
 	return selectExpr
-}
-
-// unnestFallbackOrReject handles a candidate comma source whose segment 0 did
-// NOT resolve to a real in-scope TABLE source (it is a schema-qualified table,
-// a name hidden behind a derived-table boundary, or a derived-table alias whose
-// record type can't be inspected for an array field). The dotted name is then
-// treated as a genuine table cross-join: re-translate the join with the right
-// child as a plain scan of the joined name (the table-not-found path surfaces
-// later if it is unknown). An AT alias here is still invalid — AT requires a
-// correlated array (Java's WRONG_OBJECT_TYPE).
-//
-// The PRESENT-but-scalar and missing-field-on-a-known-source cases are handled
-// inline by translateUnnestJoin (WRONG_OBJECT_TYPE / UNDEFINED_COLUMN) before
-// this is ever reached. RFC-142.
-func (t *cascadesTranslator) unnestFallbackOrReject(j *logical.LogicalJoin, u *logical.LogicalUnnest) expressions.RelationalExpression {
-	if u.AtAlias != "" {
-		t.setTranslateErr(api.NewError(api.ErrCodeWrongObjectType,
-			"AT ordinality is only valid on a correlated array source (FROM t, t.arr AS x AT ord)"))
-		return nil
-	}
-	tableName := strings.Join(u.Segments, ".")
-	alias := u.Alias
-	if alias == "" {
-		alias = tableName
-	}
-	rebuilt := &logical.LogicalJoin{
-		Left:        j.Left,
-		Right:       logical.NewScan(tableName, alias),
-		Kind:        j.Kind,
-		OnText:      j.OnText,
-		OnPredicate: j.OnPredicate,
-	}
-	return t.translateJoin(rebuilt)
 }
 
 // rewriteUnnestPredicate rewrites a WHERE predicate's references to a lateral
@@ -2476,8 +1995,8 @@ func rewriteUnnestPredicate(p predicates.QueryPredicate, u *logical.LogicalUnnes
 // columns survive into the outer (NON-rightmost) join's merged row — i.e. an unnest
 // BURIED in the left subtree of a 3+-source FROM list (`FROM T1, T1.arr AS V, U`,
 // where the outer LogicalJoin's Right is U and the unnest is in its Left). Mirrors
-// the `containsLateralUnnest` recursion (and `outerBoundAliases` /
-// `findOuterScanTable`): it does NOT descend into a CTE / derived-table Body — a
+// the `containsLateralUnnest` recursion (and `outerBoundAliases`): it does NOT
+// descend into a CTE / derived-table Body — a
 // derived source is its own FROM scope, and its inner unnest belongs to that scope,
 // not the current one. RFC-142.
 func buriedUnnestLegs(op logical.LogicalOperator) []*logical.LogicalUnnest {
@@ -2702,16 +2221,7 @@ func mapPredicateValues(p predicates.QueryPredicate, fn func(values.Value) value
 // qualified by — the AS alias, else the AT alias (mirroring
 // unnestScopeSourceAdder's correlation-name choice). RFC-142.
 func unnestSourceCorrelation(u *logical.LogicalUnnest) values.CorrelationIdentifier {
-	corr := u.Alias
-	if corr == "" {
-		corr = u.AtAlias
-	}
-	// CANONICAL UPPER: the correlation-key namespace (Scope.AddSource
-	// canonicalizes registrations the same way). A quoted-lowercase
-	// unnest alias (`t.arr AS "val"`) resolves as VAL; emitting the
-	// verbatim `val` here missed the executor's exact leg lookup and an
-	// otherwise-valid query died unbound at runtime.
-	return values.NamedCorrelationIdentifier(strings.ToUpper(corr))
+	return values.NamedCorrelationIdentifier(strings.ToUpper(logical.UnnestBindingName(u.Binding, u.Alias, u.AtAlias)))
 }
 
 // newLimitExprFromLogical builds the Cascades LogicalLimitExpression for a
@@ -2767,7 +2277,7 @@ func (t *cascadesTranslator) translateOp(op logical.LogicalOperator) expressions
 		if innerRef == nil {
 			return nil
 		}
-		limitQ := t.namedQuantifier(sourceAlias(o.Input), innerRef)
+		limitQ := t.namedQuantifier(sourceBinding(o.Input), innerRef)
 		limitExpr, err := newLimitExprFromLogical(o, limitQ)
 		if err != nil {
 			t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
@@ -2801,19 +2311,24 @@ func (t *cascadesTranslator) translateOp(op logical.LogicalOperator) expressions
 }
 
 func (t *cascadesTranslator) translateScan(s *logical.LogicalScan) expressions.RelationalExpression {
-	key := strings.ToUpper(s.Table)
-	// Pre-translated expression scope (recursive CTE references).
-	if expr, ok := t.cteExprScope[key]; ok {
-		return expr
-	}
-	if body, ok := t.cteScope[key]; ok {
-		// Translate the body in its DEFINING scope (shadow-stack pop): its
-		// own references to this name resolve to the shadowed outer binding
-		// when one exists (the derived alias-carrier over `SELECT * FROM c`
-		// inside `WITH c AS (…)`), to the real table otherwise — never back
-		// to the CTE itself (infinite recursion).
+	producer := logical.ResolveScan(s, t.cteScope)
+	if producer != nil {
+		if expr, ok := t.cteExprScope[producer]; ok {
+			return expr
+		}
+		if ref := t.producerRefs[producer]; ref != nil {
+			return ref.Get()
+		}
 		var result expressions.RelationalExpression
-		t.inCTEDefiningScope(key, body, func() {
+		t.inCTEDefiningScope(producer, func() {
+			if producer.Recursive() {
+				result = t.translateRecursiveCTE(logical.NewCTEReference(producer, s))
+				return
+			}
+			body := t.cteTranslationBody(producer)
+			if body == nil {
+				return
+			}
 			// Star opaque ordinal leg: an ADMITTED projection-less
 			// unnest body (`WITH S AS (SELECT * FROM t, t.arr AS x)`) NORMALIZES
 			// to the explicit bare projection of its boundary labels — exactly
@@ -2873,6 +2388,12 @@ func (t *cascadesTranslator) translateScan(s *logical.LogicalScan) expressions.R
 			}
 			result = t.translateOp(toTranslate)
 		})
+		if result != nil && t.producerRefs[producer] == nil {
+			if t.producerRefs == nil {
+				t.producerRefs = make(map[*logical.CTEProducer]*expressions.Reference)
+			}
+			t.producerRefs[producer] = expressions.InitialOf(result)
+		}
 		return result
 	}
 	// Type the scan leaf with the table's canonical record type.
@@ -2998,9 +2519,9 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 	enclosedGathered := false
 	if f.Predicate != nil && len(f.ExistsSubqueries) == 0 && !t.inInnerCluster && !t.unnestUnderExistential {
 		if join, isJ := f.Input.(*logical.LogicalJoin); isJ {
-			if rebuilt, ru, et, fn, rpos, rok := t.rotateEnclosedUnnest(join); rok {
+			if rebuilt, ru, et, rpos, rok := t.rotateEnclosedUnnest(join); rok {
 				if sel := t.translateGatheredUnnestCluster(
-					rebuilt, ru, unnestSourceCorrelation(ru), et, fn, rpos,
+					rebuilt, ru, unnestSourceCorrelation(ru), et, rpos,
 				); sel != nil {
 					enclosedGathered = true
 					if t.enclosedGatherCache == nil {
@@ -3025,7 +2546,7 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 	existsEnclosedRotatable := false
 	if f.Predicate != nil && len(f.ExistsSubqueries) > 0 && !t.inInnerCluster && !t.unnestUnderExistential {
 		if join, isJ := f.Input.(*logical.LogicalJoin); isJ && join.Kind == logical.JoinInner {
-			if _, _, _, _, _, rok := t.rotateEnclosedUnnest(join); rok {
+			if _, _, _, _, rok := t.rotateEnclosedUnnest(join); rok {
 				existsEnclosedRotatable = true
 			}
 		}
@@ -3134,7 +2655,7 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 			// buried unnest, so a plain `FROM A, B WHERE EXISTS` still falls through
 			// to translateJoinWithExists unchanged.
 			if existsEnclosedRotatable {
-				if rebuilt, ru, _, _, _, rok := t.rotateEnclosedUnnest(join); rok {
+				if rebuilt, ru, _, _, rok := t.rotateEnclosedUnnest(join); rok {
 					return t.translateUnnestExistsFilter(f, rebuilt, ru)
 				}
 			}
@@ -3256,7 +2777,7 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 			// at its FROM position, mid-list for the enclosed form) keeps
 			// declined residual translations on the name-model path below.
 			if _, rootUnnest := join.Right.(*logical.LogicalUnnest); !rootUnnest && enclosedGathered {
-				if rebuilt, ru, _, _, _, rok := t.rotateEnclosedUnnest(join); rok {
+				if rebuilt, ru, _, _, rok := t.rotateEnclosedUnnest(join); rok {
 					quants := sel.GetQuantifiers()
 					bindsUnnest := false
 					for _, q := range quants {
@@ -3343,7 +2864,7 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 						sel.GetJoinType(),
 					)
 				}
-				mergedCorr := values.NamedCorrelationIdentifier(sourceAlias(join.Left))
+				mergedCorr := values.NamedCorrelationIdentifier(sourceBinding(join.Left))
 				outerLegs := unnestOuterLegAliases(join.Left, mergedCorr)
 				if isChainedUnnest(join.Left, u) {
 					// CHAINED unnest (`FROM t, t.a AS x, x.b AS y`): rebase outer-col refs PER
@@ -3457,7 +2978,7 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 	}
 	return t.exactFilter(
 		preds,
-		t.namedQuantifier(sourceAlias(f.Input), innerRef),
+		t.namedQuantifier(sourceBinding(f.Input), innerRef),
 	)
 }
 
@@ -3713,7 +3234,7 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 			// rebase it to the qualified `A.c` key off the merged outer QOV.
 			// RFC-142. This is the correct and now ONLY domain of the
 			// name-keyed rebase.
-			mergedCorr := values.NamedCorrelationIdentifier(sourceAlias(join.Left))
+			mergedCorr := values.NamedCorrelationIdentifier(sourceBinding(join.Left))
 			outerLegs := unnestOuterLegAliases(join.Left, mergedCorr)
 			mergedType, _ := sel.GetResultValue().Type().(*values.RecordType)
 			for _, p := range nonExists {
@@ -3761,7 +3282,7 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 	// referencing the unnest ELEMENT (VAL) is bound by the FlatMap already (the
 	// P2c path) and is left untouched: it is NOT an outer-table-leg alias.
 	// RFC-142.
-	mergedCorr := values.NamedCorrelationIdentifier(sourceAlias(join))
+	mergedCorr := values.NamedCorrelationIdentifier(sourceBinding(join))
 	outerLegs := outerBoundAliases(join.Left)
 	// The EXISTS correlation's outer-leg refs, routed by whether
 	// the seed carries executor WINDOWS, checked DIRECTLY (not proxied through
@@ -3854,59 +3375,70 @@ func (t *cascadesTranslator) translateUnnestExistsFilter(
 			if lf, isLF := esq.Plan.(*logical.LogicalFilter); isLF &&
 				len(lf.ExistsSubqueries) == 0 && len(lf.ScalarSubqueries) == 0 &&
 				predicateIsOuterOnly(lf.Predicate, outerBoundAliases(lf.Input)) {
-				var rebased predicates.QueryPredicate
-				armCensus := unnestLegMintEnabled()
-				if armCensus {
-					RecordUnnestLegMintBranchReached(UnnestLegMintSiteBuriedNotWindowed)
+				rebase := func(original predicates.QueryPredicate) (predicates.QueryPredicate, bool) {
+					var rebased predicates.QueryPredicate
+					armCensus := unnestLegMintEnabled()
+					if armCensus {
+						RecordUnnestLegMintBranchReached(UnnestLegMintSiteBuriedNotWindowed)
+					}
+					if planTimeBake {
+						if armCensus {
+							RecordUnnestLegMintArm(UnnestLegMintSiteBuriedNotWindowed, UnnestLegMintArmPlanTimeBake)
+						}
+						// E-1a: a BURIED outer-only predicate over the INNER cluster (or a
+						// multi-esq peel box) may reference a leg OR the ELEMENT (`… WHERE
+						// X = 7` — an outer-only conjunct with no inner-table ref that
+						// buildCorrelatedExists keeps here, review-caught). Bake BOTH
+						// channels + the safety net.
+						baked, ok := t.bakeInnerExistsPredicateOrdinal(original, join.Left, innerElementSlots, ordMergedType, outerLegs, mergedCorr)
+						if !ok {
+							return nil, false
+						}
+						rebased = baked
+					} else if seedWindowed {
+						if armCensus {
+							RecordUnnestLegMintArm(UnnestLegMintSiteBuriedNotWindowed, UnnestLegMintArmOrdinalTwin)
+						}
+						baked, ok := rebaseUnnestOuterLegPredicateOrdinal(original, t.ordinalLegType(join.Left), ordMergedType, outerLegs, mergedCorr)
+						if !ok {
+							// CORRECT-or-LOUD: an outer ref the seed's outer leg type
+							// cannot map is never a valid correlation — decline the
+							// whole composition rather than ship a half-baked tree.
+							return nil, false
+						}
+						// The buried conjunct may ALSO reference the unnest ELEMENT
+						// (`EXISTS (… WHERE MA.C = X)` — outer-only relative to the
+						// EXISTS inner, mixing a leg ref and the element). Below the
+						// FOD only the merged outer row is bound, so the element ref
+						// must bake to its seed slot exactly like the leg refs —
+						// unbaked it read an unbound correlation, the comparison
+						// went NULL, and EXISTS silently dropped every row (R5m/R5n).
+						baked = bakeUnnestElementRefOrdinal(baked, unnestSeedElementSlots(unnestExpr), mergedCorr, ordMergedType)
+						if unnestExistsRefSurvivesUnbaked(baked, outerLegs, mergedCorr) {
+							// The safety net (the E-1a floor): a surviving outer/element
+							// ref would mis-resolve silently — decline instead.
+							return nil, false
+						}
+						rebased = baked
+					} else {
+						if armCensus {
+							RecordUnnestLegMintArm(UnnestLegMintSiteBuriedNotWindowed, UnnestLegMintArmName)
+						}
+						var ok bool
+						rebased, ok = rebaseUnnestOuterLegPredicate(original, outerLegs, mergedCorr, ordMergedType, UnnestLegMintSiteBuriedNotWindowed)
+						if !ok {
+							return nil, false
+						}
+					}
+					return rebased, true
 				}
-				if planTimeBake {
-					if armCensus {
-						RecordUnnestLegMintArm(UnnestLegMintSiteBuriedNotWindowed, UnnestLegMintArmPlanTimeBake)
-					}
-					// E-1a: a BURIED outer-only predicate over the INNER cluster (or a
-					// multi-esq peel box) may reference a leg OR the ELEMENT (`… WHERE
-					// X = 7` — an outer-only conjunct with no inner-table ref that
-					// buildCorrelatedExists keeps here, review-caught). Bake BOTH
-					// channels + the safety net.
-					baked, ok := t.bakeInnerExistsPredicateOrdinal(lf.Predicate, join.Left, innerElementSlots, ordMergedType, outerLegs, mergedCorr)
-					if !ok {
-						return nil
-					}
-					rebased = baked
-				} else if seedWindowed {
-					if armCensus {
-						RecordUnnestLegMintArm(UnnestLegMintSiteBuriedNotWindowed, UnnestLegMintArmOrdinalTwin)
-					}
-					baked, ok := rebaseUnnestOuterLegPredicateOrdinal(lf.Predicate, t.ordinalLegType(join.Left), ordMergedType, outerLegs, mergedCorr)
-					if !ok {
-						// CORRECT-or-LOUD: an outer ref the seed's outer leg type
-						// cannot map is never a valid correlation — decline the
-						// whole composition rather than ship a half-baked tree.
-						return nil
-					}
-					// The buried conjunct may ALSO reference the unnest ELEMENT
-					// (`EXISTS (… WHERE MA.C = X)` — outer-only relative to the
-					// EXISTS inner, mixing a leg ref and the element). Below the
-					// FOD only the merged outer row is bound, so the element ref
-					// must bake to its seed slot exactly like the leg refs —
-					// unbaked it read an unbound correlation, the comparison
-					// went NULL, and EXISTS silently dropped every row (R5m/R5n).
-					baked = bakeUnnestElementRefOrdinal(baked, unnestSeedElementSlots(unnestExpr), mergedCorr, ordMergedType)
-					if unnestExistsRefSurvivesUnbaked(baked, outerLegs, mergedCorr) {
-						// The safety net (the E-1a floor): a surviving outer/element
-						// ref would mis-resolve silently — decline instead.
-						return nil
-					}
-					rebased = baked
-				} else {
-					if armCensus {
-						RecordUnnestLegMintArm(UnnestLegMintSiteBuriedNotWindowed, UnnestLegMintArmName)
-					}
-					var ok bool
-					rebased, ok = rebaseUnnestOuterLegPredicate(lf.Predicate, outerLegs, mergedCorr, ordMergedType, UnnestLegMintSiteBuriedNotWindowed)
-					if !ok {
-						return nil
-					}
+				rebased, ok := rebase(lf.Predicate)
+				if !ok {
+					return nil
+				}
+				esq, ok = rebaseExistsInputPredicates(esq, rebase)
+				if !ok {
+					return nil
 				}
 				esq.Plan = &logical.LogicalFilter{
 					Input:                      lf.Input,
@@ -4659,21 +4191,15 @@ func (t *cascadesTranslator) buildExistentialSelect(
 		return t.buildExistentialJoinSelect(join, f, resultOverride)
 	}
 
-	outerAlias := sourceAlias(f.Input)
+	outerAlias := sourceBinding(f.Input)
 	outerQ := t.namedQuantifier(outerAlias, innerRef)
 	quantifiers := []expressions.Quantifier{outerQ}
 
-	if t.declineNegatedOuterOnlyEsqValue(resultOverride, f.ExistsSubqueries) {
-		return nil
-	}
-	if t.declineNegatedOuterOnlyEsq(f.Predicate, f.ExistsSubqueries) {
-		return nil
-	}
 	allPreds := splitNonExistsPredicates(f.Predicate)
 	allPreds = append(allPreds, extractExistsPredicates(f.Predicate)...)
 	var innerCorrNames []string
 	for _, esq := range f.ExistsSubqueries {
-		subRef := t.translateSubqueryRef(esq.Plan)
+		subRef := t.existsInputRef(esq)
 		if subRef == nil {
 			return nil
 		}
@@ -4800,12 +4326,6 @@ func (t *cascadesTranslator) buildExistentialJoinSelect(
 	f *logical.LogicalFilter,
 	resultValue values.Value,
 ) expressions.RelationalExpression {
-	if t.declineNegatedOuterOnlyEsq(f.Predicate, f.ExistsSubqueries) {
-		return nil
-	}
-	if t.declineNegatedOuterOnlyEsqValue(resultValue, f.ExistsSubqueries) {
-		return nil
-	}
 	if j.Kind == logical.JoinFull || j.Kind == logical.JoinRight {
 		// FULL: the existential semi-join cannot carry the FULL drain (never
 		// rewritten, never merged). RIGHT: the fold's JoinType has no
@@ -4874,7 +4394,7 @@ func (t *cascadesTranslator) buildExistentialJoinSelect(
 			preds = append(preds, splitNonExistsPredicates(f.Predicate)...)
 			preds = append(preds, extractExistsPredicates(f.Predicate)...)
 			for _, esq := range f.ExistsSubqueries {
-				subRef := t.translateSubqueryRef(esq.Plan)
+				subRef := t.existsInputRef(esq)
 				if subRef == nil {
 					return nil
 				}
@@ -4949,7 +4469,7 @@ func (t *cascadesTranslator) buildExistentialJoinSelect(
 	sourceAliases := []string{leftAlias, rightAlias}
 	{
 		for _, esq := range f.ExistsSubqueries {
-			subRef := t.translateSubqueryRef(esq.Plan)
+			subRef := t.existsInputRef(esq)
 			if subRef == nil {
 				return nil
 			}
@@ -6170,6 +5690,32 @@ func exactUnionResultRow(
 		}
 		records[i] = record
 	}
+	return commonUnionResultRow(records)
+}
+
+func promotedLogicalUnionResultType(branches []values.Type) (values.Type, error) {
+	records := make([]*values.RecordType, len(branches))
+	for i, branch := range branches {
+		record, ok := branch.(*values.RecordType)
+		if !ok || record == nil {
+			return nil, api.NewErrorf(api.ErrCodeUnionIncompatibleColumns,
+				"UNION branch %d result is not a record row", i)
+		}
+		records[i] = record
+	}
+	row, _, err := commonUnionResultRow(records)
+	if err != nil {
+		return nil, err
+	}
+	return row, nil
+}
+
+// commonUnionResultRow is the positional output contract shared by bound-tree
+// metadata and relational UNION normalization. It never changes an input row.
+func commonUnionResultRow(records []*values.RecordType) (*values.RecordType, bool, error) {
+	if len(records) == 0 {
+		return nil, false, api.NewError(api.ErrCodeUnsupportedQuery, "UNION has no input branches")
+	}
 	width := len(records[0].Fields)
 	for i := 1; i < len(records); i++ {
 		if len(records[i].Fields) != width {
@@ -6420,8 +5966,8 @@ func (t *cascadesTranslator) exactGatheredCTEGroupKeyValue(
 	if !ok || scan == nil || scan.Table == "" {
 		return nil, false, nil
 	}
-	body, isCTE := t.cteScope[strings.ToUpper(scan.Table)]
-	if !isCTE || body == nil {
+	producer := logical.ResolveScan(scan, t.cteScope)
+	if producer == nil || producer.Body() == nil {
 		return nil, false, nil
 	}
 	seedQOV, ok := values.AsQuantifiedObjectValue(bake.seedQOV)
@@ -6473,8 +6019,8 @@ func (t *cascadesTranslator) exactProjectedCTEOutputGroupKeyValue(
 	if !ok || scan == nil || scan.Table == "" {
 		return nil, false, nil
 	}
-	body, isCTE := t.cteScope[strings.ToUpper(scan.Table)]
-	if !isCTE || body == nil || bake.quant.GetRangesOver() == nil {
+	producer := logical.ResolveScan(scan, t.cteScope)
+	if producer == nil || producer.Body() == nil || bake.quant.GetRangesOver() == nil {
 		return nil, false, nil
 	}
 	translatedInput := bake.quant.GetRangesOver().Get()
@@ -6485,7 +6031,7 @@ func (t *cascadesTranslator) exactProjectedCTEOutputGroupKeyValue(
 	if err != nil {
 		return nil, false, fmt.Errorf("projected CTE output row: %w", err)
 	}
-	if !values.SameLeg(outputQOV.Correlation(), values.NamedCorrelationIdentifier(sourceAlias(scan))) {
+	if !values.SameLeg(outputQOV.Correlation(), values.NamedCorrelationIdentifier(sourceBinding(scan))) {
 		return nil, false, nil
 	}
 	outputRow, ok := outputQOV.FlowedType().(*values.RecordType)
@@ -6881,7 +6427,7 @@ func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.R
 	// stays an unresolved name reading a dead constant, so InMemorySort sorts on nothing
 	// (the silent DESC==ASC bug). A key already carrying a resolved ordinal is left as-is
 	// by the bake; a non-seed input has seedQOV nil, so keys and quantifier are untouched.
-	bake, bakeErr := t.gatheredSeedBakeContext(innerRef, sourceAlias(s.Input))
+	bake, bakeErr := t.gatheredSeedBakeContext(innerRef, sourceBinding(s.Input))
 	if bakeErr != nil {
 		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
 			"ORDER BY input has no exact gathered-seed row: %v", bakeErr))
@@ -7237,7 +6783,15 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 	if innerRef == nil {
 		return nil
 	}
-	projectionQ := t.namedQuantifier(sourceAlias(p.Input), innerRef)
+	// A retained recursive producer can be lowered lazily by this input scan,
+	// without a declaration envelope enclosing the projection. Its row bridge
+	// belongs to these selected consumers for the duration of this projection.
+	var recursiveBindings []values.CorrelationIdentifier
+	for producer, row := range t.recursiveProducerRows {
+		recursiveBindings = append(recursiveBindings, t.pushRecursiveCTEConsumerRows(p.Input, producer, row.declaration, row.common)...)
+	}
+	defer t.popRecursiveCTEConsumerRows(recursiveBindings)
+	projectionQ := t.namedQuantifier(sourceBinding(p.Input), innerRef)
 	projectionInput, flowedErr := projectionQ.RequireFlowedObjectValue()
 	if flowedErr != nil {
 		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
@@ -7462,32 +7016,14 @@ func (t *cascadesTranslator) translateSingleSourceCorrelatedScalarJoin(
 		innerRef = expressions.InitialOf(limitExpr)
 	}
 
-	// Source-anchored correlated-scalar-subquery join seed (RFC-077 7.6).
-	//
-	// The inner is a scalar SUBQUERY exposing exactly ONE value. The projection
-	// reads it as the QUALIFIED name <innerAlias>.<scalarCol> — and the inner
-	// quantifier's row carries the scalar under the key scalarCol (the runtime
-	// mergeRows PREFIXES every inner key with innerAlias, dots and all, so
-	// <innerAlias>.<scalarCol> resolves iff the inner key == scalarCol; it does).
-	// The ordinal seed (scalarSubqueryOrdinalSeed) names the inner leg's SINGLE
-	// field EXACTLY <innerAlias>.<scalarCol> and values it ofOrdinal(QOV(innerCorr),
-	// 0) — so composeFieldOverConstructor folds the scalar reference onto the inner
-	// leg with no NULL, whether or not scalarCol is itself dotted (a non-aggregate
-	// subquery keeps its table qualifier, "C.NAME"; the RC field NAME carries the
-	// qualified form the projection reads while the leg is keyed by a fresh unique
-	// correlation). The outer leg carries its derivable columns so the (bare or
-	// qualified) outer projections resolve too.
-	//
-	// Untranslatable when the outer columns are not derivable (only the catalog-free
-	// nil-md path — production always passes md): the opaque-seed fallback was RETIRED
-	// in RFC-077 7.6, so there is no result value to flow.
-	// VERBATIM: this NAMES the ordinal seed's inner-leg column, so it is the
-	// spelling the correlated subquery's result column reports. Folding it made
-	// `(SELECT SUM(x."Amount") …)` label itself SUM(X.AMOUNT) for a column
-	// declared `Amount` — the same defect as the aggregate mint, one boundary
-	// out. The other ToUpper on this field (logical_predicate.go's `want`,
-	// clustered_outer_scalar's innerKey) sit in front of EqualFold comparisons,
-	// where they decide nothing; this one decides a name.
+	// The scalar join seed appends the full inner query's one exact output
+	// slot after the outer columns. The inner has a fresh correlation distinct
+	// from every source its query binds; its result title is carried verbatim
+	// and never prefixed with that private identity. Consumers replace the
+	// ScalarSubqueryValue by the known final ordinal, not by a joined label.
+	// The outer metadata supplies the remaining columns; a missing exact row
+	// is an unsupported boundary, never an opaque or name-keyed fallback.
+
 	scalarCol := csq.ScalarCol
 	outerCols := t.legColumns(outerPlan)
 	if outerCols == nil || outerAlias == "" || scalarCol == "" || csq.InnerAlias == "" {
@@ -7500,8 +7036,8 @@ func (t *cascadesTranslator) translateSingleSourceCorrelatedScalarJoin(
 	// correlated-scalar seed; a decline (nil) loud-declines below.
 	//
 	// The former innerScalarIsRowColumn guard (shape 3) is GONE: a COMPUTED scalar
-	// is now MATERIALIZED as the inner's projected output (buildCorrelatedScalar,
-	// positional `_0`), so the scalar is ALWAYS present in the inner row (plain
+	// is MATERIALIZED by the full query's projection, so the scalar is present
+	// in the inner row (plain
 	// column, aggregate output, or projected computation) — the guard's "is the
 	// scalar in the inner row" question is unconditionally yes. The single inner
 	// leg reads ofOrdinal(inner, 0) regardless of whether the scalar is a stored
@@ -7515,8 +7051,18 @@ func (t *cascadesTranslator) translateSingleSourceCorrelatedScalarJoin(
 	var resultValue values.Value
 	var innerLegCorr values.CorrelationIdentifier
 	if t.clusterArity(outerPlan) == 1 {
+		innerValue := innerRef.Get().GetResultValue()
+		if innerValue == nil {
+			return nil, nil, nil
+		}
+		innerRow, ok := innerValue.Type().(*values.RecordType)
+		if !ok || len(innerRow.Fields) != 1 {
+			t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedQuery,
+				"correlated scalar inner has no one-column flowed row"))
+			return nil, nil, nil
+		}
 		ordinalInnerCorr := values.UniqueCorrelationIdentifier()
-		resultValue = t.scalarSubqueryOrdinalSeed(outerAlias, outerPlan, innerPlan, ordinalInnerCorr, csq.InnerAlias, scalarCol)
+		resultValue = t.scalarSubqueryOrdinalSeed(outerAlias, outerPlan, innerRow.Fields, ordinalInnerCorr, scalarCol)
 		if resultValue != nil {
 			innerLegCorr = ordinalInnerCorr
 		}
@@ -8099,7 +7645,7 @@ func (t *cascadesTranslator) translateDistinct(d *logical.LogicalDistinct) expre
 		return nil
 	}
 	distinct, err := expressions.NewLogicalDistinctExpression(
-		t.namedQuantifier(sourceAlias(d.Input), innerRef),
+		t.namedQuantifier(sourceBinding(d.Input), innerRef),
 	)
 	if err != nil {
 		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
@@ -8185,7 +7731,7 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 	// slots via the shared gatheredSeedBakeContext (see its doc) — the qualifier-honoring
 	// read that replaces the retired name-keyed wrap. The outer WHERE already baked itself
 	// (bakeGatedJoinPredicates fires on the SelectExpression).
-	bake, bakeErr := t.gatheredSeedBakeContext(innerRef, sourceAlias(a.Input))
+	bake, bakeErr := t.gatheredSeedBakeContext(innerRef, sourceBinding(a.Input))
 	if bakeErr != nil {
 		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
 			"aggregate input has no exact gathered-seed row: %v", bakeErr))
@@ -8385,8 +7931,8 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 	// so the planner produces "could not plan query" instead of
 	// silently returning wrong results. NOTE: this blanket rejection is
 	// also what keeps HAVING out of the esq polarity-guard surface — if
-	// it is ever narrowed, HAVING becomes a fifth consumer and needs
-	// declineNegatedOuterOnlyEsq wiring like the WHERE/ON sites.
+	// it is ever narrowed, HAVING needs an explicit admission contract
+	// at the clause construction boundary, like WHERE/ON.
 	if len(a.HavingExistsSubqueries) > 0 {
 		return nil
 	}
@@ -8710,9 +8256,6 @@ func (t *cascadesTranslator) translateJoinWithExists(
 	j *logical.LogicalJoin,
 	f *logical.LogicalFilter,
 ) expressions.RelationalExpression {
-	if t.declineNegatedOuterOnlyEsq(f.Predicate, f.ExistsSubqueries) {
-		return nil
-	}
 	// The flatten is INNER-only BY CONTRACT: the dispatch in translateFilter
 	// routes every OUTER kind to the generic arm (merging a preserved-side
 	// WHERE conjunct into the flat select would turn it into ON semantics —
@@ -8874,7 +8417,7 @@ func (t *cascadesTranslator) translateJoinWithExists(
 	sourceAliases := []string{leftAlias, rightAlias}
 	{
 		for _, esq := range f.ExistsSubqueries {
-			subRef := t.translateSubqueryRef(esq.Plan)
+			subRef := t.existsInputRef(esq)
 			if subRef == nil {
 				return nil
 			}
@@ -9087,81 +8630,6 @@ func hasKnownExistsTruth(subqueries []logical.ExistsSubquery) bool {
 	return false
 }
 
-// declineNegatedOuterOnlyEsq records a LOUD decline (and reports true) when
-// an esq flagged OuterOnlyJoinConjuncts is consumed under a NEGATED
-// existential marker in pred. Such an esq's join predicate carries a
-// conjunct with no inner-source reference (the Case-1 nested-EXISTS middle
-// routes them there — the inside placement does not plan for that
-// composition); the semi-join outer-routes it, which is VALID for positive
-// polarity (P ∧ ∃(Q) ≡ ∃(P∧Q)) but under NOT EXISTS computes P ∧ ¬∃(Q)
-// where ¬∃(P∧Q) is due — silently dropping every ¬P outer row. Positive
-// consumers are untouched (their routing is a genuine equivalence).
-func (t *cascadesTranslator) declineNegatedOuterOnlyEsq(pred predicates.QueryPredicate, esqs []logical.ExistsSubquery) bool {
-	if pred == nil || len(esqs) == 0 {
-		return false
-	}
-	negated := map[values.CorrelationIdentifier]struct{}{}
-	predicates.WalkPredicate(pred, func(p predicates.QueryPredicate) bool {
-		if a, ok := predicates.IsNotExistentialPredicate(p); ok {
-			negated[a] = struct{}{}
-		}
-		return true
-	})
-	if len(negated) == 0 {
-		return false
-	}
-	for _, esq := range esqs {
-		if _, isNeg := negated[esq.Alias]; isNeg && esq.OuterOnlyJoinConjuncts {
-			t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedOperation,
-				"NOT EXISTS over a nested-EXISTS subquery with an outer-only conjunct is not supported"))
-			return true
-		}
-	}
-	return false
-}
-
-// declineNegatedOuterOnlyEsqValue is declineNegatedOuterOnlyEsq's PROJECTED
-// twin, and STRICTER: a projected EXISTS consumes the boolean in the RESULT
-// VALUE (the synthesized filter's Predicate is nil), where outer-routing the
-// flagged conjunct FILTERS THE ROW STREAM — but a projected boolean must
-// never filter rows (Java emits the boolean per outer row; the row-drop was
-// observed live: 0 rows where Java answers (id,false) pairs). The
-// P ∧ ∃(Q) ≡ ∃(P∧Q) equivalence only licenses outer-routing for WHERE
-// consumption under positive polarity, so a flagged esq whose ExistsValue is
-// referenced by the result value declines in BOTH polarities.
-func (t *cascadesTranslator) declineNegatedOuterOnlyEsqValue(v values.Value, esqs []logical.ExistsSubquery) bool {
-	if v == nil || len(esqs) == 0 {
-		return false
-	}
-	flagged := map[values.CorrelationIdentifier]struct{}{}
-	for _, esq := range esqs {
-		if esq.OuterOnlyJoinConjuncts {
-			flagged[esq.Alias] = struct{}{}
-		}
-	}
-	if len(flagged) == 0 {
-		return false
-	}
-	hit := false
-	values.WalkValue(v, func(node values.Value) bool {
-		ev, isExists := node.(*values.ExistsValue)
-		if !isExists {
-			return true
-		}
-		if qov, isQOV := values.AsQuantifiedObjectValue(ev.Value); isQOV {
-			if _, isFlagged := flagged[qov.Correlation()]; isFlagged {
-				hit = true
-			}
-		}
-		return !hit
-	})
-	if hit {
-		t.setTranslateErr(api.NewError(api.ErrCodeUnsupportedOperation,
-			"a projected EXISTS over a nested-EXISTS subquery with an outer-only conjunct is not supported"))
-	}
-	return hit
-}
-
 // splitNonExistsPredicates extracts the non-EXISTS parts of a predicate
 // tree. EXISTS predicates (and NOT EXISTS) are dropped — they're
 // represented by the Existential quantifier in the SelectExpression.
@@ -9268,10 +8736,10 @@ func (t *cascadesTranslator) existsInnerCorrelation(esq logical.ExistsSubquery) 
 	// That keeps the leg/source-alias routing — the merged-row inner routes by
 	// distinct qualified keys and cannot clobber the outer binding.
 	if !existsInnerSafeToRename(esq.Plan) {
-		return sourceAlias(esq.Plan), esq.JoinPredicate
+		return sourceBinding(esq.Plan), esq.JoinPredicate
 	}
 	uniqueAlias := esq.Alias
-	srcAlias := values.NamedCorrelationIdentifier(sourceAlias(esq.Plan))
+	srcAlias := values.NamedCorrelationIdentifier(sourceBinding(esq.Plan))
 	joinPred := esq.JoinPredicate
 	if joinPred != nil && srcAlias != uniqueAlias {
 		aliasMap, err := values.NewAliasMap([]values.AliasPair{{Source: srcAlias, Target: uniqueAlias}})
@@ -9309,7 +8777,9 @@ func (t *cascadesTranslator) existsInnerCorrelation(esq logical.ExistsSubquery) 
 // rebasing esq.JoinPredicate's references to that alias, onto the unique
 // existential alias, is safe. Returns false for a JOIN (a merged row keyed by
 // SEVERAL leg aliases — one rebase target cannot capture them all) and a
-// CTE/derived-table (its own correlation namespace). A LogicalFilter carrying
+// unbound or scope-only CTE. An explicitly bound, nonrecursive derived carrier
+// exports one identity and is safe: only the separate JoinPredicate is rebased,
+// never its definition. A LogicalFilter carrying
 // its OWN nested ExistsSubqueries is safe to walk through: the rename only
 // rewrites esq.JoinPredicate (a value tree entirely separate from esq.Plan),
 // so it can never reach — and never needs to reach — a correlation buried
@@ -9336,7 +8806,9 @@ func existsInnerSafeToRename(op logical.LogicalOperator) bool {
 		case *logical.LogicalJoin:
 			return false
 		case *logical.LogicalCTE:
-			return false
+			// An explicit derived export owns one outward binding. Its Body
+			// has a separate lexical scope and is not part of this rebase.
+			return o.Binding != "" && !o.Recursive() && !o.PreserveMainSource
 		case *logical.LogicalFilter:
 			ch := o.Children()
 			if len(ch) == 1 {
@@ -9385,7 +8857,7 @@ func sourceAlias(op logical.LogicalOperator) string {
 			// executor qualifies merged-row keys under the alias
 			// the user specified (e.g. "sq1"), not the underlying
 			// table name buried inside the CTE body.
-			return strings.ToUpper(o.Name)
+			return strings.ToUpper(o.Name())
 		default:
 			ch := cur.Children()
 			if len(ch) == 1 {
@@ -9430,19 +8902,19 @@ func mintedBindingLeg(ops ...logical.LogicalOperator) string {
 		switch o := op.(type) {
 		case *logical.LogicalInlineValues:
 			if o.Binding != "" {
-				return o.Binding
+				return strings.ToUpper(o.Binding)
 			}
 		case *logical.LogicalScan:
 			if o.Binding != "" {
-				return o.Binding
+				return strings.ToUpper(o.Binding)
 			}
 		case *logical.LogicalUnnest:
 			if o.Binding != "" {
-				return o.Binding
+				return strings.ToUpper(o.Binding)
 			}
 		case *logical.LogicalCTE:
 			if o.Binding != "" {
-				return o.Binding
+				return strings.ToUpper(o.Binding)
 			}
 		}
 		if b := mintedBindingLeg(op.Children()...); b != "" {
@@ -9457,21 +8929,21 @@ func sourceBinding(op logical.LogicalOperator) string {
 		switch o := cur.(type) {
 		case *logical.LogicalInlineValues:
 			if o.Binding != "" {
-				return o.Binding
+				return strings.ToUpper(o.Binding)
 			}
 			return sourceAlias(cur)
 		case *logical.LogicalScan:
 			if o.Binding != "" {
-				return o.Binding
+				return strings.ToUpper(o.Binding)
 			}
 			return sourceAlias(cur)
 		case *logical.LogicalUnnest:
-			return sourceAlias(cur)
+			return strings.ToUpper(logical.UnnestBindingName(o.Binding, o.Alias, o.AtAlias))
 		case *logical.LogicalJoin:
 			return sourceBinding(o.Right)
 		case *logical.LogicalCTE:
 			if o.Binding != "" {
-				return o.Binding
+				return strings.ToUpper(o.Binding)
 			}
 			if o.PreserveMainSource {
 				return sourceBinding(o.Main)
@@ -9490,14 +8962,36 @@ func sourceBinding(op logical.LogicalOperator) string {
 }
 
 func (t *cascadesTranslator) translateCTE(c *logical.LogicalCTE) expressions.RelationalExpression {
-	if c.Recursive {
-		return t.translateRecursiveCTE(c)
+	logical.BindCTESources(c, t.cteScope)
+	if c.Recursive() {
+		var result expressions.RelationalExpression
+		t.inCTEDefiningScope(c.CTEProducer, func() { result = t.translateRecursiveCTE(c) })
+		return result
 	}
-	body := c.Body
-	if len(c.ColumnAliases) > 0 {
+	return t.translateOp(c.Main)
+}
+
+func (t *cascadesTranslator) cteTranslationBody(c *logical.CTEProducer) logical.LogicalOperator {
+	body := c.Body()
+	if len(c.ColumnAliases()) > 0 {
 		origCols := extractOutputColumns(body)
-		starBodied := false
+		exactWidth := cteBodyWidthIsExact(body)
 		if len(origCols) == 0 {
+			// A nested WITH can end in a bare scan of its local CTE. Its
+			// complete query still declares an exact row even though neither
+			// the projection walk nor the catalog-only star walk sees it.
+			if typ, err := ExactLogicalResultType(body, t.md); err == nil {
+				if row, ok := typ.(*values.RecordType); ok {
+					origCols = make([]string, len(row.Fields))
+					for i, field := range row.Fields {
+						origCols[i] = field.Name
+					}
+					exactWidth = true
+				}
+			}
+		}
+		starBodied := false
+		if len(origCols) == 0 && !exactWidth {
 			// A star-bodied CTE (`WITH c1(x, y, z) AS (SELECT * FROM t)`)
 			// has NO final projection — the plan bottoms at the scan — so
 			// extractOutputColumns sees nothing and the aliases were
@@ -9509,13 +9003,13 @@ func (t *cascadesTranslator) translateCTE(c *logical.LogicalCTE) expressions.Rel
 			origCols, starBodied = t.starBodyColumns(body)
 		}
 		switch {
-		case len(origCols) == len(c.ColumnAliases):
+		case len(origCols) == len(c.ColumnAliases()):
 			// The re-aliasing projection reads POSITIONALLY (baked
 			// ordinals), not by name: CTE column lists are positional,
 			// and duplicate body output labels (`SELECT id AS x, v AS x`)
 			// would make both name-based reads bind the first slot,
 			// silently duplicating its values.
-			proj := logical.NewProject(body, origCols, c.ColumnAliases)
+			proj := logical.NewProject(body, origCols, c.ColumnAliases())
 			proj.ProjectedValues = make([]values.Value, len(origCols))
 			// No projection input quantifier exists in the logical layer. Carry
 			// only the positional metadata; translateProject resolves it against
@@ -9525,87 +9019,36 @@ func (t *cascadesTranslator) translateCTE(c *logical.LogicalCTE) expressions.Rel
 				proj.InputOrdinals[i] = i
 			}
 			body = proj
-		case len(origCols) > 0 && (starBodied || cteBodyWidthIsExact(body)):
+		case exactWidth || len(origCols) > 0 && starBodied:
 			// The POINT-OF-TRUTH arity check (Java SemanticAnalyzer.
 			// validateCteColumnAliases): the body is BUILT here, so its
 			// output width is the real one — every shape (nested WITH,
 			// lateral unnest, qualified stars, shadowed sources) validates
 			// uniformly, with no parallel static width predictor to drift.
 			// Silently skipping the aliases instead executed the CTE with
-			// the mismatched list ignored. Rejection fires only for
-			// EXACT-width roots (Project): an Aggregate root's
-			// extractOutputColumns is its deduplicated internal layout,
+			// the mismatched list ignored. Rejection requires an exact
+			// output width: an Aggregate root's extractOutputColumns is
+			// its deduplicated internal layout,
 			// which legitimately differs from the visible SELECT list
 			// (`SELECT id, id … GROUP BY id` is 2 visible over 1 internal).
 			t.setTranslateErr(api.NewErrorf(api.ErrCodeInvalidColumnReference,
 				"cte query has %d column(s), however %d aliases defined",
-				len(origCols), len(c.ColumnAliases)))
+				len(origCols), len(c.ColumnAliases())))
 			return nil
 		}
 		// Unknown or inexact widths stay lenient — never reject a valid
 		// query on an unmodeled shape.
 	}
-	name := strings.ToUpper(c.Name)
-	// Save the OUTER binding this registration shadows (nil = unbound): the
-	// derived-table alias-carrier reuses cteScope, so a wrapper named like
-	// an enclosing WITH-CTE must not clobber it — the wrapper's body reads
-	// the outer binding (via the shadow-stack pop at scan resolution), and
-	// siblings after this CTE keep resolving the outer name.
-	prevBody, hadPrev := t.cteScope[name]
-	// Lazy init: unit tests build translators as bare struct literals,
-	// bypassing the constructor.
-	if t.cteShadowStack == nil {
-		t.cteShadowStack = make(map[string][]logical.LogicalOperator)
-	}
-	if hadPrev {
-		t.cteShadowStack[name] = append(t.cteShadowStack[name], prevBody)
-	} else {
-		t.cteShadowStack[name] = append(t.cteShadowStack[name], nil)
-	}
-	t.cteScope[name] = body
-	result := t.translateOp(c.Main)
-	st := t.cteShadowStack[name]
-	t.cteShadowStack[name] = st[:len(st)-1]
-	if hadPrev {
-		t.cteScope[name] = prevBody
-	} else {
-		delete(t.cteScope, name)
-	}
-	return result
+	return body
 }
 
-// inCTEDefiningScope runs fn with `key` resolving as it does in the DEFINING
-// scope of the cteScope body being expanded: the shadow stack pops one level
-// (the body's own references to `key` then hit the shadowed outer binding
-// when one exists, the real table otherwise) and is restored afterwards,
-// together with the body's registration. Every cteScope body expansion must
-// go through this — a bare delete-while-recursing loses the outer binding
-// (`WITH c AS (…) … FROM (SELECT * FROM c) c` read the real table instead of
-// the WITH body), and a bare re-register loops forever on self-reference.
-func (t *cascadesTranslator) inCTEDefiningScope(key string, body logical.LogicalOperator, fn func()) {
-	st := t.cteShadowStack[key]
-	var outer logical.LogicalOperator
-	popped := false
-	if n := len(st); n > 0 {
-		outer = st[n-1]
-		t.cteShadowStack[key] = st[:n-1]
-		popped = true
-	}
-	if outer != nil {
-		t.cteScope[key] = outer
-	} else {
-		delete(t.cteScope, key)
-	}
+// Lazy producer work replaces the entire consumer environment. Captured
+// absences and unrelated shadows are as significant as a same-name binding.
+func (t *cascadesTranslator) inCTEDefiningScope(producer *logical.CTEProducer, fn func()) {
+	previous := t.cteScope
+	t.cteScope = previous.BodyScope(producer)
+	defer func() { t.cteScope = previous }()
 	fn()
-	t.cteScope[key] = body
-	if popped {
-		// Restoring the pre-pop slice is safe despite sharing its backing
-		// array with any nested push during fn: a nested registration that
-		// appended into the freed slot wrote the SAME enclosing binding this
-		// restore reinstates (scope chains share their prefix), so the write
-		// is idempotent by construction.
-		t.cteShadowStack[key] = st
-	}
 }
 
 // starBodyColumns expands the output columns of a projection-less CTE body —
@@ -9625,7 +9068,7 @@ func (t *cascadesTranslator) starBodyColumns(op logical.LogicalOperator) ([]stri
 		case *logical.LogicalFilter:
 			op = o.Input
 		case *logical.LogicalScan:
-			fields := t.tableColumns(o.Table)
+			fields := t.legColumns(o)
 			if len(fields) == 0 {
 				return nil, false
 			}
@@ -9738,21 +9181,32 @@ func cteBodyWidthIsExact(op logical.LogicalOperator) bool {
 // backstop; recursive CTEs are excluded (their seed/recursive arms have
 // their own validation path).
 func ValidateCTEAliasArities(op logical.LogicalOperator) error {
+	logical.BindCTESources(op, logical.CTERegistry{})
+	return validateCTEAliasAritiesInGraph(op, make(map[*logical.CTEProducer]bool))
+}
+
+func validateCTEAliasAritiesInGraph(op logical.LogicalOperator, producers map[*logical.CTEProducer]bool) error {
 	if op == nil {
 		return nil
 	}
+	if scan, ok := op.(*logical.LogicalScan); ok {
+		if producer := scan.Source.Producer(); producer != nil && !producers[producer] {
+			producers[producer] = true
+			return validateCTEAliasAritiesInGraph(logical.NewCTEReference(producer, nil), producers)
+		}
+	}
 	if c, ok := op.(*logical.LogicalCTE); ok {
-		if len(c.ColumnAliases) > 0 && !c.Recursive {
-			if origCols := extractOutputColumns(c.Body); len(origCols) > 0 &&
-				len(origCols) != len(c.ColumnAliases) && cteBodyWidthIsExact(c.Body) {
+		if len(c.ColumnAliases()) > 0 && !c.Recursive() {
+			if origCols := extractOutputColumns(c.Body()); len(origCols) > 0 &&
+				len(origCols) != len(c.ColumnAliases()) && cteBodyWidthIsExact(c.Body()) {
 				return api.NewErrorf(api.ErrCodeInvalidColumnReference,
 					"cte query has %d column(s), however %d aliases defined",
-					len(origCols), len(c.ColumnAliases))
+					len(origCols), len(c.ColumnAliases()))
 			}
 		}
 	}
 	for _, child := range op.Children() {
-		if err := ValidateCTEAliasArities(child); err != nil {
+		if err := validateCTEAliasAritiesInGraph(child, producers); err != nil {
 			return err
 		}
 	}
@@ -9760,7 +9214,7 @@ func ValidateCTEAliasArities(op logical.LogicalOperator) error {
 	// HAVING, ON) are not Children() — a CTE declared inside one escaped
 	// the walk.
 	for _, sub := range logical.AttachedPlans(op) {
-		if err := ValidateCTEAliasArities(sub); err != nil {
+		if err := validateCTEAliasAritiesInGraph(sub, producers); err != nil {
 			return err
 		}
 	}
@@ -9830,7 +9284,7 @@ func (t *cascadesTranslator) recursiveCTECommonResultRow(
 // win over display aliases exactly as they do at quantifier construction.
 func recursiveCTEMainBindings(
 	op logical.LogicalOperator,
-	cteName string,
+	producer *logical.CTEProducer,
 	bindings map[values.CorrelationIdentifier]struct{},
 ) {
 	if op == nil {
@@ -9838,7 +9292,7 @@ func recursiveCTEMainBindings(
 	}
 	switch current := op.(type) {
 	case *logical.LogicalScan:
-		if strings.EqualFold(current.Table, cteName) {
+		if current.Source.Producer() == producer {
 			binding := sourceBinding(current)
 			if binding != "" {
 				bindings[values.NamedCorrelationIdentifier(binding)] = struct{}{}
@@ -9846,15 +9300,15 @@ func recursiveCTEMainBindings(
 		}
 		return
 	case *logical.LogicalCTE:
-		if strings.EqualFold(current.Name, cteName) {
+		if current.CTEProducer == producer {
 			return
 		}
 	}
 	for _, child := range op.Children() {
-		recursiveCTEMainBindings(child, cteName, bindings)
+		recursiveCTEMainBindings(child, producer, bindings)
 	}
 	for _, attached := range logical.AttachedPlans(op) {
-		recursiveCTEMainBindings(attached, cteName, bindings)
+		recursiveCTEMainBindings(attached, producer, bindings)
 	}
 }
 
@@ -9863,12 +9317,12 @@ func recursiveCTEMainBindings(
 // after main translation; stacks preserve an enclosing recursive definition.
 func (t *cascadesTranslator) pushRecursiveCTEConsumerRows(
 	main logical.LogicalOperator,
-	cteName string,
+	producer *logical.CTEProducer,
 	declaration *values.RecordType,
 	common *values.RecordType,
 ) []values.CorrelationIdentifier {
 	bindings := make(map[values.CorrelationIdentifier]struct{})
-	recursiveCTEMainBindings(main, cteName, bindings)
+	recursiveCTEMainBindings(main, producer, bindings)
 	if len(bindings) == 0 {
 		return nil
 	}
@@ -10012,7 +9466,33 @@ func (t *cascadesTranslator) normalizeRecursiveCTEConsumerValue(
 //  6. Translate the Main query with the CTE name resolving to the
 //     RecursiveUnionExpression.
 func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expressions.RelationalExpression {
-	cteName := strings.ToUpper(c.Name)
+	logical.BindCTESources(c, t.cteScope)
+	if ref := t.producerRefs[c.CTEProducer]; ref != nil {
+		row := t.recursiveProducerRows[c.CTEProducer]
+		bindings := t.pushRecursiveCTEConsumerRows(c.Main, c.CTEProducer, row.declaration, row.common)
+		defer t.popRecursiveCTEConsumerRows(bindings)
+		return t.translateOp(c.Main)
+	}
+	previousExpr, hadExpr := t.cteExprScope[c.CTEProducer]
+	previousColumns, hadColumns := t.cteColumnsScope[c.CTEProducer]
+	if t.cteExprScope == nil {
+		t.cteExprScope = make(map[*logical.CTEProducer]expressions.RelationalExpression)
+	}
+	if t.cteColumnsScope == nil {
+		t.cteColumnsScope = make(map[*logical.CTEProducer][]values.Field)
+	}
+	defer func() {
+		if hadExpr {
+			t.cteExprScope[c.CTEProducer] = previousExpr
+		} else {
+			delete(t.cteExprScope, c.CTEProducer)
+		}
+		if hadColumns {
+			t.cteColumnsScope[c.CTEProducer] = previousColumns
+		} else {
+			delete(t.cteColumnsScope, c.CTEProducer)
+		}
+	}()
 
 	// The recursive-CTE body ordinalizes where possible. An earlier blanket
 	// `t.inInnerCluster = true` forced every body join name-model; lifting it
@@ -10031,7 +9511,7 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	// riding alongside for UNION-DISTINCT dedup and Main name resolution.
 
 	// The body must be a UNION ALL or UNION DISTINCT.
-	union, ok := c.Body.(*logical.LogicalUnion)
+	union, ok := c.Body().(*logical.LogicalUnion)
 	if !ok || len(union.Inputs) < 2 {
 		return nil
 	}
@@ -10040,7 +9520,7 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	// (references the CTE name).
 	var seedBranches, recursiveBranches []logical.LogicalOperator
 	for _, branch := range union.Inputs {
-		if logicalOpReferencesCTE(branch, cteName) {
+		if logical.ReferencesCTE(branch, c.CTEProducer) {
 			recursiveBranches = append(recursiveBranches, branch)
 		} else {
 			seedBranches = append(seedBranches, branch)
@@ -10050,8 +9530,8 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 		return nil
 	}
 
-	scanAlias := values.NamedCorrelationIdentifier(cteName + "forScan")
-	insertAlias := values.NamedCorrelationIdentifier(cteName + "forInsert")
+	scanAlias := c.ScanBinding()
+	insertAlias := c.InsertBinding()
 
 	// Translate the seed leg. Multiple seed branches become a union.
 	var seedExpr expressions.RelationalExpression
@@ -10126,8 +9606,8 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 		}
 	}
 	outCols := seedOut
-	if len(c.ColumnAliases) > 0 && len(c.ColumnAliases) == len(outCols) {
-		outCols = c.ColumnAliases // normalized once, at the parse capture
+	if len(c.ColumnAliases()) > 0 && len(c.ColumnAliases()) == len(outCols) {
+		outCols = c.ColumnAliases() // normalized once, at the parse capture
 	}
 
 	// Derive the exact positional row shared by every iteration BEFORE creating
@@ -10174,16 +9654,16 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 		Nullable: seedType.Nullable,
 		Fields:   append([]values.Field(nil), seedFields...),
 	}
-	t.cteColumnsScope[cteName] = seedFields
+	t.cteColumnsScope[c.CTEProducer] = seedFields
 	commonRow, commonErr := t.recursiveCTECommonResultRow(seedType, recursiveBranches, outCols)
 	if commonErr != nil {
-		delete(t.cteColumnsScope, cteName)
+		delete(t.cteColumnsScope, c.CTEProducer)
 		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
 			"recursive CTE branches have no exact common result row: %v", commonErr))
 		return nil
 	}
 	tempFields := append([]values.Field(nil), commonRow.Fields...)
-	t.cteColumnsScope[cteName] = tempFields
+	t.cteColumnsScope[c.CTEProducer] = tempFields
 
 	// Normalize the seed onto that exact row. This is a no-op for the common
 	// same-schema case, preserving its plan shape; a rename, promotion, or
@@ -10191,7 +9671,7 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	if !seedType.Equals(commonRow) {
 		seedExpr = t.normalizeRecursiveLegToOutputRow(seedExpr, commonRow)
 		if seedExpr == nil {
-			delete(t.cteColumnsScope, cteName)
+			delete(t.cteColumnsScope, c.CTEProducer)
 			return nil
 		}
 	}
@@ -10204,7 +9684,7 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 		expressions.ForEachQuantifier(expressions.InitialOf(seedExpr)), insertAlias, true,
 	)
 	if err != nil {
-		delete(t.cteColumnsScope, cteName)
+		delete(t.cteColumnsScope, c.CTEProducer)
 		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
 			"recursive CTE seed insert has no exact flowed row: %v", err))
 		return nil
@@ -10215,17 +9695,17 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	// exact contract that both inserts publish (RFC-077 7.6).
 	tempScan, err := expressions.NewTempTableScanExpression(scanAlias, commonRow)
 	if err != nil {
-		delete(t.cteColumnsScope, cteName)
+		delete(t.cteColumnsScope, c.CTEProducer)
 		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
 			"recursive CTE temp scan has no exact row type: %v", err))
 		return nil
 	}
-	t.cteExprScope[cteName] = tempScan
-	t.cteColumnsScope[cteName] = tempFields
+	t.cteExprScope[c.CTEProducer] = tempScan
+	t.cteColumnsScope[c.CTEProducer] = tempFields
 	var recursiveConsumerBindings []values.CorrelationIdentifier
 	for _, branch := range recursiveBranches {
 		recursiveConsumerBindings = append(recursiveConsumerBindings,
-			t.pushRecursiveCTEConsumerRows(branch, cteName, declaredRow, commonRow)...)
+			t.pushRecursiveCTEConsumerRows(branch, c.CTEProducer, declaredRow, commonRow)...)
 	}
 	var recursiveExpr expressions.RelationalExpression
 	if len(recursiveBranches) == 1 {
@@ -10234,8 +9714,8 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 		recursiveExpr = t.translateUnion(&logical.LogicalUnion{Inputs: recursiveBranches, Distinct: false})
 	}
 	t.popRecursiveCTEConsumerRows(recursiveConsumerBindings)
-	delete(t.cteExprScope, cteName)
-	delete(t.cteColumnsScope, cteName)
+	delete(t.cteExprScope, c.CTEProducer)
+	delete(t.cteColumnsScope, c.CTEProducer)
 	if recursiveExpr == nil {
 		return nil
 	}
@@ -10290,7 +9770,7 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	seedInsertRef := expressions.InitialOf(seedInsert)
 	recursiveInsertRef := expressions.InitialOf(recursiveInsert)
 	strategy := expressions.TraversalAny
-	switch c.TraversalOrder {
+	switch c.TraversalOrder() {
 	case logical.TraversalLevelOrder:
 		// An EXPLICIT level_order pins the level union (Java LEVEL gates
 		// the DFS rule off); only the clause-less ANY leaves the choice
@@ -10328,18 +9808,26 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	// names (outCols) — the column-alias list, when present, was baked into
 	// outCols and applied to BOTH legs before the temp-table inserts.
 	cteResult := recUnion
+	if t.producerRefs == nil {
+		t.producerRefs = make(map[*logical.CTEProducer]*expressions.Reference)
+	}
+	if t.recursiveProducerRows == nil {
+		t.recursiveProducerRows = make(map[*logical.CTEProducer]recursiveCTEConsumerRow)
+	}
+	t.producerRefs[c.CTEProducer] = expressions.InitialOf(cteResult)
+	t.recursiveProducerRows[c.CTEProducer] = recursiveCTEConsumerRow{declaration: declaredRow, common: commonRow}
 
 	// Register the result so the Main query's scan of the CTE name resolves to
 	// it. The OUTWARD column schema is outCols — so a CTE reference used as a JOIN
 	// LEG in the Main query anchors instead of falling back to the opaque merge
 	// (RFC-077 7.6).
-	t.cteExprScope[cteName] = cteResult
-	t.cteColumnsScope[cteName] = tempFields
-	consumerBindings := t.pushRecursiveCTEConsumerRows(c.Main, cteName, declaredRow, commonRow)
+	t.cteExprScope[c.CTEProducer] = cteResult
+	t.cteColumnsScope[c.CTEProducer] = tempFields
+	consumerBindings := t.pushRecursiveCTEConsumerRows(c.Main, c.CTEProducer, declaredRow, commonRow)
 	result := t.translateOp(c.Main)
 	t.popRecursiveCTEConsumerRows(consumerBindings)
-	delete(t.cteExprScope, cteName)
-	delete(t.cteColumnsScope, cteName)
+	delete(t.cteExprScope, c.CTEProducer)
+	delete(t.cteColumnsScope, c.CTEProducer)
 	return result
 }
 
@@ -10480,27 +9968,6 @@ func (t *cascadesTranslator) normalizeRecursiveLegToOutputRow(
 		return nil
 	}
 	return projection
-}
-
-// logicalOpReferencesCTE walks a LogicalOperator tree and reports
-// whether any LogicalScan references the given CTE name (case-
-// insensitive). Used to partition UNION ALL branches into seed vs
-// recursive legs.
-func logicalOpReferencesCTE(op logical.LogicalOperator, cteName string) bool {
-	if op == nil {
-		return false
-	}
-	if scan, ok := op.(*logical.LogicalScan); ok {
-		if strings.EqualFold(scan.Table, cteName) {
-			return true
-		}
-	}
-	for _, child := range op.Children() {
-		if logicalOpReferencesCTE(child, cteName) {
-			return true
-		}
-	}
-	return false
 }
 
 func (t *cascadesTranslator) translateInsert(ins *logical.LogicalInsert) expressions.RelationalExpression {

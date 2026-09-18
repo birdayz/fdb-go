@@ -30,7 +30,7 @@ ROWS(1) cols=[REGION, ID]:
 
 === SELECT region, COUNT(*), SUM(v) FROM t GROUP BY region ORDER BY region
 PLAN: Project([_current.REGION#0, _current.COUNT(*)#1, _current.SUM(V)#2], StreamingAgg(keys=[_current.REGION#0], Scan(T)))
-ROWS(3) cols=[REGION, COUNT(*), SUM(V)]:
+ROWS(3) cols=[REGION, _1, _2]:
   [1, 3, 600]
   [2, 2, 900]
   [3, 1, 600]

@@ -20,10 +20,17 @@ package sqldriver_test
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
+
+	"fdb.dev/pkg/dst"
+	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/sqldriver"
+	"fdb.dev/pkg/simfdb"
 )
 
 // minStraddleExecs is the sample floor the boundary-straddle detector needs:
@@ -58,21 +65,9 @@ func TestFDB_CurrentTimestamp_StatementStable_Select(t *testing.T) {
 		"CREATE TABLE Item (id BIGINT, PRIMARY KEY (id))")
 	ctx := context.Background()
 
-	// 10k rows, batched 1000 per INSERT.
-	const total, batch = 10000, 1000
-	for lo := 0; lo < total; lo += batch {
-		var sb strings.Builder
-		sb.WriteString("INSERT INTO Item VALUES ")
-		for i := 0; i < batch; i++ {
-			if i > 0 {
-				sb.WriteString(", ")
-			}
-			fmt.Fprintf(&sb, "(%d)", lo+i)
-		}
-		if _, err := db.ExecContext(ctx, sb.String()); err != nil {
-			t.Fatalf("seed INSERT batch at %d: %v", lo, err)
-		}
-	}
+	// Keep the full 10k-row semantic population; only fixture setup may retry.
+	const total = 10000
+	seedCurrentTimestampItems(t, db, total, nil)
 
 	deadline := time.Now().Add(3 * time.Second)
 	var firstTS, lastTS string
@@ -136,20 +131,8 @@ func TestFDB_CurrentTimestamp_StatementStable_Where(t *testing.T) {
 		"CREATE TABLE Item (id BIGINT, PRIMARY KEY (id))")
 	ctx := context.Background()
 
-	const total, batch = 10000, 1000
-	for lo := 0; lo < total; lo += batch {
-		var sb strings.Builder
-		sb.WriteString("INSERT INTO Item VALUES ")
-		for i := 0; i < batch; i++ {
-			if i > 0 {
-				sb.WriteString(", ")
-			}
-			fmt.Fprintf(&sb, "(%d)", lo+i)
-		}
-		if _, err := db.ExecContext(ctx, sb.String()); err != nil {
-			t.Fatalf("seed INSERT batch at %d: %v", lo, err)
-		}
-	}
+	const total = 10000
+	seedCurrentTimestampItems(t, db, total, nil)
 
 	deadline := time.Now().Add(3 * time.Second)
 	execs := 0
@@ -192,4 +175,87 @@ func keysOf(m map[string]bool) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// seedCurrentTimestampItems bounds setup work per MVCC window and uses the
+// existing whole-transaction retry only for definite time-limit failures. SQL
+// autocommit remains single-shot; unknown completion is never replayed here.
+func seedCurrentTimestampItems(t *testing.T, db *sql.DB, total int, onRetry func(int, error)) {
+	t.Helper()
+	ctx := context.Background()
+	const batch = 100
+	for lo := 0; lo < total; lo += batch {
+		var sb strings.Builder
+		sb.WriteString("INSERT INTO Item VALUES ")
+		for i := 0; i < min(batch, total-lo); i++ {
+			if i > 0 {
+				sb.WriteString(", ")
+			}
+			fmt.Fprintf(&sb, "(%d)", lo+i)
+		}
+		retryTx(t, db, txRetryOpts{OnRetry: onRetry}, func(a txAttempt) error {
+			if _, err := a.tx.ExecContext(ctx, sb.String()); err != nil {
+				return fmt.Errorf("seed INSERT batch at %d: %w", lo, err)
+			}
+			return a.tx.Commit()
+		})
+	}
+}
+
+func TestCurrentTimestampSeedRetriesExpiredTransaction(t *testing.T) {
+	t.Parallel()
+	env := dst.NewSim(256)
+	env.Buggify = dst.DisabledBuggifier()
+	sim := simfdb.New(env)
+	backend := recordlayer.NewFDBDatabaseWithBackend(sim).SetEnv(env)
+	backend.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
+	key := "sim://" + t.Name()
+	t.Cleanup(sqldriver.RegisterBackend(key, backend))
+	setup := openSpiked(t, key, "/timestamp_seed", "")
+	ctx := context.Background()
+	for _, ddl := range []string{
+		"CREATE DATABASE /timestamp_seed",
+		"CREATE SCHEMA TEMPLATE timestamp_seed_tmpl CREATE TABLE Item (id BIGINT, PRIMARY KEY (id))",
+		"CREATE SCHEMA /timestamp_seed/s WITH TEMPLATE timestamp_seed_tmpl",
+	} {
+		if _, err := setup.ExecContext(ctx, ddl); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db := openSpiked(t, key, "/timestamp_seed", "s")
+	db.SetMaxOpenConns(1)
+	// Initialize the query connection before arming the DML fault. Catalog
+	// bootstrap has its own idempotent transaction and must not consume it.
+	var initial int64
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM Item").Scan(&initial); err != nil || initial != 0 {
+		t.Fatalf("initial population: %d, %v", initial, err)
+	}
+	sim.InjectOnce(1007)
+	retries := 0
+	const total = 1000
+	seedCurrentTimestampItems(t, db, total, func(attempt int, err error) {
+		retries++
+		if attempt != 1 || !api.IsTransactionTimeLimit(err) {
+			t.Fatalf("unexpected setup retry: attempt=%d err=%v", attempt, err)
+		}
+	})
+	if retries != 1 {
+		t.Fatalf("injected expiry caused %d caller-owned retries, want 1", retries)
+	}
+	rows, err := db.QueryContext(ctx, "SELECT id FROM Item ORDER BY id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	n := 0
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil || id != int64(n) {
+			t.Fatalf("seed row %d: id=%d err=%v", n, id, err)
+		}
+		n++
+	}
+	if err := rows.Err(); err != nil || n != total {
+		t.Fatalf("seed population after expiry/retry: rows=%d want=%d err=%v", n, total, err)
+	}
 }

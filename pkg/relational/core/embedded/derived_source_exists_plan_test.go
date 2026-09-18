@@ -4,6 +4,11 @@ import (
 	"strings"
 	"testing"
 
+	cascades "fdb.dev/pkg/recordlayer/query/plan/cascades"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/relational/core/query"
+	"fdb.dev/pkg/relational/core/query/logical"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
@@ -111,7 +116,14 @@ func TestDerivedSourceCorrelatedExistsPlans(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			plan, err := PlanPhysicalForTest(c.sql, derivedExistsSchema, nil)
+			var wantInner values.CorrelationIdentifier
+			var observe func(logical.LogicalOperator, *expressions.Reference)
+			if c.name == "cte_where_exists_inner_reads_cte" {
+				observe = func(op logical.LogicalOperator, ref *expressions.Reference) {
+					wantInner = observedExistentialIdentity(t, op, ref)
+				}
+			}
+			plan, _, err := planPhysicalForTestObserved(c.sql, derivedExistsSchema, nil, false, nil, plannerOptionsFrom(nil), observe)
 			if err != nil {
 				t.Fatalf("plan failed: %T: %v\n  sql: %s", err, err, c.sql)
 			}
@@ -135,14 +147,15 @@ func TestDerivedSourceCorrelatedExistsPlans(t *testing.T) {
 					t.Fatal("CTE-inner EXISTS plan has no FlatMap")
 				}
 
-				// CorrelationIdentifier equality includes the private kind. This
-				// therefore pins a NAMED F carrier, not merely a matching string,
-				// and proves the synthetic CTE definition name did not replace it.
-				wantInner := values.NamedCorrelationIdentifier("F")
+				// Follow the existential identity minted by this query's binder
+				// through translation and physical selection. A same-spelled
+				// named alias is not that binding, nor is the CTE definition.
 				definition := values.NamedCorrelationIdentifier("FILTERED")
-				if got := flatMap.GetInnerAlias(); got != wantInner || got == definition {
-					t.Fatalf("FlatMap inner identity = %#v, want exact main alias %#v (not definition %#v)",
-						got, wantInner, definition)
+				namedTwin := values.NamedCorrelationIdentifier(wantInner.Name())
+				if got := flatMap.GetInnerAlias(); got != wantInner || got == definition ||
+					got == namedTwin || got == flatMap.GetOuterAlias() {
+					t.Fatalf("FlatMap inner identity = %#v, want exact observed existential %#v (not definition, named twin or outer binding)",
+						got, wantInner)
 				}
 				if _, misplaced := flatMap.GetOuter().(*plans.RecordQueryPredicatesFilterPlan); misplaced {
 					t.Fatal("CTE correlation predicate was routed to the outer filter")
@@ -344,4 +357,104 @@ func TestThreeLegExistsKeepsExactExistentialAlias(t *testing.T) {
 	if !foundExactCorrelation {
 		t.Fatal("no predicate below FirstOrDefault references the exact inner-row and merged-outer bindings")
 	}
+}
+
+func TestDerivedExistsClusterProjection(t *testing.T) {
+	t.Parallel()
+	const ddl = "CREATE TABLE ord (order_id BIGINT, cust_id BIGINT, PRIMARY KEY (order_id))"
+	for _, projection := range []string{"order_id", "*"} {
+		t.Run(projection, func(t *testing.T) {
+			t.Parallel()
+			sql := "SELECT o.order_id, EXISTS (SELECT o.order_id FROM (SELECT " + projection + " FROM ord WHERE order_id = 1) AS d WHERE d.order_id = o.order_id) FROM ord AS o, ord AS other"
+			tmpl, err := buildSchemaTemplateFromDDL(ddl)
+			if err != nil {
+				t.Fatal(err)
+			}
+			q, err := parseQueryFromSelect(t, sql)
+			if err != nil {
+				t.Fatal(err)
+			}
+			op, err := NewPlanVisitor(tmpl.Underlying()).VisitQuery(q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ref, _, err := query.TranslateToCascadesWithError(op, tmpl.Underlying())
+			if err != nil || ref == nil {
+				t.Fatalf("translation=%v err=%v", ref, err)
+			}
+			seen := map[*expressions.Reference]bool{}
+			var describe func(*expressions.Reference)
+			describe = func(r *expressions.Reference) {
+				if seen[r] {
+					return
+				}
+				seen[r] = true
+				for _, m := range r.Members() {
+					t.Logf("ref %d member %T rv=%s refs=%v", r.ID(), m, values.ExplainValue(m.GetResultValue()), m.GetCorrelatedToWithoutChildren())
+					if sel, ok := m.(*expressions.SelectExpression); ok {
+						for _, p := range sel.GetPredicates() {
+							t.Logf("predicate %s refs=%v", p.Explain(), predicates.GetCorrelatedToOfPredicate(p))
+						}
+					}
+					for _, quant := range m.GetQuantifiers() {
+						t.Logf("quant %T alias=%#v -> ref %d", quant, quant.GetAlias(), quant.GetRangesOver().ID())
+						describe(quant.GetRangesOver())
+					}
+				}
+			}
+			describe(ref)
+			plan, _, err := planReferenceToPhysical(ref, tmpl.Underlying(), nil, cascades.BatchAExpressionRules(), false, nil, plannerOptionsFrom(nil))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if plan == nil {
+				t.Fatal("no physical plan")
+			}
+			t.Log(plan.Explain())
+		})
+	}
+}
+
+// observedExistentialIdentity follows the one EXISTS in this regression from
+// the bound logical attachment to its actual translated quantifier.
+func observedExistentialIdentity(t *testing.T, op logical.LogicalOperator, ref *expressions.Reference) values.CorrelationIdentifier {
+	t.Helper()
+	var bound []values.CorrelationIdentifier
+	var walkLogical func(logical.LogicalOperator)
+	walkLogical = func(node logical.LogicalOperator) {
+		if filter, ok := node.(*logical.LogicalFilter); ok {
+			for _, edge := range filter.ExistsSubqueries {
+				bound = append(bound, edge.Alias)
+			}
+		}
+		for _, child := range node.Children() {
+			walkLogical(child)
+		}
+	}
+	walkLogical(op)
+	if len(bound) != 1 || bound[0].Name() == "" || bound[0] == values.NamedCorrelationIdentifier(bound[0].Name()) {
+		t.Fatalf("bound existential identities = %#v, want exactly one generated identity", bound)
+	}
+	var translated []values.CorrelationIdentifier
+	seen := make(map[*expressions.Reference]bool)
+	var walkReference func(*expressions.Reference)
+	walkReference = func(current *expressions.Reference) {
+		if seen[current] {
+			return
+		}
+		seen[current] = true
+		for _, member := range current.Members() {
+			for _, quantifier := range member.GetQuantifiers() {
+				if quantifier.Kind() == expressions.QuantifierExistential {
+					translated = append(translated, quantifier.GetAlias())
+				}
+				walkReference(quantifier.GetRangesOver())
+			}
+		}
+	}
+	walkReference(ref)
+	if len(translated) != 1 || translated[0] != bound[0] {
+		t.Fatalf("translated existential identities = %#v, want the exact bound identity %#v", translated, bound[0])
+	}
+	return bound[0]
 }

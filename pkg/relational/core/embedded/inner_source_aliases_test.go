@@ -48,3 +48,47 @@ func TestInnerSourceAliases_MirrorsUnnestBinder(t *testing.T) {
 		t.Error("unaliased scan must contribute its table name")
 	}
 }
+
+func TestInnerSourceAliasesDerivedDefinitionIsPrivate(t *testing.T) {
+	t.Parallel()
+	body := logical.NewScan("orders", "HIDDEN")
+	main := logical.NewScan("D", "D")
+	carrier := logical.NewCTE("D", body, main, false)
+	got := innerSourceAliases(carrier)
+	if len(got) != 1 {
+		t.Fatalf("derived source binds D only, not its hidden body: %v", got)
+	}
+	if _, ok := got["D"]; !ok {
+		t.Fatalf("missing outward binding: %v", got)
+	}
+}
+
+func TestInnerSourceAliasesBindingIdentity(t *testing.T) {
+	t.Parallel()
+	scan := logical.NewScan("orders", "x")
+	scan.Binding = "q$scan"
+	unaliased := logical.NewScan("orders", "")
+	unaliased.Binding = "q$unaliased"
+	for _, tc := range []struct {
+		name string
+		op   logical.LogicalOperator
+		want string
+	}{
+		{"scan", scan, "Q$SCAN"},
+		{"unaliased scan", unaliased, "Q$UNALIASED"},
+		{"unnest AS", &logical.LogicalUnnest{Segments: []string{"X", "ARR"}, Alias: "v", Binding: "q$unnest"}, "Q$UNNEST"},
+		{"unnest AS AT", &logical.LogicalUnnest{Segments: []string{"X", "ARR"}, Alias: "v", AtAlias: "c", Binding: "q$unnest"}, "Q$UNNEST"},
+		{"unnest AT", &logical.LogicalUnnest{Segments: []string{"X", "ARR"}, AtAlias: "c", Binding: "q$unnest"}, "Q$UNNEST"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := innerSourceAliases(tc.op)
+			if len(got) != 1 {
+				t.Fatalf("only the actual correlation is inner-scoped, not a display alias: %v", got)
+			}
+			if _, ok := got[tc.want]; !ok {
+				t.Fatalf("missing bound correlation %s; an inner projection would classify as outer-owned: %v", tc.want, got)
+			}
+		})
+	}
+}

@@ -603,11 +603,11 @@ Every proof is committed; each names the dimension that was unprobed.
     type, a homonym of the same type, the top-level control;
     `TestSemanticColumnFromExactTypeCarriesRecordName` (the nominal record round-trips under its
     name; the fieldless record still declines).
-22. **The shape rule's decline is final, and no shape reaches a decline the walk would answer differently.**
-    `TestDerivedNestedEnumFieldTypesAsStringSoTheShapeRuleNeverDeclines` (Java-authored metadata:
-    an enum field beside its STRING homonym plans through the derived table and the CTE, the
-    exact row is the one STRING column; red once the exact derivation carries enums) and
-    `TestSemanticColumnFromExactTypeDeclinesEnum` (the bridge's own contract).
+22. **The nested enum preserves its identity beside a STRING homonym.**
+    RFC-256 supersedes the enum-as-STRING/decline sentinels with
+    `TestDerivedNestedEnumFieldKeepsExactTypeAndHomonym` and
+    `TestSemanticColumnFromExactTypeCarriesEnum`: the derived/CTE source carries the enum's
+    full declaration without redirecting lookup to the top-level STRING homonym.
 23. **An anonymous record through a derived row.**
     `TestFDB_AnonymousRecordsThroughADerivedRowKeepDistinctIdentities` (two anonymous shapes in
     one derived row, the CTE and derived-over-derived spellings, two top-level controls, and two
@@ -1024,16 +1024,14 @@ order-correct: the index stores (c, id), the residual filter preserves order.
   the exact route (§11, §13, the derived-over-derived body: 5 of 5), the alias that names a
   struct column never fires the shape rule (one segment after the strip; the post-lookup net
   alone covers it), and the one leaf Graefe named as still declining — an enum-typed field,
-  reachable from Java-authored metadata only — does not: the exact logical derivation types
-  an enum field as STRING (the catalog kind `ENUM` bridges forward to STRING) before the
-  bridge sees it, so no shape reaches a decline the walk would answer differently (the decline set is wider than the bridge's arm and a NULL literal beside the path reaches it; see Folds at r16). That is the negative result
-  pinned on a descriptor-built table with a STRING `color` beside the enum `p.color`
-  (`TestDerivedNestedEnumFieldTypesAsStringSoTheShapeRuleNeverDeclines`: the derived and CTE
-  spellings plan, the exact row is the one STRING column; it goes red when the exact
-  derivation starts carrying enums, naming the homonym shape as the one to pin as a loud
-  decline), and at the bridge (`TestSemanticColumnFromExactTypeDeclinesEnum`: an enum has no
-  lossless semantic carrier). This also removes Torvalds's r14 nit — a shape-true decline no
-  longer rebuilds the identical body through the net.
+  reachable from Java-authored metadata only — did not at r15: the catalog incorrectly
+  mapped ENUM to STRING before the bridge saw it. The decline set was wider than that arm
+  (a NULL literal beside the path reaches it; see Folds at r16). RFC-256 now transports exact
+  enum declarations and replaces those historical STRING/decline sentinels with
+  `TestDerivedNestedEnumFieldKeepsExactTypeAndHomonym` and
+  `TestSemanticColumnFromExactTypeCarriesEnum`. The descriptor-built nested enum and its
+  top-level STRING homonym remain distinct through derived and CTE sources. The shape-true
+  decline still does not rebuild the identical body through the net.
 ## Folds at r16
 
 - **The decline set stated as it is** (Graefe, measured): r15's comment and test-plan title said
@@ -1059,10 +1057,10 @@ order-correct: the index stores (c, id), the residual filter preserves order.
   (`TestFDB_AnonymousRecordsThroughADerivedRowKeepDistinctIdentities`, red under the old
   fallback name) and at the bridge (the anonymous arm of
   `TestSemanticColumnFromExactTypeCarriesRecordName`).
-- **The enum-as-STRING typing is booked on its own** (Graefe): `sqlTypeToCascadesType("ENUM")`
-  is `TypeString`, so the exact derivation is inexact one layer before RFC-232's carrier gap;
-  `TODO.md`, "The exact derivation types an enum field as STRING", pointing at the pin that
-  goes red when it closes and at the nullable-element entry beside it.
+- **The enum-as-STRING typing was booked on its own** (Graefe): at r16,
+  `sqlTypeToCascadesType("ENUM")` returned `TypeString`, one layer before RFC-232's carrier
+  gap. RFC-256 repairs that declaration transport; `TODO.md`, "Exact enum transport",
+  tracks its integration separately from the still-open nullable-element entry.
 - **A table with a fieldless nested-message column is unqueryable** (found while measuring
   \@claude's r14 shape — an exact-derivation decline for a reason unrelated to the nested
   path): `expr.structColumnType` turns a fieldless record into UNKNOWN and the flowed row then
@@ -3510,9 +3508,9 @@ mechanism depends on them.
   r15 measurement of an exact-derivation decline beside a nested path. `TODO.md`, "A table with
   a fieldless nested-message column cannot be queried at all", with the reproducer and the
   closure.
-- An enum field is typed STRING by the exact derivation (`sqlTypeToCascadesType("ENUM")`), one
-  layer before RFC-232's carrier gap; `TODO.md`, "The exact derivation types an enum field as
-  STRING", pointing at the pin that goes red when it closes.
+- The enum field's former STRING derivation is repaired by RFC-256's exact declaration
+  transport. `TODO.md`, "Exact enum transport", tracks current integration; the separate
+  RFC-232 nullable-element/nested-array carrier gap remains open.
 - The nightlies red for a runner-host reason — the FDB container disappearing about thirty
   minutes into every Docker-backed job — need host access and are escalated to the owner as a
   STOP, not filed. Re-measured for r50 rather than repeated: RowDiff T+30m48s (run

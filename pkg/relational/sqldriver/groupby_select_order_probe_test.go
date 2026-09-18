@@ -169,7 +169,7 @@ func TestFDB_GroupBySelectOrderProbe(t *testing.T) {
 	t.Run("multi_key_multi_aggregate_interleaving", func(t *testing.T) {
 		assertRows(t,
 			"SELECT b, SUM(v), a, COUNT(*) FROM m GROUP BY a, b ORDER BY a",
-			[]string{"B", "SUM(V)", "A", "COUNT(*)"},
+			[]string{"B", "_1", "A", "_3"},
 			[][]any{
 				{int64(10), int64(35), int64(1), int64(2)},
 				{int64(20), int64(10), int64(2), int64(1)},
@@ -194,7 +194,7 @@ func TestFDB_GroupBySelectOrderProbe(t *testing.T) {
 	t.Run("duplicate_visible_group_key_slots_share_native_identity", func(t *testing.T) {
 		assertRows(t,
 			"SELECT a, a, COUNT(*) FROM m GROUP BY a ORDER BY a",
-			[]string{"A", "A", "COUNT(*)"},
+			[]string{"A", "A", "_2"},
 			[][]any{
 				{int64(1), int64(1), int64(2)},
 				{int64(2), int64(2), int64(1)},
@@ -231,11 +231,11 @@ func TestFDB_GroupBySelectOrderProbe(t *testing.T) {
 	t.Run("group_key_alias_and_hidden_accumulators", func(t *testing.T) {
 		assertRows(t,
 			"SELECT SUM(v), a AS grp FROM m GROUP BY a HAVING COUNT(*) > 0 ORDER BY grp",
-			[]string{"SUM(V)", "GRP"},
+			[]string{"_0", "GRP"},
 			[][]any{{int64(35), int64(1)}, {int64(10), int64(2)}, {nil, int64(3)}})
 		assertRows(t,
 			"SELECT SUM(v), a FROM m GROUP BY a ORDER BY COUNT(*) DESC, a",
-			[]string{"SUM(V)", "A"},
+			[]string{"_0", "A"},
 			[][]any{{int64(35), int64(1)}, {int64(10), int64(2)}, {nil, int64(3)}})
 	})
 
@@ -260,11 +260,11 @@ func TestFDB_GroupBySelectOrderProbe(t *testing.T) {
 	t.Run("global_count_star_keeps_hidden_aggregates_private", func(t *testing.T) {
 		assertRows(t,
 			"SELECT COUNT(*) FROM m HAVING SUM(v) > 0",
-			[]string{"COUNT(*)"},
+			[]string{"_0"},
 			[][]any{{int64(4)}})
 		assertRows(t,
 			"SELECT COUNT(*) FROM m HAVING SUM(v) < 0",
-			[]string{"COUNT(*)"},
+			[]string{"_0"},
 			nil)
 		assertRows(t,
 			"SELECT COUNT(*) AS c FROM m HAVING SUM(v) > 0 ORDER BY SUM(v)",

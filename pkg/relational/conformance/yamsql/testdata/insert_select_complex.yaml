@@ -13,7 +13,6 @@ tests:
       INSERT INTO summary
       SELECT category, SUM(amount), COUNT(*)
       FROM source GROUP BY category
-    rows: []
   - query: SELECT category, total, cnt FROM summary ORDER BY category
     rows:
       - ["A", 300, 2]

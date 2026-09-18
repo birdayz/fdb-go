@@ -15,8 +15,11 @@ import (
 
 // unnestFor builds a LogicalUnnest over the given outer table with the given
 // AS/AT aliases (empty = omitted).
-func unnestFor(table, asAlias, atAlias string) *logical.LogicalUnnest {
-	return &logical.LogicalUnnest{Segments: []string{table, "ARR"}, Alias: asAlias, AtAlias: atAlias}
+func unnestFor(t testing.TB, table, asAlias, atAlias string) *logical.LogicalUnnest {
+	t.Helper()
+	ownerLayout := &values.RecordType{Fields: []values.Field{{Name: "ARR", Ordinal: 0, FieldType: values.NewArrayType(false, values.NotNullLong)}}}
+	u, _ := rawBoundUnnest(t, []string{table, "ARR"}, asAlias, atAlias, table, ownerLayout, 0)
+	return u
 }
 
 // TestUnnestSeed_NonOrdinality pins the NO-AT seed: a MIXED RC — the outer
@@ -32,7 +35,7 @@ func TestUnnestSeed_NonOrdinality(t *testing.T) {
 	outerCorr := values.NamedCorrelationIdentifier("c")
 	innerCorr := values.NamedCorrelationIdentifier("X")
 
-	seed := tr.unnestOrdinalSeed(outer, outerCorr, innerCorr, unnestFor("CUSTOMER", "X", ""), values.NotNullLong)
+	seed := tr.unnestOrdinalSeed(outer, outerCorr, innerCorr, unnestFor(t, "CUSTOMER", "X", ""), values.NotNullLong)
 	if seed == nil {
 		t.Fatal("single-source non-ordinality unnest must ordinalize, got nil (declined)")
 	}
@@ -80,7 +83,7 @@ func TestUnnestSeed_WithOrdinality(t *testing.T) {
 	outerCorr := values.NamedCorrelationIdentifier("c")
 	innerCorr := values.NamedCorrelationIdentifier("X")
 
-	seed := tr.unnestOrdinalSeed(outer, outerCorr, innerCorr, unnestFor("CUSTOMER", "X", "O"), values.NotNullLong)
+	seed := tr.unnestOrdinalSeed(outer, outerCorr, innerCorr, unnestFor(t, "CUSTOMER", "X", "O"), values.NotNullLong)
 	if seed == nil {
 		t.Fatal("single-source with-ordinality unnest must ordinalize, got nil")
 	}
@@ -130,7 +133,7 @@ func TestUnnestSeed_ATOnly(t *testing.T) {
 	outerCorr := values.NamedCorrelationIdentifier("c")
 	innerCorr := values.NamedCorrelationIdentifier("O")
 
-	seed := tr.unnestOrdinalSeed(outer, outerCorr, innerCorr, unnestFor("CUSTOMER", "", "O"), values.NotNullLong)
+	seed := tr.unnestOrdinalSeed(outer, outerCorr, innerCorr, unnestFor(t, "CUSTOMER", "", "O"), values.NotNullLong)
 	if seed == nil {
 		t.Fatal("AT-only unnest must ordinalize, got nil")
 	}
@@ -146,26 +149,31 @@ func TestUnnestSeed_ATOnly(t *testing.T) {
 }
 
 // nestedArrayUnnestFixture supplies a real exact nested-array path without
-// depending on a catalog descriptor having one. The projected leg flows one
-// column N whose value is RECORD<ARR ARRAY<LONG NOT NULL>>, so both the root
-// and suffix can be resolved exactly and the collection's final type agrees
-// with the unnest element type.
-func nestedArrayUnnestFixture(t testing.TB) (logical.LogicalOperator, *logical.LogicalUnnest, values.Type) {
+// depending on a catalog descriptor having one. The projected leg flows PAD
+// followed by N, whose value is RECORD<suffixName ARRAY<LONG NOT NULL>>. The
+// nonzero root ordinal must survive lowering while the suffix stays at zero.
+func nestedArrayUnnestFixture(t testing.TB, suffixName string) (logical.LogicalOperator, *logical.LogicalUnnest, values.Type) {
 	t.Helper()
 	elementType := values.NotNullLong
 	arrayType := values.NewArrayType(true, elementType)
 	nestedType := &values.RecordType{Fields: []values.Field{
-		{Name: "ARR", Ordinal: 0, FieldType: arrayType},
+		{Name: suffixName, Ordinal: 0, FieldType: arrayType},
 	}}
 	sourceType := &values.RecordType{Fields: []values.Field{
-		{Name: "N", Ordinal: 0, FieldType: nestedType},
+		{Name: "PAD", Ordinal: 0, FieldType: values.NotNullLong},
+		{Name: "N", Ordinal: 1, FieldType: nestedType},
 	}}
-	outer := &logical.LogicalProject{
-		Input:           scan("Customer", "src"),
-		Projections:     []string{"N"},
-		ProjectedValues: []values.Value{exactTestField(t, exactTestQOV(t, "SRC", sourceType), 0)},
+	source, err := logical.NewInlineValues("D", values.NewArrayConstructorValue(sourceType, nil))
+	if err != nil {
+		t.Fatal(err)
 	}
-	u := &logical.LogicalUnnest{Segments: []string{"D", "N", "ARR"}, Alias: "X"}
+	sourceQOV := exactTestQOV(t, "D", sourceType)
+	outer := &logical.LogicalProject{
+		Input:           source,
+		Projections:     []string{"PAD", "N"},
+		ProjectedValues: []values.Value{exactTestField(t, sourceQOV, 0), exactTestField(t, sourceQOV, 1)},
+	}
+	u, _ := rawBoundUnnest(t, []string{"D", "N", "ARR"}, "X", "", "D", sourceType, 1, 0)
 	return outer, u, elementType
 }
 
@@ -179,40 +187,54 @@ func nestedArrayUnnestFixture(t testing.TB) (logical.LogicalOperator, *logical.L
 func TestUnnestBakedRootCollection_MultiSegment(t *testing.T) {
 	t.Parallel()
 	tr := newGateTranslator(t)
-	outer, u, elementType := nestedArrayUnnestFixture(t)
-	outerCorr := values.NamedCorrelationIdentifier("D")
+	outer, u, elementType := nestedArrayUnnestFixture(t, "ARR")
+	outerCorr := values.NamedCorrelationIdentifier("D$LOWERED")
 
-	coll := tr.unnestBakedRootCollection(outer, outerCorr, u, "ARR", elementType, 1, -1)
+	coll := tr.unnestBakedRootCollection(outer, outerCorr, u, -1)
 	if coll == nil {
 		t.Fatal("multi-segment single-source unnest must bake a fused collection, got nil (declined)")
 	}
 	fv, ok := values.AsFieldValue(coll)
-	if !ok {
+	if !ok || fv.Path() == nil {
 		t.Fatalf("baked collection = %T, want *FieldValue", coll)
-	}
-	if !fv.Path().IsFrontierPinned() {
-		t.Fatal("baked collection root must be a frontier-pinned ofOrdinal (positional), not a name read")
 	}
 	if fv.Path().Len() != 2 {
 		t.Fatalf("baked collection has %d accessors, want 2 (ofOrdinal root + exact suffix)", fv.Path().Len())
 	}
 	root, rootOK := fv.Path().Accessor(0)
 	leaf, leafOK := fv.Path().Accessor(1)
-	if !rootOK || root.Ordinal() < 0 {
-		t.Errorf("root accessor = %v, want a non-negative exact ordinal", root)
+	if !rootOK || root.Ordinal() != 1 {
+		t.Errorf("root accessor = %v, want exact ordinal 1 (N after PAD)", root)
 	}
 	leafName, named := leaf.DisplayName()
 	if !leafOK || !named || leafName != "ARR" || leaf.Ordinal() != 0 {
 		t.Errorf("suffix accessor = {%q, %d}, want exact ARR ordinal 0", leafName, leaf.Ordinal())
 	}
-	// The child is the outer QOV carrying the outer LEG TYPE, so the root ordinal
-	// resolves positionally against the ordinal-seed build row.
+	if !fv.Path().IsFrontierPinned() {
+		t.Fatal("lowered collection lost its physical root's frontier pin")
+	}
+	wantDomain := values.OrdinalDomainOfColumnNames([]string{"PAD", "N"})
+	if domain := fv.Path().RootDomain(); !domain.IsKnown() || domain != wantDomain {
+		t.Fatalf("root domain = %v, want projected [PAD N] domain %v", domain, wantDomain)
+	}
+	if !coll.Type().Equals(values.NewArrayType(true, elementType)) {
+		t.Fatalf("collection type = %v, want ARRAY<LONG NOT NULL>", coll.Type())
+	}
+	// Lowering must replace the semantic D root with the physical correlation
+	// supplied to the bake, retaining the complete projected row type.
 	qov, ok := values.AsQuantifiedObjectValue(fv.ChildValue())
 	if !ok || qov.Correlation() != outerCorr {
 		t.Fatalf("baked collection child = %T, want the outer *QuantifiedObjectValue %s", fv.ChildValue(), outerCorr)
 	}
 	if _, isRT := qov.FlowedType().(*values.RecordType); !isRT {
 		t.Fatalf("outer QOV must carry the leg RecordType for positional resolution, got %T", qov.FlowedType())
+	}
+	if !qov.FlowedType().Equals(tr.ordinalLegType(outer)) || values.OrdinalDomainOfQuantified(qov) != wantDomain {
+		t.Fatalf("outer QOV type = %v, want the exact projected [PAD N] row", qov.FlowedType())
+	}
+	corr := values.GetCorrelatedToOfValue(coll)
+	if _, hasOwner := corr[outerCorr]; !hasOwner || len(corr) != 1 {
+		t.Fatalf("collection correlations = %v, want only lowered owner %s", corr, outerCorr)
 	}
 }
 
@@ -233,32 +255,20 @@ func TestUnnestBakedRootCollection_MultiSegment(t *testing.T) {
 // from the reference.
 func TestUnnestBakedRootCollection_SuffixTakesTheRowsSpelling(t *testing.T) {
 	t.Parallel()
-	tr := newGateTranslator(t)
 
-	elementType := values.NotNullLong
 	// The nested record carries the descriptor's spelling; the OUTER column
 	// keeps the exact spelling so this pin isolates the SUFFIX step — a
 	// mismatch at the root would decline before the suffix is ever built.
-	nestedType := &values.RecordType{Fields: []values.Field{
-		{Name: "arr", Ordinal: 0, FieldType: values.NewArrayType(true, elementType)},
-	}}
-	sourceType := &values.RecordType{Fields: []values.Field{
-		{Name: "N", Ordinal: 0, FieldType: nestedType},
-	}}
-	outer := &logical.LogicalProject{
-		Input:           scan("Customer", "src"),
-		Projections:     []string{"N"},
-		ProjectedValues: []values.Value{exactTestField(t, exactTestQOV(t, "SRC", sourceType), 0)},
-	}
-	u := &logical.LogicalUnnest{Segments: []string{"D", "N", "ARR"}, Alias: "X"}
-	outerCorr := values.NamedCorrelationIdentifier("D")
+	tr := newGateTranslator(t)
+	outer, u, elementType := nestedArrayUnnestFixture(t, "arr")
+	outerCorr := values.NamedCorrelationIdentifier("D$LOWERED")
 
-	coll := tr.unnestBakedRootCollection(outer, outerCorr, u, "ARR", elementType, 1, -1)
+	coll := tr.unnestBakedRootCollection(outer, outerCorr, u, -1)
 	if coll == nil {
 		t.Fatal("a folded segment over a descriptor-spelled nested field must still bake the fused collection, got nil (declined)")
 	}
 	fv, ok := values.AsFieldValue(coll)
-	if !ok {
+	if !ok || fv.Path() == nil {
 		t.Fatalf("baked collection = %T, want an admitted exact FieldValue", coll)
 	}
 	if got := fv.Path().Len(); got != 2 {
@@ -270,19 +280,43 @@ func TestUnnestBakedRootCollection_SuffixTakesTheRowsSpelling(t *testing.T) {
 		t.Fatalf("suffix accessor = {%q, %d}, want {\"arr\", 0} — the ROW's spelling, not the segment's",
 			leafName, leaf.Ordinal())
 	}
+	root, rootOK := fv.Path().Accessor(0)
+	if !rootOK || root.Ordinal() != 1 {
+		t.Fatalf("root accessor = %v, want exact ordinal 1 (N after PAD)", root)
+	}
+	if !fv.Path().IsFrontierPinned() {
+		t.Fatal("descriptor-spelled suffix lost the lowered root's frontier pin")
+	}
+	wantDomain := values.OrdinalDomainOfColumnNames([]string{"PAD", "N"})
+	if domain := fv.Path().RootDomain(); !domain.IsKnown() || domain != wantDomain {
+		t.Fatalf("root domain = %v, want projected [PAD N] domain %v", domain, wantDomain)
+	}
+	qov, ok := values.AsQuantifiedObjectValue(fv.ChildValue())
+	if !ok || qov.Correlation() != outerCorr {
+		t.Fatalf("collection child = %T, want lowered QOV %s", fv.ChildValue(), outerCorr)
+	}
+	if !qov.FlowedType().Equals(tr.ordinalLegType(outer)) || values.OrdinalDomainOfQuantified(qov) != wantDomain {
+		t.Fatalf("outer QOV type = %v, want the exact projected [PAD N] row", qov.FlowedType())
+	}
+	corr := values.GetCorrelatedToOfValue(coll)
+	if _, hasOwner := corr[outerCorr]; !hasOwner || len(corr) != 1 {
+		t.Fatalf("collection correlations = %v, want only lowered owner %s", corr, outerCorr)
+	}
+	if !coll.Type().Equals(values.NewArrayType(true, elementType)) {
+		t.Fatalf("collection type = %v, want ARRAY<LONG NOT NULL>", coll.Type())
+	}
 }
 
 // TestUnnestBakedRootCollection_DeclineUntranslatable pins the bake's
 // DECLINE: a catalog-free outer has no derivable leg type, so the bake returns
-// nil and the caller keeps the name-model builder (which owns the name-keyed
-// collection).
+// nil rather than inventing a collection binding from its diagnostic spelling.
 func TestUnnestBakedRootCollection_DeclineUntranslatable(t *testing.T) {
 	t.Parallel()
 	tr := &cascadesTranslator{} // no md → ordinalLegType nil
 	coll := tr.unnestBakedRootCollection(scan("Order", "o"),
 		values.NamedCorrelationIdentifier("o"),
 		&logical.LogicalUnnest{Segments: []string{"ORDER", "FLOWER", "TYPE"}, Alias: "X"},
-		"TYPE", values.NotNullLong, 1, -1)
+		-1)
 	if coll != nil {
 		t.Fatalf("untranslatable outer (no metadata) must DECLINE the bake to nil, got %T", coll)
 	}
@@ -296,7 +330,7 @@ func TestUnnestSeed_DeclineUntranslatable(t *testing.T) {
 	tr := &cascadesTranslator{} // no md → ordinalLegType nil
 	seed := tr.unnestOrdinalSeed(scan("Customer", "c"),
 		values.NamedCorrelationIdentifier("c"), values.NamedCorrelationIdentifier("X"),
-		unnestFor("CUSTOMER", "X", ""), values.NotNullLong)
+		unnestFor(t, "CUSTOMER", "X", ""), values.NotNullLong)
 	if seed != nil {
 		t.Fatalf("untranslatable outer (no metadata) must DECLINE to nil (name-model fallback), got %T", seed)
 	}

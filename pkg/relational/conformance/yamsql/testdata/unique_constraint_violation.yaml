@@ -18,7 +18,6 @@ tests:
 
   # Non-conflicting insert succeeds
   - query: INSERT INTO t VALUES (3, 'third')
-    rows: []
   - query: SELECT COUNT(*) FROM t
     rows:
       - [3]

@@ -66,11 +66,55 @@ func (h *ReplyHandle) Cancel() {
 	h.ch = nil // mark the channel handled so Release does not re-pool it
 }
 
+// TakeReadyOrCancel chooses response publication or cancellation under the
+// connection's reply lock. The caller must exclusively own this handle and
+// channel (no concurrent receive/Cancel/Release). Release is still required.
+func (h *ReplyHandle) TakeReadyOrCancel() (Response, bool) {
+	if h.conn == nil {
+		return Response{}, false
+	}
+	h.conn.pendingMu.Lock()
+	defer h.conn.pendingMu.Unlock()
+	select {
+	case response := <-h.ch:
+		delete(h.conn.pending, h.token)
+		return response, true
+	default:
+		if _, pending := h.conn.pending[h.token]; pending {
+			delete(h.conn.pending, h.token)
+			putReplyChannel(h.ch)
+		}
+		h.ch = nil
+		return Response{}, false
+	}
+}
+
+// KeepReadyOrCancel leaves a published response for the caller's normal receive,
+// or cancels an unpublished reply atomically. Like TakeReadyOrCancel, this needs
+// exclusive handle ownership. It never adds a second channel producer.
+func (h *ReplyHandle) KeepReadyOrCancel() bool {
+	if h.conn == nil {
+		return false
+	}
+	h.conn.pendingMu.Lock()
+	defer h.conn.pendingMu.Unlock()
+	if len(h.ch) != 0 {
+		return true
+	}
+	if _, pending := h.conn.pending[h.token]; pending {
+		delete(h.conn.pending, h.token)
+		putReplyChannel(h.ch)
+	}
+	h.ch = nil
+	return false
+}
+
 // Release returns the handle to the pool. Call EITHER after a successful receive
 // (no Cancel) OR after Cancel. On the success path h.ch is still set and is
-// pooled here: readLoop deletes the token from the pending map BEFORE delivering,
-// so once the caller has received its reply no further send can race the pool
-// Put. Cancel nils h.ch, so the cancel path never double-pools.
+// pooled here: response publication and token deletion share pendingMu, in that
+// order. Once the caller receives the response, that publisher has no further
+// channel send, and the lock excludes another publisher until deletion. Cancel
+// nils h.ch, so the cancel path never double-pools.
 func (h *ReplyHandle) Release() {
 	if h.ch != nil {
 		putReplyChannel(h.ch)
@@ -90,15 +134,17 @@ var errChanPool = sync.Pool{New: func() any { return make(chan error, 1) }}
 // If the server kills the connection, readLoop cancels the context
 // and IsClosed() returns true — the connection pool will evict it.
 type Conn struct {
-	conn      net.Conn
-	useTLS    bool
-	wbuf      *bufio.Writer // owned exclusively by writeLoop
-	hasDirty  atomic.Bool   // true when wbuf has unflushed data
-	writeCh   chan writeReq // channel-based write loop for coalescing
-	ctx       context.Context
-	cancel    context.CancelFunc
-	loopWG    sync.WaitGroup // tracks readLoop + writeLoop goroutines
-	closeOnce sync.Once      // guards the single failConnection teardown
+	conn           net.Conn
+	useTLS         bool
+	wbuf           *bufio.Writer // owned exclusively by writeLoop
+	hasDirty       atomic.Bool   // true when wbuf has unflushed data
+	writeCh        chan writeReq // channel-based write loop for coalescing
+	writeAdmission sync.RWMutex
+	writeClosed    bool // protected by writeAdmission
+	ctx            context.Context
+	cancel         context.CancelFunc
+	loopWG         sync.WaitGroup // tracks readLoop + writeLoop goroutines
+	closeOnce      sync.Once      // guards the single failConnection teardown
 
 	// Connection monitor cadence. Set once at dial time before the monitor
 	// goroutine starts. Tests inject small values for deterministic, fast
@@ -145,6 +191,7 @@ type Conn struct {
 
 // writeReq is a frame queued for the write loop.
 type writeReq struct {
+	owned *writeCompletion // cancellable read request; separate from legacy errCh
 	token UID
 	body  []byte
 	errCh chan<- error // nil = fire-and-forget (deferred writes)
@@ -599,6 +646,8 @@ func (c *Conn) Flush() error {
 // let senders enqueue, then flushes everything at once.
 func (c *Conn) writeLoop() {
 	defer c.loopWG.Done()
+	var owned []*writeCompletion
+	defer func() { c.finishOwnedWrites(owned) }()
 	defer c.recoverLoop("writeLoop")
 
 	// Collect errCh channels that need notification after flush.
@@ -613,6 +662,11 @@ func (c *Conn) writeLoop() {
 			return
 		}
 
+		// Capture ownership before encoding: recovery must finish this request
+		// even if encoding or the socket writer fails.
+		if req.owned != nil {
+			owned = append(owned, req.owned)
+		}
 		// Process first frame.
 		var writeErr error
 		if req.token != (UID{}) || req.body != nil {
@@ -627,6 +681,9 @@ func (c *Conn) writeLoop() {
 		for draining && writeErr == nil {
 			select {
 			case req = <-c.writeCh:
+				if req.owned != nil {
+					owned = append(owned, req.owned)
+				}
 				if req.token != (UID{}) || req.body != nil {
 					writeErr = WriteFrame(c.wbuf, req.token, req.body, c.useTLS)
 				}
@@ -656,6 +713,18 @@ func (c *Conn) writeLoop() {
 			ch <- writeErr
 		}
 		errChans = errChans[:0]
+		for i, completion := range owned {
+			owned[i] = nil // recovery must not complete an already-released owner
+			completion.complete(writeErr)
+		}
+		owned = owned[:0]
+		if writeErr != nil {
+			// The socket writer is terminal after any frame/flush failure. Cancel
+			// connection admission, fail replies, then let the deferred ownership
+			// finalizer drain requests that arrived outside this failed batch.
+			c.failConnection(writeErr)
+			return
+		}
 	}
 }
 
@@ -849,12 +918,12 @@ func (c *Conn) readLoop() {
 		c.pendingMu.Lock()
 		ch, ok := c.pending[token]
 		if ok {
+			// The fresh size-one channel has one producer. Publish together
+			// with deletion so cancellation cannot fall into a delivery gap.
+			ch <- Response{Body: body, RecvAt: time.Now()}
 			delete(c.pending, token)
 		}
 		c.pendingMu.Unlock()
-		if ok {
-			ch <- Response{Body: body, RecvAt: time.Now()}
-		}
 		// Unknown tokens are silently dropped (e.g., late responses after timeout).
 	}
 }

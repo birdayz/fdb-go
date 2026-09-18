@@ -2,6 +2,7 @@ package sqldriver_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"testing"
@@ -15,6 +16,7 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/executor"
+	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 )
 
@@ -92,6 +94,14 @@ func TestFDB_StarBodyCTEJoinLeg(t *testing.T) {
 			t.Errorf("%s: rows = %v, want %v\n  sql: %s", name, got, exp, q)
 		}
 	}
+	ambiguous := func(name, q string) {
+		t.Helper()
+		_, err := embedded.PlanRecordQueryWithMetadata(q, md, nil)
+		var apiErr *api.Error
+		if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeAmbiguousColumn {
+			t.Errorf("%s: error = %v, want 42702\n  sql: %s", name, err, q)
+		}
+	}
 
 	const starCTE = `WITH "S" AS (SELECT * FROM T4, T4."SCARR" AS "X") `
 
@@ -148,71 +158,26 @@ func TestFDB_StarBodyCTEJoinLeg(t *testing.T) {
 		}
 	})
 
-	// The COLLIDING-label body (`… AS "SUB"` — the element alias shadows the
-	// outer scalar SUB=999/20) now ADMITS with SHADOW-DEDUPED boundary labels:
-	// the element keeps WINNING the collision (the RFC-142 shadow rule — the
-	// same dedup the star expansion of the direct query applies), never the
-	// outer scalar. These rows are byte-identical to the name-model rows this
-	// pin carried before the admission. (Java resolves the collision as
-	// AMBIGUOUS_COLUMN instead — SemanticAnalyzer.resolveIdentifier on the
-	// duplicate CTE column; aligning Go's collision model with Java's is a
-	// conformance question for the whole RFC-142 unnest surface, documented at
-	// derivedBodyStarOrdinalLeg.)
-	want("colliding_label_shadow", `WITH "S2" AS (SELECT * FROM T4, T4."SCARR" AS "SUB") SELECT "S2"."SUB" FROM "S2", T4 AS "CC"`, []string{
-		"SUB=100", "SUB=100", "SUB=100",
-		"SUB=200", "SUB=200", "SUB=200",
-		"SUB=300", "SUB=300", "SUB=300",
-	})
+	// Record/scalar/ordinal element publication preserves every visible output.
+	// When an element or AT alias repeats the outer table's SUB column, a
+	// reference through the CTE/derived boundary is ambiguous exactly as Java's
+	// per-attribute lookup reports; no shadow-preference may silently choose one.
+	ambiguous("colliding_label", `WITH "S2" AS (SELECT * FROM T4, T4."SCARR" AS "SUB") SELECT "S2"."SUB" FROM "S2", T4 AS "CC"`)
+	ambiguous("colliding_derived_twin", `SELECT "S2"."SUB" FROM (SELECT * FROM T4, T4."SCARR" AS "SUB") AS "S2", T4 AS "CC"`)
+	ambiguous("colliding_at_alias", `WITH "S2" AS (SELECT * FROM T4, T4."SCARR" AS "E" AT "SUB") SELECT "S2"."SUB" FROM "S2", T4 AS "CC"`)
+	ambiguous("chained_colliding_label", `WITH "S" AS (SELECT * FROM T4, T4."SARR" AS "X", "X"."SUB" AS "SUB") SELECT "S"."SUB" FROM "S", T4 AS "CC"`)
+	ambiguous("colliding_no_parent_join", `WITH "S2" AS (SELECT * FROM T4, T4."SCARR" AS "SUB") SELECT "S2"."SUB" FROM "S2"`)
 
-	// The colliding DERIVED-TABLE twin used to serve the OUTER scalar (999/20)
-	// for S2.SUB — and, worse, CC's ID for S2.ID (11 rows from a leg with no
-	// ID=11!) — the name-model twin path was SILENTLY WRONG and inconsistent
-	// with the WITH form. The shadow-deduped admission serves the element and
-	// the right leg, consistent with the WITH form (bare internal labels are
-	// the twin's rule, as in the non-colliding derived_twin above).
-	want("colliding_derived_twin", `SELECT "S2"."SUB" FROM (SELECT * FROM T4, T4."SCARR" AS "SUB") AS "S2", T4 AS "CC"`, []string{
-		"SUB=100", "SUB=100", "SUB=100",
-		"SUB=200", "SUB=200", "SUB=200",
-		"SUB=300", "SUB=300", "SUB=300",
-	})
+	// A unique-label read over the same bodies still answers.
 	want("colliding_derived_twin_unique", `SELECT "S2"."ID" FROM (SELECT * FROM T4, T4."SCARR" AS "SUB") AS "S2", T4 AS "CC"`, []string{
 		"ID=1", "ID=1", "ID=1",
 		"ID=1", "ID=1", "ID=1",
 		"ID=2", "ID=2", "ID=2",
 	})
-
-	// A unique-label read over the colliding body keeps answering (Java answers
-	// it too — only the DUPLICATE label is ambiguous there).
 	want("colliding_unique_read", `WITH "S2" AS (SELECT * FROM T4, T4."SCARR" AS "SUB") SELECT "S2"."ID" FROM "S2", T4 AS "CC"`, []string{
 		"ID=1", "ID=1", "ID=1",
 		"ID=1", "ID=1", "ID=1",
 		"ID=2", "ID=2", "ID=2",
-	})
-
-	// The AT-alias collision (`AS "E" AT "SUB"` — the ORDINAL alias shadows the
-	// outer scalar): S2.SUB serves the 1-based ordinals, same shadow rule.
-	want("colliding_at_alias", `WITH "S2" AS (SELECT * FROM T4, T4."SCARR" AS "E" AT "SUB") SELECT "S2"."SUB" FROM "S2", T4 AS "CC"`, []string{
-		"SUB=1", "SUB=1", "SUB=1",
-		"SUB=1", "SUB=1", "SUB=1",
-		"SUB=2", "SUB=2", "SUB=2",
-	})
-
-	// The CHAINED colliding twin (`X.SUB AS SUB`): the name-model parent used
-	// to FIRST-MATCH the outer scalar over the ordinal body row (999/20 —
-	// inverted against the WITH single-link form's element rows). The admission
-	// serves the chained element, consistent across the whole colliding class.
-	want("chained_colliding_label", `WITH "S" AS (SELECT * FROM T4, T4."SARR" AS "X", "X"."SUB" AS "SUB") SELECT "S"."SUB" FROM "S", T4 AS "CC"`, []string{
-		"SUB=1", "SUB=1", "SUB=1",
-		"SUB=2", "SUB=2", "SUB=2",
-		"SUB=3", "SUB=3", "SUB=3",
-		"SUB=4", "SUB=4", "SUB=4",
-	})
-
-	// A PROJECTION directly over the colliding CTE (no parent join) used to
-	// LOUD-fail ("S2.SUB not resolvable … ordinal -1" — the un-normalized body
-	// merged into the parent select); the normalized boundary serves it.
-	want("colliding_no_parent_join", `WITH "S2" AS (SELECT * FROM T4, T4."SCARR" AS "SUB") SELECT "S2"."SUB" FROM "S2"`, []string{
-		"SUB=100", "SUB=200", "SUB=300",
 	})
 
 	// Parent WHERE predicates now retain the CTE leg's exact output schema.
@@ -333,11 +298,9 @@ func TestFDB_ChainedStarBodyCTE(t *testing.T) {
 		times3("Y=1", "Y=2", "Y=3", "Y=4"))
 }
 
-// TestStarBodyCTEPlanSweep pins the star-CTE class's REACH: every admitted
-// shape (single-link, chained, colliding-label) must keep PLANNING cleanly.
-// There is no name-keyed fallback plan for these shapes, so a regression
-// surfaces as a LOUD plan error here rather than a silent fallback.
-// Planning-only.
+// TestStarBodyCTEPlanSweep pins both halves of the star-CTE class: unique-label
+// shapes plan, while colliding visible labels are rejected as 42702. There is no
+// name-keyed fallback for either decision. Planning-only.
 func TestStarBodyCTEPlanSweep(t *testing.T) {
 	t.Parallel()
 	md := buildChainedUnnestMetadata(t)
@@ -359,22 +322,30 @@ func TestStarBodyCTEPlanSweep(t *testing.T) {
 		{"chained_star_at", `WITH "S" AS (SELECT * FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" AT "O") SELECT "S"."Y", "S"."O" FROM "S", T4 AS "CC"`},
 		{"chained_star_where", `WITH "S" AS (SELECT * FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE "Y" > 2) SELECT "S"."Y" FROM "S", T4 AS "CC"`},
 		{"chained_star_derived_twin", `SELECT "S"."Y" FROM (SELECT * FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y") AS "S", T4 AS "CC"`},
-		// The COLLIDING-label bodies — admitted with SHADOW-DEDUPED boundary
-		// labels (the element/ordinal alias wins over the same-named outer
-		// scalar, the RFC-142 rule).
+		// The COLLIDING-label bodies — every visible duplicate is retained, so
+		// a reference is ambiguous rather than shadow-preferred.
 		{"colliding_label", `WITH "S2" AS (SELECT * FROM T4, T4."SCARR" AS "SUB") SELECT "S2"."SUB" FROM "S2", T4 AS "CC"`},
 		{"chained_colliding_label", `WITH "S" AS (SELECT * FROM T4, T4."SARR" AS "X", "X"."SUB" AS "SUB") SELECT "S"."SUB" FROM "S", T4 AS "CC"`},
 		{"colliding_at_alias", `WITH "S2" AS (SELECT * FROM T4, T4."SCARR" AS "E" AT "SUB") SELECT "S2"."SUB" FROM "S2", T4 AS "CC"`},
 		{"colliding_derived_twin", `SELECT "S2"."SUB" FROM (SELECT * FROM T4, T4."SCARR" AS "SUB") AS "S2", T4 AS "CC"`},
 	}
+	ambiguousCases := map[string]bool{
+		"colliding_label": true, "chained_colliding_label": true,
+		"colliding_at_alias": true, "colliding_derived_twin": true,
+	}
 	for _, tc := range zeroed {
-		if _, err := count(tc.sql); err != nil {
+		_, err := count(tc.sql)
+		if ambiguousCases[tc.name] {
+			var apiErr *api.Error
+			if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeAmbiguousColumn {
+				t.Errorf("%s: error = %v, want 42702\n  sql: %s", tc.name, err, tc.sql)
+			}
+			continue
+		}
+		if err != nil {
 			t.Errorf("%s: plan error (should ordinalize cleanly): %v\n  sql: %s", tc.name, err, tc.sql)
 		}
 	}
-
-	// The colliding-label bodies resolve via the shadow-deduped admission (rows
-	// verified against the shadow semantics in TestFDB_StarBodyCTEJoinLeg).
 }
 
 // saveStarCTERows writes the shared T4 fixture rows for the star-CTE tests.

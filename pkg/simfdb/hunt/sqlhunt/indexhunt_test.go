@@ -2,10 +2,69 @@ package sqlhunt
 
 import (
 	"context"
+	"errors"
 	"testing"
 
+	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/simfdb"
 	"fdb.dev/pkg/simfdb/hunt"
 )
+
+func TestIndexDMLRetryIsApplicationOwned(t *testing.T) {
+	t.Parallel()
+	for _, fault := range []struct {
+		name    string
+		code    int
+		state   api.ErrorCode
+		applied bool
+	}{
+		{"conflict", 1020, "40001", false},
+		{"too old", 1007, "40001", false},
+		{"unknown applied", simfdb.CommitUnknownApplied, "40003", true},
+		{"unknown discarded", simfdb.CommitUnknownDiscarded, "40003", false},
+	} {
+		t.Run(fault.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			h, err := siNewHarness(714, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer h.close()
+			if _, err := h.db.ExecContext(ctx, "INSERT INTO t VALUES (1,0,10)"); err != nil {
+				t.Fatal(err)
+			}
+			// Direct SQL must consume one fault and report it, not replay.
+			h.backend.InjectOnce(fault.code)
+			_, err = h.db.ExecContext(ctx, "UPDATE t SET k = 1, v = 20 WHERE id = 1")
+			var sqlErr *api.Error
+			if !errors.As(err, &sqlErr) || sqlErr.Code != fault.state {
+				t.Fatalf("direct statement = %v, want %s without driver replay", err, fault.state)
+			}
+			want := siRow{k: 0, v: 10}
+			if fault.applied {
+				want = siRow{k: 1, v: 20}
+			}
+			if violations := siVerify(ctx, h.db, map[int64]siRow{1: want}); len(violations) != 0 {
+				t.Fatal(violations)
+			}
+			h.backend.InjectOnce(fault.code)
+			if err := execIdempotentDML(ctx, h.db, "UPDATE t SET k = ?, v = ? WHERE id = ?", int64(2), int64(30), int64(1)); err != nil {
+				t.Fatal(err)
+			}
+			if violations := siVerify(ctx, h.db, map[int64]siRow{1: {k: 2, v: 30}}); len(violations) != 0 {
+				t.Fatal(violations)
+			}
+			h.backend.InjectOnce(fault.code)
+			if err := execIdempotentDML(ctx, h.db, "DELETE FROM t WHERE id = ?", int64(1)); err != nil {
+				t.Fatal(err)
+			}
+			if violations := siVerify(ctx, h.db, map[int64]siRow{}); len(violations) != 0 {
+				t.Fatal(violations)
+			}
+		})
+	}
+}
 
 func siSmokeCfg() hunt.Config {
 	return hunt.Config{Workload: SQLIndexWorkload{}, NumOps: 30, MaxPKs: 12, VerifyEvery: 10, FaultProb: 0.3}
@@ -13,7 +72,7 @@ func siSmokeCfg() hunt.Config {
 
 // TestSQLIndexWorkloadRunsClean drives the full SQL stack (with a secondary index in the loop)
 // over SimFDB under faults for a few seeds and asserts every one is clean — idempotent DML
-// (absolute UPDATE SET k=,v= + DELETE) survives commit_unknown/conflict/too_old autocommit retry
+// (absolute UPDATE SET k=,v= + DELETE) survives commit_unknown/conflict/too_old application retry
 // with the secondary index staying consistent with the base table (no stale/missing/orphan
 // entries, index-covered WHERE k=K queries always match the model).
 func TestSQLIndexWorkloadRunsClean(t *testing.T) {
@@ -33,6 +92,7 @@ func TestSQLIndexWorkloadRunsClean(t *testing.T) {
 func TestSQLIndexWorkloadDeterminism(t *testing.T) {
 	t.Parallel()
 	cfg := siSmokeCfg()
+	faultsFired := 0
 	for _, seed := range []uint64{2, 13, 29} {
 		a := hunt.Run(seed, cfg)
 		b := hunt.Run(seed, cfg)
@@ -42,9 +102,14 @@ func TestSQLIndexWorkloadDeterminism(t *testing.T) {
 		if a.Fingerprint != b.Fingerprint {
 			t.Fatalf("seed %d nondeterministic: fingerprint %s != %s", seed, a.Fingerprint, b.Fingerprint)
 		}
+		faultsFired += a.FaultsFired
 		if a.FaultsFired != b.FaultsFired {
 			t.Fatalf("seed %d nondeterministic fault schedule: %d != %d", seed, a.FaultsFired, b.FaultsFired)
 		}
+	}
+	// A seed may activate no sites; the retained population must include faults.
+	if faultsFired == 0 {
+		t.Fatal("determinism population did not exercise the fault schedule")
 	}
 }
 

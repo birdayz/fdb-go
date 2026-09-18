@@ -355,3 +355,79 @@ func goMappedReadErrCode(t *testing.T, ctx context.Context, db *fdbclient.Databa
 	}
 	return fe.Code
 }
+
+func TestLibFDBC_MappedRangeDeferredErrorPrecedence(t *testing.T) {
+	t.Parallel()
+	clusterFile := startCluster(t)
+	cdb, err := libfdbc.COpenDatabase(clusterFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cdb.Close)
+	setupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	t.Cleanup(cancel)
+	goDB, err := fdbclient.OpenDatabase(setupCtx, clusterFile, fdbclient.WithAPIVersion(730))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { goDB.Close() })
+
+	for _, poisoned := range []bool{false, true} {
+		for _, special := range []bool{false, true} {
+			for _, reverse := range []bool{false, true} {
+				name := fmt.Sprintf("poisoned=%v_special=%v_reverse=%v", poisoned, special, reverse)
+				t.Run(name, func(t *testing.T) {
+					t.Parallel()
+					ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+					defer cancel()
+					ct, err := cdb.CreateTransaction()
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer ct.Close()
+					gt := goDB.CreateTransaction()
+					defer gt.Cancel()
+					key := []byte(t.Name())
+					if poisoned {
+						// Literal 1 is ClearRange, not a legal atomic mutation.
+						ct.Atomic(1, key, []byte("value"))
+						gt.Atomic(fdbclient.MutationType(1), key, []byte("value"))
+					}
+					begin, end := key, append(append([]byte(nil), key...), 0xff)
+					want := 0
+					if special {
+						begin, end = []byte("\xff\xff/status/json"), []byte("\xff\xff/status/json\x00")
+						want = 2000
+					}
+					if poisoned {
+						want = 2018
+					}
+					mapper := mdPack([]byte("unused-for-empty-range"))
+					cRows, cMore, ce := libfdbc.CGetMappedRange(ct, begin, end, mapper, 10, reverse, false)
+					gRows, gMore, ge := gt.GetMappedRange(ctx, begin, end, mapper, 10, reverse)
+					cCode, gCode := 0, 0
+					if ce != nil {
+						var e *libfdbc.CFDBError
+						if !errors.As(ce, &e) {
+							t.Fatalf("C++ returned non-FDB error: %v", ce)
+						}
+						cCode = e.Code
+					}
+					if ge != nil {
+						var e *wire.FDBError
+						if !errors.As(ge, &e) {
+							t.Fatalf("Go returned non-FDB error: %v", ge)
+						}
+						gCode = e.Code
+					}
+					if cCode != want || gCode != want {
+						t.Fatalf("mapped deferred precedence: Go=%d C++=%d, want literal %d", gCode, cCode, want)
+					}
+					if len(cRows) != 0 || len(gRows) != 0 || cMore || gMore {
+						t.Fatalf("empty/error control returned rows/more: C++=%d/%v Go=%d/%v", len(cRows), cMore, len(gRows), gMore)
+					}
+				})
+			}
+		}
+	}
+}

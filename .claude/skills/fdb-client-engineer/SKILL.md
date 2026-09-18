@@ -1,6 +1,6 @@
 ---
 name: fdb-client-engineer
-description: End-to-end engineering workflow for the pure-Go FoundationDB client (pkg/fdbgo — transport, transaction, commit path, RYW, key selectors, retry/ctx, GRV, wire encoding, the libfdb_c differential). Use for ANY client/wire change: drives RFC → review (FDB C++ maintainer + Torvalds + /code-review) → implement → review again → PR gauntlet (codex + @claude) → merge. The client analog of todo-worker: the FDB C++ dev substitutes for Graefe, C++ (libfdb_c 7.3.77) is the spec, wire compatibility is the hard line. Composes fdb-client-review (the review gate) and hunt-divergences (the differential method).
+description: "End-to-end engineering workflow for the pure-Go FoundationDB client (pkg/fdbgo — transport, transaction, commit path, RYW, key selectors, retry/ctx, GRV, wire encoding, the libfdb_c differential). Use for ANY client/wire change: drives RFC → review (FDB C++ maintainer + Torvalds + /code-review) → implement → review again → PR gauntlet (codex + @claude) → merge. The client analog of todo-worker: the FDB C++ dev substitutes for Graefe, C++ (libfdb_c 7.3.77) is the spec, wire compatibility is the hard line. Composes fdb-client-review (the review gate) and hunt-divergences (the differential method)."
 ---
 
 # FDB Client Engineering (pure-Go `pkg/fdbgo`)

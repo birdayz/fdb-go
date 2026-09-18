@@ -1,9 +1,11 @@
 package expressions
 
 import (
+	"maps"
 	"sync"
 	"testing"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -90,5 +92,155 @@ func TestSharedReferenceSurvivesConcurrentFlowedTypeReads(t *testing.T) {
 					round, slot, values.DescribeType(types[slot]), values.DescribeType(types[0]))
 			}
 		}
+	}
+}
+
+// Property reads may share a stable Reference even though memo mutation is
+// single-threaded. Exercise cold publication on a fresh graph each round, and
+// check the actual free aliases on cold and warm reads rather than merely
+// comparing readers that could all return the same incorrect empty set.
+func TestSharedReferenceSurvivesConcurrentCorrelationReads(t *testing.T) {
+	t.Parallel()
+
+	for _, shape := range []string{"empty", "transitive", "shared_dag", "forwarded"} {
+		t.Run(shape, func(t *testing.T) {
+			t.Parallel()
+			const goroutines = 8
+			const rounds = 32
+			outer := values.NamedCorrelationIdentifier("outer")
+			want := map[values.CorrelationIdentifier]struct{}{}
+			if shape != "empty" {
+				want[outer] = struct{}{}
+			}
+
+			for round := 0; round < rounds; round++ {
+				shared := InitialOf(mustExpression(
+					NewFullUnorderedScanExpression([]string{"T"}, testRecordType())))
+				if shape != "empty" {
+					inner := ForEachQuantifier(shared)
+					pred := predicates.NewComparisonPredicate(
+						mustExpression(inner.RequireFlowedObjectValue()),
+						predicates.Comparison{Type: predicates.ComparisonEquals, Operand: mustQOV(outer)},
+					)
+					shared = InitialOf(mustExpression(NewLogicalFilterExpression([]predicates.QueryPredicate{pred}, inner)))
+				}
+				if shape == "shared_dag" {
+					shared = InitialOf(mustExpression(NewLogicalUnionExpression([]Quantifier{
+						ForEachQuantifier(shared), ForEachQuantifier(shared),
+					})))
+				}
+				root := shared
+				var middle *Reference
+				if shape == "forwarded" {
+					middle = &Reference{forwardedTo: root}
+					shared = &Reference{forwardedTo: middle}
+				}
+
+				var start, done sync.WaitGroup
+				start.Add(1)
+				cold := make([]map[values.CorrelationIdentifier]struct{}, goroutines)
+				warm := make([]map[values.CorrelationIdentifier]struct{}, goroutines)
+				for slot := 0; slot < goroutines; slot++ {
+					done.Add(1)
+					go func() {
+						defer done.Done()
+						q := ForEachQuantifier(shared)
+						start.Wait()
+						if slot%2 == 0 {
+							cold[slot] = shared.GetCorrelatedTo()
+							warm[slot] = q.GetCorrelatedTo()
+						} else {
+							cold[slot] = q.GetCorrelatedTo()
+							warm[slot] = shared.GetCorrelatedTo()
+						}
+					}()
+				}
+				start.Done()
+				done.Wait()
+
+				for slot := 0; slot < goroutines; slot++ {
+					if cold[slot] == nil || !maps.Equal(cold[slot], want) {
+						t.Fatalf("round %d goroutine %d cold correlations = %v, want non-nil %v", round, slot, cold[slot], want)
+					}
+					if warm[slot] == nil || !maps.Equal(warm[slot], want) {
+						t.Fatalf("round %d goroutine %d warm correlations = %v, want non-nil %v", round, slot, warm[slot], want)
+					}
+				}
+				if middle != nil && (shared.forwardedTo != middle || middle.forwardedTo != root) {
+					t.Fatal("correlation reads compressed shared forwarding topology")
+				}
+			}
+		})
+	}
+}
+
+// A stable graph may be read concurrently; edits and invalidation must still be
+// sequential. Exercise each invalidation site after warming the cache, including
+// an absorb that adds no members and therefore cannot rely on Insert to clear it.
+func TestReferenceCorrelationCacheSequentialInvalidation(t *testing.T) {
+	t.Parallel()
+
+	for _, operation := range []string{"insert", "insert_final", "prepared_exploratory", "prepared_final", "absorb", "absorb_duplicate", "invalidate_forwarded"} {
+		t.Run(operation, func(t *testing.T) {
+			t.Parallel()
+			outer := values.NamedCorrelationIdentifier("outer")
+			member := mustExpression(NewSelectExpression(mustQOV(outer), nil, nil))
+			ref := &Reference{}
+			before := map[values.CorrelationIdentifier]struct{}{}
+			if operation == "absorb_duplicate" {
+				ref = InitialOf(member)
+				before[outer] = struct{}{}
+			}
+			borrowed := ref.GetCorrelatedTo()
+			if borrowed == nil || !maps.Equal(borrowed, before) || ref.correlatedToCache.Load() == nil {
+				t.Fatalf("cold read = %v, want cached non-nil %v", borrowed, before)
+			}
+
+			switch operation {
+			case "insert":
+				if !ref.Insert(member) {
+					t.Fatal("first exploratory member was not inserted")
+				}
+			case "insert_final":
+				if !ref.InsertFinal(member) {
+					t.Fatal("first final member was not inserted")
+				}
+			case "prepared_exploratory", "prepared_final":
+				relation := mustExpression(values.ExactRelationOf(member.GetResultValue().Type()))
+				var exploratory, final []RelationalExpression
+				if operation == "prepared_exploratory" {
+					exploratory = []RelationalExpression{member}
+				} else {
+					final = []RelationalExpression{member}
+				}
+				if err := ref.ApplyPreparedMemberBatch(ref.AdmissionView(), relation, exploratory, final, 0); err != nil {
+					t.Fatalf("prepared apply: %v", err)
+				}
+			case "absorb", "absorb_duplicate":
+				loser := InitialOf(member)
+				ref.Absorb(loser)
+				if !loser.IsForwarded() || loser.Canonical() != ref {
+					t.Fatal("absorb did not forward the loser to the survivor")
+				}
+			case "invalidate_forwarded":
+				forwarded := &Reference{forwardedTo: ref}
+				forwarded.InvalidateCorrelatedToCache()
+			}
+			if ref.correlatedToCache.Load() != nil {
+				t.Fatal("sequential mutation retained a previously computed correlation cache")
+			}
+			if !maps.Equal(borrowed, before) {
+				t.Fatalf("invalidation mutated a previously returned map: %v, want %v", borrowed, before)
+			}
+			want := map[values.CorrelationIdentifier]struct{}{outer: {}}
+			if operation == "invalidate_forwarded" {
+				want = map[values.CorrelationIdentifier]struct{}{}
+			}
+			for read := 0; read < 2; read++ {
+				if got := ref.GetCorrelatedTo(); got == nil || !maps.Equal(got, want) || ref.correlatedToCache.Load() == nil {
+					t.Fatalf("read %d after invalidation = %v, want cached non-nil %v", read, got, want)
+				}
+			}
+		})
 	}
 }

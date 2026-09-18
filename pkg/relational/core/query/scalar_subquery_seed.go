@@ -22,9 +22,9 @@ import (
 // ofOrdinal(QOV(inner), 0). The inner is the LEFT-OUTER null-supplying leg, so
 // its ordinal is NULLABLE-wrapped (an outer row with no inner match yields NULL;
 // the executor's null-leg build supplies it, no executor change). The inner RC
-// field is named EXACTLY <inner>.<scalarCol> — what replaceScalarSubqueryRef
-// emits and composeFieldOverConstructor folds — and, unlike the name-model
-// anchored record, the ordinal seed emits ONE field per column (no bare+dotted
+// field carries the exact scalar output title, independent of private identities.
+// replaceScalarSubqueryRef reads its known final slot by ordinal. Unlike the
+// name-model anchored record, the seed emits ONE field per column (no bare+dotted
 // duplicates: AssertOrdinalJoinSeed forbids duplicate ordinals; the outer leg's
 // RecordName carries the source table so a table-qualified reference still
 // resolves through the span type, exactly as the name model's qualified form
@@ -44,10 +44,9 @@ import (
 // its own ordinal join types QOV(InnerAlias, N-field) during planning — keying
 // the seed leg on the SQL alias collided the two at the executor's
 // widenLegTypesFromPlan (DIVERGENT baked types). With the unique id the two
-// correlations are distinct and JOIN-inners ordinalize. The RC field NAME
-// stays <innerAlias>.<scalarCol> — the name-compat plumbing the projection
-// reads (replaceScalarSubqueryRef) — only the correlation key is decoupled.
-func (t *cascadesTranslator) scalarSubqueryOrdinalSeed(outerAlias string, outerOp logical.LogicalOperator, innerOp logical.LogicalOperator, innerCorr values.CorrelationIdentifier, innerAlias, scalarCol string) values.Value {
+// correlations are distinct and JOIN-inners ordinalize. The RC field's label is
+// the scalar output title; identities never become part of that display label.
+func (t *cascadesTranslator) scalarSubqueryOrdinalSeed(outerAlias string, outerOp logical.LogicalOperator, innerColumns []values.Field, innerCorr values.CorrelationIdentifier, scalarCol string) values.Value {
 	outerType := t.ordinalLegType(outerOp)
 	if outerType == nil || len(outerType.Fields) == 0 {
 		return nil // decline → caller loud-declines
@@ -72,10 +71,11 @@ func (t *cascadesTranslator) scalarSubqueryOrdinalSeed(outerAlias string, outerO
 		fields = append(fields, values.RecordConstructorField{Name: fv.DisplayName(), Value: fv})
 	}
 
-	// INNER scalar leg: ONE nullable ordinal-0 field named <inner>.<scalarCol>.
-	// The field's TYPE is the inner subquery's OWN flowed output type, read off
-	// the inner logical operator — the same catalog-backed derivation every other
-	// leg uses. Java never re-derives a column's type downstream: client metadata
+	// INNER scalar leg: ONE nullable ordinal-0 field with its exact output title.
+	// The field's TYPE is supplied by the translated inner's flowed output, not
+	// by a second logical-column walk. In particular, a WITH query returns its
+	// Main's row, not its definition's row. Java never re-derives a column's type
+	// downstream: client metadata
 	// is positional over the plan's flowed record type, so the type must be
 	// present on the value here (QueryPlan.getResultType →
 	// RelationalStructMetaData.of).
@@ -86,11 +86,10 @@ func (t *cascadesTranslator) scalarSubqueryOrdinalSeed(outerAlias string, outerO
 	// name at different types, the scalar's column was reported as the OTHER
 	// leg's type (a STRING column served to the client as BIGINT).
 	//
-	// The inner exposes exactly ONE value (buildCorrelatedScalar materializes a
-	// computed scalar as a single projected output), so a derivable inner type
-	// has exactly one field. Anything else contradicts that premise — keep the
-	// nullable-unknown leg rather than guess which field is the scalar.
-	scalarType := scalarColumnType(t.legColumns(innerOp), scalarCol)
+	// The full scalar query exposes exactly ONE materialized output value, so
+	// its derivable row type has exactly one field. A missing exact scalar
+	// type declines below rather than guessing a column or an UNKNOWN type.
+	scalarType := scalarColumnType(innerColumns, scalarCol)
 	if scalarType == nil || scalarType.Code() == values.TypeCodeUnknown {
 		return nil
 	}
@@ -113,9 +112,8 @@ func (t *cascadesTranslator) scalarSubqueryOrdinalSeed(outerAlias string, outerO
 	// The title is a LABEL on a single-field type; the leg's identity is
 	// `innerCorr`, threaded in and unique, and nothing is minted. So stripping a
 	// qualifier off the label removes the ambiguity without touching any identity.
-	// The RC FIELD name below keeps the qualified spelling — that is the row-key
-	// arm, which replaceScalarSubqueryRef reads, and it is deliberately not in
-	// scope here.
+	// The RC FIELD label below keeps the exact output spelling. It is not a
+	// lookup key: replaceScalarSubqueryRef reads the known final ordinal.
 	innerType := &values.RecordType{Nullable: true, Fields: []values.Field{
 		{Name: innerTitle, FieldType: scalarType, Ordinal: 0},
 	}}
@@ -140,7 +138,7 @@ func (t *cascadesTranslator) scalarSubqueryOrdinalSeed(outerAlias string, outerO
 		return nil // decline
 	}
 	fields = append(fields, values.RecordConstructorField{
-		Name:  strings.ToUpper(innerAlias) + "." + scalarCol,
+		Name:  scalarCol,
 		Value: innerFV,
 	})
 

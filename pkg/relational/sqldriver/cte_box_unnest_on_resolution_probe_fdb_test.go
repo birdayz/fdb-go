@@ -24,6 +24,7 @@ package sqldriver_test
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strings"
 	"testing"
@@ -218,6 +219,101 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe(t *testing.T) {
 	t.Run("P6_mixed_subquery_and_leg_conjunct", func(t *testing.T) {
 		want(t, `SELECT LA."K", LB."K", "X" `+leftBox+` WHERE LA."K" = 100 AND LB."K" = (SELECT MAX("CV") FROM CC)`)
 	})
+	t.Run("CTE_qualified_path/qualified_declaration", func(t *testing.T) {
+		t.Parallel()
+		want(t, `WITH s.LA AS (SELECT CID AS AID FROM CC) SELECT COUNT(*) FROM s.LA`, "1")
+	})
+	for _, test := range []struct {
+		name, query string
+		rows        []string
+	}{
+		{"literal_projection", `WITH "S.LA" AS (SELECT CID AS OWN_ID FROM CC) SELECT OWN_ID FROM "S.LA"`, []string{"1"}},
+		{"literal_qualified_star", `WITH "S.LA" AS (SELECT CID AS OWN_ID FROM CC) SELECT p.* FROM "S.LA" p`, []string{"1"}},
+		{"literal_join_predicate", `WITH "S.LA" AS (SELECT CID AS OWN_ID FROM CC) SELECT p.OWN_ID FROM CC c JOIN "S.LA" p ON c.CID = p.OWN_ID`, []string{"1"}},
+		{"physical_under_unqualified_cte", `WITH LA AS (SELECT CID AS OWN_ID FROM CC) SELECT AID FROM s.LA ORDER BY AID`, []string{"1", "2"}},
+		{"qualified_declaration_projection", `WITH s.LA AS (SELECT CID AS OWN_ID FROM CC) SELECT p.OWN_ID FROM s.LA p`, []string{"1"}},
+	} {
+		t.Run("CTE_qualified_path/"+test.name, func(t *testing.T) {
+			t.Parallel()
+			want(t, test.query, test.rows...)
+		})
+	}
+	for _, test := range []struct {
+		name, query string
+		rows        []string
+	}{
+		{"computed_bare", `SELECT AID + 0 FROM s.LA`, []string{"1", "2"}},
+		{"computed_qualified", `SELECT p.AID + 1 FROM s.LA p`, []string{"2", "3"}},
+		{"computed_joined", `SELECT p.AID + 1 FROM CC c JOIN s.LA p ON c.CID = p.AID`, []string{"2"}},
+		{"aggregate_operand", `SELECT SUM(p.AID + 0) FROM s.LA p`, []string{"3"}},
+		{"group_having_sort", `SELECT p.AID + 0 FROM s.LA p GROUP BY p.AID HAVING SUM(p.AID) > 0 ORDER BY p.AID + 0 DESC`, []string{"1", "2"}},
+		{"computed_sort", `SELECT p.AID FROM s.LA p ORDER BY p.AID + 0 DESC`, []string{"1", "2"}},
+		{"correlated_exists", `SELECT p.AID FROM s.LA p WHERE EXISTS (SELECT c.CID FROM CC c WHERE c.CID = p.AID)`, []string{"1"}},
+		{"correlated_array", `SELECT p.AID FROM s.LA p WHERE EXISTS (SELECT x FROM p.ARR x WHERE x = 7)`, []string{"1"}},
+		{"literal_control", `SELECT p.OWN_ID + 1 FROM "S.LA" p`, []string{"2"}},
+	} {
+		t.Run("CTE_reader_ownership/"+test.name, func(t *testing.T) {
+			t.Parallel()
+			want(t, `WITH "S.LA" AS (SELECT CID AS OWN_ID FROM CC) `+test.query, test.rows...)
+		})
+	}
+	for _, tc := range []struct{ name, query, state string }{
+		{"undefined_projection", `SELECT p.OWN_ID + 0 FROM s.LA p`, "42703"},
+		{"undefined_aggregate", `SELECT SUM(p.OWN_ID) FROM s.LA p`, "42703"},
+		{"undefined_order", `SELECT p.AID FROM s.LA p ORDER BY p.OWN_ID + 0`, "42703"},
+		{"ambiguous_projection", `SELECT "K" + 0 FROM s.LA p, LB b`, "42702"},
+	} {
+		t.Run("CTE_reader_ownership/"+tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := run(t, `WITH "S.LA" AS (SELECT CID AS OWN_ID FROM CC) `+tc.query)
+			var sqlErr *api.Error
+			if !errors.As(err, &sqlErr) || string(sqlErr.Code) != tc.state {
+				t.Fatalf("reader diagnostic = %v, want SQLSTATE %s", err, tc.state)
+			}
+		})
+	}
+	t.Run("CTE_reader_ownership/correlated_array_without_cte", func(t *testing.T) {
+		t.Parallel()
+		want(t, `SELECT p.AID FROM s.LA p WHERE EXISTS (SELECT x FROM p.ARR x WHERE x = 7)`, "1")
+	})
+	t.Run("CTE_reader_ownership/scalar_array_outside_envelope", func(t *testing.T) {
+		t.Parallel()
+		// Primary correlated arrays are admitted in EXISTS, not scalar
+		// aggregate subqueries. Scope repair must not broaden that envelope.
+		for _, prefix := range []string{"", `WITH "S.LA" AS (SELECT CID AS OWN_ID FROM CC) `} {
+			_, err := run(t, prefix+`SELECT p.AID, (SELECT SUM(x) FROM p.ARR x) FROM s.LA p`)
+			var sqlErr *api.Error
+			if !errors.As(err, &sqlErr) || sqlErr.Code != api.ErrCodeUndefinedDatabase {
+				t.Fatalf("scalar correlated array changed admission: %v", err)
+			}
+		}
+	})
+	for _, tc := range []struct{ name, query string }{
+		{"derived", `SELECT * FROM (SELECT AID AS ID, "K" AS X, AID AS X FROM LA) d JOIN (SELECT CID AS ID FROM CC) u USING (ID)`},
+		{"cte", `WITH d AS (SELECT AID AS ID, "K" AS X, AID AS X FROM LA) SELECT * FROM d JOIN (SELECT CID AS ID FROM CC) u USING (ID)`},
+		{"quoted", `SELECT * FROM (SELECT AID AS ID, "K" AS "x.y", AID AS "x.y" FROM LA) d JOIN (SELECT CID AS ID FROM CC) u USING (ID)`},
+	} {
+		t.Run("USING_attribute_slots/"+tc.name, func(t *testing.T) {
+			t.Parallel()
+			want(t, tc.query, "1|100|1")
+		})
+	}
+	// LA has two rows and CC has one. A quoted-dot CTE must not replace the
+	// schema-qualified physical table, including derived/star reconstruction
+	// and joined-source construction. The quoted reference remains the CTE.
+	for _, test := range []struct {
+		name, query, count string
+	}{
+		{"physical", `SELECT COUNT(*) FROM s.LA`, "2"},
+		{"quoted_cte", `SELECT COUNT(*) FROM "S.LA"`, "1"},
+		{"derived_star_rebuild", `SELECT COUNT(*) FROM (SELECT p.* FROM s.LA p) d`, "2"},
+		{"joined_source", `SELECT COUNT(*) FROM CC c, s.LA p`, "2"},
+	} {
+		t.Run("CTE_qualified_path/"+test.name, func(t *testing.T) {
+			t.Parallel()
+			want(t, `WITH "S.LA" AS (SELECT CID AS AID FROM CC) `+test.query, test.count)
+		})
+	}
 }
 
 // Isolation probes for the P1 failures: single ENCLOSED reference (no double
@@ -351,7 +447,10 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 	}
 	run := func(t *testing.T, sql string) ([]string, error) {
 		t.Helper()
-		out, _, err := runPlanned(t, sql)
+		out, plan, err := runPlanned(t, sql)
+		if err != nil {
+			t.Logf("failed query plan: %s", plan)
+		}
 		return out, err
 	}
 	check := func(t *testing.T, sql string, expect ...string) {
@@ -483,14 +582,9 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 	// "unresolvable table" non-drop-risk arm, and the ON was silently DROPPED
 	// — the join returned CROSS-PRODUCT rows (every C row matched every CC
 	// row; pre-existing, no unnest needed — a plain-join CTE body did it too).
-	// Fixed twice over: (a) buildCTEOnOnlySource derives an ON-RESOLUTION-ONLY
-	// schema from the explicitly-ALIASED projection list at WITH registration
-	// (the cteOnScopes map, consumed only by upgradeJoinOnPredicates — never
-	// the global cteScopes, so WHERE/projection resolution over comma-joined
-	// multi-leg CTEs keeps its clean decline, the flatten-evasion class);
-	// (b) a declared CTE whose derivation still declines registers a MARKER
-	// that routes to the loud DROP RISK 0AF00 (the derived-table twin's
-	// behavior), never a silent drop.
+	// Prepared CTE bodies publish their complete exact output schema, so ON
+	// resolves against the row the producer actually emits. An unrepresentable
+	// declaration retains a marker that fails loud rather than dropping ON.
 	t.Run("Q9a_on_over_unnest_cte_left_pads", func(t *testing.T) {
 		check(t, `WITH "C" AS (`+cteBodyNoWhere+`) SELECT "C"."AK", "CC2"."CV" FROM "C" LEFT JOIN CC AS "CC2" ON "C"."AK" = "CC2"."CID"`,
 			"100|<nil>", "100|<nil>", "110|<nil>")
@@ -726,7 +820,8 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 	// neither a base table nor a derivedQuery — and
 	// buildSelectScope returns a NIL resolver for it, killing BOTH the 42702
 	// ambiguity gate and the 42703 unknown-column gate for the whole body.
-	// The enumerability walk (cteBodyLegsEnumerable) declines such bodies.
+	// The former enumerability walk declined such bodies instead of publishing
+	// their prepared output row.
 	// V is join-bodied (ON-only); its alias AID collides with LA's column.
 	const onOnlyV = `"V" AS (SELECT LA."K" AS "AID", LB."K" AS "Q" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID")`
 	//
@@ -829,7 +924,7 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 	// Q37: SCHEMA-QUALIFIED legs. Three stacked
 	// fixes pin here: (1) the ON-only derivation ran BEFORE
 	// normalizeSchemaQualifiedSelectSources, so "s"."LA" classified opaque —
-	// spurious 0AF00 (cteLegKind now mirrors the normalizer's strip);
+	// spurious 0AF00 (prepared bodies now retain normalized source ownership);
 	// writing this pin then EXPOSED two pre-existing bugs independent of
 	// CTEs: (2) upgradeJoinOnPredicates' scope build silently declined the
 	// dotted source — the "unresolvable table errors precisely downstream"
@@ -889,7 +984,7 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 	// base table. The plain-name variant was broken this way ALL ALONG; the
 	// schema-qualified variant broke the same way once the Q39 resolver went
 	// live. CTE-first now, mirroring
-	// execution's shadowing (and cteLegKind's ordering). X = BID values
+	// execution's shadowing. X = BID values
 	// {1,3} × 2 B-rows.
 	t.Run("Q41_cte_shadow_scope_reads_cte_schema", func(t *testing.T) {
 		check(t, `WITH "LA" AS (SELECT "BID" AS "X" FROM LB) SELECT "LA"."X" FROM "LA", "s"."LB" AS "B"`,
@@ -1121,8 +1216,8 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 	// the body rather than FROM it. Boundary as it stands:
 	//   - BARE read over the coinciding shadow answers (Q52);
 	//   - QUALIFIED read (V."X") resolves too, rather than a silent NULL;
-	//   - a 2+-extra-leg shadow read whose correlation cannot ordinalize is
-	//     still LOUD — the arm below is the pin against the panic returning;
+	//   - a correlated multi-leg shadow read answers through the scoped carrier
+	//     walk; zero and nonzero counts below pin both predicate outcomes;
 	//   - a DUPLICATE-name body is published whole: a read of a unique column
 	//     in it answers, and only a read that spells the repeated name is
 	//     ambiguous (42702; see Q55 (b) and (d)).
@@ -1135,9 +1230,28 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 		// name-keyed resolution would have silently returned `<nil>` here.
 		check(t, `WITH "V" AS (SELECT "BID" AS "X" FROM LB) SELECT (WITH "V" AS (SELECT CC."CID" AS "X" FROM "V" LEFT JOIN CC ON "V"."X" = CC."CID") SELECT MAX("V"."X") FROM "V") FROM LB LIMIT 1`,
 			"1")
-		_, ePanic := run(t, `WITH "V" AS (SELECT "BID" AS "B" FROM LB) SELECT (WITH "V" AS (SELECT LB."K" AS "B" FROM "V" LEFT JOIN CC ON "V"."B" = CC."CID" LEFT JOIN LA ON "V"."B" = LA."AID") SELECT COUNT(*) FROM "V", CC WHERE "V"."B" = 100) FROM LB LIMIT 1`)
-		if ePanic == nil {
-			t.Fatal("comma-multi-leg shadow read must be LOUD (an install panicked here), got rows")
+		// Body B is the enclosing LB.K (5 or 6), not the old V.B (1 or 3).
+		// Both left joins preserve the two old V rows; CC contributes one row.
+		// Therefore the original B=100 predicate counts zero, while B=LB.K
+		// counts two for either possible outer row selected by LIMIT 1.
+		check(t, `WITH "V" AS (SELECT "BID" AS "B" FROM LB) SELECT (WITH "V" AS (SELECT LB."K" AS "B" FROM "V" LEFT JOIN CC ON "V"."B" = CC."CID" LEFT JOIN LA ON "V"."B" = LA."AID") SELECT COUNT(*) FROM "V", CC WHERE "V"."B" = 100) FROM LB LIMIT 1`, "0")
+		for _, tc := range []struct {
+			name, query string
+			want        []string
+		}{
+			{"matching outer value", `WITH "V" AS (SELECT "BID" AS "B" FROM LB) SELECT (WITH "V" AS (SELECT LB."K" AS "B" FROM "V" LEFT JOIN CC ON "V"."B" = CC."CID" LEFT JOIN LA ON "V"."B" = LA."AID") SELECT COUNT(*) FROM "V", CC WHERE "V"."B" = LB."K") FROM LB LIMIT 1`, []string{"2"}},
+			{"unfiltered count", `WITH "V" AS (SELECT "BID" AS "B" FROM LB) SELECT (WITH "V" AS (SELECT LB."K" AS "B" FROM "V" LEFT JOIN CC ON "V"."B" = CC."CID" LEFT JOIN LA ON "V"."B" = LA."AID") SELECT COUNT(*) FROM "V", CC) FROM LB LIMIT 1`, []string{"2"}},
+			{"outer value in body", `WITH "V" AS (SELECT "BID" AS "B" FROM LB) SELECT LB."K", (WITH "V" AS (SELECT LB."K" AS "B" FROM "V" LEFT JOIN CC ON "V"."B" = CC."CID" LEFT JOIN LA ON "V"."B" = LA."AID") SELECT MAX("V"."B") FROM "V", CC) FROM LB`, []string{"5|5", "6|6"}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				got, plan, err := runPlanned(t, tc.query)
+				t.Logf("shadow carrier plan: %s", plan)
+				sort.Strings(got)
+				if err != nil || strings.Join(got, ",") != strings.Join(tc.want, ",") {
+					t.Fatalf("rows=%v err=%v, want %v", got, err, tc.want)
+				}
+			})
 		}
 		// duplicate X in the body: the body is published as stated, repeated
 		// name included, so the UNIQUE Y reads through it and answers — LA JOIN

@@ -8,6 +8,36 @@ array unnest in the FROM list (`FROM t, t.arr AS x`) and its 4.12 ordinality com
 
 ---
 
+## Current alias contract (supersedes the historical implementation notes)
+
+RFC-256, **Lateral aliases: repair the carried-binding conversion**, supersedes
+this RFC's blanket duplicate-alias rejection and UNNEST shadowing precedence.
+Those mechanisms prevented overwritten map fields, but did not match Java
+4.12.11.0's SQL binding contract. Repeated SQL labels are not repeated runtime
+correlations: each source has a distinct binding and output slots remain distinct.
+
+- `FROM t, t.arr AS X AT X` is legal when its output is unused. Referencing `X`
+  reports `AMBIGUOUS_COLUMN` (42702), not `DUPLICATE_ALIAS` (42712).
+  `SELECT X.*` publishes two `X` labels while preserving element/ordinal slots.
+- An UNNEST alias may reuse another source's display alias. Ordinary per-attribute
+  resolution decides ambiguity; an element does not shadow a competing column.
+  Reusing a runtime correlation in malformed logical input remains rejected.
+- This applies to SELECT and DML; the earlier `rejectDuplicateUnnestAlias` pass
+  and `ResolveColumnShadowingQualified` precedence are not current mechanisms.
+
+Java's `LogicalOperator.generateCorrelatedFieldAccess` constructs the two AT
+attributes with ordinal accessors without an alias-equality rejection;
+`SemanticAnalyzer.resolveIdentifier` / `lookup` collect matching attributes and
+report ambiguity. The retained `NumericCastBoundaryConformance` spec tests both
+engines: unused/referenced AS==AT, duplicate labels and element/ordinal values,
+and competing-column versus no-competing-column controls. The retained
+`TestFDB_ArrayUnnestOrdinality` P2b case and
+`TestFDB_ArrayUnnestDMLDuplicateAlias` cover the real-FDB driver paths.
+
+The implementation/review chronology below is historical. In particular, its
+shadowing and duplicate-alias guards describe superseded repairs, not current SQL
+admission. RFC-256 records the measured Java contract and the replacement design.
+
 ## 1. Problem (verified real)
 
 Two gaps, one feature:
@@ -162,7 +192,8 @@ atPresent)` in a named forEach quantifier, and assembles a `SelectExpression` wi
 explodeQ]`, no predicates, source aliases `[outer, asAlias]`. The result value
 (`buildUnnestResultValue`) anchors the outer leg's columns (`NewAnchoredJoinRecord`) plus the element
 (`QOV(inner)` bare, or `ofOrdinalNumber(_0)` under ordinality) and the ordinal (`ofOrdinalNumber(_1)`),
-with the unnest's AS/AT bare keys SHADOWING any same-named outer column. AT on a non-array → `setTranslateErr(ErrCodeWrongObjectType)` (surfaced by `PlanRecordQueryWithMetadata` /
+with the original implementation's AS/AT bare keys shadowing same-named outer columns
+(superseded by the current alias contract above). AT on a non-array → `setTranslateErr(ErrCodeWrongObjectType)` (surfaced by `PlanRecordQueryWithMetadata` /
 `cascades_generator.go` via the new `TranslateToCascadesWithError`).
 
 **FlatMap reuse, not a parallel rule.** `ImplementNestedLoopJoinRule`'s Explode guard now only bails when
@@ -183,7 +214,9 @@ same array are distinct), `GetResultType` (→ `values.ExplodeOrdinalityResultTy
 **WHERE on the unnest column.** A virtual `Shadowing` `ScopeSource` (`unnestScopeSourceAdder`, added in
 `buildSelectScope` + `buildWherePredicateForJoins`) exposes the AS/AT columns so a WHERE / projection /
 ORDER BY reference resolves (and validation passes); the new `Shadowing` flag on `ScopeSource` makes the
-unnest binding win over a same-named real column instead of erroring ambiguous. `rewriteUnnestPredicate`
+unnest binding win over a same-named real column instead of erroring ambiguous in the
+original implementation. RFC-256 replaces that precedence with ordinary ambiguity
+resolution; see the current alias contract above. `rewriteUnnestPredicate`
 (called unconditionally for any unnest WHERE, via `mapPredicateValues`) rebases the AS/AT references to what
 the inner Explode actually flows so the NLJ rule pushes them into the inner Explode's `PredicatesFilter`:
 - **WITH ORDINALITY** — the inner flows a 2-field record; AS→`_0`, AT→`_1` (`FieldValue.ofOrdinalNumber`),
@@ -214,10 +247,10 @@ reject a non-array AT cleanly. `unnestCandidateShape` is the SINGLE predicate sh
 lowering (`lateralUnnestCandidate`) and the WHERE/projection scope binding (`isLateralUnnestJoin`), so they
 never diverge.
 - **P1 (silent-wrong, alias == outer correlation):** `FROM T1 AS X, X.arr AS X` (and the aliasless
-  field-name-collides-outer variant) made `innerCorr == outerCorr`; `translateUnnestJoin` now rejects when
-  the unnest's element/ordinal alias collides with the outer FlatMap correlation OR any already-bound outer
-  source alias (`outerBoundAliases`, which — like `findOuterScanTable` — does not descend into CTE bodies)
-  → `ErrCodeDuplicateAlias`, never `innerCorr == outerCorr`.
+  field-name-collides-outer variant) made `innerCorr == outerCorr`. The initial
+  repair rejected alias collisions with `ErrCodeDuplicateAlias`. RFC-256 replaces
+  that guard with distinct carried binding identities: repeated SQL aliases are
+  legal; reused runtime correlations in malformed logical input still fail.
 - **P2a (schema-qualified comma join):** `FROM A, s.B AS B` — segment 0 (`s`) is the session schema, not a
   visible source → NOT an unnest; stays the table path, `resolveQualifiedTableNames` strips `s.` and B
   plans as a normal cross join (`NestedLoopJoin`, no Explode/FlatMap).
@@ -354,9 +387,11 @@ three other resolution paths, each a distinct silent-wrong / translation failure
 - **P2b (silent-wrong, overwrite): duplicate AS == AT alias.** `FROM t, t.arr AS X AT X` appends the element
   and the ordinal under the SAME bare+qualified names in `buildUnnestResultValue`;
   `RecordConstructorValue.Evaluate` stores fields in a map, so the ordinal (appended last) silently OVERWRITES
-  the element — `SELECT X` returned the ordinal. `translateUnnestJoin` now rejects `u.Alias == u.AtAlias`
-  cleanly (`ErrCodeDuplicateAlias`) BEFORE constructing the result, alongside the existing
-  unnest-alias-vs-outer-alias rejection (Java binds AS and AT to two distinct quantifier columns).
+  the element — `SELECT X` returned the ordinal. The initial repair rejected
+  `u.Alias == u.AtAlias` with `ErrCodeDuplicateAlias`. RFC-256 supersedes that
+  rejection: Java binds AS and AT to distinct ordinal slots even when the labels
+  coincide, so unused outputs are legal and a reference reports 42702. Physical
+  field-name deduplication preserves both values; SQL labels remain unchanged.
 - **P2c (translation failure): a correlated subquery referencing the unnest element.** `SELECT VAL FROM t,
   t.arr AS VAL WHERE EXISTS (SELECT 1 FROM U WHERE U.V = VAL)` — the inner EXISTS correlates to the unnest
   ELEMENT binding `VAL`. Two gaps: (1) `buildOuterScopeSources` built the subquery's `outerScopes` from REAL
@@ -643,6 +678,9 @@ HAVING twin of the round-18 ORDER-BY rebase:
   control, and the no-shadow projection control pass both ways.
 
 **AT-on-a-table source must surface WRONG_OBJECT_TYPE, not a masking undefined-column (codex round-22).**
+Historical implementation account: RFC-256 has since removed
+`unnestFallbackOrReject`. The early AT rejection remains; the current translator
+requires an exact semantic collection binding, with no text-to-scan recovery.
 One bug:
 - **P1 (wrong SQLSTATE / error masking): an AT on a single-segment TABLE source bound a virtual unnest scope,
   masking 42809.** `SELECT U.ID FROM T1, U AT O` — a comma source `U` that is a REAL distinct TABLE (a
@@ -902,6 +940,9 @@ translator unit tests for the nil-md `LogicalUnnest` clean error (codex P2b) and
 equals/hash/result-type. Full sqldriver + EXISTS/join + cross-engine conformance suites green, no regressions.
 
 **DML duplicate-alias guard + normalize/build ordering + ordinal nullability metadata (codex round-31).**
+Historical repairs: the P1 duplicate-alias guard and its rejection expectations
+below were superseded by RFC-256's per-attribute resolution and distinct source
+bindings (see the current alias contract above). The P2 repairs are separate.
 Three bugs:
 - **P1 (silent-wrong, DML dual-path gap): the duplicate-unnest-alias guard was not run for DML.** The
   round-29 `rejectDuplicateUnnestAlias` pass ran in `planSelectCascades` but NOT in `planDML`. An

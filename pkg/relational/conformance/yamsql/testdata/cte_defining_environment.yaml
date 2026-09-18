@@ -1,0 +1,127 @@
+# Java 4.12.11.0 QueryVisitor.visitCtes publishes definitions in declaration
+# order; LogicalOperator.generateAccess/withNewSharedReferenceAndAlias retain
+# the selected producer, not a name to resolve in a later consumer's scope.
+# T and catalog A each contain id=1. The id<0 CTE is empty. These independent
+# contents distinguish a retained empty producer from a catalog/shadow fallback.
+name: cte_defining_environment
+schema_template: |
+  CREATE TABLE t (id BIGINT, PRIMARY KEY (id))
+  CREATE TABLE a (id BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1)
+  - INSERT INTO a VALUES (1)
+tests:
+  # Transitive definition with no same-named catalog table: no 42F01 fallback.
+  - query: |-
+      WITH missing_a AS (SELECT id FROM t WHERE id < 0),
+           b AS (SELECT id FROM missing_a)
+      SELECT id FROM t WHERE EXISTS (SELECT id FROM b)
+    rows: []
+  - query: |-
+      WITH missing_a AS (SELECT id FROM t WHERE id < 0),
+           b AS (SELECT id FROM missing_a)
+      SELECT id FROM t WHERE NOT EXISTS (SELECT id FROM b)
+    rows: [[1]]
+  # Exact reported reproducer and its negation: catalog A must not replace A.
+  - query: |-
+      WITH a AS (SELECT id FROM t WHERE id < 0), b AS (SELECT id FROM a)
+      SELECT id FROM t WHERE EXISTS (SELECT id FROM b)
+    rows: []
+  - query: |-
+      WITH a AS (SELECT id FROM t WHERE id < 0), b AS (SELECT id FROM a)
+      SELECT id FROM t WHERE NOT EXISTS (SELECT id FROM b)
+    rows: [[1]]
+  # Correlated consumers retain the same definition through existential stripping.
+  - query: |-
+      WITH a AS (SELECT id FROM t WHERE id < 0), b AS (SELECT id FROM a)
+      SELECT o.id FROM t o WHERE EXISTS (SELECT id FROM b WHERE b.id = o.id)
+    rows: []
+  - query: |-
+      WITH a AS (SELECT id FROM t WHERE id < 0), b AS (SELECT id FROM a)
+      SELECT o.id FROM t o WHERE NOT EXISTS (SELECT id FROM b WHERE b.id = o.id)
+    rows: [[1]]
+  # B was defined before the inner A; it must not dynamically bind that shadow.
+  - query: |-
+      WITH a AS (SELECT id FROM t WHERE id < 0), b AS (SELECT id FROM a)
+      SELECT id FROM t WHERE EXISTS (
+        WITH a AS (SELECT id FROM t) SELECT id FROM b)
+    rows: []
+  - query: |-
+      WITH a AS (SELECT id FROM t WHERE id < 0), b AS (SELECT id FROM a)
+      SELECT id FROM t WHERE NOT EXISTS (
+        WITH a AS (SELECT id FROM t) SELECT id FROM b)
+    rows: [[1]]
+  # A physical lookup in B must not be captured by a later declaration of A.
+  - query: |-
+      WITH b AS (SELECT id FROM a), a AS (SELECT id FROM t WHERE id < 0)
+      SELECT id FROM t WHERE EXISTS (SELECT id FROM b)
+    rows: [[1]]
+  - query: |-
+      WITH b AS (SELECT id FROM a), a AS (SELECT id FROM t WHERE id < 0)
+      SELECT id FROM b
+    rows: [[1]]
+  # A's own body read catalog A before its declaration, not a consumer's shadow.
+  - query: |-
+      WITH a AS (SELECT id FROM a), b AS (SELECT id FROM a)
+      SELECT id FROM t WHERE EXISTS (
+        WITH a AS (SELECT id FROM t WHERE id < 0) SELECT id FROM b)
+    rows: [[1]]
+  # Retained CTE column lists are positional and belong to the definition.
+  - query: |-
+      WITH a(x) AS (SELECT id FROM t), b(y) AS (SELECT x FROM a)
+      SELECT o.id FROM t o WHERE EXISTS (SELECT y FROM b WHERE b.y = o.id)
+    rows: [[1]]
+  # Scalar handoffs use the same defining environment, not a separate workaround.
+  - query: |-
+      WITH a AS (SELECT id FROM t WHERE id < 0), b AS (SELECT id FROM a)
+      SELECT (SELECT COUNT(*) FROM b) FROM t
+    rows: [[0]]
+  - query: |-
+      WITH a AS (SELECT id FROM t WHERE id < 0), b AS (SELECT id FROM a)
+      SELECT (WITH a AS (SELECT id FROM t) SELECT COUNT(*) FROM b) FROM t
+    rows: [[0]]
+  # A referenced producer contributes its own outer correlation.
+  - query: |-
+      SELECT o.id FROM t o WHERE EXISTS (
+        WITH c AS (SELECT i.id FROM t i WHERE i.id = o.id)
+        SELECT id FROM c)
+    rows: [[1]]
+  # The same correlation in an unused declaration does not constrain Main.
+  - query: |-
+      SELECT o.id FROM t o WHERE EXISTS (
+        WITH c AS (SELECT o.id FROM t i WHERE i.id < 0)
+        SELECT id FROM t i)
+    rows: [[1]]
+  # Each use gets a fresh consumer binding over the same prepared producer.
+  - query: |-
+      WITH b AS (SELECT id FROM t)
+      SELECT x.id, y.id FROM b x, b y WHERE x.id = y.id
+    rows: [[1, 1]]
+  - query: |-
+      WITH b AS (SELECT id FROM t)
+      SELECT o.id FROM t o WHERE EXISTS (
+        SELECT x.id FROM b x, b y WHERE x.id = o.id AND y.id = o.id)
+    rows: [[1]]
+  # Nested recursive R owns its self-reference; its empty seed must not read
+  # the enclosing R. Restoring that inner scope must leave outer rows intact.
+  - query: |-
+      WITH RECURSIVE r(n) AS (
+        SELECT id FROM t
+        UNION ALL SELECT n + 1 FROM r WHERE n < 3)
+      SELECT n FROM r WHERE EXISTS (
+        WITH RECURSIVE r(n) AS (
+          SELECT id FROM t WHERE id < 0
+          UNION ALL SELECT n + 1 FROM r WHERE n < 3)
+        SELECT n FROM r)
+    rows: []
+  - query: |-
+      WITH RECURSIVE r(n) AS (
+        SELECT id FROM t
+        UNION ALL SELECT n + 1 FROM r WHERE n < 3)
+      SELECT n FROM r WHERE NOT EXISTS (
+        WITH RECURSIVE r(n) AS (
+          SELECT id FROM t WHERE id < 0
+          UNION ALL SELECT n + 1 FROM r WHERE n < 3)
+        SELECT n FROM r)
+      ORDER BY n
+    rows: [[1], [2], [3]]

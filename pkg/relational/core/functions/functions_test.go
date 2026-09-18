@@ -618,7 +618,7 @@ func TestCastValue(t *testing.T) {
 		assertErr(t, err)
 	})
 
-	// float64 → INTEGER (rounding via floor(x + 0.5)).
+	// float64 → INTEGER (nearest-integer rounding, ties toward +infinity).
 	t.Run("float64_to_INTEGER_round", func(t *testing.T) {
 		t.Parallel()
 		got, err := CastValue(float64(2.5), "INTEGER")

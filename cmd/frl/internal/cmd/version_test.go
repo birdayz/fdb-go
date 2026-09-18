@@ -14,6 +14,7 @@ func TestVersionCmd_Text(t *testing.T) {
 	var out bytes.Buffer
 	c.SetOut(&out)
 	c.SetErr(&out)
+	c.SetArgs([]string{})
 	if err := c.Execute(); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}

@@ -203,14 +203,14 @@ func TestMigratedPlans_StructuralKeyContract(t *testing.T) {
 	// first_or_default — the strict flag is load-bearing (strict vs non-strict
 	// constructor variants).
 	assertPlanKeyEqual(t, mustChecked(t, func() (*RecordQueryFirstOrDefaultPlan, error) {
-		return NewRecordQueryFirstOrDefaultPlan(scan, nv)
+		return NewRecordQueryFirstOrDefaultPlan(scan, values.NewNullValue(scan.GetResultType()))
 	}), mustChecked(t, func() (*RecordQueryFirstOrDefaultPlan, error) {
-		return NewRecordQueryFirstOrDefaultPlan(scan, nv)
+		return NewRecordQueryFirstOrDefaultPlan(scan, values.NewNullValue(scan.GetResultType()))
 	}))
 	assertPlanKeyUnequal(t, mustChecked(t, func() (*RecordQueryFirstOrDefaultPlan, error) {
-		return NewRecordQueryFirstOrDefaultPlan(scan, nv)
+		return NewRecordQueryFirstOrDefaultPlan(scan, values.NewNullValue(scan.GetResultType()))
 	}), mustChecked(t, func() (*RecordQueryFirstOrDefaultPlan, error) {
-		return NewRecordQueryFirstOrDefaultPlanStrict(scan, nv)
+		return NewRecordQueryFirstOrDefaultPlanStrict(scan, values.NewNullValue(scan.GetResultType()))
 	}))
 
 	// unordered_pk_distinct — no identifying fields; two instances always match.

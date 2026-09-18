@@ -37,6 +37,7 @@ func TestConfigCurrentContext_PrintsName(t *testing.T) {
 	var out bytes.Buffer
 	c.SetOut(&out)
 	c.SetErr(&out)
+	c.SetArgs([]string{})
 	if err := c.Execute(); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -70,6 +71,7 @@ func TestConfigCurrentContext_ErrorsWhenEmpty(t *testing.T) {
 	var out bytes.Buffer
 	c.SetOut(&out)
 	c.SetErr(&out)
+	c.SetArgs([]string{})
 	err := c.Execute()
 	if err == nil {
 		t.Fatal("expected error when current_context is empty")
@@ -85,6 +87,7 @@ func TestConfigGetContexts_MarksActive(t *testing.T) {
 	var out bytes.Buffer
 	c.SetOut(&out)
 	c.SetErr(&out)
+	c.SetArgs([]string{})
 	if err := c.Execute(); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -133,6 +136,7 @@ func TestConfigInit_CreatesStarter(t *testing.T) {
 	var out bytes.Buffer
 	c.SetOut(&out)
 	c.SetErr(&out)
+	c.SetArgs([]string{})
 	if err := c.Execute(); err != nil {
 		t.Fatalf("Execute: %v\n%s", err, out.String())
 	}
@@ -163,7 +167,9 @@ func TestConfigInit_OutputIsParseable(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	t.Setenv("FRL_CONFIG", path)
 
-	if err := newConfigInitCmd().Execute(); err != nil {
+	initCmd := newConfigInitCmd()
+	initCmd.SetArgs([]string{})
+	if err := initCmd.Execute(); err != nil {
 		t.Fatalf("init: %v", err)
 	}
 	// get-contexts triggers a full Load() of the written file and is thus
@@ -172,6 +178,7 @@ func TestConfigInit_OutputIsParseable(t *testing.T) {
 	var out bytes.Buffer
 	c.SetOut(&out)
 	c.SetErr(&out)
+	c.SetArgs([]string{})
 	if err := c.Execute(); err != nil {
 		t.Fatalf("post-init get-contexts: %v\nout:\n%s", err, out.String())
 	}
@@ -205,6 +212,7 @@ contexts:
 	var out bytes.Buffer
 	c.SetOut(&out)
 	c.SetErr(&out)
+	c.SetArgs([]string{})
 	if err := c.Execute(); err != nil {
 		t.Fatalf("Execute: %v\n%s", err, out.String())
 	}
@@ -259,6 +267,7 @@ func TestConfigInit_RefusesToOverwrite(t *testing.T) {
 	var out bytes.Buffer
 	c.SetOut(&out)
 	c.SetErr(&out)
+	c.SetArgs([]string{})
 	err := c.Execute()
 	if err == nil {
 		t.Fatal("expected refusal on existing file")
@@ -300,6 +309,7 @@ func TestConfigPath_HonoursEnv(t *testing.T) {
 	var out bytes.Buffer
 	c.SetOut(&out)
 	c.SetErr(&out)
+	c.SetArgs([]string{})
 	if err := c.Execute(); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -361,6 +371,7 @@ func TestConfigView_MissingContextHint(t *testing.T) {
 	var out bytes.Buffer
 	c.SetOut(&out)
 	c.SetErr(&out)
+	c.SetArgs([]string{})
 	err := c.Execute()
 	if err == nil {
 		t.Fatal("expected error on missing config, got nil")
@@ -417,6 +428,7 @@ func TestConfigUseContext_PersistsAndConfirms(t *testing.T) {
 	var ccOut bytes.Buffer
 	cc.SetOut(&ccOut)
 	cc.SetErr(&ccOut)
+	cc.SetArgs([]string{})
 	if err := cc.Execute(); err != nil {
 		t.Fatalf("current-context after switch: %v", err)
 	}
@@ -437,6 +449,7 @@ func TestConfigGetContexts_Empty(t *testing.T) {
 	var out bytes.Buffer
 	c.SetOut(&out)
 	c.SetErr(&out)
+	c.SetArgs([]string{})
 	if err := c.Execute(); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}

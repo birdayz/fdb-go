@@ -794,23 +794,21 @@ func TestFDB_CorrelatedExistsOnErrorCodeConsistency(t *testing.T) {
 			api.ErrCodeUnsupportedOperation)
 	})
 
-	// A DELIBERATE correlated-SCALAR-subquery decline (a correlated scalar with no
-	// inner WHERE — "WHERE clause required for correlation") is a Message-only
-	// CorrelatedExistsError with no wrapped cause → must report 0A000, NOT 42703.
-	// The projected-EXISTS SQLSTATE unification routes scalar errors through
-	// mapPredicateWalkError too; without the Cause==nil deliberate-decline arm a
-	// genuine-failure remap would report these unsupported shapes as 42703.
-	t.Run("correlated_scalar_no_where_decline_0A000", func(t *testing.T) {
-		requireSQLSTATE(t, getErr(t, "SELECT p.v, (SELECT p.id FROM f) FROM p"),
-			api.ErrCodeUnsupportedOperation)
+	// The shared full-query scalar path no longer requires correlation to appear
+	// in WHERE. The inner projection can read p.id directly; f contributes one
+	// row, so StrictSingle returns that outer value in projection and predicate
+	// positions.
+	t.Run("correlated_scalar_projection_without_where", func(t *testing.T) {
+		var v, id int64
+		if err := db.QueryRowContext(ctx, "SELECT p.v, (SELECT p.id FROM f) FROM p").Scan(&v, &id); err != nil || v != 10 || id != 1 {
+			t.Fatalf("projection scalar = (%d,%d), err=%v; want (10,1)", v, id, err)
+		}
 	})
-
-	// A top-level WHERE with a correlated-scalar deliberate decline must ALSO give
-	// 0A000 (the WHERE-EXISTS mapping branch honors the same Cause==nil rule as
-	// mapPredicateWalkError — every path agrees).
-	t.Run("where_scalar_decline_0A000", func(t *testing.T) {
-		requireSQLSTATE(t, getErr(t, "SELECT p.v FROM p WHERE p.id = (SELECT p.id FROM f)"),
-			api.ErrCodeUnsupportedOperation)
+	t.Run("correlated_scalar_predicate_without_inner_where", func(t *testing.T) {
+		var v int64
+		if err := db.QueryRowContext(ctx, "SELECT p.v FROM p WHERE p.id = (SELECT p.id FROM f)").Scan(&v); err != nil || v != 10 {
+			t.Fatalf("predicate scalar = %d, err=%v; want 10", v, err)
+		}
 	})
 
 	// An IN-subquery inside a JOIN ON is CLEANLY DECLINED (0AF00 "subquery in a
@@ -824,14 +822,10 @@ func TestFDB_CorrelatedExistsOnErrorCodeConsistency(t *testing.T) {
 			api.ErrCodeUnsupportedQuery)
 	})
 
-	// A deliberate unsupported decline that WRAPS a NON-semantic cause (e.g. an
-	// unsupported aggregate shape) must report 0A000, NOT 42703. Error
-	// classification is by the recognized-cause TYPE: a genuine resolution error
-	// (ColumnNotFound/SourceNotFound) → 42703; anything else (unsupported shape,
-	// wrapped or not) → 0A000. A wrong 42703 here means the mapper defaulted a
-	// non-resolution failure to undefined-column.
-	t.Run("wrapped_unsupported_cause_scalar_0A000", func(t *testing.T) {
+	// DISTINCT aggregate rejection belongs to the query-capability boundary and
+	// reports 0AF00 through the shared full scalar-query path, never 42703.
+	t.Run("wrapped_unsupported_cause_scalar_0AF00", func(t *testing.T) {
 		requireSQLSTATE(t, getErr(t, "SELECT p.v, (SELECT COUNT(DISTINCT f.fid) FROM f WHERE f.fid = p.id) FROM p"),
-			api.ErrCodeUnsupportedOperation)
+			api.ErrCodeUnsupportedQuery)
 	})
 }

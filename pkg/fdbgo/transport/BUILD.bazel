@@ -8,6 +8,7 @@ go_library(
         "handshake.go",
         "wellknown.go",
         "wirelog.go",
+        "write_context.go",
     ],
     importpath = "fdb.dev/pkg/fdbgo/transport",
     visibility = ["//visibility:public"],
@@ -33,6 +34,7 @@ go_test(
         "tls_test.go",
         "transport_test.go",
         "wirelog_test.go",
+        "write_context_test.go",
     ],
     embed = [":transport"],
     deps = [

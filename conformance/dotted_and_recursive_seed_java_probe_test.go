@@ -151,16 +151,12 @@ CREATE TABLE XPROBE (id BIGINT, "TOTAL" BIGINT, "X.TOTAL" BIGINT, PRIMARY KEY (i
 				name:     "dotted_column_whose_tail_is_its_sibling",
 				sql:      `SELECT "X.TOTAL" FROM XPROBE`,
 				wantJava: `[X.TOTAL][[99]]`,
-				wantGo:   `[TOTAL][[99]]`,
-				why: "THE HALF OF RFC-238's PAIR THAT DIVERGES, and it lives here rather " +
-					"than in the yamsql corpus because that corpus is Java-authoritative — " +
-					"an arm asserting `TOTAL` there would convert a known divergence into " +
-					"a passing conformance case and credit it in the generated ledgers. " +
-					"XPROBE declares both `\"TOTAL\"` and `\"X.TOTAL\"`, so this read renders " +
-					"IDENTICALLY to the correlated `x.\"TOTAL\"` read (pinned in the corpus, " +
-					"correct at `TOTAL`) while wanting the opposite label. Note the VALUE: " +
-					"99 proves the right column was read, so only the label is wrong. Not a " +
-					"regression — this branch's base split the same way",
+				wantGo:   `[X.TOTAL][[99]]`,
+				why: "RFC-256 closed the label half of RFC-238's pair: projection " +
+					"publication inherits the resolved attribute's exact SQL name rather " +
+					"than splitting the reference rendering. XPROBE declares both `\"TOTAL\"` " +
+					"and `\"X.TOTAL\"`; the VALUE 99 proves the dotted column was read, and " +
+					"the label must remain X.TOTAL exactly as Java reports it",
 			},
 			{
 				name:        "recursive_seed_arity_mismatch",

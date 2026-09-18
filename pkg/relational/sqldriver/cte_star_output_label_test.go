@@ -92,14 +92,11 @@ func TestCTEStarBodyPublishesSQLLabels(t *testing.T) {
 		},
 		{
 			// K is declared by BOTH legs, so a bare reference through the CTE is
-			// genuinely ambiguous and SQL says 42702. It is REJECTED — but by
-			// the translator, as an opaque 0AF00 that names neither the column
-			// nor the CTE, because the 42702/42703 gates never run for this
-			// shape at all. See the gap note below the table.
+			// genuinely ambiguous and is rejected at semantic resolution as 42702.
 			name: "duplicated_bare_column_is_rejected",
 			sql: `WITH D AS (SELECT * FROM A, B, A."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")) ` +
 				`SELECT D."K" FROM D`,
-			wantErr: "0AF00",
+			wantErr: "42702",
 		},
 		{
 			// Likewise a qualified reference to a source that does not exist at
@@ -108,7 +105,7 @@ func TestCTEStarBodyPublishesSQLLabels(t *testing.T) {
 			name: "inner_leg_alias_is_rejected",
 			sql: `WITH D AS (SELECT * FROM A, B, A."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM EE WHERE EE."CK" = A."K")) ` +
 				`SELECT A."AID" FROM D`,
-			wantErr: "0AF00",
+			wantErr: "42703",
 		},
 	} {
 		tc := tc

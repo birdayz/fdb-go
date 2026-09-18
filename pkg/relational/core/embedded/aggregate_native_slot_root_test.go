@@ -63,8 +63,7 @@ func TestAggregateNativeContract_GroupedUnionRetainsExactOuterLayout(t *testing.
 			len(leftSQ.postAggExprs), leftOp.Explain(""))
 	}
 
-	inner, err := buildLogicalPlanForQueryBodyWithCTECatalog(
-		sq.derivedQuery.QueryExpressionBody(), tmpl.Underlying(), defaultEmbeddedSchema, nil, nil)
+	inner, err := NewPlanVisitor(tmpl.Underlying()).VisitQuery(sq.derivedQuery)
 	if err != nil {
 		t.Fatalf("build grouped UNION: %v", err)
 	}

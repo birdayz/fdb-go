@@ -539,10 +539,10 @@ func (lc *locationCache) queryLocations(db *database, ctx context.Context, tenan
 			body := buildRequest(replyToken)
 			locToken := getAdjustedEndpoint(proxy.Token, EndpointGetKeyServerLocations)
 
-			if err := conn.SendFrame(locToken, body); err != nil {
+			if err := sendReadFrame(ctx, conn, locToken, body, replyHandle); err != nil {
 				replyHandle.Cancel()
 				replyHandle.Release()
-				db.handleConnError(proxy.Address)
+				db.handleReadConnError(proxy.Address, err)
 				continue
 			}
 
@@ -552,7 +552,7 @@ func (lc *locationCache) queryLocations(db *database, ctx context.Context, tenan
 				rpcCancel()
 				replyHandle.Release()
 				if resp.Err != nil {
-					db.handleConnError(proxy.Address)
+					db.handleReadConnError(proxy.Address, resp.Err)
 					continue
 				}
 				entries, err := parseGetKeyServerLocationsReply(resp.Body)

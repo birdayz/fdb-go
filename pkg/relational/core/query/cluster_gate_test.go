@@ -39,10 +39,9 @@ func newGateTranslator(t *testing.T) *cascadesTranslator {
 	}
 	return &cascadesTranslator{
 		md:              md,
-		cteScope:        make(map[string]logical.LogicalOperator),
-		cteExprScope:    make(map[string]expressions.RelationalExpression),
-		cteColumnsScope: make(map[string][]values.Field),
-		cteShadowStack:  make(map[string][]logical.LogicalOperator),
+		cteScope:        logical.CTERegistry{},
+		cteExprScope:    make(map[*logical.CTEProducer]expressions.RelationalExpression),
+		cteColumnsScope: make(map[*logical.CTEProducer][]values.Field),
 	}
 }
 
@@ -55,10 +54,8 @@ func inner(l, r logical.LogicalOperator) *logical.LogicalJoin {
 func TestStarBodyBoundaryInputOrdinalsSkipShadowedBottomColumn(t *testing.T) {
 	t.Parallel()
 	tr := newChainedSpineTranslator(t)
-	body := inner(
-		scan("T4", "T4"),
-		&logical.LogicalUnnest{Segments: []string{"T4", "SARR"}, Alias: "SUB"},
-	)
+	u, _ := rawBoundProtoUnnest(t, tr.md, "T4", "T4", []string{"T4", "SARR"}, "SUB", "", "SARR")
+	body := inner(scan("T4", "T4"), u)
 	columns, ok := tr.derivedBodyStarOrdinalLeg(body)
 	if !ok {
 		t.Fatal("colliding star body was not admitted")
@@ -131,8 +128,8 @@ func TestClusterArity_FlatteningEvasion(t *testing.T) {
 
 	// Derived tables register their body in cteScope (translateCTE); model the
 	// scope directly the way translation has it when the outer join is walked.
-	tr.cteScope["T1"] = inner(scan("Order", "o"), scan("Customer", "c"))
-	tr.cteScope["T2"] = inner(scan("TypedRecord", "t"), scan("Order", "o2"))
+	tr.cteScope = tr.cteScope.With(testCTEProducer("T1", inner(scan("Order", "o"), scan("Customer", "c"))))
+	tr.cteScope = tr.cteScope.With(testCTEProducer("T2", inner(scan("TypedRecord", "t"), scan("Order", "o2"))))
 
 	evasion := inner(scan("t1", "t1"), scan("t2", "t2"))
 	if got := tr.clusterArity(evasion); got != 4 {
@@ -154,7 +151,7 @@ func TestClusterArity_FlatteningEvasion(t *testing.T) {
 	}
 
 	// The scope must be restored after the walk (remove-while-deriving).
-	if _, ok := tr.cteScope["T1"]; !ok {
+	if tr.cteScope.Lookup("T1") == nil {
 		t.Fatal("clusterArity leaked the cteScope removal")
 	}
 }
@@ -443,7 +440,7 @@ func TestWedgeGate_Translation(t *testing.T) {
 func TestWalkArmParity(t *testing.T) {
 	t.Parallel()
 	tr := newGateTranslator(t)
-	tr.cteScope["BODYJOIN"] = inner(scan("Order", "ox"), scan("Customer", "cx"))
+	tr.cteScope = tr.cteScope.With(testCTEProducer("BODYJOIN", inner(scan("Order", "ox"), scan("Customer", "cx"))))
 
 	cases := []struct {
 		name         string
@@ -695,5 +692,41 @@ func TestGatedJoinLegTypes_BuriedConsistency(t *testing.T) {
 	if s.bakeCorr != seedS.bakeCorr || s.leafOffset != seedS.leafOffset ||
 		len(s.typ.Fields) != len(seedS.typ.Fields) || len(s.leafTyp.Fields) != len(seedS.leafTyp.Fields) {
 		t.Fatalf("WHERE-pred buried window %+v disagrees with the seed's %+v", s, seedS)
+	}
+}
+
+func TestClusterCTEPropertyReadsDoNotPublishBindings(t *testing.T) {
+	t.Parallel()
+	for _, property := range []string{"eligibility", "arity"} {
+		t.Run(property, func(t *testing.T) {
+			t.Parallel()
+			body, result := scan("C", "BODY"), scan("D", "RESULT")
+			input := logical.NewCTE("D", body, result, false)
+			plain := testCTEProducer("C", scan("Order", "O"))
+			correlated := testCTEProducer("C", &logical.LogicalFilter{
+				Input: scan("Order", "O"), CorrelatedScalarSubqueries: []logical.CorrelatedScalarSubquery{{}},
+			})
+			for _, test := range []struct {
+				producer *logical.CTEProducer
+				eligible bool
+				arity    int
+			}{{plain, true, 1}, {correlated, false, arityPoison}, {plain, true, 1}} {
+				tr := newGateTranslator(t)
+				tr.cteScope = tr.cteScope.With(test.producer)
+				if property == "eligibility" {
+					if got := tr.ordinalEligible(input); got != test.eligible {
+						t.Fatalf("eligibility = %t, want %t under this reader's registry", got, test.eligible)
+					}
+				} else if got := tr.clusterArity(input); got != test.arity {
+					t.Fatalf("arity = %d, want %d under this reader's registry", got, test.arity)
+				}
+				if body.Source.Resolved() || result.Source.Resolved() || input.DefiningRegistry().Lookup("C") != nil {
+					t.Fatal("cluster property read prepared or bound its caller's CTE graph")
+				}
+				if tr.cteScope.Lookup("C") != test.producer || tr.cteScope.Lookup("D") != nil {
+					t.Fatal("cluster property read leaked its nested lexical scope")
+				}
+			}
+		})
 	}
 }

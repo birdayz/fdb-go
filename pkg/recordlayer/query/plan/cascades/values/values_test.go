@@ -3,6 +3,7 @@ package values
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"math"
 	"testing"
 
@@ -407,7 +408,7 @@ func TestCastValue(t *testing.T) {
 	if got != float64(5) {
 		t.Fatalf("int→float: got %v", got)
 	}
-	// float → int (Java Math.round: floor(x+0.5))
+	// float → int (Java Math.round: nearest integer, ties toward +infinity)
 	floatToInt := NewCastValue(&ConstantValue{Value: float64(3.9), Typ: NullableDouble}, NullableLong)
 	got, errEv10 := floatToInt.Evaluate(nil)
 	require.NoError(t, errEv10)
@@ -811,6 +812,34 @@ func TestPromoteValue_EvaluateNumericCarrier(t *testing.T) {
 		target Type
 		want   any
 	}{
+		{
+			name:   "int32 min to long",
+			value:  int32(-1 << 31),
+			source: NotNullInt,
+			target: NotNullLong,
+			want:   int64(-1 << 31),
+		},
+		{
+			name:   "int32 max to long",
+			value:  int32(1<<31 - 1),
+			source: NotNullInt,
+			target: NotNullLong,
+			want:   int64(1<<31 - 1),
+		},
+		{
+			name:   "go int to long",
+			value:  int(3),
+			source: NotNullInt,
+			target: NotNullLong,
+			want:   int64(3),
+		},
+		{
+			name:   "null int to long",
+			value:  nil,
+			source: NullableInt,
+			target: NullableLong,
+			want:   nil,
+		},
 		{
 			name:   "int to double",
 			value:  int64(3),
@@ -1997,4 +2026,99 @@ func TestCastValue_FloatToString_JavaContract(t *testing.T) {
 			t.Errorf("CAST(%v %v AS STRING): got %q, want %q", tc.in, tc.typ, got, tc.want)
 		}
 	}
+}
+
+func TestPromoteValue_StringToEnum(t *testing.T) {
+	t.Parallel()
+	enum := NewEnumType("COLOR", true, []EnumValue{{Name: "RED", Number: 9}, {Name: "BLUE", Number: 2}, {Name: "cash$", Number: -1}})
+	for _, tc := range []struct {
+		name   string
+		value  any
+		source Type
+		want   any
+		bad    bool
+	}{
+		{"number_not_position", "RED", TypeString, int64(9), false},
+		{"negative", "cash$", TypeString, int64(-1), false},
+		{"null", nil, NullType, nil, false},
+		{"existing_enum", int64(2), enum, int64(2), false},
+		{"case_sensitive", "red", TypeString, nil, true},
+		{"unknown_member", "PURPLE", TypeString, nil, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := NewPromoteValue(&ConstantValue{Value: tc.value, Typ: tc.source}, enum).Evaluate(nil)
+			if tc.bad {
+				require.Error(t, err)
+				require.Equal(t, fmt.Sprintf("Invalid enum value for the enum type %s", tc.value), err.Error())
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestCastValue_StringToEnum(t *testing.T) {
+	t.Parallel()
+	enum := NewEnumType("COLOR", true, []EnumValue{{Name: "RED", Number: 9}, {Name: "BLUE", Number: 2}})
+	got, err := NewCastValue(&ConstantValue{Value: "RED", Typ: TypeString}, enum).Evaluate(nil)
+	require.NoError(t, err)
+	require.Equal(t, int64(9), got)
+	_, err = NewCastValue(&ConstantValue{Value: "MISSING", Typ: TypeString}, enum).Evaluate(nil)
+	require.Error(t, err)
+	require.Equal(t, "Invalid enum value for the enum type MISSING", err.Error())
+	got, err = NewCastValue(&ConstantValue{Value: int64(2), Typ: enum}, enum).Evaluate(nil)
+	require.NoError(t, err)
+	require.Equal(t, int64(2), got, "identity enum cast must preserve its numeric carrier")
+}
+
+// ENUM->STRING is an existing Go-only cast pair; Java has no operator row.
+// Preserve its decimal rendering of the stored numeric carrier independently
+// of the STRING->ENUM member-name lookup used by comparisons.
+func TestCastValue_EnumToStringNumericCarrier(t *testing.T) {
+	t.Parallel()
+	enum := NewEnumType("COLOR", true, []EnumValue{{Name: "RED", Number: 9}})
+	got, err := NewCastValue(&ConstantValue{Value: int64(9), Typ: enum}, TypeString).Evaluate(nil)
+	require.NoError(t, err)
+	require.Equal(t, "9", got)
+}
+
+func FuzzEnumStringPromotion(f *testing.F) {
+	f.Add("CASH$", int32(-17), byte(0))
+	f.Add("RED", int32(9), byte(1))
+	f.Add("", int32(0), byte(2))
+	f.Add("BLUE", int32(2147483647), byte(3))
+	f.Fuzz(func(t *testing.T, suffix string, number int32, choice byte) {
+		t.Parallel()
+		other := number ^ int32(-2147483648)
+		enum := NewEnumType("C", true, []EnumValue{
+			{Name: "left/" + suffix, Number: number},
+			{Name: "right/" + suffix, Number: other},
+		})
+		var input, want any
+		invalid := false
+		switch choice % 4 {
+		case 0:
+			input, want = "left/"+suffix, int64(number)
+		case 1:
+			input, want = "right/"+suffix, int64(other)
+		case 2:
+			// NULL propagates independently of the declaration.
+		case 3:
+			input, invalid = "absent/"+suffix, true
+		}
+		child := &ConstantValue{Value: input, Typ: NullableString}
+		for _, value := range []Value{NewPromoteValue(child, enum), NewCastValue(child, enum)} {
+			got, err := value.Evaluate(nil)
+			if invalid {
+				var enumErr *InvalidEnumValueError
+				if !errors.As(err, &enumErr) || enumErr.Value != input {
+					t.Fatalf("%T invalid member = (%v, %v)", value, got, err)
+				}
+			} else if err != nil || got != want {
+				t.Fatalf("%T member = (%v, %v), want declared number %v", value, got, err, want)
+			}
+		}
+	})
 }

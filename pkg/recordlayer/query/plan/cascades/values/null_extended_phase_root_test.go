@@ -2,8 +2,8 @@ package values
 
 import "testing"
 
-// TestTranslateNullExtendedPhaseRootCrossesOnlyTheWideningBoundary drives every
-// arm of the null-extension crossing.
+// TestTranslateNullExtendedPhaseRootCrossesOnlyTheWideningBoundary drives the
+// whole-row, already-nullable field, shape, direction and foreign-root cases.
 //
 // The crossing exists because it is the one phase boundary where a row's exact
 // type legitimately changes, and it is therefore the one place a bridge could be
@@ -31,8 +31,8 @@ func TestTranslateNullExtendedPhaseRootCrossesOnlyTheWideningBoundary(t *testing
 		return v
 	}
 
-	// The accept arm: a read INTO the row is unchanged by whether the row may be
-	// absent, so the ordinal survives and the leaf type must not move.
+	// This field is already nullable, so widening its record leaves the read's
+	// result type unchanged. NOT NULL field reads need a nullable result instead.
 	read := fieldOf(present, 1)
 	crossed, err := TranslateNullExtendedPhaseRoot(read, present, absentCapable)
 	if err != nil {

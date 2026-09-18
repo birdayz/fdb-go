@@ -17,7 +17,7 @@ func (db *database) openDatabaseCoord(ctx context.Context, conn *transport.Conn,
 	body := buildOpenDatabaseCoordRequest(snap, replyToken)
 
 	destToken := transport.WellKnownToken(transport.WLTokenClientLeaderRegOpenDatabase)
-	if err := conn.SendFrame(destToken, body); err != nil {
+	if err := sendReadFrame(ctx, conn, destToken, body, replyHandle); err != nil {
 		replyHandle.Cancel()
 		return nil, fmt.Errorf("send OpenDatabaseCoordRequest: %w", err)
 	}

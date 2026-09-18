@@ -1484,11 +1484,12 @@ func TestFieldDecisionsInsideClosuresAreReported(t *testing.T) {
 
 	// The floor: this many engine sites are only visible because the walk
 	// descends into FuncLits and keys the taint on the DECLARATION.
-	// RFC-232 retired eight closure-local compatibility readers. Two is the
-	// measured production population; the synthetic closure fixtures above pin
-	// traversal independently, so a future population decrease remains
-	// distinguishable from the walker skipping FuncLits.
-	const closureSiteFloor = 2
+	// RFC-232 and the full scalar-query conversion retired the closure-local
+	// compatibility readers. One is the measured production population; the
+	// synthetic closure fixtures above pin traversal independently, so a future
+	// population decrease remains distinguishable from the walker skipping
+	// FuncLits.
+	const closureSiteFloor = 1
 	if len(engineSites) < closureSiteFloor {
 		t.Fatalf("only %d engine decisions reported from inside a closure, want at least %d "+
 			"— the walk has stopped descending into FuncLits (or the taint has been "+

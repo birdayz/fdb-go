@@ -112,6 +112,62 @@ func TestFDB_FieldValuedComputedScalar(t *testing.T) {
 		t.Errorf("outer-scope parenthesized scalar = %v, want [1] (the OUTER c.id; the inner o.id=5 means the bared key read the wrong scope)", got)
 	}
 
+	for _, label := range []string{"MiXeD", "literal.dot"} {
+		for _, clustered := range []bool{false, true} {
+			name := "single/" + label
+			from := "customers AS c WHERE c.id = 1"
+			if clustered {
+				name = "clustered/" + label
+				from = "customers AS c, customers AS x WHERE c.id = 1 AND x.id = 1"
+			}
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				query := `SELECT (SELECT o.amount AS "` + label + `" FROM orders AS o WHERE o.id = c.id) AS "` + label + `" FROM ` + from
+				var firstPlan string
+				for i := 0; i < 5; i++ {
+					var plan string
+					if err := db.QueryRowContext(ctx, "EXPLAIN "+query).Scan(&plan); err != nil {
+						t.Fatal(err)
+					}
+					if !strings.Contains(plan, "FlatMap") || (clustered && !strings.Contains(plan, "NestedLoopJoin")) {
+						t.Fatalf("scalar seed route missing: %s", plan)
+					}
+					if i == 0 {
+						firstPlan = plan
+					} else if plan != firstPlan {
+						t.Fatalf("private identity leaked into EXPLAIN:\n%s\n%s", firstPlan, plan)
+					}
+				}
+				rows, err := db.QueryContext(ctx, query)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer rows.Close()
+				columns, err := rows.Columns()
+				if err != nil || len(columns) != 1 || columns[0] != label {
+					t.Fatalf("scalar public labels=(%v,%v), want [%s]", columns, err, label)
+				}
+				types, err := rows.ColumnTypes()
+				if err != nil || len(types) != 1 || types[0].DatabaseTypeName() != "BIGINT" {
+					t.Fatalf("scalar public types=(%v,%v), want one BIGINT", types, err)
+				}
+				if nullable, known := types[0].Nullable(); !known || !nullable {
+					t.Fatalf("scalar nullability=(%v,%v), want known nullable", nullable, known)
+				}
+				if !rows.Next() {
+					t.Fatalf("scalar row missing: %v", rows.Err())
+				}
+				var got int64
+				if err := rows.Scan(&got); err != nil || got != 100 {
+					t.Fatalf("scalar=(%d,%v), want 100", got, err)
+				}
+				if rows.Next() || rows.Err() != nil {
+					t.Fatalf("unexpected extra row or iteration error: %v", rows.Err())
+				}
+			})
+		}
+	}
+
 	// (The AT-ordinal-alias scope corner — `AS v AT c` colliding with an outer
 	// alias `c` — is pinned white-box in the embedded package
 	// (TestInnerSourceAliases_MirrorsUnnestBinder): SQL INSERT cannot seed

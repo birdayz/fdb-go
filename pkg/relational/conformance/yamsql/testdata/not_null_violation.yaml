@@ -17,7 +17,7 @@ tests:
   # NOT NULL on a scalar column → rejected at CREATE with Java's error.
   - exec: CREATE SCHEMA TEMPLATE bad_nn_scalar CREATE TABLE t2 (id BIGINT NOT NULL, name STRING, PRIMARY KEY (id))
     error_code: "0A000"
-    error: "NOT NULL is only allowed for ARRAY column type"
+    error_message: "NOT NULL is only allowed for ARRAY column type"
   - exec: CREATE SCHEMA TEMPLATE bad_nn_string CREATE TABLE t3 (id BIGINT, name STRING NOT NULL, PRIMARY KEY (id))
     error_code: "0A000"
   # NOT NULL stays legal on an ARRAY column (the one representable case:

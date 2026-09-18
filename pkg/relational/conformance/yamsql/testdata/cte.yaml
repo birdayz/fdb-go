@@ -310,16 +310,17 @@ tests:
       SELECT COUNT(*) FROM c
     rows:
       - [4]
-  # A DERIVED source's range alias colliding with a CTE name must NOT expand
-  # its star through the CTE (the CTE-first lookup would project the
-  # UNRELATED one-column CTE's schema over the two-column derived row —
-  # silent wrong columns). Derived sources register no star source; this
-  # reach class was a plan-time 0AF00 before the shadowing work and stays
-  # one (probed at the pre-change SHA) — loud, never wrong columns.
+  # A derived range alias shadows the same-named CTE and publishes the derived
+  # row's own two-column star; the trailing x.id repeats its first slot.
+  # Ordered WITH is a Go extension: Java rejects this query with 0A000.
+  # ProjectionLabelIntegrationReference also pins the unordered shared control.
   - query: |-
       WITH x AS (SELECT id FROM t)
       SELECT x.*, x.id FROM (SELECT id, v FROM t WHERE id <= 2) AS x ORDER BY x.id
-    error_code: "0AF00"
+    columns: ["ID", "V", "ID"]
+    rows:
+      - [1, 10, 1]
+      - [2, 20, 2]
   # Nested-WITH arity at the point of truth (the deleted static predictor
   # counted the OUTER x's one-column width): nested x (2 cols) shadows outer
   # x (1 col) inside c's body; the BUILT body's output width (2) is the
@@ -341,8 +342,7 @@ tests:
   # never descends into; (b) a duplicate group-key read stays VALID (the
   # aggregate's internal layout dedups to one slot, but the visible SELECT
   # is two — inexact roots never reject); (c) the no-filter derived-alias
-  # star collision rejects PLAN-TIME 0AF00 (was: raw runtime
-  # ordinal-resolution error).
+  # twin exercises the same lexical shadowing as the filtered case above.
   - query: |-
       WITH o AS (WITH i(a, b) AS (SELECT id FROM t WHERE id <= 2) SELECT id FROM t)
       SELECT id FROM t WHERE id = 1
@@ -355,7 +355,12 @@ tests:
   - query: |-
       WITH x AS (SELECT id FROM t)
       SELECT x.*, x.id FROM (SELECT id, v FROM t) AS x ORDER BY x.id
-    error_code: "0AF00"
+    columns: ["ID", "V", "ID"]
+    rows:
+      - [1, 10, 1]
+      - [2, 20, 2]
+      - [3, 30, 3]
+      - [4, 40, 4]
   # Round-9 pins: (a) the dup-read aggregate CTE now materializes its
   # VISIBLE two-slot layout (the builder mints the reshaping projection when
   # visible != internal width), so reading BOTH aliased columns works —

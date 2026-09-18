@@ -46,6 +46,9 @@ func MapFieldValues(v Value, transform func(*fieldValue) Value) Value {
 	newChildren := make([]Value, len(children))
 	for i, c := range children {
 		nc := MapFieldValues(c, transform)
+		if nc == nil {
+			return nil
+		}
 		if nc != c {
 			changed = true
 		}
@@ -109,7 +112,7 @@ func MapFieldValues(v Value, transform func(*fieldValue) Value) Value {
 	case *AndOrValue:
 		return cv.WithChildren(newChildren)
 	case *ArrayConstructorValue:
-		return cv.WithChildren(newChildren)
+		return WithChildren(cv, newChildren)
 	case *CollateValue:
 		return cv.WithChildren(newChildren)
 	case *ConditionSelectorValue:

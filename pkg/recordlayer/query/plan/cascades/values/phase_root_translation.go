@@ -585,7 +585,7 @@ func TranslateNullExtendedPhaseRoot(
 				// path into a different domain.
 				return node, nil
 			}
-			rebuilt, rebuildErr := RebuildFieldValue(field, exactTarget)
+			rebuilt, rebuildErr := resolveAgainstQOV(exactTarget, field.Resolved.Accessors, nil)
 			if rebuildErr != nil {
 				return nil, resolutionError(ReanchorInvalidMappedPath, "null-extended.field", rebuildErr.Error())
 			}
@@ -594,18 +594,23 @@ func TranslateNullExtendedPhaseRoot(
 				return nil, resolutionError(ReanchorInvalidMappedPath, "null-extended.field",
 					"resolved path did not produce an exact FieldValue")
 			}
-			// Reading INTO the row is unaffected by whether the row may be absent,
-			// so a leaf whose exact type moved means the two rows were not the same
-			// row after all and the shape check above was not strong enough.
-			if !exactTypesEqual(field.resultType, retargeted.resultType) {
+			// Java FieldValue.computeResultType includes the child's nullability:
+			// the stored field descriptor is unchanged, but reading through an
+			// absent record yields NULL even when that field is declared NOT NULL.
+			// Only this proven widening boundary permits the read-result change;
+			// generic RebuildFieldValue must continue to reject type drift.
+			if !exactTypesEqual(exactWithNullability(field.resultType, true), retargeted.resultType) {
 				return nil, resolutionError(ReanchorResultTypeMismatch, "null-extended.field",
-					"crossing the null-extension changed a leaf's exact type")
+					"null-extension changed more than field read-result nullability")
 			}
-			return retargeted, nil
+			path := *retargeted.Resolved
+			path.FrontierPinned = field.Resolved.FrontierPinned
+			copy := *retargeted
+			copy.Resolved = &path
+			return &copy, nil
 		}
 		if root, isQOV := node.(*quantifiedObjectValue); isQOV && root == exactSource {
-			// The whole-row read is the one place the type is SUPPOSED to change:
-			// the caller asked for the row this operator emits, which may be absent.
+			// A whole-row read takes the type of the emitted row, which may be absent.
 			return exactTarget, nil
 		}
 

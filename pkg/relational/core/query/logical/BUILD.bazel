@@ -3,6 +3,9 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "logical",
     srcs = [
+        "cte_producer.go",
+        "exists_consumer.go",
+        "exists_input.go",
         "inline_values.go",
         "operator.go",
         "operators.go",
@@ -10,6 +13,7 @@ go_library(
     importpath = "fdb.dev/pkg/relational/core/query/logical",
     visibility = ["//visibility:public"],
     deps = [
+        "//pkg/recordlayer/query/plan/cascades/expressions",
         "//pkg/recordlayer/query/plan/cascades/predicates",
         "//pkg/recordlayer/query/plan/cascades/values",
     ],
@@ -18,6 +22,7 @@ go_library(
 go_test(
     name = "logical_test",
     srcs = [
+        "cte_producer_test.go",
         "inline_values_test.go",
         "operators_test.go",
     ],

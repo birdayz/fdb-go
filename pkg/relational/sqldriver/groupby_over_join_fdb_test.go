@@ -273,7 +273,7 @@ func TestFDB_GroupByWrongQualifierRejected(t *testing.T) {
 	}
 
 	// (2) Correlated-scalar-subquery path. Here validateGroupByProjection (~L4414)
-	// runs FIRST and the GROUP-BY-key resolver gate (resolveCorrelatedGroupKeyValues,
+	// runs FIRST and the GROUP-BY-key resolver gate (the shared semantic GROUP BY resolver,
 	// ~L4654) runs AFTER — the inverse ordering of the top-level path. The inner
 	// subquery has a single source (dept d2), so d2.salary is a genuinely-absent
 	// column on dept and the resolver gate must reject it BY NAME (proving it's the

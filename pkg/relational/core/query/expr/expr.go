@@ -323,19 +323,14 @@ func (r *Resolver) resolveScopedColumn(col semantic.Column, src semantic.ScopeSo
 	// column). Derived-table/CTE quantifiers expose their columns under the
 	// OUTPUT name the projection emits — no reverse-map to a source column.
 	field := col.Id.Name()
-	needsQualification := len(r.scope.Sources()) > 1
-	if !needsQualification && src.CorrelationName != "" {
-		isLocal := false
-		for _, localSrc := range r.scope.Sources() {
-			if localSrc.CorrelationName == src.CorrelationName {
-				isLocal = true
-				break
-			}
-		}
-		if !isLocal {
-			needsQualification = true
+	isLocal := false
+	for _, localSrc := range r.scope.Sources() {
+		if localSrc.CorrelationName == src.CorrelationName {
+			isLocal = true
+			break
 		}
 	}
+	needsQualification := len(r.scope.Sources()) > 1 || src.CorrelationName != "" && !isLocal
 	if src.CorrelationName != "" && needsQualification {
 		// A PARENT-scope resolution (Java's zero-match fallthrough) whose
 		// correlation name is SHADOWED by a local source is
@@ -358,7 +353,11 @@ func (r *Resolver) resolveScopedColumn(col semantic.Column, src semantic.ScopeSo
 		// are pinned by an FDB integration test for duplicate FROM-alias
 		// handling.
 		for _, localSrc := range r.scope.Sources() {
-			if localSrc.CorrelationName != src.CorrelationName {
+			// Private source IDs do not expand the existing multi-source
+			// qualified-fallthrough contract. Local per-attribute matches remain
+			// legal, and single-source fallthrough remains supported.
+			lexicalShadow := !isLocal && len(r.scope.Sources()) > 1 && qualifier.Name() != "" && localSrc.Alias.EqualsIgnoreQuoting(qualifier)
+			if localSrc.CorrelationName != src.CorrelationName && !lexicalShadow {
 				continue
 			}
 			// Relaxed: this asks whether the LOCAL source could have answered
@@ -440,6 +439,10 @@ func SourceRowType(src semantic.ScopeSource) *values.RecordType {
 }
 
 func sourceRowType(src semantic.ScopeSource) *values.RecordType {
+	if src.FlowedObject != nil {
+		record, _ := columnCascadesType(*src.FlowedObject).(*values.RecordType)
+		return record
+	}
 	if src.Table == nil {
 		return nil
 	}
@@ -457,107 +460,46 @@ func sourceRowType(src semantic.ScopeSource) *values.RecordType {
 	return &values.RecordType{Nullable: src.FlowedNullable, Fields: fields}
 }
 
-// flowedTypeFor is the SINGLE authority on the type a reference's quantifier
-// object may state for a resolved source. Every mint that builds a
-// QuantifiedObjectValue from a ScopeSource goes through it — there is no
-// second opinion, because the three mints that need it
-// (ResolveIdentifier's correlated arm, ResolveQualifiedProjection,
-// ResolveColumnShadowingQualified) are reached by SQL that differs by one
-// FROM item, and a decision made independently at each of them is a decision
-// that will be made differently at one of them.
-//
-// A SHADOWING source is a lateral unnest's AS/AT binding, whose scope entry is
-// a VIRTUAL one-column table (RFC-142). That column list is a RESOLUTION
-// convenience — it is what makes `SELECT "X"` resolve — and it is NOT the row
-// the quantifier flows: an unnest element is ONE array element, a scalar, and
-// Java's own seed calls that the isPrimitive() whole-object case. Stating it as
-// a row is the difference between `_1 UNKNOWN` and `_1 RECORD<X>` in the merged
-// seed, and values.IsMixedSeedElementType discriminates the element from a leg
-// by exactly that record-ness — so a row here makes an element read as a leg,
-// which surfaces as a loud "multi-leg row cannot serve a source-relative
-// ordinal" on some shapes and as SILENTLY MISSING ROWS on others.
-//
-// Written as an explicit UnknownType rather than a nil *RecordType: a nil typed
-// pointer in a Type interface is NOT a nil interface, so it would type-assert
-// as a *RecordType and read as a row anyway — the exact conflation this
-// function exists to avoid, arrived at by the one Go idiom that looks like it
-// avoids it.
-//
-// The DOMAIN is deliberately NOT narrowed the same way: the domain names the
-// layout the resolved ORDINAL indexes, which is the virtual table's column list
-// either way. Only what the quantifier FLOWS is in question here.
-// sourceColumnOrdinal returns the 0-based position of field within the
-// resolved source's declared column order — the LOGICAL ordinal of the
-// column in the row the source flows. Matching is by EXACT spelling over ONE
-// source's declared columns: the reference was resolved against those columns
-// (or against the SQL labels a flowed layout stands beside) and arrives
-// carrying the column's own spelling, so a folded match here could only pair
-// it with a DIFFERENT column that folds the same — which is how `c."x"` and
-// `c."X"` over one body once both read slot 0.
-//
-// It also returns the FLOWED TYPE a reference's quantifier object may state for
-// this source (flowedTypeFor) and the DOMAIN token for the layout the ordinal
-// indexes. All three come from one walk of one column list, and the domain is
-// derived FROM the row type rather than beside it, so a caller that stamps the
-// flowed type on a reference's quantifier object and the domain on its resolved
-// path is guaranteed to have stated ONE layout twice rather than two layouts
-// that agree today. That guarantee is the point: `values.OrdinalIn` compares the
-// path's domain against the frontier a consumer derives from the quantifier
-// object's type, and those two derivations meeting is the whole precondition for
-// a reference being able to state its identity.
-//
-// The flowed type is returned as a values.Type, not a *RecordType, so a caller
-// CANNOT reach past the decision to the raw row: the shadowing narrowing is
-// applied here once, for everyone, by construction.
-func sourceColumnOrdinal(src semantic.ScopeSource, field string) (int, *values.RecordType, bool) {
+// sourceColumnAtOrdinal maps an already selected SQL attribute position onto
+// the exact physical row; it never chooses a source by display name.
+func sourceColumnAtOrdinal(src semantic.ScopeSource, position int) (int, *values.RecordType, bool) {
 	rowType := sourceRowType(src)
-	if rowType == nil {
+	if src.Table == nil || rowType == nil {
 		return 0, nil, false
 	}
-	// A source that states a FLOWED layout beside its SQL columns names its
-	// slots as the plan flows them — a repeated bare leaf under its qualified
-	// datum key, a repeated output under the name-addressability suffix — and
-	// those are not names a reference spells. The reference was resolved
-	// against the SQL columns, so the ordinal is its POSITION in that list, and
-	// the flowed layout, parallel to it by construction, is what the ordinal
-	// indexes. Looking the SQL name up in the flowed layout instead missed
-	// every column whose two names differ.
-	if labels := src.Table.Columns(); len(src.FlowedColumns) > 0 && len(labels) == len(rowType.Fields) {
-		// PARALLEL lists: a source that states a flowed layout the same width
-		// as its SQL columns (an exact derived source) is resolved by position.
-		//
-		// The reference was resolved against these labels by EXACT spelling —
-		// a quoted label keeps its case, so `AS "x"` and `AS "X"` are two
-		// columns — and the position is looked up the same way. A folded
-		// first match mapped both spellings to the first slot, and
-		// `SELECT c."x", c."X"` over that body answered the first column
-		// twice. There is no folded fallback: the reference arrives with the
-		// label's own spelling, so a miss here names no column of this source.
-		for i, c := range labels {
-			if c.Id.Name() == field {
-				return i, rowType, true
-			}
+	labels := src.Table.Columns()
+	if position < 0 || position >= len(labels) {
+		return 0, nil, false
+	}
+	if src.ColumnOrdinals != nil {
+		if len(src.ColumnOrdinals) != len(labels) {
+			return 0, nil, false
 		}
-		return 0, nil, false
+		ordinal := src.ColumnOrdinals[position]
+		return ordinal, rowType, ordinal >= 0 && ordinal < len(rowType.Fields)
 	}
-	// The layout IS the SQL list (an ordinary table), or it is deliberately
-	// WIDER than it: an AT-only WITH ORDINALITY source exposes the ordinal
-	// alias alone while its row still carries the unexposed element in slot 0
-	// (unnestVirtualScopeSource), and the exposed name is looked up in that
-	// row. Those are the two shapes this branch serves; a flowed layout that
-	// is NARROWER than the SQL list is not a shape any source states.
-	// Exact spelling here too: a derived body that labels two columns
-	// `AS "x"` and `AS "X"` states both in its row, and a folded first match
-	// read the first for either reference. The row's field names are the
-	// column spellings the reference was resolved against (a descriptor's
-	// stored spelling reaches both), so a folded fallback had nothing to
-	// match that an exact match does not.
-	for i, f := range rowType.Fields {
-		if f.Name == field {
+	if src.FlowedObject == nil && (len(src.FlowedColumns) == 0 || len(labels) == len(rowType.Fields)) {
+		return position, rowType, position < len(rowType.Fields)
+	}
+	// A record element's SQL list includes its ephemeral whole alias; only
+	// its members are physical slots. Older hand-built wider virtual sources
+	// likewise declare the physical name of each exposed slot directly.
+	for i, field := range rowType.Fields {
+		if field.Name == labels[position].Id.Name() {
 			return i, rowType, true
 		}
 	}
 	return 0, nil, false
+}
+
+// SourceColumnValue expands an already selected SQL attribute without resolving
+// its display name again. Two star attributes may share that name and still
+// denote different physical slots or different correlation identities.
+func SourceColumnValue(src semantic.ScopeSource, position int) (values.Value, error) {
+	if src.Table == nil || position < 0 || position >= len(src.Table.Columns()) {
+		return nil, &UnresolvableOrdinalError{Source: src.CorrelationName}
+	}
+	return resolvedSourceColumnAt(src.Table.Columns()[position], src, position, nil)
 }
 
 // resolvedSourceColumnRef constructs the exact whole-object QOV first, then
@@ -566,9 +508,28 @@ func sourceColumnOrdinal(src semantic.ScopeSource, field string) (int, *values.R
 // QOV flows the element itself. Therefore the virtual root step is omitted and
 // a scalar element is represented by the QOV directly.
 func resolvedSourceColumnRef(col semantic.Column, src semantic.ScopeSource, accessors []semantic.NestedAccessor) (values.Value, error) {
+	if src.Table != nil {
+		for i, candidate := range src.Table.Columns() {
+			if candidate.Id.Name() == col.Id.Name() {
+				return resolvedSourceColumnAt(col, src, i, accessors)
+			}
+		}
+	}
+	return nil, &UnresolvableOrdinalError{Field: col.Id.Name(), Source: src.CorrelationName}
+}
+
+func resolvedSourceColumnAt(col semantic.Column, src semantic.ScopeSource, position int, accessors []semantic.NestedAccessor) (values.Value, error) {
 	field := col.Id.Name()
-	ordinal, rowType, ok := sourceColumnOrdinal(src, field)
-	if !ok {
+	ordinal, rowType, ok := sourceColumnAtOrdinal(src, position)
+	wholeObject := src.Shadowing && len(src.FlowedColumns) == 0
+	flowed := values.Type(rowType)
+	if src.FlowedObject != nil {
+		flowed = columnCascadesType(*src.FlowedObject)
+		wholeObject = col.Ephemeral || rowType == nil
+	} else if wholeObject {
+		flowed = columnCascadesType(col)
+	}
+	if !wholeObject && !ok {
 		return nil, &UnresolvableOrdinalError{Field: field, Source: src.CorrelationName}
 	}
 	corrName := src.CorrelationName
@@ -583,21 +544,16 @@ func resolvedSourceColumnRef(col semantic.Column, src semantic.ScopeSource, acce
 	// the element name: the QOV is the whole element. WITH ORDINALITY supplies
 	// FlowedColumns and therefore carries a genuine row QOV whose AS/AT columns
 	// are addressed by their physical ordinals.
-	wholeShadowingObject := src.Shadowing && len(src.FlowedColumns) == 0
-	flowed := values.Type(rowType)
-	if wholeShadowingObject {
-		flowed = columnCascadesType(col)
-	}
 	qov, err := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(corrName), flowed)
 	if err != nil {
 		return nil, fmt.Errorf("resolve column %q exact source type: %w", field, err)
 	}
-	if wholeShadowingObject && len(accessors) == 0 {
+	if wholeObject && len(accessors) == 0 {
 		return qov, nil
 	}
 
 	path := make([]values.FieldRequest, 0, 1+len(accessors))
-	if !wholeShadowingObject {
+	if !wholeObject {
 		// The request names the slot as the FLOWED layout names it — the name
 		// the row beneath the quantified object carries — which for a column
 		// whose SQL name and runtime name differ is the runtime one. The
@@ -914,6 +870,16 @@ func (r *Resolver) ResolveComparison(op predicates.ComparisonType, left, right v
 	op, left, right = narrowConstAgainstFloatColumn(op, left, right)
 	left, right = promoteColumnColumnNumeric(left, right)
 	left, right = promoteStringComparandToUuid(op, left, right)
+	// The exported planner's parameters are unresolved until execution (the
+	// driver text-substitution route does not take this path). An enum
+	// counterpart supplies their target declaration just as a UUID does.
+	if lt, rt := left.Type(), right.Type(); lt != nil && rt != nil {
+		if values.IsEnum(lt) && rt.Code() == values.TypeCodeUnknown {
+			right = values.NewPromoteValue(right, values.WithNullability(lt, true))
+		} else if values.IsEnum(rt) && lt.Code() == values.TypeCodeUnknown {
+			left = values.NewPromoteValue(left, values.WithNullability(rt, true))
+		}
+	}
 	// NO ORDERING OVER ARRAYS (Java RelOpValue.encapsulate): the
 	// BinaryPhysicalOperator map has EQ/NEQ/IS_DISTINCT/NOT_DISTINCT rows
 	// for ARRAY and NONE operands only — no LT/LTE/GT/GTE row exists for
@@ -935,9 +901,21 @@ func (r *Resolver) ResolveComparison(op predicates.ComparisonType, left, right v
 	// parameters, internal untyped expressions) keep the runtime path.
 	if lt, rt := left.Type(), right.Type(); lt != nil && rt != nil &&
 		lt.Code() != values.TypeCodeUnknown && rt.Code() != values.TypeCodeUnknown {
-		if values.MaximumType(lt, rt) == nil {
+		maximum := values.MaximumType(lt, rt)
+		if maximum == nil {
 			return nil, api.NewErrorf(api.ErrCodeDatatypeMismatch,
 				"The operands of a comparison operator are not compatible.")
+		}
+		// Java RelOpValue.promoteOperands injects the common enum type.
+		// Admission alone is insufficient: STRING members must resolve to
+		// the stored number before a filter or an index range compares them.
+		if values.IsEnum(maximum) {
+			if !lt.Equals(maximum) {
+				left = values.NewPromoteValue(left, maximum)
+			}
+			if !rt.Equals(maximum) {
+				right = values.NewPromoteValue(right, maximum)
+			}
 		}
 		// BOOLEAN HAS NO ORDER. Java's RelOpValue declares typed binaries per
 		// operator, and there is no LT/LTE/GT/GTE binary for BOOLEAN — only
@@ -1747,7 +1725,7 @@ func (r *Resolver) ResolveIn(left values.Value, rhs []values.Value) (predicates.
 	// `b IN (a, 'x')` is still 42804 and a NULL item is still rejected by the
 	// caller before it reaches here.
 	if !allInListItemsConstant(rhs) {
-		items := promoteInListItemsToUuid(left, rhs)
+		items := promoteInListItemsToDeclaredType(left, rhs)
 		return predicates.NewComparisonPredicate(left, predicates.Comparison{
 			Type:    predicates.ComparisonIn,
 			Operand: values.NewArrayConstructorValue(inListItemType(items), items),
@@ -1795,6 +1773,13 @@ func (r *Resolver) ResolveIn(left values.Value, rhs []values.Value) (predicates.
 				lit = [16]byte(u)
 			}
 		}
+		if values.IsEnum(left.Type()) && v.Type() != nil && v.Type().Code() == values.TypeCodeString {
+			promoted, err := values.NewPromoteValue(&values.ConstantValue{Value: lit, Typ: v.Type()}, left.Type()).Evaluate(nil)
+			if err != nil {
+				return nil, err
+			}
+			lit = promoted
+		}
 		list = append(list, lit)
 	}
 	return predicates.NewComparisonPredicate(left, predicates.Comparison{
@@ -1803,9 +1788,10 @@ func (r *Resolver) ResolveIn(left values.Value, rhs []values.Value) (predicates.
 	}), nil
 }
 
-// promoteInListItemsToUuid wraps each item of a RUNTIME IN list in
-// PromoteValue(UUID) when the left operand is a UUID, mirroring what
-// promoteStringComparandToUuid does for the equality form.
+// promoteInListItemsToDeclaredType wraps each item of a RUNTIME IN list in
+// PromoteValue when the left operand is a UUID or ENUM. Both require a real
+// STRING conversion (to UUID bytes or a declared enum number), unlike numeric
+// widths that the residual comparator can compare directly.
 //
 // It exists because the constant fork below applies THREE coercions and only
 // one of them survives the crossing to a runtime list:
@@ -1827,11 +1813,16 @@ func (r *Resolver) ResolveIn(left values.Value, rhs []values.Value) (predicates.
 // Every item is wrapped, not just the non-constant ones: a mixed list like
 // `u IN (s, '…uuid literal…')` goes down this fork as a whole, so the literal
 // needs the same conversion the constant fork would have given it.
-// PromoteValue.Evaluate parses a bound string to [16]byte and passes an
-// already-[16]byte value through untouched, so wrapping is safe for both.
-func promoteInListItemsToUuid(left values.Value, rhs []values.Value) []values.Value {
+// PromoteValue.Evaluate parses a bound string to [16]byte or a declared enum
+// number and passes an already converted value through unchanged.
+//
+// Java's InOpValue injects a whole ARRAY<ENUM> promotion, but in 4.12.11.0
+// PromoteValue.eval's descriptor selection asserts that this target is a
+// RECORD. Promoting elements here deliberately avoids that upstream assertion;
+// EnumTransportReference pins Java's failure separately from the Go row oracle.
+func promoteInListItemsToDeclaredType(left values.Value, rhs []values.Value) []values.Value {
 	lt := left.Type()
-	if lt == nil || !values.IsUuid(lt) {
+	if lt == nil || (!values.IsUuid(lt) && !values.IsEnum(lt)) {
 		return rhs
 	}
 	out := make([]values.Value, len(rhs))
@@ -1840,7 +1831,8 @@ func promoteInListItemsToUuid(left values.Value, rhs []values.Value) []values.Va
 		if v == nil {
 			continue
 		}
-		if vt := v.Type(); vt != nil && promotableToUuid(vt) {
+		if vt := v.Type(); vt != nil && ((values.IsUuid(lt) && promotableToUuid(vt)) ||
+			(values.IsEnum(lt) && (values.IsPromotable(vt, lt) || vt.Code() == values.TypeCodeUnknown))) {
 			out[i] = values.NewPromoteValue(v, lt)
 		}
 	}
@@ -1995,12 +1987,9 @@ func aggregateOpForName(name string, isStar bool) (values.AggregateOp, bool) {
 	return values.AggInvalid, false
 }
 
-// sqlTypeToCascadesType maps the seed's string-valued SQL type
-// (from semantic.Column.Type) to a cascades values.Type. Coarse —
-// the seed maps INT/STRING/BOOL/ENUM to the matching primitive
-// singletons; everything else falls through to UnknownType. Real
-// type inference (proper nullability + structured-type recursion)
-// is future work.
+// sqlTypeToCascadesType maps primitive semantic.Column.Type spellings.
+// columnCascadesType carries nullability and structured RECORD/ENUM/ARRAY
+// declarations; a bare ENUM kind here is unresolved, never a STRING.
 //
 // INTEGER is a recognized SYNONYM for INT (the standard SQL spelling —
 // the metadata-derivation paths in cascades_generator / system_rows
@@ -2034,7 +2023,7 @@ func sqlTypeToCascadesType(sqlType string) values.Type {
 		return values.NullableLong
 	case "BIGINT NOT NULL":
 		return values.NotNullLong
-	case "STRING", "ENUM":
+	case "STRING":
 		return values.TypeString
 	case "UUID":
 		// UUID is a first-class scalar (Java's DataType.Primitives.UUID),
@@ -2139,6 +2128,8 @@ func columnCascadesType(col semantic.Column) values.Type {
 	elem := sqlTypeToCascadesType(col.Type)
 	if col.Type == "RECORD" {
 		elem = structColumnType(col)
+	} else if col.Type == "ENUM" {
+		elem = enumColumnType(col)
 	}
 	if !col.IsArray {
 		// Honor the catalog's declared nullability (Java's
@@ -2164,6 +2155,26 @@ func columnCascadesType(col semantic.Column) values.Type {
 		elem = values.WithNullability(elem, false)
 	}
 	return values.NewArrayType(col.Nullable, elem)
+}
+
+// enumColumnType reconstructs a checked enum declaration without invoking the
+// schema constructor's panic contract on externally supplied semantic columns.
+func enumColumnType(col semantic.Column) values.Type {
+	if col.EnumTypeName == "" || len(col.EnumMembers) == 0 {
+		return values.TypeUnknown
+	}
+	members := make([]values.EnumValue, len(col.EnumMembers))
+	for i, member := range col.EnumMembers {
+		if member.Name == "" {
+			return values.TypeUnknown
+		}
+		members[i] = values.EnumValue{Name: member.Name, Number: member.Number}
+	}
+	typ := &values.EnumType{EnumName: col.EnumTypeName, Nullable: col.Nullable, Values: members}
+	if _, err := values.SnapshotExactType(typ); err != nil {
+		return values.TypeUnknown
+	}
+	return typ
 }
 
 // ResolveConstant wraps a Go-native literal in a cascades

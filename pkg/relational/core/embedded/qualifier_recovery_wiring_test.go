@@ -1,70 +1,14 @@
 package embedded
 
-// The QUALIFIER RECOVERY census's recorder wiring at the THREE parseColRef dark
-// splitters, pinned PER SITE and PER CLASS.
+// The QUALIFIER RECOVERY census's remaining embedded recorder wiring, pinned
+// per site and class. projScopeClassify is fully retired: semantic projection
+// resolution now carries exact source identity and the all-call revival alarm
+// lives in qualifier_recovery_census_main_test.go.
 //
-// WHY parseColRef IS THREE SITES AND NOT ONE. It has 27 production call sites.
-// The overwhelming majority are display or lookup — they take `.bare()` and
-// never ask whether the name was qualified — and instrumenting those would
-// measure a helper's popularity rather than any decision. Three call sites
-// MANUFACTURE a qualifier that then DECIDES something, and they are three
-// different decisions with three different counterparties:
-//
-//	projScopeClassify  inner- vs outer-scoping of a projection field.
-//	                   Counterparty: a QuantifiedObjectValue child — but the
-//	                   split arm runs only where there ISN'T one, so this site
-//	                   can never report AGREED. Its debt is a producer change.
-//	projQualVsScan     a projected column's qualifier against the scan's
-//	                   name/alias, raising ErrCodeUndefinedColumn on a mismatch.
-//	                   Counterparty: the slot's ProjectionRefs triple.
-//	displayLabelStrip  the machinery-alias display label, guarded by the
-//	                   PARENTHESIS HEURISTIC. Counterparty: the slot's frozen
-//	                   structured alias source.
-//
-// A single merged "parseColRef" number could answer the conversion question for
-// none of them.
-//
-// WHAT THE CORPORA CANNOT SEE — and the list is SHORTER than it was, which is
-// the point of stating it from measurement instead of from the last revision.
-//
-// This package used to have no census gate, and that is what the paragraph here
-// said. It has one now (qualifier_recovery_census_main_test.go), so there are
-// two corpora over these three sites rather than one, and they do not agree.
-// Production traffic per site, with THIS FILE'S OWN FIXTURES SUBTRACTED, because
-// a fixture cannot be evidence that its own recorder is reached by anything real:
-//
-//	site               sqldriver real-FDB        embedded (production only)
-//	projScopeClassify  71: carried 11, bare 60   15: bare 15
-//	projQualVsScan     4: bare 4                 0 — not reached at all
-//	displayLabelStrip  750: AGREED 722,          6: MANUFACTURED 3, bare 2,
-//	                   MANUF 6, bare 22             heuristicDecline 1
-//
-// So the unobservable set is now:
-//
-//   - projScopeClassify's AGREED (structurally impossible, see below) and its
-//     MANUFACTURED — 0 on both corpora.
-//   - EVERY dotted class at projQualVsScan. This site's qualified arm is entered
-//     by no production traffic anywhere.
-//   - DIVERGED at all three. It is the one class this census asserts at zero, and
-//     the only proof it can be reached at all is in this file.
-//
-// And displayLabelStrip's MANUFACTURED and heuristicDecline have LEFT that set:
-// both are live production traffic in this very package (`E.SALARY` /
-// `E.SAL-ARY`, and `MAX(E.SALARY)` on the paren guard). They were 0 over 750
-// sqldriver calls, and the reading that made of them — "these arms never fire" —
-// was wrong. That is the standing lesson about this census's zeros, arriving
-// here for the fourth time: a zero is a fact about the CORPUS, and two corpora
-// agreeing is one piece of evidence when both are blind in the same direction.
-//
-// The pins below stay anyway, all of them. A class covered by production traffic
-// is covered only as long as that traffic exists, and the traffic that covers
-// these two is a single aggregate label in a single test.
-//
-// The per-site deltas also pin ATTRIBUTION: all six census sites share one class
-// enum, so a copy-paste filing one site's calls under another keeps every total
-// plausible and every floor green while destroying the only thing the census
-// reports — WHICH splitter recovered a qualifier and whether it had an identity
-// to check it against.
+// The remaining fixtures drive every class that the production corpora do not
+// reliably populate at projQualVsScan and displayLabelStrip. Their per-site
+// deltas pin attribution as well as reach: all census sites share one class enum,
+// so filing a call under the wrong site can leave aggregate totals plausible.
 
 import (
 	"sync"
@@ -117,47 +61,6 @@ func qualRecTestField(t testing.TB, correlation, fieldName string) values.FieldV
 		t.Fatalf("resolved %q is not an exact field", fieldName)
 	}
 	return field
-}
-
-// Exact field values always carry their owner correlation. A semantic field
-// name containing a dot remains one field and cannot manufacture a scope alias.
-func TestQualRecWiring_ProjScopeClassifyCarriesExactOwner(t *testing.T) {
-	t.Parallel()
-
-	cases := []struct {
-		name string
-		fv   values.FieldValue
-		want string
-	}{
-		{
-			name: "ordinary",
-			fv:   qualRecTestField(t, "T2", "SK"),
-			want: "T2",
-		},
-		{
-			name: "dotted_semantic_name",
-			fv:   qualRecTestField(t, "OWNER", "T2.SK"),
-			want: "OWNER",
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			var got string
-			delta := qualRecDelta(t, values.QualRecSiteProjScopeClassify, values.QualRecCarried, func() {
-				got = projScopeAlias(tc.fv)
-			})
-			if delta < 1 {
-				t.Fatalf("projScopeClassify recorded %d carried decision(s) for %q — want at least 1",
-					delta, tc.fv.DisplayName())
-			}
-			if got != tc.want {
-				t.Fatalf("projScopeAlias(%q) = %q, want exact owner %q",
-					tc.fv.DisplayName(), got, tc.want)
-			}
-		})
-	}
 }
 
 // TestQualRecWiring_ProjQualVsScanCountsEveryArm pins the classes at the site

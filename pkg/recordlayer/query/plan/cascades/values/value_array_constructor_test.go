@@ -124,9 +124,9 @@ func TestArrayConstructorValue_EvaluatePassesThroughNULLs(t *testing.T) {
 
 func TestArrayConstructorValue_NilChildToleratedAsNil(t *testing.T) {
 	t.Parallel()
-	// A nil Value child (different from a Value evaluating to nil)
-	// still slots into the result as a nil element — matches Java's
-	// fault-tolerance where missing children don't crash eval.
+	// The raw Go constructor tolerates a nil Value child (different from
+	// a Value evaluating to nil) and evaluates it as a nil element.
+	// Java rejects nil children when copying its constructor arguments.
 	v := NewArrayConstructorValue(NullableLong, []Value{
 		LiteralValue(int64(1)),
 		nil,
@@ -170,12 +170,111 @@ func TestArrayConstructorValue_DefensiveCopyOfElements(t *testing.T) {
 	}
 }
 
+func TestArrayConstructorValue_CheckedRebuild(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		element  Type
+		children []Value
+		want     []any
+		wantErr  bool
+	}{
+		{name: "exact", element: NotNullLong, children: []Value{&ConstantValue{Value: int64(7), Typ: NotNullLong}}, want: []any{int64(7)}},
+		{name: "nullable", element: NullableLong, children: []Value{NewNullValue(NotNullLong)}, want: []any{nil}},
+		{name: "nullable_widening", element: NotNullLong, children: []Value{NewNullValue(NotNullLong)}, wantErr: true},
+		{name: "nullable_narrowing", element: NullableLong, children: []Value{&ConstantValue{Value: int64(7), Typ: NotNullLong}}, wantErr: true},
+		{name: "type_drift", element: NotNullLong, children: []Value{&ConstantValue{Value: int32(7), Typ: NotNullInt}}, wantErr: true},
+		{name: "incompatible", element: NotNullLong, children: []Value{&ConstantValue{Value: "x", Typ: NotNullString}, &ConstantValue{Value: int64(7), Typ: NotNullLong}}, wantErr: true},
+		{name: "numeric_promotion", element: NotNullLong, children: []Value{&ConstantValue{Value: int32(3), Typ: NotNullInt}, &ConstantValue{Value: int64(7), Typ: NotNullLong}}, want: []any{int64(3), int64(7)}},
+		{name: "any", element: AnyType, children: []Value{LiteralValue("x"), LiteralValue(int64(7))}, want: []any{"x", int64(7)}},
+		{name: "nil_child", element: NullableLong, children: []Value{nil}, wantErr: true},
+		{name: "typed_nil_child", element: NullableLong, children: []Value{(*ConstantValue)(nil)}, wantErr: true},
+		{name: "nested_array_drift", element: NewArrayType(false, NotNullLong), children: []Value{
+			&ConstantValue{Value: []any{nil}, Typ: NewArrayType(false, NullableLong)},
+		}, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			original := NewArrayConstructorValue(tc.element, []Value{LiteralValue(int64(1))})
+			beforeType, beforeChild := original.Type(), original.Elements[0]
+			rebuilt, err := withChildrenChecked(original, tc.children)
+			if !original.Type().Equals(beforeType) || original.Elements[0] != beforeChild {
+				t.Fatal("rebuild mutated the original array")
+			}
+			if tc.wantErr {
+				var resolutionErr *ResolutionError
+				require.ErrorAs(t, err, &resolutionErr)
+				if rebuilt != nil || original.WithChildren(tc.children) != nil || WithChildren(original, tc.children) != nil {
+					t.Fatal("failed array reconstruction published a partial or typed-nil value")
+				}
+				return
+			}
+			require.NoError(t, err)
+			if rebuilt == nil || !rebuilt.Type().Equals(beforeType) {
+				t.Fatalf("rebuild changed the declared type: %v", rebuilt)
+			}
+			got, err := rebuilt.Evaluate(nil)
+			require.NoError(t, err)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("rebuilt evaluation = %#v, want %#v", got, tc.want)
+			}
+			if tc.name == "numeric_promotion" {
+				promoted, ok := rebuilt.Children()[0].(*PromoteValue)
+				if !ok || promoted.Child != tc.children[0] || !promoted.Type().Equals(NotNullLong) {
+					t.Fatal("numeric reconstruction must promote the int child, not relabel its array")
+				}
+			}
+			tc.children[0] = LiteralValue(int64(999))
+			got, err = rebuilt.Evaluate(nil)
+			require.NoError(t, err)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatal("rebuilt constructor retained the caller's mutable child slice")
+			}
+		})
+	}
+	for _, element := range []Type{NoneType, NotNullLong, AnyType} {
+		t.Run("empty_"+element.String(), func(t *testing.T) {
+			t.Parallel()
+			original := NewArrayConstructorValue(element, nil)
+			rebuilt, err := withChildrenChecked(original, nil)
+			require.NoError(t, err)
+			if rebuilt != original || original.WithChildren(nil) != original {
+				t.Fatal("empty reconstruction must retain the original typed or untyped empty array")
+			}
+		})
+	}
+}
+
+func TestArrayConstructorValue_FieldMapFailureIsAtomic(t *testing.T) {
+	t.Parallel()
+	rowType := NewRecordType("", false, []Field{{Name: "ID", FieldType: NotNullLong}})
+	root := mustLayoutCurrentQOV(t, rowType)
+	field, err := ResolveFieldOrdinals(root, []int{0})
+	require.NoError(t, err)
+	array := NewArrayConstructorValue(NotNullLong, []Value{field})
+	for name, original := range map[string]Value{
+		"array":  array,
+		"record": NewRecordConstructorValue(RecordConstructorField{Name: "A", Value: array}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			mapped := MapFieldValues(original, func(*fieldValue) Value { return NewNullValue(NotNullLong) })
+			if mapped != nil {
+				t.Fatalf("%T mapping published a partially rebuilt value or typed nil: %T", original, mapped)
+			}
+			if !field.Type().Equals(NotNullLong) || array.Elements[0] != field {
+				t.Fatal("failed field mapping mutated the original array or field")
+			}
+		})
+	}
+}
+
 func TestArrayConstructorValue_WithChildren(t *testing.T) {
 	t.Parallel()
-	original := NewArrayConstructorValue(NotNullLong, []Value{LiteralValue(int64(1))})
+	original := NewArrayConstructorValue(NotNullLong, []Value{&ConstantValue{Value: int64(1), Typ: NotNullLong}})
 	rebuilt := original.WithChildren([]Value{
-		LiteralValue(int64(10)),
-		LiteralValue(int64(20)),
+		&ConstantValue{Value: int64(10), Typ: NotNullLong},
+		&ConstantValue{Value: int64(20), Typ: NotNullLong},
 	})
 	got, errEv0 := rebuilt.Evaluate(nil)
 	require.NoError(t, errEv0)

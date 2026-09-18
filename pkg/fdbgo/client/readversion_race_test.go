@@ -10,11 +10,11 @@ import (
 // TestGetReadVersion_ConcurrentWithCommit_RaceFree hammers GetReadVersion against the
 // commit path on ONE transaction handle (RFC-175 E1). Every successful Commit runs
 // postCommitReset, which writes readVersion/hasReadVersion under readVersionMu;
-// GetReadVersion must capture the version under the same mutex. Concurrent use of one
+// GetReadVersion must retain the version captured by its own GRV. Concurrent use of one
 // handle is in-contract: libfdb_c marshals every fdb_transaction_* call onto the network
 // thread (ThreadSafeTransaction.cpp onMainThread), and the Go facade documents
 // concurrent use as safe. MUST run under -race to catch a regression — revert-proof:
-// restoring GetReadVersion's bare `return tx.readVersion, nil` makes this test fail
+// restoring a bare `return tx.readVersion, nil` makes this test fail
 // under -race (verified at introduction).
 func TestGetReadVersion_ConcurrentWithCommit_RaceFree(t *testing.T) {
 	t.Parallel()
@@ -29,10 +29,13 @@ func TestGetReadVersion_ConcurrentWithCommit_RaceFree(t *testing.T) {
 	key := []byte(t.Name() + "_key")
 
 	done := make(chan struct{})
+	ready := make(chan struct{})
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		var first sync.Once
+		defer first.Do(func() { close(ready) })
 		for {
 			select {
 			case <-done:
@@ -40,19 +43,29 @@ func TestGetReadVersion_ConcurrentWithCommit_RaceFree(t *testing.T) {
 			default:
 			}
 			rv, err := tx.GetReadVersion(ctx)
+			if fdbCodeOf(err) == 1025 {
+				// Confirmed commit retires outstanding reads in Go's auto-reuse
+				// incarnation. This is not a failure of the next incarnation.
+				continue
+			}
 			if err != nil {
 				t.Errorf("concurrent GetReadVersion: %v", err)
 				return
 			}
-			// rv == 0 is a legal interleaving (this GetReadVersion's ensureReadVersion
-			// completed, then a commit's postCommitReset zeroed the version before the
-			// capture). Negative or otherwise-torn values are not.
-			if rv < 0 {
-				t.Errorf("concurrent GetReadVersion returned negative version %d", rv)
+			// A successful GRV owns its answer; resetting the mutable handle
+			// must never substitute zero or another incarnation's version.
+			if rv <= 0 {
+				t.Errorf("concurrent GetReadVersion returned non-positive version %d", rv)
 				return
 			}
+			first.Do(func() { close(ready) })
 		}
 	}()
+	select {
+	case <-ready:
+	case <-ctx.Done():
+		t.Fatal("concurrent reader did not establish a real initial GRV")
+	}
 
 	// Write-only commits: no read conflict ranges, so these cannot hit not_committed —
 	// every iteration exercises commit success → postCommitReset → readVersion write.

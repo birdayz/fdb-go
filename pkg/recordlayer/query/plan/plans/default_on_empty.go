@@ -27,14 +27,14 @@ func NewRecordQueryDefaultOnEmptyPlan(inner RecordQueryPlan, defaultValue values
 // without a physical wrapper, and GetInner / GetQuantifiers / GetResultValue all
 // resolve through the one live edge (RFC-184 W2).
 func NewRecordQueryDefaultOnEmptyPlanFromQuantifier(innerQ expressions.Quantifier, defaultValue values.Value) (*RecordQueryDefaultOnEmptyPlan, error) {
-	base, err := newDefaultOnEmptyPlanExprBase(innerQ, defaultValue)
+	base, err := newDefaultResultPlanExprBase("RecordQueryDefaultOnEmptyPlan", innerQ, defaultValue)
 	if err != nil {
 		return nil, err
 	}
 	return &RecordQueryDefaultOnEmptyPlan{PlanExprBase: base, innerQ: innerQ, defaultValue: defaultValue}, nil
 }
 
-// newDefaultOnEmptyPlanExprBase admits the two result alternatives together.
+// newDefaultResultPlanExprBase admits the two result alternatives together.
 // Java verifies that the child and default types are identical after widening
 // each root to nullable, then chooses whichever original type is nullable (or
 // the child when both have the same nullability). The output is therefore not
@@ -45,11 +45,11 @@ func NewRecordQueryDefaultOnEmptyPlanFromQuantifier(innerQ expressions.Quantifie
 // layout. Its provided layout is a fresh identity layout for the reconciled
 // output type: the fabricated default row does not provide any source windows
 // the child happened to carry, so forwarding those windows would be unsound.
-func newDefaultOnEmptyPlanExprBase(
+func newDefaultResultPlanExprBase(
+	owner string,
 	innerQ expressions.Quantifier,
 	defaultValue values.Value,
 ) (PlanExprBase, error) {
-	const owner = "RecordQueryDefaultOnEmptyPlan"
 	if defaultValue == nil {
 		return PlanExprBase{}, fmt.Errorf("%s default Value: value is nil", owner)
 	}
@@ -119,33 +119,60 @@ func (p *RecordQueryDefaultOnEmptyPlan) GetInner() RecordQueryPlan {
 func (p *RecordQueryDefaultOnEmptyPlan) reanchorInputValueToOutput(
 	value values.Value,
 ) (values.Value, error) {
-	inner := p.GetInner()
+	return reanchorDefaultInputValueToOutput(p, p.GetInner(), value)
+}
+
+// reanchorDefaultInputValueToOutput crosses only proven child lineage. An
+// unchanged exact type still has a fresh output handle; genuine null extension
+// additionally widens the root, never a nested field or an unrelated source.
+func reanchorDefaultInputValueToOutput(p RecordQueryPlan, inner RecordQueryPlan, value values.Value) (values.Value, error) {
 	if value == nil || inner == nil {
 		return value, nil
 	}
-	materializer, ok := descendantValueMaterializer(inner)
-	if !ok {
-		return value, nil
-	}
-	crossed, err := materializer.reanchorInputValueToOutput(value)
+	outputLayout, err := p.ProvidedOutputLayout()
 	if err != nil {
-		return nil, fmt.Errorf("RecordQueryDefaultOnEmptyPlan inner lineage: %w", err)
+		return nil, fmt.Errorf("%T output layout: %w", p, err)
+	}
+	if valueReferencesExactQOV(value, outputLayout.Carrier()) {
+		// Output-relative ordinals must never be offered back to the child's
+		// materializer. Split mixed input/output programs at their children so
+		// only the un-crossed subtrees descend through that lineage authority.
+		if valueReferencesOnlyExactQOV(value, outputLayout.Carrier()) {
+			return values.ReanchorValueForLayout(value, outputLayout.Carrier(), outputLayout)
+		}
+		children := value.Children()
+		rebuiltChildren := make([]values.Value, len(children))
+		for i, child := range children {
+			rebuiltChildren[i], err = reanchorDefaultInputValueToOutput(p, inner, child)
+			if err != nil {
+				return nil, err
+			}
+		}
+		rebuilt, err := values.WithChildrenChecked(value, rebuiltChildren)
+		if err != nil {
+			return nil, fmt.Errorf("%T default lineage: %w", p, err)
+		}
+		return rebuilt, nil
+	}
+	crossed := value
+	if materializer, ok := descendantValueMaterializer(inner); ok {
+		var err error
+		crossed, err = materializer.reanchorInputValueToOutput(value)
+		if err != nil {
+			return nil, fmt.Errorf("%T inner lineage: %w", p, err)
+		}
 	}
 	innerLayout, err := inner.ProvidedOutputLayout()
 	if err != nil {
-		return nil, fmt.Errorf("RecordQueryDefaultOnEmptyPlan inner layout: %w", err)
+		return nil, fmt.Errorf("%T inner layout: %w", p, err)
 	}
-	outputLayout, err := p.ProvidedOutputLayout()
-	if err != nil {
-		return nil, fmt.Errorf("RecordQueryDefaultOnEmptyPlan output layout: %w", err)
-	}
-	if innerLayout.Carrier() == outputLayout.Carrier() {
-		return crossed, nil
+	if innerLayout.Carrier().FlowedType().Equals(outputLayout.Carrier().FlowedType()) {
+		return values.TranslatePhaseRoot(crossed, innerLayout.Carrier(), outputLayout.Carrier())
 	}
 	widened, err := values.TranslateNullExtendedPhaseRoot(
 		crossed, innerLayout.Carrier(), outputLayout.Carrier())
 	if err != nil {
-		return nil, fmt.Errorf("RecordQueryDefaultOnEmptyPlan null extension: %w", err)
+		return nil, fmt.Errorf("%T null extension: %w", p, err)
 	}
 	return widened, nil
 }
@@ -233,7 +260,7 @@ func (p *RecordQueryDefaultOnEmptyPlan) WithQuantifiers(qs []expressions.Quantif
 		return nil, err
 	}
 	cp := *p
-	base, err := newDefaultOnEmptyPlanExprBase(qs[0], p.defaultValue)
+	base, err := newDefaultResultPlanExprBase("RecordQueryDefaultOnEmptyPlan", qs[0], p.defaultValue)
 	if err != nil {
 		return nil, err
 	}

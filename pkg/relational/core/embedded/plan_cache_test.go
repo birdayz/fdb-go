@@ -3,6 +3,7 @@ package embedded
 import (
 	"fmt"
 	"math/rand"
+	"slices"
 	"strconv"
 	"sync"
 	"testing"
@@ -714,6 +715,24 @@ func TestPlanCache_RaceInvalidate(t *testing.T) {
 	}
 	wg.Wait()
 	checkInvariants(t, c)
+}
+
+func TestPlanCacheCarriesOutputLabelsDefensively(t *testing.T) {
+	t.Parallel()
+	cache := NewPlanCache(1)
+	labels := []string{"G", "G"}
+	cache.PutWithOutputLabels("scope", "SELECT", &stubPlan{label: "p"}, nil, labels)
+	labels[0] = "mutated-input"
+
+	_, _, got, ok := cache.GetWithOutputLabels("scope", "SELECT")
+	if !ok || !slices.Equal(got, []string{"G", "G"}) {
+		t.Fatalf("cached labels = %v, hit=%v, want [G G]", got, ok)
+	}
+	got[1] = "mutated-output"
+	_, _, again, ok := cache.GetWithOutputLabels("scope", "SELECT")
+	if !ok || !slices.Equal(again, []string{"G", "G"}) {
+		t.Fatalf("cached labels after caller mutation = %v, hit=%v, want [G G]", again, ok)
+	}
 }
 
 func BenchmarkPlanCache_Hit(b *testing.B) {

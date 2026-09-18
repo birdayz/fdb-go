@@ -96,8 +96,11 @@ func TestExplainOnlyMode_KeepsCrossDerivedPredicate(t *testing.T) {
 		"(SELECT c.id AS cid, d.dw AS dw FROM c JOIN d ON d.c_id = c.id) t2 " +
 		"WHERE t1.aid = t2.cid"
 	got := explainOnlyTextWithSchema(t, schema, evasion)
-	if !strings.Contains(got, "Filter(t1.aid = t2.cid)") {
-		t.Fatalf("logical plan lost the cross-derived predicate:\n%s", got)
+	// Each derived source projects its key into slot zero. Require the resolved
+	// owners and ordinals, not raw SQL text that would also survive a failed
+	// semantic walk. Rebuilding a successful predicate used to lose this proof.
+	if !strings.Contains(got, "Filter(T1.AID#0 = T2.CID#0)") {
+		t.Fatalf("logical plan lost the resolved cross-derived predicate:\n%s", got)
 	}
 }
 

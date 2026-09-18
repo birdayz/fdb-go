@@ -16,7 +16,6 @@ tests:
         SELECT 1 FROM transactions t
         WHERE t.account_id = accounts.id AND t.amount > 300
       )
-    rows: []
   # Only account 1 has a transaction > 300
   - query: SELECT id, tier FROM accounts ORDER BY id
     rows:
@@ -30,7 +29,6 @@ tests:
       WHERE NOT EXISTS (
         SELECT 1 FROM transactions t WHERE t.account_id = accounts.id
       )
-    rows: []
   - query: SELECT id, tier FROM accounts ORDER BY id
     rows:
       - [1, "premium"]

@@ -1059,7 +1059,7 @@ func TestDownstreamLegWindows(t *testing.T) {
 	})
 	t.Run("excluded wrapper declines", func(t *testing.T) {
 		t.Parallel()
-		firstOrDefault, err := plans.NewRecordQueryFirstOrDefaultPlan(nlj, nil)
+		firstOrDefault, err := plans.NewRecordQueryFirstOrDefaultPlan(nlj, values.NewNullValue(nlj.GetResultType()))
 		if _, ok := downstreamLegWindows(ojWiringMustConstruct(t, firstOrDefault, err)); ok {
 			t.Fatal("FirstOrDefault is deliberately NOT a passthrough (it fabricates a default row) — must decline")
 		}

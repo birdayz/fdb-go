@@ -1,15 +1,12 @@
 package sqldriver_test
 
-// The derived-table/CTE output-column naming axis. The qualifier
-// strip in derivedOutputColumns / projectionOutputNames (`t.a` → `A`) fires ONLY
-// on a plain qualified-column passthrough: those carry a DOTTED projection name.
-// A COMPUTED projection (`t.a + t.b`) carries an anonymous ordinal name (`_0`),
-// no dot, so the strip never touches it and the output column is NOT mangled to
-// the last dotted leaf. This pins that axis (the strip is scoped by the naming,
-// not by a name-text heuristic that could shred a computed expression): computed
-// derived projections keep their anonymous name and flow correct rows, while the
-// plain passthrough correctly bares its qualifier. An invalid reference to the
-// unnamed computed column is LOUD (correct-or-loud), never a silent wrong slot.
+// The derived-table/CTE output-column naming axis: a plain qualified-column
+// passthrough (`t.a`) publishes its bare column label (`A`), while an unaliased
+// computed projection (`t.a + t.b`) has an anonymous physical ordinal name
+// (`_0`) and no SQL name. Exact result types carry the runtime names through the
+// boundary; SQL name presence is separate. These tests pin the labels and rows,
+// and require invalid references to unnamed computed outputs to fail loudly
+// rather than select a wrong slot.
 
 import (
 	"context"

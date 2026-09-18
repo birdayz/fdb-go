@@ -152,81 +152,18 @@ INSERT…SELECTs.
   DONE = the merged layout carries struct column types, the query above returns
   correct rows, and the tripwire is replaced by the row assertion it names.
 
-- [ ] **CQ-70 (MED/M, M, gated on CQ-67 landing, query-engine review gate) — a
-  PREDICATE-FREE comma join under a PROJECTED-EXISTS fold does not execute:
-  `multi-leg row cannot serve a source-relative ordinal / no frontier row
-  resolved`.** A live planner/executor defect on master, found while probing
-  CQ-67 end-to-end.
-
-  **PREMISE CORRECTED after the first review lap.** This was first booked as "a
-  projected-EXISTS fold over a THREE-source FROM does not execute", and as "what
-  makes RFC-200's gate (a) unmeasurable". Both were wrong, and the branch's own
-  instruments refuted them:
-
-  - the three-source fold DOES execute when it carries EQUIJOIN predicates,
-    which is the form the corpus produces
-    (`TestFDB_CommaJoinProjectedExists_UnequalLegWidths`). Only the
-    predicate-free comma join fails. The defect is narrower than booked, hence
-    the priority drop from HIGH to MED;
-  - gate (a) is blocked by something else entirely — the nested READER arm is
-    LATENT (`NESTED-HIT 0` corpus-wide), so its mutation directions are not
-    writable even on a query that runs. Fixing this item does NOT unblock gate
-    (a), and CQ-67's entry carries that correction.
-
-  Reproducer, over four tables (`ta` 3 cols with `k` at ordinal 1, `tb` 1 col,
-  `tc` 2 cols with `k` at ordinal 1, `tp` the existential inner) — note the
-  ABSENCE of any join predicate, which is the whole trigger:
-
-  ```sql
-  SELECT tc.k, EXISTS (SELECT 1 FROM tp WHERE tp.owner = ta.aid) FROM ta, tb, tc
-  ```
-
-  fails with
-
-  ```
-  correlated FieldValue "K" (correlation "TC") evaluated against an
-  unbound/unrecognized context (*RowEvalContext (multi-leg row cannot serve a
-  source-relative ordinal)) — no frontier row resolved (planner/executor bug)
-  ```
-
-  **PRE-EXISTING, verified with an arm-disabled control.** The same query fails
-  identically with RFC-200's nested acceptance turned OFF — the comparison was
-  made by disabling `legOrdinalSafety`'s FlatMap arm, the single line that
-  activates it, and re-running. Same error, same message. It is not a CQ-67
-  regression.
-
-  **LOUD, not silent.** No wrong row reaches a user; the query errors. That is
-  what makes it survivable rather than an emergency, and it is the FIRST thing to
-  re-check if the failure mode ever changes — a silent variant is a different and
-  much worse defect.
-
-  **TWO forms are CORRECT, which is what localises this to the missing
-  predicate.** `SELECT tc.k, EXISTS (...) FROM ta, tc WHERE ta.aid = tc.cid`
-  executes (two sources, flat windows throughout), and so does the THREE-source
-  `FROM ta, tb, tc WHERE ta.aid = tb.bid AND tb.bid = tc.cid` — the corpus's own
-  shape, which returns correct rows on all four addresses. Only the
-  predicate-free comma join fails. All three are pinned in
-  `pkg/relational/sqldriver/nested_merge_leg_wrong_rows_fdb_test.go`; the failing
-  one asserts BOTH error substrings ("multi-leg row cannot serve a
-  source-relative ordinal" and "no frontier row resolved"), so a change in
-  failure mode reds rather than passing.
-
-  **WHAT THIS DOES NOT UNBLOCK.** It was booked as the blocker for RFC-200's gate
-  (a); it is not. Gate (a)'s four mutation directions are unwritable because the
-  nested READER arm is LATENT — `NESTED-HIT 0` at both keyed readers over the
-  whole corpus, and mutating the fused two-step address back to flat leaves the
-  end-to-end probe green even on a query that runs. That is a separate condition
-  tracked in CQ-67, and it needs a query whose reference reaches a leg buried
-  INSIDE the merge, which is a different thing from making this one execute.
-
-  Gated on CQ-67 only so the two do not contend for the same files; the defect
-  itself is independent of it.
-
-  DONE = the PREDICATE-FREE three-source comma join under a projected-EXISTS fold
-  executes and returns correct rows, and its pinned loud-failure test is replaced
-  by a row assertion. NOT tied to CQ-67's gate (a), which is blocked on the
-  latent reader arm and is unaffected by this item. Executor + NLJ rule, so:
-  Graefe-gated.
+- [x] **CQ-70 — predicate-free projected EXISTS over three outer sources.**
+  Fixed by RFC-256's canonical independent ForEach block below the projected
+  existential, preserving both search-preference exemptions and semantic guards.
+  `TestFDB_PredicateFreeCommaJoinProjectedExists` retains the exact original
+  nonzero-field-ordinal query, an eight-row mixed-truth cross product with an
+  unused source doubling multiplicities, and an empty-inner all-false control.
+  The original and amplified rows match the live Java
+  `IndependentOuterBlockReference` test (`outer-block-java.log`). The Go row pin
+  passed in `outer-block-old-declines.log`; that target remains red on the
+  separate Q54 positive shadow-scalar control, tracked at the end of this file.
+  This does not claim a nested-reader execution witness for CQ-67 or full
+  campaign/merge readiness.
 
 
 - [ ] **CQ-75 (HIGH, wrong rows, MEASURED) — `v IN (-0.0, 0.0)` silently loses a
@@ -774,13 +711,18 @@ against a ceiling rather than swallowed.
 
 C++ checks `deferredError` at every ThreadSafeTransaction op lambda (get :431, watch :654, commit
 :669, …) BEFORE the underlying actor observes `resetPromise` — so a transaction that is both
-poisoned (deferred 2000/2018) and Cancel()ed surfaces the deferred code from every op. Go's
-uniform entry order is cancelled-first (checkCancelled → deferredErr → checkTimeout, in
-ensureReadVersion/Commit/WatchSetup), so the same txn surfaces 1025. Observable ONLY on that
-double-terminal corner; deferred-beats-timeout and deferred-beats-1034 are already C++-aligned
-and pinned. Resolution needs a differential probe (poison, Cancel, Get on both clients — mind
-that MultiVersionTransaction may reorder) and, if confirmed, a single swap of the two gates at
-each entry point in one FDB-C-dev cycle.
+poisoned (deferred 2000/2018) and Cancel()ed surfaces the deferred code from every op. At
+production `feacb809`, Go's entry order was cancelled-first in
+ensureReadVersion/Commit/WatchSetup, so the same txn surfaced 1025. Observable ONLY on that
+double-terminal corner. The earlier deferred-beats-timeout claim is superseded by RFC-256's
+PR #785 red reproductions: ten of twelve client entry points return 1031 instead of deferred
+2018, and eight facade reads return 1031 where libfdb_c returns 2000. The versionstamp facade
+also blocks before observing the existing deferred error. See the active §12 checkpoint and
+RFC-256's accepted revision-four entry-boundary repair, now implemented in the worktree
+with both cancellation orders pinned. Full gates and implementation approvals remain open;
+this checkbox is not a merge claim. Deferred-beats-1034 remains separately pinned.
+Resolution must preserve captured-incarnation
+ownership and admitted outcomes, not merely swap live gates at every revalidation site.
 
 
 ### [ ] fdbgo/client: GRV reply's ProxyTagThrottledDuration is discarded — GetTagThrottledDuration undercounts vs libfdb_c
@@ -2325,7 +2267,7 @@ was not re-checked, so it is neither confirmed nor closed here.
     carve-out must MIGRATE INTO the normalizer when it lands, and the dotted-name divergences above
     interact with the same pass: one slice for all of it). The ordering half (round-11 review): the arc's
     real one-rule ending is a SINGLE shared source-name resolution function all four scope consumers call
-    (translateScan / cteLegKind / buildSelectScope.addSource / upgradeJoinOnPredicates.resolveTable — all
+    (translateScan / the former CTE-leg classifier / buildSelectScope.addSource / upgradeJoinOnPredicates.resolveTable — all
     four now individually CTE-first, but as four hand-mirrored copies). Two more riders, same family:
     (i) the ON-ONLY READ class (pre-existing; the SILENT residual is narrow — WHERE-based main-query
     reads are already LOUD 0AF00, only the leniency-path MAX/scalar-subquery reads stay silent):
@@ -2366,7 +2308,7 @@ was not re-checked, so it is neither confirmed nor closed here.
     fallback (0A000, pre-existing rounds 9-11); the normalization slice must catch it. (iv) CONSUMER
     CENSUS for the one-shared-resolution-function ending (round-11 review — the fifth copy was missed by
     the round dedicated to aligning copies, which is the argument for the collapse): LIVE-fixed CTE-first:
-    translateScan, cteLegKind, buildSelectScope.addSource, upgradeJoinOnPredicates.resolveTable,
+    translateScan, the former CTE-leg classifier, buildSelectScope.addSource, upgradeJoinOnPredicates.resolveTable,
     buildCTEColumnSource's inner-table resolution (round 13 — its metadata-first was LIVE-wrong: a
     shadowing body's schema derived from the TABLE, declined on the CTE-only column, and dumped the CTE
     into the ON-only marker path; the nested-shadow pin had been green only via the stale-outer accident
@@ -2388,7 +2330,7 @@ was not re-checked, so it is neither confirmed nor closed here.
     "metadata first, then CTE scopes") plus ~7 more ResolveTable sites in the same masked category
     (~:320, :912, :3754, :5790, :6083, :6206 — derived-carrier and exists-planner scope builders).
     NINTH-family (review, all three gates ACK on 60268dc9e + the follow-up): the ON-only CTE schema
-    (buildCTEOnOnlySource) is now COMPLETE-SCHEMA-OR-DECLINE — it installs ONLY when every runtime column
+    (the former ON-only source deriver) was COMPLETE-SCHEMA-OR-DECLINE at that revision — it installed ONLY when every runtime column
     (keyed by executeProjection's uppercased emit-name) is unique AND case-safe; ANY obstruction (a quoted
     case-sensitive alias `AS "x"`, or a duplicate runtime name incl. `AS "x", AS "X"` both emitting "X")
     declines the WHOLE source (caller's loud 0AF00), never a partial table. WHY complete-or-decline and not
@@ -9542,20 +9484,19 @@ covered by the correctness suite and the golden plan diff, not by this table.
   layer's own checks; the second is the long-term shape and is RFC-232's residual to close, not
   RFC-242's. Booked from RFC-242 r14 with the reproducer.
 
-- [ ] **The exact derivation types an enum field as STRING.**
-  `SELECT t.p.color FROM t` over Java-authored metadata whose `Paint.color` is a proto enum
-  (this DDL declares no enum) derives the exact result row `RECORD<COLOR STRING NULL>`: the
-  catalog kind `ENUM` bridges forward to `values.TypeString` (`expr.sqlTypeToCascadesType`,
-  the `"STRING", "ENUM"` arm), so every resolved reference to an enum field is a STRING while
-  the scan row the executor flows carries the `values.EnumType` `enumTypeForProto` mints — one
-  layer before the carrier gap booked as "An array literal with a NULL element cannot be read
-  through a CTE or derived table" (RFC-232's residual), and distinct from it. Java's
-  `Type.Enum` flows end to end. Pinned as the reason a shape-decided nested path never meets
-  the bridge's enum decline (`TestDerivedNestedEnumFieldTypesAsStringSoTheShapeRuleNeverDeclines`,
-  red once this closes: that pin then names the homonym shape to hold as a loud decline). The
-  closure is an exact enum in the resolver's flowed type, with the comparison and promotion
-  gates taught the enum lane; surfaced by RFC-242 r15's measurement and out of that RFC's
-  scope.
+- [ ] **Exact enum transport — implemented in RFC-256; campaign integration/review open.**
+  The enum-as-STRING defect discovered at RFC-242 r15 is repaired: semantic columns carry
+  the nominal name and ordered member declarations, forward/reverse bridges retain exact
+  EnumType, and string comparison/IN operands convert to the stored declared int64 number.
+  Number-aliased protobuf enums retain the existing LONG policy. The prior STRING/decline
+  sentinels are replaced by `TestDerivedNestedEnumFieldKeepsExactTypeAndHomonym` and
+  `TestSemanticColumnFromExactTypeCarriesEnum`. `TestFDB_EnumTransport` pins stored,
+  derived/CTE/UNION, nested homonyms, escaped members, arrays, NULL, ordering, index probes,
+  runtime parameters and OTHER metadata. The Java-only `EnumTransportReference` pins its
+  reference contract, including the upstream ARRAY<ENUM> IN promotion assertion; Go's
+  element-wise IN promotion deliberately avoids that assertion. This is not a claim of
+  shared IN conformance or nullable-element/nested-array carrier closure. See the RFC-256
+  tail and the appended §12 enum integration block for current evidence and remaining gates.
 
 - [ ] **A table with a fieldless nested-message column cannot be queried at all.**
   Java-authored metadata only (this DDL cannot declare an empty STRUCT: 42601). A record type
@@ -10385,3 +10326,2835 @@ it does not isolate scalar remainder evaluation cost.
 | full scan sparse filter | 97 | 3.256885513s | 3.259881222s | 3.24556748s | 3.260419357s |
 | UPDATE by index | 8 | 8.967232ms | 9.063364ms | 8.589099ms | 9.258655ms |
 | DELETE single row | 1 | 6.427363ms | 6.383369ms | 6.42126ms | 6.431717ms |
+
+### Stress test 1M baseline — RFC-254 floating type/sign preservation
+
+Baseline commit `ed3504f7e410d8e2a4f4c46fd7b4c72fd0484869` was the merge-base
+on 2026-09-14, tree `08bf79181cc59462abe052791ad9ed5cd115424b`.
+Patched comparison tree `f1c3e266fe10deb1f3b121ffc536ca07c1b86119` is that
+commit plus production blobs `values.go=443ff87ed7a8c739a8838238ea8099507807af1d`
+and `utilities.go=0465c0d9cd5b2039821a8738a1f17225b3a5d0e8`. Both states used
+one comparison worktree and output base on `/var/tmp` (59% full), not the
+nearly-full `/home` filesystem. Compiler, stress fixture and flags unchanged;
+source/tree hashes checked before and after each run.
+
+Command, sequentially twice per state and then twice on the restored baseline:
+
+```sh
+bazelisk --output_base=/var/tmp/query-hunt-254/bazel test \
+  //pkg/relational/sqldriver/stress:stress_test --nocache_test_results \
+  --test_arg='-test.run=^TestFDB_Stress_1M$' --test_timeout=900
+```
+
+All six runs passed: each had 24 RUN lines (parent + 23 subtests), 100,000
+customers and 1,000,000 orders; the 11 emitted EXPLAIN strings and all 22
+timed query row counts matched across runs, and COUNT(*) verified 1,000,000.
+The restored-baseline controls were necessary: aggregate timings rose on the
+patched runs, but also on the original source when restored. These samples
+do not establish a code-induced speedup or regression; the table keeps the
+variation visible instead of treating a confound as a bounded error term.
+Use the restored-baseline columns, not the earlier Before columns, as the
+contemporaneous controls; the earlier samples are retained to show the drift.
+
+| Run | Total test duration | Load before (1/5/15m) | Load after (1/5/15m) |
+|---|---:|---|---|
+| before-1 | 167.31s | 1.79, 1.67, 1.55 | 3.69, 3.75, 2.55 |
+| before-2 | 167.75s | 3.69, 3.75, 2.55 | 2.99, 3.55, 2.69 |
+| after-1 | 167.94s | 1.74, 4.59, 7.11 | 3.60, 4.25, 6.52 |
+| after-2 | 168.11s | 3.60, 4.25, 6.52 | 3.72, 4.15, 6.10 |
+| control-1 | 168.03s | 2.39, 3.69, 5.81 | 3.18, 3.91, 5.55 |
+| control-2 | 168.26s | 3.18, 3.91, 5.55 | 3.44, 3.66, 5.17 |
+
+| Query | Rows | Before 1 | Before 2 | After 1 | After 2 | Restored baseline 1 | Restored baseline 2 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| PK lookup id=0 | 1 | 15.340811ms | 15.234931ms | 8.380453ms | 15.688913ms | 8.394559ms | 9.044089ms |
+| PK lookup id=N/2 | 1 | 24.092507ms | 25.864815ms | 8.372097ms | 25.201622ms | 8.467748ms | 8.609526ms |
+| PK lookup id=N-1 | 1 | 22.828141ms | 22.394409ms | 5.153818ms | 19.248449ms | 5.110334ms | 5.472611ms |
+| idx_customer eq | 8 | 20.474621ms | 19.885454ms | 6.506913ms | 20.170747ms | 6.388507ms | 6.448099ms |
+| idx_amount range >9000 | 100017 | 323.500322ms | 345.779352ms | 192.159676ms | 326.144745ms | 185.83715ms | 189.393032ms |
+| idx_status count pending | 1 | 311.466156ms | 314.868644ms | 467.465297ms | 317.253265ms | 458.068186ms | 457.050109ms |
+| full scan filter amount>5000 | 1 | 533.442494ms | 535.448927ms | 727.943995ms | 605.837466ms | 715.856511ms | 746.719781ms |
+| GROUP BY status | 4 | 5.811283ms | 6.090112ms | 14.010274ms | 20.428365ms | 21.252566ms | 19.403972ms |
+| GROUP BY status COUNT only | 4 | 5.331714ms | 5.568392ms | 12.72107ms | 12.717562ms | 11.916593ms | 12.488627ms |
+| SUM by status (aggregate index) | 4 | 5.745147ms | 5.854475ms | 21.041329ms | 13.965336ms | 12.987552ms | 12.588476ms |
+| GROUP BY customer HAVING | 47271 | 815.113857ms | 847.490014ms | 617.077141ms | 759.992067ms | 611.882771ms | 598.584204ms |
+| JOIN 10 orders x customers | 10 | 19.924538ms | 22.658169ms | 19.704365ms | 22.17199ms | 19.536274ms | 20.23139ms |
+| ORDER BY PK (full) | 1000000 | 3.717173503s | 3.753375407s | 3.822408272s | 3.824847636s | 3.820873783s | 3.838834259s |
+| ORDER BY PK + index filter | 8 | 8.681883ms | 8.759389ms | 8.739915ms | 9.572923ms | 9.264797ms | 9.987517ms |
+| scan all rows ordered | 1000000 | 3.595204996s | 3.627403843s | 3.592694483s | 3.614238907s | 3.600544563s | 3.606034977s |
+| scan all rows wide | 1000000 | 3.869295674s | 3.861477867s | 3.881131061s | 3.853377193s | 3.845770145s | 3.867525626s |
+| IN-list 5 values | 46 | 22.382206ms | 20.364141ms | 18.885743ms | 18.817393ms | 19.383634ms | 21.149169ms |
+| PK needle id=999999 | 1 | 5.784071ms | 5.725419ms | 5.80395ms | 5.82007ms | 5.671338ms | 6.337069ms |
+| PK+filter needle id=500000 | 1 | 7.575526ms | 7.438417ms | 7.279216ms | 7.402249ms | 7.282061ms | 8.47454ms |
+| full scan sparse filter | 97 | 3.252493168s | 3.248308275s | 3.317105703s | 3.301384921s | 3.285604874s | 3.299271668s |
+| UPDATE by index | 8 | 8.905707ms | 8.922218ms | 9.216768ms | 8.797743ms | 9.364817ms | 9.136735ms |
+| DELETE single row | 1 | 6.252158ms | 6.471253ms | 6.986972ms | 6.277387ms | 6.439593ms | 6.876852ms |
+
+See `rfcs/254-scalar-floating-results-preserve-type-and-sign.md` for the
+correctness fixes, regression tests and review decisions.
+
+- [x] **RFC-254 correctness hunt:** preserve signed zero through scalar rounding/
+  POWER and constant folding; preserve finite DOUBLE parameter type and bits
+  through SQL text transport. Regression coverage includes real-FDB arithmetic,
+  storage, GROUP BY/DISTINCT, integer-position admission and bounded secondary
+  BIGINT index access. Design/implementation reviews ACKed; 92-target uncached
+  suite, repeated/race regressions, unguided fuzzing and million-row stress
+  passed. Details: `rfcs/254-scalar-floating-results-preserve-type-and-sign.md`.
+
+## 12. Query-engine semantic coverage — eliminate unknown and untested combinations
+
+**Mandate.** Make the EXISTING query-engine safety net comprehensive over an explicit,
+versioned semantic coverage space. Do not equate more SQL files, more seeds, line coverage,
+or a green suite with having tested the relevant combinations. Use LLMs/subagents to
+systematically discover and fill the gaps, not merely to produce more examples resembling
+what already passes. This is correctness work; this section's append-only placement after
+reference material does not make it lower priority than performance or feature expansion.
+Existing live correctness failures still take precedence and are fixed when encountered.
+
+**Decision and scope.** Extend the existing harnesses, generators, corpus formats and CI
+lanes; do not build a parallel SQL test framework, a second production query engine, or
+port an external SQL suite as this workstream's foundation. Java remains authoritative
+for the shared surface; Go-only extensions need explicit contracts and independent
+oracles. Preserve wire compatibility. This plan operationalizes the adversarial-generation
+and oracle work in `rfcs/199-deterministic-simulation-testing.md` and the existing factory,
+rather than assuming that those mechanisms being present establishes semantic coverage.
+The motivating type/sign and test-oracle failures are recorded in
+`rfcs/254-scalar-floating-results-preserve-type-and-sign.md`.
+
+**What "eliminate" means.** SQL expressions, schemas and operation histories are unbounded.
+Define the required envelope explicitly: supported features/types, boundary-value classes,
+producer/consumer combinations, expression and query nesting, join width, dataset shapes,
+and execution modes. Within that envelope, every required combination must be classified
+and have executable evidence of the specified contract; an unknown, untested, unreachable
+in practice, or oracle-less combination is OPEN work, not coverage. Outside-envelope
+combinations remain visible, and the envelope expands as features and risk knowledge grow.
+Pairwise sampling is useful exploration but must NEVER be reported as full Cartesian or
+higher-order coverage. Neither LLM confidence nor repeated agreement between two engine
+paths establishes that both paths are correct.
+
+### Existing integration homes — extend these, do not duplicate them
+
+| Home | Role in this workstream |
+|---|---|
+| `pkg/relational/conformance/yamsql` | SQL/driver scenarios, explicit expected outcomes, typed/boundary assertions and durable regressions |
+| `pkg/relational/conformance/factory` and `factorycorpus`, `cmd/factory-run` | Candidate generation/admission, alternate-plan and partition checks, Java comparison where applicable, corpus identity and promotion |
+| `pkg/relational/conformance/rowdiff` | Independent model comparison, query/projection combinations and paged real-FDB execution |
+| `pkg/simfdb/hunt/sqlhunt` | Small independent models and stateful SQL workloads over SimFDB |
+| `pkg/simfdb/hunt/metamorphic`, `cmd/dst-generate` | Structured hand-written/LLM-generated query families and reproducible equivalence checks |
+| `pkg/relational/conformance/explaindiff` and `plandiff` | Observed plan diversity, plan contracts and shared-surface cross-engine evidence |
+| `pkg/relational/sqldriver` integration tests and Cascades value/rule tests | Actual binding/metadata/storage boundaries and focused regressions below SQL |
+| Existing nightly factory, rowdiff, oracle, fuzz and coverage workflows | Exploration, full corpus replay, mutation evidence and coverage reconciliation |
+
+**Execution.** Stable work IDs below are the handover/PR references. Start at QSC-01;
+then complete the numeric/type-transport vertical slice through QSC-02–QSC-07 before
+widening to the remaining families. Build the necessary assertion, oracle, generator,
+mutation proof and CI pin together for each slice; do not build disconnected infrastructure
+and mark it done. QSC-09's preserve/reduce/fix loop applies from the FIRST finding, and
+QSC-10's executable gates apply from the FIRST promoted case. Harness architecture and
+any engine changes use the existing RFC and milestone-level query-engine review gates.
+All items below are planning work, not claims of capabilities already implemented.
+
+- [ ] **QSC-01 — Inventory contracts and make the coverage denominator executable.**
+  **Start here.** Audit actual assertion, normalization and generation paths in the homes
+  above, not only their descriptions. Inventory the supported catalog/typed operators,
+  type conversions, predicates, relational operators, result metadata and driver APIs;
+  map existing scenarios to the contracts they REALLY verify. Derive feature inventories
+  from typed registrations/structures where possible, not substring detection on SQL.
+  Define a machine-readable, versioned contract/combination manifest alongside the existing
+  corpus metadata. Each required cell names its domain assumptions, input axes, applicable
+  oracle(s), comparison policy, execution witness and owning regression IDs. Track
+  `unclassified`, `missing-input-path`, `missing-oracle`, `not-exercised`, `validated`, and
+  deliberately unsupported/rejected cases separately. Only a demonstrated impossibility
+  removes an inadmissible cross-product cell; missing harness machinery does not.
+  Known unsupported SQL must have an explicit negative error contract, not a silent skip.
+  Report required, applicable, exercised and validated populations separately, with the
+  manifest revision and exclusions. Audit existing tests without deleting or downgrading
+  their current protections. **DONE:** a reproducible report exposes concrete holes,
+  new supported registrations require classification, and unit pins catch an omitted
+  feature, an unexecuted cell and an unjustified denominator reduction.
+
+- [ ] **QSC-02 — Preserve the distinctions assertions currently erase.**
+  **Depends on QSC-01's initial contract inventory.** Extend existing comparison paths
+  and strict scenario schemas with explicit policies for numerical value, SQL result type,
+  driver carrier, representation, NULL, row multiplicity, ordering and error code/class.
+  Separate declared SQL type from transport carrier: they are not interchangeable.
+  Add lossless fixture/expectation encoding for boundary values, typed bound parameters,
+  and query/exec arguments, including signed zero and relevant non-finite bit patterns;
+  execute them through actual QueryContext/ExecContext binding rather than substituting
+  literals in the test itself. Assert column names/types where they are the contract.
+  Test the fixture decoder, matcher AND reporting path; unknown fields and unsupported
+  assertion modes must fail loudly. Preserve numeric comparison where that is intentional;
+  never globally impose bitwise float equality or globally relax to a tolerance. NaN payload,
+  FLOAT precision, collation and ordering policies require an explicit semantic basis.
+  Unordered output is a multiset, not a set; ordered/tie-sensitive checks need a defined
+  order or an explicit permitted-outcome contract. **DONE:** +0/-0, integer/whole DOUBLE,
+  NULL/value, changed multiplicity, wrong metadata and wrong errors each independently
+  fail their appropriate assertions, and those assertions run under Bazel against real SQL.
+
+- [ ] **QSC-03 — Assign independent oracles and validate equivalence assumptions.**
+  **Depends on QSC-01; deliver per vertical slice with QSC-02.** Map every contract to an
+  authority: pinned Java behavior for the shared surface, documented Go-extension semantics,
+  a small independent model, or a justified algebraic law with explicit preconditions.
+  Extend rowdiff/sqlhunt's focused models rather than building a second general SQL engine.
+  Reference calculations and expected-value normalization must not call the production
+  evaluator/cast/comparator that they are meant to check. Add direct expected results to
+  expose common-mode failures that folded/runtime or indexed/full-scan equality cannot see.
+  Validate proposed relations on adversarial small domains before admission: three-valued
+  logic, duplicates, empty inputs, overflow, non-finite values and ordering ties as applicable.
+  Floating-point reassociation, reordered aggregates and changed evaluation/error order are
+  NOT automatically valid equivalences. Engine agreement, a golden captured from Go, or
+  agreement among LLMs is not an independent correctness proof. Goldens retain their useful
+  characterization role without being credited as independent oracles. **DONE:** every
+  validated cell names a tested oracle and its limitations; deliberately false relations
+  are rejected, and a shared wrong answer cannot satisfy the slice's whole oracle set.
+
+- [ ] **QSC-04 — Mutation-validate the safety net, not just the implementation.**
+  **Depends on the slice's QSC-02/QSC-03 assertions.** Maintain representative semantic
+  mutations: erase zero sign, coerce a whole DOUBLE to integer, collapse UNKNOWN/NULL
+  incorrectly, alter duplicate multiplicity, admit a broad scan as a point lookup,
+  lose correlation, mishandle an empty aggregate, or drop/repeat a continuation-boundary row.
+  Include assertion/normalizer mutations as well as engine mutations. Run in isolated
+  worktrees; verify the mutation actually applied and compiled, the intended test executed
+  and detected the changed semantic outcome, and restoration passes on the recorded source.
+  A build failure, timeout, infrastructure error, absent test or unrelated failing assertion
+  is NOT a killed semantic mutant. Keep positive controls and independent negative controls
+  for each assertion arm; equality of two results sharing a derivation is insufficient.
+  Surviving required mutants identify an OPEN oracle/coverage hole and are fixed before
+  widening that slice. **DONE:** a durable mutant-to-contract-to-test map and reproducible
+  red/green runs demonstrate detection, with non-empty populations and no auto-waivers.
+
+- [ ] **QSC-05 — Generate combinations from the manifest, then verify actual reach.**
+  **Depends on QSC-01 and the slice's validated oracle.** Extend existing factory/rowdiff
+  generation with typed, deterministic expansion of the axes below. Use exhaustive bounded
+  enumeration for tractable critical domains, covering arrays for broader interactions,
+  and targeted higher-order combinations for known failure mechanisms. Record which
+  technique and interaction strength each scope actually covers. Retain random fuzzing
+  beside structured generation; neither replaces the other. Preserve type, sign, NULL,
+  alias/nesting, argument transport and execution-mode distinctions in corpus identity:
+  normalization/dedup must not merge the cases this plan exists to separate.
+  Credit cells from executed evidence, not requested configuration or LLM-supplied labels.
+  A second-plan claim requires different actual plans; point-lookup claims require bounds
+  and residual-filter checks; paging requires an actual continuation; a cache case needs
+  evidence of reuse/invalidation; an aggregate-index case must actually execute that path.
+  Add negative controls for every witness. **DONE:** deterministic expansion/replay and
+  dedup tests preserve the semantic axes, and reports distinguish generated, admitted,
+  planned, executed, witnessed and oracle-validated combinations.
+
+  Required axes to instantiate, not merely list in a report:
+
+  | Axis | Coverage obligations |
+  |---|---|
+  | Domains/types | Each supported scalar and nested type; typed/untyped NULL; ±0; finite fractions/whole floats; NaN/Infinity admission; precision, integer and conversion boundaries; Unicode/empty strings/bytes; temporal boundaries |
+  | Producers | Literal, real bound argument, stored field, CAST/promotion, scalar expression, aggregate output, scalar subquery, derived/unnested field |
+  | Consumers | Projection/metadata, arithmetic/cast, WHERE/HAVING, join predicate, GROUP BY, DISTINCT/set operation, ORDER BY, limit/offset admission, DML assignment/index maintenance |
+  | Relational shapes | Empty/single/multiple rows, duplicate-heavy/all-NULL/mixed data; correlated and uncorrelated subqueries; joins/outer joins; composite keys; nested and repeated aliases |
+  | Execution routes | Constant-folded versus row-dependent; available alternative access/join/aggregate plans; covering/fetch; cold/reused/invalidated cache; one-shot/paged/cancelled execution |
+  | State transitions | Query/Exec/Prepare entry points, successive differently typed/signed binds, writes followed by reads, transaction boundaries, rollback/retry and metadata/index changes |
+
+- [ ] **QSC-06 — Use LLMs/subagents as gap-directed scenario authors.**
+  **Depends on QSC-01's manifest and QSC-05's execution feedback; start with the numeric
+  slice, not an unconstrained SQL-generation campaign.** Extend the existing dst-generation
+  and factory authoring loop. A coordinator selects explicit missing cells/interactions
+  and supplies the relevant grammar/catalog, contracts, boundary fixtures, existing cases
+  and oracle limitations. Delegate focused batches to subagents by semantic interaction,
+  not arbitrary file counts: e.g. nested NULLs × outer joins × predicates, or whole DOUBLE
+  binds × integer consumers × cache reuse. Have a separate challenger seek counterexamples
+  to proposed relations and missing preconditions. Parallelize read-only research/candidate
+  generation; one integration owner serializes shared code/manifest edits and resolves findings.
+  Agents emit validated structured scenario INPUTS in the existing formats (extended by
+  QSC-02 where needed): DDL, exact data/bindings, statement sequences, target contract/cell
+  IDs, relation IDs/preconditions, intended path and provenance. They do not fabricate
+  physical plans, run generated shell commands, edit expected outputs to match Go, or
+  bless their own candidates. Proposed expected answers/relations remain untrusted until
+  QSC-03's executable checks and semantic review establish their basis.
+  Persist exact candidate inputs and corpus/generator/model/prompt revisions; the LLM
+  generation itself is nondeterministic, so a seed alone is not a replay artifact.
+  Feed executed-path gaps, rejected assumptions, surviving mutants and minimized findings
+  back into the next batch. Admission errors remain classified evidence, not erased cases;
+  valid supported SQL that fails is a finding, not "the LLM generated bad SQL."
+  **DONE:** a campaign fills previously named cells with witnessed, oracle-backed cases;
+  a malformed candidate, false relation and unavailable oracle cannot be promoted; replay
+  of the admitted corpus works without an LLM, credentials or network model access.
+
+- [ ] **QSC-07 — Close semantic families and their interactions end-to-end.**
+  **Uses QSC-02–QSC-06; finish each slice before the next.** Instantiate the manifest,
+  oracles and generated combinations in this order, always including producer/consumer
+  boundaries rather than testing each operator only in isolation:
+  1. Numeric/scalar/type transport: FLOAT versus DOUBLE versus integers, coercion/CAST,
+     domain/error handling, signed zero, precision/overflow and bound-parameter admission;
+     fold/runtime/storage variants. Include floats in NON-final composite DISTINCT/group/
+     sort positions and sequential sign/type changes on the same connection.
+  2. NULL/Boolean/empty-input semantics: TRUE/FALSE/UNKNOWN, nullable comparisons, IN/NOT IN,
+     EXISTS and scalar-subquery cardinality, empty versus all-NULL aggregates, HAVING,
+     DISTINCT and duplicate multiplicities.
+  3. Relational composition: inner/outer/semi/anti behavior where supported, correlated
+     AND uncorrelated subqueries, predicate pushdown/null extension, composite joins,
+     aggregate/DISTINCT/order/limit interactions and alternative real access paths.
+  4. Names and nested values: quoted/case-sensitive identifiers, alias shadowing, same-name
+     fields, derived tables, STRUCT/ARRAY/UNNEST, nested NULL/empty values, column metadata
+     and ordinal/type propagation across joins and projections.
+  5. Other registered domains and consumers: string/byte/Unicode behavior, collation and
+     temporal semantics; INSERT/UPDATE/DELETE, constraints and secondary/aggregate index
+     consistency after writes. Negative syntax/type/admission cases are part of each slice.
+  **DONE per slice:** every required cell in its declared envelope is validated (or has a
+  source-justified unsupported contract with an executed rejection pin), representative
+  semantic mutants are killed, and minimized real-SQL regressions pass the existing Bazel
+  targets. An empty required population or unbuilt harness capability prevents completion.
+
+- [ ] **QSC-08 — Cross the same contracts with lifecycle and stateful execution.**
+  **Uses validated families from QSC-07; lifecycle witnesses are established in QSC-05.**
+  Reuse existing stateful SQL/model, paging and real-FDB integration facilities. Exercise
+  literal/parameter/Prepare entry points; cold/warm/replanned caches; repeated binds with
+  different values and types; index/schema changes; DML followed by SELECT; autocommit and
+  explicit transaction boundaries; rollback, cancellation and retry/commit-unknown behavior
+  according to the documented transaction contract. Force continuation boundaries around
+  duplicates, groups, joins, filters and ordered limits, including empty intermediate pages;
+  require actual stop/resume evidence and compare with an independent expected population,
+  not only another possibly wrong engine path. Use SimFDB's supported deterministic controls
+  for exploration and real FDB for boundary/transaction fidelity. Record simulation limits;
+  do not claim schedules or transport effects that the simulator does not model. Known
+  engine defects exposed here are fixed, not re-blessed as expected answers.
+  **DONE:** applicable semantic cells have witnessed lifecycle counterparts, final rows/
+  metadata/errors and write effects match their contracts, and failure/retry paths were
+  explicitly exercised rather than left to chance.
+
+- [ ] **QSC-09 — Preserve, minimize, fix and promote every genuine finding.**
+  **Applies from the first candidate execution; not gated on later phases.** Extend the
+  existing finding artifacts/promotion path with the contract/cell ID, source revision,
+  exact schema/data/typed bindings/statement sequence, oracle policy/provenance, observed
+  plans/path witnesses, backend/configuration, error and replay command. Classify engine
+  defect, oracle defect/false relation, invalid candidate and infrastructure failure;
+  only adjudicated successful cases earn validation credit. Reduce failures structurally
+  while retaining the failing dimension (e.g. composite-key position, NULL placement,
+  correlation, parameter type or continuation boundary), then amplify the neighboring
+  combinations. Fix discovered defects immediately and retain regression inputs plus the
+  independent corrected expectation; never drop a failing candidate to make promotion green.
+  All load-bearing probes, including negative reachability results, become persistent tests.
+  **DONE:** end-to-end exercises prove replay, reduction without losing the defect, repair
+  and promotion; a mismatch cannot disappear through dedup, rejection or golden re-blessing.
+
+- [ ] **QSC-10 — Make completeness and detector health executable CI gates.**
+  **Starts with the first promoted slice; extend existing workflows and ledgers.** PR/normal
+  Bazel targets replay the committed regression corpus and the deterministic required-cell
+  checks; LLM availability is never a prerequisite. Existing nightly lanes explore additional
+  combinations, run broader model/real-FDB checks and the semantic mutation set, and publish
+  additions/findings with explicit source/envelope identities. Missing oracle/backend,
+  malformed or partial output, zero executed tests, unchanged "alternate" plans and required
+  unwitnessed paths are incomplete/failed verification, never success. Counters are attributed
+  to individual contract/cell IDs; include expected populations and guard both dead channels
+  and forbidden revival. Test every census/gate arm with explicit state. Corpus dedup or
+  retirement cannot reduce required coverage or oracle strength without a reviewed semantic
+  reason and replacement evidence. Include new files/data in Bazel inputs, run uncached
+  when claiming fresh execution, verify filters/run counts and source hashes, and retain
+  full output before summarizing it. Profile runtime and schedule work using measured cost,
+  not case counts; contain exploration with explicit resource limits without silently
+  dropping mandatory replay. **DONE:** missing-case, weakened-oracle and never-ran mutations
+  fail CI, and new supported features cannot merge unclassified/untested in this manifest.
+
+- [ ] **QSC-11 — Audit closure and keep the envelope expanding.**
+  **Depends on QSC-01–QSC-10 for the declared release envelope.** Give a challenger the
+  coverage report, supported feature inventory and known bug history, and require attempts
+  to identify omitted axes, mislabeled reachability, false equivalences and common-mode
+  oracle failures—not another count of green tests. Audit both modeled and unmodeled
+  combinations; no status may disappear solely because a generator cannot produce it.
+  Repair any discovered gap/bug and retain the proof. Publish scope and remaining outside-
+  envelope classes alongside required/applicable/exercised/validated counts and representative
+  mutation results, all tied to the tested revision. **DONE:** no unclassified, missing-input,
+  missing-oracle or untested REQUIRED cells remain; all declared critical interaction
+  strengths have actual evidence; the independent challenge is resolved; normal Bazel and
+  required real-FDB/replay/mutation gates pass. This is a claim about the named envelope,
+  never a claim that all possible SQL is proven correct. Every feature addition or new bug
+  mechanism extends the envelope and reopens the corresponding obligations automatically.
+
+### RFC-255 — QSC numeric envelope implementation (2026-09-14)
+
+Partial delivery toward QSC-01/02/03/04/05/07; the broad QSC items remain unchecked.
+`rfcs/255-executable-semantic-coverage-envelope.md` records the design and omissions.
+The executable manifest is `pkg/relational/conformance/yamsql/testdata/semantic/numeric-v1.json`;
+its generated `numeric-v1.yaml` is replayed by `TestNumericEnvelopeFDB` in the existing
+Bazel yamsql target. Regenerate with
+`go test ./pkg/relational/conformance/yamsql -run '^TestNumericEnvelopeArtifact$' -update-numeric-envelope`.
+
+- Observed real-FDB envelope: **90/90 math cells**, **15/15 producer prerequisites**,
+  **105 statements**, 6 scalar spellings × 5 DOUBLE inputs × 3 producers, projection only.
+  Inputs: −0, +0, −0.25, +0.25, 3.0. Literal decimal-point syntax is distinct from
+  driver-text-transport's exponent syntax; stored columns are the third producer.
+  All math cells assert input and output carrier/bits plus DOUBLE metadata. Hand-derived
+  exact answers are independent of production math calls; a literal 90-ID list pins
+  the denominator. Typed ANTLR witnesses check projection shape, exact function spelling
+  (including aliases), argument source, literal bits and exponent three before credit.
+- The live catalog snapshot contains **58 names at this measurement**: 6 in this envelope,
+  52 unclassified, reported by name. This is not catalog-wide completeness: FLOAT/int,
+  nonfinite inputs, ties and other fraction magnitudes, nesting/other consumers, executor
+  WithParams, caches, continuation and transaction lifecycle are outside the envelope.
+- yamsql now supports strict tagged args/exact rows, typed multisets, SQL metadata and
+  per-statement private execution evidence. Validation rejects ignored assertions in
+  programmatic Run calls as well as YAML. Two existing NOT NULL scenarios had ignored
+  message assertions; they now use checked `error_message` fields.
+- Applied, compiled, failing, restored mutants: zero-sign comparison; query argument
+  forwarding; EXPLAIN argument forwarding; ROUND dispatch redirected to CEIL; manifest
+  denominator removal. At the 90-cell envelope, ROUND→CEIL failed exactly the three
+  ROUND/positive-quarter producer cells. EXPLAIN pins `Project([(3 / 2)]`, not merely Scan.
+  Exact mutant edits, observed failures and tested-tree hash are recorded durably in
+  RFC-255, "Measured mutation evidence".
+- Fuzzing the codec round trip found yaml.v3 drops one newline when encoding a string
+  consisting only of newlines. Scalar encoding now uses explicitly quoted payloads;
+  newline-only strings are permanent unit/fuzz seeds. The restored all-kind codec and
+  ordered/multiset fuzz run passed **1,250,386 unguided executions in 15 seconds**;
+  Bazel explicitly reports no coverage instrumentation, so this is not guided coverage.
+  Invalid UTF-8 string payloads are rejected; arbitrary bytes use the bytes tag.
+  The independent float-bit target also passed **14,094,619 unguided executions**
+  in 15 seconds.
+- Final verification: both affected Bazel targets executed uncached and passed.
+  Final `just test`: **92 targets passing (3 executed, 89 cached)**; tested source
+  hashes remained unchanged. The earlier 200-second command timeout was not counted
+  as a successful run. Graefe and Torvalds ACKed the implementation; Codex's three
+  implementation findings are fixed with regression tests. The shared report cannot
+  credit invalid witnesses or panic on appended/removed/duplicate/unknown cells.
+  The corpus migration removes ignored empty DML rows assertions; loader and direct
+  Run regressions prevent their return. RFC-255 records the exact mutation edits and
+  a reproducible, locale-pinned tested-population hash.
+
+### Query-grind skill and next numeric consumer campaign (2026-09-14)
+
+Entry point: `.claude/skills/query-grind/SKILL.md`. Continue QSC-01–QSC-07 on the
+current branch; do not create a branch per batch. The skill requires existing-harness
+reuse, independent author/challenger roles, witnessed execution, mutation-verified
+assertions and immediate reproduce/minimize/fix/pin on a finding.
+
+Next active slice: numeric/type transport into CAST and integer consumers. Start by
+checking Java CastValue's exact conversion/overflow contract and current Go casts,
+then author targeted inputs through existing yamsql typed args/stored columns.
+Candidate axes: decimal literal versus driver-text-transport versus stored DOUBLE;
+BIGINT/INTEGER casts; signed zeros, half-integer rounding and representable range
+boundaries. No cells are credited yet. Explicit integer output/metadata and negative
+SQLSTATE contracts need independent expected answers; equality between two cast routes
+alone is not proof. The next action is a focused author batch plus an independent
+coverage/oracle audit, followed by challenger review and real-FDB replay. The existing
+RFC-255 envelope remains unchanged; any new generator or envelope mechanism needs its
+own scoped design gate.
+
+### QSC numeric CAST campaign — RFC-256 (active DFS)
+
+QSC-01/02/04/07; continuation of RFC-255's numeric transport envelope. Java's
+`CastValue` contract disproved the old floating-overflow rejection expectations:
+DOUBLE rounds/saturates to long, then narrows for INTEGER; FLOAT rounds/saturates
+at int32 width even for BIGINT. The scalar fix and replacement of the system-table
+MAP interpreter by the existing typed predicate compiler are implemented but not
+fully verified or committed. Retired interpreter-only dispatch/helpers/tests are
+removed; the complete 3VL truth-table proof now drives the actual shared compiler.
+
+Observed: 17 explicit boundary vectors × 2 declared sources × 3 producer routes ×
+2 integer consumers = 204 exact scalar cells in 102 real-FDB statements; 34 typed
+system-table statements; independent rational-oracle fuzz, 7,423,312 executions in
+15 seconds without coverage guidance. Live FLOAT_TO_LONG exposes Java's exact
+Integer/Long protobuf boxing error; Go's numeric result is independently pinned,
+not claimed live result parity. Full suite, mutations, final stress and milestone
+implementation reviews remain outstanding; these figures do not close a QSC item.
+
+**Open finding, next action:** real Java accepts UNNEST of a computed derived-array
+CAST; Go's obsolete base-passthrough classifier rejects it (0AF00). The minimal
+query and concrete typed-output replacement design are in RFC-256's DFS section.
+The initial retained live probe and eight array statements failed for this reason.
+Revision-3 design ACKs and focused typed-binding results are recorded in the
+continuation below; classifier retirement and complete array/unnest verification
+remain open. Artifacts: `/var/tmp/query-grind-cast`; implementation based on
+`8fbba9f70`, currently uncommitted.
+
+- **RFC-256 continuation (active, array binding):** scalar/system mutation pass
+  killed seven applied/compiled mutants and restored exact source hashes; focused
+  values/functions/embedded targets green. Array design review rejected deriving
+  admission from best-effort projected fields. RFC-256 revision 3 carries the
+  semantic-resolved collection into lateral `LogicalUnnest` instead, preserving
+  lexical CTE scope, owner binding, visible labels and ordinal paths. Computed
+  derived-array live probe and initial array result queries were red before
+  implementation; subsequent focused results are recorded below. No complete
+  corpus/retirement claim is booked. Evidence: `/var/tmp/query-grind-cast/`.
+
+### RFC-256 typed-array continuation — integration in progress
+
+The owner now requests finishing, reviewing and merging this increment; branch
+`rfc256-cast-array-binding`, HEAD `8fbba9f70`. No commit, push or PR yet. User skill
+edits remain byte-identical to `/var/tmp/semantic-plan-user-skills.patch`.
+
+Revision-3 design ACKs are in `design-array-v3-{graefe,torvalds}-delta.log` under
+`/var/tmp/query-grind-cast`. The final SELECT rebuilds now bind collections;
+correlated EXISTS (both no-predicate and predicate builders) and correlated scalar
+FROM rebuilding also need—and now call—the same final-spine binder. The retained
+EXISTS regression caught the omitted paths; `binding-exists-red.log` and
+`binding-exists-green.log` show red→green. Scope construction preserves errors.
+CTE column-list renaming and unnest virtual sources now preserve complete column
+types, including ARRAY and nominal STRUCT metadata.
+
+Focused results, not final-tree/full-corpus verification: `array-bound-results.log`
+ran `TestNumericCastArrayFDB` green: 17 yamsql statements (16 positive scalar-array
+results/empty results plus the rejected stored-NULL insert), and four original
+computed-NULL-element queries checked as typed nullability failures through the
+existing GoSQLSetupRunner. The original positive NULL-element expectation was
+invalid: SQL ARRAY targets declare non-nullable elements. `live-array-bound.log`
+pins Java's NPE and Go's checked layout violation for the DOUBLE→LONG NULL-element
+shape; the computed non-NULL array and empty-array live probes pass both engines.
+NULL containers are positive empty UNNEST inputs, not NULL-element support.
+
+Next: finish typed chained/multi-source lowering, remove dead descriptor/derived
+classifiers and retire all census traffic, update raw-IR fixtures to supply bound
+collections, broaden alias/CTE/struct/ordinality/errors and execution witnesses,
+then run the full suite, remaining harness mutants, final stress and milestone
+reviews. Stress must compare worktrees on ONE filesystem: the existing baseline
+is in `/var/tmp`, while the working checkout is on `/home`; run the final candidate
+in its clean `/var/tmp` comparison/commit worktree, not across those filesystems.
+
+### RFC-256 visibility integration — active continuation
+
+UNNEST-wide `Shadowing` lookup precedence is removed. The exact scope unit pin
+was red, then green (`unnest-precedence-{red,green}.log`). Live ordinary table
+versus scalar-element references now agree on 42702 in both FROM orders.
+Record-no-AT sources now publish member attributes plus an ephemeral whole
+alias, retaining the nominal flowed element separately. Qualified-star source
+research corrected the initial review requirement: Java selects the FIRST
+matching operator and rejects non-RECORD flowed values with 42F10. Both design
+delta ACKs are in `design-qualified-star-{graefe,torvalds}.log`; the exact rules
+and implementation boundary are in RFC-256's final section.
+
+The existing star expanders now carry exact source/ordinal Values into ordinary
+LogicalProject.ProjectedValues, preserve duplicate labels, and filter ephemeral
+attributes. CTE star publication no longer suppresses the multi-source UNNEST
+body merely because it used to flow an unprojected internal seed. Retained live
+star probes in `conformance/numeric_cast_boundary_conformance_test.go` cover
+bare/qualified stars, scalar/record and AS/AT, both duplicate-alias orders,
+derived and CTE boundaries, and duplicate AS==AT outputs. `live-star-publication-6.log`
+was green for its then-current population (23 star probes plus preceding numeric
+and alias probes). These probes assert SQL labels/counts and selected scalar
+rows, NOT full nested type metadata; the separate flat-string ARRAY/STRUCT type
+loss is the existing CQ-74, not claimed closed by this work.
+
+**Resolved hypothesis:** the red `live-star-publication-7.log` was an implicit
+SELECT-alias defect, not default-FROM-alias identity. Java ignores a trailing
+SELECT uid unless AS is present: the CAST output was unnamed, so A.A correctly
+failed 42703. Research: `/var/tmp/query-grind-cast/default-alias-java-research.log`.
+The shared `selectOutputAlias` now applies that rule in both frontends; the
+original implicit failures remain pins. The yamsql FROM-identity cases now use
+explicit SELECT AS and retain their 42702 contract. The older
+`star-binding-focused-2.log` (28 bound-array subtests) was Go-only evidence;
+the later live naming evidence and remaining integration work are below.
+
+Branch/HEAD remain `rfc256-cast-array-binding` / `8fbba9f701bee185c9995f3922ecd0d44ce1cd77`,
+uncommitted; no PR/push yet. Full regression migration, dead/stale helper and
+comment cleanup, malformed-binding/ordinal pins, mutations, full `just test`,
+normal-hook commit, draft PR, stress and final implementation review gates remain
+open. User skill edits remain excluded. Logs are under `/var/tmp/query-grind-cast`.
+
+### QSC-04/07 RFC-256 — SELECT semantic names versus physical labels (integration open)
+
+Java's `ExpressionVisitor.visitSelectExpressionElement` only assigns the SELECT
+uid when AS is present. Authored names, inherited reference names and anonymous
+computed outputs are distinct; `_N` result labels and accumulator keys are not
+SQL-visible names. The RFC-256 tail records the helper/caller census, provenance
+matrix, invalid-protobuf-name 42602 boundary, and design review artifacts. Both
+frontends now share alias parsing, capture aggregate AS provenance, carry
+`LogicalProject.SQLNames` through deferred projection, and publish inherited
+reference labels only after binding. The Java conformance harness now preserves
+the outer structured SQLSTATE while keeping deepest-cause diagnostics.
+
+Evidence under `/var/tmp/query-grind-cast`: `select-as-live-fourth.log` passed its
+then-current 59 publication cases × 2 engines (118 STAR-PUBLICATION outcomes),
+plus the preceding numeric/alias probes. This does not establish full nested
+ARRAY/STRUCT metadata parity (CQ-74). `select-as-regression-focused.log` passed
+the new naming pins and corrected existing count/postaggregate/sort/unknown-table
+pins. `full-integration-3.log` is RED; its source-hash inventory verified no drift
+during that run. No full-suite green, hook, commit or PR is claimed.
+
+Current DFS: finish integration regressions. A missing `outputAliased` propagation
+in sole COUNT(*)→grouped-aggregate demotion explained the native aggregate-slot
+regression; the fix and derived/CTE explicit/implicit pins are written, awaiting
+rerun. Fixture-author edits were audited, not accepted as an oracle: the proposed
+positive derived `_0` lookup was rejected and retained as 42703 alongside the
+original canonical COUNT(*) lookup. Other unnamed-label/implicit-AS migrations
+still need affected-suite execution. Scope/star fixtures, exact bound-UNNEST
+fixtures, label/projection metadata tests and the SQLNames cloning audit remain
+open. Next: run the grouped-count/native-root pins, reconcile remaining full3
+failures against Java, then rerun affected suites and the live publication probes
+(now expanded with three grouped-count cases) before `just test` and the normal
+hook/draft-PR checkpoint. Stress, mutations and final implementation ACKs remain
+merge gates, not claims made by this block.
+
+### QSC-04/07 RFC-256 — exact enum / CTE integration checkpoint
+
+The enum-as-STRING item above now has an exact declaration carrier and real-FDB
+regressions. `TestFDB_EnumTransport` covers stored/derived/CTE/UNION values,
+nested STRING homonyms, escaped enum members, number aliases, repeated enums,
+comparisons/IN with literal and actual executor parameters, NULL, ordering,
+index equality and OTHER metadata. Java-only `EnumTransportReference` separates
+its upstream ARRAY<ENUM> IN assertion from Go's independently checked correct
+rows. The RFC-256 final section gives the source basis and exact log population;
+nullable array elements and nested-array transport are not claimed repaired.
+
+`enum-core-full-2.log` passed five uncached core targets. Three repetitions of
+the enum integration and complete UnnestExistsGather passed, including the
+original deep-six DISTINCT/groupby regression. Subsequent UNION and malformed
+graph pins passed `enum-union-guard.log`. The live Java numeric/publication and
+enum specs passed `enum-numeric-java-final.log`. These are bounded results.
+`just-test-enum.log` completed RED: 55/92 targets executed, 37 cached, 83 passed,
+9 failed; full factory corpus passed. No full green, normal hook, commit or PR.
+
+Current DFS is the remaining integration: sqldriver's old name/alias/metadata
+fixtures, Java/corpus comparisons, golden shapes, docscheck's old aggregate-label
+and deleted-helper assumptions. The full ordinality migration diff was audited;
+its remaining failed arms, missing disjoint twins and contradictory comments
+must be repaired, not accepted on the author's assertion. Read-only triage is
+`/var/tmp/query-grind-cast/full-suite-readonly-triage.log`. Main branch remains
+`rfc256-cast-array-binding` at `8fbba9f701bee185c9995f3922ecd0d44ce1cd77` with the
+campaign uncommitted. User skill edits remain excluded and byte-preserved.
+
+### QSC-04/07 RFC-256 — typed slot-order gate and derived-correlated DFS
+
+The typed slot-order gate is implemented under both design ACKs. Full docscheck
+passed uncached in `slot-order-full-integration.log`; full sqldriver remains red.
+The gate and two complete FDB fixtures passed their focused run after migrating
+14 COUNT(*) labels to Java `_1` without changing SQL/values. Both population
+floors and all naming/provenance classes have unit pins. Five compiled mutations
+were killed; 1,531,211 fuzz executions passed without coverage guidance. RFC-256's
+latest evidence block scopes the populations, hashes and retained limitations.
+Ordinality's full test passed 228 RUN lines before the final comment repair;
+scanner comparison proves that repair changed comments only. Enum promotion fuzz
+also passed its earlier run (`enum-fuzz.log`); neither bounded fuzz result closes
+whole-engine coverage or the nullable/nested-array carrier limitation.
+
+Current DFS: `scalar-derived-diagnostic-research.log` refuted the earlier triage
+for correlated derived sources. The EXISTS WHERE path should execute, not look up
+its derived alias as a catalog table; scalar syntax is a Go-only extension whose
+primary should execute and original two-row comma leg must raise 21000. Reuse
+checked exact source/body carriers in those existing consumers; retain original
+queries and real-FDB empty/ON/cardinality twins, then finish remaining fixture and
+full-suite integration. `DerivedSourceReference` records the Java-side boundary.
+Branch/HEAD remain rfc256-cast-array-binding / 8fbba9f701bee185c9995f3922ecd0d44ce1cd77;
+no commit, hook, PR, push or merge has happened. User skill edits remain excluded.
+
+### QSC-04/07 RFC-256 — correlated-derived identity and retained constraints
+
+The focused correlated-derived slice is green in
+`/var/tmp/query-grind-cast/derived-identity-green-4.log` (four affected Bazel
+targets, requested unit and complete scalar/EXISTS FDB fixture execution).
+Derived primaries carry exact semantic sources and full query bodies including
+WITH, mint private runtime identities before resolving Values, and publish that
+identity through the scalar/EXISTS consumers. Cluster pull-up walks separate
+CTE Body/Main lexical scopes without exposing hidden definition aliases. Unit
+pins include a Body-free/export-name homonym, Main-local shadowing, explicit
+binding versus display name, nested scopes and unsupported/recursive decline.
+
+The expanded FDB cases found two additional real defects, both fixed inline:
+1. Projected EXISTS over an independent outer cross product had no implementable
+   partition. The canonical ordinary-ForEach block below its sole projected
+   existential now survives both search preferences, without relaxing semantic,
+   dependency or liveness checks. Rule tests cover one/two live lower rows and
+   deferral on/off; qualification negatives pin excluded edge/dependency forms.
+2. The existential PK/index shortcut discarded existing primary scan bounds.
+   Constrained scans retain their chosen access path and generic residual
+   compensation; unbounded controls still optimize. Six bounded equality/range/
+   composite PK/index unit arms were observed red before the fix; both unbounded
+   controls stayed green. FDB star-body empty/nonempty and single/clustered
+   regressions now pass, including multiplicity and NOT EXISTS.
+
+Design ACKs and mechanism/evidence details are in RFC-256's final sections.
+The complete core run passed Cascades/query/embedded; docscheck caught moved RFC-238
+citations, repaired without changing its ledger, with both cite tests green.
+Eleven applied/compiled semantic mutants were killed and restored. Ten uncached
+FDB fixture invocations passed the same 46 RUN names; ten live Java outcomes are
+pinned. The implementation review found scan/unnest bindings missing from the
+inner alias collector: fixed with five red-to-green arms and related FDB greens.
+Final review deltas, full integration and final stress comparison remain open.
+Detailed evidence and the distinction between direct collector pins and shipped
+SQL reachability are in RFC-256’s final verification section. The old `/var/tmp` stress checkout is on a different
+filesystem and cannot support a ratio against `/home`: replacement merge-base
+runs on `/home/birdy/projects/fdb-rfc256-merge-base` both passed with the same 24
+RUN lines per invocation, SHA `ed3504f7e410d8e2a4f4c46fd7b4c72fd0484869`
+(`stress-base-home-{1,2}.log`). No after-result or performance claim yet.
+The current branch/HEAD and uncommitted state are unchanged. User skill edits
+remain byte-preserved; no hook, commit, PR, push or merge has occurred.
+
+### QSC-04/07 RFC-256 — full-run checkpoint and active Q54 DFS
+
+`just test` completed red in `derived-just-test.log`: 8 failing targets, 46
+executed plus 46 cached, 84 reported passing. The 6,158-path SHA-256 inventory was
+unchanged; failed logs are archived in `/var/tmp/query-grind-cast/just-failures/`.
+The bounded correlated-derived implementation received both delta ACKs, but
+full-suite follow-through exposed a new wrong-row case, now the active DFS.
+
+Q54's original shadow-scalar query counts zero whether its local WITH is honored
+or silently lost. The retained positive control V.B=outer LB.K must count 2 and
+returns 0; unfiltered count and MAX controls fail 42703. The ordinary body build
+lacks the outer semantic scope, then buildCorrelatedScalar discards q.Ctes() and
+wraps the old enclosing V. Exact SQL and plans are in the Q54 subtests and
+`outer-block-shadow-red.log`; root-cause research and chosen parent-scope/full-query
+correction are in RFC-256's last section. Implement that correction next after
+its design gate, then continue the archived integration failures. No probe or
+sentinel has been deleted to make this green.
+
+### QSC-04/07 RFC-256 — parent-scope derived identity follow-through
+
+Q54's retained positive controls now pass under the full parent-scoped scalar
+builder; integration is still open. That path exposed a distinct runtime alias
+collision: an inner derived D and enclosing real D shared QOV(D). The chosen
+source binding/body-reuse amendment and both conditional design ACKs are in
+RFC-256's final section. Four exact scalar-source planning witnesses were red;
+`derived-binding-combined-1.log` passed the two structural units and all 17 scalar
+source subtests, including empty/multiple-row semantics, actual-parent reads,
+shadowing, same-level duplicates, quoted mint-shaped aliases, nullable BIGINT
+metadata and five raw EXPLAIN repeats per row case. The final default-qualified
+alias reservation needs its rerun. Previous full query/executor greens remain
+bounded evidence, not integration approval. Continue the full-run failures and
+scalar/cardinality sentinels with independent row/error oracles; do not mass-refresh
+fixtures. No implementation ACK for the complete parent-scope slice, hook, commit,
+PR or push. Details and exact log locations: RFC-256's final sections.
+
+### QSC-07 RFC-256 — full-run 1021 fixture failure, immediate DFS
+
+The full integration replay (`derived-parent-just-test.log`) is red: 11 of 92
+targets failed; 25 executed, 67 cached. All 6,149 inventoried files stayed unchanged.
+Both derived-binding units and the scalar-derived FDB suite passed, including
+the final implicit-qualified alias reservation. Archived failures:
+`/var/tmp/query-grind-cast/derived-parent-failures/`.
+
+Immediate open path: factory `fc_0000000745_q6_p0` setup INSERT returned 23505
+after a 1021 retry, NOT a timeout. Existing named SimFDB applied/discarded fault
+pins ran uncached (`factory-1021-existing-pins.log`). Current pinned Java SQL does
+NOT use FDBDatabase.run for autocommit: its one-shot context/commit path disproves
+the existing "Java-matching" hazard comments. The RFC-256 final amendment records
+sources, the chosen one-transaction DML correction and application-owned atomic
+reset/load factory fixture boundary. Design ACKs required before implementation;
+no fixture suppressions, reblessing, commit, PR or push. Finish this flake path,
+then return to the archived scalar/carrier/integration failures. This block and
+RFC-256 are the durable state, not a resolved checkbox.
+
+### QSC-07 RFC-256 — one-shot DML and private fixture implementation checkpoint
+
+Design reviews both conditionally ACKed the autocommit amendment; no implementation
+ACK. Owned DML commit/rollback and private factory reset/load are implemented.
+Required applied/discarded INSERT/relative-UPDATE witnesses went red→green;
+`autocommit-faults-wide-3.log` passed 47 RUN lines with unchanged recorded source
+hashes (before the later count-drain cancellation mapping edit). The 101-fault
+inspection initially consumed its own schedule through catalog initialization;
+its captured stack and corrected initialization-before-injection test are retained.
+New fixture validator/classifier/load/RunParsed tests passed under Bazel in
+`fixture-focused-3.log`. The exact factory 745 scenario passed real FDB in
+`factory745-reset-load.log`; this is not the full 8,150-scenario run.
+
+Next: full factory replay, then complete the ownership/cancellation/hooks/metrics/
+transaction-limit proof and metadata-boundary audit, mutants and stale-claim sweep.
+The last section of RFC-256 has implementation details, precise evidence and the
+remaining review conditions. The archived 11-target integration red remains open;
+no reblessing, hook, commit, PR or push. Finish this DFS before returning to the
+scalar/carrier/doc gates recorded above.
+
+### QSC-07 RFC-256 — factory green, cancellation DFS is now the open path
+
+Full factory passed uncached: 8,150 scenario RUN/PASS lines, 335.7s, unchanged
+4,126-file pkg/gen Go/BUILD/yamsql inventory (`factory-full-reset-load.log`,
+`fixture-full-source.md5`). SimFDB's concurrent Cancel flag race was reproduced
+and fixed atomically; cancellation pins passed under -race. SQL-hunt's explicit
+idempotent-application-retry design received both conditional ACKs but remains
+unimplemented while this deeper path is open.
+
+Immediate RED: `TestGet_CancelUnblocksHeldReply` against real FDB in
+`pkg/fdbgo/client/watch_ctx_fault_test.go`; `client-cancel-held-red.log` proves
+Transaction.Cancel does not interrupt an ordinary held read, although C++ 7.3.77
+races resetPromise. Owned SQL DML cannot claim working cancellation until this
+is fixed. RFC-256's last section records the reproduced defect, chosen
+read-incarnation cancellation design, C++ source and required client review /
+differential gates. No production client change yet. Finish this cancellation
+DFS, then remaining lifecycle and SQL-hunt work, then the archived integration
+red. No hook, commit, PR or push.
+
+### QSC-07 RFC-256 — client cancellation implementation checkpoint
+
+The final Cancellation DFS design has C++/Torvalds/independent ACKs; no impl ACK.
+Read-incarnation cancellation/timebomb and deferred scope ownership are in place.
+Held real-FDB read/GRV/reset/pipeline pins and lifecycle units pass. Full client
+race ran 1,626 test/fuzz RUN entries with frozen source and failed two assertions
+(`client-full-race-1.log`). A C-client differential proved retry-limit change
+cannot revive terminal OnError (1020 → 1025 → success only after Reset), fixing a
+unit that directly rewrote private state. The GRV race exposed a real captured
+result bug: after Reset a completed GetReadVersion returned the next incarnation's
+version. Retained real-FDB red→green plus stricter race pin now pass
+(`client-grv-stable-result-red.log`, `client-grv-retry-green-1.log`).
+
+Exact current implementation/evidence and remaining client acquisition/lifetime/
+mutation/fuzz/full-race/performance/review obligations are in RFC-256's final
+"Client cancellation implementation checkpoint". Finish this DFS before SQL
+hunt replay and the archived scalar/carrier/docscheck integration red. No full
+green, implementation ACK, hook, commit, PR or push.
+
+### QSC-07 RFC-256 — nested-WITH star alias publication DFS
+
+The full yamsql replay `yamsql-full-5.log` still fails two scenarios plus generated
+coverage artifacts. Active engine finding: `cte_error_codes` test[5] advertises
+W,Z,A,B but emits W,Z,X,Y, recorded in `cte-alignment-trace.log`; the temporary
+result-set instrumentation was restored byte-for-byte. `translateCTE` loses the
+outer column-list rename when its body is a nested WITH whose Main is a bare scan.
+Java QueryVisitor.visitNamedQuery renames the expanded output of the complete
+query, not just an exposed projection. Use the existing exact logical result-type
+derivation before the legacy star-width fallback and keep positional renaming;
+do not weaken result-set alignment. Three translator tests are red (rename,
+too few aliases, too many aliases) in `cte-nested-star-unit-red.log`.
+
+Finite slice: nested local binding × correct/short/long alias lists; durable real-FDB
+replay is the existing six-row cross product, with exact labels added next. A
+narrowed/reordered Main control must use its own row, not the definition body's.
+No subagent tools are available in this session; local author/challenger review
+must check lexical scope, arity and unchanged failure guards. Next: implement the
+exact-row refinement, run the focused translator and FDB scenarios, then resume
+remaining mandatory integration gates. No commit, push or PR.
+
+### QSC-04/07 RFC-256 — array owner-window integration DFS
+
+All 376 yamsql scenarios passed (`yamsql-scenarios-green-6.log`); generated docs
+remain to regenerate. Java/publication pins confirmed nested CTE W,Z,A,B labels
+and quoted/bare `_0` errors (`cte-label-java-1.log`); removing exact-row refinement
+reddened unit rename/arity/Main controls and the FDB cross product, then source
+restoration passed its checksum. Full query replay subsequently exposed three
+owner failures (`query-full-cte-followup.log`): FULL box right owner reads slot 3
+rather than 11, same-typed foreign inline owner is admitted, and the under-EXISTS
+FULL box collection declines. `clusterArity==1` means one optimizer leg, NOT one
+semantic source: FULL boxes are opaque legs containing multiple owner windows.
+
+Finite slice: true single-source versus FULL box × owning first/second/foreign
+identity, plus existing derived/CTE and under-EXISTS controls. Java
+LogicalOperator.java:216-224,306-315 consumes the resolver's underlying collection;
+matching a layout never establishes ownership. Local design challenge (subagent
+tooling unavailable): retain identity-checked single-source admission, otherwise
+use the existing exact leg-window identity/width checks. Do not change the seed's
+optimizer-arity routing or weaken type checks. Next: remove arity-only collection
+admission, run the existing failing tests plus full query and real-FDB lateral
+regressions, mutation-prove this guard, and resume mandatory integration gates.
+
+### QSC-04/07 RFC-256 — integration replay and label/type separation
+
+Owner-window correction is green across the full query target (459 RUN lines)
+and real-FDB lateral subset (503 RUN lines); restoring the arity-only admission
+reproduced all three original failures, then checksum restoration and rerun passed.
+The lateral replay also refuted the interim qualified-star 42F01 mapping: live
+Java reports 42703 for quoted/unquoted unknown stars in single/multi-source and
+mixed SELECT lists. Those four cross-engine pins are retained in
+NumericCastBoundaryConformance (`qualified-star-java-green-2.log`). Remove that
+mapping and correct the four stale yamsql expectations from this evidence, not
+from Go. Full yamsql (376 scenarios plus artifact gates), golden, SQL-hunt and
+metamorphic passed in `nonconformance-integration-3.log`.
+
+The same replay exposed scalar harness issues. Raw protobuf fixtures with stored
+mixed-case Order/Customer now spell those tables quoted; Java getTable's exact
+normalized lookup and the existing unquoted_dml_against_a_quoted_table scenario
+justify this, with a new unquoted 42F01 control. Accepted scalar LIMIT>1,
+DISTINCT and HAVING now assert the strict physical barrier instead of obsolete
+unsupported expectations; the real-FDB cardinality test proves zero/one/multiple
+after DISTINCT, not before. The SELECT plan harness missed production's shared
+windowed-aggregate pre-pass: added it, retained the window rejection, and removing
+it reproduces that test's false admission. Full embedded target passes 1,973 RUN
+lines (`embedded-full-integration-4.log`). These scalar forms use the RFC's stated
+Go-extension contract; Java's scalar syntax rejection is not an affirmative row oracle.
+
+Open integration failures: docscheck's new UnknownType mint plus retired census
+counts/cites, Java-corpus dead result-metadata skip vocabulary, explaindiff golden,
+and three plandiff logical projection-name goldens. The UnknownType is a synthetic
+CTE row used only to carry labels when UNION types await promotion. Do not raise
+the mint allowance: carry label bindings independently of real row-type bindings.
+Java Expression.withName and expanded output likewise keep names independent of
+the expression's type. Local author/challenger design (no subagent tools): no fake
+record types, preserve lexical CTE shadowing and alias arity, and do not turn label
+success into exact type success. `TestCTELabelsDoNotRequireUnionTypePromotion`
+already passes before this structural correction (not a red→green claim); the
+mint census is the red detector, and the new test preserves behavior across it.
+Next: implement separate private label bindings, run full query/yamsql, then finish
+the remaining integration/review/race/gazelle/tidy/full-just-test gates. No commit,
+push or PR while gates remain incomplete. Skills patch still byte-identical; no
+whitespace-only file diff among 186 modified tracked Go files at that inspection.
+
+### QSC-04/07 RFC-256 — final integration review: DML replay finding
+
+CTE label/type separation is green in full query, docscheck and yamsql; deleting
+the pending label binding makes both duplicate-label and explicit-alias arms fail,
+then checksum restoration passes. No UNKNOWN mint allowance was added. Docscheck
+also reconciles the retired scalar name authority (11 authorities / 16 sites) and
+the remaining 31 numeric RFC-238 cites. Java-corpus is green, including the dead
+result-metadata skip-class retirement; 72 pass / 166 booked / 2,110 queries.
+The nested array-metadata class remains independently live.
+
+Live Java evidence in `scalar-aggregate-integration-java.log` confirms LIMIT,
+DISTINCT and HAVING scalar syntax rejects 42601; Go's post-operation strict
+cardinality is an extension. COUNT metadata agrees before the grouped-empty
+query hits Java 0AF00. `labels-integration-java-green-3.log` certifies the three
+ordinal chain/star/self query rows and duplicate SQL labels, plus 42702 derived
+star collisions and 42602 invalid protobuf aliases. It also corrects two scope
+claims: Java rejects ORDER BY inside WITH with 0A000, and the unindexed grouped
+row-version query with 0AF00. Their Go result pins are extension contracts;
+unordered derived-shadow and PK-ordered COUNT controls supply affirmative shared
+label evidence. Both plan-baseline targets now pass. An earlier entry claimed
+an entry-by-entry physical diff audit without retained evidence; that claim is
+withdrawn. The six reported regressions and four unpinned planning errors still
+need individual adjudication. Inserted nested-table controls shift positions;
+the report's raw diff count alone is not a count of planner regressions.
+
+**Active review finding:** the recently added `cascadesPlan.Execute` DB.Run DML
+wrapper bypasses the one-shot statement-owned transaction. The retained SQL
+commit-unknown tests now fail (`dml-lifecycle-review-red.log`): applied relative
+UPDATE produces 102 instead of 101; applied INSERT returns spurious 23505; a
+discarded outcome silently retries. Java AbstractEmbeddedStatement drains updates
+and RecordLayerResultSet.close commits once. This is not the FDB callback API's
+retry contract. Remove the wrapper and its managed-transaction flags, retaining
+the owned transaction's commit/cancellation boundary and explicit-budget exemption.
+Then diagnose the SQL-hunt/paged-DISTINCT setup tests that motivated that wrapper
+at their correct harness boundary; never reintroduce implicit SQL replay to make
+those tests green. Full final gates/commit/push/PR remain unperformed.
+
+### QSC-04/07 RFC-256 — one-shot repair and typed hunt retry review
+
+The SQL DB.Run replay wrapper is removed. The full sqldriver, embedded and sqlhunt
+Bazel targets passed uncached (`dml-lifecycle-three-full.log`, 8,696 RUN lines,
+zero SKIP lines). Restoring replay failed all four INSERT/relative-UPDATE ambiguity
+pins; disabling application retry failed all four hunt fault cases; bypassing the
+faulted DISTINCT backend failed its nonzero-ambiguity witness. All three mutants
+were restored with SHA256 verification. DISTINCT setup now uses standalone clean
+transaction handles without bypassing the faulted SELECT paging backend. The
+missing-table DELETE subquery pins 42F01 and unchanged rows; unavailable determinism
+subprocesses now fail instead of skipping.
+
+Local challenger review (no subagent tools) found the hunt classifier did not meet
+the already-approved typed-cause conjunction. `sqlhunt-typed-policy-red.log` catches
+bare/mismatched SQLSTATEs, synthetic/untyped time-window markers and joined errors.
+The helper now requires 40001 + typed FDB1007/1020 or 40003 + typed FDB1021 in a
+single causal chain. Driver-budget exhaustion is not an injected FDB fault and is
+not retried. Explicit index-workload UPDATE/DELETE pins now cover both unknown
+outcomes, conflict and too-old; both models and bound values remain independent.
+Disabling retry fails all eight row/index fault subcases
+(`sqlhunt-two-workloads-mutant.log`); restoration is SHA256-verified. Full sqlhunt
+passes in `sqlhunt-typed-full-green-2.log` before that restored mutation run. An
+initial new per-seed nonzero-fault assertion was invalid: BUGGIFY's activation gate
+can leave a seed fault-free. The retained three-seed population in each workload
+now must have nonzero faults, with per-seed schedule/fingerprint equality intact.
+
+Remaining exact gates: rerun restored sqlhunt; client/transport race twice with
+frozen source; complete physical-plan and full diff review; gazelle/tidy; full
+`just test` with ample timeout. No commit/push/PR yet. Next: finish these release
+gates without restoring implicit SQL replay or blessing unexplained goldens.
+
+### QSC-04/07 RFC-256 — physical-plan audit reconciled
+
+RFC-256's final "Physical-plan integration audit" now individually adjudicates all
+six stopped-planning entries, two recovered extension shapes, four unchanged
+INFORMATION_SCHEMA harness-only errors and ten shifted nested-table positions.
+No error allowance or row expectation was relaxed. The full physical diff and eight
+hunt golden diffs were read locally; golden agreement remains characterization,
+not an independent result oracle. Ordered derived-shadow WITH is now explicitly
+annotated as a Go extension in cte.yaml. Two stale comments for the removed blanket
+UNNEST alias rejection were removed; the cross-process XPROCPLAN print is a required
+test protocol and stays. Release gates remain open as listed immediately above.
+
+### QSC-04/07 RFC-256 — final-suite inherited-name regression
+
+The frozen full `just test` run completed with 91/92 targets green, one failing
+QuotedIdentifierCaseJavaProbe (four of its eight cases): ordinary unqualified
+references through Go's case-insensitive lookup extension now report reference
+case, not the declared field's case. Exact references and star agree with Java.
+The oracle is the existing declared-name extension contract, not Java's rejection.
+Java Expression.fromColumn:326-331 and SemanticAnalyzer.lookup:464-480 preserve
+the selected attribute. Local author/challenger design ACK (no subagent tooling):
+use the already-resolved projection slot for unqualified inherited names instead
+of limiting that lookup to prebound star attributes. Keep aliases, computed slots
+and qualified structural names unchanged. Next: pin ordinary-reference publication,
+restore the original eight-case cross-engine test without changing expectations,
+then finish stress/performance and release gates. The owner now permits inclusion
+of all existing skill edits in the commit; their bytes remain unchanged.
+
+### QSC-04/07 RFC-256 — local review and Stress test 1M baseline complete
+
+The inherited-name repair now distinguishes resolved field attributes from scalar
+QOV runtime bindings. The original eight-case Java probe, all 40 quoted-label
+scenario queries, 228 array-ordinality RUN lines and 11 new unit/control RUN lines
+pass. Both original failing dimensions are retained with red→green evidence;
+no cross-engine or row expectations changed. The intermediate QOV regression is
+closed rather than absorbed into metadata fixtures.
+
+Final local Cascades/code-quality review has no remaining finding in this bounded
+implementation; prior client implementation ACKs and two-run race source hashes
+remain current. RFC-256's final section records the exact review scope and sources.
+Fresh same-filesystem stress comparison: two runs per side at merge-base
+ed3504f7e versus the frozen working tree above 8fbba9f701, all passed, 24 RUN lines
+each and matching row counts (including 1,000,000 full COUNT). Full timing table,
+load, source digest and exact commands are in RFC-256. Additional existing planner
+benchmarks (18 samples per side) show the small aggregate end-to-end timing
+increase is not additional planner work. Client read latency is 1.006x in two
+samples; allocations increased from 32 to 67, explicitly recorded as a cost of
+lifecycle correctness, not hidden as performance parity.
+
+Generation/Gazelle/tidy/lint/diff checks pass with source hashes unchanged. User
+permission now includes the original skill edits, so the intended commit contains
+the whole reviewed working tree. The remaining release gate is the frozen full
+suite plus normal commit hooks; PR/CI review remains a merge gate, not a claimed
+completed approval. This does not close the broad QSC campaign.
+
+### QSC-04/07 RFC-256 — release gate green
+
+The normal pre-commit gate passed generate/lint/build/full `just test`: 92/92
+Bazel targets passed (22 executed, 70 cached), with the frozen source inventory
+unchanged. All diagnosed final-suite failures are repaired and retained as tests.
+The bounded implementation is ready for commit/push/PR; RFC-256 is Implemented.
+PR review and final-head CI approval remain necessary before any merge.
+
+### QSC-04/08 RFC-256 — PR review findings, timeout repair verified
+
+PR #785 remains the active work item on `rfc256-cast-array-binding`. The owner
+requires **one new correctness fix per PR, retained regression, query-engine
+gates, green CI, then merge before starting the next fix**. Finish this PR's
+blocking review findings and authorized merge before opening another hunt slice.
+
+The `gpt-6-astra` / `xhigh` virtual reviews of `ed1f41359ec7` are NAK or INCOMPLETE,
+not approvals. All seven CI checks passed on that SHA. The first finding is now
+reproduced and repaired: early replacement-incarnation capture during reset could
+suppress the replacement timeout permanently. Publication now arms the timer
+after reset options are final, as C++ resetRyow requires. Two unit cases and a
+held real-FDB GRV are retained, with applied/reverted red and SHA-checked restored
+green. Ten `-race` repetitions pass (150 RUN lines with neighboring lease tests);
+full `just test` passes 92/92 targets (43 executed, 49 cached). RFC-256's final
+entry names the exact commands' logs under `/var/tmp/query-grind-cast/pr785-review`.
+
+Next: reproduce terminal PendingGet registration after Cancel/timeout without
+calling Resolve, then close the remaining reports in `pr785-review/findings.md`.
+No final-head review approval or merge is claimed; broad QSC entries stay open.
+
+### QSC-04/08 RFC-256 — terminal pipelined registration repaired
+
+The full architectural review continuation completed and returned NAK. No review
+approval is claimed. Its additional derived-source/CTE-body-loss report joins the
+remaining findings in `/var/tmp/query-grind-cast/pr785-review/findings.md`.
+
+Cancel/TIMEOUT after send but before PendingGet registration is now reproduced and
+repaired. Terminal registration retires its own resources without requiring
+Resolve, and preserves an already-published reply. Six real-FDB cases cross
+Cancel/TIMEOUT/Reset with held/published replies; the old Reset cancellation pin
+now explicitly holds its response. Two compiled semantic mutants detect missing
+terminal cleanup and lost ready values, with SHA-checked restoration. Ten race
+repetitions pass (80 RUN lines); full `just test` passes 92/92 (43 executed,
+49 cached). RFC-256's final entry records evidence and exact replay.
+
+Next: reproduce deferred-error versus timeout priority through existing client and
+libfdb_c differential harnesses. C++ ignores SetTimeout after a deferred error, so
+that is not a valid differential setup; observe timeout before applying poison,
+and separately pin poison-before-expiry through the client timer seam. Do not
+conflate the pre-existing deferred-versus-Cancel TODO at line 710 with this newly
+broken timeout contract without explicit scope/design adjudication. PR #785 is
+still blocked on remaining findings and final-head gates; no new hunt slice yet.
+
+
+### QSC-04/08 RFC-256 — deferred entry precedence reproduced (historical RED)
+
+Reproduction production/PR #785 HEAD was `feacb809443d579db7dc15a58dc1d71b329d6645`.
+Both preceding lifetime repairs are committed/pushed; the PR remains OPEN/BLOCKED.
+The deferred/timeout finding is now reproduced, not merely source-derived:
+`TestDeferredErrorOutranksExpiredTimeoutAtReadEntry` has ten failures among twelve
+entry cases (deferred 2018 versus actual 1031; size/Commit positive controls).
+`TestDifferential_DeferredErrorAfterTimeout` first observes 1031 on both clean
+clients, then witnesses deferred 2000 through size: eight Go read operations
+return 1031 where C++ returns 2000, Go versionstamp exceeds its bounded wait,
+and Commit returns 2000 on both. These retained tests are RED, not a release gate.
+The unbounded first differential attempt is not a completed result.
+
+The initial RFC draft proposed capturing deferred failure at leased operation
+entry, preserving that capture across nested work, never consulting replacement
+state from a retired operation. That proposal has since advanced to revision-four
+design approval and implementation, recorded in the following block. Three tracked
+gpt-6-astra/xhigh virtual reviewer sessions initially failed read-only sandbox
+startup on a stale autofs mount; the alternative sandbox selection also failed,
+yielding no review verdicts. The same sessions subsequently reviewed numbered,
+hashed source packets supplied directly as input without weakening sandbox
+permissions. Their verdicts cover supplied bytes, not independently verified live
+filesystem reads.
+
+Evidence: `/var/tmp/query-grind-cast/pr785-review/deferred-timeout-unit-red.log`,
+`deferred-timeout-differential-red-2.log`, `precedence-design-source-packet.txt`,
+and `precedence-design-{cpp,torvalds,codex}*`. The following block supersedes this
+entry's next action and RED-only status. Other PR blockers and final-head
+reviews/CI/authorized merge still precede any new hunt slice.
+
+### QSC-04/08 RFC-256 — deferred admission and client-owned stamp implementation
+
+Revision four received DESIGN ACKs from the same three tracked virtual
+`gpt-6-astra`/`xhigh` sessions, reviewing supplied source packets only. This is not
+human sign-off or implementation approval. The initial repair was committed and
+pushed as `ef1b0532e5a2bc279340a932423aa27648d58fc3`: deferred errors are captured at leased admission (including a
+clean nil), and versionstamp completion belongs to the client incarnation rather
+than mutable facade commitDone/commitErr fields. Database/Tenant retries, manual
+Commit, Reset, caller exits, and auto-reuse now use the captured owner. Commit's
+actual error remains separate from the native promise's 2020/2021/CommitID result.
+
+Observed evidence in `/var/tmp/query-grind-cast/pr785-review`:
+- `versionstamp-first-green.log`: four libfdb_c differential top-level tests,
+  20 RUN lines; deferred/timeout, completion lifetime, pre-native failure and
+  existing successful stamp contract pass against real FDB.
+- `versionstamp-selection-unit-red.log`: new literal actor_cancelled (1101)
+  exclusion pin caught a missing exclusion in the provisional implementation.
+  Fixed using flow/Error.h's operation_cancelled alias, not an inferred code.
+- `versionstamp-lifetime-green.log`: 90 RUN lines across client and facade targets,
+  including Database/Tenant attempts and a held uncertainty barrier; both targets
+  pass. The later overlapping-producer real-FDB pin passes separately in
+  `versionstamp-overlapping-green.log` (one RUN line).
+- Four compiled semantic mutants/reversions are killed: forwarding native Commit
+  errors, sharing overlapping producers, omitting sealed retirement, and restoring
+  the three old facade files. `versionstamp-mutants-summary.log` and each mutant's
+  `.source.txt` record executed failures and SHA-256-checked restoration. The
+  retirement proof includes an unresolved sibling consumed AFTER native success.
+
+Ten race repetitions now pass (`versionstamp-race-10.log`, 910 RUN lines,
+zero FAIL/SKIP lines, both targets, 214s), with source hashes unchanged during the
+run. A subsequent fuzz-only test addition exercises an independent first-event
+model: the initial 25-second run completed zero seeds while its worker started the
+FDB fixture and earns no fuzz credit. The one-worker 90-second rerun completes
+7/7 seeds and 2,837,314 unguided executions (`versionstamp-fuzz-2.log`); the Bazel
+binary explicitly lacks coverage instrumentation. No wire-fuzz claim is made.
+
+Next: milestone implementation review; the following full-gate follow-up records
+restored test results. The separate
+OnError validation/retirement gap and remaining planner/lowering review findings
+remain open; PR #785 is not ready to merge. No new hunt slice or broad QSC closure.
+
+Full-gate follow-up for the preceding block: first full `just test` was RED
+(91/92 targets, `versionstamp-full.log`). The existing metric-precedence test
+bypassed public admission by calling private Impl helpers with bare contexts.
+It now uses the public wrappers, retains every expected code and adds two poisoned
+inverted-range controls. A compiled admission-discard mutant fails both 2000
+assertions; SHA-checked restoration and the four libfdb_c differential tests pass
+(`metrics-entry-mutant.log`, `versionstamp-restored-differential-metrics-green.log`).
+Final ten-run race tests including this metric boundary and fuzz seeds pass in
+`versionstamp-race-final-10.log` (1,000 RUN lines, zero FAIL/SKIP lines, 213s).
+The full rerun passes 92/92 targets (43 executed, 49 cached, 947s), with every
+`versionstamp-full-2-tested.sha256` hash unchanged during execution. Evidence:
+`versionstamp-full-2.log`. Implementation and exact-final-HEAD approvals remain
+required; no merge is claimed.
+
+
+### QSC-04/08 RFC-256 — implementation-review ownership regressions
+
+All three same-session `gpt-6-astra`/`xhigh` supplied-byte implementation reviews
+NAKed `ef1b0532e5a2bc279340a932423aa27648d58fc3`. Prior green evidence did not cover:
+1. A leased synchronous getter consulting the cleared/replacement transaction
+   head during user Reset or successful auto-turnover (panic/deadlock or 2015
+   instead of its captured 1025).
+2. Older successful producer A retaining A's stamp over later producer B's native
+   size failure or retirement. Latest-admitted ownership, not last-successful
+   ownership, is the accepted Go concurrency/reuse extension.
+3. Panic unwinding running the native-result defer with an unset result and nil
+   error, manufacturing ten zero bytes before any successful CommitID reply.
+
+These are implementation corrections within the accepted design, not new C++
+concurrency claims. Ten deterministic real-FDB cells now cross Reset/auto-turnover
+with nil/replacement heads; before-dispatch/after-selection older-commit gates
+with newer native-size-failure/pending producers; and pre-dispatch/uncertainty-
+barrier panic. A caller-first retirement unit control supplements those cells.
+C++ 7.3.77 anchors remain ThreadSafeTransaction.cpp:725, RYW:2515–2523 and
+NativeAPI:6645–6680/6910–6940. An abnormal Go panic propagates unchanged; it is
+neither a successful CommitID nor a normal native return. The pending stamp can
+still retire normally. No Go panic-to-FDB-code mapping is invented.
+
+The original nine-cell version of the FDB tests ran RED (11 RUN/11 FAIL lines,
+including parents): `versionstamp-review-regressions-red.log`. The first repair
+run additionally found retained retirement mapped through the new caller's
+incarnation, yielding bare context cancellation instead of sealed 1025. That
+mapping is repaired, keeping caller-first cancellation local. The following
+88-RUN targeted pass predates the extra uncertainty-barrier panic/caller-first
+controls; do not mistake it for final-tree coverage. Four compiled semantic
+mutants then fail their intended assertions (3/5/3/3 RUN lines respectively),
+with byte-for-byte/SHA-checked restoration: current-head lookup (replacement-head
+cases, not timeout credit), older-producer retention, deferred panic success and
+successor-based retirement mapping. Artifacts are
+`/var/tmp/query-grind-cast/pr785-review/versionstamp-review-*`.
+
+Current PR HEAD ef1b0532 has seven completed successful CI checks, verified in
+`versionstamp-pr-state-reviewed.json`; this does not approve the dirty repair or
+close the prior feacb809 CI flake. That failed run has exactly two timestamp
+fixture INSERT failures (Where batch 1000, CrossPage batch 6000), both marked
+FDB transaction-too-old. Setup currently executes single-shot autocommit batches
+of 1000 rows. Deterministic setup/retry proof is still required; do not change
+production autocommit replay semantics or timestamp expectations.
+
+Restored final-tree gates pass: ten race repetitions across client/facade targets
+(1,140 RUN lines, 214s), entire client/facade race suites (2,000 RUN lines, 253s),
+and four libfdb_c differentials (20 RUN lines, 24s); all have zero FAIL/SKIP lines.
+All seven changed Go-file hashes remained unchanged through both race runs.
+`just test` passes 92/92 targets (43 executed, 49 cached, 932s), with all nine
+changed-file hashes unchanged during execution. Full suite output is target-level,
+not a verbose per-test execution count. See `versionstamp-review-race-10.log`,
+`versionstamp-review-race-full.log`, `versionstamp-review-differential.log`,
+`versionstamp-review-full.log` and the corresponding hash inventories/results.
+Only this TODO block and its linked RFC evidence paragraph change after that full
+run; the normal commit hook must check those updated documentation bytes too.
+
+This correction subsequently passed its normal hook and was committed/pushed as
+cc2e21d14, with three same-session scoped delta ACKs. The following block resumes
+OnError's non-atomic beginTurnover finding. CTE/derived/UNNEST findings remain
+open; no merge/new hunt slice.
+
+### QSC-04/08 RFC-256 — conditional turnover cannot erase terminal failure
+
+The preceding ownership correction is committed/pushed as
+`cc2e21d1406d765254c4250a4d738681df6f287b`. The same three virtual
+`gpt-6-astra`/`xhigh` sessions all give scoped IMPLEMENTATION ACK on that exact
+HEAD (`versionstamp-delta-{cpp,torvalds,codex}-verdict.md`, supplied bytes only).
+These are not full-PR/human approvals; the previously disclosed conditional-
+turnover race remained explicitly outside those ACKs.
+
+That next finding is now reproduced. `beginTurnover` validated its expected
+incarnation, unlocked readErrMu, then reacquired it in `turnoverLocked`. Cancel
+or the existing timer callback in that gap completed before retirement but was
+erased by the ensuing successful OnError reset. Two retained real-FDB cases
+observe nil instead of literal 1025/1031 (`turnover-terminal-red.log`, three
+RUN/FAIL lines including the parent). This violates the already-specified single
+leaf-lock validation/retirement claim in RFC-256's Drain protocol closure, not a
+new concurrency contract. C++ 7.3.77 RYWImpl::onError:1499–1537 races resetPromise
+against retry completion and does not yield between completion and resetRyow.
+
+The repair keeps expected-owner validation and retirement under one continuous
+readErrMu hold, with the captured old incarnation passed to the retirement helper.
+Public Reset acquires the same lock before that helper. Cancellation delivery,
+timer stopping, cleanup and lease drain remain outside the leaf lock; resetMu
+still serializes the whole turnover. The deterministic pre-retirement hook is
+outside the leaf lock on both sides of the correction. No new retry, wire-byte,
+error-code or deferred-error policy is introduced.
+
+The corrected real-FDB cases preserve the old terminal owner, reject later reads,
+and verify that explicit Reset alone restores usability while discarding the old
+mutations and committing only replacement writes. The first restored targeted
+run passes 27 RUN lines, zero FAIL/SKIP (`turnover-terminal-green.log`). A compiled
+literal reversion (old implementation plus the same boundary hook) fails both
+1025/1031 assertions; exact source and SHA-checked restoration are saved in
+`turnover-terminal-revert-source.txt` and `turnover-terminal-revert.log`.
+Artifacts: `/var/tmp/query-grind-cast/pr785-review`.
+
+Restored gates pass: ten race repetitions execute 1,320 RUN lines (new regression
+10 times), zero FAIL/SKIP, 306s; entire client/facade race suites execute 2,003 RUN
+lines, zero FAIL/SKIP, 258s. All three changed Go-file hashes remain unchanged.
+`just test` passes 92/92 targets (43 executed, 49 cached, 968s), all five changed-
+file hashes unchanged through execution. Artifacts: `turnover-terminal-race-10.log`,
+`turnover-terminal-race-full.log`, `turnover-terminal-full.log` and matching hash
+inventories/results. Only these TODO/RFC evidence paragraphs are updated afterward;
+the normal commit hook must verify those documentation updates.
+
+The preceding cc2e21d14 PR HEAD also has seven completed successful CI checks
+(`versionstamp-review-pr-state-final.json`); those do not cover this local repair
+or close the earlier timestamp fixture failure. This correction subsequently
+passed its normal hook and was committed/pushed as 3f15b0877. C++ and Torvalds
+scoped reviews ACKed atomicity; the independent review NAKed rejected-turnover
+watch cleanup. The next block records that repair. Timestamp fixture setup,
+CTE correlation/derived rebinding, UNNEST lowering evidence and final-PR
+approvals/CI remain open. No new hunt slice.
+
+### QSC-04/08 RFC-256 — rejected-turnover watch cleanup ownership
+
+The independent supplied-byte review of 3f15b0877 found a missing cleanup edge:
+OnError releases its execution lease before conditional turnover. A timeout that
+rejects that turnover bypasses both reset cleanup and the terminal defer's
+active-lease-only watch cleanup. Atomic retirement itself remains sound; two
+scoped ACKs do not override this third review's NAK.
+
+The existing real-FDB cancel/timeout regression now establishes a pending watch
+and checks context cancellation, failed completion and slot release BEFORE
+explicit Reset/deferred Cancel. The timeout case is RED on the committed code
+(three RUN, two FAIL lines including the parent; cancel control passes).
+The repair uses the existing identity-checked enterReadState admission to reclaim
+cleanup authority only for the captured incarnation after release. That lease
+pins reset-owned watch state through cancellation; readErrMu is released before
+watch locking/delivery. If replacement already won, old cleanup does nothing.
+The original terminal return (1031) and incarnation remain unchanged.
+
+A retained real-FDB replacement test parks old terminal cleanup, performs Reset,
+starts a successor watch, then releases the old cleanup. It requires unchanged
+1031, a live successor watch and successful completion after an independent
+transaction changes its key, with no outstanding slots. C++ 7.3.77 anchors:
+RYW onError:1499–1533, watch:1284–1335 and NativeAPI watch:5637–5684 (counter
+release on success AND failure). These are controlled Go lifecycle regressions,
+not claims of C++ concurrent-handle support or a live differential.
+
+The initial focused repaired run passes 23 RUN lines with no FAIL/SKIP. Two
+compiled semantic mutants fail the intended assertions: omitted reclaim leaks
+the old watch (three RUN, two FAIL including parent); unconditional current-head
+reclaim cancels the successor watch (one RUN/FAIL). Final test bytes use a
+versionstamp writer so repeated runs always change the key; both mutants were
+rerun against those bytes, with byte-for-byte/SHA-checked source restoration.
+Artifacts: `/var/tmp/query-grind-cast/pr785-review/turnover-watch-*`.
+
+Ten race repetitions pass 1,510 RUN lines, both turnover tests ten times, zero
+FAIL/SKIP, 360s. Full client/facade race suites pass 2,004 RUN lines, zero
+FAIL/SKIP, 273s. Both changed Go-file hashes match across both runs. `just test`
+passes 92/92 targets (43 executed, 49 cached, 961s), all four changed-file hashes
+unchanged during execution. The full-suite output is target-level, not per-test
+no-skip evidence. Logs: `turnover-watch-race-10.log`, `turnover-watch-race-full.log`,
+`turnover-watch-full.log` and matching hash inventories/results. These evidence-
+only TODO/RFC updates followed the full run; the normal hook subsequently passed
+92/92 (one executed). This correction is committed/pushed as 2212c0643; all three
+same-session virtual reviewers gave scoped IMPLEMENTATION ACK on that exact HEAD.
+The independent review explicitly resolved its watch-cleanup NAK. Those supplied-
+byte ACKs are not human/full-PR approval.
+
+The remote 3f15b0877 CI now has seven completed successful checks
+(`turnover-watch-pr-state-precommit.json`); those do not cover this dirty repair
+or close the earlier timestamp fixture failure. Its regression/repair remains
+losslessly saved in `timestamp-seed-pending.patch` with its hash inventory and
+restored immediately after the client scoped review closed. The next block
+resumes that fixture repair. No production autocommit replay or golden changes.
+Other planner/lowering and final PR gates remain open; no merge or new hunt slice.
+
+### QSC-04/08 RFC-256 — timestamp fixture stays within the MVCC window
+
+Resume the diagnosed feacb809 CI failure after the client cleanup's scoped review
+closure. `ci-feacb809-failed.log` contains two CURRENT_TIMESTAMP fixture INSERT
+failures, Where at batch1000 and CrossPage at batch6000, both typed transaction-
+too-old. These are seed failures before semantic assertions, not timestamp drift.
+Later green CI cannot dismiss them. The patch was parked only while resolving
+the client NAK and is now restored with both source hashes verified.
+
+Three 10,000-row timestamp tests now share seedCurrentTimestampItems: 100 rows per
+batch rather than 1,000, using the EXISTING retryTx caller-owned transaction
+helper (three attempts, typed api.IsTransactionTimeLimit only). Each attempt
+executes the full batch and commits; failed attempts are rolled back. Conflict
+and unknown-completion failures still abort, not replay. Production autocommit
+remains single-shot. No timestamp assertions, execution floors, paging options,
+row population or expected results are weakened.
+
+This is fixture reliability for a Go extension, not Java row parity. The pinned
+Java 4.12.11.0 BaseVisitor::visitCurrentTimestamp delegates to visitChildren
+(lines1376–1380); QueryExecutionContext:28–65 has no statement-clock contract.
+The unchanged Go tests require one timestamp within each statement, advancing
+instants across statements, stable predicate counts and stable paginated results.
+
+A retained SimFDB test warms catalog/connection setup, injects literal1007 once,
+then calls the actual shared seed helper. It requires exactly one caller-owned
+retry and independently checks every ordered id0…999, with no missing/duplicate
+rows. Simulation proves fault/retry routing, not real-wire timing. The original
+single-shot batch1000 version is RED (`timestamp-seed-red.log`); the initial
+repair plus three real-FDB timestamp tests and five SQL1007/1021 no-replay
+controls passes nine RUN lines (`timestamp-seed-green.log`). A newly compiled
+reversion to single-shot Exec STILL retaining smaller batch100 fails the injected
+1007 assertion (one RUN/FAIL), proving batching alone cannot satisfy the detector.
+Original bytes/SHA are restored (`timestamp-seed-revert.py`, log and source).
+
+Artifacts: `/var/tmp/query-grind-cast/pr785-review/timestamp-seed-*`. Ten serial
+uncached Bazel race processes pass 240 RUN/PASS lines, zero FAIL/SKIP, 250s;
+the new regression and all three real-FDB timestamp tests each run ten times.
+Both changed Go-file hashes remain unchanged.
+
+The first FULL SQL-driver race run was RED at an ad-hoc 1800s timeout, with
+6673 RUN/6672 PASS and only TestFDB_MetamorphicPagingAtScale still running. All
+four touched tests passed. Its stack was runnable in LIMIT/sort continuation
+serialization, not a client-lock wait. The target's PUBLISHED timeout is eternal,
+3600s in .bazelrc; the override was below that budget (the older TODO:8439 already
+records a 1766s standalone race execution). The identical full scope at the
+published budget passes 6688 RUN/PASS, zero FAIL/SKIP, 1849s, with all four
+changed-file hashes unchanged. The paging test passes 140 checks in 1789s; the
+15 extra RUN lines are the fuzz function plus 14 seeds, not a changed test scope.
+CPU profiling attributes 757.75/6027.41 sampled CPU seconds cumulatively to sort
+continuation encoding, supporting the observed expensive runnable path; this is
+not a baseline performance comparison. No repository timeout, performance limit,
+population or expectation was relaxed. Logs: `timestamp-seed-race-full.log`,
+`timestamp-seed-race-full-2.log`, the matching hash records and CPU profile.
+
+Full non-race `just test` passes 92/92 targets (three executed, 89 cached, 249s),
+all four changed-file hashes unchanged (`timestamp-seed-full.log` and matching
+hash records). This target-level output is not per-test no-skip evidence.
+Only these TODO/RFC evidence paragraphs change afterward; the normal hook must
+verify them. Milestone/final-HEAD review gates remain required. Client scoped
+ACKs are not fixture or full-PR approval. CTE/derived/UNNEST and final PR gates
+remain open; no merge or new hunt slice.
+
+### QSC-04/07/08 RFC-256 — retained bound CTE/derived bodies (review repair)
+
+The timestamp fixture correction is committed/pushed as 90b026077 with normal
+hook 92/92 (one executed). Prior client HEAD2212 has seven completed successful
+CI checks; those are not 90b026077 CI or full-PR approval. No new hunt/merge.
+Resume the already-open Graefe/Torvalds findings on ed1f413, not a new semantic
+family: boundDerivedSource rebuilds instead of retaining its body, loses outer
+cteBodies, and BuildScalar vetoes derived correlation using direct SQL syntax.
+
+Finite initial cells: (1) actual BuildScalar registration for C(V) whose bound
+body reads O.ID; (2) two distinct outer IDs7/9 through nested CTE/scalar SQL;
+(3) an enclosing CTE read by a scalar inside a derived body; (4) nested derived
+passthrough growth at depths1–4; (5) preserved exact types and duplicate output
+names through at least three levels. Existing embedded builder tests and real-
+FDB SQL-driver tests own the regressions. Java4.12.11.0 QueryVisitor:170–181 and
+688–691 retains the built operator then renames it; its relational expression
+correlation property derives free references from values/quantifiers
+(AbstractRelationalExpressionWithChildren:57–77). Nested scalar/CTE SQL is tested
+as a Go extension here; no Java error is row evidence. Expected rows7 and7/9 are
+independent hand derivations, not agreement between two Go plans.
+
+First three cells now execute RED on90b026077 without production edits:
+TestBuildScalarRetainsCorrelationCarriedByCTEBody registers correlated0 /
+independent1 instead of1/0 after building the body through the real visitor;
+TestFDB_ScalarCTEBodySurvivesDerivedBinding rejects C with42F01 instead of row7;
+TestFDB_ScalarCTEBodyRetainsOuterCorrelation fails with an unbound scalar-result
+alias instead of rows(7,7),(9,9). `cte-bound-body-red-2.log` has three RUN/FAIL,
+zero SKIP, both targets executed. The first attempt was only a fixture compile
+error (Identifier versus QualifiedName), not semantic RED evidence. All three
+regressions are retained. Artifacts: `/var/tmp/query-grind-cast/pr785-review`.
+
+The retained growth detector now executes RED at depths1–4: 2/3/4/5 parsed
+query bodies are accessed 5/21/85/341 times, exceeding the explicit linear bound
+2*(depth+1). These count QueryExpressionBody accesses, not parser invocations or
+wall-clock performance (`derived-body-growth-red.log`). The retained prepared-
+body control passes: duplicate K/K names and BIGINT/DOUBLE types survive direct
+body preparation and three nested d.* wrappers (`derived-prepared-body-control.log`).
+
+The registration regression now also pins the bound Reference's free set: an
+outer-dependent CTE has exactly O, including when the scalar's local CTE scan is
+itself aliased O; both are wrongly registered independent. A local O shadow
+inside the CTE definition and an ordinary local column each have an empty free
+set and correctly register independent. With the duplicate/type control, the
+latest focused run has six RUN, three PASS/three FAIL including the failing
+parent, zero SKIP (`cte-correlation-controls-red-2.log`). The second outer case
+shows why a main-query source-name blacklist cannot override free correlation
+either: a CTE definition captures its defining scope, not its caller's alias.
+
+Concrete repair design is recorded in RFC-256's retained-bound-body amendment
+(DRAFT, not implementation permission). Prepared bodies already finish their
+projection-name publication before the parent consumes them. Reuse that body
+for exact metadata instead of rebuilding it; classify scalar dependency from
+the translated free-correlation set, without SQL-text/tree or local-name vetoes.
+All three tracked design reviewers NAKed the unchanged non-exact UNION fallback:
+it loses the same defining environment, not merely extra traversal time. A new
+retained real-FDB crossing test fails42F01 for C instead of promoted float64 rows
+7,9.5 (`cte-promoted-union-red.log`, one RUN/FAIL). The initial exclusion is
+superseded. RFC revision2 requires retained-branch promotion metadata using the
+translator's shared positional common-row rule, separate SQL labels, unchanged
+strict type API, and no reconstruction in the bound-source consumer. Review is
+still required before production changes.
+
+The prepared duplicate/type control now also checks distinct physical names,
+ordinals0/1, nullable BIGINT/DOUBLE types and ambiguous D.K lookup through all
+four depths (`derived-prepared-body-control-4.log`, one RUN/PASS). An intermediate
+attempt was a fixture compile error (SourceRowType already returns a pointer).
+Another wrongly required physical names K/K_2, despite the valid qualified
+physical keys X.K/Y.K at depth0; this was a new probe-oracle error, not an engine
+failure. The corrected contract requires distinct physical slots and unchanged
+literal SQL names K/K, not one implementation spelling of private field keys.
+No existing assertion or golden was relaxed. Five pre-existing neighboring test
+functions also pass, eleven RUN/PASS including subtests, zero SKIP
+(`cte-pre-repair-neighbor-controls.log`). Timestamp90b026
+scoped exact-HEAD implementation reviews returned ACK from all three tracked
+C++/Torvalds/Codex sessions (tasks59–61, supplied committed packet only, no live
+verification or full-PR approval). The CI snapshot had one SUCCESS/six QUEUED;
+a later job-level read shows vulnerability and wire-oracle checks also passed,
+but the run still has queued jobs and is not a green rollup.
+UNNEST lowering proof remains open. No full-PR approval or broad QSC closure.
+
+### QSC-04/07/08 RFC-256 — owner-bound construction, EXISTS phase boundary
+
+Resume the existing retained-body review repair on branch
+`rfc256-cast-array-binding`, committed HEAD90b026077. All seven CI checks on that
+HEAD are now SUCCESS; the dirty implementation has no implementation/full-PR
+approval. Revision-2 scoped virtual Graefe/Torvalds/Codex DESIGN ACKs cover packet
+3a79d427… only. RFC-256 “Retained-body implementation and EXISTS ownership
+follow-through” supersedes earlier no-production-edits/CI-queued checkpoints.
+No merge/new hunt or executor-performance repair is authorized. The owner
+explicitly allows pre-release hard API/architectural changes for correctness.
+
+Implemented in the worktree: retained derived bodies, shared prospective UNION
+property, no CTE shadow-error fallback, identifier-based scalar correlation,
+flowed Main-row scalar seed. Pre-supplement query/embedded full run:2462RUN/PASS,
+0FAIL/SKIP. New prospective/translated independent type/slot/nullability, typed
+UNION errors and WITH Main-versus-Body pins:7RUN/PASS,0FAIL/SKIP. These are
+post-packet tests, not already-reviewed coverage.
+
+Adapter audit REDs are retained: standalone promoted source accesses its query
+body twice; correlated-EXISTS derived source loses enclosing C's body (42F01).
+The obsolete manual derived-term/UNION/join schema chain is removed; root
+preparation feeds the single bound converter, and direct correlated source
+consumers retain their prepared body. Four-way join-nullability expectations
+are unchanged on the retained-join path. An initial new free-set assertion
+inspected the wrong boundary; the corrected pin checks the comparison on the
+EXISTS attachment and the body's independent scalar-plan binding separately.
+
+Active finite missing cells: complete SQL-entry ownership for a CTE-backed
+scalar inside a correlated derived EXISTS/NOT EXISTS, with t={7,9}; expected
+outer rows9/7 respectively, derived independently. Both real-FDB arms still
+fail42F01 in buildExists's initial schema-only constructor. A direct switch to
+the general parent-aware visitor made those rows pass but bypassed EXISTS's
+specialized attachment/cardinality lowering:723RUN/594PASS/129FAIL/0SKIP across
+the two affected targets. Reverted that experiment; no assertions/goldens
+weakened. Full logs live under `/var/tmp/query-grind-cast/pr785-review`, notably
+`cte-bound-exists-owner-first.log` and `cte-bound-legacy-supplements-*.log`.
+
+The RFC supplement records the chosen fix: an owner-returned bound query and
+explicit EXISTS lowering from retained sources/resolved Values, algebraic free
+correlations, existing polarity/cardinality/pagination/ON contracts, no syntax
+rebuild or mutable last-query cache. Next action is scoped supplemental DESIGN
+review in the SAME three tracked gpt-6-astra/xhigh sessions before implementing
+that new phase boundary. Original semantic/count mutants, full sqldriver,
+race/determinism, just test, performance/stress, UNNEST and final gates remain
+open; no broad QSC closure.
+
+
+### QSC-04/07/08 RFC-256 — supplemental handoff NAK and revision 2
+
+The supplemental virtual Graefe review NAKed packet68a97641…: binding must mint
+source identities BEFORE resolved Values, preserve ON origin before folding,
+and classify a complete operator/attachment graph without requiring EXISTS
+lowering first. It also requires explicit success-only registration instead of
+lastJoinPredicate scratch transfer. Full verdict:
+`/var/tmp/query-grind-cast/pr785-review/cte-exists-ownership-design-graefe-verdict.md`.
+Prior retained-body revision2 ACKs do not cover this new boundary. The other two
+tracked supplemental requests (tasks70/71) produced repeated websocket idle-
+timeout/reconnect messages and no verdict; they were cancelled, not treated as
+approval. Revised packet ef8291fe3c881a97ae0f3e4942cdbf68543e5fd501e525ca87ec60299a7acb12
+(71768bytes/1107lines) was submitted in the SAME three sessions as tasks74–76.
+Task74 returned a scoped virtual Graefe DESIGN ACK, sufficient to implement
+subject to its listed acceptance requirements. Tasks75/76 are still pending;
+this is not implementation/human/full-PR approval.
+
+RFC256's new “EXISTS binding/lowering handoff — supplemental revision 2 (DRAFT)”
+answers the NAK with two explicit return values (bound query and lowered
+attachment), source identity assignment including primary catalog scans,
+left-to-current ON snapshots, immutable defining CTE frames, algebraic bound
+edge dependency rules, residual dependencies after projection elision and final
+attachment typing before atomic publication. Existing unsupported-shape and
+pagination tests remain contracts; assigning identities does not authorize
+expanding those shapes. No phase-boundary production edits made. Next action:
+resume the SAME tracked gpt-6-astra/xhigh sessions on the revised design after
+resolving their current requests; no replacement agents/models.
+
+Fresh uncached query+embedded run:2476RUN/PASS,0FAIL/SKIP,2/2targets,12.786s
+(`cte-bound-query-embedded-supplement-revision2.log`). Includes the new missing-
+body/UNION-width/UNION-incompatibility/unrepresentable-type error-class pin
+(parent+4cases; focused predecessor5RUN/PASS). Fresh real-FDB counterexample on
+the restored schema-only BuildExists path:3RUN/FAIL,0PASS/SKIP (parent+EXISTS+
+NOT_EXISTS), each arm42F01 tableC missing
+(`cte-bound-exists-owner-restored-red.log`). SHA256 inventory of all dirty Go
+files matched before/after both fresh runs. This is not a full-driver green.
+
+Original experiment failures were reread narrowly: projected/N-way0AF00, changed
+indexed-probe shape, changed known-truth folding and missing deliberate typed
+pagination rejection; the new polarity rows did pass in that REVERTED experiment.
+No mutant credit, golden/assertion changes, broad QSC closure, commit, push,
+merge, hunt or executor-performance repair. Committed HEAD remains90b026077;
+all implementation/full-suite/race/determinism/mutation/stress/UNNEST/final-HEAD
+review gates remain open.
+
+
+Post-packet mutation continuation: the real-FDB capture test now exercises both
+scalar Main sources `c` and `c o`, requiring(7,7),(9,9) in each. The second arm
+pins the accepted definition-versus-Main shadow rule end-to-end. Baseline13/13
+focused outcomes were green. Independently compiled mutants then failed:
+syntax veto13RUN/7PASS/6FAIL; local-name veto13/9/4; repeated body preparation
+13/9/4; all0SKIP. First two fail actual BuildScalar registration AND real-FDB
+scalar bindings; the second isolates same-name capture. Rebuild mutant reads
+3/7/15/31 bodies at depths1–4 and trips the existing bound at depths2–4.
+Production hashes restored exactly and the SAME13 outcomes reran green.
+Artifacts:cte-bound-mutants-report.json,cte-mutant-*.{diff,log},
+cte-bound-mutants-restored-green.log. These are three bounded mutant kills,
+not EXISTS-boundary/UNNEST/full-PR closure. New boundary mutants remain open.
+
+Gazelle/mod tidy completed; embedded_test's counted-query helper now has its
+direct ANTLR BUILD dependency. No module changes. Current full/affected rerun
+needed after that BUILD change. Supplemental packetef8291fe… predates these
+test/BUILD deltas; its Graefe DESIGN ACK is not their implementation review.
+
+
+### QSC-04/07/08 RFC-256 — consumer-admission handoff and exact-row RED
+
+Supplemental revision2 reviews completed: tasks74Graefe/75Torvalds scoped DESIGN
+ACK;76Codex DESIGN NAK. Missing mechanism: one nested-middle child/free set has
+positive predicate acceptance but negated/projected rejection; the proposed
+lowered result dropped that consumer restriction. RFC256 “EXISTS consumer
+admission — supplemental revision3 (DRAFT)” adds edge-owned ConsumerConstraints
+and private clause construction, then validation against normalized parent
+predicate polarity/Value use BEFORE atomic publication. No eager BuildExists
+publication, inferred-positive default, duplicate translator policy, or query
+acceptance expansion. No boundary production implementation. Next action:
+review this precise amendment in the same tracked gpt-6-astra/xhigh sessions.
+
+Post-Gazelle full query+embedded2476PASS15.664s; retained-body driver controls
+5PASS6.527s; targeted race10 repeats the13-outcome mutation population:
+130PASS89.614s. All0FAIL/SKIP and dirtyGo+BUILD SHA256 unchanged during runs.
+Those greens predate the new consumer test. Logs:cte-bound-post-mutants-*.log.
+
+Existing TestFDB_ExistsInnerShadow remains GREEN (one RUN/PASS). New retained
+TestFDB_NestedExistsConsumerAdmission holds one child SQL fixed in positive/
+negative predicates and both projected polarities; independent positive rows7,9.
+It executes RED (parent+4 arms): the positive query, including its execution
+after each rejected consumer, fails executor.layout11 with read type
+RECORD(S.ID:LONG?,M.ID:LONG?) versus declared RECORD(ID:LONG?,ID:LONG?).
+Logical exact join typing qualifies names at logical_result_type.go:612–662;
+runtime declaration origin remains to trace. This is an active final-attachment
+row/duplicate-slot counterexample, not a changed oracle or waived type check.
+Retain and resolve under the ownership repair; no lateral hunt or performance
+repair. Original correlated-derived EXISTS42F01 also remains open. No full-PR
+closure or commit/push/merge; all final gates remain open.
+
+
+Supplemental revision3 DESIGN gate now passed: tasks78Graefe/79Torvalds/80Codex
+all scoped ACK on063df42aebba11a6bb8cefe6684b66173eb2e25688e977f7060cea1888b46531
+(54832bytes/770lines). Implement the accepted private typed-edge/consumer-
+constraint/parent-validation boundary; no implementation/full-PR approval.
+New retained unit TestExistsFinalAttachmentTypeMatchesTranslatedRow localizes
+positive-layout RED before execution: middle attachment FlowedType(S.ID,M.ID)
+versus translated result(ID,ID); nested attachment(1:INT) agrees. Combined unit+
+consumer driver run6RUN/6FAIL,0PASS/SKIP; three consumer0A000 outcomes explicitly
+logged, all positive7/9 row checks still fail. Producer is ordinalJoinSeedFields
+DisplayName→NewRawRecordConstructorValue (ordinal_seed.go:627–704), versus
+ExactLogicalResultType's alias qualification (logical_result_type.go:612–662).
+No type-gate relaxation/SQL-label overwrite/expectation change. Fix final owned
+attachment typing during the accepted migration. Unit is post-packet; previous
+2476 full green predates it. Original42F01 also remains open. No jobs left from
+the reviews/race; no commit/push/merge or new hunt.
+
+
+### QSC-04/07/08 RFC-256 — primary binding-carrier prerequisite
+
+Implemented only the assigned-identity transport prerequisite: primary catalog,
+CTE and inline VALUES plans/scopes now preserve fs/sq.bindingID separately from
+the lexical SQL alias. New retained test verifies both constructors, three
+resolver scopes and resolved-column singleton free set. Baseline catalog/CTE
+RED3/3; restored focused6PASS; two separately compiled transport mutants each
+4FAIL,0SKIP, source hashes restored; focused race10=60PASS,0FAIL/SKIP.
+Logs/report:cte-primary-binding-*.log,cte-primary-binding-mutants-report.json
+under `/var/tmp/query-grind-cast/pr785-review`. RFC's new prerequisite block
+records the initial aborted mutation-inventory check separately from kills.
+
+Current full query+embedded:2481RUN/2480PASS/1FAIL/0SKIP (retained attachment row
+mismatch). Driver Exists|EXISTS|ScalarCTE|InlineValues:641RUN/633PASS/8FAIL/0SKIP;
+failures are derived EXISTS42F01 parent/two arms and admission/layout11 parent/
+four arms. Three rejection0A000 assertions remain correct, positive7/9 controls
+remain RED. Neither is a green suite; no assertions/goldens changed. BoundQuery,
+shared early allocator, exact attachment typing and private consumer validation/
+atomic publication remain unimplemented. Next action is that accepted migration,
+not another hunt or executor repair. No commit/push/merge; final gates open.
+
+
+### QSC-04/07/08 RFC-256 — owned EXISTS producer closes row-type RED
+
+Implemented retained ExistsInput: child Reference + exact producer row + scalar
+edges. All SQL existential consumers reuse its Reference. Gather/UNNEST predicate
+rebases preserve child pointers, row and scalar ownership instead of retranslation.
+Strengthened tests pin both existential Reference identities and typed mismatch
+rejection; new tests pin scalar edges and both rebasing node forms. The positive
+7/9 controls now pass; three restricted consumers still reject0A000. No executor
+or SQL-label repair. Legacy bound-query construction, dependency classification,
+early allocator and private admission/publication migration remain open.
+
+Focused10PASS; four separately compiled mutants fail6/2/3/1 outcomes respectively
+and restore hashes, then10PASS again. Focused race10=100PASS after isolating each
+parallel test case's memo Reference (initial fixture race100RUN/70PASS/30FAIL;
+no serialization or weaker assertions). Full query/embedded/logical/driver:
+9235RUN/9232PASS/3FAIL/0SKIP, only original derived EXISTS42F01 parent/two arms.
+Artifacts:cte-owned-input-*.log/report and cte-owned-mutant-* under the review
+work area; detailed proof/aborted-mutant accounting in RFC's owned-producer block.
+
+Full race with my900s override was incomplete:9220RUN/9216PASS/3FAIL/one unfinished
+PagingAtScale, no race report. Stack is known runnable LIMIT/sort-continuation
+serialization. Task81 completed/collected at published3600s (no override): same
+four-target full race9235RUN/9232PASS/3FAIL/0SKIP, no missing outcomes/DATA RACE;
+only original CTE-scope parent/two-arm42F01. Paging140checks1878.21s; total1990.384s;
+all18 changed Go/BUILD hashes match. Log:cte-owned-input-full-race-published.log.
+No jobs remain. This is not an all-green gate or performance-parity claim. No
+repository limit change, new hunt, executor-performance repair, commit/push/merge.
+
+
+### RFC-256 active review repair — legacy bound-query migration implemented
+
+Supersedes the preceding open-migration/42F01 checkpoint, not QSC-01…11 or merge
+approval. Bound graph construction, pure dependency classification (EXISTS and
+scalar), private clause admission/publication, retained producer/type ownership,
+early primary-UNNEST binding, saved ON visibility and post-elision dependency
+validation are implemented. Empty-middle semantics and independent scalar edges
+survive lowering. Shared pagination parsing now rejects unresolved LIMIT/OFFSET
+through root/nested/UNION/derived routes; HAVING no longer steals projection
+registrations. Ordinary private-parent lexical repetition keeps the existing
+0AF00 control; no existing rejection assertion or golden was weakened.
+
+Historical pre-admission-repair six-target run:11908 package-scoped RUN/PASS,
+0 FAIL/SKIP, no missing outcomes (cte-bound-final-full.log,218.927s). Ten subprocess diagnostic
+PASS lines explain the prior mismatched counts: the earlier five-target failure
+was11546 RUN/11544 PASS/2 FAIL, not11554 PASS. TestLikeMatch is a real distinct
+test in two packages; globally deduplicated names undercount by one.
+
+Five compiled clause/ownership mutants plus seven compiled boundary mutants
+were killed separately. Latest33 source/BUILD hashes restored,76 focused
+RUN/PASS afterward. Full scope, failure populations, rejected hypothesis and
+initial script preflight abort are recorded in RFC-256's new migration block;
+artifacts under /var/tmp/query-grind-cast/pr785-review. That six-target race
+command (task82) ended Bazel INTERRUPTED, exit8; its recovered11908 RUN/PASS
+outcomes do not establish command success. Current source has subsequent review
+repairs below. Current-source normal/race/determinism/stress, implementation
+reviews, commit and exact-HEAD ACK/CI gates remain open. No new hunt,
+executor-performance work, push or merge was performed in this block.
+
+### RFC-256 active review repair — live helper coverage and gate restoration
+
+Scope remains PR785's existing bound-query migration/review repairs, not a new
+QSC hunt or executor/performance repair. See RFC-256's **Legacy migration gate
+repairs — live coverage and retained clause provenance** block for the exact
+findings, Java references, tests, golden rationale and artifact paths.
+
+Nine retired function definitions are removed; their tests exercise live APIs.
+Bound construction rejects windowed aggregates before cardinality classification
+and retains QUALIFY provenance/admission. The UNION right branch now keeps
+resolved WHERE bindings and does not discard QUALIFY when registering scalar
+subqueries. The real-FDB `exists_with_aggregate` scenario passes12/12 cases,
+including empty-input and false-QUALIFY controls. Six compiled mutants were
+killed; all45 pre-mutation source/artifact hashes were restored. The live-helper
+pre-mutation Bazel baseline was107 RUN/PASS with no missing outcomes.
+
+The earlier five-target full-suite failure is not dismissed: missing-source
+42F01 is cross-engine verified (12 SELECT/DELETE/UPDATE observations), correlated
+UNION admission is restored, retired helpers are removed, and the inspected plan
+goldens retain the middle producer / remove an identity projection. SimFDB's
+four-query `unionjoinleg` capture changes one PLAN line and no non-PLAN bytes.
+Fresh normal/race/determinism results are recorded in the following gate block;
+stress/performance and exact-HEAD review/CI are not established by this entry.
+
+At this snapshot, the existing Torvalds and Codex sessions were context-exhausted;
+no replacement sessions/models or review bypass had been used. The owner has since
+explicitly authorized fresh sessions and necessary session management (2026-09-17).
+Session reuse is not a gate; missing reviews still are.
+The subsequent scoped Graefe ACK covers the 18 supplied repair deltas, excluding
+four documentation files and the final three test-file repairs below. It is not
+final-HEAD or full-PR approval. No merge is asserted by this status block.
+
+### RFC-256 active review repair — fresh gate results and remaining stop
+
+Companion: RFC-256 **Legacy migration — final assertion repairs and fresh local
+gates**. The two remaining full-suite failures were repaired in tests: require
+resolved derived owners/ordinals in EXPLAIN, and isolate no-argument Cobra tests
+from the test process's argv. Each is independently revert-proven; restoring
+the fixes passes. No production CLI, executor, performance limit or successful
+row expectation changed.
+
+On the 50-file frozen migration tree above `90b026077cb08a028cf567e423d39bca86eb2ae4`:
+- `just test`: all 92 targets executed, zero cached; exit 0. Reconciled Go
+  population: 39,937 RUN, 39,932 PASS, five SKIP, zero FAIL/missing/extra outcomes.
+- Seven affected targets under race: 12,323 RUN/PASS, no FAIL/SKIP; exit 0,
+  1,953.745s, unchanged 3,600s eternal timeout.
+- Ten independent runs each of 22 embedded + eight driver root tests:
+  1,430 total RUN/PASS, no FAIL/SKIP. BEP and per-run logs confirm every selected
+  root ran ten times. All 50 source/artifact hashes survived each check.
+
+Evidence: `/var/tmp/query-grind-cast/pr785-review/cte-final-*`, with commands,
+counts and freeze verdicts. The five factory skips are opt-in exploratory hunts,
+not Docker unavailability; they do not earn pass credit or a clean no-skip gate.
+No new hunt has been started. Fresh stress/performance and final-HEAD CI remain
+separate from these results.
+
+The owner subsequently authorized fresh/reset/resumed review sessions on
+2026-09-17; recovery of context-exhausted sessions no longer requires a decision.
+Fresh `gpt-6-astra/xhigh` reviews are recorded in the later PR785 review block.
+Graefe's earlier 18-file scoped ACK precedes the three final test-file repairs;
+exact-HEAD confirmation remains required. This block does not authorize merge or close any QSC item.
+
+### Stress test 1M baseline — RFC-256 bound-query migration (2026-09-17)
+
+This compares committed `9b0b1042fe67975f58b9c5b1747158118d38d2c9` against
+`ed3504f7e410d8e2a4f4c46fd7b4c72fd0484869`, the PR merge-base on this date.
+It does not reuse the earlier release-working-tree comparison. Both checkouts
+are on the same `/var/tmp` filesystem (74% used); `/home` was 99% used and was
+not used for either checkout. Both `go.mod` files are byte-identical. Baseline:
+`/var/tmp/query-grind-cast/baseline`; current:
+`/var/tmp/query-grind-cast/cte-stress-current`. The two baseline runs finished
+before either current run; no other local verification run was started alongside
+them. One-minute load, start/end: baseline 3.85/10.92 and 10.37/3.95; current
+3.95/3.44 and 3.25/17.75. Machine load was not constant.
+
+Each command used the existing `//pkg/relational/sqldriver/stress:stress_test`
+with `--test.run=^TestFDB_Stress_1M$`, `--test.v`, `--nocache_test_results` and
+`--test_output=all`, with separate Bazel output bases. All four commands exited
+0, each with 24 RUN/PASS (root + 23 query cases), no FAIL/SKIP and no cached
+result. All 22 logged row counts agree across all four runs; the remaining
+COUNT(*) case asserts 1,000,000 separately. The unchanged test also retains its
+existing row assertions. No latency bound, timeout or golden was relaxed.
+
+Samples below are milliseconds, with n=2 per side; ratios divide the arithmetic
+means. They are observations, not a claim of performance parity or causality.
+
+| Query | Rows | Baseline samples ms | Current samples ms | Mean current/base |
+|---|---:|---:|---:|---:|
+| PK lookup id=0 | 1 | 11.265 / 17.512 | 8.590 / 8.681 | 0.600x |
+| PK lookup id=N/2 | 1 | 9.151 / 24.537 | 8.728 / 8.422 | 0.509x |
+| PK lookup id=N-1 | 1 | 7.871 / 36.871 | 6.548 / 5.218 | 0.263x |
+| idx_customer eq | 8 | 7.503 / 19.153 | 7.088 / 6.643 | 0.515x |
+| idx_amount range >9000 | 100017 | 272.706 / 321.323 | 240.427 / 257.383 | 0.838x |
+| idx_status count pending | 1 | 437.941 / 333.728 | 367.779 / 391.575 | 0.984x |
+| full scan filter amount>5000 | 1 | 927.111 / 561.985 | 679.471 / 706.544 | 0.931x |
+| GROUP BY status | 4 | 6.649 / 6.314 | 25.317 / 14.222 | 3.050x |
+| GROUP BY status COUNT only | 4 | 5.482 / 5.679 | 13.902 / 18.653 | 2.917x |
+| SUM by status (aggregate index) | 4 | 6.023 / 6.191 | 22.755 / 22.001 | 3.664x |
+| GROUP BY customer HAVING | 47271 | 627.455 / 754.337 | 752.904 / 664.768 | 1.026x |
+| JOIN 10 orders x customers | 10 | 20.417 / 32.478 | 21.485 / 21.109 | 0.805x |
+| ORDER BY PK (full) | 1000000 | 7681.128 / 3905.476 | 3885.252 / 3849.811 | 0.668x |
+| ORDER BY PK + index filter | 8 | 9.867 / 8.874 | 9.657 / 9.393 | 1.017x |
+| scan all rows ordered | 1000000 | 4081.957 / 3712.733 | 3701.414 / 3704.449 | 0.950x |
+| scan all rows wide | 1000000 | 4382.384 / 3952.603 | 3970.416 / 3980.001 | 0.954x |
+| IN-list 5 values | 46 | 21.654 / 19.750 | 19.862 / 19.954 | 0.962x |
+| PK needle id=999999 | 1 | 6.997 / 5.796 | 6.003 / 6.035 | 0.941x |
+| PK+filter needle id=500000 | 1 | 8.071 / 7.331 | 7.518 / 7.526 | 0.977x |
+| full scan sparse filter | 97 | 3553.146 / 3380.458 | 3361.724 / 3359.674 | 0.969x |
+| UPDATE by index | 8 | 9.495 / 9.303 | 9.749 / 9.942 | 1.048x |
+| DELETE single row | 1 | 6.890 / 6.662 | 7.105 / 7.140 | 1.051x |
+
+The small aggregate queries are slower in this sample: GROUP BY status,
+COUNT-only GROUP BY and SUM-by-status mean ratios are 3.050x, 2.917x and 3.664x.
+That is not hidden by the faster scan ratios. The baseline's first full ordered
+scan took 7.681s versus 3.905s in its second run, so the 0.668x comparison must
+not be presented as a demonstrated optimization. All 11 printed EXPLAIN plans
+per stress run are byte-identical across the four runs; this does not prove
+execution cost equality.
+
+The existing six `BenchmarkPlanStressShape_` benchmarks also ran sequentially
+on these same SHAs, count=3, benchtime=1s, benchmem: 18 samples per side, both
+commands exit 0. GROUP BY status planning samples were
+1.690/1.645/1.703 ms baseline versus 1.715/1.671/1.708 ms current; SUM planning
+was 1.583/1.587/1.599 versus 1.599/1.588/1.614 ms. These separate measurements
+do not attribute the end-to-end slowdown or erase it. No executor/performance
+fix was attempted under the existing review-repair-only scope.
+
+Artifacts: `/var/tmp/query-grind-cast/pr785-review/cte-final-stress-*` (all four
+complete logs, commands, SHAs, load, BEP, row samples and table), and
+`cte-final-planner-bench-*` (both complete logs and all benchmark samples).
+This result accompanies the fresh normal/race/determinism block above; it does
+not waive the five opt-in hunt omissions, absent Torvalds/Codex implementation
+reviews, final exact-HEAD review/CI or merge gate. No QSC item is closed.
+
+### RFC-256 PR785 CI correlation-read race — 2026-09-17
+
+- [ ] Repair the witnessed race from CI `35198992145` at
+  `3905677ad4480c7593bdf96fdd4b8bc2158cafa7`. The full diagnosis, Java citations,
+  selected atomic-publication/read-only-forwarding design, and regression scope
+  are in `rfcs/256-numeric-cast-boundary-conformance.md`, **Legacy migration —
+  witnessed CI correlation-read race**. Both design ACKs are obtained and the
+  atomic-publication/read-only-forwarding repair is implemented; final
+  verification and implementation reviews remain open. `cte-correlation-race-red.log` in
+  `/var/tmp/query-grind-cast/pr785-review` reproduces the original named Cascades
+  test under `-race` (20 repetitions, uncached, exit 3). Preserve its parallel
+  cases; do not dismiss this as a flake. The earlier seven-target local race
+  population did not contain the whole Cascades target and does not override
+  this failure. The new expressions regression compiled and failed under Bazel
+  `-race` (five RUN/FAIL), and plain `just test` fails its forwarding-chain
+  assertion (91 passing targets, one failing; 90 cached). It witnesses both
+  unsynchronized map publication and getter path-compression writes. Graefe
+  returned a scoped design ACK; the existing Torvalds session still errors with
+  context exhaustion, including the advertised 872000-token setting. The owner
+  has explicitly authorized fresh review sessions and all necessary session
+  management. Use concise, tool-enabled prompts with source/evidence paths and a
+  specific ask, not pasted source/diff packets. Fresh Torvalds design review
+  ACKed after inspecting the code and Java source. Seven sequential-invalidation
+  operation arms passed before the representation change; the repaired focused
+  race run passed 440 outcomes across 20 repetitions. Full targets, mutation
+  verification and final implementation reviews remain open. The original
+  Cascades fixture is unchanged. This entry predates local commit `e3a03821b`;
+  current publication sequencing is recorded in the final repair block below.
+
+
+### RFC-256 PR785 full-review repair queue — 2026-09-17
+
+Companion: RFC-256 **Legacy migration — full review findings and captured timeout
+repair**. This is the existing migration's review repair queue, not QSC/new-hunt
+or executor/performance work. At this review snapshot, HEAD was
+`3905677ad4480c7593bdf96fdd4b8bc2158cafa7` and correlation was uncommitted;
+its later local commit and publication sequencing are recorded below.
+
+- Correlation verification completed on its six-file freeze: uncached `just test`
+  92/92 targets, 39,945 PASS + five non-Docker opt-in SKIP; full expressions/
+  Cascades race 4,026 PASS; focused repeated race 440 PASS; seven compiled/killed
+  mutants. Existing semantic-equality fuzz: 664,376 executions, 15s, under race
+  **without coverage guidance**. These do not certify a no-skip pass.
+- [ ] C++ P1 synchronous timeout uses current rather than captured incarnation
+  during Reset. Active DFS repair; C++ 7.3.77 citations and chosen design are in
+  the companion RFC section. Design reviews required before implementation.
+- [ ] Torvalds P2 mapped special-key reads must preserve captured deferred-error
+  precedence. Same migration's entry-gate gap; no new hunt.
+- [ ] Independent Codex P2 restore production lowering and nonzero owner offset
+  in the three nested UNNEST structural regression pins, including frontier,
+  complete ordinal path, correlation and suffix spelling; compiled mutant.
+
+Torvalds ACKs only the six-file correlation repair and did not finish the full
+PR. C++ NAKs the client and did not finish the full PR. Independent Codex read
+all 367 committed changed files / 59,984 diff lines plus the repair and NAKs the
+UNNEST test regression. Graefe review is still running. Verdicts and complete
+verification logs: `/var/tmp/query-grind-cast/pr785-review/cte-correlation-*`.
+The SQL/client CI-equivalent race check, final exact-HEAD full-PR approvals,
+@claude and CI remain mandatory. The five opt-in omissions and previously
+measured aggregate slowdowns are not waived. No merge or completed QSC item.
+
+
+### RFC-256 PR785 review repair status — captured timeout design ACKs
+
+Companion: RFC-256 **Legacy migration — full review findings and captured timeout
+repair**, including the appended design/reproduction results. Both client design
+reviewers ACKed. Real-FDB race RED is witnessed at all seven public-operation
+routes: 22 RUN = seven PASS + 15 FAIL, where the failures include parents and
+all seven reset-first leaves (old and replacement both wrongly receive 1031).
+Timeout-first controls pass. Implementation plus prepared-commit/stale-context
+pins is under verification; no correctness repair has been pushed or merged.
+
+- [ ] Additional retained Graefe P1: transitive CTE producer/environment loss
+  across EXISTS translation (`logical_predicate.go:9003,9529` at `3905677a`).
+  Source-derived, not yet executed. Required chained EXISTS/NOT EXISTS,
+  catalog-name collision and lexical-shadowing regressions; preserve the bound
+  defining environment rather than re-resolving diagnostic names. The completed
+  review read all 367 committed files plus the frozen correlation repair and
+  found no further defect in that repair; later client/docs edits were excluded.
+
+This extends the preceding full-review queue with the completed review result.
+The client timeout was the active DFS path at this snapshot; subsequent
+verification and the mapped-entry repair are recorded below. Review artifacts:
+`/var/tmp/query-grind-cast/pr785-review/cte-{timeout-design-*,timeout-regression-red.*,correlation-full-graefe-verdict.md}`.
+No full-PR ACK, no-skip pass, performance waiver or merge is asserted.
+
+
+### RFC-256 PR785 captured-timeout repair — implementation verification
+
+Companion: RFC-256 **Legacy migration — full review findings and captured timeout
+repair**, appended implementation verification. C++ maintainer and Torvalds
+both ACK the frozen eight-file client implementation. Repeated focused race:
+1,720 PASS over 20 repeats. Full uncached client race: 1,790 RUN/PASS, no skips,
+failure or missing/extra outcomes. The compiled current-owner mutation kills
+all eight reset-first leaves, including prepared commit; timeout-first controls
+remain green. Exact source bytes restored and full client race ran afterward.
+Normal full-suite and independent review were still pending at this snapshot;
+the following block records their completion. The timeout delta is uncommitted;
+no repair has been pushed or merged.
+The mapped-error, nested-UNNEST test and transitive-CTE review findings remain
+open in the preceding queue. No new hunt or performance fix is authorized by
+these scoped results. Evidence: `pr785-review/cte-timeout-*` under the artifact
+root named in the preceding block.
+
+
+### RFC-256 PR785 mapped-read deferred-entry repair — 2026-09-17
+
+Companion: RFC-256 **Legacy migration — mapped-read deferred-entry repair**.
+The prior timeout repair now has all three scoped implementation ACKs and an
+unchanged-file normal gate: 92 uncached targets, 39,974 PASS + five opt-in
+SKIP. Its separate full client race passed 1,790 outcomes. A clean comparison
+worktree is preserving separate logical commits and normal hooks while the main
+worktree retains all bytes; no repair has been pushed or merged.
+
+The active retained P2 is mapped special-key precedence: captured deferred 2018
+must precede special-key 2000, which still precedes lifetime failures. Use the
+existing captured entry, never the mutable live slot or the combined lifetime
+check before special keys. Chosen design, C++ citations and exact regression/
+differential contracts are in the companion RFC section. No new hunt, executor
+change or performance repair. Transitive-CTE and nested-UNNEST test findings
+remain in the preceding review queue; final-HEAD/full-PR gates remain unwaived.
+
+
+### RFC-256 PR785 mapped fixture and repair sequencing — 2026-09-17
+
+Companion: RFC-256 **Mapped-read fixture correction and first green evidence**
+and **Repair publication sequencing — one correctness fix per PR**.
+The first mapped-focused attempt failed its replacement-poison precondition;
+that failed run earns no green/revert-proof credit. The replacement fixture now
+uses invalid atomic type 1 on a system key, asserting distinct deferred 2004.
+Focused client race: 1,780 RUN/PASS across 20 repeats. Official pinned libfdb_c
+7.3.77 differential: 27 RUN/PASS across three repetitions of eight arms plus
+the parent. No skips or missing/extra outcomes in either corrected run.
+Implementation review and full gates remain separate; no new hunt was started.
+
+The earlier correlation repair was committed locally through normal hooks as
+`e3a03821bcb61cb551e2741e8c0f6bc0c0bc9690`; a dedicated local branch
+`fix/pr785-correlation-cache-race` now isolates its four-file delta against
+`3905677ad4480c7593bdf96fdd4b8bc2158cafa7`. The initial separate-PR plan was
+never published; the owner subsequently directed commit and push to existing
+PR785 on `rfc256-cast-array-binding`. That supersedes split-PR sequencing, not
+logical commits or the final-HEAD/full-PR merge gates. The companion RFC records
+the clarification and the still-unresolved no-skip/no-new-hunt policy conflict.
+
+
+### RFC-256 PR785 mapped-read complete client race — 2026-09-17
+
+Companion: RFC-256 **Mapped-read compiled mutants and complete client race**.
+The 55-outcome focused race population killed all three compiled semantic
+mutants (missing entry guard, premature lifetime check, live deferred lookup);
+exact source hashes were restored. Full uncached client race then passed
+1,805 RUN/PASS, no skips or unmatched outcomes, with matching post-run hashes.
+This verified the local combined tree only. At this snapshot, fresh normal
+verification and three scoped implementation reviews were still in progress;
+the following block records their results. The owner's subsequent instruction
+authorizes commit/push to existing PR785, not merge.
+
+
+### RFC-256 PR785 mapped-read verification and publication STOP — 2026-09-17
+
+Companion: RFC-256 **Mapped-read implementation ACKs, normal gate and
+publication STOP**. All three fresh `gpt-6-astra/xhigh` reviewers ACK the frozen
+four-file mapped repair only. Full client race passed 1,805/1,805; compiled
+mutants and the raw-C matrix are recorded in the preceding blocks. Fresh
+normal suite: 92/92 uncached targets, 39,994 RUN = 39,989 PASS + five opt-in
+SKIP, no missing/extra outcomes. Complete pinned libfdb_c 7.3.77 tagged lane:
+85 RUN/PASS, no skips. The 18-path freeze matched after both suites and review;
+the closing documentation amendment follows that verification snapshot.
+
+**Merge gate remains open; commit/push now authorized:** the five non-Docker
+`requireSweepOptIn` omissions
+prevent a clean no-skip release gate, while the owner forbids starting new
+hunts. Authorization is needed to run these existing five opt-in sweeps as
+verification; no sweep, skip removal, weakened assertion/limit or new hunt has
+been introduced. The companion RFC names every test and opt-in variable.
+The owner has explicitly directed commit and push to existing PR785 on
+`rfc256-cast-array-binding`; the unused local correlation branch is not another
+PR and is not the publication target. The retained nested-UNNEST and
+transitive-CTE review findings remain unresolved. This instruction grants no
+merge authorization, full-PR ACK or performance approval.
+
+
+### RFC-256 PR785 publication preparation — owner clarification
+
+Companion: RFC-256 **PR785 publication preparation — owner clarification**.
+The owner directed commit/push on existing PR785 (`rfc256-cast-array-binding`),
+superseding the unexecuted split-PR plan. Correlation `e3a03821b`, timeout
+`79f411aae` and mapped-read `41d40f312` are separate logical commits;
+the client commits passed ordinary generate/lint/build/test hooks in a clean
+comparison worktree, preserving the main worktree's bytes. The companion RFC
+records their full SHAs and fresh/cached target populations. No new PR, hunt,
+merge approval or waiver of remaining review/CI/no-skip/performance gates.
+
+
+### RFC-256 PR785 red CI — pooled test-buffer lifetime (2026-09-17)
+
+- [x] Repair the pooled test-buffer lifetime defect witnessed by CI `35232274269`
+  at `c861d20be`: defer the tenant no-alias test's buffer return until all borrowed
+  field assertions finish. Both attempts, every assertion and parallelism remain.
+  Companion: RFC-256 **PR785 CI pooled-buffer lifetime repair**, with C++/Go
+  ownership references, witnessed red and 100/100 repeated race green. All three
+  scoped implementation reviews ACKed; all 31 CI-equivalent race targets passed
+  uncached (20,220 RUN/PASS, no skips). No production/wire change or new hunt.
+  This closes the specific test defect, not the remaining full-PR findings or
+  merge gates; published CI must confirm the pushed commit.
+
+
+### RFC-256 PR785 remaining ACKs — retained review repairs
+
+The owner requested the remaining ACKs and conditionally authorized merge only
+after all required ACKs exist. Companion: RFC-256 **PR785 retained CTE producer
+repair — defining environments**. Active DFS: retained Graefe P1, now witnessed
+by real FDB (13/14 targeted queries fail at `3e1b120e6`, including wrong rows).
+Retain resolved producer identity and its defining environment, not transitive
+name wrappers; design review precedes implementation. Next is the retained
+Codex UNNEST production-lowering assertion repair, then final-head full-PR
+Graefe/Torvalds/C++/Codex and published @claude/CI gates. Earlier timeout and
+mapped-read findings were repaired in their published commits; the historical
+queue above is not a claim that those remain broken. No new hunt or performance
+fix is started by this review-repair work. Evidence: the companion RFC and
+`/var/tmp/query-grind-cast/pr785-review/remaining-acks/`.
+
+### RFC-256 PR785 retained repair verification — 2026-09-18
+
+Companion: RFC-256 **Retained repairs: implementation and regression evidence**.
+CTE producer ownership and the retained UNNEST production-lowering assertions
+are implemented locally, not yet published or implementation-ACKed. Real-FDB
+20/20 CTE and 40/40 quoted-identifier queries pass; all 2,975 prior plan-golden
+entries remain byte-identical with 20 additive entries. Full affected core,
+explaindiff and docscheck targets pass. Four compiled semantic mutants fail and
+restore exactly; the companion scopes each population and artifact.
+
+Next: post-restoration full suite, affected race/determinism, final 1M stress,
+normal hooks, publish, and exact-head full-PR Graefe/Torvalds/C++/Codex plus
+published @claude LGTM and CI. No merge while any required ACK is absent. The
+owner then authorizes taking the next TODO entry after merge. Permission to run
+the five existing opt-in sweeps was explicitly requested; the earlier no-hunts
+restriction is not silently waived by this local repair.
+
+### RFC-256 PR785 read-only scan-resolution repair
+
+Companion: RFC-256 **Retained scan lookup race and non-publishing resolution**.
+The affected race run found a shared-scan write in read-side `ResolveScan`;
+construction now owns publication and lookup is read-only. A deterministic
+regression was observed red before repair. Full affected race: 2,804 RUN/PASS;
+ten selected repetitions: 430 RUN/PASS. Five final compiled mutants are killed
+and restored; an intermediate nogo-rejected mutant is explicitly excluded.
+The interrupted normal full-suite attempt is not a final green. The next full
+suite/stress/hook/review lap uses the restored non-publishing implementation.
+
+### Stress test 1M baseline — RFC-256 retained producer repair (2026-09-18)
+
+Companion: RFC-256 **Restored-source full verification**. Fresh normal suite:
+92/92 uncached targets; 40,022 Go RUN = 40,017 PASS + five existing opt-in SKIP,
+no unmatched outcomes. The sweep permission question remains open; this is not
+a no-skip or merge approval. All 51 frozen paths survived the suite and stress;
+subsequent gazelle/module tidy changed none. Closing documentation follows those
+measurements; hooks and final published-head reviews/CI remain required.
+
+Baseline commit: `ed3504f7e410d8e2a4f4c46fd7b4c72fd0484869`, the merge-base on
+2026-09-18. Repaired source: parent `3e1b120e6322bdb23a7c8f4cc7a2932a37b2c075`
+plus the 51-path frozen repair; exact tested Git **tree** object
+`364940ce4fcf72d255363b20d7c30e73c65cec5e` (not a published commit).
+The hash manifest and full commands are in
+`/var/tmp/query-grind-cast/pr785-review/remaining-acks/cte-readonly-final-freeze.json`
+and `cte-readonly-stress-records.json`. Baseline checkout
+`/var/tmp/query-grind-cast/baseline`; repaired checkout
+`/var/tmp/query-grind-cast/cte-producer-verify`. Both use the same filesystem
+with roughly 233 GB free and byte-identical `go.mod`. No other local test job
+was launched alongside these four serialized runs.
+
+Two baseline runs preceded two repaired runs. Every run completed 24 RUN/PASS
+(root plus 23 query cases), no failure/skip/cache hit. All 22 timed row counts
+match across all four runs; COUNT(*) separately asserts 1,000,000. Command wall
+times including build: baseline 180.312/179.289s; repaired 193.952/180.014s.
+One-minute load start/end: baseline 2.210/2.210 and 2.210/2.593; repaired
+2.593/2.955 and 2.955/3.855. Latencies below retain both samples; ratios divide
+arithmetic means. No parity or causality claim, no performance fix, no changed
+latency/workload limit. Slower observations remain visible.
+
+| Query | Rows | Baseline ms (n=2) | Repaired ms (n=2) | Mean repaired/base |
+|---|---:|---:|---:|---:|
+| PK lookup id=0 | 1 | 8.938 / 9.683 | 8.623 / 15.624 | 1.302x |
+| PK lookup id=N/2 | 1 | 8.516 / 8.829 | 9.042 / 15.898 | 1.438x |
+| PK lookup id=N-1 | 1 | 6.258 / 6.374 | 5.351 / 22.720 | 2.222x |
+| idx_customer eq | 8 | 7.045 / 6.546 | 6.859 / 31.811 | 2.845x |
+| idx_amount range >9000 | 100017 | 241.192 / 192.954 | 232.076 / 286.377 | 1.194x |
+| idx_status count pending | 1 | 407.402 / 434.174 | 376.283 / 318.196 | 0.825x |
+| full scan filter amount>5000 | 1 | 574.725 / 816.570 | 736.976 / 871.634 | 1.156x |
+| GROUP BY status | 4 | 6.664 / 5.962 | 22.327 / 6.446 | 2.279x |
+| GROUP BY status COUNT only | 4 | 5.368 / 5.451 | 22.126 / 5.419 | 2.546x |
+| SUM by status (aggregate index) | 4 | 5.833 / 5.632 | 13.972 / 5.783 | 1.723x |
+| GROUP BY customer HAVING | 47271 | 573.238 / 580.031 | 655.468 / 579.762 | 1.071x |
+| JOIN 10 orders x customers | 10 | 22.719 / 20.421 | 21.498 / 22.310 | 1.015x |
+| ORDER BY PK (full) | 1000000 | 7277.045 / 7353.015 | 3879.669 / 7479.113 | 0.776x |
+| ORDER BY PK + index filter | 8 | 9.504 / 9.150 | 9.209 / 9.033 | 0.978x |
+| scan all rows ordered | 1000000 | 3634.442 / 3616.518 | 3726.635 / 3736.883 | 1.029x |
+| scan all rows wide | 1000000 | 3884.176 / 3879.734 | 3990.025 / 3993.531 | 1.028x |
+| IN-list 5 values | 46 | 23.416 / 19.076 | 19.787 / 19.526 | 0.925x |
+| PK needle id=999999 | 1 | 6.252 / 5.985 | 5.870 / 5.901 | 0.962x |
+| PK+filter needle id=500000 | 1 | 7.673 / 7.522 | 7.640 / 7.715 | 1.011x |
+| full scan sparse filter | 97 | 3279.491 / 3283.829 | 3382.087 / 3402.709 | 1.034x |
+| UPDATE by index | 8 | 8.869 / 8.964 | 9.562 / 9.502 | 1.069x |
+| DELETE single row | 1 | 6.293 / 6.624 | 6.740 / 6.946 | 1.060x |
+
+Evidence: `cte-readonly-stress-{baseline,current}-{1,2}.{log,exit,bep.jsonl}`,
+`cte-readonly-stress-records.json`, `cte-readonly-stress-rows.json`, and the
+full-suite count/BEP/freeze verdict under the same artifact root. No new hunt
+was started, and no QSC-01–11 item is authorized or marked complete here.
+
+### RFC-256 published binding-boundary findings
+
+Companion: RFC-256 **Published binding-boundary findings at `eea214b7d`**.
+Full-PR reviews at that SHA are NAK/incomplete, never ACKs. Active repair:
+non-publishing metadata/cluster properties and metadata-free derived construction
+(compiled 26/26 RUN failures reproduced); structured CTE lookup distinguishing
+quoted dots from schema qualification; removal of the obsolete unnest fallback
+and its active descriptions. Tests are retained in the existing test files;
+comparison worktree `/var/tmp/query-grind-cast/cte-property-boundary`, evidence
+`pr785-review/remaining-acks/cte-property-boundary-built-red.*`.
+
+The source-selection repair now preserves normalized declaration/scan segments
+and explicit physical ownership through metadata/SELECT/ON scope construction.
+The original physical/joined/derived quoted-dot collisions were compiled red;
+CTE-only projection and JOIN ON exposed the remaining scope-side split and are
+also retained. Ten FDB cells pass on the current repair, including quoted and
+qualified CTE controls and schema-qualified physical access under a CTE shadow.
+Metadata-free nested bodies, aliases and recursive traversal metadata also have
+compiled red regressions and repairs. The unused unnest helper is deleted;
+source descriptions and historical RFC accounts are reconciled. See the linked
+RFC block for exact artifact names and the superseded/cancelled runs.
+
+The initial full-suite attempt was cancelled after the scope-side finding;
+its earlier eight-mutant/race evidence does not certify the later scope edits.
+Final-tree suite/race/mutation/hook verification and published-head reviews still
+follow. Published `eea214b7d` has seven successful CI checks, not implementation
+approval for this repair. No new hunt, performance change, admission expansion
+or QSC authorization is implied; the five opt-in sweep permissions remain open.
+
+
+### RFC-256 binding-boundary verification and stress (2026-09-18)
+
+Companion: RFC-256 **Binding-boundary verification before publication**.
+The subsequent normal suite ran 92 targets: 91 passed, docscheck failed on a
+stale RFC-238 numeric source citation after the unused helper was deleted.
+Its Go population was 40,114 RUN = 40,108 PASS + one FAIL + five opt-in SKIP;
+13 captured subprocess diagnostic outcomes are excluded. All three occurrences
+of the citation now point at the same intended mint, and the uncached docscheck
+target passes. No citation gate or weak-cite floor changed. That partial repair
+is not a replacement for a final full-suite run through the normal commit hook.
+
+On the frozen executable repair, the four affected race targets passed with
+2,886 RUN/PASS; the focused ten-repeat race population passed 830 RUN/PASS,
+with no missing/extra outcomes. Eleven v4 semantic mutants compiled and failed
+the intended regressions; all input bytes were restored and the three affected
+restored targets passed 2,729 RUN/PASS. Earlier compile/nogo failures receive no
+semantic mutation credit. The existing translator fuzzer ran 3,758,546 executions
+in 15 seconds, without coverage guidance. A fresh real-FDB qualified-source run
+passed the root and all ten cases after the physical-catalog case-policy repair.
+Artifacts under `/var/tmp/query-grind-cast/pr785-review/remaining-acks/`:
+`cte-scope-boundaries-{race,repeat,restored,fuzz,docs-green}.*`, the v4 mutation
+verdict, and `cte-boundary-final-fdb.*`.
+
+**Stress test 1M baseline — binding-boundary repair.** Baseline commit
+`ed3504f7e410d8e2a4f4c46fd7b4c72fd0484869`, the merge-base on 2026-09-18;
+repaired parent `eea214b7dfc5a49a96af05d32a37f1d53afeea2c` plus the frozen
+20-path repair, exact Git tree `50c8315b280564fd313995d3c45828b466038913`.
+This tree predates this closing documentation; it is not a published commit.
+The manifest is `cte-scope-boundaries-stress-freeze.json`. Baseline checkout
+`/var/tmp/query-grind-cast/baseline`; repaired checkout
+`/var/tmp/query-grind-cast/cte-property-boundary`. Both are on the same filesystem
+with more than 231 GB free at each run start and byte-identical `go.mod`.
+Two baseline runs preceded two repaired runs, with no other local test job
+launched alongside them. Each ran 24 RUN/PASS (root plus 23 query cases),
+no failure/skip/cache hit. All 22 timed row counts match across the four runs;
+COUNT(*) separately asserted 1,000,000.
+
+Command wall times including build: baseline 174.245/177.244s;
+repaired 185.485/178.213s. One-minute load start/end:
+baseline 1: 0.577/2.614; baseline 2: 2.614/3.573; current 1: 3.573/2.928; current 2: 2.928/2.529.
+Individual timings and mean ratios follow; slower observations remain visible.
+No performance parity, causal attribution, acceptance or performance fix is claimed.
+
+| Query | Rows | Baseline ms (n=2) | Repaired ms (n=2) | Mean repaired/base |
+|---|---:|---:|---:|---:|
+| PK lookup id=0 | 1 | 8.510 / 14.313 | 8.567 / 15.953 | 1.074x |
+| PK lookup id=N/2 | 1 | 8.497 / 24.420 | 8.504 / 24.204 | 0.994x |
+| PK lookup id=N-1 | 1 | 6.352 / 23.229 | 5.215 / 22.411 | 0.934x |
+| idx_customer eq | 8 | 6.450 / 19.996 | 6.477 / 20.165 | 1.007x |
+| idx_amount range >9000 | 100017 | 243.221 / 270.953 | 236.185 / 281.938 | 1.008x |
+| idx_status count pending | 1 | 415.469 / 325.337 | 353.664 / 324.856 | 0.916x |
+| full scan filter amount>5000 | 1 | 653.380 / 657.405 | 842.622 / 776.852 | 1.235x |
+| GROUP BY status | 4 | 6.205 / 5.890 | 6.374 / 6.527 | 1.067x |
+| GROUP BY status COUNT only | 4 | 5.376 / 5.304 | 5.680 / 5.469 | 1.044x |
+| SUM by status (aggregate index) | 4 | 5.974 / 5.931 | 6.151 / 5.887 | 1.011x |
+| GROUP BY customer HAVING | 47271 | 576.842 / 580.053 | 576.810 / 588.606 | 1.007x |
+| JOIN 10 orders x customers | 10 | 20.296 / 19.991 | 20.712 / 21.592 | 1.050x |
+| ORDER BY PK (full) | 1000000 | 3893.751 / 7158.409 | 3959.583 / 3957.982 | 0.716x |
+| ORDER BY PK + index filter | 8 | 8.772 / 9.270 | 9.083 / 9.098 | 1.008x |
+| scan all rows ordered | 1000000 | 3647.145 / 3631.477 | 3760.381 / 3783.042 | 1.036x |
+| scan all rows wide | 1000000 | 3886.356 / 3887.554 | 4013.442 / 3999.472 | 1.031x |
+| IN-list 5 values | 46 | 18.722 / 22.009 | 19.690 / 19.714 | 0.967x |
+| PK needle id=999999 | 1 | 6.772 / 6.128 | 5.979 / 5.969 | 0.926x |
+| PK+filter needle id=500000 | 1 | 7.641 / 8.258 | 7.591 / 7.589 | 0.955x |
+| full scan sparse filter | 97 | 3295.407 / 3278.796 | 3462.302 / 3460.599 | 1.053x |
+| UPDATE by index | 8 | 9.025 / 9.161 | 9.761 / 9.815 | 1.076x |
+| DELETE single row | 1 | 6.635 / 6.481 | 6.898 / 6.928 | 1.054x |
+
+Full commands, timestamps, tree identities, load and outcomes are retained in
+`cte-scope-boundaries-stress-records.json`; row measurements in
+`cte-scope-boundaries-stress-rows.json`; raw logs/BEPs in
+`cte-scope-boundaries-stress-{baseline,current}-{1,2}.*` under the artifact root.
+Normal hooks and exact published-head full-PR Graefe/Torvalds/C++/Codex approvals,
+published @claude LGTM, CI and the owner decision on the five restricted sweeps
+still precede merge. No admission/expectation/golden weakening, performance work,
+new hunt, or QSC-01–11 authorization is implied.
+
+### RFC-256 remaining reader/USING ownership findings at `7483327ce`
+
+Full-PR Graefe, Torvalds and C++ sessions read all 389 files / 68,299 diff
+lines and returned NAK. Independent Codex timed out after two hours; no
+approval is inferred. Exact-head CI has seven successful checks. Evidence:
+`/var/tmp/query-grind-cast/pr785-review/remaining-acks/published-boundary-*`
+and `cte-boundary-ci-pass.json`. Companion: RFC-256 **Remaining reader and
+USING ownership findings**.
+
+The source-derived finding was flattened-name selection in
+projection/aggregate/sort readers and subquery outer-source capture. The
+uncommitted repair now shares SELECT scope construction; focused verification
+and the remaining publication gates are recorded below.
+The retained physical LA scan in
+`WITH "S.LA" AS (SELECT CID AS OWN_ID FROM CC) SELECT p.AID + 0 FROM s.LA p`
+is reinterpreted using CTE schema metadata. The design is to consume the checked
+SELECT scope rather than maintain separate reader-specific source-selection
+algorithms. Java Identifier.equals/findCteMaybe preserves name plus qualifier;
+all expression consumers read that same chosen source.
+
+The other finding in this ownership repair was USING-star expansion emitting
+name lookups rather than bound attribute slots. The uncommitted repair below
+removes that separate path in favor of the checked star expander. A derived/CTE row with two X
+outputs must preserve both ordinals when USING hides only the right ID. The
+existing checked star expander implements Java expandStar's visible-attribute
+contract and must own this path too. Both findings require compiled regression
+reds, restored green runs, complete verification and exact-head review before
+merge. No new hunt, admission expansion, performance fix or QSC authorization.
+
+### RFC-256 FirstOrDefault type mismatch exposed by reader repair
+
+Active correctness finding under the remaining reader/USING repair, not new
+QSC work: the admitted correlated `EXISTS (SELECT x FROM p.ARR x WHERE x = 7)`
+fails with and without the CTE collision. `FirstOrDefault` publishes the
+non-nullable scalar child's type while emitting its typed NULL default. Java's
+constructor derives the output root nullability from the default. Evidence:
+`/var/tmp/query-grind-cast/pr785-review/remaining-acks/cte-reader-array-runtime-red.*`.
+Design and regression obligations: RFC-256 **FirstOrDefault result-type contract
+uncovered by the reader regressions**. Design v2 accepted, implementation
+verification ongoing; no binder bypass,
+SQL admission change, performance work or merge waiver is authorized.
+
+### RFC-256 default-result lineage verification continuation
+
+Design v2 has Graefe/Torvalds design-only ACKs; implementation/full-PR approval
+is still open. The correlated-array/EXISTS reader FDB cells now pass without
+relaxing exact carrier authority. Extraction had read an old owner from a
+mutable memo reference after it ceased to be a selected singleton. Filter
+relinking now uses its immutable admitted carrier, pinned by the live-reference
+red/green (`remaining-acks/default-filter-live-relink-{red,green}.*`).
+
+The next retained lineage matrix exposed a real NOT NULL-field read failure:
+null-extending its record changes the read result to nullable (Java FieldValue
+computeResultType), while `TranslateNullExtendedPhaseRoot` incorrectly requires
+an unchanged result type. Follow RFC-256 **Null-extension field lineage
+clarification** before closing the active DFS path. `default-lineage.log` holds
+the compiled failure. Four affected full suites passed before this new test
+(`first-default-affected-v5.*`), not proof for the subsequent edit. USING and
+checked-scope reader audit remain in the parent ownership repair above; no new
+QSC work, performance repair, admission expansion or merge waiver.
+
+### RFC-256 default-result plan-shape refresh (owner-approved)
+
+The field-lineage implementation now passes its focused values/plans/executor
+regressions; its previous compiled failure and design-only ACKs remain recorded
+above, not a current unresolved field-read failure. The first full default-result
+run failed docscheck, embedded fixtures and explaindiff. Focused docs/fixture
+repairs pass; the pre-refresh full-suite result is recorded below.
+
+The pre-refresh `TestPlanShapeGolden` failure affected three join orientations,
+not SQL result expectations: `projected_exists_over_a_derived_source.yaml#2/#5` and
+`subquery_in.yaml#11`. The type correction changes the final hash between
+otherwise equal-cost orientations. All 19 queries in a bounded two-YAML replay
+match their old goldens when only FirstOrDefault and quantifier code is restored
+to published `7483327ce`; reinstating the repair restores the three differences.
+The permanent `TestPlanHarness_ExistsDefaultTypesAndSymmetricJoinCosts` pins the
+three exact SQL/type/cost premises, passes four RUN/PASS, and compiled red under
+that two-file rollback. Every diagnostic edit was restored; the cost model
+remains unchanged. Companion RFC-256 **Default-result metadata and owner-approved
+plan-shape refresh** contains the scope, Java reference, artifact paths and
+limitations.
+
+**Owner approved the three-snapshot refresh.** A fresh complete dump changed
+exactly those three of 2,995 entries; the header, SQL and per-entry node
+populations are unchanged. The full EXPLAIN target passed three uncached runs:
+159/159 Go RUN/PASS, including three executions each of the exact golden and
+determinism checks (`default-result-approved-shapes-test.*`). Full-suite
+verification follows. No type weakening, cost/hash retuning, admission change,
+new hunt/QSC work, skip waiver, push or merge is authorized by this approval. Reader scope/error and USING slot pins now pass in the continuation below;
+final full/race/mutation verification and exact-head review remain incomplete.
+This block does not mark the parent ownership repair done.
+
+Pre-refresh full verification: uncached `just test` completed **91/92
+targets passed**, only `TestPlanShapeGolden` red; **40,213 RUN = 40,207 PASS +
+one FAIL + five restricted-hunt SKIP**, zero cached results and no source
+changes during the frozen run. The unchanged two YAML scenarios passed all
+6+13 assertions; the new type/cost pin passed parent plus three cells. Logs,
+BEP and hashes: `remaining-acks/default-cost-full.*` under the PR785 review
+artifact directory above. The five-skip gate remains unmet. This result was
+recorded after the measured run; it is not a final-tree green or an approval.
+
+### RFC-256 reader/USING repair continuation after the approved golden refresh
+
+The uncommitted USING repair deletes the separate name-based bare-star expander
+and its two entry-point calls. Both SELECT construction entries now use the
+existing checked visible-attribute expansion, so duplicate X slots, quoted-dot
+labels and unnamed outputs remain separate while only the right USING key is
+hidden. No name-based binder fallback or additional golden change was added.
+
+Real-FDB driver coverage first compiled red: 25 RUN, 15 PASS / 10 FAIL (nine
+new SQL cells plus the parent); the restored repair passed 25/25. A first
+catalog-entry mutant survived the driver tests, exposing a coverage gap rather
+than earning mutation credit. The retained catalog-constructor unit test now
+pins exact source ownership and ordinals for duplicate, quoted and unnamed
+attributes. Independent final mutants fail 4/4 catalog outcomes and 14/16
+visitor outcomes (the two qualified-star controls stay green); both original
+sources are restored byte-for-byte. The initial catalog test fixture used a
+nonexistent Order field and assumed an automatically minted binding; that run
+is a fixture failure, not engine regression evidence.
+
+Scope/error audit retained the adapters' nil-on-source-failure compatibility
+contract and removed retries of the identical SELECT scope builder. New unit
+pins refuse missing primary/join metadata, a CTE tombstone and absent catalog,
+without publishing a partial scope; real-FDB diagnostic pins preserve 42703
+for undefined projection/aggregate/sort columns and 42702 for ambiguity under
+the quoted-dot CTE collision. The scalar-array rejection remains 42F00. The
+two temporary EXPLAIN logs are removed.
+
+The restored focused embedded/driver/EXPLAIN run passed **77/77 RUN/PASS**,
+including the approved exact golden and determinism checks. Evidence under
+`/var/tmp/query-grind-cast/pr785-review/remaining-acks`:
+`using-attribute-slots-{red,green}.*`, `using-attribute-catalog-green-v2.*`,
+`using-attribute-slots-{catalog,visitor}-mutant-v2.*`,
+`verify-using-slot-mutations.py`, and `reader-using-focused*`.
+Companion: RFC-256 **Bound-attribute USING expansion and reader failure contract**.
+Full-suite, race, wider default-result mutation, stress and final review gates
+remain open. Five restricted hunts, performance fixes, push and merge are not
+newly authorized by the three-golden approval.
+
+### RFC-256 array constructor rebuild correction
+
+Local milestone implementation review at published HEAD
+`7483327ce1d91c14c2256740c19fbd97a3d67345` plus working-diff SHA256
+`5b943d92990558c0ec2228d37abc8e5b0291cc85592c160d72572afc75304b16`
+returned Graefe ACK / Torvalds NAK. Both reviews read the complete 33-file,
+3,004-line local diff; neither is a full-PR approval. The outstanding finding
+is constructed arrays retaining NOT NULL element metadata after a field read
+widens across a default-plan absent-record root. Java's checked reconstruction
+contract and the exact repair/test scope are recorded in RFC-256 **Array-constructor
+reconstruction after null extension**; fix that finding before publication.
+
+Before these new tests/docs, the frozen tree passed actual uncached `just test`:
+92/92 targets, 40,241 RUN = 40,236 PASS + five restricted-hunt SKIP,
+13 embedded diagnostics excluded, no missing/extra outcomes, zero cached results.
+The separate uncached race run passed all seven affected targets in 1,942.767s:
+17,930 RUN/PASS, no SKIP/FAIL or missing/extra outcomes, 11 embedded diagnostics
+excluded, zero cached results. All 6,185 tracked regular-file hashes still
+matched the full-run freeze after both runs. These results describe the
+pre-correction tree and are not proof of the new array-rebuild fix. Artifacts:
+`/var/tmp/query-grind-cast/pr785-review/remaining-acks/reader-using-{full,race}.*`
+and `reader-using-impl-{graefe,torvalds}.*`.
+
+The five restricted hunts, wider default-result mutations, stress, final
+exact-published-head full-PR Graefe/Torvalds/C++/Codex approvals, published
+Claude LGTM and CI remain unwaived. No performance fix, push or merge is
+newly authorized. Next: compiled red regressions, checked reconstruction,
+restored green/mutation/full verification and final local review confirmation.
+
+### RFC-256 array/default reconstruction verification
+
+The array-constructor finding is implemented under the reviewed Java
+reconstruction contract: common element type must equal retained metadata,
+then promotions are injected; no silent widening. Mixed default lineage keeps
+typed errors. Field mapping now rejects a typed-nil array and partial enclosing
+record. Numeric reconstruction exposed missing `PromoteValue` INT→LONG carrier
+widening; reusing the existing primitive promotion helper fixes it without
+changing the conversion lattice or scalar/simplifier typing. RFC-256 **Array-constructor
+reconstruction after null extension** contains the Java references, source scope
+and fixture/build failures (not credited as semantic reds).
+
+Verification before the final full/race runs: three uncached package targets
+passed 5,036/5,036 outcomes; five array-boundary mutants compiled/red over 56
+outcomes each (32/3/2/6/7 FAIL), then exact restoration passed 56/56. Expanded
+field-lineage fuzz passed four seeds and 6,648,152 executions/15s without coverage
+guidance. Ten wider default-result mutants compiled/red: construction/rebuild
+17 outcomes each (17/5 FAIL); eight remaining mutants 255 outcomes each
+(55/15/23/20/4/1/1/4 FAIL). v2 is the complete credited run; v1 stopped on a
+mutation-verification harness assertion before its last two cases. A separate
+permanent nonmutation pin passed 10/10 and both borrowed-row/borrowed-slot
+mutants failed all ten outcomes. All source files were restored byte-for-byte.
+
+Artifacts under `/var/tmp/query-grind-cast/pr785-review/remaining-acks`:
+`default-array-*`, `default-result-mutant-v2-*`,
+`default-result-mutation-counts-v2.jsonl`, `default-result-mutations-v2.*`,
+`default-row-*` and the three `verify-default-*-mutations.py` scripts.
+The design delta has Graefe/Torvalds ACKs, not implementation/full-PR approval.
+Final full/race/stress and implementation confirmation remain; five restricted
+hunts and published-head review/Claude/CI gates stay unwaived. No push or merge.
+
+### RFC-256 structured promotion — owner expectation decision
+
+**Historical owner-decision stop, resolved by the owner-ordered split at the
+end of this section.** At this checkpoint the reproduced recursive-promotion
+defect and failing pins prevented publication. The owner subsequently chose to
+retain the known limitation in this pinned-version PR and repair it in the
+immediate Java-upgrade/parity successor. This is not a defect-closure claim.
+Companion: RFC-256 **Structured promotion reproducer and expectation-approval STOP**.
+
+Both local implementation-delta reviews returned NAK on virtual tree
+`472bff1b40276a3f7738331c7470deb593b44de3`, diff SHA256
+`dd52a2e1fd50aab77395f1ac881baa03033470c1690671f6a568d2671d5132dc`,
+published HEAD `7483327ce1d91c14c2256740c19fbd97a3d67345`.
+The checked array reconstruction now inserts promotions that the primitive-only
+evaluator cannot perform recursively. The independent local Codex run has no
+completed verdict; its process/task is gone and its log ends during source
+inspection. Cause unknown, no review credit. The newer race run was cancelled;
+stress was not run. The preceding frozen full run did pass 92 uncached targets,
+40,299 RUN = 40,294 PASS + five restricted SKIP, with 13 embedded diagnostics
+excluded and all 6,185 frozen file hashes unchanged. It predates the new pins
+and does not fulfill the no-skips gate.
+
+Two values test roots added at that checkpoint assert actual nested INT→LONG/LONG→DOUBLE
+array carriers, additional array depth, nullable elements, protobuf field
+kinds/values, NULL fields, empty arrays and source immutability. Uncached Bazel
+compiled and reproduced **12 outcomes = 11 FAIL + one PASS** (nine failing
+cases plus two parents; the empty-array control passed). `just gazelle` and
+`bazelisk mod tidy` passed. No recursive production fix has been made.
+
+The existing real-FDB `TestFDB_ArrayOfRecordLiteralsDescriptorOutcomes` passed
+unchanged (one Go RUN/PASS; plain-loop SQL cases). Its table explicitly requires
+`SELECT ([(1 AS A), (2.5 AS A)] AS CH) FROM t` and
+`SELECT ([(1 AS A), (2.5 AS B)] AS CH) FROM t` to fail with
+`but double in the target`. Those refusals arise because the record promotion
+leaves an INT message under DOUBLE target metadata. Completing the Go conversion
+would remove that failure; the three approved shape snapshots do not authorize
+changing these expectations. The subsequent live-Java verification below
+corrects the premise of the initial request: Java 4.12.11.0 also fails these
+exact queries, so successful rows would be a deliberate upstream-bug workaround,
+not measured Java SQL parity. Other admission/error/representation expectations
+remain unchanged.
+
+Evidence under `/var/tmp/query-grind-cast/pr785-review/remaining-acks`:
+`structured-promotion-red.*`, `structured-promotion-admission-controls.*`,
+`structured-promotion-{gazelle,tidy}.log`,
+`default-array-impl-codex.incomplete.json`, `default-array-impl-{graefe,torvalds}.*`,
+and `default-array-full.*`. The owner-ordered split below carries those exact
+success assertions and recursive-coercion implementation together into the
+immediate successor. The five restricted hunts, published-head full-PR reviews,
+Claude LGTM, CI and performance acceptance remain unwaived; the new instruction
+authorizes finishing/publishing the parent, not merging it.
+
+### RFC-256 live Java numeric record-array correction
+
+**Correction to the preceding owner-decision premise:** Java 4.12.11.0 also
+fails BOTH exact mixed-width array-of-record queries with
+`IllegalArgumentException: ... field java type: DOUBLE, value type: java.lang.Integer`.
+Changing Go to return rows would therefore be an upstream-bug workaround, not
+restoration of observed Java SQL behavior. The prior Go refusal expectations
+remain unchanged. Companion: RFC-256 **Live Java outcome correction for numeric
+record arrays**.
+
+A retained spec in `conformance/record_constructor_java_probe_test.go` pins
+both errors and successful controls replacing only `1` with `1.0`. The controls
+return `{CH: [{A: 1.0}, {A: 2.5}]}` or `{CH: [{_0: 1.0}, {_0: 2.5}]}`, respectively.
+The HTTP row representation does not expose nested JDBC primitive widths; no
+such coverage is claimed. Root cause: pinned `ExpressionVisitor.java:1094–1110`
+uses the raw array factory rather than the promotion-injecting encapsulator;
+its TODO names that missing step. The live Java stack reaches
+`MessageHelpers.deepCopyMessage:292` through `RecordConstructorValue` and
+confirms unpromoted Integer copying into the DOUBLE descriptor.
+
+The initial assumed-success probe failed at its FIRST case, so it is not
+four-case evidence. The completed normal and debug runs each passed one
+focused Ginkgo spec and emitted all four case outputs; 1,441 other specs were
+excluded by the focus filter, not exercised. Artifacts under the existing
+PR785 review directory: `remaining-acks/structured-promotion-java.log`,
+`structured-promotion-java-v2.*`, `structured-promotion-java-traced.*`, and
+`structured-promotion-java-final-{gazelle,tidy}.log`. That investigation made no
+production fix or publication. The owner subsequently ordered the parent/successor
+split recorded below; it does not authorize a changed SQL outcome in the parent.
+
+### RFC-256 owner-ordered parent and Java-upgrade successor
+
+The owner resolved the preceding stop: finish/publish PR785 on Java **4.12.11.0**,
+accept the known broken promotion behavior here, then make the immediate stacked
+Java-upgrade PR including the required parity work. No upstream Java PR: #4171
+already fixed the SQL construction path; RFC-256 records its release history.
+Existing Go SQL refusal expectations and the four-case pinned-Java regression remain.
+No merge, new QSC hunt, performance fix or unrelated expectation change follows.
+
+The retained limitation is explicit: structured `PromoteValue` evaluation still
+leaves nested carriers/descriptors unchanged, including promotions inserted by
+checked reconstruction. Java 4.12.11's library already recurses; its SQL path
+bypasses that library operation. SQL failure agreement is not library parity.
+A fresh uncached baseline run at the PR merge-base `ed3504f7e410d8e2a4f4c46fd7b4c72fd0484869`
+reproduced the same nine failing carrier/descriptor cases, plus two failed
+parents and the passing empty-array control (12 outcomes total). Only the array
+baseline's entry point and promotion-node assertions were adapted to the old
+unchecked API; carrier/type/nonmutation assertions and the record root stayed
+unchanged. No newly introduced wrong-result regression was established within
+this measured boundary. Graefe/Torvalds ACKed the bounded split's design, not
+implementation/full-PR correctness or any verification waiver.
+
+The two desired-success roots are reserved unchanged for the immediate successor:
+`TestArrayConstructorValue_CheckedRebuildNestedNumericCarriers` and
+`TestPromoteValue_EvaluateRecordNumericCarriers`. They must be committed with
+recursive ARRAY/RECORD promotion there, not weakened, skipped or discarded.
+Their checked application patch is
+`/var/tmp/query-grind-cast/pr785-review/owner-split/successor-tests.patch`, SHA256
+`b7384c77cfba0885ccb321f1552bbce620d474d105b3ae96c629d8b2295d9724`; the adjacent
+manifest records exact test-function/file hashes. All previously green array,
+primitive-promotion, default-result and ownership repairs/tests stay in PR785.
+Fresh focused Go/Java pins passed uncached, with all four Java query outputs;
+these are not full-suite evidence. Final parent full/race/stress/review/CI gates
+and the five restricted hunts remain distinct requirements.
+
+Companion: RFC-256 **Owner-ordered pinned-version parent and stacked parity upgrade**.
+Evidence: `owner-split/{before.*,design.txt,graefe.*,torvalds.*,baseline-*,pinned-*,successor-tests.*}`
+under the PR785 review directory. Next: finish parent verification/publication,
+then verify and confirm the common Maven release before successor pin edits;
+include proto/grammar/generated changes and the complete required behavioral
+parity delta, including the retained recursive-promotion tests and SQL success
+expectations. Do not claim the accepted defect closed by finishing the parent.
+
+### RFC-256 read-lifetime cancellation observation flake
+
+The repeated frozen parent full run passed the corrected documentation guard but
+failed `TestGetReadVersion_ConcurrentWithCommit_RaceFree`: concurrent GRV leaked
+plain `context canceled` during commit reuse instead of FDB 1025. Population:
+92 uncached targets, 91 passed; 40,299 Go outcomes = 40,293 PASS + one FAIL + five
+restricted SKIP. Sequential race/stress verification stopped before starting.
+This is a real client defect, not part of the accepted promotion limitation.
+
+Root cause: `readLifetimeError` sampled incarnation cause before context error;
+retirement could record/deliver cancellation in between. The fix reads context
+error first, then the captured cause, still returning that cause preferentially. The
+record-before-delivery ordering makes that observation order sound. No surface
+error remapping, new production hook or weakened race expectation. Retain a
+controlled real-FDB regression across cancel/timeout/reset/commit reuse and caller
+cancellation, with replacement/committed-data controls, then loop under race.
+C++/Torvalds and independent design reviews ACKed this repair before the production
+edit. Final local implementation ACKs and broad verification are recorded below.
+Companion: RFC-256 **Read-lifetime cancellation-observation ordering**. Evidence:
+`/var/tmp/query-grind-cast/pr785-review/owner-split/v2/parent-full.*` and
+`verification-records.json`; the preceding docs-only failure is retained under
+`owner-split/parent-full.*`. Complete final verification before parent publication
+or upgrade work.
+
+The deterministic test compiled and failed before the fix and again with the fix
+reverted: six outcomes, four retirement-case failures plus the failed parent and
+a passing caller-cancellation control. Each failure exposed raw context cancellation
+instead of literal 1025/1031. The restored fix and unchanged concurrent test passed
+50 repetitions normally and 50 under `-race`: 350 RUN/PASS in each uncached run,
+zero skipped/missing outcomes; source hashes matched before/after. The test also
+checks live callers, positive replacement GRVs and independently persisted commit
+data. Evidence: `owner-split/read-cancel/{red.*,revert.*,revert-present.json,revert-verified.json,green-repeat.*,race-repeat.*,green-focused.freeze.sha256}`.
+The initial revert-output postprocessor expected helper code 0 rather than the
+actual non-FDB sentinel -1; the complete compiled failure log was rechecked, not
+rerun or altered to produce the expected proof. Full/race-package/stress and final
+review gates are separate from this focused repair evidence; the completed local
+rerun and code ACKs are recorded below.
+
+### RFC-256 watch-setup cancellation classification
+
+The implementation reviewer found another raw-context bypass in `WatchSetup`
+after the GRV observation repair. Internal cancellation between its first lifetime
+gates and direct `ctx.Err()` check can escape without the captured FDB 1025/1031.
+The v3 broad run was stopped after 87 completed passing targets; no full-suite,
+race-package or stress completion is claimed for it. This is outside the accepted
+promotion limitation and had to be fixed before publication or upgrade work.
+
+The raw check now uses the existing captured `readLifetimeError`, preserving watch
+option/key/cap precedence and timeout publication. C++, Torvalds and independent
+design ACKs preceded the production edit. The expanded real-FDB fixture retains
+the GRV assertions and covers both watch gates, four retirement paths and caller
+control, with slot, replacement and independently persisted commit checks.
+
+Compiled red before repair and on raw-watch-gate reversion: 19 outcomes = 13 PASS
++ six FAIL (four follow-up retirement cases plus their two parents). Restoring the
+old cause-before-context observation instead failed all twelve retirement cases
+and four parents, with three caller controls passing (19 outcomes). Both mutants
+were verified present and fixed hashes restored. The regressions plus unchanged
+concurrent test passed 50 repetitions normally and under `-race`: 1,000 RUN/PASS
+in each uncached execution, zero skips/missing outcomes, all source hashes stable.
+Implementation delta ACKs and the complete full/race-package/stress rerun are
+recorded below; focused evidence alone is not a complete-suite claim.
+Companion: RFC-256 **Watch setup must retain captured cancellation classification**.
+Evidence: `/var/tmp/query-grind-cast/pr785-review/owner-split/v3/cpp-delta.md`
+and `interrupted.json`; `owner-split/watch-cancel/{red.*,records.json,complete.json,source.freeze.json,*-present.json,green-repeat.*,watch-raw-gate.*,cause-first-observation.*,race-repeat.*}`.
+
+### RFC-256 accepted parent — complete repaired-tree verification
+
+The read/watch cancellation findings are fixed and revert-proven; they are not
+part of the accepted structured-promotion limitation. Graefe, Torvalds, the C++
+maintainer and independent Codex each ACKed code through virtual Git tree
+`71501a0b216ee0a2a52a66bea8a9cfafbcaef587`: retained complete full-PR review plus
+final deltas, covering 418 changed files / 72,460 diff lines. No merge approval
+follows. Those identities predate this closing documentation; final published-SHA
+confirmation, Claude and CI remain separate gates.
+
+Uncached verification completed against that frozen tree, with all 6,185 tracked
+regular-file hashes matching afterwards:
+
+- Actual `just test`: 92/92 targets passed; 40,318 Go RUN = 40,313 PASS + five
+  restricted opt-in SKIP, no missing/extra outcomes. Thirteen embedded diagnostic
+  outcomes were excluded by their test-output framing. This is not a no-skips gate.
+- Complete race targets for client, values, expressions, plans, executor, Cascades,
+  embedded and SQL driver: eight passed; 19,812 RUN/PASS, no skipped/missing/extra
+  outcomes (eleven embedded diagnostic outcomes excluded).
+- Two merge-base and two repaired-tree 1M runs, serialized on one filesystem and
+  identical `go.mod`: 24 RUN/PASS each, no skips; all 22 timed row populations agree
+  across all four samples, and COUNT(*) separately asserts 1,000,000.
+- BEP reconciliation independently checked every test summary and result: zero
+  `totalNumCached`, local-cache or remote-cache results across the 104 executed
+  target results in these six runs. Commands explicitly disabled test caching.
+
+Evidence under `/var/tmp/query-grind-cast/pr785-review/owner-split/v4/`:
+`parent.scope.json`, `parent.freeze.json`, `verification-complete.json`,
+`verification-records.json`, `verified-results.json`, complete logs/BEPs/counts
+and four `*-delta.md` reviews. The previous v1/v2 failures and v3 canceled run
+remain preserved; none is relabeled as a complete green. All four focused client
+source hashes and both compiled semantic mutations are retained in the sibling
+`watch-cancel/` evidence. The original concurrent test remains unchanged.
+
+**Stress test 1M baseline — final accepted-parent repairs.** Baseline commit
+`ed3504f7e410d8e2a4f4c46fd7b4c72fd0484869`, the merge-base on 2026-09-18, versus
+parent `7483327ce1d91c14c2256740c19fbd97a3d67345` plus the frozen 43-path repair,
+exact Git tree `71501a0b216ee0a2a52a66bea8a9cfafbcaef587`. This is a comparison of
+those two trees, not moving master or the later documentation/commit tree.
+Both checkouts reside under `/var/tmp/query-grind-cast/` on one filesystem, with
+more than 222 GB available at each run start. Two baseline samples preceded two
+repaired samples; no other local test job was launched alongside them.
+
+Command wall times including build: baseline-1 189.652s; baseline-2 182.119s; current-1 261.706s; current-2 186.351s.
+One-minute load start/end: baseline-1 5.183/4.643; baseline-2 4.643/4.077; current-1 4.077/4.751; current-2 4.751/5.377.
+
+Individual observations and slower rows remain explicit. No performance parity,
+causal attribution, performance acceptance or performance fix is claimed.
+
+| Query | Rows | Baseline ms (n=2) | Repaired ms (n=2) | Mean repaired/base |
+|---|---:|---:|---:|---:|
+| PK lookup id=0 | 1 | 15.366 / 9.497 | 9.535 / 30.159 | 1.597x |
+| PK lookup id=N/2 | 1 | 27.201 / 8.922 | 9.284 / 15.869 | 0.696x |
+| PK lookup id=N-1 | 1 | 20.236 / 6.505 | 8.039 / 15.117 | 0.866x |
+| idx_customer eq | 8 | 18.747 / 7.167 | 7.411 / 24.342 | 1.225x |
+| idx_amount range >9000 | 100017 | 294.465 / 263.989 | 268.091 / 265.400 | 0.955x |
+| idx_status count pending | 1 | 339.138 / 408.621 | 357.179 / 359.375 | 0.958x |
+| full scan filter amount>5000 | 1 | 836.040 / 797.637 | 690.911 / 669.576 | 0.833x |
+| GROUP BY status | 4 | 12.601 / 27.069 | 6.410 / 12.449 | 0.475x |
+| GROUP BY status COUNT only | 4 | 22.579 / 12.573 | 5.766 / 22.856 | 0.814x |
+| SUM by status (aggregate index) | 4 | 12.230 / 13.654 | 5.895 / 17.823 | 0.916x |
+| GROUP BY customer HAVING | 47271 | 666.799 / 663.976 | 606.752 / 729.099 | 1.004x |
+| JOIN 10 orders x customers | 10 | 20.228 / 40.079 | 21.151 / 22.100 | 0.717x |
+| ORDER BY PK (full) | 1000000 | 3923.656 / 3884.824 | 7219.723 / 4013.498 | 1.439x |
+| ORDER BY PK + index filter | 8 | 8.984 / 8.973 | 9.785 / 9.390 | 1.068x |
+| scan all rows ordered | 1000000 | 7226.670 / 3735.729 | 3889.861 / 3886.304 | 0.709x |
+| scan all rows wide | 1000000 | 4072.873 / 4014.798 | 4136.531 / 4169.673 | 1.027x |
+| IN-list 5 values | 46 | 19.706 / 20.144 | 20.420 / 19.872 | 1.011x |
+| PK needle id=999999 | 1 | 5.980 / 6.058 | 6.083 / 6.211 | 1.021x |
+| PK+filter needle id=500000 | 1 | 7.524 / 7.527 | 8.229 / 7.626 | 1.053x |
+| full scan sparse filter | 97 | 3409.280 / 3411.116 | 3533.631 / 3632.709 | 1.051x |
+| UPDATE by index | 8 | 9.837 / 9.266 | 9.965 / 9.503 | 1.019x |
+| DELETE single row | 1 | 7.139 / 7.272 | 7.221 / 7.406 | 1.015x |
+
+Row measurements are retained in `stress-rows.json`; all source identities,
+commands, cache checks and loads are in `verified-results.json`. The five restricted
+factory hunts remain unapproved, not Docker skips or passing coverage. Prior
+paging140/eternal3600 and transaction/watch/retry obligations remain unchanged.
+
+The owner's parent/successor split still governs: publish this pinned-version
+parent without claiming recursive structured promotion fixed, then immediately
+verify/confirm the Java release and implement all parity in the stacked successor,
+including the unchanged preserved desired-success tests. No merge is authorized.
+Companion: RFC-256 **Accepted-parent verification completed**.
+
+### PR #785 published-review follow-up (active; parent Java pin unchanged)
+
+Published `6b833ba3c28b8266c00670e778f7497d07a188b7` has seven successful CI
+checks and four exact-published-SHA virtual reviewer confirmations. The published
+Claude review is **not LGTM** and discloses unread test/testdata/docs scope.
+
+- Fresh retained `NumericCastBoundaryConformance` against Java 4.12.11.0 confirms
+  legal unused AS==AT, 42702 when referenced, separate element/ordinal values
+  behind duplicate labels, and ordinary ambiguity for competing UNNEST columns.
+  RFC-142/source prose was stale; the behavior already follows RFC-256's reviewed
+  design. The focused run executed one Ginkgo spec; excluded specs are not pass
+  credit. Its source hashes were stable.
+- The quoted-alias finding is reproduced: quoted `"a"` and bare `A` are distinct
+  SQL names but `bound_exists_on.go` upper-folds lexical admission comparisons.
+  Both orientations and later-source ON fail in Go, succeed in Java; the
+  distinct-letter control succeeds in both. The UNNEST-frame collision also
+  needs lexical equality without removing the separately retained correlated
+  multi-source UNNEST restriction. Design and exact regression scope are in
+  RFC-256, **Published-review follow-up: quoted lexical aliases in EXISTS
+  admission**. Production is unchanged pending design ACKs.
+- Remaining review work: locate/check the reported CTE rewrite-cache concern,
+  correct PR-wide versus latest-repair golden scope and stale transport/type-flow
+  comments, obtain complete published coverage and final-head verification.
+
+Logs/probes/review artifacts are under
+`/var/tmp/query-grind-cast/pr785-review/owner-split/claude-followup/`.
+No additional hunt, performance change, upgrade pin, upstream PR or merge is
+started. The accepted structured-promotion split, five restricted hunts and
+performance/merge gates remain unchanged.
+
+### PR #785 shared-CTE follow-up (active; same published-review repair)
+
+Located the reported cache in `core/query/clustered_outer_scalar.go`. A retained
+logical regression now reproduces order-dependent outer-reference classification
+for two consumers of one producer: first consumer's alias exclusion contaminated
+the cached definition. The exact public SQL probe passes Go before the fix
+(private bindings/defining envelope); pinned Java rejects scalar-expression WITH
+with 42601, so this is not claimed as a Java SQL success or reproduced SQL wrong
+rows. The negative SQL result is retained too.
+
+RFC-256 **Published-review follow-up: shared producer classification scope**
+records the Java definition-versus-consumer contract, nil-safe parent-frame
+repair, test scope and mandatory design gate. The preceding quoted-name repair
+has restored-source green evidence (50 focused Go outcomes; three focused
+Ginkgo specs including 20 quoted-alias engine outcomes) and seven compiled
+semantic mutants, all restored. No implementation/full-PR approval is inferred.
+
+### PR #785 follow-up implementation (focused evidence; full gates pending)
+
+The quoted-alias and shared-CTE repairs described in the two preceding blocks are
+implemented after both design ACKs. RFC-256's **Follow-up implementation evidence
+before full verification** records exact scope and failed intermediate commands.
+Restored-source focused verification: 50 quoted-admission Go outcomes and 12
+clustered-CTE outcomes pass; three selected alias/source/numeric Ginkgo specs and
+one selected CTE-scope spec pass. Seven alias mutants and four final CTE mutants
+compile and fail; exact source restoration is verified. Java scalar-WITH and
+ordered-lateral limitations remain explicit, not conflated with Go's row oracle.
+
+Corrected stale alias/pooling/type-flow prose and the PR body's snapshot scope.
+The three authorized snapshot refreshes belong to `6b833ba3c`'s 43-file repair;
+the full `ed3504f7e4`→`6b833ba3c` diff includes ten golden files (accumulated
+plan-shape work plus nine simulation files). No golden changes in this follow-up.
+Both fresh merge-base million-row samples passed 24 outcomes each; current-tree
+samples, complete suite/race, implementation reviews and final-head gates remain
+pending. No merge or upgrade-pin change is authorized by these results.
+
+### PR #785 final follow-up verification and owner merge authorization
+
+The owner explicitly requested merging PR #785 on 2026-09-18. That supersedes the
+publication-only/no-merge authorization statements in earlier checkpoints here
+and in RFC-256; it does not turn unrun coverage into passes or select an upgrade
+version. The accepted Java 4.12.11.0 structured-promotion/mixed-numeric-record-array
+split and mandatory immediate Java-upgrade/parity successor remain unchanged.
+The verified common-release candidate is recorded in RFC-256 and still awaits
+explicit version confirmation. No pin, Java checkout, golden, new hunt or upstream
+PR changed; this living document names only the current Java pin.
+
+All four existing read-only gpt-6-astra/xhigh reviewers ACKed the complete 17-path
+follow-up at virtual tree `285739a5f8d1837cee2523d57aa4426f03f51d82`, retaining
+their prior full-PR coverage. The fresh 92-target full run then reported 40,362 Go
+RUN = 40,356 PASS + one FAIL + five restricted opt-in SKIP. Its sole failed test,
+`TestRFC238WeakCitesAreTheOnesSection7dNames`, caught line references moved by the
+CTE repair. Corrected the RFC citations to the actual field-name assignments;
+no test expectation or census floor changed. The retained resolution, weak-set
+and repository-census tests reran uncached: three RUN/PASS. Old references are
+absent from tracked Go/Markdown blobs, with both replacement citations as positive
+controls. The failed full run remains evidence, not a passing gate. The first
+commit-hook run next rejected this closing block's literal future Java version:
+living TODO version citations must match the current pin. Moved that candidate
+citation to RFC-256, retaining the successor obligation here. The failed hook is
+preserved under `claude-followup/publish/attempt1/`; no assertion was weakened.
+
+The resulting 18-path tree `33744cee59417c1d8bf341b3faf0534e7cce9b8b`, over
+published `6b833ba3c28b8266c00670e778f7497d07a188b7`, differs from the reviewed
+tree only in those RFC-238 citations. All 6,186 regular-file hashes stayed fixed
+through the complete affected race targets (embedded, core/query, logical,
+SQL driver and transport): five uncached targets, 9,600 RUN/PASS, no skips or
+unmatched outcomes. Two current 1M samples passed 24 RUN/PASS each. Normal
+unmodified generate/lint/build/just-test commit hooks, final published-SHA delta
+confirmation, seven exact-head CI checks and completion of Claude's previously
+unread scope are still required after this closing record; no future result is
+claimed here. Artifacts: `owner-split/claude-followup/` and its `v2/` directory,
+including complete logs/BEP, frozen hashes and `verified-runtime-results.json`.
+
+**Stress test 1M baseline — published-review follow-up.** Baseline commit
+`ed3504f7e410d8e2a4f4c46fd7b4c72fd0484869` (merge-base on 2026-09-18), versus
+parent `6b833ba3c28b8266c00670e778f7497d07a188b7` plus exact 18-path tree
+`33744cee59417c1d8bf341b3faf0534e7cce9b8b`. Both checkouts are on the same
+filesystem under `/var/tmp/query-grind-cast/`, with identical `go.mod` and more
+than 200 GB free. Two baseline samples precede two current samples, serialized;
+no other local test job was launched alongside them. All four runs passed 24
+outcomes; their 22 timed row counts agree, and COUNT(*) independently asserts
+1,000,000. The four stress targets plus five race targets are uncached in both
+BEP summary and individual-result cache fields. Wall time includes build;
+load below is one-minute load at start/end.
+
+baseline-1: 182.269s, load 1.829/4.054; baseline-2: 181.064s, load 4.054/4.202; current-1: 250.693s, load 3.962/4.852; current-2: 188.081s, load 4.852/6.331.
+
+| Query | Rows | Baseline ms (n=2) | Current ms (n=2) | Mean current/base |
+|---|---:|---:|---:|---:|
+| PK lookup id=0 | 1 | 9.745 / 8.762 | 8.750 / 8.597 | 0.937x |
+| PK lookup id=N/2 | 1 | 8.347 / 8.537 | 8.958 / 8.669 | 1.044x |
+| PK lookup id=N-1 | 1 | 7.503 / 5.440 | 6.666 / 6.450 | 1.013x |
+| idx_customer eq | 8 | 8.953 / 7.208 | 7.211 / 6.743 | 0.863x |
+| idx_amount range >9000 | 100017 | 217.882 / 273.791 | 298.246 / 243.721 | 1.102x |
+| idx_status count pending | 1 | 397.232 / 409.385 | 335.196 / 388.595 | 0.897x |
+| full scan filter amount>5000 | 1 | 820.379 / 802.818 | 827.352 / 582.460 | 0.869x |
+| GROUP BY status | 4 | 12.974 / 5.963 | 25.042 / 6.314 | 1.656x |
+| GROUP BY status COUNT only | 4 | 12.706 / 5.693 | 18.511 / 5.907 | 1.327x |
+| SUM by status (aggregate index) | 4 | 22.507 / 5.920 | 13.767 / 5.967 | 0.694x |
+| GROUP BY customer HAVING | 47271 | 726.538 / 683.030 | 649.365 / 605.409 | 0.890x |
+| JOIN 10 orders x customers | 10 | 23.963 / 42.477 | 20.880 / 22.203 | 0.648x |
+| ORDER BY PK (full) | 1000000 | 3946.169 / 3979.620 | 4004.413 / 6900.132 | 1.376x |
+| ORDER BY PK + index filter | 8 | 9.581 / 9.143 | 9.749 / 9.405 | 1.023x |
+| scan all rows ordered | 1000000 | 3789.993 / 3828.593 | 3803.942 / 3870.351 | 1.007x |
+| scan all rows wide | 1000000 | 4052.879 / 4103.485 | 4104.493 / 4121.170 | 1.008x |
+| IN-list 5 values | 46 | 20.870 / 23.966 | 20.240 / 23.597 | 0.978x |
+| PK needle id=999999 | 1 | 5.980 / 6.382 | 6.157 / 6.141 | 0.995x |
+| PK+filter needle id=500000 | 1 | 7.641 / 8.663 | 8.468 / 8.166 | 1.020x |
+| full scan sparse filter | 97 | 3480.230 / 3495.816 | 3476.757 / 3489.646 | 0.999x |
+| UPDATE by index | 8 | 9.411 / 9.624 | 10.271 / 9.613 | 1.045x |
+| DELETE single row | 1 | 6.629 / 6.776 | 7.310 / 7.243 | 1.086x |
+
+All individual samples, including slower observations, are retained in
+`v2/stress-rows.json`. No performance parity or causal attribution is claimed,
+and no performance repair was made. The five restricted factory hunts remain
+unapproved/unrun, not Docker skips or passing coverage. Prior paging140/eternal3600
+and transaction/watch/retry obligations are not newly executed by this follow-up.
+Companion: RFC-256 **Final follow-up verification and owner merge authorization**.

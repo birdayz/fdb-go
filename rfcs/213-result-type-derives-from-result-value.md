@@ -17,15 +17,18 @@ sequence anticipated:
 - The unconditional plan-level `UnknownType` stub inventory is **zero**.
 - Aggregate-index construction passes an exact candidate-derived result type;
   the former call-site `UnknownType` stub inventory is **zero**.
-- The result-type consumer classifier measures **FORWARD 1 / GUARDED 9 /
-  PROPAGATED 27 / RAW 0** (the pinned test's comment carries every movement
+- Across 37 non-census, non-test call sites, the result-type consumer classifier
+  measures **FORWARD 1 / GUARDED 8 / PROPAGATED 28 / RAW 0** (the pinned test's comment carries every movement
   since this sentence was first written: 14/29 at that time; RFC-235 retired
   three reads; RFC-242 retired three more — `planColumnNamesWithMD` and
   `physicalPlanColumnNames`, both GUARDED tail reads of a union leg's row, and
   `columnRenameValue`'s PROPAGATED read — by deleting the union re-alignment
   they served; RFC-243 merged the default materializers, retiring the GUARDED
   read in `defaultOnEmptyResultFromValue` while retaining the PROPAGATED read
-  in shared `defaultResultFromValue`). `RAW == 0` remains the correctness ratchet. The
+  in shared `defaultResultFromValue`; RFC-256 shares matched-result normalization
+  in `normalizeDefaultResult`, storing the declared type before its scalar/record
+  guards and moving one read from syntactically GUARDED to PROPAGATED).
+  `RAW == 0` remains the correctness ratchet. The
   post-implementation growth is executor exact-layout admission (projection,
   UPDATE, aggregate index, multi-intersection, and DefaultOnEmpty) plus VALUES
   passing its declared type to the runtime validator. The descendant producer

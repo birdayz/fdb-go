@@ -410,12 +410,9 @@ var engineGaps = []EngineGap{
 	// A correlated EXISTS in the SELECT projection combined with a WHERE
 	// EXISTS — Cascades declines the double-EXISTS shape.
 	{"exists-in-select.yamsql", SkipGapPlannerDeclines, "Cascades planner could not plan query", "CQ-72"},
-	// The result-set metadata pipeline truncates column types to one flat
-	// string (CQ-74), so `resultMetadata:` assertions on aggregate outputs
-	// mismatch.
-	{"aggregate-empty-table.yamsql", SkipGapResultMetadata, "result metadata mismatch", "CQ-74"},
-	{"aggregate-index-tests-count.yamsql", SkipGapResultMetadata, "result metadata mismatch", "CQ-74"},
-	{"aggregate-index-tests-count-empty.yamsql", SkipGapResultMetadata, "result metadata mismatch", "CQ-74"},
+	// Go's in-memory sort extension plans this grouped empty-input shape where
+	// Java's Cascades planner declines it.
+	{"aggregate-empty-table.yamsql", SkipConformanceGoAccepts, "expecting statement to throw an error 0AF00, however it succeeded", "RFC-256"},
 
 	// The bitmap aggregate QUERY surface: RFC-202 S3 builds the BITMAP_VALUE
 	// index metadata (the file's DDL now succeeds and the key expression is

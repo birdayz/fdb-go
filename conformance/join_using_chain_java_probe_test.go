@@ -155,33 +155,17 @@ var _ = Describe("JoinUsingChainJavaProbe", func() {
 				goSays:   "42703",
 			},
 			{
-				// A DERIVED BODY THAT IS ITSELF INVALID — A KNOWN DIVERGENCE,
-				// pinned as it stands rather than asserted away.
-				//
-				// `nope` is not a source inside the subquery, so the body is
-				// wrong before any USING question arises, and Java reports
-				// `Unknown reference NOPE`. Go reports the OUTER ambiguity
-				// instead, because the schema derivation advertises a simple
-				// star body's columns without validating it: a lone qualified
-				// star is read as the source's full schema whatever the
-				// qualifier says.
-				//
-				// Both engines refuse the query — it is invalid twice over — so
-				// this is an error-ORDER divergence, not a wrong answer. The fix
-				// is to route a derived source's schema through the validating
-				// builder (buildExactScopeSourceOrBodyError, which today only
-				// serves join/derived-legged bodies), which is a change to
-				// shared CTE derivation rather than to this resolver. Booked in
-				// TODO.md under "A derived source's schema is advertised before
-				// its body is validated".
-				//
-				// Pinned by naming BOTH sides so it fails when it changes in
-				// either direction — repaired, or moved to a third answer.
+				// A DERIVED BODY THAT IS ITSELF INVALID. `nope` is not a source
+				// inside the subquery, so that fault precedes the outer USING
+				// ambiguity. Both engines now validate the derived body before
+				// advertising its schema and report the missing qualifier first.
+				// Pin BOTH sides because merely agreeing on rejection would not
+				// establish error precedence.
 				chained: true, name: "derived body invalid, outer USING ambiguous",
 				sql: "SELECT a.id FROM a JOIN (SELECT nope.* FROM c) d USING (id) " +
 					"JOIN c USING (k)",
 				javaSays: "Unknown reference NOPE",
-				goSays:   "42702",
+				goSays:   "42703",
 			},
 			{
 				// A RIGHT LEG THAT EXPORTS THE SAME NAME TWICE. Within one

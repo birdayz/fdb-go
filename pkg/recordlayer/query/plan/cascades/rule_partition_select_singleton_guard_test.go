@@ -202,3 +202,93 @@ func TestPartitionSelect_RejectsNonSingletonCrossProductLower(t *testing.T) {
 		}
 	}
 }
+
+func TestPartitionSelect_ProjectedExistentialKeepsOuterCrossProduct(t *testing.T) {
+	t.Parallel()
+	for _, bothLive := range []bool{false, true} {
+		name := "one_live_lower"
+		if bothLive {
+			name = "two_live_lowers"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			a, b, eBase := scanQuantifier("A"), scanQuantifier("B"), scanQuantifier("E")
+			e := expressions.NamedExistentialQuantifier(eBase.GetAlias(), eBase.GetRangesOver())
+			exists := mustPartitionConstruct(values.NewExistsValue(e.GetAlias(), partitionSelectRowType("E")))
+			fields := []values.RecordConstructorField{{Name: "A", Value: partitionField("A", "col")}, {Name: "H", Value: exists}}
+			if bothLive {
+				fields = append(fields, values.RecordConstructorField{Name: "B", Value: partitionField("B", "col")})
+			}
+			sel := mustPartitionConstruct(expressions.NewSelectExpression(values.NewRawRecordConstructorValue(fields...), []expressions.Quantifier{a, b, e}, []predicates.QueryPredicate{joinPred("A", "E")}))
+			for _, deferProducts := range []bool{false, true} {
+				mode := "enumerate_products"
+				if deferProducts {
+					mode = "defer_products"
+				}
+				t.Run(mode, func(t *testing.T) {
+					t.Parallel()
+					cfg := DefaultPlannerConfiguration()
+					cfg.ShouldDeferCrossProducts = deferProducts
+					yields := mustFireExpressionRuleWithMemo(t, NewPartitionSelectRule(), expressions.InitialOf(sel), rightDeepPlanContext{cfg: cfg}, nil)
+					found := false
+					for _, y := range yields {
+						for _, lower := range nestedLowerAliasSets(y) {
+							if len(lower) == 2 && isSupersetOf(lower, aliasSet("A", "B")) {
+								found = true
+							}
+						}
+					}
+					if !found {
+						t.Fatalf("no lower {A,B} preserving cross-product multiplicity before projected E; %d alternatives", len(yields))
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestProjectedExistentialBlockQualification(t *testing.T) {
+	t.Parallel()
+	a, b, eBase, fBase := scanQuantifier("A"), scanQuantifier("B"), scanQuantifier("E"), scanQuantifier("F")
+	e := expressions.NamedExistentialQuantifier(eBase.GetAlias(), eBase.GetRangesOver())
+	f := expressions.NamedExistentialQuantifier(fBase.GetAlias(), fBase.GetRangesOver())
+	rv := mustPartitionConstruct(values.NewExistsValue(e.GetAlias(), partitionSelectRowType("E")))
+	ordinaryRV := partitionField("A", "col")
+	nullB := expressions.NamedForEachNullOnEmptyQuantifier(b.GetAlias(), b.GetRangesOver())
+	strictB := expressions.NamedForEachStrictSingleQuantifier(b.GetAlias(), b.GetRangesOver())
+	physicalB := expressions.NamedPhysicalQuantifier(b.GetAlias(), b.GetRangesOver())
+	correlated := mustPartitionConstruct(expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{joinPred("A", "B")}, b))
+	dependentB := expressions.NamedForEachQuantifier(b.GetAlias(), expressions.InitialOf(correlated))
+	for _, tc := range []struct {
+		name   string
+		qs     []expressions.Quantifier
+		result values.Value
+		want   bool
+	}{
+		{"admitted", []expressions.Quantifier{a, b, e}, rv, true},
+		{"existential_first", []expressions.Quantifier{e, b, a}, rv, true},
+		{"ordinary_join", []expressions.Quantifier{a, b, eBase}, ordinaryRV, false},
+		{"predicate_only", []expressions.Quantifier{a, b, e}, ordinaryRV, false},
+		{"no_lower", []expressions.Quantifier{e}, rv, false},
+		{"one_lower", []expressions.Quantifier{a, e}, rv, false},
+		{"empty", nil, &values.ConstantValue{Value: int64(1), Typ: values.NotNullLong}, false},
+		{"two_existentials", []expressions.Quantifier{a, b, e, f}, rv, false},
+		{"null_on_empty", []expressions.Quantifier{a, nullB, e}, rv, false},
+		{"strict_single", []expressions.Quantifier{a, strictB, e}, rv, false},
+		{"hard_dependency", []expressions.Quantifier{a, dependentB, e}, rv, false},
+		{"physical", []expressions.Quantifier{a, physicalB, e}, rv, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sel := mustPartitionConstruct(expressions.NewSelectExpression(tc.result, tc.qs, nil))
+			order := computeTransitiveCorrelationOrder(tc.qs)
+			if tc.name == "hard_dependency" && len(order[b.GetAlias()]) == 0 {
+				t.Fatal("dependency negative has no actual hard edge")
+			}
+			got, ok := independentForEachBlockBelowProjectedExistential(sel, order)
+			if ok != tc.want || ok && got != e.GetAlias() {
+				t.Fatalf("qualification=(%#v,%v), want E,%v", got, ok, tc.want)
+			}
+		})
+	}
+}

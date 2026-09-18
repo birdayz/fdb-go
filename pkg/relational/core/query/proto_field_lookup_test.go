@@ -3,33 +3,19 @@ package query
 import (
 	"testing"
 
+	"fdb.dev/pkg/recordlayer/protoname"
+	"fdb.dev/pkg/relational/core/query/semantic"
+
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
 )
 
-// protoFieldLookup TAKES A SQL NAME AND SEARCHES STORAGE NAMES, and those differ
-// on TWO INDEPENDENT AXES — case, and protobuf escaping. It has to try both, and
-// try them in combination, or a valid column reads as undefined.
-//
-// The escaping axis was missing entirely: a column declared `"a.b"` is stored as
-// `a__2b`, comes back through ToUserIdentifier everywhere a user sees it, and
-// arrived here spelled `a.b` — matching neither the exact nor the
-// case-insensitive attempt. That was the third and last site in a chain that
-// made `SELECT x FROM (SELECT "a.b" AS z FROM dottarr AS a) d, d.z AS x` fail;
-// the first two were qualifier heuristics, and this one was looking in the
-// wrong ALPHABET rather than at the wrong structure.
-//
-// The first fix of it added the escaped attempt EXACT-ONLY, which is the same
-// omission one axis over: a hand-written lowercase proto exposing `a__0b` as SQL
-// `a__b` needs escape AND fold together, because an unquoted reference arrives
-// folded. Both orders are arms below.
-//
-// ORDER IS PART OF THE CONTRACT, not an implementation detail. Escaping runs
-// only after both unescaped attempts miss, so an ordinary name — the
-// overwhelming majority — never pays for it.
-func TestProtoFieldLookupTriesCaseAndEscapingTogether(t *testing.T) {
+// TestSemanticLookupTriesCaseAndEscapingTogether exercises SQL resolution after
+// decoding stored field names. The translator must not backtrack through the
+// protobuf descriptor to rediscover an array's owner or path.
+func TestSemanticLookupTriesCaseAndEscapingTogether(t *testing.T) {
 	t.Parallel()
 
 	// fields builds a descriptor whose fields carry the given STORAGE names
@@ -170,17 +156,28 @@ func TestProtoFieldLookupTriesCaseAndEscapingTogether(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := protoFieldLookup(fields(t, tc.storage...), tc.lookup)
-			switch {
-			case tc.want == "" && got != nil:
-				t.Errorf("protoFieldLookup(%q) found %q, want a MISS\n  %s",
-					tc.lookup, got.Name(), tc.why)
-			case tc.want != "" && got == nil:
-				t.Errorf("protoFieldLookup(%q) missed, want %q\n  %s",
-					tc.lookup, tc.want, tc.why)
-			case tc.want != "" && string(got.Name()) != tc.want:
-				t.Errorf("protoFieldLookup(%q) = %q, want %q\n  %s",
-					tc.lookup, got.Name(), tc.want, tc.why)
+			fs := fields(t, tc.storage...)
+			columns := make([]semantic.Column, fs.Len())
+			for i := range columns {
+				columns[i] = semantic.Column{Id: semantic.FromNormalized(protoname.ToUserIdentifier(string(fs.Get(i).Name()))), Type: "BIGINT"}
+			}
+			scope := semantic.NewScope(nil)
+			if err := scope.AddSource(semantic.ScopeSource{Alias: semantic.FromNormalized("T"), Table: &semantic.StaticTable{TableColumns: columns}}); err != nil {
+				t.Fatal(err)
+			}
+			column, _, path, err := scope.ResolvePathNested([]semantic.Identifier{semantic.FromNormalized("T"), semantic.FromNormalized(tc.lookup)})
+			if tc.want == "" {
+				if err == nil {
+					t.Fatalf("lookup %q resolved %v, want a miss: %s", tc.lookup, path, tc.why)
+				}
+				return
+			}
+			if err != nil || len(path) != 0 {
+				t.Fatalf("lookup %q: path=%v err=%v, want %q: %s", tc.lookup, path, err, tc.want, tc.why)
+			}
+			want := protoname.ToUserIdentifier(tc.want)
+			if got := column.Id.Name(); got != want {
+				t.Fatalf("lookup %q selected column %q, want decoded storage %q (%q): %s", tc.lookup, got, tc.want, want, tc.why)
 			}
 		})
 	}

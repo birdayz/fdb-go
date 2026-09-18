@@ -255,24 +255,31 @@ class ConformanceServer {
             // (the planner / executor surface, which throws RelationalException
             // for parser / planner / runtime errors). Reflection avoids
             // coupling to the exception class names so we can detect either
-            // form without import-time dependencies.
+            // form without import-time dependencies. The SQL mapping can live
+            // on a wrapper (e.g. PlanGenerator's InvalidNameException -> 42602),
+            // so retain the first structured code in the original cause chain
+            // independently of the deepest diagnostic class/message above.
             String sqlState = null;
-            if (root instanceof SQLException) {
-                sqlState = ((SQLException) root).getSQLState();
-            } else {
-                try {
-                    Method getErrorCode = root.getClass().getMethod("getErrorCode");
-                    Object errorCode = getErrorCode.invoke(root);
-                    if (errorCode != null) {
-                        Method getCode = errorCode.getClass().getMethod("getErrorCode");
-                        Object code = getCode.invoke(errorCode);
-                        if (code instanceof String) {
-                            sqlState = (String) code;
+            for (Throwable cause = e; cause != null && sqlState == null; cause = cause.getCause()) {
+                if (cause instanceof SQLException) {
+                    sqlState = ((SQLException) cause).getSQLState();
+                } else {
+                    try {
+                        Method getErrorCode = cause.getClass().getMethod("getErrorCode");
+                        Object errorCode = getErrorCode.invoke(cause);
+                        if (errorCode != null) {
+                            Method getCode = errorCode.getClass().getMethod("getErrorCode");
+                            Object code = getCode.invoke(errorCode);
+                            if (code instanceof String) {
+                                sqlState = (String) code;
+                            }
                         }
+                    } catch (Exception ignored) {
+                        // No structured code on this wrapper; inspect its cause.
                     }
-                } catch (Exception ignored) {
-                    // No getErrorCode() method, or it returned an unexpected
-                    // shape — leave sqlState null.
+                }
+                if (sqlState != null && sqlState.isEmpty()) {
+                    sqlState = null;
                 }
             }
             if (sqlState != null) {

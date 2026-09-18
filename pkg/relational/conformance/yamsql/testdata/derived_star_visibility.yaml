@@ -1,7 +1,7 @@
 # A derived table or CTE whose body is a projection-less star over a join
-# takes its SQL columns from the star-expansion rules — an unnest AS/AT alias
-# shadows a same-named outer column, and the ephemeral __ROW_VERSION
-# pseudo-column stays hidden (Java's SemanticAnalyzer.expandStar →
+# takes its SQL columns from the star-expansion rules — a repeated unnest/table
+# label remains visible and is ambiguous when referenced, while the ephemeral
+# __ROW_VERSION pseudo-column stays hidden (Java's SemanticAnalyzer.expandStar →
 # nonEphemeralVisible; derived_star_row_versions.yaml) — so such a body is published by the builders that
 # know those rules, never by the exact labels of its built row. Beside it: a
 # body that labels two columns by quoted, case-distinct names states two
@@ -22,22 +22,14 @@ setup:
   - INSERT INTO ql VALUES (1, 1, 10)
   - INSERT INTO tv VALUES (1, 15), (2, 25), (3, 17)
 tests:
-  # (1) The unnest alias X shadows the outer column X in a star body: the
-  # published row carries ONE X, the element, in both spellings.
+  # (1) The star body publishes both the table column X and scalar element X;
+  # a reference to that repeated output name is ambiguous in both spellings.
   - query: SELECT d.x FROM (SELECT * FROM things, things.arr AS x) d
-    columns: ["X"]
-    rows:
-      - [7]
-      - [8]
+    error_code: "42702"
   - query: WITH d AS (SELECT * FROM things, things.arr AS x) SELECT d.x FROM d
-    columns: ["X"]
-    rows:
-      - [7]
-      - [8]
+    error_code: "42702"
   - query: SELECT d.x FROM (SELECT * FROM things, things.arr AS x) d WHERE d.x = 8
-    columns: ["X"]
-    rows:
-      - [8]
+    error_code: "42702"
   # (2) is derived_star_row_versions.yaml: the same rule over row-versioned
   # tables, whose star hides the ephemeral __ROW_VERSION slot.
   # (3) Quoted, case-distinct labels are two columns; each reference reads
@@ -85,7 +77,7 @@ tests:
     rows:
       - [10]
   - query: WITH d AS (SELECT * FROM rv, rw) SELECT d."__ROW_VERSION", COUNT(*) FROM d GROUP BY d."__ROW_VERSION"
-    columns: ["__ROW_VERSION", "COUNT(*)"]
+    columns: ["__ROW_VERSION", "_1"]
     unordered: true
     rows:
       - [a, 1]

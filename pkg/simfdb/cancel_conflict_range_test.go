@@ -310,3 +310,35 @@ func TestOversizedConflictRangeEndpointClamped(t *testing.T) {
 			err, codeOf(err))
 	}
 }
+
+// TestCancelConcurrentWithRead exercises cancellation from a caller-context
+// goroutine while the transaction's owning goroutine reads. Data operations
+// remain single-owner; Cancel must still be safe to call asynchronously, as in
+// C++ ThreadSafeTransaction::cancel's dispatch to the network thread.
+func TestCancelConcurrentWithRead(t *testing.T) {
+	t.Parallel()
+	db := simfdb.New(nil)
+	tx, err := db.CreateWritableTransaction()
+	if err != nil {
+		t.Fatal(err)
+	}
+	start, stopped := make(chan struct{}), make(chan struct{})
+	go func() {
+		<-start
+		for range 1000 {
+			tx.Cancel()
+		}
+		close(stopped)
+	}()
+	close(start)
+	for range 1000 {
+		_, err := tx.Get(fdb.Key("cancel/read")).Get()
+		if got := codeOf(err); got != 0 && got != 1025 {
+			t.Errorf("concurrent read code=%d, want success or 1025", got)
+		}
+	}
+	<-stopped
+	if _, err := tx.Get(fdb.Key("cancel/read")).Get(); codeOf(err) != 1025 {
+		t.Fatalf("post-cancel read=%v, want 1025", err)
+	}
+}

@@ -37,6 +37,8 @@ tests:
       WITH c1(w, z) AS (SELECT id, col1 FROM t1),
            c2(a, b) AS (WITH c1(x, y) AS (SELECT id, col1 FROM t1 WHERE id IN (1, 2)) SELECT * FROM c1)
       SELECT * FROM c1, c2
+    columns: ["W", "Z", "A", "B"]
+    plan_contains: "NestedLoopJoin"
     unordered: true
     rows:
       - [1, 10, 1, 10]

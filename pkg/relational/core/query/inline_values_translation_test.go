@@ -9,12 +9,16 @@ import (
 	"fdb.dev/pkg/relational/core/query/logical"
 )
 
-func inlineValuesQueryFixture(t *testing.T) *logical.LogicalInlineValues {
-	t.Helper()
-	rowType := &values.RecordType{Fields: []values.Field{
+func inlineValuesRowLayout() *values.RecordType {
+	return &values.RecordType{Fields: []values.Field{
 		{Name: "ID", Ordinal: 0, FieldType: values.NotNullInt},
 		{Name: "ARR", Ordinal: 1, FieldType: values.NewArrayType(false, values.NotNullInt)},
 	}}
+}
+
+func inlineValuesQueryFixture(t *testing.T) *logical.LogicalInlineValues {
+	t.Helper()
+	rowType := inlineValuesRowLayout()
 	row := values.NewRawRecordConstructorValue(
 		values.RecordConstructorField{Name: "ID", Value: &values.ConstantValue{Value: int32(1), Typ: values.NotNullInt}},
 		values.RecordConstructorField{Name: "ARR", Value: values.NewArrayConstructorValue(
@@ -91,7 +95,8 @@ func TestInlineValuesTranslationRejectsCollectionTypeDrift(t *testing.T) {
 func TestInlineValuesOwnerTypesLateralArrayWithoutMetadata(t *testing.T) {
 	t.Parallel()
 	source := inlineValuesQueryFixture(t)
-	unnest := &logical.LogicalUnnest{Segments: []string{"V", "ARR"}, Alias: "EL", AtAlias: "O"}
+	ownerLayout := inlineValuesRowLayout()
+	unnest, _ := rawBoundUnnest(t, []string{"V", "ARR"}, "EL", "O", "V", ownerLayout, 1)
 	join := logical.NewJoin(source, unnest, logical.JoinInner, "")
 
 	exact, err := ExactLogicalResultType(join, nil)
@@ -108,8 +113,8 @@ func TestInlineValuesOwnerTypesLateralArrayWithoutMetadata(t *testing.T) {
 	}{
 		{"V.ID", values.NotNullInt},
 		{"V.ARR", values.NewArrayType(false, values.NotNullInt)},
-		{"EL.EL", values.NotNullInt},
-		{"EL.O", values.NotNullInt},
+		{"EL", values.NotNullInt},
+		{"O", values.NotNullInt},
 	} {
 		field := row.Fields[ordinal]
 		if field.Name != want.name || field.Ordinal != ordinal || !field.FieldType.Equals(want.typ) {
@@ -154,9 +159,15 @@ func TestInlineValuesOwnerRejectsForeignScalarAndDuplicateOwners(t *testing.T) {
 	t.Parallel()
 	source := inlineValuesQueryFixture(t)
 
+	ownerLayout := inlineValuesRowLayout()
+	foreign, _ := rawBoundUnnest(t, []string{"X", "ARR"}, "EL", "", "X", ownerLayout, 1)
+	scalar := &logical.LogicalUnnest{
+		Segments:             []string{"V", "ID"},
+		Alias:                "EL",
+		CorrelatedCollection: rawCorrelatedValue(t, "V", ownerLayout, 0),
+	}
 	for name, unnest := range map[string]*logical.LogicalUnnest{
-		"foreign": {Segments: []string{"X", "ARR"}, Alias: "EL"},
-		"scalar":  {Segments: []string{"V", "ID"}, Alias: "EL"},
+		"scalar":  scalar,
 		"missing": {Segments: []string{"V", "NOPE"}, Alias: "EL"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -166,14 +177,15 @@ func TestInlineValuesOwnerRejectsForeignScalarAndDuplicateOwners(t *testing.T) {
 			}
 		})
 	}
+	foreignJoin := logical.NewJoin(source, foreign, logical.JoinInner, "")
+	if ref, _, err := TranslateToCascadesWithError(foreignJoin, nil); err == nil || ref != nil {
+		t.Fatalf("foreign owner translation = (%v, %v), want nil,error", ref, err)
+	}
 
 	left := logical.NewJoin(source, inlineValuesQueryFixture(t), logical.JoinInner, "")
-	if owner := findInlineValuesOwner(left, "V"); owner != nil {
-		t.Fatalf("duplicate V owners selected %p by traversal order", owner)
-	}
-	if typ, err := ExactLogicalResultType(
-		logical.NewJoin(left, &logical.LogicalUnnest{Segments: []string{"V", "ARR"}, Alias: "EL"}, logical.JoinInner, ""), nil,
-	); err == nil || typ != nil || !strings.Contains(err.Error(), "record metadata") {
-		t.Fatalf("duplicate owner typed as (%v, %v), want loud owner ambiguity", typ, err)
+	duplicate, _ := rawBoundUnnest(t, []string{"V", "ARR"}, "EL", "", "V", ownerLayout, 1)
+	duplicateJoin := logical.NewJoin(left, duplicate, logical.JoinInner, "")
+	if ref, _, err := TranslateToCascadesWithError(duplicateJoin, nil); err == nil || ref != nil || !strings.Contains(err.Error(), "share correlation identity") {
+		t.Fatalf("duplicate owner translated as (%v, %v), want loud owner ambiguity", ref, err)
 	}
 }

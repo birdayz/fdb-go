@@ -221,6 +221,8 @@ func TestBuildCommitRequest_TenantNoAlias(t *testing.T) {
 
 	for attempt := 0; attempt < 2; attempt++ {
 		body, bufp := buildCommitTransactionRequest(tx, transport.UID{First: 1, Second: 2}, tx.mutations, tx.writeConflicts)
+		// UnmarshalFDB borrows body; retain it until every decoded-field assertion is done.
+		defer marshalBufPool.Put(bufp)
 
 		// tx.mutations backing array must be byte-for-byte the originals — the
 		// prefix must NOT have been written through the zero-copy alias.
@@ -237,7 +239,6 @@ func TestBuildCommitRequest_TenantNoAlias(t *testing.T) {
 		if err := req.UnmarshalFDB(body); err != nil {
 			t.Fatalf("attempt %d: UnmarshalFDB: %v", attempt, err)
 		}
-		marshalBufPool.Put(bufp)
 		want := append(append([]byte{}, prefix[:]...), origKey...)
 		if len(req.Transaction.Mutations) != 1 || !bytes.Equal(req.Transaction.Mutations[0].Param1, want) {
 			t.Fatalf("attempt %d: marshaled key: got %q, want %q (single tenant prefix)", attempt, req.Transaction.Mutations[0].Param1, want)

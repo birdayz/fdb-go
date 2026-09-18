@@ -49,7 +49,7 @@ func TestSubstituteParams(t *testing.T) {
 			name:  "float64",
 			query: "INSERT INTO t VALUES (?)",
 			args:  []driver.NamedValue{nv(1, float64(3.14))},
-			want:  "INSERT INTO t VALUES (3.14)",
+			want:  "INSERT INTO t VALUES (3.14e+00)",
 		},
 		{
 			name:  "string escaping",
@@ -336,99 +336,6 @@ func TestEmbeddedConnection_BeginTxClosedReturnsErrBadConn(t *testing.T) {
 	}
 }
 
-// TestTriBool pins the Kleene three-valued truth table so any future tweak
-// of triAnd/triOr/Not doesn't silently violate SQL §8.12. Exhaustively
-// enumerates all 3×3 combinations — 9 AND, 9 OR, 3 NOT.
-func TestTriBool(t *testing.T) {
-	t.Parallel()
-	name := func(v triBool) string {
-		switch v {
-		case triTrue:
-			return "T"
-		case triFalse:
-			return "F"
-		case triNull:
-			return "N"
-		}
-		return "?"
-	}
-
-	andCases := []struct {
-		a, b, want triBool
-	}{
-		{triTrue, triTrue, triTrue},
-		{triTrue, triFalse, triFalse},
-		{triTrue, triNull, triNull},
-		{triFalse, triTrue, triFalse},
-		{triFalse, triFalse, triFalse},
-		{triFalse, triNull, triFalse}, // FALSE short-circuits
-		{triNull, triTrue, triNull},
-		{triNull, triFalse, triFalse},
-		{triNull, triNull, triNull},
-	}
-	for _, tc := range andCases {
-		if got := triAnd(tc.a, tc.b); got != tc.want {
-			t.Errorf("triAnd(%s, %s) = %s, want %s", name(tc.a), name(tc.b), name(got), name(tc.want))
-		}
-	}
-
-	orCases := []struct {
-		a, b, want triBool
-	}{
-		{triTrue, triTrue, triTrue},
-		{triTrue, triFalse, triTrue},
-		{triTrue, triNull, triTrue}, // TRUE short-circuits
-		{triFalse, triTrue, triTrue},
-		{triFalse, triFalse, triFalse},
-		{triFalse, triNull, triNull},
-		{triNull, triTrue, triTrue},
-		{triNull, triFalse, triNull},
-		{triNull, triNull, triNull},
-	}
-	for _, tc := range orCases {
-		if got := triOr(tc.a, tc.b); got != tc.want {
-			t.Errorf("triOr(%s, %s) = %s, want %s", name(tc.a), name(tc.b), name(got), name(tc.want))
-		}
-	}
-
-	notCases := []struct {
-		in, want triBool
-	}{
-		{triTrue, triFalse},
-		{triFalse, triTrue},
-		{triNull, triNull},
-	}
-	for _, tc := range notCases {
-		if got := tc.in.Not(); got != tc.want {
-			t.Errorf("Not(%s) = %s, want %s", name(tc.in), name(got), name(tc.want))
-		}
-	}
-
-	// IsTrue: only triTrue is truthy. UNKNOWN must NOT pass the filter
-	// boundary — that's the whole point of the tri-state.
-	truthyCases := []struct {
-		in   triBool
-		want bool
-	}{
-		{triTrue, true},
-		{triFalse, false},
-		{triNull, false},
-	}
-	for _, tc := range truthyCases {
-		if got := tc.in.IsTrue(); got != tc.want {
-			t.Errorf("%s.IsTrue() = %v, want %v", name(tc.in), got, tc.want)
-		}
-	}
-
-	// triFromBool — round-trip.
-	if triFromBool(true) != triTrue {
-		t.Error("triFromBool(true) != triTrue")
-	}
-	if triFromBool(false) != triFalse {
-		t.Error("triFromBool(false) != triFalse")
-	}
-}
-
 func TestEmbeddedConnection_ResetSession(t *testing.T) {
 	t.Parallel()
 	conn := &EmbeddedConnection{sess: &session.Session{Schema: "myschema"}}
@@ -496,53 +403,6 @@ func TestEmbeddedConnection_IsValid(t *testing.T) {
 	conn3.closed.Store(true)
 	if conn3.IsValid() {
 		t.Error("IsValid: want false for closed, got true")
-	}
-}
-
-func TestValuesEqual(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		name string
-		a, b any
-		want bool
-	}{
-		{"nil==nil", nil, nil, true},
-		{"nil!=int", nil, int64(0), false},
-		{"int!=nil", int64(0), nil, false},
-		{"int64 equal", int64(1), int64(1), true},
-		{"int64 not equal", int64(1), int64(2), false},
-		// Large int64 that float64 cannot represent exactly (> 2^53).
-		{"large int64 equal", int64(9007199254740993), int64(9007199254740993), true},
-		{"large int64 not equal", int64(9007199254740992), int64(9007199254740993), false},
-		{"float64 equal", float64(3.14), float64(3.14), true},
-		{"float64 not equal", float64(3.14), float64(2.71), false},
-		{"int64 == float64", int64(5), float64(5.0), true},
-		{"float64 == int64", float64(5.0), int64(5), true},
-		{"string equal", "hello", "hello", true},
-		{"string not equal", "hello", "world", false},
-		{"bool true==true", true, true, true},
-		{"bool false!=true", false, true, false},
-		// Mixed-type comparisons must return false — no string coercion.
-		{"string '5' != int 5", "5", int64(5), false},
-		{"int 5 != string '5'", int64(5), "5", false},
-		{"string '5.0' != float 5.0", "5.0", float64(5.0), false},
-		{"float 5.0 != string '5.0'", float64(5.0), "5.0", false},
-		{"bool true != int 1", true, int64(1), false},
-		{"int 1 != bool true", int64(1), true, false},
-		{"bool true != string 'true'", true, "true", false},
-		{"string 'true' != bool true", "true", true, false},
-		{"bytes equal", []byte("abc"), []byte("abc"), true},
-		{"bytes not equal", []byte("abc"), []byte("abd"), false},
-		{"bytes != string", []byte("abc"), "abc", false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			got := valuesEqual(tc.a, tc.b)
-			if got != tc.want {
-				t.Errorf("valuesEqual(%v, %v) = %v, want %v", tc.a, tc.b, got, tc.want)
-			}
-		})
 	}
 }
 
@@ -823,24 +683,6 @@ func FuzzCompareValues(f *testing.F) {
 		}
 		if r := functions.CompareValues(false, true); r != -1 {
 			t.Fatalf("CompareValues(false, true) = %d, want -1", r)
-		}
-		// Cross-helper consistency: ORDER BY (CompareValues) and `=`
-		// (valuesEqual) MUST agree on equality. If they diverged a
-		// query like `SELECT * FROM t WHERE x = y ORDER BY x` could
-		// surface rows where `x = y` is true but the sort treats them
-		// as ordered relative to each other (or vice versa). Skip when
-		// either operand is NaN, since IEEE754 NaN ≠ NaN by definition
-		// (CompareValues falls back to type-name order = 0; valuesEqual
-		// returns false). This isn't a divergence — it's the IEEE754
-		// boundary, which both helpers handle consistently with their
-		// design.
-		if !hasNaN(a) && !hasNaN(bv) {
-			cmp0 := functions.CompareValues(a, bv) == 0
-			eq := valuesEqual(a, bv)
-			if cmp0 != eq {
-				t.Fatalf("CompareValues == 0 vs valuesEqual disagree:\n  a=%v, b=%v\n  CompareValues=%d (==0 ? %v)\n  valuesEqual=%v",
-					a, bv, functions.CompareValues(a, bv), cmp0, eq)
-			}
 		}
 	})
 }

@@ -2,6 +2,7 @@ package logical
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -16,7 +17,11 @@ type ExistsSubquery struct {
 	// FlowedType is the exact whole-row type of Plan. It is captured when the
 	// subquery is built so every ExistsValue and existential Quantifier use one
 	// stable type authority rather than re-deriving a placeholder type.
-	FlowedType    values.Type
+	FlowedType values.Type
+	// Input owns the lowered producer and its scalar edges. Plan retains the
+	// bound logical source/placement information; it is not rebuilt to type or
+	// translate an attachment that already owns Input.
+	Input         *ExistsInput
 	Plan          LogicalOperator
 	JoinPredicate predicates.QueryPredicate
 	// KnownTruth is non-nil when the front-end can prove the EXISTS result from
@@ -27,22 +32,10 @@ type ExistsSubquery struct {
 	// substitutes the constant in positive and negated WHERE consumers instead
 	// of building a correlated semi-join. Nil means the result is data-dependent.
 	KnownTruth predicates.TriBool
-	// OuterOnlyJoinConjuncts marks a JoinPredicate carrying conjuncts with
-	// NO inner-source reference that can FILTER (a nested-EXISTS middle
-	// routes them here; the inside placement does not plan for that
-	// composition; statically-TRUE tautologies are excluded - routing TRUE
-	// is a no-op). The outer-routing validity matrix, enforced by
-	// declineNegatedOuterOnlyEsq (predicate side) and
-	// declineNegatedOuterOnlyEsqValue (value side) in the translator:
-	//
-	//	WHERE/ON + positive  -> VALID   (P AND EXISTS(Q) == EXISTS(P AND Q))
-	//	WHERE/ON + negative  -> DECLINE (would compute P AND NOT-EXISTS(Q))
-	//	projected + either   -> DECLINE (outer-routing filters the row
-	//	                        stream; a projected boolean must not)
-	//
-	// HAVING is kept out of the surface by translateAggregate's blanket
-	// rejection of HavingExistsSubqueries.
-	OuterOnlyJoinConjuncts bool
+	// Constraint is an admission requirement, independent of dependency and
+	// predicate placement. Only the completed owning clause can discharge it.
+	Constraint ExistsConstraint
+	consumers  ExistsConsumer
 }
 
 // ScalarSubquery pairs a correlation alias with the logical plan for
@@ -83,8 +76,13 @@ type CorrelatedScalarSubquery struct {
 // LogicalScan reads a single table. Empty Alias means "use the table
 // name as the source alias."
 type LogicalScan struct {
-	Table string
-	Alias string
+	Source ScanSource
+	Table  string
+	Alias  string
+	// TablePath preserves normalized identifier segments from the SQL parse
+	// boundary. A quoted dotted name is one segment, not a schema qualifier.
+	// Nil denotes legacy programmatic input; non-nil empty is malformed.
+	TablePath []string
 	// Binding is the scan's binding correlation name when its FROM alias
 	// DUPLICATES an earlier leg's at the same level ("" = the alias binds —
 	// every non-duplicate leg). Carried from the
@@ -94,9 +92,11 @@ type LogicalScan struct {
 	Binding string
 }
 
-// NewScan constructs a LogicalScan.
-func NewScan(table, alias string) *LogicalScan {
-	return &LogicalScan{Table: table, Alias: alias}
+// NewScan constructs a LogicalScan. SQL builders supply captured tablePath
+// segments; synthesized alias references supply exactly one literal segment.
+// Omitting tablePath retains the legacy string-only programmatic interface.
+func NewScan(table, alias string, tablePath ...string) *LogicalScan {
+	return &LogicalScan{Table: table, Alias: alias, TablePath: slices.Clone(tablePath)}
 }
 
 func (*LogicalScan) Children() []LogicalOperator { return []LogicalOperator{} }
@@ -123,9 +123,9 @@ type LogicalUnnest struct {
 	// Binding carries the comma source's duplicate-alias binding id
 	// (see LogicalScan.Binding) so the
 	// TABLE-FIRST demotion (demoteSchemaQualifiedUnnest) can restore it on
-	// the demoted LogicalScan — a mis-classified schema-qualified TABLE leg
-	// is a table leg for binding purposes. A GENUINE unnest never consumes
-	// it: a duplicate unnest AS/AT alias is rejected outright (RFC-142).
+	// the demoted LogicalScan. A genuine unnest consumes the same identity;
+	// repeated SQL labels do not replace it or collapse element/ordinal
+	// slots (RFC-256).
 	Binding string
 	// Alias is the AS alias (`x` in `... AS x`) bound to each unnested
 	// element. Empty when the AS alias is omitted (AT-only form).
@@ -133,13 +133,37 @@ type LogicalUnnest struct {
 	// AtAlias is the AT ordinal alias (`ord` in `... AT ord`), empty when
 	// absent. Its presence makes the Explode WITH ORDINALITY.
 	AtAlias string
-	// CorrelatedCollection is set only when this unnest is the primary source
-	// of a correlated subquery (`EXISTS (SELECT ... FROM R.TAGS AS E)`). It is
-	// the already-resolved array FieldValue over the outer correlation. A
-	// regular lateral FROM leg gets that value from the LogicalJoin on its left
-	// and leaves this nil. Carrying the resolved Value preserves minted outer
-	// correlations and avoids resolving the owner a second time.
+	// CorrelatedCollection is the already-resolved array Value over the outer
+	// correlation. A lateral FROM leg binds it against its preceding FROM
+	// prefix; a correlated primary source in EXISTS binds it against its outer
+	// scope. Carrying the value preserves the owner, exact type and ordinal
+	// path instead of resolving the syntax again during translation.
 	CorrelatedCollection values.Value
+}
+
+// UnnestBindingName reads a lateral source's runtime identity. A nonempty
+// binding is the parser's collision-free identity; the empty-binding convention
+// uses the captured AS/default name (AT for programmatic ordinal-only sources).
+// Display aliases never replace a carried binding at a consumer.
+func UnnestBindingName(binding, alias, atAlias string) string {
+	if binding != "" {
+		return strings.ToUpper(binding)
+	}
+	if alias != "" {
+		return strings.ToUpper(alias)
+	}
+	return strings.ToUpper(atAlias)
+}
+
+// UnnestOrdinalityNames names the two physical slots without changing their
+// order. Semantic labels remain untouched. For AT-only input the visible ordinal
+// keeps its name; only the hidden element is renamed on a collision.
+func UnnestOrdinalityNames(alias, atAlias string) []string {
+	if alias == "" {
+		names := values.DedupFieldNames([]string{atAlias, values.OrdinalFieldName(0)})
+		return []string{names[1], names[0]}
+	}
+	return values.DedupFieldNames([]string{alias, atAlias})
 }
 
 func (*LogicalUnnest) Children() []LogicalOperator { return []LogicalOperator{} }
@@ -171,6 +195,10 @@ func (u *LogicalUnnest) Explain(indent string) string {
 // builder is constructed without a metadata-backed catalog (the
 // catalog-less Explain path, which has no transaction in scope).
 type LogicalFilter struct {
+	// HasQualify preserves the owning block's clause provenance when QUALIFY
+	// is combined with WHERE. Correlated EXISTS admission must not infer that
+	// provenance from a predicate that may already have folded to a constant.
+	HasQualify                 bool
 	Input                      LogicalOperator
 	Predicate                  predicates.QueryPredicate  // preferred when non-nil
 	PredicateText              string                     // source-text fallback
@@ -224,6 +252,10 @@ type LogicalProject struct {
 	Aliases         []string       // parallel to Projections; "" means no alias
 	ProjectedValues []values.Value // parallel to Projections; nil slot = walker declined
 	IsComputed      []bool         // parallel to Projections; true = expression, not plain column ref
+	// SQLNames preserves semantic name presence independently of physical
+	// aliases: an empty slot is unnamed, even when its emitted field is _N.
+	// nil means names derive from the projection's authored references/aliases.
+	SQLNames []string
 	// AliasMinted is parallel to Aliases: true = the alias in that slot was
 	// written by the MACHINERY, not by the user's `AS`. It is the provenance of
 	// the name, carried, because the name's SHAPE cannot carry it: the
@@ -794,7 +826,16 @@ func (k JoinKind) String() string {
 // predicate). OnPredicate is the optional structured form (used by
 // the catalog-aware walker); when non-nil, it takes precedence over
 // OnText for Cascades lowering.
+// BoundJoinPredicate retains ON provenance before existential folding. The
+// source identities describe the left-to-current frame, never later joins.
+type BoundJoinPredicate struct {
+	Predicate       predicates.QueryPredicate
+	Exists          []ExistsSubquery
+	VisibleBindings []values.CorrelationIdentifier
+}
+
 type LogicalJoin struct {
+	BoundOn     *BoundJoinPredicate
 	Left        LogicalOperator
 	Right       LogicalOperator
 	Kind        JoinKind
@@ -1011,23 +1052,18 @@ func (v *LogicalValues) Explain(indent string) string {
 
 // --- CTE -----------------------------------------------------------
 
-// LogicalCTE wraps a named Common Table Expression around a Main
-// query. The Body is the CTE's own plan; Main references Body via a
-// LogicalScan on Name. Recursive CTEs set Recursive=true — Body may
-// self-reference (the recursive evaluator lives at the executor
-// layer for now).
+// LogicalCTE retains a Common Table Expression declaration around a Main query.
+// Its consumers select the shared producer through LogicalScan.Source.
 type LogicalCTE struct {
-	Name           string
-	Body           LogicalOperator
-	Main           LogicalOperator
-	Recursive      bool
-	ColumnAliases  []string // WITH c(a, b) AS (...) → renames body's output columns
-	TraversalOrder TraversalOrder
+	*CTEProducer
+	// Alias retains a derived source's SQL qualifier independently of its
+	// private CTE registration Name (empty = Name is also the qualifier).
+	Alias string
+	Main  LogicalOperator
 	// PreserveMainSource marks a scope-only envelope: Name registers Body for
 	// scans in Main, but the envelope does not replace Main's outward source
-	// identity. Correlated EXISTS/Scalar plans use this when they copy enclosing
-	// CTE definitions into a self-contained subplan. Derived-table alias carriers
-	// leave it false because their CTE name deliberately IS the outward alias.
+	// identity. Derived-table alias carriers leave it false because their
+	// binding is the outward source identity.
 	PreserveMainSource bool
 	// Binding is the derived/CTE leg's binding correlation name when its
 	// FROM alias duplicates an earlier leg's ("" = Name binds). See
@@ -1051,21 +1087,26 @@ const (
 )
 
 // NewCTE constructs a LogicalCTE.
-func NewCTE(name string, body, main LogicalOperator, recursive bool) *LogicalCTE {
-	return &LogicalCTE{Name: name, Body: body, Main: main, Recursive: recursive}
+func NewCTE(name string, body, main LogicalOperator, recursive bool, options ...CTEOption) *LogicalCTE {
+	return &LogicalCTE{CTEProducer: newCTEProducer(name, body, recursive, options...), Main: main}
+}
+
+// NewCTEReference retains a prepared declaration without copying its metadata.
+func NewCTEReference(producer *CTEProducer, main LogicalOperator) *LogicalCTE {
+	return &LogicalCTE{CTEProducer: producer, Main: main}
 }
 
 func (c *LogicalCTE) Children() []LogicalOperator {
-	return []LogicalOperator{c.Body, c.Main}
+	return []LogicalOperator{c.Body(), c.Main}
 }
 
 func (c *LogicalCTE) Explain(indent string) string {
 	tag := "CTE"
-	if c.Recursive {
+	if c.Recursive() {
 		tag = "RecursiveCTE"
 	}
-	header := fmt.Sprintf("%s%s(%s)", indent, tag, c.Name)
-	return fmt.Sprintf("%s\n%s\n%s", header, c.Body.Explain(indent+"  "), c.Main.Explain(indent+"  "))
+	header := fmt.Sprintf("%s%s(%s)", indent, tag, c.Name())
+	return fmt.Sprintf("%s\n%s\n%s", header, c.Body().Explain(indent+"  "), c.Main.Explain(indent+"  "))
 }
 
 // --- DDL + passthrough ---------------------------------------------
@@ -1230,7 +1271,7 @@ func OuterSourceIsDerivedTable(op LogicalOperator, alias string) bool {
 	walk = func(o LogicalOperator) bool {
 		switch n := o.(type) {
 		case *LogicalCTE:
-			if strings.EqualFold(n.Name, want) {
+			if strings.EqualFold(n.Name(), want) {
 				return true
 			}
 			// Only the visible Main leg is in scope; never the Body.

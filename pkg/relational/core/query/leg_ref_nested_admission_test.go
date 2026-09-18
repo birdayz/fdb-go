@@ -273,11 +273,12 @@ func TestClassifyLegConjunct_SeesANestedBoxLegDescent(t *testing.T) {
 	}
 	classify := func(t *testing.T, pred predicates.QueryPredicate) boxConjVerdict {
 		t.Helper()
+		tr := newChainedSpineTranslator(t)
 		box := logical.NewJoin(scan("T4", "T4"), scan("T", "T"), logical.JoinLeft, "")
-		u := &logical.LogicalUnnest{Segments: []string{"T4", "SARR"}, Alias: "X"}
+		u, _ := rawBoundProtoUnnest(t, tr.md, "T4", "T4", []string{"T4", "SARR"}, "X", "", "SARR")
 		f := &logical.LogicalFilter{Input: logical.NewJoin(box, u, logical.JoinInner, ""), Predicate: pred}
 		j := f.Input.(*logical.LogicalJoin)
-		return newChainedSpineTranslator(t).classifyBoxLegConjunct(
+		return tr.classifyBoxLegConjunct(
 			j.Left.(*logical.LogicalJoin), j.Right.(*logical.LogicalUnnest), f.Predicate)
 	}
 

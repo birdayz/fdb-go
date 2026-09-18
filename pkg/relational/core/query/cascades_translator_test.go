@@ -599,9 +599,9 @@ func TestExactProjectionForLogicalProjectDoesNotLeakActiveCTEQualifier(t *testin
 	project.ProjectionRefs = []logical.ColumnRef{{
 		Present: true, Bare: "ID", Qualifier: "S", Qualified: true,
 	}}
-	translator := &cascadesTranslator{cteScope: map[string]logical.LogicalOperator{
+	translator := &cascadesTranslator{cteScope: testCTERegistry(map[string]logical.LogicalOperator{
 		"S": logical.NewScan("T", ""),
-	}}
+	})}
 	expr := translator.exactProjectionForLogicalProject([]values.Value{id}, project, inner)
 	proj, ok := expr.(*expressions.LogicalProjectionExpression)
 	if !ok {
@@ -914,6 +914,7 @@ func TestTranslateCTEChained(t *testing.T) {
 	mainA := logical.NewScan("B", "")
 	bodyB := logical.NewScan("A", "")
 	cteA := logical.NewCTE("A", bodyA, mainA, false)
+	bodyB.Source = logical.CTEScanSource(cteA.CTEProducer)
 	cteB := logical.NewCTE("B", bodyB, cteA, false)
 
 	ref, _ := TranslateToCascadesWithSubqueries(cteB, demoMetaData(t))
@@ -1417,7 +1418,7 @@ func TestLegColumns_CTEScopeResolvesBody(t *testing.T) {
 	md := demoMetaData(t) // has a real "Order" table
 
 	// Without a shadow, "Order" anchors from metadata (non-nil).
-	plain := &cascadesTranslator{md: md, cteScope: map[string]logical.LogicalOperator{}}
+	plain := &cascadesTranslator{md: md, cteScope: testCTERegistry(map[string]logical.LogicalOperator{})}
 	realCols := plain.legColumns(logical.NewScan("Order", ""))
 	if realCols == nil {
 		t.Fatal("setup: a real table must derive columns from metadata")
@@ -1428,7 +1429,7 @@ func TestLegColumns_CTEScopeResolvesBody(t *testing.T) {
 	body := logical.NewProject(logical.NewScan("Order", ""), []string{"ORDER_ID"}, []string{"OID"})
 	shadowed := &cascadesTranslator{
 		md:       md,
-		cteScope: map[string]logical.LogicalOperator{"ORDER": body},
+		cteScope: testCTERegistry(map[string]logical.LogicalOperator{"ORDER": body}),
 	}
 	cols := shadowed.legColumns(logical.NewScan("Order", ""))
 	if len(cols) != 1 || cols[0].Name != "OID" {
@@ -1441,16 +1442,18 @@ func TestLegColumns_CTEScopeResolvesBody(t *testing.T) {
 	selfBody := logical.NewScan("Order", "")
 	selfShadowed := &cascadesTranslator{
 		md:       md,
-		cteScope: map[string]logical.LogicalOperator{"ORDER": selfBody},
+		cteScope: testCTERegistry(map[string]logical.LogicalOperator{"ORDER": selfBody}),
 	}
 	if got := selfShadowed.legColumns(logical.NewScan("Order", "")); len(got) != len(realCols) {
 		t.Errorf("self-referential CTE body must resolve to the real table's columns (no recursion); got %v want %d cols", got, len(realCols))
 	}
 
 	// cteExprScope (a pre-translated recursive-CTE reference) still falls back to nil.
+	recursiveProducer := testCTEProducer("ORDER", nil)
 	exprShadowed := &cascadesTranslator{
 		md:           md,
-		cteExprScope: map[string]expressions.RelationalExpression{"ORDER": nil},
+		cteScope:     logical.CTERegistry{}.With(recursiveProducer),
+		cteExprScope: map[*logical.CTEProducer]expressions.RelationalExpression{recursiveProducer: nil},
 	}
 	if cols := exprShadowed.legColumns(logical.NewScan("Order", "")); cols != nil {
 		t.Errorf("cteExprScope-shadowed name must NOT anchor (recursive-CTE body unreadable); got %v", cols)
@@ -1580,19 +1583,17 @@ func TestTranslateUnnest_NilMetadataAtOrdinalityIsCleanError(t *testing.T) {
 	}
 }
 
-// TestExactLogicalResultType_LateralRightUnnest pins the only context in which
-// a syntax-only LogicalUnnest has enough information to state an exact type:
-// the right child of its lateral join. The owner is selected structurally from
-// the exact left input, and its stored array slot supplies the element type.
-// A standalone unnest and every malformed owner/path remain loud; this must
-// never become an Unknown-producing text fallback.
+// TestExactLogicalResultType_LateralRightUnnest pins the exact type supplied by
+// the semantic collection binding. A syntax-only source stays untyped even when
+// its diagnostic Segments happen to name a real catalog array.
 func TestExactLogicalResultType_LateralRightUnnest(t *testing.T) {
 	t.Parallel()
 	md := demoMetaData(t)
 	left := logical.NewScan("Order", "O")
 
 	t.Run("scalar AS", func(t *testing.T) {
-		unnest := &logical.LogicalUnnest{Segments: []string{"O", "TAGS"}, Alias: "TAG"}
+		owner, path := rawProtoPath(t, md, "Order", "TAGS")
+		unnest, _ := rawBoundUnnest(t, []string{"O", "TAGS"}, "TAG", "", "O", owner, path...)
 		joined, err := ExactLogicalResultType(logical.NewJoin(left, unnest, logical.JoinInner, ""), md)
 		if err != nil {
 			t.Fatal(err)
@@ -1608,8 +1609,9 @@ func TestExactLogicalResultType_LateralRightUnnest(t *testing.T) {
 	})
 
 	t.Run("AS plus AT", func(t *testing.T) {
-		unnest := &logical.LogicalUnnest{Segments: []string{"O", "TAGS"}, Alias: "TAG", AtAlias: "POS"}
-		right, err := exactLateralUnnestResultType(left, unnest, md)
+		owner, path := rawProtoPath(t, md, "Order", "TAGS")
+		unnest, _ := rawBoundUnnest(t, []string{"O", "TAGS"}, "TAG", "POS", "O", owner, path...)
+		right, err := ExactLogicalResultType(unnest, md)
 		if err != nil {
 			t.Fatal(err)
 		}

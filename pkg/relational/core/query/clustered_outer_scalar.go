@@ -212,6 +212,64 @@ func (pu *clusterPullUp) bake(v values.Value) values.Value {
 	return baked
 }
 
+// innerBindingScope is a lexical frame, not a recursive union of every alias
+// in the subtree. CTE definitions and Main can bind the same spelling separately.
+type innerBindingScope struct {
+	parent *innerBindingScope
+	local  map[string]struct{}
+}
+
+func (s *innerBindingScope) contains(name string) bool {
+	for cur := s; cur != nil; cur = cur.parent {
+		if _, bound := cur.local[name]; bound {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *innerBindingScope) withoutCurrent(names map[string]struct{}) *innerBindingScope {
+	if s == nil {
+		return nil
+	}
+	local := make(map[string]struct{}, len(s.local))
+	for name := range s.local {
+		if _, replaced := names[name]; !replaced {
+			local[name] = struct{}{}
+		}
+	}
+	return &innerBindingScope{parent: s.parent, local: local}
+}
+
+// innerLexicalBindings lists actual current-scope binding identities. Unlike the
+// conservative alias census, a minted binding never also binds its display alias.
+func innerLexicalBindings(op logical.LogicalOperator) map[string]struct{} {
+	out := map[string]struct{}{}
+	var walk func(logical.LogicalOperator)
+	walk = func(op logical.LogicalOperator) {
+		if op == nil {
+			return
+		}
+		switch node := op.(type) {
+		case *logical.LogicalCTE:
+			if node.Binding == "" && node.PreserveMainSource {
+				walk(node.Main)
+			} else {
+				out[strings.ToUpper(sourceBinding(node))] = struct{}{}
+			}
+			return
+		case *logical.LogicalScan, *logical.LogicalInlineValues, *logical.LogicalUnnest:
+			out[strings.ToUpper(sourceBinding(op))] = struct{}{}
+			return
+		}
+		for _, child := range op.Children() {
+			walk(child)
+		}
+	}
+	walk(op)
+	return out
+}
+
 // rebuildInnerWithValues rebuilds the csq's single-source inner chain with fn
 // applied to every carried value — COPIES, never in-place mutation (the
 // logical tree must survive a decline-and-fallback re-translation unpoisoned).
@@ -227,15 +285,85 @@ func (pu *clusterPullUp) bake(v values.Value) values.Value {
 // admits JOIN-inners; a join with existential riders declines). Scan and
 // Distinct carry no values.
 func rebuildInnerWithValues(op logical.LogicalOperator, fn func(values.Value) values.Value) (logical.LogicalOperator, bool) {
+	return rebuildInnerInScope(op, fn, nil)
+}
+
+func rebuildInnerInScope(op logical.LogicalOperator, rewrite func(values.Value) values.Value, scope *innerBindingScope, producerCopies ...map[*logical.CTEProducer]*logical.CTEProducer) (logical.LogicalOperator, bool) {
+	copies := make(map[*logical.CTEProducer]*logical.CTEProducer)
+	if len(producerCopies) > 0 {
+		copies = producerCopies[0]
+	}
+	fn := func(v values.Value) values.Value {
+		for correlation := range values.GetCorrelatedToOfValue(v) {
+			if scope.contains(strings.ToUpper(correlation.Name())) {
+				return v
+			}
+		}
+		return rewrite(v)
+	}
 	switch o := op.(type) {
 	case *logical.LogicalScan:
-		return o, true
-	case *logical.LogicalJoin:
-		l, ok := rebuildInnerWithValues(o.Left, fn)
+		producer := o.Source.Producer()
+		if producer == nil {
+			return o, true
+		}
+		if producer.Recursive() {
+			return nil, false
+		}
+		copy, found := copies[producer]
+		if !found {
+			// The definition predates this entire consumer FROM frame, not
+			// just the first scan's alias. Sibling consumers cannot mask its
+			// free references before the shared snapshot is cached.
+			var enclosing *innerBindingScope
+			if scope != nil {
+				enclosing = scope.parent
+			}
+			bodyScope := &innerBindingScope{parent: enclosing, local: innerLexicalBindings(producer.Body())}
+			body, ok := rebuildInnerInScope(producer.Body(), rewrite, bodyScope, copies)
+			if !ok {
+				return nil, false
+			}
+			copy = producer.WithBody(body)
+			copies[producer] = copy
+		}
+		cp := *o
+		cp.Source = logical.CTEScanSource(copy)
+		return &cp, true
+	case *logical.LogicalCTE:
+		if o.Recursive() {
+			return nil, false
+		}
+		mainBindings := innerLexicalBindings(o.Main)
+		exported := o.Binding
+		if exported == "" {
+			exported = o.Name()
+		}
+		mainBindings[strings.ToUpper(exported)] = struct{}{}
+		// The definition cannot see its own newly exported binding or Main's
+		// FROM locals. Other enclosing bindings remain visible, including an
+		// older same-named export in an enclosing lexical frame.
+		enclosing := scope.withoutCurrent(mainBindings)
+		bodyScope := &innerBindingScope{parent: enclosing, local: innerLexicalBindings(o.Body())}
+		body, ok := rebuildInnerInScope(o.Body(), rewrite, bodyScope, copies)
 		if !ok {
 			return nil, false
 		}
-		r, ok := rebuildInnerWithValues(o.Right, fn)
+		copies[o.CTEProducer] = o.CTEProducer.WithBody(body)
+		mainScope := &innerBindingScope{parent: enclosing, local: mainBindings}
+		main, ok := rebuildInnerInScope(o.Main, rewrite, mainScope, copies)
+		if !ok {
+			return nil, false
+		}
+		cp := *o
+		cp.CTEProducer, cp.Main = copies[o.CTEProducer], main
+		return &cp, true
+	case *logical.LogicalJoin:
+		l, ok := rebuildInnerInScope(o.Left, rewrite, scope, copies)
+		if !ok {
+			return nil, false
+		}
+		r, ok := rebuildInnerInScope(o.Right, rewrite, scope, copies)
 		if !ok {
 			return nil, false
 		}
@@ -250,7 +378,7 @@ func rebuildInnerWithValues(op logical.LogicalOperator, fn func(values.Value) va
 			len(o.CorrelatedScalarSubqueries) > 0 {
 			return nil, false
 		}
-		in, ok := rebuildInnerWithValues(o.Input, fn)
+		in, ok := rebuildInnerInScope(o.Input, rewrite, scope, copies)
 		if !ok {
 			return nil, false
 		}
@@ -264,7 +392,7 @@ func rebuildInnerWithValues(op logical.LogicalOperator, fn func(values.Value) va
 		if len(o.ScalarSubqueries) > 0 || len(o.CorrelatedScalarSubqueries) > 0 {
 			return nil, false
 		}
-		in, ok := rebuildInnerWithValues(o.Input, fn)
+		in, ok := rebuildInnerInScope(o.Input, rewrite, scope, copies)
 		if !ok {
 			return nil, false
 		}
@@ -284,7 +412,7 @@ func rebuildInnerWithValues(op logical.LogicalOperator, fn func(values.Value) va
 		if len(o.HavingExistsSubqueries) > 0 || len(o.HavingScalarSubqueries) > 0 {
 			return nil, false
 		}
-		in, ok := rebuildInnerWithValues(o.Input, fn)
+		in, ok := rebuildInnerInScope(o.Input, rewrite, scope, copies)
 		if !ok {
 			return nil, false
 		}
@@ -334,7 +462,7 @@ func rebuildInnerWithValues(op logical.LogicalOperator, fn func(values.Value) va
 		}
 		return &cp, true
 	case *logical.LogicalSort:
-		in, ok := rebuildInnerWithValues(o.Input, fn)
+		in, ok := rebuildInnerInScope(o.Input, rewrite, scope, copies)
 		if !ok {
 			return nil, false
 		}
@@ -350,7 +478,7 @@ func rebuildInnerWithValues(op logical.LogicalOperator, fn func(values.Value) va
 		cp.Keys = keys
 		return &cp, true
 	case *logical.LogicalLimit:
-		in, ok := rebuildInnerWithValues(o.Input, fn)
+		in, ok := rebuildInnerInScope(o.Input, rewrite, scope, copies)
 		if !ok {
 			return nil, false
 		}
@@ -361,7 +489,7 @@ func rebuildInnerWithValues(op logical.LogicalOperator, fn func(values.Value) va
 		}
 		return &cp, true
 	case *logical.LogicalDistinct:
-		in, ok := rebuildInnerWithValues(o.Input, fn)
+		in, ok := rebuildInnerInScope(o.Input, rewrite, scope, copies)
 		if !ok {
 			return nil, false
 		}
@@ -407,15 +535,12 @@ func collectClusterOuterRefs(op logical.LogicalOperator, outerAliases, skip map[
 			return v
 		}
 		alias := strings.ToUpper(qov.Correlation().Name())
-		if _, shadowed := skip[alias]; shadowed {
-			return v
-		}
 		if _, isOuter := outerAliases[alias]; isOuter {
 			refs[alias] = struct{}{}
 		}
 		return v
 	}
-	_, exhaustive := rebuildInnerWithValues(op, record)
+	_, exhaustive := rebuildInnerInScope(op, record, &innerBindingScope{local: skip})
 	return refs, exhaustive
 }
 
@@ -463,10 +588,12 @@ func outerSubtreeAliases(op logical.LogicalOperator) map[string]struct{} {
 				out[strings.ToUpper(o.Binding)] = struct{}{}
 			}
 		case *logical.LogicalCTE:
-			out[strings.ToUpper(o.Name)] = struct{}{}
-			if o.Binding != "" {
-				out[strings.ToUpper(o.Binding)] = struct{}{}
+			if o.Binding != "" || !o.PreserveMainSource {
+				out[strings.ToUpper(sourceBinding(o))] = struct{}{}
+			} else {
+				walk(o.Main)
 			}
+			return
 		}
 		for _, c := range op.Children() {
 			walk(c)
@@ -480,11 +607,10 @@ func outerSubtreeAliases(op logical.LogicalOperator) map[string]struct{} {
 // clustered outer: ONE full ordinal run over the fresh concat QOV — fields
 // named DOTTED `LEG.COL` per gathered leg, so the level-2 output row stays
 // name-addressable for the flat projection reads above — then the single
-// nullable inner scalar leg at ordinal 0, named
-// exactly `INNER.SCALARCOL` (what replaceScalarSubqueryRef reads) but KEYED by
-// the fresh unique innerCorr (shape 2: the SQL alias would collide with a
-// JOIN-inner's own typed QOV at widenLegTypesFromPlan).
-func clusteredOuterOrdinalSeed(pu *clusterPullUp, innerCorr values.CorrelationIdentifier, innerAlias, scalarCol string, scalarType values.Type) values.Value {
+// nullable inner scalar leg at ordinal 0, labeled with its exact output title.
+// The fresh innerCorr owns the slot; replaceScalarSubqueryRef reads its known
+// final ordinal. A private correlation must never leak into the field's label.
+func clusteredOuterOrdinalSeed(pu *clusterPullUp, innerCorr values.CorrelationIdentifier, scalarCol string, scalarType values.Type) values.Value {
 	outerQOV, err := values.NewQuantifiedObjectValue(pu.outerCorr, pu.concatType)
 	if err != nil {
 		return nil
@@ -508,9 +634,7 @@ func clusteredOuterOrdinalSeed(pu *clusterPullUp, innerCorr values.CorrelationId
 			})
 		}
 	}
-	// Same inner-leg construction as the single-source seed: the scalar's
-	// concrete type is untyped at translation; nullability (LEFT-OUTER
-	// null-fill) is the only type property that matters.
+	// Preserve the exact scalar type and add LEFT-OUTER nullability.
 	innerType := &values.RecordType{Fields: []values.Field{
 		{Name: scalarCol, FieldType: values.WithNullability(scalarType, true), Ordinal: 0},
 	}}
@@ -531,7 +655,7 @@ func clusteredOuterOrdinalSeed(pu *clusterPullUp, innerCorr values.CorrelationId
 		return nil // decline
 	}
 	fields = append(fields, values.RecordConstructorField{
-		Name:  strings.ToUpper(innerAlias) + "." + scalarCol,
+		Name:  scalarCol,
 		Value: innerFV,
 	})
 	rc := values.NewRawRecordConstructorValue(fields...)
@@ -540,12 +664,10 @@ func clusteredOuterOrdinalSeed(pu *clusterPullUp, innerCorr values.CorrelationId
 }
 
 // clusterProjectionsResolvable reports whether EVERY top-level projection
-// resolves against the dotted seed output: the csq reference itself (rewritten
-// to `INNER.SCALARCOL` by replaceScalarSubqueryRef), or flat dotted `LEG.COL`
-// reads. Bare names and resolver-anchored (QOV-child) references do not
-// resolve over the level-2 output row — the ordinal path declines and the
-// query keeps today's behavior (design ruling (v)).
-func clusterProjectionsResolvable(p *logical.LogicalProject, csq logical.CorrelatedScalarSubquery, pu *clusterPullUp, innerKey string) bool {
+// has a resolved Value rooted at the scalar identity or a known outer leg.
+// An unresolved, noncomputed projection can pass the legacy leg-name check,
+// but cannot supply scalar identity; construction still requires exact Values.
+func clusterProjectionsResolvable(p *logical.LogicalProject, csq logical.CorrelatedScalarSubquery, pu *clusterPullUp) bool {
 	for i := range p.Projections {
 		var v values.Value
 		if i < len(p.ProjectedValues) {
@@ -587,7 +709,7 @@ func clusterProjectionsResolvable(p *logical.LogicalProject, csq logical.Correla
 		if i < len(p.IsComputed) && p.IsComputed[i] {
 			return false // walker declined the expression — nothing to resolve
 		}
-		if !clusterFieldResolvable(p.Projections[i], pu, innerKey) {
+		if !clusterFieldResolvable(p.Projections[i], pu) {
 			return false
 		}
 	}
@@ -668,7 +790,8 @@ func bakeClusterLegRefs(v values.Value, pu *clusterPullUp, seedQOV values.Value)
 }
 
 // clusterFieldResolvable reports whether one flat projection NAME resolves
-// against the seed output: the inner scalar key, or a leg column.
+// against the seed's outer leg columns. Scalar references require an exact
+// ScalarSubqueryValue identity and are never admitted by a manufactured name.
 //
 // The leg arm compares against the name the SEED BUILDER constructs, instead of
 // slicing the reference at its first dot and treating the prefix as a leg
@@ -676,16 +799,13 @@ func bakeClusterLegRefs(v values.Value, pu *clusterPullUp, seedQOV values.Value)
 // disagree on the one that is not: a column literally named `A.B` is one name
 // here, and a manufactured qualifier cannot conjure a leg out of it.
 //
-// Both arms compare case-INSENSITIVELY and neither folds either operand. The
+// The comparison is case-insensitive without folding either operand. The
 // two sides are minted by different authorities — the projection name arrives
 // normalized at the parse boundary, the seed's name carries the leg row's own
 // descriptor spelling — so an exact compare answers "unresolvable" for a column
 // that is plainly there, while folding one side can only ever reach the other
 // in one direction.
-func clusterFieldResolvable(field string, pu *clusterPullUp, innerKey string) bool {
-	if strings.EqualFold(field, innerKey) {
-		return true
-	}
+func clusterFieldResolvable(field string, pu *clusterPullUp) bool {
 	_, found := clusterSeedSlotByName(pu, field)
 	return found
 }
@@ -770,7 +890,7 @@ func (t *cascadesTranslator) translateClusteredOuterScalar(p *logical.LogicalPro
 // check needs). nil = decline (the dispatch then applies the CORRECT-or-LOUD
 // policy).
 func (t *cascadesTranslator) buildClusteredOuterOrdinalScalar(p *logical.LogicalProject, csq logical.CorrelatedScalarSubquery, j *logical.LogicalJoin, innerOwn map[string]struct{}) expressions.RelationalExpression {
-	scalarCol := strings.ToUpper(csq.ScalarCol)
+	scalarCol := csq.ScalarCol
 	if scalarCol == "" || csq.InnerAlias == "" {
 		return nil
 	}
@@ -788,8 +908,7 @@ func (t *cascadesTranslator) buildClusteredOuterOrdinalScalar(p *logical.Logical
 			return nil
 		}
 	}
-	innerKey := strings.ToUpper(csq.InnerAlias) + "." + scalarCol
-	if !clusterProjectionsResolvable(p, csq, pu, innerKey) {
+	if !clusterProjectionsResolvable(p, csq, pu) {
 		return nil
 	}
 
@@ -835,8 +954,8 @@ func (t *cascadesTranslator) buildClusteredOuterOrdinalScalar(p *logical.Logical
 	// The inner quantifier carries a FRESH unique id (shape 2 decouples it from
 	// the SQL alias): the seed's typed 1-field inner leg keyed by the SQL
 	// alias would collide with a JOIN-inner's own typed QOV(InnerAlias) at
-	// widenLegTypesFromPlan. The RC field NAME keeps the SQL alias — the
-	// name-compat key the projection reads.
+	// widenLegTypesFromPlan. The RC field label retains the scalar output title,
+	// while the projection reads its known ordinal.
 	innerCorr := values.UniqueCorrelationIdentifier()
 	var innerQ expressions.Quantifier
 	if csq.StrictSingle {
@@ -856,7 +975,7 @@ func (t *cascadesTranslator) buildClusteredOuterOrdinalScalar(p *logical.Logical
 		}
 		scalarType = record.Fields[0].FieldType
 	}
-	seed := clusteredOuterOrdinalSeed(pu, innerCorr, csq.InnerAlias, scalarCol, scalarType)
+	seed := clusteredOuterOrdinalSeed(pu, innerCorr, scalarCol, scalarType)
 	if seed == nil {
 		return nil
 	}

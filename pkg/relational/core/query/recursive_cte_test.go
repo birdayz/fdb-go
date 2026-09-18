@@ -21,8 +21,10 @@ func TestRecursiveRefJoinGatesOrdinal(t *testing.T) {
 	tr := newDisjointUnnestTranslator(t)
 	// The recursive-branch translation state: the reference pre-registered as
 	// a temp-table scan (presence keys the gate arm) with its OUTPUT columns.
-	tr.cteExprScope["R"] = nil
-	tr.cteColumnsScope["R"] = []values.Field{
+	producer := testCTEProducer("R", nil)
+	tr.cteScope = tr.cteScope.With(producer)
+	tr.cteExprScope[producer] = nil
+	tr.cteColumnsScope[producer] = []values.Field{
 		{Name: "RID", FieldType: values.NotNullLong, Ordinal: 0},
 	}
 

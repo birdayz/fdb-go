@@ -9,21 +9,18 @@ setup:
 tests:
   # Update quantities
   - query: UPDATE inventory SET qty = qty + 25 WHERE product = 'Widget'
-    rows: []
   - query: SELECT product, qty FROM inventory WHERE id = 1
     rows:
       - ["Widget", 125]
 
   # Delete a row
   - query: DELETE FROM inventory WHERE id = 2
-    rows: []
   - query: SELECT COUNT(*) FROM inventory
     rows:
       - [2]
 
   # Insert new row
   - query: INSERT INTO inventory VALUES (4, 'Thingamajig', 200)
-    rows: []
 
   # Verify final state
   - query: SELECT id, product, qty FROM inventory ORDER BY id

@@ -63,42 +63,6 @@ func jdbcizeColumnNames(cols []string) []string {
 	return out
 }
 
-// classifyPrimitiveType returns the canonical upper-case SQL type name
-// from a ConvertedDataType parse node using typed ANTLR terminals.
-func classifyPrimitiveType(cdt antlrgen.IConvertedDataTypeContext) string {
-	pt := cdt.PrimitiveType()
-	if pt == nil {
-		return ""
-	}
-	p, ok := pt.(*antlrgen.PrimitiveTypeContext)
-	if !ok {
-		return ""
-	}
-	switch {
-	case p.INTEGER() != nil:
-		return "INTEGER"
-	case p.BIGINT() != nil:
-		return "BIGINT"
-	case p.FLOAT() != nil:
-		return "FLOAT"
-	case p.DOUBLE() != nil:
-		return "DOUBLE"
-	case p.STRING() != nil:
-		return "STRING"
-	case p.BOOLEAN() != nil:
-		return "BOOLEAN"
-	case p.BYTES() != nil:
-		return "BYTES"
-	case p.UUID() != nil:
-		return "UUID"
-	case p.DATE() != nil:
-		return "DATE"
-	case p.TIMESTAMP() != nil:
-		return "TIMESTAMP"
-	}
-	return ""
-}
-
 // resolveSelectListPosition maps a SQL-92 positional reference (e.g.
 // `ORDER BY 2` or `GROUP BY 1`) to the matching output column name from
 // the current SELECT list. `clause` is the SQL keyword used for the

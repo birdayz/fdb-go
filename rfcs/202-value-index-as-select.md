@@ -715,9 +715,12 @@ sort re-arms a name-based sort-key resolution path RFC-197 deleted.
 ### D4 — The logical plan comes from the existing planning front end, post-passes included.
 
 `NewPlanVisitorWithSchema(md, schema).VisitQuery(q)` (`plan_visitor.go:143-156`)
-is **not** the front end — it is its first stage. Five mandatory post-passes
-follow it on both existing callers (`cascades_generator.go:361-382`,
-`plan_harness.go:530-551`), and the index path must run all five in order:
+is **not** the front end — it is its first stage. The original implementation
+ran the following five post-passes on both callers (`cascades_generator.go`,
+`plan_harness.go`). RFC-256 subsequently removed step (3): repeated SQL aliases
+are legal, while source bindings remain unique and references are adjudicated
+per attribute (see RFC-142's current alias contract). The index path must use the
+current shared front end, not restore that historical guard:
 
 1. `demoteSchemaQualifiedUnnest` — re-classifies a schema-qualified table the
    metadata-less parser mistook for a lateral unnest (RFC-142).

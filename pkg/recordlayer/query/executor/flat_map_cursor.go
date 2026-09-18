@@ -661,19 +661,40 @@ func (c *flatMapCursor) computeResultLegs(outerRow QueryResult, inner *QueryResu
 	// element. A row-shaped inner binds its positional row unchanged.
 	var innerBinding any
 	if innerRow.Positional != nil {
+		scalar, bindingErr := isBareScalarRow(innerRow.Positional)
+		if bindingErr != nil {
+			return QueryResult{}, bindingErr
+		}
 		whole, explicitAbsent, bindingErr := innerRow.Positional.wholeObjectBinding()
 		if bindingErr != nil {
 			return QueryResult{}, bindingErr
 		}
 		if explicitAbsent {
 			innerBinding = nil
-		} else if isBareScalarRow(innerRow.Positional) {
+		} else if scalar {
 			innerBinding = innerRow.Positional.Slots[0]
 		} else {
 			innerBinding = whole
 		}
 	}
-	outerBinding := qualifyOuterPositional(outerRow.Positional, c.outerAlias)
+	var outerBinding any
+	if outerRow.Positional != nil {
+		scalar, bindingErr := isBareScalarRow(outerRow.Positional)
+		if bindingErr != nil {
+			return QueryResult{}, bindingErr
+		}
+		_, explicitAbsent, bindingErr := outerRow.Positional.wholeObjectBinding()
+		if bindingErr != nil {
+			return QueryResult{}, bindingErr
+		}
+		if !explicitAbsent {
+			if scalar {
+				outerBinding = outerRow.Positional.Slots[0]
+			} else {
+				outerBinding = qualifyOuterPositional(outerRow.Positional, c.outerAlias)
+			}
+		}
+	}
 	nestedCtx := c.evalCtx.
 		WithBinding(c.outerAlias, outerBinding).
 		WithBinding(c.innerAlias, innerBinding)

@@ -1,7 +1,12 @@
 package rlcatalog_test
 
 import (
+	"reflect"
 	"testing"
+
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protodesc"
+	"google.golang.org/protobuf/types/descriptorpb"
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
@@ -402,5 +407,59 @@ func BenchmarkWrap_LookupColumn(b *testing.B) {
 	target := semantic.NewUnquoted("order_id")
 	for i := 0; i < b.N; i++ {
 		_, _ = tbl.LookupColumn(target)
+	}
+}
+
+func TestWrap_EnumDeclarationAndNumberAliases(t *testing.T) {
+	t.Parallel()
+	opt := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum()
+	fd, err := protodesc.NewFile(&descriptorpb.FileDescriptorProto{
+		Name: proto.String("enum_catalog_test.proto"), Package: proto.String("enumcatalog"), Syntax: proto.String("proto2"),
+		EnumType: []*descriptorpb.EnumDescriptorProto{
+			{Name: proto.String("Plain"), Value: []*descriptorpb.EnumValueDescriptorProto{
+				{Name: proto.String("Z__1B"), Number: proto.Int32(9)}, {Name: proto.String("ALPHA"), Number: proto.Int32(-2)},
+			}},
+			{Name: proto.String("Aliased"), Options: &descriptorpb.EnumOptions{AllowAlias: proto.Bool(true)}, Value: []*descriptorpb.EnumValueDescriptorProto{
+				{Name: proto.String("FIRST"), Number: proto.Int32(1)}, {Name: proto.String("SAME"), Number: proto.Int32(1)},
+			}},
+		},
+		MessageType: []*descriptorpb.DescriptorProto{
+			{Name: proto.String("T"), Field: []*descriptorpb.FieldDescriptorProto{
+				{Name: proto.String("ID"), Number: proto.Int32(1), Label: opt, Type: descriptorpb.FieldDescriptorProto_TYPE_INT64.Enum()},
+				{Name: proto.String("E"), Number: proto.Int32(2), Label: opt, Type: descriptorpb.FieldDescriptorProto_TYPE_ENUM.Enum(), TypeName: proto.String(".enumcatalog.Plain")},
+				{Name: proto.String("ES"), Number: proto.Int32(3), Label: descriptorpb.FieldDescriptorProto_LABEL_REPEATED.Enum(), Type: descriptorpb.FieldDescriptorProto_TYPE_ENUM.Enum(), TypeName: proto.String(".enumcatalog.Plain")},
+				{Name: proto.String("AE"), Number: proto.Int32(4), Label: opt, Type: descriptorpb.FieldDescriptorProto_TYPE_ENUM.Enum(), TypeName: proto.String(".enumcatalog.Aliased")},
+			}},
+			{Name: proto.String("UnionDescriptor"), Field: []*descriptorpb.FieldDescriptorProto{
+				{Name: proto.String("_T"), Number: proto.Int32(1), Label: opt, Type: descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(), TypeName: proto.String(".enumcatalog.T")},
+			}},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(fd)
+	builder.GetRecordType("T").SetPrimaryKey(recordlayer.Field("ID"))
+	md, err := builder.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	table, ok := rlcatalog.Wrap(md).LookupTable(semantic.ParseQualifiedName("T", false))
+	if !ok {
+		t.Fatal("missing enum table")
+	}
+	columns := table.Columns()
+	for _, i := range []int{1, 2} {
+		column := columns[i]
+		if column.Type != "ENUM" || column.EnumTypeName != "enumcatalog.Plain" || !reflect.DeepEqual(column.EnumMembers, []semantic.EnumMember{{Name: "Z$B", Number: 9}, {Name: "ALPHA", Number: -2}}) {
+			t.Fatalf("column %d lost its declared enum: %+v", i, column)
+		}
+		if column.Nullable != (i == 1) || column.IsArray != (i == 2) {
+			t.Fatalf("column %d array/nullability: %+v", i, column)
+		}
+	}
+	alias := columns[3]
+	if alias.Type != "BIGINT" || alias.EnumTypeName != "" || len(alias.EnumMembers) != 0 || !alias.Nullable {
+		t.Fatalf("aliased enum must retain the stored LONG lane: %+v", alias)
 	}
 }

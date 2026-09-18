@@ -31,6 +31,7 @@ const (
 	ErrTransactionTooOld         = 1007 // transaction_too_old
 	ErrFutureVersion             = 1009 // future_version
 	ErrWrongShardServer          = 1001 // wrong_shard_server (1062 is change_feed_cancelled — do not confuse)
+	ErrTransactionCancelled      = 1025 // transaction_cancelled
 	ErrTransactionTimedOut       = 1031 // transaction_timed_out (NEVER retryable)
 	ErrAccessedUnreadable        = 1036 // accessed_unreadable — read of a pending versionstamped key (NOT retryable; RFC-098)
 	ErrProcessBehind             = 1037 // process_behind
@@ -306,6 +307,27 @@ type txOptions struct {
 	// shrinks ours, it never lengthens the observable contract.)
 	rpcTimeoutOverride time.Duration
 
+	// afterPendingSend is a per-transaction lifecycle interleaving seam. It
+	// runs without transaction locks, after enqueue and before registration.
+	afterPendingSend func(*PendingGet)
+	// afterReadVersion observes a completed GRV before its caller returns.
+	afterReadVersion func()
+	// beforeReadVersionLock parks acquisition after entry validation.
+	beforeReadVersionLock func()
+	// beforeReadFailureDelivery observes terminal-state publication ordering.
+	beforeReadFailureDelivery func(error)
+	// beforeReadTimeoutPublication parks an expired synchronous check before
+	// publishing its terminal cause, without holding a transaction lock.
+	beforeReadTimeoutPublication func()
+	// beforeVersionstampLookup parks the synchronous getter after entry checks.
+	beforeVersionstampLookup func()
+	// beforeTurnoverRetirement parks conditional turnover before its leaf-lock
+	// lifetime claim, with resetMu held but no execution lease or leaf lock.
+	beforeTurnoverRetirement func()
+	// beforeOnErrorWatchCleanup parks terminal cleanup before claiming watch
+	// state; it runs without resetMu or readErrMu.
+	beforeOnErrorWatchCleanup func()
+
 	// backoffJitter: if non-nil, replaces rand.Float64() in nextBackoff's jitter.
 	// Test-only knob to make the backoff delay deterministic (production leaves it
 	// nil → real rand.Float64()).
@@ -380,6 +402,7 @@ type Transaction struct {
 	committedVersion int64
 	hasCommitted     bool
 	txnBatchId       uint16
+	lastVersionstamp *versionstampCompletion
 
 	// Mutation & conflict buffers — conflictMu guards all six (the published
 	// contract makes data ops concurrent-safe: a pipelined Get future resolving
@@ -459,7 +482,10 @@ type Transaction struct {
 	// readErrMu guards readErr, readGen and pendingReads: pipelined read
 	// futures resolve on other goroutines, and the three fields must move
 	// together (a mutex, not the atomic deferred-error contract above).
+	resetMu   sync.Mutex
+	readReady chan struct{}
 	readErrMu sync.Mutex
+	readLife  *readIncarnation
 	readErr   error
 	// readGen is the read-tracking incarnation, bumped on every reset. C++
 	// swaps the reading AndFuture on resetRyow (:2715): a read issued under an
@@ -571,11 +597,13 @@ type Snapshot struct {
 // Snapshot reads go through the RYW cache unless snapshot RYW is net-disabled
 // (snapshotRYWDisableCount > 0).
 func (s *Snapshot) Get(ctx context.Context, key []byte) ([]byte, error) {
+	ctx, cancel := s.tx.opContext(ctx)
+	defer cancel()
 	// Snapshot reads are tracked in C++ ryw->reading exactly like regular reads
 	// (reading.add runs for Snapshot::True too) — a failed snapshot read poisons
 	// a later Commit the same way.
 	if err := s.tx.ensureReadVersion(ctx); err != nil {
-		return nil, s.tx.trackReadError(err)
+		return nil, s.tx.trackReadOperation(ctx, err)
 	}
 	// Same system key check as regular Get.
 	if bytes.Compare(key, s.tx.maxReadKey()) >= 0 && !bytes.Equal(key, metadataVersionKeyBytes) {
@@ -586,10 +614,10 @@ func (s *Snapshot) Get(ctx context.Context, key []byte) ([]byte, error) {
 	// storage read here (a snapshot read adds no conflict either way).
 	if s.tx.rywDisabled || s.tx.snapshotRYWDisableCount > 0 {
 		v, err := s.tx.getValue(ctx, key)
-		return v, s.tx.trackReadError(err)
+		return v, s.tx.trackReadOperation(ctx, err)
 	}
 	v, err := s.tx.ryw.get(ctx, key, s.tx.getValue)
-	return v, s.tx.trackReadError(err)
+	return v, s.tx.trackReadOperation(ctx, err)
 }
 
 // GetKey resolves a key selector without adding a read conflict range.
@@ -598,8 +626,10 @@ func (s *Snapshot) Get(ctx context.Context, key []byte) ([]byte, error) {
 // enabled unless net-disabled via SetSnapshotRYWDisable). When net-disabled
 // (snapshotRYWDisableCount > 0) the write map is bypassed (snapshot cache only).
 func (s *Snapshot) GetKey(ctx context.Context, selectorKey []byte, orEqual bool, offset int32) ([]byte, error) {
+	ctx, cancel := s.tx.opContext(ctx)
+	defer cancel()
 	if err := s.tx.ensureReadVersion(ctx); err != nil {
-		return nil, s.tx.trackReadError(err)
+		return nil, s.tx.trackReadOperation(ctx, err)
 	}
 	// Eager validation — NOT tracked (C++ returns before a read future
 	// exists), matching Transaction.GetKey.
@@ -609,7 +639,7 @@ func (s *Snapshot) GetKey(ctx context.Context, selectorKey []byte, orEqual bool,
 	// includeWrites mirrors C++ :400-402: consult the RYW write map only when readYourWrites is
 	// NOT disabled AND snapshot RYW is net-enabled (count <= 0).
 	k, err := s.tx.ryw.getKeyRYW(ctx, selectorKey, orEqual, offset, s.tx.maxReadKey(), !s.tx.rywDisabled && s.tx.snapshotRYWDisableCount <= 0, s.tx.getRange)
-	return k, s.tx.trackReadError(err)
+	return k, s.tx.trackReadOperation(ctx, err)
 }
 
 // GetRange reads a range without adding a read conflict range.
@@ -627,8 +657,10 @@ func (s *Snapshot) GetRangeWithByteTarget(ctx context.Context, begin, end []byte
 }
 
 func (s *Snapshot) getRangeDir(ctx context.Context, begin, end []byte, limit, byteTarget int, reverse bool) ([]KeyValue, bool, error) {
+	ctx, cancel := s.tx.opContext(ctx)
+	defer cancel()
 	if err := s.tx.ensureReadVersion(ctx); err != nil {
-		return nil, false, s.tx.trackReadError(err)
+		return nil, false, s.tx.trackReadOperation(ctx, err)
 	}
 	maxKey := s.tx.maxReadKey()
 	if bytes.Compare(begin, maxKey) > 0 || bytes.Compare(end, maxKey) > 0 {
@@ -643,10 +675,10 @@ func (s *Snapshot) getRangeDir(ctx context.Context, begin, end []byte, limit, by
 	}
 	if s.tx.rywDisabled || s.tx.snapshotRYWDisableCount > 0 {
 		kvs, more, err := s.tx.getRange(ctx, begin, end, limit, byteTarget, reverse)
-		return kvs, more, s.tx.trackReadError(err)
+		return kvs, more, s.tx.trackReadOperation(ctx, err)
 	}
 	kvs, more, err := s.tx.ryw.getRange(ctx, begin, end, limit, byteTarget, reverse, s.tx.getRange)
-	return kvs, more, s.tx.trackReadError(err)
+	return kvs, more, s.tx.trackReadOperation(ctx, err)
 }
 
 // GetRangeReverse reads a range in reverse without adding a read conflict range.
@@ -668,6 +700,15 @@ func (s *Snapshot) GetReadVersion(ctx context.Context) (int64, error) {
 // calls this), and ops that bypass ensureReadVersion (metrics, OnError, GetVersionstamp, Commit)
 // call it directly at entry. Apps branch on err.Code == 1025 (RFC-068), so the code must match.
 func (tx *Transaction) checkCancelled() error {
+	tx.readErrMu.Lock()
+	var cause error
+	if tx.readLife != nil {
+		cause = tx.readLife.cause
+	}
+	tx.readErrMu.Unlock()
+	if cause != nil {
+		return cause
+	}
 	if txState(tx.state.Load()) == txStateCancelled {
 		return &wire.FDBError{Code: 1025} // transaction_cancelled
 	}
@@ -677,9 +718,9 @@ func (tx *Transaction) checkCancelled() error {
 // trackReadError records err as this transaction's first failed read (see the
 // readErr field — the C++ ryw->reading analogue, which fails a later Commit
 // with the same error). Returns err unchanged so read tails can
-// `return v, tx.trackReadError(err)`. Synchronous reads run inside the current
-// incarnation by construction; asynchronous resolvers must use
-// trackReadErrorGen with their captured generation instead.
+// `return v, tx.trackReadError(err)`. Operations that captured an incarnation
+// must use trackReadOperation/trackReadErrorGen instead: even a synchronous
+// call can finish on another goroutine after Reset.
 func (tx *Transaction) trackReadError(err error) error {
 	// Nil/ctx check BEFORE the lock: every successful read funnels through
 	// here — taking readErrMu on the hot path would serialize concurrent
@@ -716,35 +757,50 @@ func isTrackableReadError(err error) bool {
 	return err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
 }
 
-func (tx *Transaction) ensureReadVersion(parentCtx context.Context) error {
-	if err := tx.checkCancelled(); err != nil {
+func (tx *Transaction) ensureReadVersion(ctx context.Context) error {
+	ctx, release := tx.opContext(ctx)
+	defer release()
+	if _, err := tx.readVersionForOperation(ctx); err != nil {
 		return err
 	}
+	return tx.readEntryError(ctx)
+}
+
+// readVersionForOperation returns the GRV captured by this operation, not a
+// later read of the mutable handle. C++ RYWImpl::getReadVersion returns the
+// value from its completed future even if the handle is subsequently reset.
+func (tx *Transaction) readVersionForOperation(parentCtx context.Context) (int64, error) {
+	ctx, cancel := tx.opContext(parentCtx)
+	defer cancel()
+	if err := tx.readEntryError(ctx); err != nil {
+		return 0, err
+	}
+	if err := tx.checkCancelled(); err != nil {
+		return 0, err
+	}
 	if txState(tx.state.Load()) != txStateActive {
-		return fmt.Errorf("transaction not active")
+		return 0, fmt.Errorf("transaction not active")
 	}
 	// Bound the GRV by the SetTimeout deadline too: the GRV is the first read RPC
 	// every transaction issues, and a hung-but-alive GRV proxy must not run past
 	// the timeout (RFC-112; the C++ analog is RYWImpl::getReadVersion's
 	// `choose { getReadVersion() | resetPromise }`, ReadYourWrites.actor.cpp:1537).
-	// A deadline-cancelled GRV is surfaced as transaction_timed_out via mapTimeout.
-	ctx, cancel := tx.opContext(parentCtx)
-	defer cancel()
-	// The deferred error (bad Atomic op-code, or SetReadYourWritesDisable-after-an-op)
-	// surfaces on every subsequent op — C++ checkDeferredError at each read entry
-	// (ThreadSafeTransaction.cpp:431 get, :441 getKey, :421 getReadVersion, :654 watch).
-	// This is the single uniform gate: all reads (regular + snapshot), Commit, Watch, and
-	// GetReadVersion fetch a read version through here — libfdb_c gates all of them
-	// identically (poison verified differentially, incl. GetReadVersion). The metrics /
-	// approx-size / versionstamp paths bypass this and are gated separately. (Cleared on
-	// reset.)
-	if e := tx.deferredErr.Load(); e != nil {
-		return e
+	// Interruption is classified against the captured incarnation by mapReadError.
+	// Deferred failure was captured by opContext at the outer entry, before
+	// RYW/resetPromise dispatch. Nested GRV work must not sample later poison.
+	if err := tx.checkTimeout(ctx); err != nil {
+		return 0, err
 	}
-	if err := tx.checkTimeout(); err != nil {
-		return err
+	if tx.beforeReadVersionLock != nil {
+		tx.beforeReadVersionLock()
 	}
 	tx.readVersionMu.Lock()
+	// Entry validation precedes this lock. Reset can retire the operation
+	// while it waits; never acquire the replacement's cached read version.
+	if err := tx.readEntryError(ctx); err != nil {
+		tx.readVersionMu.Unlock()
+		return 0, err
+	}
 	if tx.metricStart.IsZero() {
 		// RFC-114 total-latency anchor: stamp at this transaction's FIRST GRV (the
 		// first read, or the commit-path GRV for a write-only txn) — ≈ C++
@@ -761,7 +817,7 @@ func (tx *Transaction) ensureReadVersion(parentCtx context.Context) error {
 		rv, locked, rvAt, err := tx.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(tx.db, ctx, flags, tx.currentSpan(), tx.tags, tx.useGrvCache, tx.skipGrvCache)
 		if err != nil {
 			tx.readVersionMu.Unlock()
-			return tx.mapTimeout(parentCtx, err)
+			return 0, tx.mapReadError(ctx, err)
 		}
 		// Database-lock enforcement — the C++ extractReadVersion analog
 		// (NativeAPI.actor.cpp:7425-7426): a locked database refuses reads
@@ -772,7 +828,7 @@ func (tx *Transaction) ensureReadVersion(parentCtx context.Context) error {
 		// GRV) until the lock is released or the budget ends — same as C++.
 		if locked && !(tx.lockAware || tx.readLockAware) {
 			tx.readVersionMu.Unlock()
-			return &wire.FDBError{Code: ErrDatabaseLocked}
+			return 0, &wire.FDBError{Code: ErrDatabaseLocked}
 		}
 		tx.readVersion = rv
 		tx.hasReadVersion = true
@@ -808,18 +864,23 @@ func (tx *Transaction) ensureReadVersion(parentCtx context.Context) error {
 			_, _, _, _ = tx.db.grvBatchers[grvBatcherIndex(flags)].getReadVersion(tx.db, ctx, flags, tx.currentSpan(), tx.tags, tx.useGrvCache, tx.skipGrvCache)
 		}
 		if err := tx.db.validateVersion(rv); err != nil {
-			return err
+			return 0, err
 		}
 	}
-	return nil
+	if tx.afterReadVersion != nil {
+		tx.afterReadVersion()
+	}
+	return rv, nil
 }
 
 // Get reads a single key. Returns nil if the key doesn't exist.
 func (tx *Transaction) Get(ctx context.Context, key []byte) ([]byte, error) {
+	ctx, cancel := tx.opContext(ctx)
+	defer cancel()
 	// GRV failures are tracked: in C++ the read version is acquired INSIDE the
 	// read future that reading.add records, so a failed GRV poisons commit too.
 	if err := tx.ensureReadVersion(ctx); err != nil {
-		return nil, tx.trackReadError(err)
+		return nil, tx.trackReadOperation(ctx, err)
 	}
 	// C++ RYW::getValue: if (key >= getMaxReadKey() && key != metadataVersionKey)
 	if bytes.Compare(key, tx.maxReadKey()) >= 0 && !bytes.Equal(key, metadataVersionKeyBytes) {
@@ -834,10 +895,10 @@ func (tx *Transaction) Get(ctx context.Context, key []byte) ([]byte, error) {
 	}
 	if tx.rywDisabled {
 		v, err := tx.getValue(ctx, key)
-		return v, tx.trackReadError(err)
+		return v, tx.trackReadOperation(ctx, err)
 	}
 	v, err := tx.ryw.get(ctx, key, tx.getValue)
-	return v, tx.trackReadError(err)
+	return v, tx.trackReadOperation(ctx, err)
 }
 
 // GetPipelined sends a GetValue request and returns a PendingGet that can be
@@ -848,6 +909,17 @@ func (tx *Transaction) Get(ctx context.Context, key []byte) ([]byte, error) {
 // Returns (nil, pending, nil) for server requests (call pending.Resolve() to get value).
 // Returns (nil, nil, err) for errors during send.
 func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte, pending *PendingGet, err error) {
+	parentOp := tx.readOperation(ctx)
+	ctx, opCancel := tx.opContext(ctx)
+	op := tx.readOperation(ctx)
+	if op != parentOp {
+		defer op.lease.release() // only this invocation's send-phase lease
+	}
+	defer func() {
+		if pending == nil {
+			opCancel()
+		}
+	}()
 	if err := tx.ensureReadVersion(ctx); err != nil {
 		return nil, nil, err
 	}
@@ -884,7 +956,7 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 			// caller re-drives them through the full read path, which records
 			// its own final outcome (one C++ read future = GetPipelined +
 			// Resolve/re-drive together).
-			return nil, nil, tx.trackReadError(&wire.FDBError{Code: ErrAccessedUnreadable})
+			return nil, nil, tx.trackReadOperation(ctx, &wire.FDBError{Code: ErrAccessedUnreadable})
 		}
 	}
 	if entry, ok := tx.ryw.writes[string(key)]; ok {
@@ -909,13 +981,8 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 		return nil, nil, nil
 	}
 
-	// Bound the locate, the send-loop dials, AND (below) the deferred reply wait by
-	// the SetTimeout deadline (RFC-112): the pipelined path is what the fdb facade
-	// Get routes through, so a hung locate/dial/reply here must honor the timeout.
-	// opCtx must cover the cache-miss locate too — a hung GetKeyServerLocations is
-	// the first RPC of the send phase.
-	opCtx, opCancel := tx.opContext(ctx)
-	defer opCancel() // dials complete within this function; the reply wait uses the timer
+	// Retain the captured incarnation through locate, send and deferred Resolve.
+	// The send phase must not release the context that the reply still needs.
 
 	// Capture under readVersionMu (RFC-175 E1): pipelined reads run concurrently with
 	// Commit/Reset, whose resets write readVersion under the mutex. Same capture
@@ -925,9 +992,9 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 	tx.readVersionMu.Unlock()
 
 	// Locate shard.
-	loc, locErr := tx.db.locCache.locate(tx.db, opCtx, key, tx.tenantId, tx.currentSpan(), false)
+	loc, locErr := tx.db.locCache.locate(tx.db, ctx, key, tx.tenantId, tx.currentSpan(), false)
 	if locErr != nil {
-		return nil, nil, tx.mapTimeout(ctx, fmt.Errorf("locate key: %w", locErr))
+		return nil, nil, tx.mapReadError(ctx, fmt.Errorf("locate key: %w", locErr))
 	}
 	if len(loc.Servers) == 0 {
 		return nil, nil, fmt.Errorf("no storage servers for key")
@@ -935,34 +1002,44 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 
 	// Send request without waiting for response.
 	for _, server := range loc.Servers {
-		conn, dialErr := tx.db.getOrDial(opCtx, server.Address)
+		conn, dialErr := tx.db.getOrDial(ctx, server.Address)
 		if dialErr != nil {
-			tx.db.handleDialError(opCtx, server.Address)
+			tx.db.handleDialError(ctx, server.Address)
 			continue
 		}
 		replyToken, replyCh, replyHandle := conn.PrepareReply()
 		body, poolBuf := buildGetValueRequest(key, readVersion, tx.lockAware || tx.readLockAware, tx.tenantId, childSpanContext(tx.currentSpan()), replyToken, server.Token)
-		// Note: can't pool body for SendFrameDeferred — writeLoop holds reference.
-		_ = poolBuf
 		// RFC-114: stamp sentAt BEFORE enqueueing the frame. SendFrameDeferred only
 		// enqueues onto the write channel, so for a very fast read the write+read loops
 		// can deliver the reply (stamping resp.RecvAt) before we'd otherwise record
 		// sentAt — making RecvAt−sentAt negative and silently dropped by the sketch.
 		sentAt := time.Now()
-		if sendErr := conn.SendFrameDeferred(server.Token, body); sendErr != nil {
+		_, sendErr := conn.SendFrameDeferredContext(ctx, server.Token, body)
+		getValueBufPool.Put(poolBuf)
+		if sendErr != nil {
 			replyHandle.Cancel()
 			replyHandle.Release()
-			tx.db.handleConnError(server.Address)
+			tx.db.handleReadConnError(server.Address, sendErr)
 			continue
 		}
 		timer := getTimer(tx.pipelineReplyTimeout()) // capped by SetTimeout (RFC-112)
-		p := &PendingGet{key: key, tx: tx, addr: server.Address, replyCh: replyCh, replyHandle: replyHandle, conn: conn, ctx: ctx, timer: timer, sentAt: sentAt}
+		p := &PendingGet{key: bytes.Clone(key), tx: tx, addr: server.Address, tenantID: tx.tenantId, replyCh: replyCh, replyHandle: replyHandle, conn: conn, ctx: ctx, cancel: opCancel, timer: timer, sentAt: sentAt, gen: op.inc.gen}
+		if tx.afterPendingSend != nil {
+			tx.afterPendingSend(p)
+		}
 		// Register under the current read incarnation: Commit drains
 		// outstanding pipelined reads (the C++ wait(reading) completion
 		// barrier) and a post-reset late Resolve must not poison the next
 		// incarnation.
 		tx.readErrMu.Lock()
-		p.gen = tx.readGen
+		if tx.readLife != op.inc || op.inc.cause != nil {
+			tx.readErrMu.Unlock()
+			// Failure can detach the registry before this send is registered.
+			// Retire it here, preserving any already-published reply without
+			// requiring the caller to Resolve just to release its resources.
+			p.retireLocked()
+			return p.memoVal, nil, p.memoErr
+		}
 		if tx.pendingReads == nil {
 			tx.pendingReads = make(map[*PendingGet]struct{})
 		}
@@ -970,29 +1047,32 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 		tx.readErrMu.Unlock()
 		return nil, p, nil
 	}
-	// If every dial above failed because the SetTimeout deadline expired (opCtx
+	// If every dial above failed because the SetTimeout deadline expired (ctx
 	// cancelled), surface transaction_timed_out (1031) rather than the
 	// non-retryable all_alternatives_failed (1006) — a cold-dial expiry is still a
 	// timeout, matching C++ (the timebomb wins the loadBalance race). RFC-112.
-	if err := opCtx.Err(); err != nil {
-		return nil, nil, tx.mapTimeout(ctx, err)
+	if err := ctx.Err(); err != nil {
+		return nil, nil, tx.mapReadError(ctx, err)
 	}
 	return nil, nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
 }
 
 // PendingGet represents a GetValue request that has been sent but not yet resolved.
 type PendingGet struct {
-	key         []byte
-	tx          *Transaction
-	addr        string // storage server the deferred frame was sent to
-	replyCh     <-chan transport.Response
-	replyHandle *transport.ReplyHandle
-	conn        *transport.Conn
-	ctx         context.Context
-	timer       *time.Timer
-	sentAt      time.Time // RFC-114: send time, for the pipelined read-latency sample
-	flushed     bool
-	gen         uint64 // read incarnation at issue (see Transaction.readGen)
+	key           []byte
+	tx            *Transaction
+	tenantID      int64
+	replyConsumed bool
+	addr          string // storage server the deferred frame was sent to
+	replyCh       <-chan transport.Response
+	replyHandle   *transport.ReplyHandle
+	conn          *transport.Conn
+	ctx           context.Context
+	cancel        context.CancelFunc
+	timer         *time.Timer
+	sentAt        time.Time // RFC-114: send time, for the pipelined read-latency sample
+	flushed       bool
+	gen           uint64 // read incarnation at issue (see Transaction.readGen)
 
 	// Resolve is idempotent: the first caller (the future's .Get(), or
 	// Commit's drain — whichever runs first) does the work; later callers get
@@ -1003,100 +1083,12 @@ type PendingGet struct {
 	memoErr error
 }
 
-// Resolve blocks until the response arrives or timeout, then applies the SAME
-// classify/invalidate/retry semantics as the synchronous getValue path: a
-// wrong_shard_server or all_alternatives_failed reply (including the inline
-// LoadBalancedReply.error, RFC-010 #1) invalidates the stale location and
-// re-drives through the full read path; transport errors, a flush failure, or a
-// timeout likewise fall through to the full path rather than surfacing a bare
-// error or skipping the wrong-shard retry. Pipelining only defers the wait — it
-// must not own a different error policy. RFC-010 #3.
-//
-// Flushes the write buffer on first call to ensure the request reaches the
-// server (batched with any other deferred frames on the same connection).
-func (p *PendingGet) Resolve() ([]byte, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.done {
-		return p.memoVal, p.memoErr
-	}
-	val, err := p.resolve()
-	p.done = true
-	p.memoVal, p.memoErr = val, err
-	// Completed — drop from the incarnation's outstanding set so Commit's
-	// drain doesn't re-touch it. trackReadError already ran (gen-guarded) on
-	// whichever path produced the outcome.
-	p.tx.readErrMu.Lock()
-	delete(p.tx.pendingReads, p)
-	p.tx.readErrMu.Unlock()
-	return val, err
-}
-
-func (p *PendingGet) resolve() ([]byte, error) {
-	if !p.flushed {
-		p.flushed = true
-		if err := p.conn.Flush(); err != nil {
-			// The request never reached the server — mark the connection bad
-			// (parity with the sync getValue/SendFrame path) and re-locate+retry.
-			p.tx.db.handleConnError(p.addr)
-			p.replyHandle.Cancel()
-			p.replyHandle.Release()
-			putTimer(p.timer)
-			return p.resolveFull()
-		}
-	}
-	defer putTimer(p.timer)
-	defer p.replyHandle.Release()
-	select {
-	case resp := <-p.replyCh:
-		if resp.Err != nil {
-			// Transport/connection error — mark the connection bad before
-			// retrying so server selection avoids it, matching sendGetValue. Then
-			// re-drive through the full read path.
-			p.tx.db.handleConnError(p.addr)
-			return p.resolveFull()
-		}
-		val, _, err := parseGetValueReply(resp.Body)
-		if isWrongShardServer(err) || isAllAlternativesFailed(err) {
-			p.tx.db.locCache.invalidate(p.key, p.tx.tenantId, false)
-			return p.resolveFull()
-		}
-		// RFC-114: pipelined GetValue round-trip latency — the path the fdb facade
-		// Get routes through. Measured from send (sentAt) to reply DELIVERY
-		// (resp.RecvAt, stamped by the read loop), NOT to Resolve-call time — so a
-		// caller that batches GetPipelined and resolves the futures later records the
-		// true RPC round-trip, not its own future-wait (the async-facade case). Sampled
-		// on a successful reply only (mirroring the sync getValue sample); the
-		// wrong-shard/transport/flush/timeout arms re-drive through getValue, which
-		// samples there, so a read is counted exactly once.
-		if err == nil && p.tx.db != nil && !resp.RecvAt.IsZero() {
-			p.tx.db.metrics.observeReadLatency(resp.RecvAt.Sub(p.sentAt))
-		}
-		// Tracked (C++ ryw->reading): GetPipelined+Resolve together model ONE
-		// C++ read future; this is its final outcome.
-		return val, p.tx.trackReadErrorGen(err, p.gen)
-	case <-p.timer.C:
-		p.replyHandle.Cancel()
-		return p.resolveFull()
-	case <-p.ctx.Done():
-		p.replyHandle.Cancel()
-		return nil, p.ctx.Err()
-	}
-}
-
-// resolveFull re-drives a pipelined get through the full read path and records
-// its final outcome in the transaction's read-error tracking (see readErr) —
-// the re-drive, not the transient failure that triggered it, is what the C++
-// read future would have resolved to.
-func (p *PendingGet) resolveFull() ([]byte, error) {
-	v, err := p.tx.getValue(p.ctx, p.key)
-	return v, p.tx.trackReadErrorGen(err, p.gen)
-}
-
 // GetKey resolves a key selector to the actual key in the database.
 func (tx *Transaction) GetKey(ctx context.Context, selectorKey []byte, orEqual bool, offset int32) ([]byte, error) {
+	ctx, cancel := tx.opContext(ctx)
+	defer cancel()
 	if err := tx.ensureReadVersion(ctx); err != nil {
-		return nil, tx.trackReadError(err)
+		return nil, tx.trackReadOperation(ctx, err)
 	}
 	// C++ RYW::getKey: if (key.getKey() > getMaxReadKey()) → key_outside_legal_range
 	// Eager validation — NOT tracked (C++ returns it before the read future exists).
@@ -1114,7 +1106,7 @@ func (tx *Transaction) GetKey(ctx context.Context, selectorKey []byte, orEqual b
 		resolved, err = tx.ryw.getKeyRYW(ctx, selectorKey, orEqual, offset, tx.maxReadKey(), true, tx.getRange)
 	}
 	if err != nil {
-		return nil, tx.trackReadError(err)
+		return nil, tx.trackReadOperation(ctx, err)
 	}
 	// Read-conflict range: getKey conflicts over the RANGE between the selector base
 	// and the resolved key (C++ addConflictRange(GetKeyReq), ReadYourWrites.actor.cpp:230),
@@ -1317,12 +1309,12 @@ type conflictBuf struct {
 }
 
 // SetReadSystemKeys allows reading \xff prefix system keys.
-func (tx *Transaction) SetReadSystemKeys() {
+func (tx *Transaction) stateSetReadSystemKeys() {
 	tx.readSystemKeys = true
 }
 
 // SetAccessSystemKeys allows reading AND writing \xff prefix system keys.
-func (tx *Transaction) SetAccessSystemKeys() {
+func (tx *Transaction) stateSetAccessSystemKeys() {
 	tx.readSystemKeys = true
 	tx.writeSystemKeys = true
 }
@@ -1357,8 +1349,10 @@ func (tx *Transaction) GetRangeWithByteTarget(ctx context.Context, begin, end []
 }
 
 func (tx *Transaction) getRangeDir(ctx context.Context, begin, end []byte, limit int, byteTarget int, reverse bool) ([]KeyValue, bool, error) {
+	ctx, cancel := tx.opContext(ctx)
+	defer cancel()
 	if err := tx.ensureReadVersion(ctx); err != nil {
-		return nil, false, tx.trackReadError(err)
+		return nil, false, tx.trackReadOperation(ctx, err)
 	}
 	// C++ RYW::getRange: if (begin > maxKey || end > maxKey) → key_outside_legal_range
 	maxKey := tx.maxReadKey()
@@ -1388,7 +1382,7 @@ func (tx *Transaction) getRangeDir(ctx context.Context, begin, end []byte, limit
 	if err != nil {
 		// C++ adds the read-conflict only in the read's SUCCESS branch
 		// (ReadYourWrites.actor.cpp:388) — a failed read records no conflict.
-		return kvs, more, tx.trackReadError(err)
+		return kvs, more, tx.trackReadOperation(ctx, err)
 	}
 
 	// Read-conflict computed AFTER the read so it can be CLAMPED to the data actually
@@ -1414,7 +1408,7 @@ func (tx *Transaction) getRangeDir(ctx context.Context, begin, end []byte, limit
 }
 
 // Set writes a key-value pair.
-func (tx *Transaction) Set(key, value []byte) {
+func (tx *Transaction) stateSet(key, value []byte) {
 	// The mutation and its write-conflict range must become visible to a
 	// concurrent Commit snapshot as ONE atomic unit — otherwise the snapshot
 	// could ship the mutation without its conflict range, so a concurrent
@@ -1445,7 +1439,7 @@ func (tx *Transaction) consumeNextWriteNoConflict() {
 	tx.conflictMu.Unlock()
 }
 
-func (tx *Transaction) Clear(key []byte) {
+func (tx *Transaction) stateClear(key []byte) {
 	// C++ clear(KeyRef) drops an oversized single-key clear entirely
 	// (NativeAPI.actor.cpp:6045-6047): no mutation, no conflict range, no RYW write —
 	// but the no-conflict flag is still consumed (RYW :2407, above the size check).
@@ -1479,7 +1473,7 @@ func (tx *Transaction) Clear(key []byte) {
 // ClearRange deletes all keys in [begin, end).
 // Returns inverted_range (2005) if begin > end. Matches C++ fdb_transaction_clear_range_impl.
 // Zero-width ranges (begin == end) are silently ignored, matching C++.
-func (tx *Transaction) ClearRange(begin, end []byte) error {
+func (tx *Transaction) stateClearRange(begin, end []byte) error {
 	if bytes.Compare(begin, end) > 0 {
 		return &wire.FDBError{Code: ErrInvertedRange}
 	}
@@ -1514,7 +1508,7 @@ func (tx *Transaction) ClearRange(begin, end []byte) error {
 }
 
 // Atomic performs an atomic mutation.
-func (tx *Transaction) Atomic(op MutationType, key, operand []byte) {
+func (tx *Transaction) stateAtomic(op MutationType, key, operand []byte) {
 	// Min→MinV2 / And→AndV2 op-code upgrade (C++ RYW::atomicOp,
 	// ReadYourWrites.actor.cpp:2243-2248): apiVersionAtLeast(510) upgrades the
 	// legacy codes to their V2 variants, which fold correctly on an absent key.
@@ -1783,32 +1777,51 @@ func (tx *Transaction) validateMutation(m Mutation, maxWrite []byte) error {
 // Commit sends mutations to a commit proxy.
 // After successful commit, the transaction is automatically reset for reuse
 // (mutations and conflict ranges cleared, read version invalidated).
-// This matches the C client's behavior where fdb_transaction_set() can be
-// called after commit to start building a new transaction.
+// This preserves Go's auto-reuse extension; C++ RYW API >=410 does not reset
+// after commit (ReadYourWrites.actor.cpp:1383-1387,1405-1410).
 func (tx *Transaction) Commit(ctx context.Context) error {
-	if err := tx.checkCancelled(); err != nil {
-		return err // transaction_cancelled (1025), matching libfdb_c (RFC-068)
+	ctx, release := tx.opContext(ctx)
+	defer release()
+	completion, err := tx.admitCommit(ctx)
+	if err != nil {
+		return err
+	}
+	return tx.commitAdmitted(ctx, completion)
+}
+
+func (tx *Transaction) commitEntryError(ctx context.Context) error {
+	op := tx.readOperation(ctx)
+	if op.lease == nil {
+		return tx.readEntryError(ctx)
+	}
+	// The C++ wrapper checks deferredError before entering RYW, including on
+	// a canceled or timed-out transaction. Only the mutation snapshot below
+	// rechecks concurrent poison; nested GRV work preserves this entry verdict.
+	if op.entryErr != nil {
+		return op.entryErr
+	}
+	if terminalCause := tx.readIncarnationCause(op.inc); terminalCause != nil {
+		return terminalCause
 	}
 	if txState(tx.state.Load()) != txStateActive {
 		return fmt.Errorf("transaction not active")
 	}
-	// The deferred error (bad Atomic op-code 2018/2004/2000, or SetReadYourWritesDisable
-	// after an op, 2000) fails commit — the C++ checkDeferredError at commit entry
-	// (ThreadSafeTransaction.cpp:669). Checked HERE — before the read-only fast path below
-	// (a poisoned read-only commit has no mutations, so it would otherwise skip
-	// ensureReadVersion's gate and commit successfully) AND before checkTimeout: reads check
-	// the deferred error before the timeout, and libfdb_c's checkDeferredError runs before
-	// any commit logic, so it must out-rank a stale-timeout 1031 for parity. Returns
-	// WITHOUT resetting or marking the txn errored — in C++ the transaction stays
-	// poisoned-but-alive and every subsequent op re-throws the same error until reset;
-	// Go's per-op gates reproduce that (the bad mutation itself was never buffered,
-	// so nothing can reach the cluster). RFC-059 / RFC-175 E2.
-	if e := tx.deferredErr.Load(); e != nil {
-		return e
-	}
-	if err := tx.checkTimeout(); err != nil {
+	return tx.checkTimeout(ctx)
+}
+
+func (tx *Transaction) commitAdmitted(parent context.Context, completion *versionstampCompletion) (rerr error) {
+	ctx, release := tx.opContext(parent)
+	defer release()
+	op := tx.readOperation(ctx)
+	if err := tx.commitEntryError(ctx); err != nil {
 		return err
 	}
+	nativeStarted := false
+	defer func() {
+		if nativeStarted && rerr != nil {
+			completion.finishNative(commitOutcome{}, rerr)
+		}
+	}()
 	// C++ commit() waits on ryw->reading before ANY commit work — before the
 	// RYW-disabled branch, the read-only fast path, and the size checks
 	// (ReadYourWrites.actor.cpp:1358-1359). That wait is a COMPLETION BARRIER
@@ -1830,6 +1843,9 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	tx.readErrMu.Unlock()
 	for _, p := range drain {
 		p.Resolve() //nolint:errcheck // outcome lands in readErr via its tracked tail
+	}
+	if err := tx.readIncarnationCause(op.inc); err != nil {
+		return err
 	}
 	tx.readErrMu.Lock()
 	readErr := tx.readErr
@@ -1909,6 +1925,7 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	// that fast path's condition) but BEFORE the size check (~:6835), so a
 	// persistently oversized commit shows up as Started-without-Completed.
 	// Started-Completed = failed/in-flight (intentional asymmetry). RFC-097.
+	nativeStarted = true
 	if tx.db != nil && (len(shipMuts) > 0 || len(sizeConflicts) > 0) {
 		tx.db.metrics.transactionsCommitStarted.Add(1)
 	}
@@ -1921,13 +1938,13 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	if len(shipMuts) == 0 && len(sizeConflicts) == 0 {
 		// Read-only transaction — no commit needed.
 		// Still set hasCommitted so GetCommittedVersion returns 0 (not error 2015).
-		// Reset for reuse (matches C client behavior).
+		// Preserve Go's auto-reuse behavior; C++ API >=410 does not reset here.
 		// RFC-170 (#8): activate pending watches at the READ version (committedVersion is 0 for a
 		// no-commit txn — C++ setupWatches' ternary falls back to getReadVersion). Fire BEFORE
 		// postCommitReset clears the read version.
-		tx.fireWatchActivation(0, false)
-		tx.hasCommitted = true
-		tx.postCommitReset()
+		completion.finishNoWrite()
+		op.lease.release()
+		tx.publishCommit(op.inc, op.lease, commitOutcome{})
 		return nil
 	}
 
@@ -1937,7 +1954,7 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	//
 	// #28 P1/P2b: the \xff/SC/ range it appends is added AFTER the 2101 gate (so unsized, matching C++
 	// makeSelfConflicting at NativeAPI.actor.cpp:6860, which follows the size check at :6836) but MUST ship —
-	// pre-#28, buildCommitTransactionRequest read tx.writeConflicts live (post-SC); the size-time
+	// pre-#28, the request builder read tx.writeConflicts live (post-SC); the size-time
 	// `sizeConflicts` snapshot predates it. The SC DECISION and the ship both work from the frozen
 	// writeConflictsSnap (the shipped set), not live tx.writeConflicts: maybeMakeSelfConflicting decides on
 	// the snapshot, and finalizeShipConflicts folds JUST the returned range into it (not a
@@ -1981,7 +1998,14 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	if tx.db != nil {
 		commitTok = tx.db.grvCache.token()
 	}
-	if err := tx.commit(context.WithoutCancel(ctx), shipMuts, shipConflicts); err != nil {
+	input := tx.captureCommit(shipMuts, shipConflicts)
+	input.versionstamp = completion
+	if err := tx.readEntryError(ctx); err != nil {
+		return err
+	}
+	op.lease.release()
+	result, err := input.commit(context.WithoutCancel(ctx))
+	if err != nil {
 		return err
 	}
 
@@ -2000,11 +2024,7 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 		tx.db.metrics.transactionsCommitCompleted.Add(1)
 		now := time.Now()
 		tx.db.metrics.observeCommitLatency(now.Sub(commitStart))
-		// Capture under readVersionMu (RFC-175 E1): a concurrent op's first GRV
-		// stamps metricStart under the mutex.
-		tx.readVersionMu.Lock()
-		metricStart := tx.metricStart
-		tx.readVersionMu.Unlock()
+		metricStart := input.metricStart
 		if !metricStart.IsZero() {
 			tx.db.metrics.observeTotalLatency(now.Sub(metricStart))
 		}
@@ -2024,51 +2044,33 @@ func (tx *Transaction) Commit(ctx context.Context) error {
 	// before `wait(reply)` and handed to updateCachedReadVersion
 	// (NativeAPI.actor.cpp:6645, :6657). commitStart is marginally earlier
 	// still (before dispatch rather than after), which is the safe direction.
-	if tx.committedVersion > 0 {
+	if result.version > 0 {
 		// Generation from dispatch (an invalidation during the commit must still
 		// refuse it); EPOCH from the proxy binding inside commit(), which is the
 		// cluster this version actually came from.
-		tx.db.grvCache.update(commitTok.withEpoch(tx.commitEpoch.Load()),
-			commitStart, tx.committedVersion)
+		tx.db.grvCache.update(commitTok.withEpoch(result.epoch),
+			commitStart, result.version)
 	}
 
-	// RFC-170 (#8): register pending watches at the COMMITTED version. C++ commitAndWatch runs
-	// setupWatches AFTER commitMutations (NativeAPI.actor.cpp:6909-6918) with
-	// watchVersion = committedVersion > 0 ? committedVersion : readVersion. Fire BEFORE postCommitReset
-	// (which clears readVersion and rotates readGen) so a self-write-then-watch registers against the
-	// txn's own committed write and stays pending until the NEXT external change.
-	tx.fireWatchActivation(tx.committedVersion, false)
-
-	tx.hasCommitted = true
-
-	// Auto-reset for reuse — clear mutations and conflicts but preserve
-	// committedVersion/txnBatchId for GetCommittedVersion/GetVersionstamp.
-	//
-	// Divergence from C++ (audit item #6): the C++ NativeAPI client leaves
-	// the transaction in a fully-committed state and requires the caller to
-	// either Reset() or destroy it before the next use. We auto-reset here
-	// to match the C-binding contract observed by the binding tester (which
-	// reuses the same fdb_transaction_t handle across `_RESET` instructions
-	// without explicit reset between commits) and the Go-idiomatic
-	// `db.Run(func(tx)…)` callers that expect a single tx object to be
-	// reusable. The accepted cost is one extra `slice = slice[:0]` and a
-	// pool-return per commit, which is amortised by the savings on the
-	// retry path. See TODO.md "Document accepted divergences inline" for
-	// the open question of whether to also expose a no-reset variant.
-	tx.postCommitReset()
+	tx.publishCommit(op.inc, op.lease, result)
 	return nil
 }
 
 // Cancel cancels the transaction. All subsequent operations will return an error.
 // This is irreversible — a cancelled transaction cannot be reused.
 func (tx *Transaction) Cancel() {
+	lease := tx.enterState()
+	defer lease.release()
+	// Publish the terminal state before either incarnation cancellation or
+	// cancelWatches can wake an operation that maps its error through this handle.
+	tx.state.Store(int32(txStateCancelled))
+	tx.failCapturedIncarnation(lease.inc, &wire.FDBError{Code: ErrTransactionCancelled})
 	// Store the cancelled state BEFORE cancelWatches so a watch setup read parked on watchCtx, which
 	// cancelWatches is about to unblock, deterministically observes txStateCancelled when it re-checks
 	// checkCancelled in watchSetupErr → transaction_cancelled (1025). The store is sequenced-before the
 	// context cancellation, whose Done()-close is a happens-before edge to the read goroutine's
 	// state.Load(), so the ordering is guaranteed, not racy (the prior order let the unblocked
 	// read see the not-yet-cancelled state and surface context.Canceled instead of 1025).
-	tx.state.Store(int32(txStateCancelled))
 	tx.cancelWatches()
 	tx.endTxSpan() // RFC-115 §4 Layer 2: end the "Transaction" otel span on teardown
 }
@@ -2083,25 +2085,7 @@ func (tx *Transaction) Cancel() {
 // surface as context.Canceled rather than the FDBError transaction_cancelled (1025) C++ raises via
 // resetPromise.sendError — a known divergence (TODO "watch-path divergences" D5).
 func (tx *Transaction) Reset() {
-	tx.retryCount = 0
-	tx.backoff = 0
-	// C++ reset() updates creationTime = now(), restarting timeout window.
-	tx.creationTime = time.Now()
-	tx.reset(true) // user Reset(): persistent options (timeout/retryLimit/maxRetryDelay) revert to DB defaults
-	// RFC-114: Reset() begins a NEW logical transaction, so clear the total-latency
-	// anchor here too (re-stamped at the next first GRV) — otherwise a handle that
-	// reads/abandons work then Reset()s without committing would fold that pre-Reset
-	// work + idle into the next commit's total latency. This clear lives in Reset(),
-	// NOT in the OnError-shared reset() (which must preserve metricStart so latency
-	// spans retries). It runs AFTER reset(true): a WatchSetup goroutine can HOLD
-	// readVersionMu across its GRV (ensureReadVersion) waiting on the very watch
-	// context that reset()'s cancelWatches releases — taking the mutex first
-	// deadlocks Reset against it (pinned by TestReset_DoesNotDeadlockWithWatchSetupGRV).
-	// C++ has no such window: reset and the watch share the network thread, and
-	// resetPromise fires before any state is rebuilt.
-	tx.readVersionMu.Lock()
-	tx.metricStart = time.Time{}
-	tx.readVersionMu.Unlock()
+	tx.reset(true)
 }
 
 // regenerateSpan refreshes the transaction's trace span — a fresh span per
@@ -2204,7 +2188,7 @@ func (tx *Transaction) endTxSpan() {
 // NativeAPI.actor.cpp:7126): a 33-byte IncludeVersion-serialized SpanContext. The
 // transaction's span becomes a child of it (inherit traceID + flags, fresh spanID),
 // and the linkage persists across retries (regenerateSpan honors spanParent).
-func (tx *Transaction) SetSpanParent(b []byte) error {
+func (tx *Transaction) stateSetSpanParent(b []byte) error {
 	parent, err := parseSpanParent(b)
 	if err != nil {
 		return err
@@ -2245,7 +2229,7 @@ type watchActivation struct {
 
 // WatchActivation returns this incarnation's activation, lazily creating it on first use (a fresh handle
 // before any Watch/commit has nil watchAct). Race-safe via CAS so two concurrent Watch() calls share one.
-func (tx *Transaction) WatchActivation() *watchActivation {
+func (tx *Transaction) stateWatchActivation() *watchActivation {
 	if act := tx.watchAct.Load(); act != nil {
 		return act
 	}
@@ -2315,6 +2299,10 @@ func (tx *Transaction) ReleaseWatch() {
 // Cancel()/reset() (cancelWatches) still cancel every live watch. Captured synchronously in
 // WatchSetup (the async WatchPoll only USES the context) — preserves the race-free bind.
 func (tx *Transaction) newWatchCtx(parent context.Context) (context.Context, context.CancelFunc) {
+	parent = context.WithValue(parent, watchParametersKey{}, watchParameters{
+		tenantID:   tx.tenantId,
+		activation: tx.stateWatchActivation(),
+	})
 	ctx, cancel := context.WithCancel(parent)
 	tx.watchMu.Lock()
 	if tx.watchCancels == nil {
@@ -2337,9 +2325,9 @@ func (tx *Transaction) newWatchCtx(parent context.Context) (context.Context, con
 }
 
 // GetCommittedVersion returns the version at which this transaction committed.
-func (tx *Transaction) GetCommittedVersion() (int64, error) {
+func (tx *Transaction) stateGetCommittedVersion() (int64, error) {
 	if !tx.hasCommitted {
-		return 0, &wire.FDBError{Code: 2015} // used_during_commit / not yet committed
+		return 0, &wire.FDBError{Code: 2015} // future_not_set / not yet committed
 	}
 	return tx.committedVersion, nil
 }
@@ -2347,16 +2335,35 @@ func (tx *Transaction) GetCommittedVersion() (int64, error) {
 // GetVersionstamp returns the 10-byte versionstamp from the committed transaction.
 // Format: [version 8 bytes big-endian][txnBatchId 2 bytes big-endian].
 // Must be called after a successful Commit.
-func (tx *Transaction) GetVersionstamp() ([]byte, error) {
-	if err := tx.checkCancelled(); err != nil {
-		return nil, err // transaction_cancelled (1025) out-ranks the not-yet-committed 2015 (RFC-068)
-	}
-	// C++ gates getVersionstamp on the deferred error (ThreadSafeTransaction.cpp
-	// checkDeferredError before tr->getVersionstamp()) — before the
-	// no_commit_version check (a poisoned txn cannot have committed anyway).
+func (tx *Transaction) stateGetVersionstamp(inc *readIncarnation) ([]byte, error) {
+	// C++ checks deferredError before RYW's captured resetPromise.
 	if e := tx.deferredErr.Load(); e != nil {
 		return nil, e
 	}
+	if tx.beforeVersionstampLookup != nil {
+		tx.beforeVersionstampLookup()
+	}
+	tx.readErrMu.Lock()
+	// Turnover clears the current head before draining leases. Only the
+	// incarnation captured at admission can classify this getter.
+	if inc.cause != nil {
+		tx.readErrMu.Unlock()
+		return nil, inc.cause
+	}
+	completion := inc.versionstamp
+	if completion == nil {
+		completion = tx.lastVersionstamp
+	}
+	if completion != nil {
+		if !completion.ready {
+			tx.readErrMu.Unlock()
+			return nil, &wire.FDBError{Code: 2015}
+		}
+		value, err := completion.value()
+		tx.readErrMu.Unlock()
+		return value, err
+	}
+	tx.readErrMu.Unlock()
 	if !tx.hasCommitted {
 		return nil, &wire.FDBError{Code: 2015}
 	}
@@ -2389,26 +2396,24 @@ func backoffSleep(ctx context.Context, d time.Duration) error {
 // C++ RYWImpl::onError which races the backoff delay() against the timebomb (resetPromise,
 // ReadYourWrites.actor.cpp:1517) so the wait aborts the moment the deadline passes. With no timeout
 // set it is exactly backoffSleep. A genuine parent-ctx cancellation still surfaces ctx.Err().
-func (tx *Transaction) backoffSleepBounded(ctx context.Context, delay time.Duration) error {
-	if tx.timeoutNs.Load() <= 0 {
-		return backoffSleep(ctx, delay)
-	}
-	bctx, cancel := context.WithDeadline(ctx, tx.deadlineTime())
+func (tx *Transaction) backoffSleepBounded(parent context.Context, delay time.Duration) error {
+	ctx, cancel := tx.opContext(parent)
 	defer cancel()
-	if err := backoffSleep(bctx, delay); err != nil {
-		// The deadline fired (not the caller's ctx) → 1031, matching the timebomb race.
-		if ctx.Err() == nil && time.Now().After(tx.deadlineTime()) {
-			return &wire.FDBError{Code: ErrTransactionTimedOut}
-		}
-		return err
-	}
-	return nil
+	return tx.mapReadError(ctx, backoffSleep(ctx, delay))
 }
 
 // OnError handles a transaction error. Returns nil if the error is retryable
 // (the transaction has been reset for retry). Returns the error if non-retryable
 // or ctx.Err() if ctx fires during the backoff sleep.
 func (tx *Transaction) OnError(ctx context.Context, err error) (rerr error) {
+	callerCtx := ctx
+	ctx, release := tx.opContext(ctx)
+	defer release()
+	op := tx.readOperation(ctx)
+	retryReset := func(conflicts []KeyRange) error {
+		op.lease.release()
+		return tx.resetExpected(false, op.inc, op.lease, conflicts)
+	}
 	// A TERMINAL OnError — any non-nil return, i.e. the txn is aborting, not retrying — must release
 	// any in-flight watch slots. A watch registered in Transact whose txn then fails non-retryably
 	// would otherwise keep long-polling and HOLD its outstanding-watch slot until the key changes, so
@@ -2417,6 +2422,23 @@ func (tx *Transaction) OnError(ctx context.Context, err error) (rerr error) {
 	// the ABORT paths. cancelWatches is idempotent (no-op when no watch context is bound).
 	defer func() {
 		if rerr != nil {
+			tx.failCapturedIncarnation(op.inc, &wire.FDBError{Code: ErrTransactionCancelled})
+			if tx.beforeOnErrorWatchCleanup != nil {
+				tx.beforeOnErrorWatchCleanup()
+			}
+			tx.readErrMu.Lock()
+			owned := op.lease != nil && op.lease.active
+			tx.readErrMu.Unlock()
+			if !owned {
+				// Conditional turnover can reject a timeout after releasing
+				// the operation's token. Reclaim cleanup authority only on the
+				// same incarnation; a successor's watches are never ours.
+				cleanupLease := tx.enterReadState(ctx, op.inc, false)
+				if cleanupLease == nil {
+					return
+				}
+				defer cleanupLease.release()
+			}
 			tx.cancelWatches()
 		}
 	}()
@@ -2424,8 +2446,26 @@ func (tx *Transaction) OnError(ctx context.Context, err error) (rerr error) {
 	// transaction_cancelled (1025) (ReadYourWrites.actor.cpp). Without this, OnError on a
 	// cancelled txn would reset-and-retry a retryable input error (return nil), reusing a
 	// cancelled handle — a real divergence (RFC-068).
-	if cerr := tx.checkCancelled(); cerr != nil {
-		return cerr // transaction_cancelled (1025)
+	if op.lease == nil {
+		var fdbErr *wire.FDBError
+		if !errors.As(err, &fdbErr) {
+			return err
+		}
+		if e := callerCtx.Err(); e != nil {
+			return e
+		}
+		return tx.readLifetimeError(ctx)
+	}
+	tx.readErrMu.Lock()
+	terminalCause := op.inc.cause
+	tx.readErrMu.Unlock()
+	if cerr := terminalCause; cerr != nil {
+		var terminal *wire.FDBError
+		if !errors.As(cerr, &terminal) || terminal.Code != ErrTransactionTimedOut {
+			return cerr
+		}
+		// The timeout belongs to the FDB retry boundary below. A Go
+		// application error or caller cancellation still escapes unchanged.
 	}
 	var fdbErr *wire.FDBError
 	if !errors.As(err, &fdbErr) {
@@ -2442,12 +2482,12 @@ func (tx *Transaction) OnError(ctx context.Context, err error) (rerr error) {
 	// before classifying the FDB error and before any backoff. Without this, a SetTimeout txn under
 	// contention sleeps a full (growing) backoff and does one extra reset+retry before the NEXT op's
 	// checkTimeout surfaces 1031, overshooting the declared timeout. Non-retryable; mark errored.
-	// BUT a done CALLER ctx out-ranks the txn timeout (mapTimeout precedence, transaction.go:107-116):
+	// BUT a done CALLER ctx out-ranks the txn timeout:
 	// if both the SetTimeout deadline and the caller's ctx have expired, a TransactCtx caller must get
 	// their own context.Canceled/DeadlineExceeded, not 1031.
-	if cerr := tx.checkTimeout(); cerr != nil {
+	if cerr := tx.checkTimeout(ctx); cerr != nil {
 		tx.state.Store(int32(txStateErrored))
-		if ctxErr := ctx.Err(); ctxErr != nil {
+		if ctxErr := callerCtx.Err(); ctxErr != nil {
 			return ctxErr // the caller's own cancellation/deadline out-ranks the txn timeout
 		}
 		return cerr // transaction_timed_out (1031)
@@ -2493,8 +2533,7 @@ func (tx *Transaction) OnError(ctx context.Context, err error) (rerr error) {
 			tx.state.Store(int32(txStateErrored))
 			return cerr
 		}
-		tx.reset(false) // OnError retry: PRESERVE per-txn persistent options (RFC-171)
-		return nil
+		return retryReset(nil)
 
 	case ErrProxyMemoryLimitExceeded, ErrGrvProxyMemoryLimit,
 		ErrThrottledHotShard, ErrRangeLocked:
@@ -2510,8 +2549,7 @@ func (tx *Transaction) OnError(ctx context.Context, err error) (rerr error) {
 			tx.state.Store(int32(txStateErrored))
 			return cerr
 		}
-		tx.reset(false) // OnError retry: PRESERVE per-txn persistent options (RFC-171)
-		return nil
+		return retryReset(nil)
 
 	case ErrCommitUnknownResult, ErrClusterVersionChanged:
 		// MAYBE_COMMITTED: self-conflicting — deep-copy write conflicts to read
@@ -2538,11 +2576,7 @@ func (tx *Transaction) OnError(ctx context.Context, err error) (rerr error) {
 			tx.state.Store(int32(txStateErrored))
 			return cerr
 		}
-		tx.reset(false) // OnError retry: PRESERVE per-txn persistent options (RFC-171)
-		tx.conflictMu.Lock()
-		tx.readConflicts = append(tx.readConflicts, selfConflicts...)
-		tx.conflictMu.Unlock()
-		return nil
+		return retryReset(selfConflicts)
 
 	default:
 		// RETRYABLE_NOT_COMMITTED (not_committed, database_locked, process_behind,
@@ -2559,29 +2593,24 @@ func (tx *Transaction) OnError(ctx context.Context, err error) (rerr error) {
 			tx.state.Store(int32(txStateErrored))
 			return cerr
 		}
-		tx.reset(false) // OnError retry: PRESERVE per-txn persistent options (RFC-171)
-		return nil
+		return retryReset(nil)
 	}
 }
 
 // GetReadVersion returns the read version for this transaction, fetching it
 // from a GRV proxy if not already set. Matches C++ fdb_transaction_get_read_version.
 func (tx *Transaction) GetReadVersion(ctx context.Context) (int64, error) {
-	if err := tx.ensureReadVersion(ctx); err != nil {
+	ctx, cancel := tx.opContext(ctx)
+	defer cancel()
+	rv, err := tx.readVersionForOperation(ctx)
+	if err != nil {
 		return 0, err
 	}
-	// Capture under readVersionMu (RFC-175 E1): a concurrent Commit's postCommitReset
-	// (or a Reset) writes readVersion under the mutex, and the concurrent-use contract
-	// allows it to overlap this read. Same capture convention as the read path
-	// (readpath.go sendGetValue/sendGetKey).
-	tx.readVersionMu.Lock()
-	rv := tx.readVersion
-	tx.readVersionMu.Unlock()
 	return rv, nil
 }
 
 // SetReadVersion sets the read version manually.
-func (tx *Transaction) SetReadVersion(version int64) {
+func (tx *Transaction) stateSetReadVersion(version int64) {
 	tx.readVersionMu.Lock()
 	tx.readVersion = version
 	tx.hasReadVersion = true
@@ -2615,7 +2644,7 @@ func (tx *Transaction) SetReadVersion(version int64) {
 // they were redundant with the gate, and two mechanisms covering one rule means
 // neither is individually detectable by a mutation — the tests kept passing with
 // either one broken, which is worse than having only one.
-func (tx *Transaction) ReadVersionInstant() (time.Time, bool) {
+func (tx *Transaction) stateReadVersionInstant() (time.Time, bool) {
 	tx.readVersionMu.Lock()
 	defer tx.readVersionMu.Unlock()
 	if !tx.hasReadVersion || tx.readVersionInstant.IsZero() {
@@ -2628,7 +2657,8 @@ func (tx *Transaction) ReadVersionInstant() (time.Time, bool) {
 // The timeout is an overall budget from creation time (or last user Reset),
 // NOT per-retry. OnError retries share the same deadline.
 // A value of 0 disables the timeout. Matches C++ FDB_TR_OPTION_TIMEOUT.
-func (tx *Transaction) SetTimeout(ms int64) {
+func (tx *Transaction) stateSetTimeout(ms int64) {
+	defer tx.configureReadTimeout()
 	if ms <= 0 {
 		tx.timeoutNs.Store(0)
 		tx.deadlineNs.Store(0)
@@ -2647,7 +2677,7 @@ func (tx *Transaction) SetTimeout(ms int64) {
 // A value of 0 means "don't retry at all" (first error escapes).
 // A value of -1 means "unlimited" (default behavior).
 // Matches C++ FDB_TR_OPTION_RETRY_LIMIT.
-func (tx *Transaction) SetRetryLimit(retries int64) {
+func (tx *Transaction) stateSetRetryLimit(retries int64) {
 	if retries < 0 {
 		tx.hasRetryLimit = false
 		return
@@ -2676,7 +2706,7 @@ const (
 // each mutation includes sizeof(MutationRef), each conflict range includes
 // sizeof(KeyRangeRef). For set/atomic with write conflicts, C++ also adds the
 // key length again for the auto-generated write conflict range.
-func (tx *Transaction) GetApproximateSize() (int64, error) {
+func (tx *Transaction) stateGetApproximateSize() (int64, error) {
 	// C++ gates getApproximateSize on the deferred error and NOTHING else
 	// (ThreadSafeTransaction.cpp:715-721: checkDeferredError, then the plain
 	// RYW counter getter — no resetPromise race, so a cancelled-but-unpoisoned
@@ -2750,30 +2780,36 @@ func (tx *Transaction) approximateCommitSize(muts []Mutation, writeConflicts []K
 
 // GetLocations returns all shard location entries overlapping [begin, end).
 func (tx *Transaction) GetLocations(parentCtx context.Context, begin, end []byte, limit int) ([]LocationResult, error) {
-	ctx, cancel := tx.opContext(parentCtx) // bound by SetTimeout (RFC-112)
+	ctx, cancel := tx.opContext(parentCtx)
 	defer cancel()
+	if err := tx.readEntryError(ctx); err != nil {
+		return nil, err
+	}
 	locs, err := tx.db.locCache.locateRange(tx.db, ctx, begin, end, limit, false, tx.tenantId, tx.currentSpan())
-	return locs, tx.mapTimeout(parentCtx, err)
+	return locs, tx.mapReadError(ctx, err)
 }
 
 // GetAddressesForKey returns the addresses of storage servers responsible for
 // the given key. Uses the location cache (queries cluster on miss).
 func (tx *Transaction) GetAddressesForKey(parentCtx context.Context, key []byte) ([]string, error) {
+	ctx, cancel := tx.opContext(parentCtx)
+	defer cancel()
+	if err := tx.readEntryError(ctx); err != nil {
+		return nil, err
+	}
 	// A cancelled txn returns transaction_cancelled (1025) — C++ getAddressesForKey races
 	// resetPromise at op entry (ReadYourWrites.actor.cpp:1837); this path bypasses
 	// ensureReadVersion, so gate explicitly (RFC-068).
 	if err := tx.checkCancelled(); err != nil {
 		return nil, err
 	}
-	// C++ getAddressesForKey is also bounded by the timebomb (resetPromise,
-	// ReadYourWrites.actor.cpp:1843-1848) — bound the locate by SetTimeout (RFC-112).
-	ctx, cancel := tx.opContext(parentCtx)
-	defer cancel()
+	// The captured signal also bounds the locate (C++ resetPromise,
+	// ReadYourWrites.actor.cpp:1843-1848).
 	loc, err := tx.db.locCache.locate(tx.db, ctx, key, tx.tenantId, tx.currentSpan(), false)
 	if err != nil {
 		// Tracked (C++ ryw->reading): getAddressesForKey is reading.add'd
 		// (ReadYourWrites.actor.cpp:1849), so its failure poisons commit too.
-		return nil, tx.trackReadError(tx.mapTimeout(parentCtx, fmt.Errorf("locate key: %w", err)))
+		return nil, tx.trackReadOperation(ctx, tx.mapReadError(ctx, fmt.Errorf("locate key: %w", err)))
 	}
 	addrs := make([]string, len(loc.Servers))
 	for i, s := range loc.Servers {
@@ -2787,10 +2823,25 @@ func (tx *Transaction) GetAddressesForKey(parentCtx context.Context, key []byte)
 	return addrs, nil
 }
 
-// checkTimeout returns a timeout error if the deadline has passed.
-func (tx *Transaction) checkTimeout() error {
+// checkTimeout publishes synchronous expiry into the captured resetPromise.
+// The lease pins its deadline while Reset retires and drains that incarnation;
+// neither failure publication nor the returned cause may select its successor.
+func (tx *Transaction) checkTimeout(parent context.Context) error {
+	ctx, release := tx.opContext(parent)
+	defer release()
+	op := tx.readOperation(ctx)
+	if op.lease == nil {
+		return tx.readLifetimeError(ctx)
+	}
+	if cause := tx.readIncarnationCause(op.inc); cause != nil {
+		return cause
+	}
 	if tx.timeoutNs.Load() > 0 && time.Now().After(tx.deadlineTime()) {
-		return &wire.FDBError{Code: ErrTransactionTimedOut}
+		if tx.beforeReadTimeoutPublication != nil {
+			tx.beforeReadTimeoutPublication()
+		}
+		tx.failCapturedIncarnation(op.inc, &wire.FDBError{Code: ErrTransactionTimedOut})
+		return tx.readIncarnationCause(op.inc)
 	}
 	return nil
 }
@@ -3028,7 +3079,7 @@ func conflictRangesIntersect(writes, reads []KeyRange) bool {
 // what ships: otherwise a racing write intersecting a read range could make scAdded=false while the shipped
 // frozen writes carry NO intersecting range and NO \xFF/SC/ key, leaving the request non-self-conflicting
 // and breaking the commit_unknown_result barrier. Read side stays live — it matches the
-// live read conflicts buildCommitTransactionRequest ships, and a racing Get only over-conflicts (harmless).
+// live read conflicts the commit request ships, and a racing Get only over-conflicts (harmless).
 // Returns the injected \xFF/SC/ WRITE-conflict range and true when it added one, so Commit can ship it on
 // the SIZED snapshot (#28 P2b) rather than re-reading live tx.writeConflicts.
 func (tx *Transaction) maybeMakeSelfConflicting(writeSnap []KeyRange) (KeyRange, bool) {
@@ -3052,7 +3103,7 @@ func (tx *Transaction) maybeMakeSelfConflicting(writeSnap []KeyRange) (KeyRange,
 // key rather than a real user key, avoiding spurious not_committed (1020) for concurrent readers of a
 // hot user key (finding #27). Only maybeMakeSelfConflicting calls this, and only on the NON-tenant path,
 // so the raw \xFF/SC/ key is committed verbatim (a non-tenant commit prepends no tenant prefix) and thus
-// matches the raw-access dummy's conflict key. buildCommitTransactionRequest exempts ONLY the
+// matches the raw-access dummy's conflict key. the commit request builder exempts ONLY the
 // metadataVersion key from tenant prefixing — it would prefix this \xFF/SC/ key — which is one reason the
 // tenant case is a separate follow-up rather than a trivial gate flip. Caller MUST hold conflictMu.
 func (tx *Transaction) makeSelfConflictingLocked() KeyRange {
@@ -3076,54 +3127,54 @@ func (tx *Transaction) makeSelfConflictingLocked() KeyRange {
 // SetNextWriteNoWriteConflictRange causes the next mutation to NOT add a write
 // conflict range. Auto-resets after one mutation. Matches C++
 // FDB_TR_OPTION_NEXT_WRITE_NO_WRITE_CONFLICT_RANGE.
-func (tx *Transaction) SetNextWriteNoWriteConflictRange() {
+func (tx *Transaction) stateSetNextWriteNoWriteConflictRange() {
 	tx.nextWriteNoConflict = true
 }
 
 // SetPriority sets the transaction priority for GRV requests.
-func (tx *Transaction) SetPriority(p TransactionPriority) {
+func (tx *Transaction) stateSetPriority(p TransactionPriority) {
 	tx.priority = p
 }
 
 // SetCausalReadRisky sets the causal-read-risky flag.
 // When set, the read version may not reflect the latest committed writes.
-func (tx *Transaction) SetCausalReadRisky(v bool) {
+func (tx *Transaction) stateSetCausalReadRisky(v bool) {
 	tx.causalReadRisky = v
 }
 
 // SetUseGrvCache opts this transaction in to serving its read version from the
 // database's GRV cache (USE_GRV_CACHE, 1101). Off by default — a default
 // transaction issues a fresh proxy GRV, matching libfdb_c. RFC-104.
-func (tx *Transaction) SetUseGrvCache() {
+func (tx *Transaction) stateSetUseGrvCache() {
 	tx.useGrvCache = true
 }
 
 // SetSkipGrvCache forces this transaction to bypass the GRV cache even if
 // SetUseGrvCache was also set (SKIP_GRV_CACHE, 1102 — skip wins). RFC-104.
-func (tx *Transaction) SetSkipGrvCache() {
+func (tx *Transaction) stateSetSkipGrvCache() {
 	tx.skipGrvCache = true
 }
 
 // SetLockAware sets the lock-aware flag on the commit request.
-func (tx *Transaction) SetLockAware(v bool) {
+func (tx *Transaction) stateSetLockAware(v bool) {
 	tx.lockAware = v
 }
 
 // SetReadLockAware allows reads on locked databases without granting
 // commit access. C++: options.readLockAware — only affects read path.
-func (tx *Transaction) SetReadLockAware(v bool) {
+func (tx *Transaction) stateSetReadLockAware(v bool) {
 	tx.readLockAware = v
 }
 
 // LockAware reports whether the commit is lock-aware (sets FLAG_IS_LOCK_AWARE,
 // bypassing the locked-database check). Mirrors SetLockAware.
-func (tx *Transaction) LockAware() bool {
+func (tx *Transaction) stateLockAware() bool {
 	return tx.lockAware
 }
 
 // ReadLockAware reports whether reads bypass the locked-database check.
 // Mirrors SetReadLockAware.
-func (tx *Transaction) ReadLockAware() bool {
+func (tx *Transaction) stateReadLockAware() bool {
 	return tx.readLockAware
 }
 
@@ -3131,13 +3182,13 @@ func (tx *Transaction) ReadLockAware() bool {
 // If the transaction exceeds this size, commit returns error 2101.
 // Valid range: [32, 10_000_000]. Out-of-range values cause error 2006 at commit.
 // A value of 0 disables the limit.
-func (tx *Transaction) SetSizeLimit(limit int64) {
+func (tx *Transaction) stateSetSizeLimit(limit int64) {
 	tx.sizeLimit = limit
 }
 
 // SetMaxRetryDelay caps the exponential backoff between retries.
 // Value in milliseconds. Matches C++ FDB_TR_OPTION_MAX_RETRY_DELAY.
-func (tx *Transaction) SetMaxRetryDelay(ms int64) {
+func (tx *Transaction) stateSetMaxRetryDelay(ms int64) {
 	tx.maxRetryDelay = time.Duration(ms) * time.Millisecond
 }
 
@@ -3151,7 +3202,7 @@ func (tx *Transaction) SetMaxRetryDelay(ms int64) {
 // lands in deferredError (the option call itself succeeds) and every subsequent op
 // returns 2000 until reset (RFC-059). Match both halves: record the deferred error
 // AND leave rywDisabled unset. A clean (pre-op) disable applies normally.
-func (tx *Transaction) SetReadYourWritesDisable() {
+func (tx *Transaction) stateSetReadYourWritesDisable() {
 	if tx.hadRead.Load() || !tx.ryw.isEmpty() {
 		// CAS: first deferred error wins (the E2 contract above; C++
 		// doOnMainThreadVoid never overwrites deferredError).
@@ -3165,13 +3216,13 @@ func (tx *Transaction) SetReadYourWritesDisable() {
 // mutations. Use for insert-only batch writes where keys are guaranteed unique
 // and all atomic operations commute (ADD, MAX, MIN). Significantly reduces
 // commit request size and eliminates conflict buffer allocations.
-func (tx *Transaction) SetWriteConflictsDisabled() {
+func (tx *Transaction) stateSetWriteConflictsDisabled() {
 	tx.writeConflictsDisabled = true
 }
 
 // EnsureMutationCapacity pre-sizes the mutations and writeConflicts slices
 // to avoid growth allocations during batch writes. Call before a large batch.
-func (tx *Transaction) EnsureMutationCapacity(n int) {
+func (tx *Transaction) stateEnsureMutationCapacity(n int) {
 	tx.conflictMu.Lock()
 	if cap(tx.mutations) < n {
 		newMuts := make([]Mutation, len(tx.mutations), n)
@@ -3190,7 +3241,7 @@ func (tx *Transaction) EnsureMutationCapacity(n int) {
 // disabled-oriented inverse, so it increments here). Matches FDB_TR_OPTION_SNAPSHOT_RYW_DISABLE
 // (libfdb_c does enabledCount--). When the net count is > 0 (more disables than enables),
 // Snapshot.Get/GetRange/GetKey read from the server, bypassing the RYW cache.
-func (tx *Transaction) SetSnapshotRYWDisable() {
+func (tx *Transaction) stateSetSnapshotRYWDisable() {
 	tx.snapshotRYWDisableCount++
 }
 
@@ -3198,37 +3249,37 @@ func (tx *Transaction) SetSnapshotRYWDisable() {
 // SetSnapshotRYWDisable. Matches FDB_TR_OPTION_SNAPSHOT_RYW_ENABLE (libfdb_c does
 // enabledCount++). The option is a counter, not a toggle: two disables require two enables to
 // re-enable, and an enable from the default pushes the count negative (still enabled).
-func (tx *Transaction) SetSnapshotRYWEnable() {
+func (tx *Transaction) stateSetSnapshotRYWEnable() {
 	tx.snapshotRYWDisableCount--
 }
 
 // SnapshotRYWDisableCount reports the net snapshot-RYW-disable count (> 0 means snapshot reads
 // bypass the RYW cache). Read-only accessor used to verify database-level option propagation.
-func (tx *Transaction) SnapshotRYWDisableCount() int { return tx.snapshotRYWDisableCount }
+func (tx *Transaction) stateSnapshotRYWDisableCount() int { return tx.snapshotRYWDisableCount }
 
 // SetSnapshotRYWDisableCount SETS the snapshot-RYW disable counter to n (vs the ++/-- of
 // SetSnapshotRYWDisable/Enable). It seeds the per-tx counter to a database default. Setting (not
 // incrementing) is idempotent under the retry replay of applyTxDefaults — matching libfdb_c, whose
 // reset() re-seeds snapshotRywEnabled = db->snapshotRywEnabled each attempt rather than accumulating.
-func (tx *Transaction) SetSnapshotRYWDisableCount(n int) { tx.snapshotRYWDisableCount = n }
+func (tx *Transaction) stateSetSnapshotRYWDisableCount(n int) { tx.snapshotRYWDisableCount = n }
 
 // BypassUnreadable reports whether FDB_TR_OPTION_BYPASS_UNREADABLE is set. Read-only accessor used
 // to verify database-level option propagation.
-func (tx *Transaction) BypassUnreadable() bool { return tx.ryw.bypassUnreadable }
+func (tx *Transaction) stateBypassUnreadable() bool { return tx.ryw.bypassUnreadable }
 
 // CausalReadRisky reports whether the GRV causal-read-risky flag is set. Read-only accessor used to
 // verify database-level option propagation.
-func (tx *Transaction) CausalReadRisky() bool { return tx.causalReadRisky }
+func (tx *Transaction) stateCausalReadRisky() bool { return tx.causalReadRisky }
 
 // SetTenantId sets the tenant for this transaction. All operations will
 // be scoped to the tenant's key space. Use NoTenantID (-1) for no tenant.
-func (tx *Transaction) SetTenantId(id int64) {
+func (tx *Transaction) stateSetTenantId(id int64) {
 	tx.tenantId = id
 }
 
 // TenantId returns the current tenant ID for this transaction.
 // Returns NoTenantID (-1) if no tenant is set.
-func (tx *Transaction) TenantId() int64 {
+func (tx *Transaction) stateTenantId() int64 {
 	return tx.tenantId
 }
 
@@ -3247,7 +3298,7 @@ const (
 // length is validated first, then the count — and the count is checked BEFORE
 // the duplicate test, so adding a duplicate to an already-full set still fails
 // with too_many_tags rather than silently succeeding.
-func (tx *Transaction) SetTag(tag string) error {
+func (tx *Transaction) stateSetTag(tag string) error {
 	if len(tag) > maxTransactionTagLength {
 		return &wire.FDBError{Code: 2110} // tag_too_long
 	}
@@ -3269,8 +3320,8 @@ func (tx *Transaction) SetTag(tag string) error {
 // set and the read tag set. The transaction set drives the GRV request and the
 // commit tagSet; the read set is what C++ samples onto per-storage-server read
 // requests.
-func (tx *Transaction) SetAutoThrottleTag(tag string) error {
-	if err := tx.SetTag(tag); err != nil {
+func (tx *Transaction) stateSetAutoThrottleTag(tag string) error {
+	if err := tx.stateSetTag(tag); err != nil {
 		return err
 	}
 	// readTags is a distinct TagSet in C++ and gets its own limit check. It can
@@ -3287,10 +3338,10 @@ func (tx *Transaction) SetAutoThrottleTag(tag string) error {
 
 // Tags returns the transaction tag set in insertion order. Insertion order is
 // the wire order for the commit tagSet, so tests can assert it directly.
-func (tx *Transaction) Tags() []string { return tx.tags }
+func (tx *Transaction) stateTags() []string { return append([]string(nil), tx.tags...) }
 
 // ReadTags returns the auto-throttle (read) tag subset in insertion order.
-func (tx *Transaction) ReadTags() []string { return tx.readTags }
+func (tx *Transaction) stateReadTags() []string { return append([]string(nil), tx.readTags...) }
 
 // encodeTagSet serializes tags the way TagSet's dynamic_size_traits does
 // (TagThrottle.actor.h): each tag as a single length byte followed by its bytes,
@@ -3316,7 +3367,7 @@ func encodeTagSet(tags []string) []byte {
 // GetTagThrottledDuration returns the total time this transaction was delayed
 // by proxy tag throttling across all GRV requests. Matches C++
 // Transaction::getTagThrottledDuration() (NativeAPI.actor.cpp:7594).
-func (tx *Transaction) GetTagThrottledDuration() float64 {
+func (tx *Transaction) stateGetTagThrottledDuration() float64 {
 	return tx.proxyTagThrottledDuration
 }
 
@@ -3342,7 +3393,7 @@ func (tx *Transaction) grvFlags() uint32 {
 // If any key in this range is modified by another transaction between
 // this transaction's read version and commit, the commit will fail.
 // Returns inverted_range (2005) if begin > end. Matches C++ fdb_transaction_add_conflict_range.
-func (tx *Transaction) AddReadConflictRange(begin, end []byte) error {
+func (tx *Transaction) stateAddReadConflictRange(begin, end []byte) error {
 	if bytes.Compare(begin, end) > 0 {
 		return &wire.FDBError{Code: ErrInvertedRange}
 	}
@@ -3390,13 +3441,13 @@ func (tx *Transaction) AddReadConflictRange(begin, end []byte) error {
 // through the RYW write-map (C++ addReadConflictRange over [key, keyAfter(key)) → updateConflictMap,
 // ReadYourWrites.actor.cpp:1986): a self-written independent key adds no conflict; rywDisabled adds
 // the full single-key conflict directly (:1979). Identical to the Get-path helper, so delegate.
-func (tx *Transaction) AddReadConflictKey(key []byte) {
+func (tx *Transaction) stateAddReadConflictKey(key []byte) {
 	tx.addReadConflictForKeyRYW(key)
 }
 
 // AddWriteConflictRange adds an explicit write conflict range [begin, end).
 // Returns inverted_range (2005) if begin > end. Matches C++ fdb_transaction_add_conflict_range.
-func (tx *Transaction) AddWriteConflictRange(begin, end []byte) error {
+func (tx *Transaction) stateAddWriteConflictRange(begin, end []byte) error {
 	if bytes.Compare(begin, end) > 0 {
 		return &wire.FDBError{Code: ErrInvertedRange}
 	}
@@ -3424,7 +3475,7 @@ func (tx *Transaction) AddWriteConflictRange(begin, end []byte) error {
 }
 
 // AddWriteConflictKey adds a write conflict on a single key.
-func (tx *Transaction) AddWriteConflictKey(key []byte) {
+func (tx *Transaction) stateAddWriteConflictKey(key []byte) {
 	tx.addWriteConflictForKey(key)
 }
 
@@ -3434,11 +3485,17 @@ func (tx *Transaction) AddWriteConflictKey(key []byte) {
 // retry gets a fresh timeout window (matches C++ where set_option is
 // re-applied on reset, restarting the timer).
 // postCommitReset clears mutation buffers and conflict ranges after a
-// successful commit, allowing the transaction to be reused. Matches the C++
-// client's tryCommit() which does `tr.transaction = CommitTransactionRef()`
-// after successful commit. Preserves committedVersion and txnBatchId for
+// successful commit, preserving Go's auto-reuse behavior. C++ RYW API >=410
+// does not reset here (ReadYourWrites.actor.cpp:1383-1387,1405-1410).
+// Preserves committedVersion and txnBatchId for
 // GetCommittedVersion/GetVersionstamp queries.
 func (tx *Transaction) postCommitReset() {
+	finish := tx.startTurnover()
+	defer finish()
+	tx.postCommitResetFields()
+}
+
+func (tx *Transaction) postCommitResetFields() {
 	tx.state.Store(int32(txStateActive))
 	tx.readVersionMu.Lock()
 	tx.hasReadVersion = false
@@ -3468,11 +3525,6 @@ func (tx *Transaction) postCommitReset() {
 	tx.conflictMu.Unlock()
 	tx.ryw.reset()
 	tx.deferredErr.Store(nil) // C++ resetRyow clears deferredError (ReadYourWrites.actor.cpp:2719)
-	tx.readErrMu.Lock()
-	tx.readErr = nil // necessarily nil here (commit succeeded), cleared for reuse symmetry
-	tx.readGen++     // detach in-flight reads (C++ resetRyow swaps the reading AndFuture)
-	tx.pendingReads = nil
-	tx.readErrMu.Unlock()
 	tx.hadRead.Store(false)
 	// RFC-114: a committed, auto-reset handle begins a NEW logical transaction, so
 	// CLEAR the total-latency anchor — the next transaction re-stamps it at ITS first
@@ -3497,6 +3549,29 @@ func (tx *Transaction) postCommitReset() {
 // persistent options revert to DB defaults); false = OnError retry (resetRyow's applyPersistentOptions →
 // per-txn persistent options PRESERVED). Non-persistent options are cleared to DB defaults on both.
 func (tx *Transaction) reset(userReset bool) {
+	finish := tx.startTurnover()
+	defer finish()
+	tx.resetFields(userReset)
+}
+
+func (tx *Transaction) resetExpected(userReset bool, expected *readIncarnation, released *executionLease, conflicts []KeyRange) error {
+	finish, err := tx.beginTurnover(expected, released)
+	if err != nil {
+		return err
+	}
+	defer finish()
+	tx.resetFields(userReset)
+	tx.readConflicts = append(tx.readConflicts, conflicts...)
+	return nil
+}
+
+func (tx *Transaction) resetFields(userReset bool) {
+	if userReset {
+		tx.retryCount = 0
+		tx.backoff = 0
+		tx.creationTime = time.Now()
+		tx.metricStart = time.Time{}
+	}
 	tx.cancelWatches()
 	tx.state.Store(int32(txStateActive))
 	tx.readVersionMu.Lock()
@@ -3507,6 +3582,7 @@ func (tx *Transaction) reset(userReset bool) {
 	tx.committedVersion = 0
 	tx.hasCommitted = false
 	tx.txnBatchId = 0
+	tx.lastVersionstamp = nil
 	// Hold conflictMu: Watch() goroutines may still be running after
 	// cancelWatches() (cancel is async — goroutines drain on ctx.Done), and the
 	// concurrent-use contract means Set/Commit may touch these under the lock.
@@ -3522,11 +3598,6 @@ func (tx *Transaction) reset(userReset bool) {
 	tx.conflictMu.Unlock()
 	tx.ryw.reset()
 	tx.deferredErr.Store(nil) // C++ resetRyow clears deferredError (ReadYourWrites.actor.cpp:2719)
-	tx.readErrMu.Lock()
-	tx.readErr = nil // C++ resetRyow(): reading = AndFuture() (:2715)
-	tx.readGen++     // detach in-flight reads (C++ resetRyow swaps the reading AndFuture)
-	tx.pendingReads = nil
-	tx.readErrMu.Unlock()
 	tx.hadRead.Store(false)
 	// RFC-171 (#9/#14): re-apply the Database-level option defaults. NON-persistent options
 	// (readSystemKeys, sizeLimit, priority, rywDisabled, tags, …) are cleared to their DB defaults on BOTH
@@ -3544,6 +3615,7 @@ func (tx *Transaction) reset(userReset bool) {
 	} else {
 		tx.deadlineNs.Store(0)
 	}
+	tx.configureReadTimeout()
 	// Clear accumulated proxy tag throttle duration on retry (tags themselves are cleared to the DB
 	// default by applyOptionDefaults above — they are NON-persistent, C++ TransactionOptions::clear).
 	tx.proxyTagThrottledDuration = 0
@@ -3612,7 +3684,7 @@ func (tx *Transaction) applyOptionDefaults(userReset bool) {
 	// next OnError stop retrying (0 >= -1).
 	tx.timeoutNs.Store(int64(time.Duration(td.Timeout) * time.Millisecond)) // 0 → disabled (deadline recomputed by reset())
 	if td.HasRetryLimit {
-		tx.SetRetryLimit(int64(td.RetryLimit))
+		tx.stateSetRetryLimit(int64(td.RetryLimit))
 	} else {
 		tx.hasRetryLimit = false // no DB retry-limit default → unlimited
 	}
@@ -3684,6 +3756,6 @@ func (tx *Transaction) nextBackoff(errCode int) time.Duration {
 // bytes as written instead of failing with accessed_unreadable (1036);
 // SVK's unmodified-unreadable candidate range reads through to storage.
 // RFC-098.
-func (tx *Transaction) SetBypassUnreadable(v bool) {
+func (tx *Transaction) stateSetBypassUnreadable(v bool) {
 	tx.ryw.setBypassUnreadable(v)
 }

@@ -19,12 +19,8 @@ import (
 //	    now resolves the group key against ALL join-leaf descriptors instead of
 //	    only the first (which missed a second-leg key).
 //
-// (c) is DELIBERATELY not changed: Go labels an unaliased `COUNT(*)` with the
-// descriptive `COUNT(*)` where Java mints a positional `_N`. The plandiff
-// ConformColumns harness already accepts a descriptive Go label against Java's
-// anonymous `_N` when the type matches, so the descriptive label is a
-// conformance-blessed read-side nicety (wire-neutral) — this test pins it stays
-// descriptive so an accidental change is caught.
+// Unaliased aggregates follow Java's zero-based positional `_N` metadata
+// contract; authored aliases remain the only way to publish an aggregate name.
 func TestFDB_GroupByResultMetadata(t *testing.T) {
 	t.Parallel()
 	db, ctx := gojDB(t, "rider2meta")
@@ -59,20 +55,19 @@ func TestFDB_GroupByResultMetadata(t *testing.T) {
 		// d.dname: label BARE "DNAME" (not "D.DNAME"), type STRING (dname lives on
 		// the far dept leg — resolved, not UNKNOWN).
 		assertMeta(t, `SELECT d.dname, COUNT(*) FROM emp AS e INNER JOIN dept AS d ON e.did = d.did GROUP BY d.dname`,
-			[]string{"DNAME|STRING", "COUNT(*)|BIGINT"})
+			[]string{"DNAME|STRING", "_1|BIGINT"})
 	})
 
 	t.Run("bare group key over join also resolves its far-leg type", func(t *testing.T) {
 		assertMeta(t, `SELECT dname, COUNT(*) FROM emp AS e INNER JOIN dept AS d ON e.did = d.did GROUP BY dname`,
-			[]string{"DNAME|STRING", "COUNT(*)|BIGINT"})
+			[]string{"DNAME|STRING", "_1|BIGINT"})
 	})
 
 	t.Run("aggregate column: bare-key fix does not disturb the aggregate label/type", func(t *testing.T) {
-		// Control: the group-key label/type fix must leave the aggregate column
-		// untouched. Go keeps its descriptive `MAX(E.SALARY)` label (a Go read-
-		// side nicety vs Java's `_1`) and the first-leg-resolved BIGINT type.
+		// Control: the group-key label/type fix must leave the aggregate column's
+		// positional label and first-leg-resolved BIGINT type untouched.
 		assertMeta(t, `SELECT d.dname, MAX(e.salary) FROM emp AS e INNER JOIN dept AS d ON e.did = d.did GROUP BY d.dname`,
-			[]string{"DNAME|STRING", "MAX(E.SALARY)|BIGINT"})
+			[]string{"DNAME|STRING", "_1|BIGINT"})
 	})
 
 	t.Run("values still flow: the qualified datum key resolves (not NULL)", func(t *testing.T) {
@@ -89,16 +84,13 @@ func TestFDB_GroupByResultMetadata(t *testing.T) {
 
 	t.Run("single-table group key control keeps its bare label and type", func(t *testing.T) {
 		assertMeta(t, `SELECT ename, COUNT(*) FROM emp AS e GROUP BY ename`,
-			[]string{"ENAME|STRING", "COUNT(*)|BIGINT"})
+			[]string{"ENAME|STRING", "_1|BIGINT"})
 	})
 
-	t.Run("(c) unaliased COUNT(*) keeps its descriptive label (accepted by ConformColumns)", func(t *testing.T) {
-		// Intentional divergence: Java mints `_1`, Go keeps the informative
-		// `COUNT(*)`; the conformance harness accepts it (type must still match).
-		// Pinned so an accidental relabel is caught.
+	t.Run("(c) unaliased COUNT(*) uses its positional label", func(t *testing.T) {
 		got := colMeta(t, `SELECT dname, COUNT(*) FROM emp AS e INNER JOIN dept AS d ON e.did = d.did GROUP BY dname`)
-		if len(got) != 2 || got[1] != "COUNT(*)|BIGINT" {
-			t.Fatalf("unaliased COUNT(*): got %v, want the descriptive COUNT(*)|BIGINT label", got)
+		if len(got) != 2 || got[1] != "_1|BIGINT" {
+			t.Fatalf("unaliased COUNT(*): got %v, want positional _1|BIGINT label", got)
 		}
 	})
 }

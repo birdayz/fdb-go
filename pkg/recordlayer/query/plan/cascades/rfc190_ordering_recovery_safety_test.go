@@ -423,7 +423,7 @@ func TestRFC190ProjectedExistsSortRecoveryUsesExactOutputCarrier(t *testing.T) {
 		innerScan := mustRFC190RecoveryConstruct(plans.NewRecordQueryScanPlan(
 			[]string{"T2"}, innerType, false))
 		inner := mustRFC190RecoveryConstruct(
-			plans.NewRecordQueryFirstOrDefaultPlan(innerScan, nil))
+			plans.NewRecordQueryFirstOrDefaultPlan(innerScan, values.NewNullValue(innerScan.GetResultType())))
 		outerQ := expressions.NamedPhysicalQuantifier(
 			outerAlias, expressions.FinalOf(outer))
 		innerQ := expressions.NamedPhysicalQuantifier(

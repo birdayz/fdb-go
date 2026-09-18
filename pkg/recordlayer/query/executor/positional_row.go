@@ -275,7 +275,13 @@ func RowValue(qr QueryResult) any {
 	if qr.Positional == nil {
 		return nil
 	}
-	if isBareScalarRow(qr.Positional) {
+	scalar, err := isBareScalarRow(qr.Positional)
+	if err != nil {
+		// This diagnostic-only API exposes a malformed row as an error value;
+		// production consumers propagate the same checked error normally.
+		return err
+	}
+	if scalar {
 		return qr.Positional.Slots[0]
 	}
 	return positionalToMap(qr.Positional)

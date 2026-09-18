@@ -81,6 +81,24 @@ func combineQualifyPred(
 	return predicates.NewAnd(pred, qualPred), nil
 }
 
+// retainQualifyProvenance marks the filter that received this block's QUALIFY.
+// Both SELECT builders combine it with WHERE, but its admission boundary must
+// survive predicate simplification and may not migrate to a derived FROM body.
+func retainQualifyProvenance(op logical.LogicalOperator) error {
+	for cur := op; cur != nil; {
+		if filter, ok := cur.(*logical.LogicalFilter); ok {
+			filter.HasQualify = true
+			return nil
+		}
+		next, ok := unaryInput(cur)
+		if !ok {
+			break
+		}
+		cur = next
+	}
+	return api.NewError(api.ErrCodeInternalError, "QUALIFY predicate has no owning logical filter")
+}
+
 // predicateHasUnloweredRowNumber reports whether the predicate tree still
 // contains a raw RowNumberValue after the DistanceRank transform — i.e. an
 // unsupported window shape that did not lower to a vector scan.

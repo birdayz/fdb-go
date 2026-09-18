@@ -114,10 +114,10 @@ type Reference struct {
 	// made every such reader a writer, and -race caught it intermittently — 4
 	// runs in 6 — which is the worst possible way to own a data race.
 	//
-	// An atomic pointer restores "reading a Reference does not write to it" at
-	// the only place that broke it. Two goroutines racing to derive the same
-	// answer both store a self-consistent (type, version) pair, so a duplicate
-	// derivation is wasted work and never a wrong answer.
+	// An atomic pointer makes concurrent publication safe for this getter. Two
+	// goroutines racing to derive the same answer both store a self-consistent
+	// (type, version) pair, so a duplicate derivation is wasted work and never a
+	// wrong answer.
 	flowedType atomic.Pointer[flowedTypeMemo]
 
 	plannerStage PlannerStage
@@ -149,7 +149,11 @@ type Reference struct {
 	// and collide distinct values sharing a rendered name.
 	winner RelationalExpression
 
-	correlatedToCache map[values.CorrelationIdentifier]struct{}
+	// Publish a complete, read-only correlation set so concurrent readers of a
+	// stable graph cannot race on lazy initialization. A non-nil pointer to an
+	// empty map caches the uncorrelated case. Member edits and invalidation
+	// remain sequential and must not overlap readers.
+	correlatedToCache atomic.Pointer[map[values.CorrelationIdentifier]struct{}]
 
 	// aliasAwareDedups counts how many times the ALIAS-AWARE interning tier
 	// (the MemoEqual branch in Insert/InsertFinal, gated to merge
@@ -359,7 +363,7 @@ func (r *Reference) ApplyPreparedMemberBatch(
 		// genuinely new member invalidates that snapshot just as Insert and
 		// InsertFinal do.
 		canonical.winner = nil
-		canonical.correlatedToCache = nil
+		canonical.correlatedToCache.Store(nil)
 	}
 	if len(final) > 0 {
 		finalsGeneration.Add(uint64(len(final)))
@@ -458,7 +462,7 @@ func (r *Reference) Absorb(loser *Reference) {
 			}
 		}
 	}
-	r.correlatedToCache = nil
+	r.correlatedToCache.Store(nil)
 	loser.forwardedTo = r
 }
 
@@ -706,7 +710,7 @@ func (r *Reference) Insert(e RelationalExpression) bool {
 	// complete group before hashing.
 	r.admittedResultType = nil
 	r.memberVersion++
-	r.correlatedToCache = nil
+	r.correlatedToCache.Store(nil)
 	return true
 }
 
@@ -909,7 +913,7 @@ func (r *Reference) InsertFinal(e RelationalExpression) bool {
 	r.winner = nil
 	r.admittedResultType = nil
 	r.memberVersion++
-	r.correlatedToCache = nil
+	r.correlatedToCache.Store(nil)
 	finalsGeneration.Add(1)
 	return true
 }
@@ -1168,14 +1172,16 @@ func (r *Reference) GetPartialMatchCandidates() []any {
 // a merge (RFC-037 §3 step 5). Operates on the canonical Reference.
 func (r *Reference) InvalidateCorrelatedToCache() {
 	r = r.Canonical()
-	r.correlatedToCache = nil
+	r.correlatedToCache.Store(nil)
 }
 
 // GetCorrelatedTo returns the full (transitive) set of correlation
 // identifiers this Reference depends on. Unions each member's own
 // correlations with its children's correlations, excluding aliases
 // bound by each member's own quantifiers. Result is cached after
-// first computation.
+// first computation. The returned map is borrowed and must not be modified.
+// Concurrent reads are safe only while the entire reachable graph, including
+// its member sets and forwarding links, remains unchanged.
 func (r *Reference) GetCorrelatedTo() map[values.CorrelationIdentifier]struct{} {
 	return r.getCorrelatedToGuarded(nil)
 }
@@ -1191,9 +1197,9 @@ func (r *Reference) GetCorrelatedTo() map[values.CorrelationIdentifier]struct{} 
 // worse than an incomplete correlation set. visited is nil on the top-level
 // call and lazily allocated only when we actually descend.
 func (r *Reference) getCorrelatedToGuarded(visited map[*Reference]struct{}) map[values.CorrelationIdentifier]struct{} {
-	r = r.Canonical()
-	if r.correlatedToCache != nil {
-		return r.correlatedToCache
+	r = canonicalReferenceReadOnly(r)
+	if cached := r.correlatedToCache.Load(); cached != nil {
+		return *cached
 	}
 	if _, seen := visited[r]; seen {
 		return map[values.CorrelationIdentifier]struct{}{}
@@ -1237,7 +1243,7 @@ func (r *Reference) getCorrelatedToGuarded(visited map[*Reference]struct{}) map[
 			}
 		}
 	}
-	r.correlatedToCache = result
+	r.correlatedToCache.Store(&result)
 	return result
 }
 

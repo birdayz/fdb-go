@@ -228,7 +228,7 @@ func nulls() Scenario {
 				Name: "having-vs-derived-filter", Reason: "HAVING p on an aggregate ≡ the same predicate on a derived aggregate table (SUM ignores NULL identically both sides)",
 				Queries: []string{
 					"SELECT a FROM tn GROUP BY a HAVING SUM(b) > 3",
-					"SELECT a FROM (SELECT a, SUM(b) s FROM tn GROUP BY a) x WHERE s > 3",
+					"SELECT a FROM (SELECT a, SUM(b) AS s FROM tn GROUP BY a) x WHERE s > 3",
 				},
 			},
 			{

@@ -4386,6 +4386,12 @@ func (r *ImplementNestedLoopJoinRule) tryExistsFlatMap(
 	if !ok {
 		return false
 	}
+	// Both access substitutions below replace the scan's bounds. A selected
+	// constrained scan must instead keep its conditions and let the generic
+	// existential path apply the correlated predicate residually.
+	if len(innerScan.GetScanComparisons()) != 0 {
+		return false
+	}
 	recordTypes := innerScan.GetRecordTypes()
 	if len(recordTypes) != 1 {
 		return false

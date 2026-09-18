@@ -6,18 +6,21 @@ import (
 	"strings"
 
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/catalog"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
+	"fdb.dev/pkg/relational/core/query/expr"
+	"fdb.dev/pkg/relational/core/query/semantic"
 )
 
 // INFORMATION_SCHEMA.* query handlers + SHOW DATABASES / SHOW SCHEMA
 // TEMPLATES. Each handler assembles a static result set from the
 // catalog (no FDB data path) and hands it back as a staticRows.
 //
-// filterSysRows re-applies the WHERE clause against the in-memory
-// rows via evalPredicateOnMap, so standard SQL predicates work over
-// INFORMATION_SCHEMA / SHOW rows the same as over table rows.
+// filterSysRows resolves WHERE through the shared typed expression compiler
+// and evaluates it against ordinal catalog rows.
 
 // execSystemTableQuery is the executor-free entry point for an
 // INFORMATION_SCHEMA.* SELECT. It serves the simple shape
@@ -32,8 +35,7 @@ import (
 // is the only shape ever used; any join / aggregate / GROUP BY / HAVING /
 // DISTINCT / QUALIFY / CTE / derived-table / set-query (UNION) against a
 // system table is rejected with a clean error (verified none are used today).
-// Subqueries / EXISTS embedded in the WHERE filter surface the severed-arm
-// error from filterSysRows → evalPredicateOnMapExpr (RFC-145 Phase 1).
+// Subqueries / EXISTS in WHERE have no SubqueryPlanner and remain unsupported.
 func (c *EmbeddedConnection) execSystemTableQuery(ctx context.Context, sel antlrgen.ISelectStatementContext, q antlrgen.IQueryContext) (driver.Rows, error) {
 	// WITH / WITH RECURSIVE against a system table is not supported.
 	if q.Ctes() != nil {
@@ -79,7 +81,11 @@ func (c *EmbeddedConnection) execSystemTableQuery(ctx context.Context, sel antlr
 			"unsupported INFORMATION_SCHEMA query shape: FROM %q", sq.tableName)
 	}
 	sysTable := upper[len(prefix):]
-	sysRows, sysErr := c.execSystemTable(ctx, sysTable, sq.whereExpr)
+	alias := sq.tableAlias
+	if alias == sq.tableName {
+		alias = sysTable
+	}
+	sysRows, sysErr := c.execSystemTable(ctx, sysTable, alias, sq.whereExpr)
 	if sysErr != nil {
 		return nil, sysErr
 	}
@@ -87,16 +93,16 @@ func (c *EmbeddedConnection) execSystemTableQuery(ctx context.Context, sel antlr
 }
 
 // execSystemTable dispatches INFORMATION_SCHEMA.* queries.
-func (c *EmbeddedConnection) execSystemTable(ctx context.Context, name string, whereExpr antlrgen.IWhereExprContext) (driver.Rows, error) {
+func (c *EmbeddedConnection) execSystemTable(ctx context.Context, name, alias string, whereExpr antlrgen.IWhereExprContext) (driver.Rows, error) {
 	switch name {
 	case "SCHEMATA":
-		return c.execSysSchemata(ctx, whereExpr)
+		return c.execSysSchemata(ctx, alias, whereExpr)
 	case "TABLES":
-		return c.execSysTables(ctx, whereExpr)
+		return c.execSysTables(ctx, alias, whereExpr)
 	case "COLUMNS":
-		return c.execSysColumns(ctx, whereExpr)
+		return c.execSysColumns(ctx, alias, whereExpr)
 	case "INDEXES":
-		return c.execSysIndexes(ctx, whereExpr)
+		return c.execSysIndexes(ctx, alias, whereExpr)
 	default:
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unknown INFORMATION_SCHEMA table: %q", name)
 	}
@@ -130,24 +136,68 @@ func (c *EmbeddedConnection) listSessionSchemas(txn api.Transaction) (api.Result
 	return c.sess.Catalog.ListSchemasInDatabase(txn, scope, nil)
 }
 
-// filterSysRows applies WHERE filtering to system-table rows (map-based, no proto).
-// Column names are matched case-insensitively against the cols slice.
-func filterSysRows(ctx context.Context, conn *EmbeddedConnection, rows [][]driver.Value, cols []string, where antlrgen.IWhereExprContext) ([][]driver.Value, error) {
+// systemColumn declares the SQL type independently of the row's Go carrier.
+type systemColumn struct {
+	name string
+	typ  string
+}
+
+func systemColumnNames(cols []systemColumn) []string {
+	names := make([]string, len(cols))
+	for i, col := range cols {
+		names[i] = col.name
+	}
+	return names
+}
+
+type systemOrdinalRow []driver.Value
+
+func (r systemOrdinalRow) Get(i int) (any, bool) {
+	if i < 0 || i >= len(r) {
+		return nil, false
+	}
+	return r[i], true
+}
+
+// filterSysRows compiles one typed predicate against the declared ordinal schema,
+// including for an empty row population. CAST source widths therefore survive
+// nested expressions instead of being guessed from an already-evaluated carrier.
+func filterSysRows(ctx context.Context, conn *EmbeddedConnection, rows [][]driver.Value, cols []systemColumn, alias string, where antlrgen.IWhereExprContext) ([][]driver.Value, error) {
 	if where == nil {
 		return rows, nil
 	}
-	expr := where.Expression()
+	if atom := firstSubqueryOrExistsAtom(where.Expression()); atom != "" {
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "%s is not supported in this context", atom)
+	}
+	columns := make([]semantic.Column, len(cols))
+	for i, col := range cols {
+		columns[i] = semantic.Column{Id: semantic.NewUnquoted(col.name), Type: col.typ, Nullable: true}
+	}
+	table := &semantic.StaticTable{TableName: semantic.FromSegments([]string{alias}, true), TableColumns: columns}
+	scope := semantic.NewScope(nil)
+	if err := scope.AddSource(semantic.ScopeSource{Table: table, Alias: semantic.FromNormalized(alias)}); err != nil {
+		return nil, err
+	}
+	resolver := expr.New(semantic.NewAnalyzer(semantic.NewInMemoryCatalog(table), false), scope)
+	predicate, err := resolver.WalkPredicate(where.Expression())
+	if err != nil {
+		if mapped := mapPredicateWalkError(err); mapped != nil {
+			return nil, mapped
+		}
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation, err.Error())
+	}
+	evalCtx := &values.RowEvalContext{Clock: stmtClock{now: conn.statementNow()}}
 	var out [][]driver.Value
 	for _, row := range rows {
-		m := make(map[string]driver.Value, len(cols))
-		for i, c := range cols {
-			m[strings.ToUpper(c)] = row[i]
-		}
-		ok, err := evalPredicateOnMapExpr(ctx, conn, m, expr)
-		if err != nil {
+		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if ok {
+		evalCtx.Positional = systemOrdinalRow(row)
+		result, err := predicate.Eval(evalCtx)
+		if err != nil {
+			return nil, translateExecError(err)
+		}
+		if result == predicates.TriTrue {
 			out = append(out, row)
 		}
 	}
@@ -155,7 +205,7 @@ func filterSysRows(ctx context.Context, conn *EmbeddedConnection, rows [][]drive
 }
 
 // execSysSchemata implements SELECT * FROM INFORMATION_SCHEMA.SCHEMATA.
-func (c *EmbeddedConnection) execSysSchemata(ctx context.Context, where antlrgen.IWhereExprContext) (driver.Rows, error) {
+func (c *EmbeddedConnection) execSysSchemata(ctx context.Context, alias string, where antlrgen.IWhereExprContext) (driver.Rows, error) {
 	type row = []driver.Value
 	var data []row
 	_, err := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
@@ -182,16 +232,22 @@ func (c *EmbeddedConnection) execSysSchemata(ctx context.Context, where antlrgen
 	if err != nil {
 		return nil, err
 	}
-	cols := []string{"CATALOG_NAME", "SCHEMA_NAME", "DEFAULT_CHARACTER_SET_NAME", "DEFAULT_COLLATION_NAME", "SQL_PATH"}
-	filtered, ferr := filterSysRows(ctx, c, data, cols, where)
+	cols := []systemColumn{
+		{"CATALOG_NAME", "STRING"},
+		{"SCHEMA_NAME", "STRING"},
+		{"DEFAULT_CHARACTER_SET_NAME", "STRING"},
+		{"DEFAULT_COLLATION_NAME", "STRING"},
+		{"SQL_PATH", "STRING"},
+	}
+	filtered, ferr := filterSysRows(ctx, c, data, cols, alias, where)
 	if ferr != nil {
 		return nil, ferr
 	}
-	return &staticRows{cols: cols, rows: filtered}, nil
+	return &staticRows{cols: systemColumnNames(cols), rows: filtered}, nil
 }
 
 // execSysTables implements SELECT * FROM INFORMATION_SCHEMA.TABLES.
-func (c *EmbeddedConnection) execSysTables(ctx context.Context, where antlrgen.IWhereExprContext) (driver.Rows, error) {
+func (c *EmbeddedConnection) execSysTables(ctx context.Context, alias string, where antlrgen.IWhereExprContext) (driver.Rows, error) {
 	type row = []driver.Value
 	var data []row
 	_, err := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
@@ -239,20 +295,27 @@ func (c *EmbeddedConnection) execSysTables(ctx context.Context, where antlrgen.I
 	if err != nil {
 		return nil, err
 	}
-	cols := []string{
-		"TABLE_CATALOG", "TABLE_SCHEMA", "TABLE_NAME", "TABLE_TYPE",
-		"REMARKS", "TYPE_CAT", "TYPE_SCHEM", "TYPE_NAME",
-		"SELF_REFERENCING_COL_NAME", "REF_GENERATION",
+	cols := []systemColumn{
+		{"TABLE_CATALOG", "STRING"},
+		{"TABLE_SCHEMA", "STRING"},
+		{"TABLE_NAME", "STRING"},
+		{"TABLE_TYPE", "STRING"},
+		{"REMARKS", "STRING"},
+		{"TYPE_CAT", "STRING"},
+		{"TYPE_SCHEM", "STRING"},
+		{"TYPE_NAME", "STRING"},
+		{"SELF_REFERENCING_COL_NAME", "STRING"},
+		{"REF_GENERATION", "STRING"},
 	}
-	filtered, ferr := filterSysRows(ctx, c, data, cols, where)
+	filtered, ferr := filterSysRows(ctx, c, data, cols, alias, where)
 	if ferr != nil {
 		return nil, ferr
 	}
-	return &staticRows{cols: cols, rows: filtered}, nil
+	return &staticRows{cols: systemColumnNames(cols), rows: filtered}, nil
 }
 
 // execSysColumns implements SELECT * FROM INFORMATION_SCHEMA.COLUMNS.
-func (c *EmbeddedConnection) execSysColumns(ctx context.Context, where antlrgen.IWhereExprContext) (driver.Rows, error) {
+func (c *EmbeddedConnection) execSysColumns(ctx context.Context, alias string, where antlrgen.IWhereExprContext) (driver.Rows, error) {
 	type row = []driver.Value
 	var data []row
 	_, err := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
@@ -318,21 +381,29 @@ func (c *EmbeddedConnection) execSysColumns(ctx context.Context, where antlrgen.
 	if err != nil {
 		return nil, err
 	}
-	cols := []string{
-		"TABLE_CATALOG", "TABLE_SCHEMA", "TABLE_NAME", "COLUMN_NAME",
-		"ORDINAL_POSITION", "COLUMN_DEFAULT", "IS_NULLABLE", "DATA_TYPE",
-		"CHARACTER_MAXIMUM_LENGTH", "NUMERIC_PRECISION", "NUMERIC_SCALE",
+	cols := []systemColumn{
+		{"TABLE_CATALOG", "STRING"},
+		{"TABLE_SCHEMA", "STRING"},
+		{"TABLE_NAME", "STRING"},
+		{"COLUMN_NAME", "STRING"},
+		{"ORDINAL_POSITION", "BIGINT"},
+		{"COLUMN_DEFAULT", "STRING"},
+		{"IS_NULLABLE", "STRING"},
+		{"DATA_TYPE", "STRING"},
+		{"CHARACTER_MAXIMUM_LENGTH", "STRING"},
+		{"NUMERIC_PRECISION", "STRING"},
+		{"NUMERIC_SCALE", "STRING"},
 	}
-	filtered, ferr := filterSysRows(ctx, c, data, cols, where)
+	filtered, ferr := filterSysRows(ctx, c, data, cols, alias, where)
 	if ferr != nil {
 		return nil, ferr
 	}
-	return &staticRows{cols: cols, rows: filtered}, nil
+	return &staticRows{cols: systemColumnNames(cols), rows: filtered}, nil
 }
 
 // execSysIndexes implements SELECT * FROM INFORMATION_SCHEMA.INDEXES.
 // Returns one row per index across all (database, schema, table) tuples.
-func (c *EmbeddedConnection) execSysIndexes(ctx context.Context, where antlrgen.IWhereExprContext) (driver.Rows, error) {
+func (c *EmbeddedConnection) execSysIndexes(ctx context.Context, alias string, where antlrgen.IWhereExprContext) (driver.Rows, error) {
 	type row = []driver.Value
 	var data []row
 	_, err := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
@@ -397,15 +468,20 @@ func (c *EmbeddedConnection) execSysIndexes(ctx context.Context, where antlrgen.
 	if err != nil {
 		return nil, err
 	}
-	cols := []string{
-		"TABLE_CATALOG", "TABLE_SCHEMA", "TABLE_NAME",
-		"INDEX_NAME", "INDEX_TYPE", "IS_UNIQUE", "IS_SPARSE",
+	cols := []systemColumn{
+		{"TABLE_CATALOG", "STRING"},
+		{"TABLE_SCHEMA", "STRING"},
+		{"TABLE_NAME", "STRING"},
+		{"INDEX_NAME", "STRING"},
+		{"INDEX_TYPE", "STRING"},
+		{"IS_UNIQUE", "STRING"},
+		{"IS_SPARSE", "STRING"},
 	}
-	data, err = filterSysRows(ctx, c, data, cols, where)
+	data, err = filterSysRows(ctx, c, data, cols, alias, where)
 	if err != nil {
 		return nil, err
 	}
-	return &staticRows{cols: cols, rows: data}, nil
+	return &staticRows{cols: systemColumnNames(cols), rows: data}, nil
 }
 
 func (c *EmbeddedConnection) execShowStatement(ctx context.Context, show antlrgen.IShowStatementContext) (driver.Rows, error) {

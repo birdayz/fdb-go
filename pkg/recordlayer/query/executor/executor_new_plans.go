@@ -1192,6 +1192,10 @@ func executePredicatesFilter(
 	filtered := &filterResultCursor{
 		inner: inner,
 		pred: func(qr QueryResult) (bool, error) {
+			scalar, kindErr := isBareScalarRow(qr.Positional)
+			if kindErr != nil {
+				return false, kindErr
+			}
 			var rowCtx any
 			switch {
 			case qr.Positional != nil && qr.Positional.Layout != nil:
@@ -1206,7 +1210,7 @@ func executePredicatesFilter(
 				// the leg bindings are required; the bare merged row misreads
 				// leg-relative ordinals — a wrong-slot hazard).
 				rowCtx = legWindowRowContext(qr.Positional, evalCtx, legSpans)
-			case qr.Positional != nil && bindAlias && isBareScalarRow(qr.Positional):
+			case qr.Positional != nil && scalar:
 				// A BARE SCALAR inner row (a non-ordinal lateral-array UNNEST's
 				// Explode flows a raw int64, wrapped by scalarPositionalRow into a
 				// 1-slot `_0` row — RFC-142). A WHERE on the element references the
@@ -1215,6 +1219,8 @@ func executePredicatesFilter(
 				// generateCorrelatedFieldAccess), so bind the UNWRAPPED scalar under
 				// innerAlias so QOV(innerAlias) resolves to it. Without this the QOV
 				// whole-row fallback returns the 1-slot row, not the scalar.
+				// The exact current and input edge need this binding even when
+				// there is no optional extra innerAlias.
 				layout, layoutErr := p.GetInner().ProvidedOutputLayout()
 				if layoutErr != nil {
 					return false, fmt.Errorf("predicates filter scalar input layout: %w", layoutErr)
@@ -1411,6 +1417,10 @@ func executeFirstOrDefault(
 			}
 		}
 		_ = inner.Close()
+		first, err = normalizeDefaultResult(p, first)
+		if err != nil {
+			return nil, err
+		}
 		if p.IsStrict() {
 			return applySkipLimit(newSingleResultCursor(first), props.Skip, props.ReturnedRowLimit), nil
 		}
@@ -1666,7 +1676,7 @@ func executeDefaultOnEmpty(
 			return &errResultCursor{err: err}
 		}
 		return recordlayer.MapErrCursor(inner, func(result QueryResult) (QueryResult, error) {
-			return normalizeDefaultOnEmptyResult(p, result)
+			return normalizeDefaultResult(p, result)
 		})
 	}
 	alternativeFactory := func(cont []byte) recordlayer.RecordCursor[QueryResult] {
@@ -1689,30 +1699,46 @@ func executeDefaultOnEmpty(
 	return applySkipLimit(orElse, props.Skip, props.ReturnedRowLimit), nil
 }
 
-// normalizeDefaultOnEmptyResult publishes the operator's reconciled output
-// type on an inner row. DefaultOnEmpty is a UNION of two result alternatives:
-// a non-null child row and a nullable default can produce a nullable RECORD.
+// normalizeDefaultResult publishes the operator's reconciled output type on an
+// inner row. FirstOrDefault and DefaultOnEmpty combine two result alternatives:
+// a non-null child and a nullable default produce a nullable scalar or record.
 // Forwarding the child's narrower runtime type unchanged makes the row disagree
 // with the plan's exact provided layout even though its values are valid for
 // that layout. Retag only the root-nullability widening admitted by the plan
 // constructor; every field, ordinal, and slot count must still agree exactly.
-func normalizeDefaultOnEmptyResult(
-	p *plans.RecordQueryDefaultOnEmptyPlan,
+func normalizeDefaultResult(
+	p plans.RecordQueryPlan,
 	result QueryResult,
 ) (QueryResult, error) {
-	resultType, isRecord := p.GetResultType().(*values.RecordType)
+	declared := p.GetResultType()
+	resultType, isRecord := declared.(*values.RecordType)
 	if !isRecord {
+		row := result.Positional
+		scalar, err := isBareScalarRow(row)
+		if err != nil {
+			return QueryResult{}, err
+		}
+		if !scalar || row.Type == nil || len(row.Type.Fields) != 1 || len(row.Slots) != 1 ||
+			!values.WithNullability(row.Type.Fields[0].FieldType, true).Equals(values.WithNullability(declared, true)) ||
+			(row.Type.Fields[0].FieldType.IsNullable() && !declared.IsNullable()) {
+			return QueryResult{}, layoutBindingError(values.LayoutTypeMismatch, fmt.Sprintf("%T scalar child disagrees with declared output type %s", p, declared))
+		}
+		if row.Slots[0] == nil && !declared.IsNullable() {
+			return QueryResult{}, layoutBindingError(values.LayoutNullabilityMismatch, fmt.Sprintf("%T non-nullable scalar child is SQL NULL", p))
+		}
+		result.Positional = scalarPositionalRowOfType(row.Slots[0], declared)
 		return result, nil
 	}
 	if result.Positional == nil || result.Positional.Type == nil {
-		return QueryResult{}, fmt.Errorf("DefaultOnEmpty record result has no typed positional row")
+		return QueryResult{}, fmt.Errorf("%T record result has no typed positional row", p)
 	}
 	actualType := result.Positional.Type
 	if !values.WithNullability(actualType, true).Equals(values.WithNullability(resultType, true)) ||
-		len(result.Positional.Slots) != len(resultType.Fields) {
+		len(result.Positional.Slots) != len(resultType.Fields) ||
+		(actualType.IsNullable() && !resultType.IsNullable()) {
 		return QueryResult{}, fmt.Errorf(
-			"DefaultOnEmpty runtime row type %s is incompatible with result type %s",
-			actualType, resultType)
+			"%T runtime row type %s is incompatible with result type %s",
+			p, actualType, resultType)
 	}
 	if actualType.Equals(resultType) && result.Positional.Layout == nil {
 		return result, nil
@@ -1720,9 +1746,9 @@ func normalizeDefaultOnEmptyResult(
 	row := *result.Positional
 	row.Type = resultType
 	row.Slots = append([]any(nil), result.Positional.Slots...)
-	// The child's layout describes the child type. DefaultOnEmpty publishes a
-	// fresh identity layout for the reconciled union type; ExecutePlan attaches
-	// that parent layout after the OrElse cursor chooses its branch.
+	// The child's layout describes the child type. The default-producing plan
+	// publishes a fresh identity layout for the reconciled union type;
+	// ExecutePlan attaches that parent layout after the chosen branch.
 	row.Layout = nil
 	row.LayoutPresence = nil
 	// Replacing the child's address layout must not turn a whole-record NULL

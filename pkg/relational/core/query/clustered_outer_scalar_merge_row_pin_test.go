@@ -77,11 +77,9 @@ const mergeRowPinReArms = "a positional-merge row is now feeding this dotted rea
 	"RFC-197's producer-first ordering applies and the conversion must be sequenced " +
 	"BEFORE the seed change, not after."
 
-// RFC-200 §7 pin 1: clusterFieldResolvable's inner-scalar-key arm.
-//
-// Its counterparty is the inner scalar key clusteredOuterOrdinalSeed mints as
-// `UPPER(innerAlias) + "." + scalarCol`. A positional merge's field names carry
-// no dot at all, so no merge field can be that key.
+// RFC-200 §7 pin 1, retained for the remaining leg-name admission. Positional
+// merge names cannot name an outer leg. The retired joined scalar-label arm
+// also stays rejected: scalar admission requires a ScalarSubqueryValue identity.
 func TestClusterFieldResolvable_APositionalMergeRowNamesNothing(t *testing.T) {
 	t.Parallel()
 
@@ -92,10 +90,10 @@ func TestClusterFieldResolvable_APositionalMergeRowNamesNothing(t *testing.T) {
 		t.Fatal("fixture: the merge row is not a positional merge — the pin would be " +
 			"asserting a negative about a shape the layout authority never sees")
 	}
-	innerKey := "S.CV" // what clusteredOuterOrdinalSeed mints for the inner scalar
+	innerKey := "S.CV" // a manufactured scalar-looking label, not identity
 
 	for _, f := range rc.Fields {
-		if clusterFieldResolvable(f.Name, pu, innerKey) {
+		if clusterFieldResolvable(f.Name, pu) {
 			t.Errorf("clusterFieldResolvable(%q) resolved. %s", f.Name, mergeRowPinReArms)
 		}
 		if strings.Contains(f.Name, ".") {
@@ -108,11 +106,10 @@ func TestClusterFieldResolvable_APositionalMergeRowNamesNothing(t *testing.T) {
 	// The POSITIVE CONTROL. Without it a reader that had stopped resolving
 	// anything at all would satisfy the negatives above, and the pin would read
 	// as "merge rows are excluded" when it actually meant "this reader is dead".
-	if !clusterFieldResolvable(innerKey, pu, innerKey) {
-		t.Fatal("the inner scalar key does not resolve — this reader is not answering " +
-			"at all, so every negative above holds vacuously")
+	if clusterFieldResolvable(innerKey, pu) {
+		t.Fatal("a manufactured scalar label resolved without a ScalarSubqueryValue identity")
 	}
-	if !clusterFieldResolvable("O.ID", pu, innerKey) {
+	if !clusterFieldResolvable("O.ID", pu) {
 		t.Fatal("a plain leg column does not resolve — the leg arm is dead and every " +
 			"negative above holds vacuously")
 	}

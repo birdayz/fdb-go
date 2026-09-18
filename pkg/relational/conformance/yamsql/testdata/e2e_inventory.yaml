@@ -46,7 +46,6 @@ tests:
   - query: >
       UPDATE stock SET quantity = quantity + 20
       WHERE quantity < 5
-    rows: []
   - query: >
       SELECT product_id, warehouse_id, quantity FROM stock
       WHERE product_id IN (1, 2) ORDER BY product_id, warehouse_id

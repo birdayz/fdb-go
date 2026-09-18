@@ -215,10 +215,6 @@ const (
 	// for, and the fix would cost real correctness elsewhere, so these stay
 	// booked rather than closed.
 	SkipConformanceJavaPlannerBug SkipClass = "conformance:java-planner-bug"
-	// SkipGapResultMetadata is a `resultMetadata:` assertion the engine fails
-	// because the result-set metadata pipeline truncates a column's type to
-	// one flat string (CQ-74).
-	SkipGapResultMetadata SkipClass = "engine-gap:result-metadata"
 	// SkipGapSerializationOptions is a schema template serialization option
 	// (compression/encryption) the store layer does not implement, so reads
 	// that Java rejects (wrong key, missing encryption) succeed in Go.
@@ -278,7 +274,6 @@ func AllSkipClasses() []SkipClass {
 		SkipGapErrorClass,
 		SkipConformanceGoAccepts,
 		SkipConformanceJavaPlannerBug,
-		SkipGapResultMetadata,
 		SkipGapSerializationOptions,
 		SkipGapMultipleLateralUnnests,
 		SkipGapStarGroupBy,
@@ -336,6 +331,10 @@ type FileResult struct {
 	Err error
 	// QueriesRun counts queries whose configs were actually asserted.
 	QueriesRun int
+	// FixtureLoadAttempts counts explicit reset/load transactions in the
+	// generated-fixture mode only. Each ambiguous commit is retained below.
+	FixtureLoadAttempts      int
+	FixtureCommitAmbiguities []error
 	// Skips are the sub-file counted skips (block, query and config level).
 	Skips []Skip
 }

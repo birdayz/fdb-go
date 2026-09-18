@@ -364,20 +364,19 @@ func TestClusteredCarrierEnumeration(t *testing.T) {
 }
 
 // TestClusterFieldResolvableSpansBothNamingAuthorities drives
-// clusterFieldResolvable's two arms directly, because nothing else in this
-// package reaches it: it is the arm for a projection that carries no resolved
-// Value, and every fixture here supplies one.
+// the legacy leg-name admission directly. It cannot establish scalar identity:
+// an unresolved scalar-looking name must decline, even when it matches an
+// earlier joined-label convention.
 //
 // Its two operands are minted by DIFFERENT authorities. A flat projection NAME
 // arrives normalized at the parse boundary — unquoted folded UPPER — while the
-// seed's own names carry the leg row's descriptor spelling and the subquery's
-// output title. So an exact comparison answers "unresolvable" for a column that
+// seed's outer names carry the leg row's descriptor spelling. So an exact comparison answers "unresolvable" for a column that
 // is plainly in the row, and the whole clustered-outer ordinal path declines a
 // query it can serve.
 //
 // The negative arms are what keep the positives honest: a predicate that
 // answered true unconditionally would satisfy every positive arm below on its
-// own, so at 4 positive and 3 negative arms the pin fails in both directions.
+// own, so at 3 positive and 4 negative arms the pin fails in both directions.
 func TestClusterFieldResolvableSpansBothNamingAuthorities(t *testing.T) {
 	t.Parallel()
 	tr := newGateTranslator(t)
@@ -385,11 +384,7 @@ func TestClusterFieldResolvableSpansBothNamingAuthorities(t *testing.T) {
 	if pu == nil {
 		t.Fatal("pull-up spine")
 	}
-	// The inner scalar key: a folded source alias joined to the SUBQUERY's own
-	// output title. The title is whatever the inner select produced, so it can
-	// arrive in either case, and the descriptor spelling is the one an exact
-	// comparison against a parse-folded projection name cannot reach.
-	const innerKey = "SQ.order_id"
+	// A joined scalar-looking title is not a substitute for resolved identity.
 
 	for _, tc := range []struct {
 		field string
@@ -399,12 +394,12 @@ func TestClusterFieldResolvableSpansBothNamingAuthorities(t *testing.T) {
 		{"O.ORDER_ID", true, "a parse-folded reference to a descriptor-spelled leg column"},
 		{"O.order_id", true, "the seed's own spelling of that same column"},
 		{"C.customer_id", true, "the second leg, so the walk is not stopping at leg one"},
-		{"SQ.ORDER_ID", true, "a parse-folded reference to the inner scalar key"},
+		{"SQ.ORDER_ID", false, "a scalar reference requires its ScalarSubqueryValue identity, not a joined label"},
 		{"O.NO_SUCH_COLUMN", false, "a leg that exists cannot resolve a column it does not declare"},
 		{"Z.ORDER_ID", false, "a qualifier naming no leg at all"},
 		{"ORDER_ID", false, "a bare name: the level-2 row publishes dotted keys only"},
 	} {
-		if got := clusterFieldResolvable(tc.field, pu, innerKey); got != tc.want {
+		if got := clusterFieldResolvable(tc.field, pu); got != tc.want {
 			t.Errorf("clusterFieldResolvable(%q) = %v, want %v — %s", tc.field, got, tc.want, tc.why)
 		}
 	}
@@ -412,7 +407,7 @@ func TestClusterFieldResolvableSpansBothNamingAuthorities(t *testing.T) {
 
 // TestClusteredSeed_Shape pins the dotted seed: one FULL ordinal run over the
 // fresh concat QOV with fields named LEG.COL in FROM order, then the single
-// nullable inner leg named INNER.SCALARCOL at ordinal 0.
+// nullable inner leg labeled with its exact output title at ordinal 0.
 func TestClusteredSeed_Shape(t *testing.T) {
 	t.Parallel()
 	tr := newGateTranslator(t)
@@ -421,7 +416,7 @@ func TestClusteredSeed_Shape(t *testing.T) {
 	if pu == nil {
 		t.Fatal("pull-up spine")
 	}
-	seed := clusteredOuterOrdinalSeed(pu, values.UniqueCorrelationIdentifier(), "SQ", "ORDER_ID", values.NullableLong)
+	seed := clusteredOuterOrdinalSeed(pu, values.UniqueCorrelationIdentifier(), "ORDER_ID", values.NullableLong)
 	if seed == nil {
 		t.Fatal("gated cluster must seed")
 	}
@@ -459,8 +454,8 @@ func TestClusteredSeed_Shape(t *testing.T) {
 		}
 	}
 	last := rc.Fields[wantOuter]
-	if last.Name != "SQ.ORDER_ID" {
-		t.Errorf("inner field name = %q, want SQ.ORDER_ID", last.Name)
+	if last.Name != "ORDER_ID" {
+		t.Errorf("inner field name = %q, want exact scalar output title ORDER_ID", last.Name)
 	}
 	ifv := exactTestFieldView(t, last.Value)
 	if !ifv.ResultType().IsNullable() {
@@ -652,5 +647,274 @@ func TestJoinInnerDispatch_Ordinal(t *testing.T) {
 	lastQOV, ok := values.AsQuantifiedObjectValue(lastField.ChildValue())
 	if !ok || lastQOV.Correlation() != innerQCorr {
 		t.Fatalf("seed inner leg owner = %T, want quantifier correlation %s", lastField.ChildValue(), innerQCorr)
+	}
+}
+
+func TestClusteredCTELexicalBoundary(t *testing.T) {
+	t.Parallel()
+	owned := exactDemoRef(t, "SHARED", "order_id")
+	free := exactDemoRef(t, "OUTER", "order_id")
+	body := logical.NewProject(scan("Order", "SHARED"), []string{"local", "free"}, nil)
+	body.ProjectedValues = []values.Value{owned, free}
+	main := logical.NewProject(scan("D", "D"), []string{"free"}, nil)
+	main.ProjectedValues = []values.Value{free}
+	cte := logical.NewCTE("D", body, main, false)
+	cte.CTEProducer = logical.NewCTE(cte.Name(), cte.Body(), nil, cte.Recursive(), logical.CTEColumns([]string{"L", "F"}...), logical.CTETraversal(cte.TraversalOrder())).CTEProducer
+	cte.Binding = "PRIVATE"
+	cte.CTEProducer = logical.NewCTE(cte.Name(), cte.Body(), nil, cte.Recursive(), logical.CTEColumns(cte.ColumnAliases()...), logical.CTETraversal(logical.TraversalPostOrder)).CTEProducer
+	cte.PreserveMainSource = true
+	replacement := &values.ConstantValue{Value: int64(42)}
+	rebuilt, ok := rebuildInnerWithValues(cte, func(v values.Value) values.Value {
+		if _, field := values.AsFieldValue(v); field {
+			return replacement
+		}
+		return v
+	})
+	if !ok {
+		t.Fatal("nonrecursive CTE Body/Main must be rebuildable")
+	}
+	got := rebuilt.(*logical.LogicalCTE)
+	gotBody := got.Body().(*logical.LogicalProject)
+	gotMain := got.Main.(*logical.LogicalProject)
+	if gotBody.ProjectedValues[0] != owned || gotBody.ProjectedValues[1] != replacement || gotMain.ProjectedValues[0] != replacement {
+		t.Fatalf("lexical rewrite: body=%v main=%v; only free references may change", gotBody.ProjectedValues, gotMain.ProjectedValues)
+	}
+	if got == cte || got.Body() == body || got.Main == main || body.ProjectedValues[1] != free || main.ProjectedValues[0] != free {
+		t.Fatal("CTE pull-up must copy changed nodes without mutating the original")
+	}
+	if got.Name() != "D" || got.Binding != "PRIVATE" || !got.PreserveMainSource || got.Recursive() || got.TraversalOrder() != logical.TraversalPostOrder || strings.Join(got.ColumnAliases(), ",") != "L,F" {
+		t.Fatalf("wrapper attributes lost: %#v", got)
+	}
+	aliases := outerSubtreeAliases(cte)
+	if _, leaked := aliases["SHARED"]; leaked {
+		t.Fatalf("hidden Body binding escaped: %v", aliases)
+	}
+	if _, present := aliases["PRIVATE"]; !present {
+		t.Fatalf("explicit carrier binding disappeared: %v", aliases)
+	}
+	for _, unsupported := range []*logical.LogicalCTE{
+		logical.NewCTE("D", body, main, true),
+		logical.NewCTE("D", logical.NewUnion([]logical.LogicalOperator{body, body}, false), main, false),
+	} {
+		if _, ok := rebuildInnerWithValues(unsupported, func(v values.Value) values.Value { return v }); ok {
+			t.Fatal("recursive or unsupported Body must not claim exhaustive traversal")
+		}
+	}
+}
+
+func TestClusteredCTENestedScope(t *testing.T) {
+	t.Parallel()
+	local := exactDemoRef(t, "SHARED", "order_id")
+	free := exactDemoRef(t, "OUTER", "order_id")
+	innerBody := logical.NewProject(scan("Order", "SHARED"), []string{"local", "free"}, nil)
+	innerBody.ProjectedValues = []values.Value{local, free}
+	innerMain := logical.NewProject(scan("N", "N"), []string{"outer"}, nil)
+	// The SHARED binding is local to N's definition, not visible in its Main.
+	innerMain.ProjectedValues = []values.Value{local}
+	nested := logical.NewCTE("N", innerBody, innerMain, false)
+	root := logical.NewCTE("D", nested, scan("D", "D"), false)
+	outer := map[string]struct{}{"SHARED": {}, "OUTER": {}}
+	refs, exhaustive := collectClusterOuterRefs(root, outer, outerSubtreeAliases(root))
+	if !exhaustive || len(refs) != 2 {
+		t.Fatalf("nested lexical free refs=%v exhaustive=%v, want SHARED and OUTER", refs, exhaustive)
+	}
+	for _, name := range []string{"SHARED", "OUTER"} {
+		if _, ok := refs[name]; !ok {
+			t.Errorf("missing free ref %s", name)
+		}
+	}
+}
+
+func TestClusteredCTEMainBindingDoesNotHideBodyFreeReference(t *testing.T) {
+	t.Parallel()
+	ref := exactDemoRef(t, "D", "order_id")
+	body := logical.NewProject(scan("Order", "LOCAL"), []string{"outer"}, nil)
+	body.ProjectedValues = []values.Value{ref}
+	main := logical.NewProject(scan("D", "D"), []string{"local"}, nil)
+	main.ProjectedValues = []values.Value{ref}
+	cte := logical.NewCTE("D", body, main, false)
+	refs, exhaustive := collectClusterOuterRefs(cte, map[string]struct{}{"D": {}}, map[string]struct{}{"D": {}})
+	if !exhaustive || len(refs) != 1 {
+		t.Fatalf("Body-free D was hidden by Main's local D: refs=%v exhaustive=%v", refs, exhaustive)
+	}
+	replacement := &values.ConstantValue{Value: int64(42)}
+	rebuilt, ok := rebuildInnerWithValues(cte, func(v values.Value) values.Value {
+		if _, field := values.AsFieldValue(v); field {
+			return replacement
+		}
+		return v
+	})
+	if !ok {
+		t.Fatal("CTE must be rebuildable")
+	}
+	got := rebuilt.(*logical.LogicalCTE)
+	if got.Body().(*logical.LogicalProject).ProjectedValues[0] != replacement || got.Main.(*logical.LogicalProject).ProjectedValues[0] != ref {
+		t.Fatal("Body-free D must rewrite while Main-local D stays untouched")
+	}
+	localOnly := logical.NewCTE("D", scan("Order", "LOCAL"), main, false)
+	refs, exhaustive = collectClusterOuterRefs(localOnly, map[string]struct{}{"D": {}}, map[string]struct{}{"D": {}})
+	if !exhaustive || len(refs) != 0 {
+		t.Fatalf("Main-local D misclassified as outer: %v/%v", refs, exhaustive)
+	}
+}
+
+func TestClusteredCTEBindingNotDisplayAlias(t *testing.T) {
+	t.Parallel()
+	local := exactDemoRef(t, "PRIVATE", "order_id")
+	free := exactDemoRef(t, "SHARED", "order_id")
+	source := scan("Order", "SHARED")
+	source.Binding = "PRIVATE"
+	body := logical.NewProject(source, []string{"local", "free"}, nil)
+	body.ProjectedValues = []values.Value{local, free}
+	cte := logical.NewCTE("D", body, scan("D", "D"), false)
+	refs, exhaustive := collectClusterOuterRefs(cte, map[string]struct{}{"PRIVATE": {}, "SHARED": {}}, outerSubtreeAliases(cte))
+	if _, present := refs["SHARED"]; !exhaustive || len(refs) != 1 || !present {
+		t.Fatalf("actual binding must mask PRIVATE, not display SHARED: %v/%v", refs, exhaustive)
+	}
+	replacement := &values.ConstantValue{Value: int64(42)}
+	got, ok := rebuildInnerWithValues(cte, func(v values.Value) values.Value {
+		if _, field := values.AsFieldValue(v); field {
+			return replacement
+		}
+		return v
+	})
+	if !ok {
+		t.Fatal("bound CTE must rebuild")
+	}
+	projections := got.(*logical.LogicalCTE).Body().(*logical.LogicalProject).ProjectedValues
+	if projections[0] != local || projections[1] != replacement {
+		t.Fatalf("binding/display rewrite mismatch: %v", projections)
+	}
+	envelope := logical.NewCTE("HIDDEN", body, scan("Order", "MAIN"), false)
+	envelope.PreserveMainSource = true
+	aliases := outerSubtreeAliases(envelope)
+	if _, present := aliases["MAIN"]; len(aliases) != 1 || !present {
+		t.Fatalf("scope-only envelope must expose Main alone: %v", aliases)
+	}
+}
+
+func TestClusteredCTESharedProducerConsumerOrder(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name             string
+		reverse, private bool
+	}{
+		{"colliding_consumer_first", false, false},
+		{"colliding_consumer_last", true, false},
+		{"private_consumer_first", false, true},
+		{"private_consumer_last", true, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			freeA := exactDemoRef(t, "A", "order_id")
+			freeX := exactDemoRef(t, "X", "order_id")
+			local := exactDemoRef(t, "LOCAL", "order_id")
+			inherited := exactDemoRef(t, "ENCLOSING", "order_id")
+			body := logical.NewProject(scan("Order", "LOCAL"), []string{"a", "x", "local", "inherited"}, nil)
+			body.ProjectedValues = []values.Value{freeA, freeX, local, inherited}
+			producer := logical.NewCTE("D", body, nil, false).CTEProducer
+			left, right := scan("D", "A"), scan("D", "X")
+			left.Source, right.Source = logical.CTEScanSource(producer), logical.CTEScanSource(producer)
+			if test.private {
+				left.Binding, right.Binding = "PRIVATE_A", "PRIVATE_X"
+			}
+			if test.reverse {
+				left, right = right, left
+			}
+			join := logical.NewJoin(left, right, logical.JoinInner, "")
+			refs, exhaustive := collectClusterOuterRefs(join, map[string]struct{}{"A": {}, "X": {}}, innerLexicalBindings(join))
+			_, hasA := refs["A"]
+			_, hasX := refs["X"]
+			if !exhaustive || len(refs) != 2 || !hasA || !hasX {
+				t.Fatalf("consumer order hid the producer's definition-time outer references: refs=%v exhaustive=%v, want A and X", refs, exhaustive)
+			}
+			replacement := &values.ConstantValue{Value: int64(42)}
+			rebuilt, ok := rebuildInnerInScope(join, func(v values.Value) values.Value {
+				if _, field := values.AsFieldValue(v); field {
+					return replacement
+				}
+				return v
+			}, &innerBindingScope{
+				local:  innerLexicalBindings(join),
+				parent: &innerBindingScope{local: map[string]struct{}{"ENCLOSING": {}}},
+			})
+			if !ok {
+				t.Fatal("shared nonrecursive producer must rebuild")
+			}
+			got := rebuilt.(*logical.LogicalJoin)
+			lp := got.Left.(*logical.LogicalScan).Source.Producer()
+			rp := got.Right.(*logical.LogicalScan).Source.Producer()
+			if lp == producer || lp != rp {
+				t.Fatal("both consumers must share the rewritten definition, independent of their aliases")
+			}
+			projected := lp.Body().(*logical.LogicalProject).ProjectedValues
+			if len(projected) != 4 || projected[0] != replacement || projected[1] != replacement || projected[2] != local || projected[3] != inherited {
+				t.Fatalf("definition rewrite lost free values or lexical masks: %v", projected)
+			}
+			if left.Source.Producer() != producer || right.Source.Producer() != producer || body.ProjectedValues[0] != freeA || body.ProjectedValues[1] != freeX || body.ProjectedValues[2] != local || body.ProjectedValues[3] != inherited {
+				t.Fatal("classification or rebuilding mutated the original producer")
+			}
+		})
+	}
+}
+
+func TestClusteredCTERetainedScanScopeEntry(t *testing.T) {
+	t.Parallel()
+	for _, envelope := range []bool{false, true} {
+		name := "nil_scope_cache_miss"
+		if envelope {
+			name = "explicit_definition_cache_reuse"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			free := exactDemoRef(t, "A", "order_id")
+			local := exactDemoRef(t, "LOCAL", "order_id")
+			body := logical.NewProject(scan("Order", "LOCAL"), []string{"outer", "local"}, nil)
+			body.ProjectedValues = []values.Value{free, local}
+			producer := logical.NewCTE("D", body, nil, false, logical.CTEColumns("OUTER_ID", "LOCAL_ID"), logical.CTETraversal(logical.TraversalPostOrder)).CTEProducer
+			left, right := scan("D", "A"), scan("D", "X")
+			left.Source, right.Source = logical.CTEScanSource(producer), logical.CTEScanSource(producer)
+			join := logical.NewJoin(left, right, logical.JoinInner, "")
+			var root logical.LogicalOperator = join
+			if envelope {
+				main := logical.NewProject(join, []string{"consumer"}, nil)
+				main.ProjectedValues = []values.Value{free}
+				root = logical.NewCTEReference(producer, main)
+			}
+			replacement := &values.ConstantValue{Value: int64(42)}
+			visits := 0
+			rebuilt, ok := rebuildInnerWithValues(root, func(v values.Value) values.Value {
+				if v == free {
+					visits++
+					return replacement
+				}
+				return v
+			})
+			if !ok || visits != 1 {
+				t.Fatalf("definition should rewrite once before both consumers: rebuilt=%t visits=%d", ok, visits)
+			}
+			var rewrittenProducer *logical.CTEProducer
+			if envelope {
+				cte := rebuilt.(*logical.LogicalCTE)
+				main := cte.Main.(*logical.LogicalProject)
+				if main.ProjectedValues[0] != free {
+					t.Fatal("producer rewrite escaped into a consumer-local reference")
+				}
+				rewrittenProducer, rebuilt = cte.CTEProducer, main.Input
+			}
+			got := rebuilt.(*logical.LogicalJoin)
+			lp := got.Left.(*logical.LogicalScan).Source.Producer()
+			rp := got.Right.(*logical.LogicalScan).Source.Producer()
+			if lp == producer || lp != rp || (envelope && lp != rewrittenProducer) {
+				t.Fatal("retained consumers did not reuse the definition's immutable snapshot")
+			}
+			projected := lp.Body().(*logical.LogicalProject).ProjectedValues
+			if len(projected) != 2 || projected[0] != replacement || projected[1] != local || lp.Identity() != producer.Identity() || lp.Name() != "D" || lp.TraversalOrder() != logical.TraversalPostOrder || strings.Join(lp.ColumnAliases(), ",") != "OUTER_ID,LOCAL_ID" {
+				t.Fatal("rewriting lost declaration identity, metadata or body-local masking")
+			}
+			if left.Source.Producer() != producer || right.Source.Producer() != producer || body.ProjectedValues[0] != free {
+				t.Fatal("rewriting mutated the original definition or consumers")
+			}
+		})
 	}
 }

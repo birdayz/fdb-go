@@ -63,7 +63,12 @@ func NewRecordQueryFirstOrDefaultPlanStrictFromQuantifier(innerQ expressions.Qua
 }
 
 func newRecordQueryFirstOrDefaultPlan(innerQ expressions.Quantifier, defaultValue values.Value, strict bool) (*RecordQueryFirstOrDefaultPlan, error) {
-	base, err := newPlanExprBaseForQuantifier("RecordQueryFirstOrDefaultPlan", innerQ)
+	// Java's constructor adopts the default's root nullability, but its execution
+	// returns a nonempty child unchanged, including a nullable child's SQL NULL.
+	// Use the union of both alternatives (as DefaultOnEmpty does) so the exact
+	// physical contract covers those actual values instead of understating
+	// nullability or rejecting a valid child at the runtime binder.
+	base, err := newDefaultResultPlanExprBase("RecordQueryFirstOrDefaultPlan", innerQ, defaultValue)
 	if err != nil {
 		return nil, err
 	}
@@ -84,10 +89,8 @@ func (p *RecordQueryFirstOrDefaultPlan) GetInnerQuantifier() expressions.Quantif
 	return p.innerQ
 }
 
-// GetResultValue returns the flowed object value of the child quantifier — a
-// first-or-default passes its input's rows through (with an empty→default row),
-// so its row identity IS the inner's. This is the identity
-// physicalFirstOrDefaultWrapper.GetResultValue supplied (RFC-184 W2).
+// GetResultValue returns the stable output carrier admitted from both result
+// alternatives. A fabricated default cannot provide the child's source windows.
 func (p *RecordQueryFirstOrDefaultPlan) GetResultValue() values.Value {
 	return p.PlanExprBase.GetResultValue()
 }
@@ -109,7 +112,7 @@ func (p *RecordQueryFirstOrDefaultPlan) GetDefaultValue() values.Value { return 
 // cardinality rule (error 21000 on a second row).
 func (p *RecordQueryFirstOrDefaultPlan) IsStrict() bool { return p.strict }
 
-// GetResultType returns the inner's result type.
+// GetResultType returns the reconciled child/default result type.
 func (p *RecordQueryFirstOrDefaultPlan) GetResultType() values.Type { return p.GetResultValue().Type() }
 
 // GetChildren returns the inner plan as the only child.
@@ -174,7 +177,7 @@ func (p *RecordQueryFirstOrDefaultPlan) WithQuantifiers(qs []expressions.Quantif
 		return nil, err
 	}
 	cp := *p
-	base, err := newPlanExprBaseForQuantifier("RecordQueryFirstOrDefaultPlan", qs[0])
+	base, err := newDefaultResultPlanExprBase("RecordQueryFirstOrDefaultPlan", qs[0], p.defaultValue)
 	if err != nil {
 		return nil, err
 	}
@@ -198,6 +201,12 @@ func (p *RecordQueryFirstOrDefaultPlan) WithChildren(qs []expressions.Quantifier
 		return nil, fmt.Errorf("RecordQueryFirstOrDefaultPlan.WithChildren: expected 1 child, got %d", len(qs))
 	}
 	return p.WithQuantifiers(qs)
+}
+
+// reanchorInputValueToOutput preserves only proven child lineage across the
+// default-producing boundary, including the root-nullability widening.
+func (p *RecordQueryFirstOrDefaultPlan) reanchorInputValueToOutput(value values.Value) (values.Value, error) {
+	return reanchorDefaultInputValueToOutput(p, p.GetInner(), value)
 }
 
 // GetRecordQueryPlan returns the plan itself.

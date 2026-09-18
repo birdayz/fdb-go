@@ -365,7 +365,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	cacheSQL := canonicalTextOf(q)
 
 	if g.cache != nil {
-		if cachedPlan, cachedSubs, ok := g.cache.Get(cacheScope, cacheSQL); ok {
+		if cachedPlan, cachedSubs, cachedLabels, ok := g.cache.GetWithOutputLabels(cacheScope, cacheSQL); ok {
 			ls.setPlan(cachedPlan)
 			ls.setCache(PlanCacheHit)
 			return &cascadesPlan{
@@ -374,6 +374,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 				physicalPlan:     cachedPlan,
 				explain:          cachedPlan.Explain(),
 				scalarSubqueries: cachedSubs,
+				outputLabels:     cachedLabels,
 				sql:              g.c.execLogSQL(q),
 				// Dependencies are a function of the PLAN, so a cache hit derives
 				// them from the cached plan rather than carrying anything in the
@@ -403,7 +404,6 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	if logicalOp == nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, plannerUnableToPlanMessage)
 	}
-
 	if fn := query.FindUnsupportedFunction(logicalOp); fn != "" {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
 			"Unsupported operator "+fn)
@@ -411,6 +411,11 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 
 	if err := runFromResolutionPostPasses(logicalOp, g.c.sess.Schema, md, g.c.cachedMetaData()); err != nil {
 		return nil, err
+	}
+	outputLabels, labelErr := query.ExactLogicalOutputLabels(logicalOp, md, nil)
+	if labelErr != nil {
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery,
+			"query has no exact output-label contract: %v", labelErr)
 	}
 
 	if msg := findDistinctAggregate(logicalOp); msg != "" {
@@ -533,7 +538,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	// not applied post-execution, so the cached plan is complete.
 	if g.cache != nil {
 		ls.setCache(PlanCacheMiss)
-		g.cache.Put(cacheScope, cacheSQL, physPlan, scalarSubs)
+		g.cache.PutWithOutputLabels(cacheScope, cacheSQL, physPlan, scalarSubs, outputLabels)
 	} else {
 		ls.setCache(PlanCacheSkip)
 	}
@@ -543,6 +548,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 		physicalPlan:     physPlan,
 		explain:          physPlan.Explain(),
 		scalarSubqueries: scalarSubs,
+		outputLabels:     outputLabels,
 		sql:              g.c.execLogSQL(q),
 		// The fourth argument is the PROOF-ONLY dependency set: indexes whose
 		// metadata property licensed a transformation without the index being
@@ -1038,20 +1044,6 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 		return nil, err
 	}
 
-	// Reject a lateral unnest's AS/AT alias colliding with ANY other FROM-source
-	// alias (earlier OR later) in the same scope — the DML twin of the SELECT-path
-	// guard. An `INSERT INTO dst SELECT V FROM T1, T1.arr AS V, U AS V` reaches the
-	// DML planner whose INSERT … SELECT body the SELECT-path rejectDuplicateUnnest
-	// Alias never runs over, so without this the later `U AS V` overwrites the
-	// unnest's V keys (mergeRows last-leg-wins) and the INSERT writes the WRONG rows
-	// instead of raising the duplicate-alias error. The pass recurses through
-	// LogicalInsert.Source / LogicalUpdate.Input / LogicalDelete.Input (their
-	// Children) and subquery plans, so a colliding alias anywhere in the DML's FROM
-	// scope is rejected. RFC-142.
-	if err := rejectDuplicateUnnestAlias(logicalOp, g.c.cachedMetaData()); err != nil {
-		return nil, err
-	}
-
 	// INSERT … SELECT with an explicit column list is rejected (Java:
 	// "setting column ordering for insert with select is not supported").
 	if insOp, ok := logicalOp.(*logical.LogicalInsert); ok && insOp.Source != nil && len(insOp.Columns) > 0 {
@@ -1277,6 +1269,10 @@ type cascadesPlan struct {
 	physicalPlan     plans.RecordQueryPlan
 	explain          string
 	scalarSubqueries []PlannedScalarSubquery
+	// outputLabels is the top-level SQL publication contract. It is parallel to
+	// the physical result row but intentionally not the same as its protobuf-safe,
+	// deduplicated field names (for example [G,G] over physical [G,G_2]).
+	outputLabels []string
 
 	// The indexes this plan depends on, revalidated inside every execution
 	// transaction — including cache hits and every continuation page. Java's
@@ -1362,6 +1358,18 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 	}
 
 	cols := deriveColumnsFromPlan(p.physicalPlan, p.md)
+	if p.outputLabels != nil {
+		if len(p.outputLabels) != len(cols) {
+			return query.Result{}, api.NewErrorf(api.ErrCodeInternalError,
+				"result label width %d does not match physical row width %d", len(p.outputLabels), len(cols))
+		}
+		for i, label := range p.outputLabels {
+			if label == "" {
+				label = values.OrdinalFieldName(i)
+			}
+			cols[i].Label = label
+		}
+	}
 
 	// RFC-211: start the execution-stats scope BEFORE the first page, so the
 	// duration spans the work rather than reporting on it afterwards. nil when
@@ -1439,6 +1447,34 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 		scratch: executor.NewExecutionScratch(),
 	}
 
+	// SQL DML owns a single commit boundary, not one retrying transaction per
+	// page. The captured transaction and ownership are separate: a statement
+	// must never commit or abort an application's explicit transaction.
+	if pr.isUpdate && pr.tx == nil {
+		tx, err := c.beginTransaction()
+		if err != nil {
+			pr.statsErr = err
+			pr.Close()
+			return query.Result{}, err
+		}
+		pr.tx, pr.ownsTx = tx, true
+		cancelDone := make(chan struct{})
+		stop := context.AfterFunc(ctx, func() {
+			tx.rctx.Cancel()
+			close(cancelDone)
+		})
+		pr.stopTxCancellation = func() {
+			if !stop() {
+				<-cancelDone
+			}
+		}
+		defer pr.Close()
+		if err := c.ensureMetaData(ctx); err != nil {
+			pr.statsErr = err
+			return query.Result{}, err
+		}
+	}
+
 	// Eagerly fetch the first page so execution errors (type mismatches,
 	// plan failures) surface at QueryContext time, not during row iteration.
 	if err := pr.fetchPage(); err != nil {
@@ -1446,6 +1482,9 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 		// so the error has to reach it. A statement killed here by a scan
 		// limit still reports what it consumed — the counters were charged
 		// per attempt on the way out, not at a success-only checkpoint.
+		if pr.ownsTx && ctx.Err() != nil {
+			err = translateExecErrorCtx(ctx, ctx.Err())
+		}
 		pr.statsErr = err
 		pr.Close()
 		return query.Result{}, err
@@ -1454,13 +1493,28 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 	// DML (INSERT/UPDATE/DELETE) plans emit one row per affected record;
 	// the affected-row count is the JDBC update count, not a result set.
 	// Drain and count, matching Java's AbstractEmbeddedStatement.countUpdates.
-	// The mutations have already run inside fetchPage's transaction(s).
-	if p.IsUpdate() {
+	// An owned transaction commits only after the complete drain succeeds.
+	if pr.isUpdate {
 		n, err := pr.countAll()
-		// DML never passes through Next, so its row outcome is the affected
-		// count, not RowsReturned (RFC-211). Recorded before Close, which is
-		// where the record is emitted.
-		pr.execLog.setRows(0, n)
+		if pr.ownsTx {
+			pr.detachTxCancellation()
+			if err != nil && ctx.Err() != nil {
+				err = translateExecErrorCtx(ctx, ctx.Err())
+			}
+			if err == nil {
+				if ctx.Err() != nil {
+					err = translateExecErrorCtx(ctx, ctx.Err())
+				} else {
+					// Cancellation cannot cancel a dispatched commit: its actual
+					// result decides success/failure/ambiguity, not ctx.Err().
+					err = pr.tx.Commit()
+				}
+			}
+		}
+		// A failed statement cannot publish a successful affected-row count.
+		if err == nil {
+			pr.execLog.setRows(0, n)
+		}
 		pr.statsErr = err
 		pr.Close()
 		if err != nil {
@@ -1575,8 +1629,9 @@ type paginatingRows struct {
 	closed       bool
 	fetchErr     error
 
-	// tx is the explicit transaction that was open when Execute ran, or nil in
-	// auto-commit mode. EVERY page of EVERY statement kind executes on it —
+	// tx is either the explicit transaction that was open when Execute ran, the
+	// statement-owned auto-commit DML transaction, or nil for auto-commit SELECT.
+	// EVERY page of EVERY statement kind executes on it —
 	// SELECT included, which is what gives an explicit transaction
 	// read-your-writes and read conflict ranges (RFC-198 Decision 1; Java
 	// reads through conn.getTransaction() at BackingRecordStore.java:235).
@@ -1591,6 +1646,14 @@ type paginatingRows struct {
 	// re-runs the transaction — the driver cannot, because it does not hold
 	// the statements the application has not issued yet.
 	tx *embeddedTx
+
+	// ownsTx marks a directly-created statement transaction. It commits once
+	// after the complete DML drain; ambiguity is reported, never replayed.
+	// Borrowed explicit transactions remain application-owned.
+	ownsTx bool
+	// stopTxCancellation detaches and drains the pre-commit cancellation hook.
+	// It is consumed exactly once before commit or during terminal cleanup.
+	stopTxCancellation func()
 
 	// isUpdate is the statement-kind fact that used to share a field with the
 	// routing decision above (`respectActiveTx`), conflating two independent
@@ -1613,8 +1676,26 @@ func (r *paginatingRows) Columns() []string {
 	return cols
 }
 
+func (r *paginatingRows) detachTxCancellation() {
+	if stop := r.stopTxCancellation; stop != nil {
+		r.stopTxCancellation = nil
+		stop()
+	}
+}
+
 func (r *paginatingRows) Close() error {
+	if r.closed {
+		return nil
+	}
 	r.closed = true
+	r.detachTxCancellation()
+	if r.ownsTx && !r.tx.terminated.Load() {
+		// Commit terminates on every outcome, including ambiguity. Reaching
+		// this arm means execution ended before commit and must be aborted.
+		if err := r.tx.Rollback(); err != nil {
+			r.statsErr = errors.Join(r.statsErr, err)
+		}
+	}
 	// Release the statement-timeout context (RFC-106a §4). The deadline
 	// must live for the whole result-set lifetime, so cancel fires here on
 	// Close — not when Execute returns. Idempotent: cancel is safe to call
@@ -2125,7 +2206,11 @@ func (r *paginatingRows) fetchPage() error {
 	// transaction (Decision 3).
 	_, txErr := c.runInCapturedTx(r.ctx, r.tx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		attempts++
-		if r.tx != nil {
+		// The driver budget governs an application's multi-statement explicit
+		// transaction. An internally owned auto-commit DML transaction may span
+		// pages, but its statement clock and FDB's own MVCC limit govern it; treating
+		// it as explicit makes a backend clock injection pre-empt setup/seed DML.
+		if r.tx != nil && !r.ownsTx {
 			if err := r.preflightTxBudget(rctx); err != nil {
 				return nil, err
 			}
@@ -2498,6 +2583,10 @@ func translateExecError(err error) error {
 	var castErr *values.InvalidCastError
 	if errors.As(err, &castErr) {
 		return api.NewError(api.ErrCodeInvalidCast, castErr.Error())
+	}
+	var enumErr *values.InvalidEnumValueError
+	if errors.As(err, &enumErr) {
+		return api.WrapError(api.ErrCodeInternalError, enumErr.Error(), err)
 	}
 	var invalidArg *values.InvalidArgumentError
 	if errors.As(err, &invalidArg) {
@@ -2992,14 +3081,6 @@ func runFromResolutionPostPasses(logicalOp logical.LogicalOperator, schema strin
 	// tree only after VisitQuery returns. Run before validateTablesAndColumns so the
 	// WRONG_OBJECT_TYPE is not masked by a column-validation error. RFC-142.
 	if err := rejectAtOrdinalityOnTable(logicalOp, md); err != nil {
-		return err
-	}
-	// Reject a lateral unnest's AS/AT alias colliding with ANY other FROM-source
-	// alias (earlier OR later) in the same scope — the later-source collision the
-	// translator's bottom-up lowering cannot see (`FROM T1, T1.arr AS V, U AS V`).
-	// Run before column resolution so the duplicate-alias error is not masked.
-	// RFC-142.
-	if err := rejectDuplicateUnnestAlias(logicalOp, unnestMD); err != nil {
 		return err
 	}
 	if err := resolveQualifiedTableNames(logicalOp, schema); err != nil {
@@ -5857,6 +5938,9 @@ func arrayElementTypeNameOfField(fd protoreflect.FieldDescriptor) string {
 		}
 		return "STRUCT"
 	}
+	if fd.Kind() == protoreflect.EnumKind {
+		return cascadesTypeName(values.ScalarTypeForProtoKind(fd))
+	}
 	return protoKindToTypeName(fd.Kind())
 }
 
@@ -6321,9 +6405,9 @@ func cascadesTypeName(t values.Type) string {
 		return "DATE"
 	case values.TypeCodeTimestamp:
 		return "TIMESTAMP"
-	case values.TypeCodeUuid:
-		// JDBC getColumnTypeName for a UUID is the catch-all "OTHER"
-		// (Java: DataType.Code.UUID → Types.OTHER → "OTHER"), matching the
+	case values.TypeCodeUuid, values.TypeCodeEnum:
+		// JDBC getColumnTypeName for UUID and ENUM is the catch-all "OTHER"
+		// (Java DataType's JDBC map → Types.OTHER → "OTHER"), matching the
 		// field-path protoFieldTypeName so all metadata paths agree.
 		return "OTHER"
 	case values.TypeCodeRecord:
@@ -6424,6 +6508,9 @@ func protoFieldTypeName(desc protoreflect.MessageDescriptor, name string) string
 		// storage shape, not a type.
 		if inner, wrapped, _ := values.EffectiveListField(fd); wrapped {
 			fd = inner
+		}
+		if fd.Kind() == protoreflect.EnumKind {
+			return cascadesTypeName(values.ScalarTypeForProtoKind(fd))
 		}
 		return protoKindToTypeName(fd.Kind())
 	}
@@ -6670,7 +6757,7 @@ func demoteSchemaQualifiedUnnest(op logical.LogicalOperator, schemaName string, 
 					return api.NewError(api.ErrCodeWrongObjectType,
 						"AT ordinality is only valid on a correlated array source, not a table")
 				}
-				demoted := logical.NewScan(table, alias)
+				demoted := logical.NewScan(table, alias, table)
 				demoted.Binding = u.Binding
 				j.Right = demoted
 			}
@@ -6716,62 +6803,50 @@ func demoteSchemaQualifiedUnnest(op logical.LogicalOperator, schemaName string, 
 // projection column resolution — surfaces the intended 42809 regardless of what the
 // query references.
 //
-// This MIRRORS the translator's `translateUnnestJoin` AT-rejection EXACTLY (it is
-// the authority; the early pass is a faithful echo): an AT source is WRONG_OBJECT_
-// TYPE when
+// This early check covers AT candidates before semantic collection binding:
 //
-//	(1) segment 0 does NOT resolve to a visible in-scope SCAN in the outer leg
-//	    (a table / schema-qualified / unknown qualifier — Java's findOuterScanTable
-//	    == "" → unnestFallbackOrReject), OR
-//	(2) segment 0 resolves to a REAL base table whose remaining segment(s) name a
-//	    field that is MISSING / a single-segment bare source / a PRESENT SCALAR
-//	    (Java's generateCorrelatedFieldAccess "repeated type" assert).
+//	(1) segment 0 does NOT resolve to a visible outer owner (scan, retained CTE,
+//	    derived source, prior unnest or inline VALUES), OR
+//	(2) a real-table owner is named without a field or with a present scalar
+//	    field instead of an array.
 //
-// A GENUINE array (planned), a CTE/derived-output source (record type not in md, OR
-// an in-scope WITH-CTE / derived-table source shadowing a real same-named table →
-// left to the translator's outerSourceIsCTE / outerSourceIsDerivedTable
-// UNSUPPORTED_QUERY), and a missing field on a real table (the translator's
-// UNDEFINED_COLUMN — distinct from a present scalar) are NOT rejected here, so the
-// early pass never DIVERGES from the translator's per-case code. RFC-142.
+// CTE/derived outputs, prior elements, inline VALUES, missing fields and nested
+// field paths are left to semantic collection resolution. The translator consumes
+// that exact binding; it no longer reconstructs a table scan as a fallback.
+// RFC-142.
 func rejectAtOrdinalityOnTable(op logical.LogicalOperator, md *recordlayer.RecordMetaData) error {
-	return rejectAtOrdinalityOnTableWithCTEs(op, md, nil)
+	return rejectAtOrdinalityOnTableWithCTEs(op, md, logical.CTERegistry{})
 }
 
-// rejectAtOrdinalityOnTableWithCTEs is the recursion carrying the set of WITH-CTE
-// names in scope at `op`. A FROM source whose segment 0 names an in-scope CTE binds
-// to the CTE's OUTPUT type, not a base-table descriptor — so it is the translator's
-// outerSourceIsCTE territory and is left to its UNSUPPORTED_QUERY rejection, never
-// the base-table AT check here (which would, when the CTE name ALSO matches a real
-// table, raise a WRONG_OBJECT_TYPE keyed on the SHADOWED base table and diverge from
-// the translator). A WITH CTE wraps the SELECT's join tree in an enclosing
-// LogicalCTE, so the CTE name is not visible from `j.Left` (only Scan(name) is
-// there) — it must be threaded down from the wrapper. Derived tables `(…) AS d`
-// instead lower to a LogicalCTE leg INSIDE j.Left and are caught structurally by
-// atOnNonArraySource's OuterSourceIsDerivedTable check.
-func rejectAtOrdinalityOnTableWithCTEs(op logical.LogicalOperator, md *recordlayer.RecordMetaData, cteNames map[string]struct{}) error {
+// Resolve constructor inputs once, then validate the retained producer graph.
+// Both selected CTEs and captured physical sources keep their defining ownership.
+func rejectAtOrdinalityOnTableWithCTEs(op logical.LogicalOperator, md *recordlayer.RecordMetaData, registry logical.CTERegistry) error {
+	logical.BindCTESources(op, registry)
+	return rejectAtOrdinalityOnTableInGraph(op, md, make(map[*logical.CTEProducer]bool))
+}
+
+func rejectAtOrdinalityOnTableInGraph(op logical.LogicalOperator, md *recordlayer.RecordMetaData, producers map[*logical.CTEProducer]bool) error {
 	if op == nil || md == nil {
 		return nil
 	}
-	if cte, ok := op.(*logical.LogicalCTE); ok {
-		// Extend the in-scope CTE set for this subtree (the CTE name is visible to
-		// its Main projection and any nested CTEs).
-		next := make(map[string]struct{}, len(cteNames)+1)
-		for k := range cteNames {
-			next[k] = struct{}{}
+	if scan, ok := op.(*logical.LogicalScan); ok {
+		if producer := scan.Source.Producer(); producer != nil && !producers[producer] {
+			producers[producer] = true
+			if err := rejectAtOrdinalityOnTableInGraph(producer.Body(), md, producers); err != nil {
+				return err
+			}
 		}
-		next[strings.ToUpper(cte.Name)] = struct{}{}
-		cteNames = next
 	}
 	if j, ok := op.(*logical.LogicalJoin); ok {
 		if u, ok := j.Right.(*logical.LogicalUnnest); ok && u.AtAlias != "" {
-			if atOnNonArraySource(j.Left, u, md, cteNames) {
+			if atOnNonArraySource(j.Left, u, md) {
 				return api.NewError(api.ErrCodeWrongObjectType,
 					"AT ordinality is only valid on a correlated array source, not a table")
 			}
 		}
 	}
 	for _, ch := range op.Children() {
-		if err := rejectAtOrdinalityOnTableWithCTEs(ch, md, cteNames); err != nil {
+		if err := rejectAtOrdinalityOnTableInGraph(ch, md, producers); err != nil {
 			return err
 		}
 	}
@@ -6779,7 +6854,7 @@ func rejectAtOrdinalityOnTableWithCTEs(op logical.LogicalOperator, md *recordlay
 	// (carried on side fields, not Children()) — Java's generateAccess runs at every
 	// FROM point. Reach those plans too, like demoteSchemaQualifiedUnnest. RFC-142.
 	for _, sub := range subqueryPlans(op) {
-		if err := rejectAtOrdinalityOnTableWithCTEs(sub, md, cteNames); err != nil {
+		if err := rejectAtOrdinalityOnTableInGraph(sub, md, producers); err != nil {
 			return err
 		}
 	}
@@ -6788,29 +6863,16 @@ func rejectAtOrdinalityOnTableWithCTEs(op logical.LogicalOperator, md *recordlay
 
 // atOnNonArraySource reports whether an AT-bearing LogicalUnnest is in truth an
 // AT on a TABLE / non-array source (cases (1)/(2) of rejectAtOrdinalityOnTable),
-// resolving segment 0 against the outer leg's visible scans (the shared
-// logical.FindOuterScanTable walk the translator's findOuterScanTable also uses).
+// resolving segment 0 against the outer leg's visible scans and their retained
+// producer identities.
 // RFC-142.
-func atOnNonArraySource(left logical.LogicalOperator, u *logical.LogicalUnnest, md *recordlayer.RecordMetaData, cteNames map[string]struct{}) bool {
+func atOnNonArraySource(left logical.LogicalOperator, u *logical.LogicalUnnest, md *recordlayer.RecordMetaData) bool {
 	if len(u.Segments) == 0 {
 		return false
 	}
-	// A CTE / derived-table source bound to segment 0 is the translator's
-	// outerSourceIsCTE / outerSourceIsDerivedTable territory: its OUTPUT type — not a
-	// base-table descriptor — governs whether the AT field is an array, and the
-	// translator rejects a CTE/derived-output unnest with UNSUPPORTED_QUERY. Detect
-	// that BEFORE the md.GetRecordType lookup below, so a CTE/derived source whose
-	// alias ALSO names a REAL same-named base table does NOT fall through to the
-	// base-table AT-on-non-array check (which would raise a 42809 keyed on the
-	// SHADOWED base table instead of the translator's intended UNSUPPORTED_QUERY).
-	// Two shapes:
-	//   - segment 0 names an in-scope WITH CTE (threaded down from the enclosing
-	//     LogicalCTE wrapper) — the translator's outerSourceIsCTE arm;
-	//   - segment 0 binds to a derived-table LogicalCTE leg INSIDE the outer plan
-	//     (`(SELECT …) AS d`) — the translator's structural outerSourceIsDerivedTable
-	//     arm (OuterSourceIsDerivedTable).
-	// Only a genuine REAL base table reaches the WRONG_OBJECT_TYPE check below.
-	if _, ok := cteNames[strings.ToUpper(u.Segments[0])]; ok {
+	// The selected producer's output owns this source even when its alias or
+	// declaration name also names a physical table. Physical absence is retained.
+	if scan := logical.FindVisibleScan(left, u.Segments[0]); scan != nil && scan.Source.Producer() != nil {
 		return false
 	}
 	if logical.OuterSourceIsDerivedTable(left, u.Segments[0]) {
@@ -6835,15 +6897,14 @@ func atOnNonArraySource(left logical.LogicalOperator, u *logical.LogicalUnnest, 
 	}
 	outerTable := logical.FindOuterScanTable(left, u.Segments[0])
 	if outerTable == "" {
-		// (1) segment 0 not a visible in-scope scan: a table / schema-qualified /
-		//     unknown qualifier — the translator's unnestFallbackOrReject AT path.
+		// (1) No visible correlated owner: reject AT on a table or unknown
+		// qualifier before projection resolution can mask the diagnostic.
 		return true
 	}
 	rt := md.GetRecordType(outerTable)
 	if rt == nil || rt.Descriptor == nil {
-		// segment 0 binds to a source whose record type is not a base table (a
-		// CTE / derived output): the translator handles it (outerSourceIsCTE →
-		// UNSUPPORTED_QUERY). Leave it — do NOT raise WRONG_OBJECT_TYPE.
+		// No physical descriptor authorizes a table/scalar rejection. Leave
+		// exact source and collection resolution to the semantic binder.
 		return false
 	}
 	// (2) Real base table. A bare source (single segment, no field) or a field
@@ -6883,169 +6944,6 @@ func lookupFieldFold(desc protoreflect.MessageDescriptor, name string) protorefl
 		f := fields.Get(i)
 		if strings.EqualFold(string(f.Name()), name) {
 			return f
-		}
-	}
-	return nil
-}
-
-// rejectDuplicateUnnestAlias enforces — at FROM-source analysis time, before any
-// projection/WHERE column resolution — that a lateral array unnest's AS / AT alias
-// does not collide with ANY OTHER source alias in the SAME FROM scope, EARLIER OR
-// LATER. Java's SemanticAnalyzer registers each FROM range-variable into one scope
-// and forbids two sources sharing a name (a duplicate quantifier alias is a binding
-// error); the unnest's AS (element) / AT (ordinal) names participate in that same
-// uniqueness rule.
-//
-// The translator's translateUnnestJoin already rejects the EARLIER collision
-// (the unnest alias vs an outer / already-bound source) and the AS == AT case, but
-// it lowers a left-deep join chain bottom-up: when it processes the unnest's join
-// (`FROM T1, T1.arr AS V`) it cannot see a LATER comma source (`, U AS V`), which is
-// the RIGHT child of an ANCESTOR join. So `FROM T1, T1.arr AS V, U AS V` was planned
-// with BOTH legs under alias V; the outer NestedLoopJoin's mergeRows overwrites the
-// unnest's bare/qualified V keys last-leg-wins with U's keys → a projection of V
-// reads U.V (the wrong source) instead of the unnested element — silent-wrong rows,
-// never the duplicate-alias error. This pass closes the gap: it sees the WHOLE FROM
-// chain, so a later source reusing the unnest alias is rejected cleanly here.
-//
-// Running it over the full tree (and into subquery plans, like rejectAtOrdinalityOn
-// Table) covers an unnest whose colliding later source lives in an EXISTS / scalar
-// subquery's own FROM scope. RFC-142.
-func rejectDuplicateUnnestAlias(op logical.LogicalOperator, md *recordlayer.RecordMetaData) error {
-	return rejectDuplicateUnnestAliasInner(op, md, nil)
-}
-
-// rejectDuplicateUnnestAliasInner carries the in-scope WITH definitions so a
-// FROM chain's Scan-on-a-CTE-name legs can derive their output columns from
-// the CTE Body (the ambiguity check is column-aware for them, exactly like
-// base tables).
-func rejectDuplicateUnnestAliasInner(op logical.LogicalOperator, md *recordlayer.RecordMetaData, ctes map[string]*logical.LogicalCTE) error {
-	if op == nil {
-		return nil
-	}
-	// A WITH definition is visible to its Main subtree (and to its own Body —
-	// recursive CTEs self-reference; for a non-recursive Body the extra
-	// visibility is inert, its scans can't name the CTE).
-	if cte, ok := op.(*logical.LogicalCTE); ok {
-		sub := make(map[string]*logical.LogicalCTE, len(ctes)+1)
-		for k, v := range ctes {
-			sub[k] = v
-		}
-		sub[strings.ToUpper(cte.Name)] = cte
-		ctes = sub
-	}
-	// A LogicalJoin is the root of a FROM-scope join chain. Collect every source
-	// alias in that chain and reject any unnest whose AS/AT alias duplicates
-	// another source's. The chain walk stops at a derived/CTE Body — a derived
-	// source is its own FROM scope — exactly like outerBoundAliases /
-	// buriedUnnestLegs; the recursion below then re-enters those nested scopes.
-	if j, ok := op.(*logical.LogicalJoin); ok {
-		if err := checkFromScopeUnnestAliases(j, md, ctes); err != nil {
-			return err
-		}
-	}
-	for _, ch := range op.Children() {
-		if err := rejectDuplicateUnnestAliasInner(ch, md, ctes); err != nil {
-			return err
-		}
-	}
-	for _, sub := range subqueryPlans(op) {
-		if err := rejectDuplicateUnnestAliasInner(sub, md, ctes); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// fromLegSchema describes one FROM-chain leaf source for the RFC-142
-// duplicate unnest-alias check: its UPPER alias. (The column-derivation
-// fields died when ambiguity checking moved to per-attribute reference
-// resolution, replacing an earlier FROM-level 42702 approximation.)
-type fromLegSchema struct {
-	alias string
-}
-
-// checkFromScopeUnnestAliases gathers every leaf source alias of the FROM-scope
-// join chain rooted at `j` (Scan aliases, prior-unnest AS/AT aliases, derived/CTE
-// leg OUTER aliases — never descending into a derived/CTE Body, which is a separate
-// scope) and rejects any lateral-unnest leg in that chain whose AS or AT alias also
-// names another source in the same chain. The check is symmetric across the chain,
-// so it catches both an earlier and a later collision. RFC-142.
-func checkFromScopeUnnestAliases(j *logical.LogicalJoin, md *recordlayer.RecordMetaData, ctes map[string]*logical.LogicalCTE) error {
-	var legs []fromLegSchema // every leaf source (Scan / derived leg) in the chain
-	var unnests []*logical.LogicalUnnest
-	var walk func(logical.LogicalOperator, map[string]*logical.LogicalCTE)
-	walk = func(o logical.LogicalOperator, ctes map[string]*logical.LogicalCTE) {
-		switch n := o.(type) {
-		case *logical.LogicalScan:
-			a := n.Alias
-			if a == "" {
-				a = n.Table
-			}
-			if a == "" {
-				return
-			}
-			legs = append(legs, fromLegSchema{alias: strings.ToUpper(a)})
-		case *logical.LogicalUnnest:
-			unnests = append(unnests, n)
-		case *logical.LogicalCTE:
-			// A derived/CTE leg contributes only its OUTER alias (its Main is
-			// a Scan on the definition name); its Body is a separate FROM
-			// scope, not descended here. Registering the definition makes the
-			// Scan arm derive the leg's OUTPUT columns from the Body — a
-			// derived leg is column-aware, exactly like a base table.
-			sub := make(map[string]*logical.LogicalCTE, len(ctes)+1)
-			for k, v := range ctes {
-				sub[k] = v
-			}
-			sub[strings.ToUpper(n.Name)] = n
-			walk(n.Main, sub)
-		default:
-			for _, c := range o.Children() {
-				walk(c, ctes)
-			}
-		}
-	}
-	walk(j, ctes)
-	// Duplicate FROM aliases register freely (the parser mints per-leg
-	// binding ids, assignFromLegBindingIDs), every reference resolves
-	// per-ATTRIBUTE at the semantic scope (Scope.ResolveQualifiedColumn/
-	// ResolveColumn — ≥2 matches raise Java's exact `Ambiguous reference X`
-	// 42702), and the cluster gate admits binding-distinguished duplicate
-	// legs into the ordinal seed, matching Java's live model. Undefined
-	// tables keep failing through validateTablesAndColumns (42F01 —
-	// resolution declines on unknowable tables, so the ambiguity path cannot
-	// mask it). Only the RFC-142 unnest-alias half below remains: Java
-	// genuinely forbids a duplicate unnest AS/AT alias at FROM.
-	if len(unnests) == 0 {
-		return nil
-	}
-	// Build, for each unnest, the set of OTHER sources' aliases: every scan alias
-	// plus every OTHER unnest's AS/AT aliases. A collision against any of them is a
-	// duplicate range-variable name.
-	for _, u := range unnests {
-		others := make(map[string]struct{}, len(legs)+2*len(unnests))
-		for _, leg := range legs {
-			others[leg.alias] = struct{}{}
-		}
-		for _, ou := range unnests {
-			if ou == u {
-				continue
-			}
-			if ou.Alias != "" {
-				others[strings.ToUpper(ou.Alias)] = struct{}{}
-			}
-			if ou.AtAlias != "" {
-				others[strings.ToUpper(ou.AtAlias)] = struct{}{}
-			}
-		}
-		for _, name := range []string{u.Alias, u.AtAlias} {
-			if name == "" {
-				continue
-			}
-			if _, dup := others[strings.ToUpper(name)]; dup {
-				return api.NewError(api.ErrCodeDuplicateAlias,
-					"lateral unnest alias collides with another FROM-source alias; use a distinct AS/AT alias")
-			}
 		}
 	}
 	return nil
@@ -7178,7 +7076,13 @@ func resolveQualifiedTableNames(op logical.LogicalOperator, schemaName string) e
 		return nil
 	}
 	if scan, ok := op.(*logical.LogicalScan); ok {
-		resolved, err := functions.ResolveQualifiedTableName(scan.Table, schemaName)
+		var resolved string
+		var err error
+		if scan.TablePath != nil {
+			resolved, err = functions.ResolveQualifiedTablePath(scan.TablePath, schemaName)
+		} else {
+			resolved, err = functions.ResolveQualifiedTableName(scan.Table, schemaName)
+		}
 		if err != nil {
 			return err
 		}
@@ -7236,26 +7140,35 @@ func resolveQualifiedTableNames(op logical.LogicalOperator, schemaName string) e
 }
 
 func validateTablesAndColumns(op logical.LogicalOperator, md *recordlayer.RecordMetaData) error {
-	cteNames := collectCTENames(op)
-	return validateTablesAndColumnsInner(op, md, cteNames)
+	logical.BindCTESources(op, logical.CTERegistry{})
+	return validateTablesAndColumnsInner(op, md, make(map[*logical.CTEProducer]bool))
 }
 
-func validateTablesAndColumnsInner(op logical.LogicalOperator, md *recordlayer.RecordMetaData, cteNames map[string]bool) error {
+func validateTablesAndColumnsInner(op logical.LogicalOperator, md *recordlayer.RecordMetaData, cteNames map[*logical.CTEProducer]bool) error {
 	if op == nil {
 		return nil
 	}
 	if scan, ok := op.(*logical.LogicalScan); ok {
-		if !cteNames[strings.ToUpper(scan.Table)] {
+		if scan.Source.Producer() == nil {
 			rt := md.GetRecordType(scan.Table)
 			if rt == nil {
 				return api.NewErrorf(api.ErrCodeUndefinedTable, "table %q does not exist", scan.Table)
 			}
 		}
 	}
+	if scan, ok := op.(*logical.LogicalScan); ok && scan.Source.Producer() != nil {
+		producer := scan.Source.Producer()
+		if !cteNames[producer] {
+			cteNames[producer] = true
+			if err := validateTablesAndColumnsInner(producer.Body(), md, cteNames); err != nil {
+				return err
+			}
+		}
+	}
 	if proj, ok := op.(*logical.LogicalProject); ok && !hasJoin(op) && !hasAggregate(op) &&
 		!projectionInputRedefinesColumns(proj.Input) {
 		scan := findLogicalScan(op)
-		if scan != nil && !cteNames[strings.ToUpper(scan.Table)] {
+		if scan != nil && scan.Source.Producer() == nil {
 			rt := md.GetRecordType(scan.Table)
 			if rt != nil && rt.Descriptor != nil {
 				for i, col := range proj.Projections {
@@ -7318,24 +7231,6 @@ func validateTablesAndColumnsInner(op logical.LogicalOperator, md *recordlayer.R
 		}
 	}
 	return nil
-}
-
-func collectCTENames(op logical.LogicalOperator) map[string]bool {
-	names := make(map[string]bool)
-	collectCTENamesInner(op, names)
-	return names
-}
-
-func collectCTENamesInner(op logical.LogicalOperator, names map[string]bool) {
-	if op == nil {
-		return
-	}
-	if cte, ok := op.(*logical.LogicalCTE); ok {
-		names[strings.ToUpper(cte.Name)] = true
-	}
-	for _, ch := range op.Children() {
-		collectCTENamesInner(ch, names)
-	}
 }
 
 func hasAggregate(op logical.LogicalOperator) bool {
@@ -7826,21 +7721,13 @@ func (r *paginatingRows) env() *dst.Env {
 //
 // THAT MAKES IT THE ODD ONE OUT AND THE NOTE IS DELIBERATE. Every other
 // harness-vs-production divergence here was closed by making the HARNESS mirror
-// production -- the target guard, this sweep, rejectDuplicateUnnestAlias. This
+// production -- the target guard and this sweep. This
 // walk is the reverse: production carries it for a path only the harness
 // exercises. Someone will eventually read that as dead weight and simplify it
 // away, so the reason is written down rather than inferred.
 //
-// IT ALSO REJECTED THREE VALID STATEMENTS until the CTE names were SCOPED. A
-// scalar subquery may define its own CTE on the same side field this walk
-// descends into, so descending with only the outer names rejected the CTE's own
-// scan with 42F01. The fix is per-plan scoping below -- NOT making
-// collectCTENames itself walk subqueries, which a first attempt did and which
-// leaked a CTE into a SIBLING subquery where it is out of scope. Within one
-// level the set is still flat, so a CTE is visible to every scan in that plan
-// regardless of lexical position: an over-accept, matching
-// validateTablesAndColumns, and the safe direction for a validator whose job is
-// rejection.
+// Source ownership is sealed before this walk. Retained producers are checked
+// by identity, while captured physical sources always require a catalog table.
 //
 // A DML EXISTS SUBQUERY IS NOT WHY THIS EXISTS. `DELETE ... WHERE EXISTS
 // (SELECT 1 FROM nosuchtable)` answers 0AF00 from the unsupported-shape check
@@ -7853,37 +7740,34 @@ func validateScanTables(op logical.LogicalOperator, md *recordlayer.RecordMetaDa
 	if op == nil || md == nil {
 		return nil
 	}
-	return validateScanTablesInner(op, md, collectCTENames(op))
+	logical.BindCTESources(op, logical.CTERegistry{})
+	return validateScanTablesInner(op, md, make(map[*logical.CTEProducer]bool))
 }
 
-func validateScanTablesInner(op logical.LogicalOperator, md *recordlayer.RecordMetaData, cteNames map[string]bool) error {
+func validateScanTablesInner(op logical.LogicalOperator, md *recordlayer.RecordMetaData, producers map[*logical.CTEProducer]bool) error {
 	if op == nil {
 		return nil
 	}
 	if scan, ok := op.(*logical.LogicalScan); ok {
-		if !cteNames[strings.ToUpper(scan.Table)] && md.GetRecordType(scan.Table) == nil {
+		if scan.Source.Producer() == nil && md.GetRecordType(scan.Table) == nil {
 			return api.NewErrorf(api.ErrCodeUndefinedTable, "table %q does not exist", scan.Table)
 		}
 	}
+	if scan, ok := op.(*logical.LogicalScan); ok {
+		if producer := scan.Source.Producer(); producer != nil && !producers[producer] {
+			producers[producer] = true
+			if err := validateScanTablesInner(producer.Body(), md, producers); err != nil {
+				return err
+			}
+		}
+	}
 	for _, child := range op.Children() {
-		if err := validateScanTablesInner(child, md, cteNames); err != nil {
+		if err := validateScanTablesInner(child, md, producers); err != nil {
 			return err
 		}
 	}
-	// Each attached plan gets its OWN scope: the CTE names visible here, plus the
-	// ones that plan declares -- never the ones a SIBLING declares. Unioning every
-	// side plan's definitions into one map before descending was simpler and
-	// wrong: for `id = (WITH x AS (...) SELECT MAX(id) FROM x) AND v = (SELECT
-	// MAX(id) FROM x)` it made `X` visible to the second subquery, which is
-	// outside the CTE's scope, so an invalid reference was accepted. A CTE is
-	// lexically scoped and a flat name set cannot express that.
 	for _, sub := range subqueryPlans(op) {
-		scoped := make(map[string]bool, len(cteNames))
-		for k, v := range cteNames {
-			scoped[k] = v
-		}
-		collectCTENamesInner(sub, scoped)
-		if err := validateScanTablesInner(sub, md, scoped); err != nil {
+		if err := validateScanTablesInner(sub, md, producers); err != nil {
 			return err
 		}
 	}

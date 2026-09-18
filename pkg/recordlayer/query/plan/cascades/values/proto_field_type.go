@@ -227,7 +227,9 @@ func enumTypeForProto(ed protoreflect.EnumDescriptor) Type {
 			return NewPrimitiveType(TypeCodeLong, true)
 		}
 		seenNumbers[value.Number()] = struct{}{}
-		values = append(values, EnumValue{Name: string(value.Name()), Number: int32(value.Number())})
+		// Java Type.Enum.enumValuesFromProto keeps the user identifier;
+		// string promotion compares that spelling, not protobuf escaping.
+		values = append(values, EnumValue{Name: protoname.ToUserIdentifier(string(value.Name())), Number: int32(value.Number())})
 	}
 	return NewEnumType(string(ed.FullName()), true, values)
 }

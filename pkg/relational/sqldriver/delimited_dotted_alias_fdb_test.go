@@ -3,9 +3,11 @@ package sqldriver_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"testing"
 
+	"fdb.dev/pkg/relational/api"
 	"github.com/onsi/gomega"
 )
 
@@ -94,8 +96,6 @@ func TestFDB_DelimitedDottedAliasIsVerbatim(t *testing.T) {
 		{"computed_dotted_alias", `SELECT u.uid + 1 AS "U.NAME" FROM Users u ORDER BY u.uid`, []string{"U.NAME"}},
 		// A dotted alias whose leaf matches a column of the OTHER leg.
 		{"join_leaf_match_other_leg", `SELECT u.name AS "O.NAME"` + join, []string{"O.NAME"}},
-		// Delimited alias containing a space AND a dot.
-		{"dotted_alias_with_space", `SELECT u.name AS "U. NAME" FROM Users u ORDER BY u.uid`, []string{"U. NAME"}},
 		// A dotted user alias in the SAME query as a machinery-minted qualified
 		// datum key: `o.name`/`u.name` duplicate the bare leaf NAME, so slot 1
 		// gets the mint while slot 0 carries the user's alias. Both must be
@@ -113,9 +113,22 @@ func TestFDB_DelimitedDottedAliasIsVerbatim(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			g := gomega.NewWithT(t)
 			g.Expect(queryColumns(tc.query)).To(gomega.Equal(tc.want),
-				"a delimited alias is reported VERBATIM (Java: Identifier::toString); query: %s", tc.query)
+				"a protobuf-admissible delimited alias is reported verbatim; query: %s", tc.query)
 		})
 	}
+
+	// A dot is escaped by Java's ProtoUtils, but a space is not. The lexer
+	// accepts this delimited identifier; result-field materialization rejects it.
+	t.Run("dotted_alias_with_space", func(t *testing.T) {
+		rows, queryErr := db.QueryContext(ctx, `SELECT u.name AS "U. NAME" FROM Users u ORDER BY u.uid`)
+		if rows != nil {
+			_ = rows.Close()
+		}
+		var apiErr *api.Error
+		if !errors.As(queryErr, &apiErr) || apiErr.Code != api.ErrCodeInvalidName {
+			t.Fatalf("error = %v, want 42602", queryErr)
+		}
+	})
 }
 
 // TestFDB_DuplicateBareLeafKeepsTwoColumns is the HAZARD case for the fix

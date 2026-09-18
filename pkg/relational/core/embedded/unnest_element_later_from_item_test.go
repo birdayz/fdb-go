@@ -35,25 +35,52 @@ func unnestFrontendMetadata(t *testing.T) *recordlayer.RecordMetaData {
 	return tmpl.Underlying()
 }
 
-func TestDuplicateUnnestAliasInsideExistsIsRejectedBeforeTranslation(t *testing.T) {
+func TestDuplicateUnnestAliasInsideExistsKeepsDistinctCorrelations(t *testing.T) {
 	t.Parallel()
 	md := unnestFrontendMetadata(t)
 	root, err := parseQueryFromSelect(t,
 		`SELECT "ID" FROM T1 WHERE EXISTS (SELECT 1 FROM T1, T1."ARR1" AS "V", U AS "V")`)
 	if err != nil {
-		t.Fatalf("parse: %v", err)
+		t.Fatal(err)
 	}
-	_, err = NewPlanVisitorWithSchema(md, "s").VisitQuery(root)
-	var apiErr *api.Error
-	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeDuplicateAlias {
-		t.Fatalf("VisitQuery error = %v, want %s before subquery attachment/translation", err, api.ErrCodeDuplicateAlias)
+	op, err := NewPlanVisitorWithSchema(md, "s").VisitQuery(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bindings []string
+	var walk func(logical.LogicalOperator)
+	walk = func(node logical.LogicalOperator) {
+		switch n := node.(type) {
+		case *logical.LogicalScan:
+			if n.Table == "U" {
+				if n.Alias != "V" {
+					t.Fatalf("private identity replaced the table's SQL alias: %q", n.Alias)
+				}
+				bindings = append(bindings, n.Binding)
+			}
+		case *logical.LogicalUnnest:
+			if n.Alias != "V" {
+				t.Fatalf("private identity replaced the unnest's SQL alias: %q", n.Alias)
+			}
+			bindings = append(bindings, logical.UnnestBindingName(n.Binding, n.Alias, n.AtAlias))
+		}
+		for _, child := range node.Children() {
+			walk(child)
+		}
+		for _, child := range subqueryPlans(node) {
+			walk(child)
+		}
+	}
+	walk(op)
+	if len(bindings) != 2 || bindings[0] != "Q$BOUND2" || bindings[1] != "Q$BOUND3" {
+		t.Fatalf("lateral and later table bindings: %v", bindings)
 	}
 }
 
-func TestQualifiedStarOverScalarUnnestKeepsExactWholeObjectValue(t *testing.T) {
+func TestScalarUnnestProjectionKeepsExactWholeObjectValue(t *testing.T) {
 	t.Parallel()
 	md := unnestFrontendMetadata(t)
-	root, err := parseQueryFromSelect(t, `SELECT "V".* FROM T1, T1."ARR1" AS "V"`)
+	root, err := parseQueryFromSelect(t, `SELECT "V" FROM T1, T1."ARR1" AS "V"`)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -63,15 +90,38 @@ func TestQualifiedStarOverScalarUnnestKeepsExactWholeObjectValue(t *testing.T) {
 	}
 	proj := findProjection(op)
 	if proj == nil || len(proj.ProjectedValues) != 1 || proj.ProjectedValues[0] == nil {
-		t.Fatalf("qualified-star projection = %#v, want one resolved exact value", proj)
+		t.Fatalf("scalar projection = %#v, want one resolved exact value", proj)
 	}
 	qov, ok := values.AsQuantifiedObjectValue(proj.ProjectedValues[0])
 	if !ok {
-		t.Fatalf("qualified-star value = %T %v, want whole scalar QOV", proj.ProjectedValues[0], proj.ProjectedValues[0])
+		t.Fatalf("scalar projection value = %T %v, want whole scalar QOV", proj.ProjectedValues[0], proj.ProjectedValues[0])
 	}
 	if qov.Correlation() != values.NamedCorrelationIdentifier("V") ||
 		qov.FlowedType().Code() != values.TypeCodeLong || qov.FlowedType().IsNullable() {
-		t.Fatalf("qualified-star QOV = %s:%s, want V:LONG NOT NULL", qov.Correlation(), qov.FlowedType())
+		t.Fatalf("scalar projection QOV = %s:%s, want V:LONG NOT NULL", qov.Correlation(), qov.FlowedType())
+	}
+}
+
+func TestQualifiedStarOverScalarUnnestRejects(t *testing.T) {
+	t.Parallel()
+	md := unnestFrontendMetadata(t)
+	for _, frontend := range []string{"catalog", "visitor"} {
+		t.Run(frontend, func(t *testing.T) {
+			t.Parallel()
+			root, err := parseQueryFromSelect(t, `SELECT "V".* FROM T1, T1."ARR1" AS "V"`)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if frontend == "catalog" {
+				_, err = buildLogicalPlanForQueryWithCatalog(root, md)
+			} else {
+				_, err = NewPlanVisitorWithSchema(md, "s").VisitQuery(root)
+			}
+			var sqlErr *api.Error
+			if !errors.As(err, &sqlErr) || sqlErr.Code != api.ErrCodeInvalidColumnReference {
+				t.Fatalf("scalar star: %v, want 42F10", err)
+			}
+		})
 	}
 }
 
@@ -116,30 +166,11 @@ func TestSchemaAliasCollisionRetainsOnlyTheAuthoredTableQualifier(t *testing.T) 
 	}
 }
 
-// TestUnnestElementCarriesExactScalarWithALaterFromItem is the logical-tree
-// counterpart of TestUnnestElementQuantifierCarriesExactScalar with ONE more
-// FROM item. The extra item changes which resolver mint emits the element's
-// quantified object:
-//
-//	FROM A, C, C."ARR" AS "X"          -> ResolveIdentifier's correlated arm
-//	FROM A, C, C."ARR" AS "X", U       -> ResolveColumnShadowingQualified
-//
-// The second helper exists precisely because a LATER FROM item's mergeRows
-// clobbers the bare `X` key last-leg-wins, so the bare `SELECT "X"` must read
-// the qualified `X.X` key instead (RFC-142). It is a different function, and a
-// flowed-type guard written only in the first one does not reach it — which was
-// the state this test was written against.
-//
-// # Why this asserts on the LOGICAL tree, not the physical plan
-//
-// RFC-232 no longer permits UNKNOWN quantified objects. The virtual unnest
-// table is lookup metadata, while QOV(X) flows the exact array element itself:
-// LONG NOT NULL for this fixture, never RECORD<X ...>. The logical tree is the
-// last surface on which this resolver mint is still directly observable.
-//
-// Do not "strengthen" this into a physical-plan check. The rewrite that erases
-// the type is incidental — it is not a guard, nothing pins it, and a shape
-// where it does not fire is a shape with silently wrong leg windows.
+// TestUnnestElementCarriesExactScalarWithALaterFromItem pins the resolver's
+// exact element type before physical rewriting. A later table does not change
+// QOV(EL) from LONG NOT NULL into its one-column lookup record. The original
+// colliding X spelling is also retained: independent visible columns are
+// ambiguous, not a license to prefer the UNNEST element.
 func TestUnnestElementCarriesExactScalarWithALaterFromItem(t *testing.T) {
 	t.Parallel()
 
@@ -161,8 +192,19 @@ func TestUnnestElementCarriesExactScalarWithALaterFromItem(t *testing.T) {
 		t.Fatalf("build schema: %v", err)
 	}
 
-	root, perr := parseQueryFromSelect(t,
+	colliding, err := parseQueryFromSelect(t,
 		`SELECT A."K", "X" FROM A, C, C."ARR" AS "X", U WHERE A."K" = U."UID"`)
+	if err != nil {
+		t.Fatalf("parse collision: %v", err)
+	}
+	_, err = buildLogicalPlanForQueryWithCatalog(colliding, tmpl.Underlying())
+	var sqlErr *api.Error
+	if !errors.As(err, &sqlErr) || sqlErr.Code != api.ErrCodeAmbiguousColumn {
+		t.Fatalf("independent X columns: %v, want 42702", err)
+	}
+
+	root, perr := parseQueryFromSelect(t,
+		`SELECT A."K", "EL" FROM A, C, C."ARR" AS "EL", U WHERE A."K" = U."UID"`)
 	if perr != nil {
 		t.Fatalf("parse: %v", perr)
 	}
@@ -226,19 +268,16 @@ func TestUnnestElementCarriesExactScalarWithALaterFromItem(t *testing.T) {
 			"assertion below is vacuous.\n  seen: %v", aTypes, seen)
 	}
 
-	// THE BOUNDARY. The unnest element's quantifier must state the exact scalar
-	// element — here, where ResolveColumnShadowingQualified is the mint.
-	xTypes, sawX := seen["X"]
+	// The element's QOV flows the array element, not the lookup table's row.
+	xTypes, sawX := seen["EL"]
 	if !sawX {
-		t.Fatalf("no projected quantifier object for the unnest binding X; the virtual "+
-			"scope source likely still exposes UNKNOWN and exact QOV construction declined. "+
-			"The bare `\"X\"` projection must reach ResolveColumnShadowingQualified.\n  seen: %v", seen)
+		t.Fatalf("no projected quantifier object for the unnest binding EL; the exact "+
+			"element projection is no longer exercised.\n  seen: %v", seen)
 	}
 	for _, ty := range xTypes {
 		if ty == nil || ty.Code() != values.TypeCodeLong || ty.IsNullable() {
-			t.Fatalf("the unnest ELEMENT quantifier X states %v, want exact LONG NOT NULL. "+
-				"This shape resolves bare `\"X\"` through ResolveColumnShadowingQualified; "+
-				"the virtual one-column lookup table must not become the flowed type, and "+
+			t.Fatalf("the unnest ELEMENT quantifier EL states %v, want exact LONG NOT NULL. "+
+				"The virtual one-column lookup table must not become the flowed type, and "+
 				"UNKNOWN is no longer an admissible QOV.\n  seen: %v", ty, seen)
 		}
 	}

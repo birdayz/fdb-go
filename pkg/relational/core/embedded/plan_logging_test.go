@@ -292,8 +292,8 @@ func TestPlanCacheEvent_String(t *testing.T) {
 // TestNestedDerivedArithmetic_TypeSurvivesUnmergedProjectionSpine pins
 // column-metadata typing against PLAN SHAPE: `doubled` (val * 2) through
 // two derived-table levels must report BIGINT no matter whether the
-// planner merged the nested projections or an ordering-pinned spine kept
-// them stacked. The inherit path in deriveColumnsFromProjection only
+// planner reused identical output rows or disabled composition kept renamed
+// projection boundaries stacked. The inherit path in deriveColumnsFromProjection only
 // fired for FLAT (childless) FieldValues; the pinned/unmerged shape reads
 // the inner output through a QUANTIFIER-ADDRESSED FieldValue (Child=QOV),
 // which skipped inheritance and reported UNKNOWN — a cross-engine
@@ -301,45 +301,59 @@ func TestPlanCacheEvent_String(t *testing.T) {
 // regardless of shape).
 func TestNestedDerivedArithmetic_TypeSurvivesUnmergedProjectionSpine(t *testing.T) {
 	t.Parallel()
-	g, md := newLoggingGenerator(t, "CREATE TABLE t_nd8 (id BIGINT, val BIGINT, PRIMARY KEY (id))", &captureLogger{})
-	q := parseQuery(t, "SELECT id, doubled FROM (SELECT id, doubled FROM (SELECT id, val * 2 AS doubled FROM t_nd8) AS d2) AS d1 ORDER BY id")
-	p, err := g.planSelectCascades(context.Background(), q, md, true)
-	if err != nil {
-		t.Fatalf("plan: %v", err)
-	}
-	cp, ok := p.(*cascadesPlan)
-	if !ok {
-		t.Fatalf("plan is %T, want *cascadesPlan", p)
-	}
-	t.Logf("physical plan: %s", cp.physicalPlan.Explain())
-	// The sentinel only tests the UNMERGED spine while it stays unmerged. The
-	// ORDER BY sort is allowed to sit BETWEEN the projection nodes: requiring
-	// them to be immediate parent/child made the test stale as soon as the sort
-	// was represented explicitly, despite the two projection boundaries still
-	// being present. Count the boundaries over the physical tree instead.
-	projectionCount := 0
-	plans.Walk(cp.physicalPlan, func(plan plans.RecordQueryPlan) bool {
-		if _, ok := plan.(*plans.RecordQueryProjectionPlan); ok {
-			projectionCount++
-		}
-		return true
-	})
-	if projectionCount < 2 {
-		t.Fatalf("physical plan has %d projection node(s), want at least two unmerged boundaries", projectionCount)
-	}
-	cols := deriveColumnsFromPlan(cp.physicalPlan, cp.md)
-	doubledIdx := -1
-	for i := range cols {
-		if strings.EqualFold(cols[i].Label, "DOUBLED") || strings.EqualFold(cols[i].Name, "DOUBLED") {
-			doubledIdx = i
-			break
-		}
-	}
-	if doubledIdx < 0 {
-		t.Fatalf("no DOUBLED column in derived metadata: %+v", cols)
-	}
-	if got := cols[doubledIdx].TypeName; got != "BIGINT" {
-		t.Fatalf("DOUBLED type = %q, want BIGINT (metadata typing must not depend on whether the projection spine was merged)", got)
+	const original = "SELECT id, doubled FROM (SELECT id, doubled FROM (SELECT id, val * 2 AS doubled FROM t_nd8) AS d2) AS d1 ORDER BY id"
+	for _, tc := range []struct {
+		name           string
+		sql            string
+		disabled       []string
+		minProjections int
+	}{
+		{"default", original, nil, 1},
+		{"identity_reuse", original, []string{"ProjectionMergeRule", "RemoveProjectionRule"}, 1},
+		{"renamed_unmerged", "SELECT id, d2_value AS doubled FROM (SELECT id, doubled AS d2_value FROM (SELECT id, val * 2 AS doubled FROM t_nd8) AS d2) AS d1 ORDER BY id", []string{"ProjectionMergeRule", "RemoveProjectionRule"}, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			g, md := newLoggingGenerator(t, "CREATE TABLE t_nd8 (id BIGINT, val BIGINT, PRIMARY KEY (id))", &captureLogger{})
+			g.c.SetOptions(api.NewOptionsBuilder().Set(api.OptDisabledPlannerRules, tc.disabled).Build())
+			q := parseQuery(t, tc.sql)
+			p, err := g.planSelectCascades(context.Background(), q, md, true)
+			if err != nil {
+				t.Fatalf("plan: %v", err)
+			}
+			cp, ok := p.(*cascadesPlan)
+			if !ok {
+				t.Fatalf("plan is %T, want *cascadesPlan", p)
+			}
+			t.Logf("physical plan: %s", cp.physicalPlan.Explain())
+			// Implementation also reuses exact identity rows independently of
+			// rewrite rules. Renaming the middle row prevents that reuse; with
+			// composition disabled, the inheritance boundary must survive.
+			projectionCount := 0
+			plans.Walk(cp.physicalPlan, func(plan plans.RecordQueryPlan) bool {
+				if _, ok := plan.(*plans.RecordQueryProjectionPlan); ok {
+					projectionCount++
+				}
+				return true
+			})
+			if projectionCount < tc.minProjections {
+				t.Fatalf("physical plan has %d projection node(s), want at least %d", projectionCount, tc.minProjections)
+			}
+			cols := deriveColumnsFromPlan(cp.physicalPlan, cp.md)
+			doubledIdx := -1
+			for i := range cols {
+				if strings.EqualFold(cols[i].Label, "DOUBLED") || strings.EqualFold(cols[i].Name, "DOUBLED") {
+					doubledIdx = i
+					break
+				}
+			}
+			if doubledIdx < 0 {
+				t.Fatalf("no DOUBLED column in derived metadata: %+v", cols)
+			}
+			if got := cols[doubledIdx].TypeName; got != "BIGINT" {
+				t.Fatalf("DOUBLED type = %q, want BIGINT (metadata typing must not depend on whether the projection spine was merged)", got)
+			}
+		})
 	}
 }
 

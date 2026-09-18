@@ -3,9 +3,11 @@ package executor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
@@ -1167,5 +1169,53 @@ func TestOrdinalJoinBuildBareQOVTriggerKeysOnLegAliases(t *testing.T) {
 		t.Fatal("a bare QOV enabled the build with NO leg aliases supplied. The trigger keys " +
 			"on the correlation matching a known leg; with nothing to match it must decline, " +
 			"or every semantic-RC caller of the legacy constructor starts building ordinally.")
+	}
+}
+
+func TestScalarPredicatesFilterUsesLayoutWithoutAlias(t *testing.T) {
+	t.Parallel()
+	for _, alias := range []bool{false, true} {
+		for _, null := range []bool{false, true} {
+			t.Run(fmt.Sprintf("alias=%t/null=%t", alias, null), func(t *testing.T) {
+				t.Parallel()
+				var datum any = int64(7)
+				comparison := predicates.ComparisonIsNotNull
+				if null {
+					datum = nil
+					comparison = predicates.ComparisonIsNull
+				}
+				inner := mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{
+					Value: []any{datum}, Typ: values.NewArrayType(false, values.NullableLong),
+				}))
+				edge := plans.QuantifierOverPlan(inner)
+				object, err := edge.RequireFlowedObjectValue()
+				if err != nil {
+					t.Fatal(err)
+				}
+				preds := []predicates.QueryPredicate{predicates.NewComparisonPredicate(object, predicates.Comparison{Type: comparison})}
+				var filter *plans.RecordQueryPredicatesFilterPlan
+				if alias {
+					filter, err = plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(edge, preds, edge.GetAlias())
+				} else {
+					filter, err = plans.NewRecordQueryPredicatesFilterPlanFromQuantifier(edge, preds)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				ctx := context.Background()
+				cur, err := ExecutePlan(ctx, filter, nil, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer cur.Close()
+				result, err := cur.OnNext(ctx)
+				if err != nil || !result.HasNext() {
+					t.Fatalf("scalar filter: %v, %v; declared edge/layout must bind even without an extra alias", result, err)
+				}
+				if got := result.GetValue().Positional.Slots[0]; got != datum {
+					t.Fatalf("scalar = %v, want %v", got, datum)
+				}
+			})
+		}
 	}
 }

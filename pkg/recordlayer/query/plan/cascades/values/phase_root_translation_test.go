@@ -662,3 +662,172 @@ func TestTranslateProjectionInputNameNormalizationRejectsStructuralDrift(t *test
 		t.Fatalf("malformed-ordinal QOV admission = (%T,%v), want nil,error", admitted, admissionErr)
 	}
 }
+
+func TestTranslateNullExtendedPhaseRootDerivesFieldReadNullability(t *testing.T) {
+	t.Parallel()
+	nested := NewRecordType("", false, []Field{{Name: "ID", FieldType: NotNullLong}})
+	array := NewArrayType(false, NotNullLong)
+	rowType := NewRecordType("", false, []Field{
+		{Name: "ID", FieldType: NotNullLong},
+		{Name: "NESTED", FieldType: nested},
+		{Name: "ITEMS", FieldType: array},
+		{Name: "OPTIONAL", FieldType: NullableLong},
+	})
+	for _, test := range []struct {
+		name string
+		path []int
+		want Type
+	}{
+		{"scalar", []int{0}, NullableLong},
+		{"nested_scalar", []int{1, 0}, NullableLong},
+		{"nested_record", []int{1}, WithNullability(nested, true)},
+		{"array", []int{2}, WithNullability(array, true)},
+		{"already_nullable", []int{3}, NullableLong},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			source := mustLayoutCurrentQOV(t, rowType)
+			target := mustLayoutCurrentQOV(t, WithNullability(rowType, true))
+			field, err := ResolveOrdinalSeedField(source, test.path[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(test.path) > 1 {
+				field, err = ResolveFieldOrdinals(field, test.path[1:])
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			original := mustReanchorField(t, field)
+			translated, err := TranslateNullExtendedPhaseRoot(field, source, target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := mustReanchorField(t, translated)
+			if got.ChildValue() != target || !got.ResultType().Equals(test.want) || !got.Path().IsFrontierPinned() {
+				t.Fatalf("null extension lost exact target, derived type or frontier provenance: %v", got)
+			}
+			path := got.Path().Ordinals()
+			if len(path) != len(test.path) {
+				t.Fatalf("path %v, want %v", path, test.path)
+			}
+			for i, ordinal := range path {
+				before, _ := original.Path().Accessor(i)
+				after, _ := got.Path().Accessor(i)
+				if ordinal != test.path[i] || !before.FieldType().Equals(after.FieldType()) {
+					t.Fatalf("stored field descriptor changed at %d", i)
+				}
+			}
+			if original.ChildValue() != source || !source.Type().Equals(rowType) || !original.Path().IsFrontierPinned() {
+				t.Fatal("source metadata was mutated")
+			}
+			foreign := mustLayoutCurrentQOV(t, rowType)
+			foreignField, err := ResolveFieldOrdinals(foreign, test.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if retained, err := TranslateNullExtendedPhaseRoot(foreignField, source, target); err != nil || retained != foreignField {
+				t.Fatalf("same-shaped foreign carrier was rewritten: %v, %v", retained, err)
+			}
+			// The ordinary rebuild must remain exact; only the explicitly proved
+			// null-extension boundary may change read-result nullability.
+			if !field.Type().IsNullable() {
+				if rebuilt, err := RebuildFieldValue(original, target); err == nil || rebuilt != nil {
+					t.Fatalf("generic field rebuild accepted type drift: %v, %v", rebuilt, err)
+				}
+			}
+		})
+	}
+}
+
+func TestTranslateNullExtendedPhaseRootRejectsShapeDriftAndNarrowing(t *testing.T) {
+	t.Parallel()
+	rowType := NewRecordType("", false, []Field{{Name: "ID", FieldType: NotNullLong}})
+	source := mustLayoutCurrentQOV(t, rowType)
+	for _, targetType := range []Type{
+		rowType,
+		NewRecordType("", true, []Field{{Name: "ID", FieldType: NullableLong}}),
+		NewRecordType("", true, []Field{{Name: "RENAMED", FieldType: NotNullLong}}),
+		NewRecordType("", true, []Field{{Name: "ID", FieldType: NotNullString}}),
+	} {
+		target := mustLayoutCurrentQOV(t, targetType)
+		if got, err := TranslateNullExtendedPhaseRoot(source, source, target); err == nil || got != nil {
+			t.Fatalf("target %s accepted outside root-only widening: %v, %v", targetType, got, err)
+		}
+	}
+	nullable := mustLayoutCurrentQOV(t, WithNullability(rowType, true))
+	if got, err := TranslateNullExtendedPhaseRoot(nullable, nullable, source); err == nil || got != nil {
+		t.Fatalf("nullable root narrowed: %v, %v", got, err)
+	}
+}
+
+func FuzzTranslateNullExtendedField(f *testing.F) {
+	f.Add(byte(0), uint16(0), byte(0))
+	f.Add(byte(4), uint16(0), byte(1))
+	f.Add(byte(3), uint16(255), byte(2))
+	f.Add(byte(2), uint16(65535), byte(2))
+	f.Fuzz(func(t *testing.T, depthByte byte, flags uint16, leafKind byte) {
+		leaves := []Type{NotNullLong, NullableString, NewArrayType(false, NotNullLong)}
+		leaf := leaves[int(leafKind)%len(leaves)]
+		var typ Type = leaf
+		depth := int(depthByte%5) + 1
+		path := make([]int, depth)
+		for i := depth - 1; i >= 0; i-- {
+			ordinal := int(flags>>i) & 1
+			path[i] = ordinal
+			fields := []Field{{Name: "A", FieldType: NotNullLong}, {Name: "B", FieldType: NullableString}}
+			fields[ordinal].FieldType = typ
+			typ = NewRecordType("", i != 0 && (flags>>(i+5))&1 != 0, fields)
+		}
+		source := mustLayoutCurrentQOV(t, typ)
+		target := mustLayoutCurrentQOV(t, WithNullability(typ, true))
+		field, err := ResolveFieldOrdinals(source, path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		translated, err := TranslateNullExtendedPhaseRoot(field, source, target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := mustReanchorField(t, translated)
+		if got.ChildValue() != target || !got.Type().Equals(WithNullability(leaf, true)) {
+			t.Fatalf("null-extension field root/type = %v, want target/nullable %v", got, leaf)
+		}
+		if len(got.Path().Ordinals()) != len(path) {
+			t.Fatalf("ordinal path length changed from %v to %v", path, got.Path().Ordinals())
+		}
+		for i, ordinal := range got.Path().Ordinals() {
+			if ordinal != path[i] {
+				t.Fatalf("ordinal path changed from %v to %v", path, got.Path().Ordinals())
+			}
+		}
+		// Constructing an array is different from reading an array-valued
+		// field: every enclosing constructor must retain a compatible declared
+		// element type, including through nested constructor parents.
+		nullableElement := flags&(1<<10) != 0
+		array := NewArrayConstructorValue(WithNullability(leaf, nullableElement), []Value{field})
+		var program Value = array
+		for range int((flags >> 11) & 3) {
+			program = NewArrayConstructorValue(program.Type(), []Value{program})
+		}
+		beforeType, beforeFieldType := program.Type(), field.Type()
+		rebuilt, rebuildErr := TranslateNullExtendedPhaseRoot(program, source, target)
+		if nullableElement {
+			if rebuildErr != nil || rebuilt == nil || !rebuilt.Type().Equals(beforeType) {
+				t.Fatalf("nullable-element array reconstruction = %v, %v", rebuilt, rebuildErr)
+			}
+		} else if rebuildErr == nil || rebuilt != nil {
+			t.Fatalf("incompatible array metadata survived null extension: %v, %v", rebuilt, rebuildErr)
+		}
+		if array.Elements[0] != field || !field.Type().Equals(beforeFieldType) || !program.Type().Equals(beforeType) {
+			t.Fatal("array reconstruction mutated its source program")
+		}
+		foreign := mustLayoutCurrentQOV(t, typ)
+		if retained, err := TranslateNullExtendedPhaseRoot(field, foreign, target); err != nil || retained != field {
+			t.Fatalf("foreign source acquired lineage: %v, %v", retained, err)
+		}
+		if retained, err := TranslateNullExtendedPhaseRoot(program, foreign, target); err != nil || retained != program {
+			t.Fatalf("foreign array program acquired lineage: %v, %v", retained, err)
+		}
+	})
+}

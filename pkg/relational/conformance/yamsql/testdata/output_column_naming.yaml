@@ -42,11 +42,10 @@ tests:
     columns: [TOTAL]
     rows:
       - [9]
-  # An UNALIASED scalar aggregate keeps the generated expression name —
-  # the fix must not invent an alias where the user wrote none.
+  # An UNALIASED scalar aggregate uses Java's zero-based positional label.
   - query: SELECT MAX(a) FROM t
     plan_contains: "Project([_current.MAX(A)#0], StreamingAgg(keys=[], Scan(T)))"
-    columns: ["MAX(A)"]
+    columns: ["_0"]
     rows:
       - [3]
   # GROUPED aggregate: already correct (a projection above it carries the

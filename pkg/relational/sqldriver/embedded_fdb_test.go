@@ -449,80 +449,16 @@ func assertNameSplitCensus(w io.Writer) bool {
 	return values.AssertNameSplitCensus(w, &nameSplitFloors)
 }
 
-// qualifierRecoveryFloors is the minimum population each DARK SPLITTER must
-// report over the whole real-FDB corpus. Filled from the measurement, an order
-// of magnitude below it where the population allows, so the floor detects a site
-// going DARK rather than drift.
-//
-// Measured over this corpus (ordinal model):
-//
-//	recursiveRemap      calls   0 | carried   0 | AGREED   0 | MANUFACTURED 0 | leafOnly 0 | bare 0
-//	existsSortSplit     calls  22 | carried   0 | AGREED  22 | MANUFACTURED 0 | bare 0
-//	derivedUnnestSource calls  15 | carried   0 | AGREED   0 | MANUFACTURED 0 | bare 15
-//	projScopeClassify   calls  73 | carried  73 | AGREED   0 | MANUFACTURED 0 | bare 0
-//	projQualVsScan      calls   0 | carried   0 | AGREED   0 | MANUFACTURED 0 | bare 0
-//	displayLabelStrip   calls 583 | carried   0 | AGREED 561 | MANUFACTURED 6 | bare 16
-//
-// THREE FLOORS WENT TO ZERO AND EACH ZERO IS A DIFFERENT FACT. The rule for a
-// watched population whose expected value changes is to RECONCILE the guard with
-// the new value and say which direction is now the alarm — not to lower it
-// quietly, and not to delete it, which leaves a revival unwatched. Split[s] == 0
-// is exactly that reconciliation: the census reads a zero entry as a DECLARATION
-// and checks it in the STALE direction, so a site declared 0 whose split
-// population comes back RED at the next run.
-//
-//   - recursiveRemap: the site has NO PRODUCTION CALLER AT ALL.
-//     query.recursiveRemapValues is a retired compatibility no-op, and this was
-//     already recorded on the translator harness's own floors
-//     (core/query/leg_identity_census_main_test.go) and pinned by
-//     TestQualRecWiring_RetiredRecursiveRemapIsInert. These floors simply had not
-//     been reconciled with it; 10/10 was unsatisfiable, not merely generous.
-//
-//   - projScopeClassify: STILL LIVE, and its call floor stays. What went to zero
-//     is its SPLIT arm, structurally. projScopeAlias reads fv.ChildValue(), and
-//     values.AsFieldValue admits a *fieldValue only when its Child is a
-//     *quantifiedObjectValue (isAdmittedFieldValue), so every admitted FieldValue
-//     answers on the CARRIED channel and the last-dot fallback beneath it cannot
-//     be reached by any input. That is the conversion this census was built to
-//     watch for, arriving: 73 calls, 73 of them carried, no name sliced.
-//
-//   - projQualVsScan: the recorder still stands at its site, and the SITE is what
-//     stopped being reached. Its caller is validateTablesAndColumnsInner's
-//     per-column loop, which skips any projection carrying a ProjectedValue —
-//     under the ordinal model that is every one of them, so the loop body did not
-//     execute once across this corpus. The 42703 it used to raise by comparing a
-//     manufactured qualifier against the scan's alias is now raised by resolution
-//     instead, which is the point of the model change. Its unit wiring pin
-//     (embedded/qualifier_recovery_wiring_test.go) drives the recorder directly
-//     and keeps the instrument itself proven live.
-//
-// DIVERGED is 0 at every site, and unlike the population zeros that is a zero
-// over a REAL population — but a SMALLER one than the total, and smaller than it
-// used to be. Of the 620 calls above:
-//
-//   - 22 are existsSortSplit, and they CANNOT disagree. sortKeyFieldRef RENDERS
-//     `LEG.COL` out of the very FieldValue{Field, Child:QOV} that
-//     sortKeyQualifierIdentity reads the identity back out of one call later, so
-//     the split is re-parsing a string joined from its own counterparty. That
-//     AGREED is a TAUTOLOGY. It is worth counting — it is what makes the round
-//     trip visible rather than arguable — but it is not evidence that anything
-//     survived a lossy rendering, because nothing at that site was ever at risk
-//     of not surviving one.
-//   - 561 are displayLabelStrip, and those are the result. A machinery-minted
-//     display label sliced at its dot, checked against the correlation the alias
-//     was actually minted from, 561 times, no disagreement.
-//
-// So the zero over a population that could have been non-zero is ~562, and
-// displayLabelStrip carries essentially all of it.
+// qualifierRecoveryFloors watches collapse at the live sites reached by this
+// corpus. Derived UNNEST and projection-scope classification are fully retired;
+// their stable sites forbid all calls independently of these floors.
 var qualifierRecoveryFloors = values.QualifierRecoveryFloors{
 	Calls: [6]int{
 		// recursiveRemap: no entry. The site is retired and has no caller; its
 		// revival is watched by the Split declaration below, which fires on any
 		// class but CARRIED — and a retired recorder cannot report CARRIED
 		// either, because it cannot report at all.
-		values.QualRecSiteExistsSortSplit:     4,
-		values.QualRecSiteDerivedUnnestSource: 2,
-		values.QualRecSiteProjScopeClassify:   8,
+		values.QualRecSiteExistsSortSplit: 4,
 		// projQualVsScan: no entry. The site is unreached over this corpus and
 		// the Split DECLARATION is what watches it. It never records CARRIED
 		// (recordProjQualVsScan classifies bare/AGREED/DIVERGED/MANUFACTURED
@@ -530,41 +466,18 @@ var qualifierRecoveryFloors = values.QualifierRecoveryFloors{
 		// population and one of the two would be redundant.
 		values.QualRecSiteDisplayLabelStrip: 70,
 	},
-	// The SPLIT floors, which are the ones that carry the weight: the sites that
-	// do all their work in a splitting arm have Calls and Split floors that
-	// coincide. projScopeClassify is the site where they diverge, and it now
-	// diverges completely — 73 calls, 0 splits — which is why its split floor is
-	// a 0 DECLARATION rather than the 6 it used to be.
+	// The SPLIT floors carry the weight at the remaining live splitters.
 	Split: [6]int{
-		// recursiveRemap and projScopeClassify carry no entry here. Their
-		// splitting arms are STRUCTURALLY gone rather than "measured empty over
-		// this corpus", so they are declared in qualifierRecoveryRetiredSplit
-		// below, where the alarm is REVIVAL and survives a -test.run filter that
-		// drops every floor on this struct.
+		// recursiveRemap carries no entry because its splitting arm is
+		// structurally gone. projScopeClassify is stronger: every call is retired.
 		//
 		// projQualVsScan IS here, at 0, and the difference is the point: its
 		// recorder and its call site both still stand, and what stopped is the
 		// corpus REACHING them. That is a claim about this suite, so it is a
 		// declaration that a filter may drop — not a tree fact.
-		values.QualRecSiteProjQualVsScan:  0,
-		values.QualRecSiteExistsSortSplit: 4,
-		// derivedUnnestSource: 2 -> 0, and THE DIRECTION OF THIS GUARD
-		// INVERTED. classifyDerivedUnnestArray decides from the parse-tree
-		// triple now and splits only for a slot that has none; measured over
-		// this corpus, all 15 calls carry one. A positive floor is therefore
-		// unsatisfiable, and the alarm is GROWTH: a non-zero means a slot
-		// reached the site WITHOUT segments, which is a finding about the
-		// CAPTURE rather than about this site.
-		//
-		// It stays here as a 0 DECLARATION rather than moving to
-		// qualifierRecoveryRetiredSplit below, on that list's own criterion:
-		// the splitting arm is not gone from the tree, it is the documented
-		// fallback for an absent triple. What is empty is this corpus's
-		// population, which is a claim about this suite and may be dropped by
-		// a filter — and the query package's wiring pin drives the fallback
-		// directly, so it is not untested.
-		values.QualRecSiteDerivedUnnestSource: 0,
-		values.QualRecSiteDisplayLabelStrip:   70,
+		values.QualRecSiteProjQualVsScan:    0,
+		values.QualRecSiteExistsSortSplit:   4,
+		values.QualRecSiteDisplayLabelStrip: 70,
 	},
 }
 
@@ -576,12 +489,8 @@ var qualifierRecoveryFloors = values.QualifierRecoveryFloors{
 //   - recursiveRemap: values.RecordQualifierRecovery is not called with this site
 //     anywhere in non-test sources; query.recursiveRemapValues is a retired
 //     compatibility no-op.
-//   - projScopeClassify: projScopeAlias's last-dot fallback cannot be reached,
-//     because values.AsFieldValue admits a *fieldValue only when its Child is a
-//     *quantifiedObjectValue, so the CARRIED branch above it always answers.
 var qualifierRecoveryRetiredSplit = func() (r [6]bool) {
 	r[values.QualRecSiteRecursiveRemap] = true
-	r[values.QualRecSiteProjScopeClassify] = true
 	return r
 }()
 
@@ -607,6 +516,10 @@ func assertQualifierRecoveryCensus(w io.Writer) bool {
 		&values.QualifierRecoveryExpectations{
 			Floors:       floors,
 			RetiredSplit: qualifierRecoveryRetiredSplit,
+			RetiredCalls: [6]bool{
+				values.QualRecSiteDerivedUnnestSource: true,
+				values.QualRecSiteProjScopeClassify:   true,
+			},
 		},
 		"sqldriver real-FDB corpus")
 }
@@ -4320,7 +4233,7 @@ func TestFDB_CastAndSubstring(t *testing.T) {
 	expectRejectionOrCascadesError(t, errIf, "Unsupported operator IF")
 
 	// Java conformance: CAST(float AS INT) rounds (not
-	// truncates) using `Math.round` semantics (floor(x + 0.5)). Previously
+	// truncates) using `Math.round` semantics (nearest integer, ties toward +infinity). Previously
 	// Go used `int64(n)` which truncates toward zero and silently wraps
 	// on overflow. Matches Java CastValue.DOUBLE_TO_LONG.
 	var rounded int64
@@ -4364,20 +4277,11 @@ func TestFDB_CastAndSubstring(t *testing.T) {
 	}
 	g.Expect(errCast).To(gomega.HaveOccurred(), "CAST('t' AS BOOLEAN) must error (Java rejects 't', only 'true'/'false'/'0'/'1')")
 
-	// Java CastValue range-checks the rounded value against target type
-	// limits. Go used to silently wrap via int64() on overflow. Any float
-	// that can't fit an int64 (> MaxInt64 or <  MinInt64) must now error.
-	rowsOverflow, errOF := db.QueryContext(ctx, `SELECT CAST(1e20 AS BIGINT) FROM Item WHERE id = 1`)
-	if errOF == nil && rowsOverflow != nil {
-		defer rowsOverflow.Close()
-		if rowsOverflow.Next() {
-			var x int64
-			errOF = rowsOverflow.Scan(&x)
-		} else {
-			errOF = rowsOverflow.Err()
-		}
-	}
-	g.Expect(errOF).To(gomega.HaveOccurred(), "CAST(1e20 AS BIGINT) must error on overflow, not silently wrap")
+	// Java Math.round(double) saturates to LONG bounds before CAST returns.
+	// Scan into any to ensure float64(2^63) cannot masquerade as Long.MAX_VALUE.
+	var saturated any
+	g.Expect(db.QueryRowContext(ctx, `SELECT CAST(1e20 AS BIGINT) FROM Item WHERE id = 1`).Scan(&saturated)).To(gomega.Succeed())
+	g.Expect(saturated).To(gomega.Equal(int64(9223372036854775807)))
 
 	// ROUND is a Go-only math scalar extension (RFC-087). A non-coercible
 	// decimals arg degrades to SQL NULL rather than erroring: NULL decimals
@@ -7156,7 +7060,7 @@ func TestFDB_NullCompareInCTEAndBetween(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO T (id, val) VALUES (2, 100)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// NULL > x in a CTE WHERE (evalPredicateOnMapExpr path) should exclude the row.
+	// NULL > x in a CTE WHERE should exclude the row.
 	var cnt int64
 	g.Expect(db.QueryRowContext(ctx,
 		`WITH c AS (SELECT id, val FROM T) SELECT COUNT(*) FROM c WHERE val > 50`).Scan(&cnt)).To(gomega.Succeed())

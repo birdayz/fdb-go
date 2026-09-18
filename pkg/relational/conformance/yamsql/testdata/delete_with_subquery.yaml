@@ -13,7 +13,6 @@ tests:
   - query: >
       DELETE FROM orders
       WHERE EXISTS (SELECT 1 FROM returns r WHERE r.order_id = orders.id)
-    rows: []
   - query: SELECT id, total FROM orders ORDER BY id
     rows:
       - [2, 200]

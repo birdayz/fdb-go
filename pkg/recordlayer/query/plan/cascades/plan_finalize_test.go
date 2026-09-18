@@ -372,9 +372,13 @@ var specimens = map[string]specimen{
 	"RecordQueryFirstOrDefaultPlan": {
 		build: func(_ *testing.T) (plans.RecordQueryPlan, map[string]*values.RecordConstructorValue) {
 			child, cs := sentinelChild()
-			def := sentinel()
+			defaultSentinel := sentinel()
+			// Match the VALUES output row while keeping the nested sentinel
+			// reachable only through the defaultValue field being tested.
+			def := mustFinalizeConstruct(values.ProjectionResultValue(
+				[]values.Value{defaultSentinel}, nil))
 			return mustFinalizeConstruct(plans.NewRecordQueryFirstOrDefaultPlan(child, def)),
-				map[string]*values.RecordConstructorValue{"innerQ": cs, "defaultValue": def}
+				map[string]*values.RecordConstructorValue{"innerQ": cs, "defaultValue": defaultSentinel}
 		},
 	},
 

@@ -42,7 +42,6 @@ tests:
 
   # Cancel pending orders
   - query: UPDATE orders SET status = 'cancelled' WHERE status = 'pending'
-    rows: []
   - query: SELECT id, status FROM orders WHERE customer_id = 1 ORDER BY id
     rows:
       - [10, "shipped"]

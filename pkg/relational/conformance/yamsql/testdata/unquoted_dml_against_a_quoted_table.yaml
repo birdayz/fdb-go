@@ -172,14 +172,13 @@ tests:
   - query: DELETE FROM "Customer" WHERE id IN (SELECT id FROM "Customer" WHERE id = 9)
     error: "0AF00"
 
-  # A BAD TABLE INSIDE A DML EXISTS IS 0AF00, not 42F01, and that is the
-  # unsupported-shape check answering rather than any table validation. An
-  # earlier version of this comment claimed the arm was reachable only through
-  # validateScanTables' subquery walk and would succeed without it -- measured
-  # false, it is 0AF00 with the walk and without it. EXISTS IS a supported DML
-  # predicate shape when its body builds; what fails here is the body.
+  # EXISTS is supported in DML; its absent source is UNDEFINED_TABLE, as in
+  # SELECT. The bound producer now preserves that classification rather than
+  # losing construction's error in the legacy text fallback (0AF00).
+  # conformance/bound_exists_source_conformance_test.go checks this exact SQL
+  # against Java, plus SELECT/UPDATE and valid-source controls for all three.
   - query: DELETE FROM "Customer" WHERE EXISTS (SELECT 1 FROM nosuchtable)
-    error: "0AF00"
+    error: "42F01"
 
   # The store is untouched by any of the rejected statements above.
   - query: SELECT id, name FROM "Customer" ORDER BY id

@@ -305,15 +305,41 @@ func TestFDB_CorrelatedScalarCardinality_AllConsumers(t *testing.T) {
 			"SELECT (SELECT SUM(c.val) FROM child c WHERE c.parent_id = p.id GROUP BY c.grp LIMIT 2) FROM parent p",
 		} {
 			err := expectError(t, db, query)
-			requireSQLSTATE(t, err, api.ErrCodeUnsupportedQuery)
+			requireSQLSTATE(t, err, api.ErrCodeCardinalityViolation)
 		}
 	})
 
-	t.Run("group_key_only_having_typed_loud", func(t *testing.T) {
-		err := expectError(t, db,
+	t.Run("group_key_only_having_returns_the_one_surviving_group", func(t *testing.T) {
+		var got string
+		if err := db.QueryRowContext(ctx,
 			"SELECT (SELECT c.grp FROM child c WHERE c.parent_id = p.id "+
-				"GROUP BY c.grp HAVING c.grp = 'a') FROM parent p")
-		requireSQLSTATE(t, err, api.ErrCodeUnsupportedQuery)
+				"GROUP BY c.grp HAVING c.grp = 'a') FROM parent p WHERE p.id = 1").Scan(&got); err != nil {
+			t.Fatalf("group-key-only HAVING scalar: %v", err)
+		}
+		if got != "a" {
+			t.Fatalf("group-key-only HAVING scalar = %q, want a", got)
+		}
+	})
+
+	t.Run("distinct_cardinality_is_post_deduplication", func(t *testing.T) {
+		const query = "SELECT (SELECT DISTINCT c.grp FROM child c WHERE c.parent_id = p.id) FROM parent p WHERE p.id = ?"
+		// Parent 4 has two rows in the same group: DISTINCT must run before
+		// cardinality enforcement. Parent 1 has two distinct groups instead.
+		for _, tc := range []struct {
+			id   int
+			want sql.NullString
+		}{
+			{4, sql.NullString{String: "a", Valid: true}},
+			{2, sql.NullString{String: "a", Valid: true}},
+			{3, sql.NullString{}},
+		} {
+			var got sql.NullString
+			if err := db.QueryRowContext(ctx, query, tc.id).Scan(&got); err != nil || got != tc.want {
+				t.Fatalf("DISTINCT scalar parent %d = %+v, %v; want %+v", tc.id, got, err, tc.want)
+			}
+		}
+		err := expectError(t, db, "SELECT (SELECT DISTINCT c.grp FROM child c WHERE c.parent_id = p.id) FROM parent p WHERE p.id = 1")
+		requireSQLSTATE(t, err, api.ErrCodeCardinalityViolation)
 	})
 
 	t.Run("bound_limit_preserves_guard", func(t *testing.T) {
@@ -342,7 +368,7 @@ func TestFDB_CorrelatedScalarCardinality_AllConsumers(t *testing.T) {
 			}
 			_ = rows.Close()
 		}
-		requireSQLSTATE(t, boundErr, api.ErrCodeUnsupportedQuery)
+		requireSQLSTATE(t, boundErr, api.ErrCodeCardinalityViolation)
 	})
 
 	t.Run("dml_correlated_scalar_stays_typed_loud", func(t *testing.T) {

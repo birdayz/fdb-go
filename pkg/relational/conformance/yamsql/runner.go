@@ -2,12 +2,14 @@ package yamsql
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
 
 	"fdb.dev/pkg/relational/api"
+	"gopkg.in/yaml.v3"
 )
 
 // RunConfig controls scenario execution.
@@ -27,13 +29,15 @@ type RunConfig struct {
 
 // Result is the outcome of running one scenario.
 type Result struct {
-	Name       string
-	TestsRun   int
-	TestsPass  int
-	TestsFail  int
-	TestsSkip  int
-	Failures   []Failure
-	SetupError error // non-nil if schema/setup failed before any test ran
+	Name           string
+	TestsRun       int
+	TestsPass      int
+	TestsFail      int
+	TestsSkip      int
+	Failures       []Failure
+	outcomes       []bool
+	scenarioDigest [32]byte
+	SetupError     error // non-nil if schema/setup failed before any test ran
 }
 
 // Failure describes one mismatched test.
@@ -45,6 +49,9 @@ type Failure struct {
 
 // Run executes the scenario against cfg.DB and returns per-test results.
 func Run(ctx context.Context, s *Scenario, cfg RunConfig) (*Result, error) {
+	if err := s.validate(); err != nil {
+		return nil, err
+	}
 	if cfg.DB == nil {
 		return nil, errors.New("RunConfig.DB is required")
 	}
@@ -59,7 +66,11 @@ func Run(ctx context.Context, s *Scenario, cfg RunConfig) (*Result, error) {
 		schema = "conf"
 	}
 
-	r := &Result{Name: s.Name}
+	digest, err := digestScenario(s)
+	if err != nil {
+		return nil, err
+	}
+	r := &Result{Name: s.Name, scenarioDigest: digest}
 
 	if err := setup(ctx, cfg.DB, cfg.DBPath, schema, cfg.TemplateName, s); err != nil {
 		r.SetupError = err
@@ -70,6 +81,7 @@ func Run(ctx context.Context, s *Scenario, cfg RunConfig) (*Result, error) {
 	for i, t := range s.Tests {
 		r.TestsRun++
 		msg := runTest(ctx, cfg.DB, &t)
+		r.outcomes = append(r.outcomes, msg == "")
 		if msg == "" {
 			r.TestsPass++
 			continue
@@ -117,16 +129,20 @@ func teardown(ctx context.Context, db *sql.DB, dbPath, schema, tmpl string) {
 }
 
 func runTest(ctx context.Context, db *sql.DB, t *Test) string {
+	args, err := decodeScalars(t.Args)
+	if err != nil {
+		return fmt.Sprintf("args: %v", err)
+	}
 	if t.EffectiveErrorCode() != "" {
-		return runErrorTest(ctx, db, t)
+		return runErrorTest(ctx, db, t, args...)
 	}
 	// Non-query statements (UPDATE/DELETE/INSERT) go through Exec and
 	// must not be sent to Query — the driver rejects them there. They
 	// are sequenced steps that mutate state for a subsequent SELECT;
-	// the scenario declares them with rows: absent or [] and the runner
+	// the scenario declares them with rows: absent and the runner
 	// asserts only that they succeed.
 	if !IsQuery(t.Query) {
-		res, err := db.ExecContext(ctx, t.Query)
+		res, err := db.ExecContext(ctx, t.Query, args...)
 		if err != nil {
 			return fmt.Sprintf("exec error: %v", err)
 		}
@@ -144,7 +160,7 @@ func runTest(ctx context.Context, db *sql.DB, t *Test) string {
 		}
 		return ""
 	}
-	rows, err := db.QueryContext(ctx, t.Query)
+	rows, err := db.QueryContext(ctx, t.Query, args...)
 	if err != nil {
 		return fmt.Sprintf("query error: %v", err)
 	}
@@ -160,21 +176,38 @@ func runTest(ctx context.Context, db *sql.DB, t *Test) string {
 		}
 	}
 
+	if t.ColumnTypes != nil {
+		types, err := rows.ColumnTypes()
+		if err != nil {
+			return fmt.Sprintf("column types: %v", err)
+		}
+		names := make([]string, len(types))
+		for i, typ := range types {
+			names[i] = typ.DatabaseTypeName()
+		}
+		if d := diffColumns(t.ColumnTypes, names); d != "" {
+			return "column types: " + d
+		}
+	}
 	actual, err := scanAll(rows)
 	if err != nil {
 		return fmt.Sprintf("scan error: %v", err)
 	}
-	if d := diffRows(t.Rows, actual, t.Unordered); d != "" {
+	if t.ExactRows != nil {
+		if d := diffExactRows(*t.ExactRows, actual, t.Unordered); d != "" {
+			return d
+		}
+	} else if d := diffRows(t.Rows, actual, t.Unordered); d != "" {
 		return d
 	}
 	if t.PlanContains != "" || t.PlanNotContains != "" {
-		return checkPlanAssertions(ctx, db, t.Query, t.PlanContains, t.PlanNotContains)
+		return checkPlanAssertions(ctx, db, t.Query, t.PlanContains, t.PlanNotContains, args...)
 	}
 	return ""
 }
 
-func checkPlanAssertions(ctx context.Context, db *sql.DB, query, contains, notContains string) string {
-	rows, err := db.QueryContext(ctx, "EXPLAIN "+query)
+func checkPlanAssertions(ctx context.Context, db *sql.DB, query, contains, notContains string, args ...any) string {
+	rows, err := db.QueryContext(ctx, "EXPLAIN "+query, args...)
 	if err != nil {
 		return fmt.Sprintf("EXPLAIN error: %v", err)
 	}
@@ -196,10 +229,10 @@ func checkPlanAssertions(ctx context.Context, db *sql.DB, query, contains, notCo
 	return ""
 }
 
-func runErrorTest(ctx context.Context, db *sql.DB, t *Test) string {
+func runErrorTest(ctx context.Context, db *sql.DB, t *Test, args ...any) string {
 	var err error
 	if IsQuery(t.Query) {
-		rows, qerr := db.QueryContext(ctx, t.Query)
+		rows, qerr := db.QueryContext(ctx, t.Query, args...)
 		if qerr == nil {
 			// SELECT errors may surface only during row iteration (e.g.
 			// div/0 in a projection), not at query-prepare time.
@@ -212,7 +245,7 @@ func runErrorTest(ctx context.Context, db *sql.DB, t *Test) string {
 			err = qerr
 		}
 	} else {
-		_, err = db.ExecContext(ctx, t.Query)
+		_, err = db.ExecContext(ctx, t.Query, args...)
 		if err == nil {
 			return fmt.Sprintf("expected error %s, got nil", t.EffectiveErrorCode())
 		}
@@ -225,6 +258,9 @@ func runErrorTest(ctx context.Context, db *sql.DB, t *Test) string {
 	wantCode := strings.TrimSpace(t.EffectiveErrorCode())
 	if gotCode != wantCode {
 		return fmt.Sprintf("expected error code %q, got %q (msg: %s)", wantCode, gotCode, apiErr.Message)
+	}
+	if t.ErrorMessage != "" && apiErr.Message != t.ErrorMessage {
+		return fmt.Sprintf("expected error message %q, got %q", t.ErrorMessage, apiErr.Message)
 	}
 	return ""
 }
@@ -291,4 +327,28 @@ func diffColumns(want, got []string) string {
 		}
 	}
 	return ""
+}
+
+func digestScenario(s *Scenario) ([32]byte, error) {
+	data, err := yaml.Marshal(s)
+	if err != nil {
+		return [32]byte{}, fmt.Errorf("scenario digest: %w", err)
+	}
+	return sha256.Sum256(data), nil
+}
+
+// successfulStatements verifies live execution against the exact scenario and
+// returns a fresh per-statement success vector. Aggregate counters are not proof.
+func (r *Result) successfulStatements(s *Scenario) ([]bool, error) {
+	if r == nil || s == nil || len(s.Tests) == 0 {
+		return nil, fmt.Errorf("non-empty scenario and result required")
+	}
+	digest, err := digestScenario(s)
+	if err != nil {
+		return nil, err
+	}
+	if r.SetupError != nil || digest != r.scenarioDigest || len(r.outcomes) != len(s.Tests) {
+		return nil, fmt.Errorf("incomplete or mismatched scenario execution")
+	}
+	return append([]bool(nil), r.outcomes...), nil
 }

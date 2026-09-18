@@ -418,3 +418,19 @@ func BenchmarkExplain_DeepTree(b *testing.B) {
 		_ = tree.Explain("")
 	}
 }
+
+func TestScanTablePathOwnership(t *testing.T) {
+	t.Parallel()
+	path := []string{"q.q"}
+	scan := NewScan("q.q", "", path...)
+	path[0] = "corrupted"
+	if len(scan.TablePath) != 1 || scan.TablePath[0] != "q.q" {
+		t.Fatalf("scan retained caller's mutable path: %v", scan.TablePath)
+	}
+	if NewScan("T", "").TablePath != nil {
+		t.Fatal("legacy constructor must retain nil path")
+	}
+	if NewScan("T", "", []string{}...).TablePath == nil {
+		t.Fatal("explicitly empty path collapsed into legacy nil")
+	}
+}

@@ -9,7 +9,6 @@ setup:
 tests:
   # DELETE with equality
   - query: DELETE FROM logs WHERE level = 'ERROR'
-    rows: []
   - query: SELECT id FROM logs ORDER BY id
     rows:
       - [1]
@@ -18,7 +17,6 @@ tests:
 
   # DELETE with range
   - query: DELETE FROM logs WHERE ts > 300
-    rows: []
   - query: SELECT id FROM logs ORDER BY id
     rows:
       - [1]
@@ -26,7 +24,6 @@ tests:
 
   # DELETE with IN
   - query: DELETE FROM logs WHERE id IN (1)
-    rows: []
   - query: SELECT COUNT(*) FROM logs
     rows:
       - [1]

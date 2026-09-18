@@ -1,15 +1,17 @@
 package query
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/query/logical"
 )
 
 // A CTE column list renames the BODY's output columns, not the statement's.
-// `LogicalCTE.ColumnAliases` says so, `exactCTEDefinitionRecordType` applies it
+// `LogicalCTE.ColumnAliases()` says so, `exactCTEDefinitionRecordType` applies it
 // that way, and the translator builds a Project over the BODY from it — so a
 // derivation that renames the MAIN query's row instead disagrees with every
 // other consumer of the same field.
@@ -74,13 +76,11 @@ func TestCTEColumnAliasesRenameTheBodyNotTheStatement(t *testing.T) {
 		t.Parallel()
 		// WITH c(x, w) AS (VALUES (a, b)) SELECT x AS y FROM c
 		cte := &logical.LogicalCTE{
-			Name:          "C",
-			ColumnAliases: []string{"X", "W"},
-			Body:          cteColumnAliasBodyFixture(t),
 			Main: positionalProject(
 				logical.NewScan("C", "C"),
 				[]string{"X"}, []string{"Y"}, []int{0},
 			),
+			CTEProducer: logical.NewCTE("C", cteColumnAliasBodyFixture(t), nil, false, logical.CTEColumns([]string{"X", "W"}...)).CTEProducer,
 		}
 		typ, err := ExactLogicalResultType(cte, nil)
 		if err != nil {
@@ -108,13 +108,11 @@ func TestCTEColumnAliasesRenameTheBodyNotTheStatement(t *testing.T) {
 		t.Parallel()
 		// WITH c(x, w) AS (VALUES (a, b)) SELECT x FROM c
 		cte := &logical.LogicalCTE{
-			Name:          "C",
-			ColumnAliases: []string{"X", "W"},
-			Body:          cteColumnAliasBodyFixture(t),
 			Main: positionalProject(
 				logical.NewScan("C", "C"),
 				[]string{"X"}, []string{""}, []int{0},
 			),
+			CTEProducer: logical.NewCTE("C", cteColumnAliasBodyFixture(t), nil, false, logical.CTEColumns([]string{"X", "W"}...)).CTEProducer,
 		}
 		typ, err := ExactLogicalResultType(cte, nil)
 		if err != nil {
@@ -137,10 +135,8 @@ func TestCTEColumnAliasesRenameTheBodyNotTheStatement(t *testing.T) {
 		// fails if the aliases are applied to the statement rather than the
 		// binding. A plain scan of the CTE reports the bound row directly.
 		cte := &logical.LogicalCTE{
-			Name:          "C",
-			ColumnAliases: []string{"X", "W"},
-			Body:          cteColumnAliasBodyFixture(t),
-			Main:          logical.NewScan("C", "C"),
+			Main:        logical.NewScan("C", "C"),
+			CTEProducer: logical.NewCTE("C", cteColumnAliasBodyFixture(t), nil, false, logical.CTEColumns([]string{"X", "W"}...)).CTEProducer,
 		}
 		typ, err := ExactLogicalResultType(cte, nil)
 		if err != nil {
@@ -170,13 +166,73 @@ func TestCTEColumnAliasesRenameTheBodyNotTheStatement(t *testing.T) {
 		// Three aliases over a two-column body is the real arity error, and it
 		// must be reported against the BODY — the row the aliases actually name.
 		cte := &logical.LogicalCTE{
-			Name:          "C",
-			ColumnAliases: []string{"X", "W", "Z"},
-			Body:          cteColumnAliasBodyFixture(t),
-			Main:          logical.NewScan("C", "C"),
+			Main:        logical.NewScan("C", "C"),
+			CTEProducer: logical.NewCTE("C", cteColumnAliasBodyFixture(t), nil, false, logical.CTEColumns([]string{"X", "W", "Z"}...)).CTEProducer,
 		}
 		if typ, err := ExactLogicalResultType(cte, nil); err == nil {
 			t.Fatalf("three aliases over a two-column body typed as %v, want an error", typ)
 		}
 	})
+}
+
+// A projection-less Main scan under a nested WITH still has an exact output
+// row. The outer column list must rename that row, not disappear because the
+// structural projection walk cannot see through the local CTE binding.
+func TestTranslateCTEColumnAliasesOverNestedStar(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		aliases []string
+		wantErr bool
+	}{
+		{name: "rename", aliases: []string{"OUT_A", "OUT_B"}},
+		{name: "too_few", aliases: []string{"OUT_A"}, wantErr: true},
+		{name: "too_many", aliases: []string{"OUT_A", "OUT_B", "OUT_C"}, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			innerBody := positionalProject(cteColumnAliasBodyFixture(t), []string{"A", "B"}, []string{"X", "Y"}, []int{0, 1})
+			inner := logical.NewCTE("C1", innerBody, logical.NewScan("C1", "C1"), false)
+			outer := logical.NewCTE("C2", inner, logical.NewScan("C2", "C2"), false)
+			outer.CTEProducer = logical.NewCTE(outer.Name(), outer.Body(), nil, outer.Recursive(), logical.CTEColumns(tc.aliases...), logical.CTETraversal(outer.TraversalOrder())).CTEProducer
+			ref, _, err := TranslateToCascadesWithError(outer, nil)
+			if tc.wantErr {
+				var sqlErr *api.Error
+				if ref != nil || !errors.As(err, &sqlErr) || sqlErr.Code != api.ErrCodeInvalidColumnReference {
+					t.Fatalf("mismatched column list translated as %v, err %v; want 42F10", ref, err)
+				}
+				return
+			}
+			if err != nil || ref == nil {
+				t.Fatalf("translate nested CTE: %v", err)
+			}
+			row, ok := ref.Members()[0].GetResultValue().Type().(*values.RecordType)
+			if !ok || len(row.Fields) != 2 {
+				t.Fatalf("translated row = %v; want two fields", row)
+			}
+			for i, wantType := range []values.Type{values.NotNullInt, values.NotNullLong} {
+				if row.Fields[i].Name != tc.aliases[i] || !row.Fields[i].FieldType.Equals(wantType) {
+					t.Errorf("slot %d = %v; want %s %v", i, row.Fields[i], tc.aliases[i], wantType)
+				}
+			}
+		})
+	}
+}
+
+func TestTranslateCTEColumnAliasesFollowNestedMainRow(t *testing.T) {
+	t.Parallel()
+	body := positionalProject(cteColumnAliasBodyFixture(t), []string{"A", "B"}, []string{"X", "Y"}, []int{0, 1})
+	narrow := positionalProject(logical.NewScan("C1", "C1"), []string{"Y"}, []string{"ONLY_Y"}, []int{1})
+	main := logical.NewCTE("C3", narrow, logical.NewScan("C3", "C3"), false)
+	inner := logical.NewCTE("C1", body, main, false)
+	outer := logical.NewCTE("C2", inner, logical.NewScan("C2", "C2"), false)
+	outer.CTEProducer = logical.NewCTE(outer.Name(), outer.Body(), nil, outer.Recursive(), logical.CTEColumns([]string{"OUT_B"}...), logical.CTETraversal(outer.TraversalOrder())).CTEProducer
+	ref, _, err := TranslateToCascadesWithError(outer, nil)
+	if err != nil || ref == nil {
+		t.Fatalf("translate nested Main: %v", err)
+	}
+	row, ok := ref.Members()[0].GetResultValue().Type().(*values.RecordType)
+	if !ok || len(row.Fields) != 1 || row.Fields[0].Name != "OUT_B" || !row.Fields[0].FieldType.Equals(values.NotNullLong) {
+		t.Fatalf("translated row = %v; want Main's one LONG slot, renamed OUT_B", row)
+	}
 }

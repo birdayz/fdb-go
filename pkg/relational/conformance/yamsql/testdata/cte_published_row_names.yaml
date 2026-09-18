@@ -123,12 +123,12 @@ tests:
       - [1]
       - [1]
   - query: WITH u AS (SELECT ga.g, c.id AS g, c.w FROM ga, c) SELECT u.w, COUNT(*) FROM u GROUP BY u.w ORDER BY u.w
-    columns: ["W", "COUNT(*)"]
+    columns: ["W", "_1"]
     rows:
       - [1, 3]
       - [2, 3]
   - query: SELECT u.w, COUNT(*) FROM (SELECT ga.g, c.id AS g, c.w FROM ga, c) u GROUP BY u.w ORDER BY u.w
-    columns: ["W", "COUNT(*)"]
+    columns: ["W", "_1"]
     rows:
       - [1, 3]
       - [2, 3]
@@ -145,14 +145,14 @@ tests:
     rows:
       - [9]
   - query: WITH u AS (SELECT ga.id, c.id, c.w FROM ga, c) SELECT u.w, COUNT(*) FROM u GROUP BY u.w ORDER BY u.w
-    columns: ["W", "COUNT(*)"]
+    columns: ["W", "_1"]
     rows:
       - [1, 3]
       - [2, 3]
   # The aliased twin, which never failed: the control that the shapes above
   # are about the repeated leaf and nothing else.
   - query: WITH u AS (SELECT ga.g AS g1, c.id AS g, c.w FROM ga, c) SELECT u.w, COUNT(*) FROM u GROUP BY u.w ORDER BY u.w
-    columns: ["W", "COUNT(*)"]
+    columns: ["W", "_1"]
     rows:
       - [1, 3]
       - [2, 3]
@@ -215,12 +215,12 @@ tests:
       - [1]
       - [1]
   - query: SELECT u.w, COUNT(*) FROM (SELECT ga.g, c.id AS g, c.w FROM ga, c UNION ALL SELECT ga.g, c.id AS g, c.w FROM ga, c) u GROUP BY u.w ORDER BY u.w
-    columns: ["W", "COUNT(*)"]
+    columns: ["W", "_1"]
     rows:
       - [1, 6]
       - [2, 6]
   - query: WITH u AS (SELECT ga.g, c.id AS g, c.w FROM ga, c UNION ALL SELECT ga.g, c.id AS g, c.w FROM ga, c) SELECT u.w, COUNT(*) FROM u GROUP BY u.w ORDER BY u.w
-    columns: ["W", "COUNT(*)"]
+    columns: ["W", "_1"]
     rows:
       - [1, 6]
       - [2, 6]
@@ -280,7 +280,7 @@ tests:
       - [1]
       - [1]
   - query: SELECT d.w, COUNT(*) FROM (SELECT * FROM ga, c UNION ALL SELECT * FROM ga, c) d GROUP BY d.w ORDER BY d.w
-    columns: ["W", "COUNT(*)"]
+    columns: ["W", "_1"]
     rows:
       - [1, 6]
       - [2, 6]

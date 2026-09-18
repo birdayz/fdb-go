@@ -310,13 +310,20 @@ const (
 // front. Any caller building a remote-fetch cursor on top of this inherits the
 // same obligation.
 func (tx *Transaction) GetMappedRange(ctx context.Context, begin, end, mapper []byte, limit int, reverse bool) ([]MappedKeyValue, bool, error) {
-	// C++ :1786 — the special key space is not mapped-readable. Checked first,
-	// before even the read version is taken.
+	ctx, cancel := tx.opContext(ctx)
+	defer cancel()
+	// ThreadSafeTransaction checks deferredError before RYW's special-key
+	// rejection, which still precedes resetPromise (C++ 7.3.77).
+	if err := tx.readOperation(ctx).entryErr; err != nil {
+		return nil, false, err
+	}
+	// C++ :1786 — the special key space is not mapped-readable. Checked after
+	// deferred errors, before lifetime errors or taking the read version.
 	if isSpecialKey(begin) && isSpecialKey(end) {
 		return nil, false, &wire.FDBError{Code: ErrClientInvalidOperation}
 	}
 	if err := tx.ensureReadVersion(ctx); err != nil {
-		return nil, false, tx.trackReadError(err)
+		return nil, false, tx.trackReadOperation(ctx, err)
 	}
 	// C++ :1801 — key_outside_legal_range.
 	maxKey := tx.maxReadKey()
@@ -346,7 +353,7 @@ func (tx *Transaction) GetMappedRange(ctx context.Context, begin, end, mapper []
 
 	rows, more, err := tx.getMappedRangeImpl(ctx, begin, end, mapper, limit, reverse)
 	if err != nil {
-		return nil, false, tx.trackReadError(err)
+		return nil, false, tx.trackReadOperation(ctx, err)
 	}
 
 	// C++ addConflictRangeAndMustUnmodified (:1163-1192): the read went out at

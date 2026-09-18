@@ -171,18 +171,23 @@ func c3FindExplode(ref *expressions.Reference, seen map[*expressions.Reference]b
 // (unnestBakedRootCollection, translateGatheredUnnestCluster).
 func TestEnclosedUnnestDeclines(t *testing.T) {
 	t.Parallel()
+	md := demoMetaData(t)
+	bound := func() *logical.LogicalUnnest {
+		u, _ := rawBoundProtoUnnest(t, md, "Order", "O", []string{"o", "TAGS"}, "x", "", "TAGS")
+		return u
+	}
 
 	shapes := map[string]func() *logical.LogicalJoin{
 		"multi-source outer": func() *logical.LogicalJoin {
 			outer := inner(scan("Customer", "c"), scan("Order", "o"))
-			return logical.NewJoin(outer, &logical.LogicalUnnest{Segments: []string{"o", "TAGS"}, Alias: "x"}, logical.JoinInner, "")
+			return logical.NewJoin(outer, bound(), logical.JoinInner, "")
 		},
 		"full-outer box outer": func() *logical.LogicalJoin {
 			outer := logical.NewJoin(scan("Customer", "c"), scan("Order", "o"), logical.JoinFull, "")
-			return logical.NewJoin(outer, &logical.LogicalUnnest{Segments: []string{"o", "TAGS"}, Alias: "x"}, logical.JoinInner, "")
+			return logical.NewJoin(outer, bound(), logical.JoinInner, "")
 		},
 		"single-source outer": func() *logical.LogicalJoin {
-			return logical.NewJoin(scan("Order", "o"), &logical.LogicalUnnest{Segments: []string{"o", "TAGS"}, Alias: "x"}, logical.JoinInner, "")
+			return logical.NewJoin(scan("Order", "o"), bound(), logical.JoinInner, "")
 		},
 	}
 	for name, mk := range shapes {

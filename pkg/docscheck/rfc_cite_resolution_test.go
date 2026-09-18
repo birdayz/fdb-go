@@ -12,6 +12,10 @@ import (
 
 const rfc238Path = "rfcs/238-a-qualifier-is-structure-not-punctuation.md"
 
+// Numeric cites remaining after §7d replaced drifting lines with symbol names.
+// Both resolution and weak-cite classification must see this population.
+const rfc238NumericCiteFloor = 31
+
 // A CITE NAMING A BASENAME THE TREE HOLDS THREE OF IS NOT A CITE, and this is
 // the half of a cite gate that is worth building. RFC-238 §7d measures the
 // other half -- "does the cited line look like code" -- and rejects it: most
@@ -53,7 +57,7 @@ func TestRFC238CitesResolveUniquely(t *testing.T) {
 	index := goFileSuffixIndex(t, root)
 
 	cites := citesIn(t, filepath.Join(root, rfc238Path))
-	if len(cites) < 40 {
+	if len(cites) < rfc238NumericCiteFloor {
 		t.Fatalf("only %d distinct cites parsed out of %s; the scan lost the document "+
 			"(check sourceTreeRoot/runfiles staging) rather than the document losing its cites — "+
 			"a resolution test over an empty population passes for the wrong reason", len(cites), rfc238Path)
@@ -140,13 +144,7 @@ func TestRFC238WeakCitesAreTheOnesSection7dNames(t *testing.T) {
 	root := sourceTreeRoot(t)
 	index := goFileSuffixIndex(t, root)
 
-	want := []string{
-		"cascades_generator.go:2830",
-		"colref.go:95",
-		"derived_unnest.go:250",
-		"full_unordered_scan.go:110-118",
-		"positional_row.go:7",
-	}
+	var want []string
 
 	var got []string
 	classified := 0
@@ -174,7 +172,7 @@ func TestRFC238WeakCitesAreTheOnesSection7dNames(t *testing.T) {
 			got = append(got, c.text)
 		}
 	}
-	if classified < 40 {
+	if classified < rfc238NumericCiteFloor {
 		t.Fatalf("only %d cites were classified; the population collapsed and an empty "+
 			"weak set would otherwise read as agreement with §7d", classified)
 	}

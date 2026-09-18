@@ -168,21 +168,14 @@ func TestFDB_BuriedChainedRotation(t *testing.T) {
 		})
 
 	// SELECT * over the buried chain: STRANDED before the rotation ("best
-	// expression is not a physical plan"); now plans and executes. Column order
-	// follows the ROTATED form (trailing legs before the elements — the same
-	// element-last convention the single-link rotation established), pinned via
-	// the label list AND by the rows themselves.
+	// expression is not a physical plan"); now plans and executes. SQL publication
+	// remains in FROM order even though physical planning rotates the legs: T4,
+	// X's visible record fields, scalar Y, then T4C.
 	//
-	// This is the ONE shape in this suite whose output names REPEAT — the label
-	// list is [ID SARR SCARR SUB ID SARR SCARR SUB X Y], T4's four columns twice
-	// (T4 and the trailing T4C). Under the name-keyed rendering these rows could
-	// not be asserted at all: the projection to a name->value map collapses each
-	// repeated name last-wins, so four of the ten slots vanished and two rows
-	// differing ONLY in their first leg rendered identically. A row COUNT was all
-	// that survived, and a count cannot tell a correctly bound leg pair from a
-	// swapped one. The slot-ordered rendering keeps all ten, so the binding of
-	// BOTH legs is now asserted: every row's first four slots are T4's and its
-	// next four are T4C's, and a rotation that crossed them would show up here.
+	// This shape repeats T4's four labels and also repeats SUB through X. The
+	// slot-ordered rendering keeps all thirteen positions (with deterministic
+	// suffixes), so both table legs and every expanded element field are asserted;
+	// a name->value map would collapse the repeats and hide a crossed binding.
 	t.Run("star_now_plans", func(t *testing.T) {
 		q := `SELECT * ` + buried
 		plan, perr := embedded.PlanRecordQueryWithMetadata(q, md, nil)
@@ -190,17 +183,20 @@ func TestFDB_BuriedChainedRotation(t *testing.T) {
 			t.Fatalf("SELECT * over the buried chain must plan post-rotation: %v", perr)
 		}
 		labels := fmt.Sprintf("%v", embedded.ResultColumnLabelsForPlan(plan, md))
-		if labels != "[ID SARR SCARR SUB ID SARR SCARR SUB X Y]" {
-			t.Fatalf("SELECT * labels = %s (rotated element-last layout expected)", labels)
+		if labels != "[ID SARR SCARR SUB SUB K SUBSTRUCT Y ID SARR SCARR SUB]" {
+			t.Fatalf("SELECT * labels = %s (SQL FROM-order layout expected)", labels)
 		}
 		// T4 rows: 1 (SARR elements SUB{1,7}), 2 (SUB{9}), 11 (SUB{5}). The chain
 		// yields 4 (T4,X,Y) combinations, each crossed with the 3 T4C rows = 12.
 		const t4_1 = `SARR=[SUB:1 SUB:7 K:0 SUBSTRUCT:{DEEP:11 DEEP:12 LEAF:0} SUBSTRUCT:{DEEP:13 LEAF:0}]|SCARR=[]|SUB=999`
 		const t4_2 = `SARR=[SUB:9 K:0 SUBSTRUCT:{DEEP:20 LEAF:0}]|SCARR=[]|SUB=20`
 		const t4_11 = `SARR=[SUB:5 K:0 SUBSTRUCT:{DEEP:11 LEAF:0}]|SCARR=[]|SUB=999`
-		const x1 = `X=SUB:1 SUB:7 K:0 SUBSTRUCT:{DEEP:11 DEEP:12 LEAF:0} SUBSTRUCT:{DEEP:13 LEAF:0}`
-		const x2 = `X=SUB:9 K:0 SUBSTRUCT:{DEEP:20 LEAF:0}`
-		const x11 = `X=SUB:5 K:0 SUBSTRUCT:{DEEP:11 LEAF:0}`
+		const t4c_1 = `SARR_2=[SUB:1 SUB:7 K:0 SUBSTRUCT:{DEEP:11 DEEP:12 LEAF:0} SUBSTRUCT:{DEEP:13 LEAF:0}]|SCARR_2=[]|SUB_3=999`
+		const t4c_2 = `SARR_2=[SUB:9 K:0 SUBSTRUCT:{DEEP:20 LEAF:0}]|SCARR_2=[]|SUB_3=20`
+		const t4c_11 = `SARR_2=[SUB:5 K:0 SUBSTRUCT:{DEEP:11 LEAF:0}]|SCARR_2=[]|SUB_3=999`
+		const x1 = `SUB_2=[1 7]|K=0|SUBSTRUCT=[DEEP:11 DEEP:12 LEAF:0 DEEP:13 LEAF:0]`
+		const x2 = `SUB_2=[9]|K=0|SUBSTRUCT=[DEEP:20 LEAF:0]`
+		const x11 = `SUB_2=[5]|K=0|SUBSTRUCT=[DEEP:11 LEAF:0]`
 		want := []string{}
 		for _, seed := range []struct{ id, cols, x string }{
 			{"1", t4_1, x1}, {"2", t4_2, x2}, {"11", t4_11, x11},
@@ -214,10 +210,10 @@ func TestFDB_BuriedChainedRotation(t *testing.T) {
 			}
 			for _, y := range ys {
 				for _, tc := range []struct{ id, cols string }{
-					{"1", t4_1}, {"2", t4_2}, {"11", t4_11},
+					{"1", t4c_1}, {"2", t4c_2}, {"11", t4c_11},
 				} {
 					want = append(want,
-						"ID="+seed.id+"|"+seed.cols+"|ID="+tc.id+"|"+tc.cols+"|"+seed.x+"|Y="+y)
+						"ID="+seed.id+"|"+seed.cols+"|"+seed.x+"|Y="+y+"|ID_2="+tc.id+"|"+tc.cols)
 				}
 			}
 		}

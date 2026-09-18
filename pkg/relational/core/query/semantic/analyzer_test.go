@@ -2,6 +2,7 @@ package semantic
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"fdb.dev/pkg/relational/core/parser"
@@ -380,5 +381,44 @@ func TestAnalyzer_ExpandStar_SkipsEphemeral(t *testing.T) {
 	// Resolution by NAME still sees the ephemeral column.
 	if _, ok := tbl.LookupColumn(NewUnquoted("__ROW_VERSION")); !ok {
 		t.Fatal("LookupColumn must still resolve the ephemeral column by name")
+	}
+}
+
+func TestColumnNotFoundRetainsReferencePath(t *testing.T) {
+	t.Parallel()
+	for _, names := range [][]string{{"MISSING"}, {"U", "MISSING"}, {"U", "N", "MISSING"}, {"U", "a.b"}} {
+		t.Run(strings.Join(names, "/"), func(t *testing.T) {
+			t.Parallel()
+			a := NewAnalyzer(buildTestCatalog(), false)
+			table, err := a.ResolveTable(ParseQualifiedName("users", false))
+			if err != nil {
+				t.Fatal(err)
+			}
+			scope := NewScope(nil)
+			if err := scope.AddSource(ScopeSource{Alias: NewUnquoted("u"), Table: table}); err != nil {
+				t.Fatal(err)
+			}
+			path := make([]Identifier, len(names))
+			for i, name := range names {
+				path[i] = FromNormalized(name)
+			}
+			for _, source := range []*Scope{scope, nil} {
+				_, _, _, err := a.ResolveColumnRefPath(source, path)
+				var missing *ColumnNotFoundError
+				if !errors.As(err, &missing) {
+					t.Fatalf("resolution = %v, want ColumnNotFoundError", err)
+				}
+				want := strings.Join(names, ".")
+				if missing.Reference() != want || missing.Id.Name() != names[len(names)-1] {
+					t.Fatalf("missing reference = %q, leaf = %q, want %q and %q", missing.Reference(), missing.Id.Name(), want, names[len(names)-1])
+				}
+				first := path[0]
+				path[0] = FromNormalized("CHANGED")
+				if missing.Reference() != want {
+					t.Fatal("error retained a caller-writable path")
+				}
+				path[0] = first
+			}
+		})
 	}
 }

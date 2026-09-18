@@ -59,8 +59,8 @@ func TestFDB_ScalarAggregate_KeepsAlias(t *testing.T) {
 		{"scalar_sum_aliased", "SELECT SUM(a) AS total FROM t", []string{"TOTAL"}, 21},
 		// Control: a GROUPED aggregate already worked (projection carries it).
 		{"grouped_aliased", "SELECT b AS g, MAX(a) AS agg FROM t GROUP BY b WHERE b = 2", nil, 0},
-		// Control: with NO alias the generated expression name is correct.
-		{"scalar_unaliased_keeps_expression_name", "SELECT MAX(a) FROM t", []string{"MAX(A)"}, 9},
+		// Control: with NO alias Java publishes the zero-based positional name.
+		{"scalar_unaliased_uses_positional_name", "SELECT MAX(a) FROM t", []string{"_0"}, 9},
 	} {
 		tc := tc
 		if tc.wantCols == nil {

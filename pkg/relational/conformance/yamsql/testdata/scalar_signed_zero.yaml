@@ -1,0 +1,29 @@
+# Reciprocal strings distinguish -0 from +0 without relying on numeric equality.
+# These scalar functions are Go-only read-side extensions.
+name: scalar_signed_zero
+schema_template: |
+  CREATE TABLE t (id BIGINT, z DOUBLE, f FLOAT, d DOUBLE, PRIMARY KEY (id))
+setup:
+  - INSERT INTO t VALUES (1, -0.0, CAST(-0.0 AS FLOAT), -0.25), (2, 0.0, CAST(0.0 AS FLOAT), 0.0)
+tests:
+  - query: SELECT CAST(1.0 / FLOOR(z) AS STRING), CAST(1.0 / CEIL(d) AS STRING), CAST(1.0 / CEILING(f) AS STRING), CAST(1.0 / ROUND(d) AS STRING), CAST(1.0 / POWER(z, 3) AS STRING), CAST(1.0 / POW(f, 3) AS STRING) FROM t WHERE id = 1
+    rows:
+      - ['-Infinity', '-Infinity', '-Infinity', '-Infinity', '-Infinity', '-Infinity']
+  - query: SELECT CAST(1.0 / ROUND(d, -1) AS STRING), CAST(1.0 / ROUND(-0.001, 2) AS STRING), CAST(1.0 / POWER(-0.0, 2) AS STRING) FROM t WHERE id = 1
+    rows:
+      - ['-Infinity', '-Infinity', 'Infinity']
+  - query: SELECT FLOOR(d), CEIL(0.25), ROUND(-0.5), POWER(-2.0, 3), CAST(FLOOR(z) AS BIGINT), ROUND(CAST(NULL AS DOUBLE)) FROM t WHERE id = 1
+    rows:
+      - [-1.0, 1.0, -1.0, -8.0, 0, null]
+  - query: SELECT CAST(1.0 / s AS STRING), COUNT(*) FROM (SELECT CEIL(d) AS s FROM t) a GROUP BY s
+    plan_contains: StreamingAgg
+    unordered: true
+    rows:
+      - ['-Infinity', 1]
+      - ['Infinity', 1]
+  - query: SELECT CAST(1.0 / s AS STRING) FROM (SELECT DISTINCT CEIL(d) AS s FROM t) a
+    plan_contains: Distinct
+    unordered: true
+    rows:
+      - ['-Infinity']
+      - ['Infinity']

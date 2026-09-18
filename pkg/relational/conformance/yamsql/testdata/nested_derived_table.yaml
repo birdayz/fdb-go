@@ -44,10 +44,15 @@ tests:
   - query: SELECT a FROM (SELECT COUNT(*) AS a FROM t1 WHERE n IS NOT NULL) AS sub
     rows:
       - [3]
-  # Still works without the alias — canonical name carries through.
+  # Neither the accumulator key nor the physical display label is a SQL name.
   - query: SELECT "COUNT(*)" FROM (SELECT COUNT(*) FROM t1 WHERE n IS NOT NULL) AS sub
-    rows:
-      - [3]
+    error_code: "42703"
+  - query: SELECT "_0" FROM (SELECT COUNT(*) FROM t1 WHERE n IS NOT NULL) AS sub
+    error_code: "42703"
+  # A leading underscore needs quoting in the shared lexer; the bare spelling
+  # fails before column resolution (RelationalLexer.g4 ID_LITERAL).
+  - query: SELECT _0 FROM (SELECT COUNT(*) FROM t1 WHERE n IS NOT NULL) AS sub
+    error_code: "42601"
   # COUNT(*) AS alias with GROUP BY + derived table: the alias rides
   # through the fast-path-demote (countStar → aggCols) into the grouped
   # aggregation path. Groups: n=10, n=20, n=40 after filter — each has

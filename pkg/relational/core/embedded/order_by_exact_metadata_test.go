@@ -182,12 +182,15 @@ func TestExactCTEProjection_QualifiedDirectJoinLegUsesBuiltResultType(t *testing
 		{Name: "X", FieldType: values.NotNullInt, Ordinal: 0},
 	})
 	cteFieldsBefore := append([]values.Field(nil), cteType.Fields...)
-	cteTypes := map[string]*values.RecordType{"D": cteType}
+	producer := logical.NewCTE("D", nil, nil, false).CTEProducer
+	registry := logical.CTERegistry{}.With(producer)
+	cteTypes := map[*logical.CTEProducer]*values.RecordType{producer: cteType}
 	newProject := func(
 		input logical.LogicalOperator,
 		ref logical.ColumnRef,
 		computed bool,
 	) *logical.LogicalProject {
+		logical.BindCTESources(input, registry)
 		project := logical.NewProject(input, []string{"D.X"}, []string{""})
 		project.ProjectionRefs = []logical.ColumnRef{ref}
 		project.IsComputed = []bool{computed}
@@ -246,7 +249,7 @@ func TestExactCTEProjection_QualifiedDirectJoinLegUsesBuiltResultType(t *testing
 		input    logical.LogicalOperator
 		ref      logical.ColumnRef
 		computed bool
-		types    map[string]*values.RecordType
+		types    map[*logical.CTEProducer]*values.RecordType
 	}{
 		{
 			name:  "unqualified",
@@ -311,7 +314,7 @@ func TestExactCTEProjection_QualifiedDirectJoinLegUsesBuiltResultType(t *testing
 			name:  "duplicate_output_field",
 			input: directJoin(logical.JoinInner),
 			ref:   qualifiedX,
-			types: map[string]*values.RecordType{"D": duplicateOutputType},
+			types: map[*logical.CTEProducer]*values.RecordType{producer: duplicateOutputType},
 		},
 	}
 	for _, test := range tests {

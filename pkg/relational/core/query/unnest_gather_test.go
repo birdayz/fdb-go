@@ -52,18 +52,24 @@ func newDisjointUnnestTranslator(t *testing.T) *cascadesTranslator {
 	}
 	return &cascadesTranslator{
 		md:              tmpl.Underlying(),
-		cteScope:        make(map[string]logical.LogicalOperator),
-		cteExprScope:    make(map[string]expressions.RelationalExpression),
-		cteColumnsScope: make(map[string][]values.Field),
+		cteScope:        logical.CTERegistry{},
+		cteExprScope:    make(map[*logical.CTEProducer]expressions.RelationalExpression),
+		cteColumnsScope: make(map[*logical.CTEProducer][]values.Field),
 	}
+}
+
+func rawSRCArrayUnnest(t testing.TB, tr *cascadesTranslator, alias, atAlias string) *logical.LogicalUnnest {
+	t.Helper()
+	u, _ := rawBoundProtoUnnest(t, tr.md, "SRC", "S", []string{"s", "ARR"}, alias, atAlias, "ARR")
+	return u
 }
 
 // gatheredFixture builds the canonical multi-source shape
 // `FROM SRC s, AUX x, s.ARR AS EL [AT ord]` — the unnest join whose left is
 // the 2-source comma cluster and whose owning source is the FIRST
 // (non-rightmost) leg.
-func gatheredFixture(asAlias, atAlias string) (*logical.LogicalJoin, *logical.LogicalUnnest) {
-	u := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: asAlias, AtAlias: atAlias}
+func gatheredFixture(t testing.TB, tr *cascadesTranslator, asAlias, atAlias string) (*logical.LogicalJoin, *logical.LogicalUnnest) {
+	u := rawSRCArrayUnnest(t, tr, asAlias, atAlias)
 	left := inner(scan("SRC", "s"), scan("AUX", "x"))
 	return logical.NewJoin(left, u, logical.JoinInner, ""), u
 }
@@ -79,9 +85,9 @@ func TestGatheredSeedShape(t *testing.T) {
 	t.Parallel()
 	tr := newDisjointUnnestTranslator(t)
 
-	j, u := gatheredFixture("EL", "ORD")
+	j, u := gatheredFixture(t, tr, "EL", "ORD")
 	innerCorr := values.NamedCorrelationIdentifier("EL")
-	sel := tr.translateGatheredUnnestCluster(j, u, innerCorr, values.NotNullLong, "ARR", unnestTrailing)
+	sel := tr.translateGatheredUnnestCluster(j, u, innerCorr, values.NotNullLong, unnestTrailing)
 	if sel == nil {
 		t.Fatal("a gated 2-source cluster + owned unnest must gather, got nil (declined)")
 	}
@@ -149,11 +155,11 @@ func TestGatheredDeclineBoundary(t *testing.T) {
 
 	// (a) ON-carrying cluster GATHERS: the ON conjunct rides the flat select
 	// baked through the cluster spine.
-	uOn := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL"}
+	uOn := rawSRCArrayUnnest(t, tr, "EL", "")
 	onLeft := logical.NewJoinWithPredicate(scan("SRC", "s"), scan("AUX", "x"), logical.JoinInner,
 		corrEq(t, "x", "XID", "s", "SID"))
 	jOn := logical.NewJoin(onLeft, uOn, logical.JoinInner, "")
-	gotOn := tr.translateGatheredUnnestCluster(jOn, uOn, innerCorr, values.NotNullLong, "ARR", unnestTrailing)
+	gotOn := tr.translateGatheredUnnestCluster(jOn, uOn, innerCorr, values.NotNullLong, unnestTrailing)
 	if gotOn == nil {
 		t.Fatal("an ON-carrying cluster must GATHER")
 	}
@@ -170,9 +176,9 @@ func TestGatheredDeclineBoundary(t *testing.T) {
 	// first-match. (A BARE ambiguous reference errors 42702 at semantic analysis
 	// before the translator, so only qualified reads reach here.) The raw seed is a
 	// SelectExpression, no nested projection.
-	uDup := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL"}
+	uDup := rawSRCArrayUnnest(t, tr, "EL", "")
 	jDup := logical.NewJoin(inner(scan("SRC", "s"), scan("SRC", "s2")), uDup, logical.JoinInner, "")
-	gotDup := tr.translateGatheredUnnestCluster(jDup, uDup, innerCorr, values.NotNullLong, "ARR", unnestTrailing)
+	gotDup := tr.translateGatheredUnnestCluster(jDup, uDup, innerCorr, values.NotNullLong, unnestTrailing)
 	if gotDup == nil {
 		t.Fatal("cross-leg duplicate column names between two non-box legs must GATHER via the raw seed, not decline")
 	}
@@ -187,10 +193,10 @@ func TestGatheredDeclineBoundary(t *testing.T) {
 	// and a qualified read routes by SLOT — it GATHERS the raw seed. The
 	// discriminating FULL-NULL / cross-leg-predicate / ORDER BY rows are pinned e2e in
 	// the sqldriver FDB integration suite.
-	uBox := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL"}
+	uBox := rawSRCArrayUnnest(t, tr, "EL", "")
 	boxLeg := logical.NewJoin(scan("SRC2", "s2"), scan("AUX", "x"), logical.JoinFull, "")
 	jBox := logical.NewJoin(inner(boxLeg, scan("SRC", "s")), uBox, logical.JoinInner, "")
-	gotBox := tr.translateGatheredUnnestCluster(jBox, uBox, innerCorr, values.NotNullLong, "ARR", unnestTrailing)
+	gotBox := tr.translateGatheredUnnestCluster(jBox, uBox, innerCorr, values.NotNullLong, unnestTrailing)
 	if _, ok := gotBox.(*expressions.SelectExpression); !ok {
 		t.Fatalf("a box-involved CROSS-LEG dup must GATHER the raw seed, got %T", gotBox)
 	}
@@ -201,10 +207,10 @@ func TestGatheredDeclineBoundary(t *testing.T) {
 	// leaves at distinct slots, so a qualified SRC2.W / AUX2.W resolves to its own window;
 	// the box's DOUBLY-null-fill (both W NULL on opposite unmatched rows) resolves through
 	// the FULL-NULL substrate (e2e discriminating rows: the sqldriver FDB integration suite).
-	uWithin := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL"}
+	uWithin := rawSRCArrayUnnest(t, tr, "EL", "")
 	withinBox := logical.NewJoin(scan("SRC2", "s2"), scan("AUX2", "y"), logical.JoinFull, "")
 	jWithin := logical.NewJoin(inner(withinBox, scan("SRC", "s")), uWithin, logical.JoinInner, "")
-	gotWithin := tr.translateGatheredUnnestCluster(jWithin, uWithin, innerCorr, values.NotNullLong, "ARR", unnestTrailing)
+	gotWithin := tr.translateGatheredUnnestCluster(jWithin, uWithin, innerCorr, values.NotNullLong, unnestTrailing)
 	if _, ok := gotWithin.(*expressions.SelectExpression); !ok {
 		t.Fatalf("a WITHIN-box dup (two same-named columns in ONE box) must GATHER the raw seed, got %T", gotWithin)
 	}
@@ -218,9 +224,9 @@ func TestGatheredDeclineBoundary(t *testing.T) {
 	// keys route by slot, not first-match. Same cluster as (b) — the ONLY difference is
 	// underAggregate, and both now gather the raw seed.
 	tr.underAggregate = true
-	uGrouped := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL"}
+	uGrouped := rawSRCArrayUnnest(t, tr, "EL", "")
 	jGrouped := logical.NewJoin(inner(scan("SRC", "s"), scan("SRC", "s2")), uGrouped, logical.JoinInner, "")
-	gotGrouped := tr.translateGatheredUnnestCluster(jGrouped, uGrouped, innerCorr, values.NotNullLong, "ARR", unnestTrailing)
+	gotGrouped := tr.translateGatheredUnnestCluster(jGrouped, uGrouped, innerCorr, values.NotNullLong, unnestTrailing)
 	tr.underAggregate = false
 	if _, ok := gotGrouped.(*expressions.SelectExpression); !ok {
 		t.Fatalf("a GROUPED non-box cross-leg dup must GATHER via the un-collapse (raw SelectExpression), got %T", gotGrouped)
@@ -230,9 +236,9 @@ func TestGatheredDeclineBoundary(t *testing.T) {
 	// equaling an outer column name resolves correctly — the visitor
 	// qualifies the shadowed bare projection and the span windows route the
 	// qualified read to the ELEMENT leg (last-binding-wins preserved).
-	uShadow := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "V"}
+	uShadow := rawSRCArrayUnnest(t, tr, "V", "")
 	jShadow := logical.NewJoin(inner(scan("SRC", "s"), scan("AUX", "x")), uShadow, logical.JoinInner, "")
-	if got := tr.translateGatheredUnnestCluster(jShadow, uShadow, values.NamedCorrelationIdentifier("V"), values.NotNullLong, "ARR", unnestTrailing); got == nil {
+	if got := tr.translateGatheredUnnestCluster(jShadow, uShadow, values.NamedCorrelationIdentifier("V"), values.NotNullLong, unnestTrailing); got == nil {
 		t.Fatal("an element alias shadowing an outer column must GATHER")
 	}
 
@@ -241,37 +247,41 @@ func TestGatheredDeclineBoundary(t *testing.T) {
 	// ONE opaque leg (see TestOuterBoxLeftGathers); the still-
 	// ungated class is a DUPLICATE-BINDING cluster, poisoned by the wedge
 	// gate before any leg translates.
-	uLeft := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL"}
+	uLeft := rawSRCArrayUnnest(t, tr, "EL", "")
 	jLeft := logical.NewJoin(
 		inner(scan("SRC", "s"), scan("SRC", "s")),
 		uLeft, logical.JoinInner, "")
-	if got := tr.translateGatheredUnnestCluster(jLeft, uLeft, innerCorr, values.NotNullLong, "ARR", unnestTrailing); got != nil {
+	if got := tr.translateGatheredUnnestCluster(jLeft, uLeft, innerCorr, values.NotNullLong, unnestTrailing); got != nil {
 		t.Fatal("an UNGATED (duplicate-binding) cluster must DECLINE")
 	}
 
 	// (e) SINGLE-SOURCE left: the binary unnest-seed path owns N=1.
-	uSingle := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL"}
+	uSingle := rawSRCArrayUnnest(t, tr, "EL", "")
 	jSingle := logical.NewJoin(scan("SRC", "s"), uSingle, logical.JoinInner, "")
-	if got := tr.translateGatheredUnnestCluster(jSingle, uSingle, innerCorr, values.NotNullLong, "ARR", unnestTrailing); got != nil {
+	if got := tr.translateGatheredUnnestCluster(jSingle, uSingle, innerCorr, values.NotNullLong, unnestTrailing); got != nil {
 		t.Fatal("a single-source outer must DECLINE the gather (the binary seed owns it)")
 	}
 
-	// (f) The owner must be a gathered PLAIN leg: segment 0 naming NO leg
-	// declines (an out-of-scope or derived owner).
-	uNoOwner := &logical.LogicalUnnest{Segments: []string{"z", "ORDER_ID"}, Alias: "EL"}
+	// (f) The bound owner must be a gathered PLAIN leg: a real exact array
+	// correlated to foreign owner Z declines.
+	foreignLayout := &values.RecordType{Fields: []values.Field{
+		{Name: "ARR", Ordinal: 0, FieldType: values.NewArrayType(false, values.NotNullLong)},
+	}}
+	uNoOwner, _ := rawBoundUnnest(t, []string{"z", "ORDER_ID"}, "EL", "", "Z", foreignLayout, 0)
 	jNoOwner := logical.NewJoin(inner(scan("SRC", "s"), scan("AUX", "x")), uNoOwner, logical.JoinInner, "")
-	if got := tr.translateGatheredUnnestCluster(jNoOwner, uNoOwner, innerCorr, values.NotNullLong, "ARR", unnestTrailing); got != nil {
-		t.Fatal("segment 0 naming no gathered leg must DECLINE")
+	if got := tr.translateGatheredUnnestCluster(jNoOwner, uNoOwner, innerCorr, values.NotNullLong, unnestTrailing); got != nil {
+		t.Fatal("a foreign bound owner must DECLINE")
 	}
 
-	// (g) A multi-segment path whose ROOT segment is not a column of the
-	// owner window declines (VALID struct paths route
-	// through the fused suffix; SRC has no column A, so the root lookup
-	// misses).
-	uDeep := &logical.LogicalUnnest{Segments: []string{"s", "A", "B"}, Alias: "EL"}
+	// (g) A bound owner layout that disagrees with SRC's actual source window
+	// declines. Segments remains diagnostic and cannot manufacture a lookup.
+	mismatchedLayout := &values.RecordType{Fields: []values.Field{
+		{Name: "A", Ordinal: 0, FieldType: values.NewArrayType(false, values.NotNullLong)},
+	}}
+	uDeep, _ := rawBoundUnnest(t, []string{"s", "A", "B"}, "EL", "", "S", mismatchedLayout, 0)
 	jDeep := logical.NewJoin(inner(scan("SRC", "s"), scan("AUX", "x")), uDeep, logical.JoinInner, "")
-	if got := tr.translateGatheredUnnestCluster(jDeep, uDeep, innerCorr, values.NotNullLong, "A", unnestTrailing); got != nil {
-		t.Fatal("a multi-segment path with a MISSING root column must DECLINE")
+	if got := tr.translateGatheredUnnestCluster(jDeep, uDeep, innerCorr, values.NotNullLong, unnestTrailing); got != nil {
+		t.Fatal("a bound collection with a mismatched source window must DECLINE")
 	}
 }
 
@@ -282,8 +292,8 @@ func TestGatheredMixedElementSkipsAssert(t *testing.T) {
 	t.Parallel()
 	tr := newDisjointUnnestTranslator(t)
 
-	j, u := gatheredFixture("EL", "")
-	sel := tr.translateGatheredUnnestCluster(j, u, values.NamedCorrelationIdentifier("EL"), values.NotNullLong, "ARR", unnestTrailing)
+	j, u := gatheredFixture(t, tr, "EL", "")
+	sel := tr.translateGatheredUnnestCluster(j, u, values.NamedCorrelationIdentifier("EL"), values.NotNullLong, unnestTrailing)
 	if sel == nil {
 		t.Fatal("the no-AT gathered form must translate")
 	}
@@ -360,8 +370,8 @@ func chainEqPredLocal(t *testing.T, a, aCol, b, bCol string) predicates.QueryPre
 // enclosedFixture builds the ENCLOSED shape `FROM SRC s, s.ARR AS EL, AUX x`
 // — the unnest join buried as the LEFT leg of the enclosing cluster, the
 // rotation's canonical input.
-func enclosedFixture(asAlias, atAlias string) *logical.LogicalJoin {
-	u := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: asAlias, AtAlias: atAlias}
+func enclosedFixture(t testing.TB, tr *cascadesTranslator, asAlias, atAlias string) *logical.LogicalJoin {
+	u := rawSRCArrayUnnest(t, tr, asAlias, atAlias)
 	unnestJoin := logical.NewJoin(scan("SRC", "s"), u, logical.JoinInner, "")
 	return logical.NewJoin(unnestJoin, scan("AUX", "x"), logical.JoinInner, "")
 }
@@ -374,13 +384,13 @@ func TestEnclosedRotation(t *testing.T) {
 	t.Parallel()
 	tr := newDisjointUnnestTranslator(t)
 
-	root := enclosedFixture("EL", "")
-	rebuilt, u, elementType, fieldName, pos, ok := tr.rotateEnclosedUnnest(root)
+	root := enclosedFixture(t, tr, "EL", "")
+	rebuilt, u, elementType, pos, ok := tr.rotateEnclosedUnnest(root)
 	if !ok {
 		t.Fatal("the enclosed 2-plain-leg cluster must classify and rotate, got ok=false")
 	}
-	if u == nil || fieldName != "ARR" || elementType == nil {
-		t.Fatalf("classification: u=%v field=%q type=%v", u != nil, fieldName, elementType)
+	if u == nil || elementType == nil || elementType.Code() != values.TypeCodeLong || elementType.IsNullable() {
+		t.Fatalf("classification: u=%v type=%v, want exact LONG NOT NULL", u != nil, elementType)
 	}
 	if _, isU := rebuilt.Right.(*logical.LogicalUnnest); !isU {
 		t.Fatalf("rotation must place the unnest at root-right, got %T", rebuilt.Right)
@@ -439,12 +449,12 @@ func TestEnclosedRotationONCollection(t *testing.T) {
 	t.Parallel()
 	tr := newDisjointUnnestTranslator(t)
 
-	u := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL"}
+	u := rawSRCArrayUnnest(t, tr, "EL", "")
 	unnestJoin := logical.NewJoin(scan("SRC", "s"), u, logical.JoinInner, "")
 	onPred := chainEqPredLocal(t, "x", "XID", "s", "SID")
 	root := logical.NewJoinWithPredicate(unnestJoin, scan("AUX", "x"), logical.JoinInner, onPred)
 
-	rebuilt, _, _, _, _, ok := tr.rotateEnclosedUnnest(root)
+	rebuilt, _, _, _, ok := tr.rotateEnclosedUnnest(root)
 	if !ok {
 		t.Fatal("the ON-carrying enclosed cluster must rotate")
 	}
@@ -467,32 +477,32 @@ func TestEnclosedRotationDeclineBoundary(t *testing.T) {
 	t.Parallel()
 	tr := newDisjointUnnestTranslator(t)
 
-	u2 := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "E2"}
+	u2 := rawSRCArrayUnnest(t, tr, "E2", "")
 	twoUnnests := logical.NewJoin(
-		logical.NewJoin(enclosedFixture("EL", ""), u2, logical.JoinInner, ""),
+		logical.NewJoin(enclosedFixture(t, tr, "EL", ""), u2, logical.JoinInner, ""),
 		scan("AUX", "y"), logical.JoinInner, "")
-	if _, _, _, _, _, ok := tr.rotateEnclosedUnnest(twoUnnests); ok {
+	if _, _, _, _, ok := tr.rotateEnclosedUnnest(twoUnnests); ok {
 		t.Error("two buried unnests must decline (chained/multi is out of scope)")
 	}
 
-	u := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL"}
+	u := rawSRCArrayUnnest(t, tr, "EL", "")
 	singleLeg := logical.NewJoin(scan("SRC", "s"), u, logical.JoinInner, "")
-	if _, _, _, _, _, ok := tr.rotateEnclosedUnnest(singleLeg); ok {
+	if _, _, _, _, ok := tr.rotateEnclosedUnnest(singleLeg); ok {
 		t.Error("the root form (unnest at root-right) must decline — translateUnnestJoin owns it")
 	}
 
-	uCollide := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "X"}
+	uCollide := rawSRCArrayUnnest(t, tr, "X", "")
 	collideRoot := logical.NewJoin(
 		logical.NewJoin(scan("SRC", "s"), uCollide, logical.JoinInner, ""),
 		scan("AUX", "x"), logical.JoinInner, "")
-	if _, _, _, _, _, ok := tr.rotateEnclosedUnnest(collideRoot); ok {
+	if _, _, _, _, ok := tr.rotateEnclosedUnnest(collideRoot); ok {
 		t.Error("an element alias colliding with a TRAILING leg alias must decline (all-legs scope)")
 	}
 
 	leftRoot := logical.NewJoin(
 		logical.NewJoin(scan("SRC", "s"), u, logical.JoinInner, ""),
 		scan("AUX", "x"), logical.JoinLeft, "")
-	if _, _, _, _, _, ok := tr.rotateEnclosedUnnest(leftRoot); ok {
+	if _, _, _, _, ok := tr.rotateEnclosedUnnest(leftRoot); ok {
 		t.Error("a LEFT-kind enclosing root must decline (inner-only rotation)")
 	}
 }
@@ -507,7 +517,7 @@ func TestEnclosedRotationONElementRewrite(t *testing.T) {
 	t.Parallel()
 	tr := newDisjointUnnestTranslator(t)
 
-	u := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL"}
+	u := rawSRCArrayUnnest(t, tr, "EL", "")
 	unnestJoin := logical.NewJoin(scan("SRC", "s"), u, logical.JoinInner, "")
 	onPred := chainEqPredLocal(t, "x", "V", "EL", "EL") // B.V = EL — references the element
 	root := logical.NewJoinWithPredicate(unnestJoin, scan("AUX", "x"), logical.JoinInner, onPred)
@@ -559,12 +569,12 @@ func TestEnclosedRotationThreeLegsMidUnnest(t *testing.T) {
 	t.Parallel()
 	tr := newDisjointUnnestTranslator(t)
 
-	u := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL"}
+	u := rawSRCArrayUnnest(t, tr, "EL", "")
 	unnestJoin := logical.NewJoin(scan("SRC", "s"), u, logical.JoinInner, "")
 	mid := logical.NewJoin(unnestJoin, scan("AUX", "x"), logical.JoinInner, "")
 	root := logical.NewJoin(mid, scan("AUX2", "y"), logical.JoinInner, "")
 
-	_, _, _, _, pos, ok := tr.rotateEnclosedUnnest(root)
+	_, _, _, pos, ok := tr.rotateEnclosedUnnest(root)
 	if !ok || pos != 1 {
 		t.Fatalf("rotate: ok=%v pos=%d, want ok with unnestPos 1 (one plain leg precedes)", ok, pos)
 	}
@@ -603,10 +613,10 @@ func TestBoxLegOwnerGathers(t *testing.T) {
 	tr := newDisjointUnnestTranslator(t)
 	box := logical.NewJoin(scan("SRC", "s"), scan("AUX", "x"), logical.JoinLeft, "")
 	left := inner(box, scan("AUX2", "y"))
-	u := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL", AtAlias: "ORD"}
+	u := rawSRCArrayUnnest(t, tr, "EL", "ORD")
 	j := logical.NewJoin(left, u, logical.JoinInner, "")
 	innerCorr := values.NamedCorrelationIdentifier("EL")
-	sel := tr.translateGatheredUnnestCluster(j, u, innerCorr, values.NotNullLong, "ARR", unnestTrailing)
+	sel := tr.translateGatheredUnnestCluster(j, u, innerCorr, values.NotNullLong, unnestTrailing)
 	if sel == nil {
 		t.Fatal("a buried box-leg owner must GATHER (class 1), got nil (declined)")
 	}
@@ -693,10 +703,10 @@ func TestOuterBoxLeftGathers(t *testing.T) {
 	tr := newDisjointUnnestTranslator(t)
 	box := logical.NewJoinWithPredicate(scan("SRC", "s"), scan("AUX", "x"), logical.JoinLeft,
 		chainEqPredLocal(t, "x", "XID", "s", "SID"))
-	u := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL", AtAlias: "ORD"}
+	u := rawSRCArrayUnnest(t, tr, "EL", "ORD")
 	j := logical.NewJoin(box, u, logical.JoinInner, "")
 	innerCorr := values.NamedCorrelationIdentifier("EL")
-	sel := tr.translateGatheredUnnestCluster(j, u, innerCorr, values.NotNullLong, "ARR", unnestTrailing)
+	sel := tr.translateGatheredUnnestCluster(j, u, innerCorr, values.NotNullLong, unnestTrailing)
 	if sel == nil {
 		t.Fatal("an outer box as unnest-left must GATHER as one leg (class 1), got nil")
 	}
@@ -733,10 +743,10 @@ func TestDupAliasOwnerFirstMatch(t *testing.T) {
 	first := scan("SRC", "s")
 	second := scan("AUX", "s") // same SQL alias, distinct table
 	second.Binding = "Q$DUP1"  // the parser's mint for a later duplicate
-	u := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL", AtAlias: "ORD"}
+	u := rawSRCArrayUnnest(t, tr, "EL", "ORD")
 	j := logical.NewJoin(inner(first, second), u, logical.JoinInner, "")
 	innerCorr := values.NamedCorrelationIdentifier("EL")
-	sel := tr.translateGatheredUnnestCluster(j, u, innerCorr, values.NotNullLong, "ARR", unnestTrailing)
+	sel := tr.translateGatheredUnnestCluster(j, u, innerCorr, values.NotNullLong, unnestTrailing)
 	if sel == nil {
 		t.Fatal("a dup-alias cluster with distinct bindings must GATHER, got nil")
 	}
@@ -766,9 +776,9 @@ func TestOpaqueBoxNestedClusterPredsStayInside(t *testing.T) {
 	innerCluster := logical.NewJoin(scan("AUX", "x"), scan("AUX2", "y"), logical.JoinInner, "")
 	innerCluster.OnPredicate = chainEqPredLocal(t, "x", "XID", "y", "YID")
 	box := logical.NewJoin(scan("SRC", "s"), innerCluster, logical.JoinLeft, "")
-	u := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL"}
+	u := rawSRCArrayUnnest(t, tr, "EL", "")
 	j := logical.NewJoin(box, u, logical.JoinInner, "")
-	sel := tr.translateGatheredUnnestCluster(j, u, values.NamedCorrelationIdentifier("EL"), values.NotNullLong, "ARR", unnestTrailing)
+	sel := tr.translateGatheredUnnestCluster(j, u, values.NamedCorrelationIdentifier("EL"), values.NotNullLong, unnestTrailing)
 	if sel == nil {
 		t.Fatal("a nested-cluster opaque box must GATHER, got nil")
 	}
@@ -790,6 +800,7 @@ func TestOpaqueBoxNestedClusterPredsStayInside(t *testing.T) {
 // ClusteredBoxSeedsOrdinal pin follows.
 func TestGatheredOuterConjunctCoupling(t *testing.T) {
 	t.Parallel()
+	tr := newDisjointUnnestTranslator(t)
 	innerCorr := values.NamedCorrelationIdentifier("EL")
 
 	// OUTER-box arm. None → must GATHER an ORDINAL seed (an unconditional/
@@ -802,12 +813,12 @@ func TestGatheredOuterConjunctCoupling(t *testing.T) {
 	for _, kind := range []logical.JoinKind{logical.JoinFull, logical.JoinLeft} {
 		box := logical.NewJoinWithPredicate(scan("SRC", "s"), scan("AUX", "x"), kind,
 			chainEqPredLocal(t, "x", "XID", "s", "SID"))
-		u := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL", AtAlias: "ORD"}
+		u := rawSRCArrayUnnest(t, tr, "EL", "ORD")
 		j := logical.NewJoin(box, u, logical.JoinInner, "")
 
 		trClear := newDisjointUnnestTranslator(t)
 		trClear.unnestBoxLegConjunct = boxConjNone
-		clear := trClear.translateGatheredUnnestCluster(j, u, innerCorr, values.NotNullLong, "ARR", unnestTrailing)
+		clear := trClear.translateGatheredUnnestCluster(j, u, innerCorr, values.NotNullLong, unnestTrailing)
 		if clear == nil {
 			t.Fatalf("%v box, verdict None: must GATHER (got nil) — the decline must fire ONLY on Unbakeable", kind)
 		}
@@ -818,7 +829,7 @@ func TestGatheredOuterConjunctCoupling(t *testing.T) {
 
 		trBake := newDisjointUnnestTranslator(t)
 		trBake.unnestBoxLegConjunct = boxConjBakeable
-		baked := trBake.translateGatheredUnnestCluster(j, u, innerCorr, values.NotNullLong, "ARR", unnestTrailing)
+		baked := trBake.translateGatheredUnnestCluster(j, u, innerCorr, values.NotNullLong, unnestTrailing)
 		if baked == nil {
 			t.Fatalf("%v box, BAKEABLE: must GATHER (got nil) — B2 admits bakeable conjuncts; a `!= boxConjNone` blanket decline regressed", kind)
 		}
@@ -832,7 +843,7 @@ func TestGatheredOuterConjunctCoupling(t *testing.T) {
 
 		trSet := newDisjointUnnestTranslator(t)
 		trSet.unnestBoxLegConjunct = boxConjUnbakeable
-		if got := trSet.translateGatheredUnnestCluster(j, u, innerCorr, values.NotNullLong, "ARR", unnestTrailing); got != nil {
+		if got := trSet.translateGatheredUnnestCluster(j, u, innerCorr, values.NotNullLong, unnestTrailing); got != nil {
 			t.Fatalf("%v box, UNBAKEABLE: must DECLINE to name-model (got %T) — the conjunct merges by name over a positional gather with no per-leg window; gathering malforms", kind, got)
 		}
 	}
@@ -845,11 +856,11 @@ func TestGatheredOuterConjunctCoupling(t *testing.T) {
 	// the seed is ORDINAL (AnchoredJoin==false), mirroring the
 	// ClusteredBoxSeedsOrdinal pin.
 	innerCluster := inner(scan("SRC", "s"), scan("AUX", "x"))
-	uInner := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL", AtAlias: "ORD"}
+	uInner := rawSRCArrayUnnest(t, tr, "EL", "ORD")
 	jInner := logical.NewJoin(innerCluster, uInner, logical.JoinInner, "")
 	trInner := newDisjointUnnestTranslator(t)
 	trInner.unnestBoxLegConjunct = boxConjUnbakeable
-	got := trInner.translateGatheredUnnestCluster(jInner, uInner, innerCorr, values.NotNullLong, "ARR", unnestTrailing)
+	got := trInner.translateGatheredUnnestCluster(jInner, uInner, innerCorr, values.NotNullLong, unnestTrailing)
 	if got == nil {
 		t.Fatal("INNER cluster, UNBAKEABLE: must STILL GATHER (got nil) — the verdict couples only the OUTER-box arm; over-declining the INNER cluster drops the gather optimization")
 	}
@@ -992,7 +1003,7 @@ func TestExactGatheredCTEGroupKeyValueUsesUniqueSeedField(t *testing.T) {
 	}}
 	seed := exactTestQOV(t, "q$seed", seedType)
 	body := logical.NewScan("A", "A")
-	tr := &cascadesTranslator{cteScope: map[string]logical.LogicalOperator{"D": body}}
+	tr := &cascadesTranslator{cteScope: testCTERegistry(map[string]logical.LogicalOperator{"D": body})}
 	bake := gatheredSeedBake{seedQOV: seed}
 
 	tests := []struct {
@@ -1107,7 +1118,7 @@ func TestExactGatheredCTEGroupKeyValueUsesUniqueSeedField(t *testing.T) {
 				tc.key.Qualified != beforeKey.Qualified || !slices.Equal(tc.key.Segs, beforeSegments) {
 				t.Fatalf("source group key mutated: before=%+v after=%+v", beforeKey, tc.key)
 			}
-			if tr.cteScope["D"] != body {
+			if tr.cteScope.Lookup("D").Body() != body {
 				t.Fatal("CTE source registration mutated")
 			}
 			if ok != tc.wantOK {
@@ -1154,10 +1165,10 @@ func projectedCTEOutputGroupKeyFixture(
 	}
 
 	tr := newDisjointUnnestTranslator(t)
-	j, u := gatheredFixture("EL", "ORD")
+	j, u := gatheredFixture(t, tr, "EL", "ORD")
 	tr.underAggregate = true
 	gathered := tr.translateGatheredUnnestCluster(
-		j, u, values.NamedCorrelationIdentifier("EL"), values.NotNullLong, "ARR", unnestTrailing)
+		j, u, values.NamedCorrelationIdentifier("EL"), values.NotNullLong, unnestTrailing)
 	tr.underAggregate = false
 	if gathered == nil {
 		t.Fatal("fixture gathered seed declined")
@@ -1210,7 +1221,7 @@ func projectedCTEOutputGroupKeyFixture(
 	}
 
 	input := logical.NewScan("D", "D")
-	tr.cteScope["D"] = logical.NewScan("SRC", "S")
+	tr.cteScope = tr.cteScope.With(testCTEProducer("D", logical.NewScan("SRC", "S")))
 	return tr, input, gatheredSeedBake{
 		quant: expressions.NamedForEachQuantifier(
 			values.NamedCorrelationIdentifier("D"), expressions.InitialOf(output)),
@@ -1248,7 +1259,7 @@ func TestExactProjectedCTEOutputGroupKeyValueUsesExactOutputRow(t *testing.T) {
 			beforeSegments := slices.Clone(key.Segs)
 			beforeRef := bake.quant.GetRangesOver()
 			beforeExpr := beforeRef.Get()
-			beforeBody := tr.cteScope["D"]
+			beforeBody := tr.cteScope.Lookup("D").Body()
 
 			got, ok, err := tr.exactProjectedCTEOutputGroupKeyValue(input, key, bake)
 			if err != nil {
@@ -1275,7 +1286,7 @@ func TestExactProjectedCTEOutputGroupKeyValueUsesExactOutputRow(t *testing.T) {
 				key.Qualified || !slices.Equal(key.Segs, beforeSegments) {
 				t.Fatalf("source key mutated: %+v", key)
 			}
-			if bake.quant.GetRangesOver() != beforeRef || beforeRef.Get() != beforeExpr || tr.cteScope["D"] != beforeBody {
+			if bake.quant.GetRangesOver() != beforeRef || beforeRef.Get() != beforeExpr || tr.cteScope.Lookup("D").Body() != beforeBody {
 				t.Fatal("source CTE/output expression graph was mutated")
 			}
 		})
@@ -1360,8 +1371,8 @@ func TestExactProjectedCTEOutputGroupKeyValueDeclinesOutsideExactContract(t *tes
 			beforeSegments := slices.Clone(key.Segs)
 			beforeRef := bake.quant.GetRangesOver()
 			beforeExpr := beforeRef.Get()
-			beforeScopeLen := len(tr.cteScope)
-			beforeCTEBody := tr.cteScope["D"]
+			beforeScopeLen := len(tr.cteScope.Names())
+			beforeCTEBody := tr.cteScope.Lookup("D").Body()
 
 			got, ok, err := tr.exactProjectedCTEOutputGroupKeyValue(input, key, bake)
 			if err != nil {
@@ -1376,7 +1387,7 @@ func TestExactProjectedCTEOutputGroupKeyValueDeclinesOutsideExactContract(t *tes
 				t.Fatalf("source key mutated: before=%+v after=%+v", beforeKey, key)
 			}
 			if bake.quant.GetRangesOver() != beforeRef || beforeRef.Get() != beforeExpr ||
-				len(tr.cteScope) != beforeScopeLen || tr.cteScope["D"] != beforeCTEBody {
+				len(tr.cteScope.Names()) != beforeScopeLen || tr.cteScope.Lookup("D").Body() != beforeCTEBody {
 				t.Fatal("source output expression or CTE scope was mutated")
 			}
 		})

@@ -241,7 +241,7 @@ func TestStoredRecordDMLCandidates_ExcludesNonStoredAccessPaths(t *testing.T) {
 	// — because it substitutes a default row for an empty stream and that row
 	// is not a stored record. A mutation over it has nothing to write back.
 	notStored, err := plans.NewRecordQueryFirstOrDefaultPlan(
-		dmlDedupScanPlan(t, rowType), nil)
+		dmlDedupScanPlan(t, rowType), values.NewNullValue(rowType))
 	notStored = mustConstruct(t, notStored, err)
 	notStoredRef := expressions.FinalOfAtStage(notStored, expressions.StageCanonical)
 	computeRefPlanProperties(notStoredRef)

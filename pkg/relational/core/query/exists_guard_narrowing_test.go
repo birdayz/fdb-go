@@ -81,3 +81,51 @@ func TestExistsGuardNarrowing(t *testing.T) {
 		})
 	}
 }
+
+func TestExistsBoundCTERebasesOnlyExportedBinding(t *testing.T) {
+	t.Parallel()
+	bound := values.NamedCorrelationIdentifier("PRIVATE")
+	outer := values.NamedCorrelationIdentifier("D")
+	target := values.UniqueCorrelationIdentifier()
+	body := logical.NewProject(logical.NewScan("Order", "PRIVATE"), []string{"order_id"}, nil)
+	bodyValue := exactDemoRef(t, "PRIVATE", "order_id")
+	body.ProjectedValues = []values.Value{bodyValue}
+	carrier := logical.NewCTE("D", body, logical.NewScan("D", "D"), false)
+	carrier.Binding = bound.Name()
+	predicate := predicates.NewComparisonPredicate(exactDemoRef(t, "PRIVATE", "order_id"), predicates.Comparison{
+		Type: predicates.ComparisonEquals, Operand: exactDemoRef(t, "D", "order_id"),
+	})
+	esq := logical.ExistsSubquery{Alias: target, Plan: carrier, JoinPredicate: predicate}
+	tr := &cascadesTranslator{}
+	name, got := tr.existsInnerCorrelation(esq)
+	if tr.translateErr != nil {
+		t.Fatal(tr.translateErr)
+	}
+	correlations := predicates.GetCorrelatedToOfPredicate(got)
+	if name != target.Name() || len(correlations) != 2 {
+		t.Fatalf("binding=%s refs=%v, want existential and outer", name, correlations)
+	}
+	for _, want := range []values.CorrelationIdentifier{target, outer} {
+		if _, present := correlations[want]; !present {
+			t.Errorf("missing exact correlation %#v in %v", want, correlations)
+		}
+	}
+	original := predicates.GetCorrelatedToOfPredicate(predicate)
+	if _, present := original[bound]; !present {
+		t.Fatal("original join predicate mutated")
+	}
+	if carrier.Body() != body || body.ProjectedValues[0] != bodyValue {
+		t.Fatal("Body must never be renamed through its exported identity")
+	}
+	recursive := *carrier
+	recursive.CTEProducer = logical.NewCTE(recursive.Name(), recursive.Body(), nil, true, logical.CTEColumns(recursive.ColumnAliases()...), logical.CTETraversal(recursive.TraversalOrder())).CTEProducer
+	envelope := *carrier
+	envelope.PreserveMainSource = true
+	unbound := *carrier
+	unbound.Binding = ""
+	for _, node := range []logical.LogicalOperator{&recursive, &envelope, &unbound, logical.NewJoin(carrier, logical.NewScan("T", "T"), logical.JoinInner, "")} {
+		if existsInnerSafeToRename(node) {
+			t.Fatalf("%#v must not admit a single-export rebase", node)
+		}
+	}
+}

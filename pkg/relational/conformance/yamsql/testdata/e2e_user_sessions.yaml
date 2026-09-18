@@ -50,7 +50,6 @@ tests:
 
   # Close Alice's active session
   - query: UPDATE sessions SET end_ts = 4000 WHERE id = 20
-    rows: []
   - query: SELECT id, end_ts FROM sessions WHERE user_id = 1 ORDER BY id
     rows:
       - [10, 2000]

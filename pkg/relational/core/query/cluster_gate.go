@@ -399,11 +399,15 @@ func (t *cascadesTranslator) ordinalEligible(op logical.LogicalOperator) bool {
 		}
 		return t.ordinalEligible(o.Input)
 	case *logical.LogicalScan:
-		key := strings.ToUpper(o.Table)
-		if _, ok := t.cteExprScope[key]; ok {
+		producer := logical.ResolveScan(o, t.cteScope)
+		if _, ok := t.cteExprScope[producer]; ok {
 			return true // pre-translated opaque reference (temp-table scan)
 		}
-		if body, ok := t.cteScope[key]; ok {
+		if producer != nil {
+			if producer.Recursive() {
+				return true // one opaque recursive result, like its temporary scan
+			}
+			body := producer.Body()
 			// A bare-projected unnest-cluster derived boundary is an OPAQUE ordinal
 			// leg (its projected row is a clean single namespace) even though its
 			// internal unnest would poison the plain recursion below. So is the
@@ -415,9 +419,8 @@ func (t *cascadesTranslator) ordinalEligible(op logical.LogicalOperator) bool {
 			if _, star := t.derivedBodyStarOrdinalLeg(body); star {
 				return true
 			}
-			delete(t.cteScope, key)
-			eligible := t.ordinalEligible(body)
-			t.cteScope[key] = body
+			var eligible bool
+			t.inCTEDefiningScope(producer, func() { eligible = t.ordinalEligible(body) })
 			return eligible
 		}
 		return true
@@ -430,19 +433,13 @@ func (t *cascadesTranslator) ordinalEligible(op logical.LogicalOperator) bool {
 		// must mirror clusterArity's CTE transparency exactly, per this
 		// file's own header). Recurse through the registered body into Main,
 		// identically to clusterArity.
-		if o.Recursive {
+		if o.Recursive() {
 			return false
 		}
-		key := strings.ToUpper(o.Name)
-		prev, had := t.cteScope[key]
-		t.cteScope[key] = o.Body
-		eligible := t.ordinalEligible(o.Main)
-		if had {
-			t.cteScope[key] = prev
-		} else {
-			delete(t.cteScope, key)
-		}
-		return eligible
+		previous := t.cteScope
+		t.cteScope = previous.With(o.CTEProducer)
+		defer func() { t.cteScope = previous }()
+		return t.ordinalEligible(o.Main)
 	default:
 		// Non-join leaves and opaque boxes (aggregate, union, sort, limit,
 		// distinct, values, …): the leg boundary sees the box's own output
@@ -582,7 +579,7 @@ func (t *cascadesTranslator) derivedBodyStarOrdinalLeg(body logical.LogicalOpera
 		return nil, false
 	}
 	u, isU := j.Right.(*logical.LogicalUnnest)
-	if !isU || len(u.Segments) < 2 || (u.Alias == "" && u.AtAlias == "") {
+	if !isU || (u.Alias == "" && u.AtAlias == "") {
 		return nil, false
 	}
 	if isChainedUnnest(j.Left, u) {
@@ -595,29 +592,22 @@ func (t *cascadesTranslator) derivedBodyStarOrdinalLeg(body logical.LogicalOpera
 		// gate. The correlations passed are the seed's own (sourceAlias /
 		// unnestSourceCorrelation); the built values are discarded — the gate is
 		// side-effect-free construction.
-		if unnestAliasReject(u) != nil {
-			// Decline the shape; the raw body surfaces the loud
-			// duplicate-alias rejection at translation (unnestAliasReject
-			// in translateUnnestJoin / translateChainedUnnestJoin).
+		if unnestCorrelationReject(j.Left, u) != nil {
 			return nil, false
 		}
-		elementType, _, disp := t.classifyChainedUnnestArray(j.Left, u)
-		if disp != derivedUnnestArray {
+		_, _, array := boundUnnestCollection(u)
+		if array == nil {
 			return nil, false
 		}
 		outerCorr := unnestOuterCorrelation(j.Left)
-		if _, _, ok := t.chainedUnnestOrdinalGate(j, u, outerCorr, unnestSourceCorrelation(u), elementType); !ok {
+		if _, _, ok := t.chainedUnnestOrdinalGate(j, u, outerCorr, unnestSourceCorrelation(u), array.ElementType); !ok {
 			return nil, false
 		}
 	} else {
 		if t.clusterArity(j.Left) != 1 || len(outerBoundAliases(j.Left)) != 1 {
 			return nil, false
 		}
-		outerTable := findOuterScanTable(j.Left, u.Segments[0])
-		if outerTable == "" || t.outerSourceIsCTE(outerTable) || outerSourceIsDerivedTable(j.Left, u.Segments[0]) {
-			return nil, false
-		}
-		if _, _, isArray, _ := t.unnestArrayElementType(outerTable, u.Segments[1:]); !isArray {
+		if _, _, array := boundUnnestCollection(u); array == nil {
 			return nil, false
 		}
 	}
@@ -863,11 +853,15 @@ func (t *cascadesTranslator) clusterArity(op logical.LogicalOperator) int {
 		// same as an uncorrelated scalar rider on a filter.
 		return t.clusterArity(o.Input)
 	case *logical.LogicalScan:
-		key := strings.ToUpper(o.Table)
-		if _, ok := t.cteExprScope[key]; ok {
+		producer := logical.ResolveScan(o, t.cteScope)
+		if _, ok := t.cteExprScope[producer]; ok {
 			return 1
 		}
-		if body, ok := t.cteScope[key]; ok {
+		if producer != nil {
+			if producer.Recursive() {
+				return 1
+			}
+			body := producer.Body()
 			if t.derivedBodyOpaqueOrdinalLeg(body) {
 				// A bare-projected unnest-cluster derived boundary is OPAQUE: its
 				// internal unnest poison does not propagate past the boundary — the
@@ -880,31 +874,21 @@ func (t *cascadesTranslator) clusterArity(op logical.LogicalOperator) int {
 				// the unnest seed's positional row (one leg, arity 1).
 				return 1
 			}
-			delete(t.cteScope, key)
-			a := t.clusterArity(body)
-			t.cteScope[key] = body
+			var a int
+			t.inCTEDefiningScope(producer, func() { a = t.clusterArity(body) })
 			return a
 		}
 		return 1
 	case *logical.LogicalInlineValues:
 		return 1
 	case *logical.LogicalCTE:
-		if o.Recursive {
+		if o.Recursive() {
 			return arityPoison
 		}
-		key := strings.ToUpper(o.Name)
-		prev, had := t.cteScope[key]
-		// The ColumnAliases projection wrapper translateCTE adds is a plain
-		// Project — arity-transparent — so registering the raw body walks the
-		// same cluster the translation produces.
-		t.cteScope[key] = o.Body
-		a := t.clusterArity(o.Main)
-		if had {
-			t.cteScope[key] = prev
-		} else {
-			delete(t.cteScope, key)
-		}
-		return a
+		previous := t.cteScope
+		t.cteScope = previous.With(o.CTEProducer)
+		defer func() { t.cteScope = previous }()
+		return t.clusterArity(o.Main)
 	case *logical.LogicalAggregate, *logical.LogicalDistinct, *logical.LogicalSort,
 		*logical.LogicalLimit, *logical.LogicalUnion:
 		return 1

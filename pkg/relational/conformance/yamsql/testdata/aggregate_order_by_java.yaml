@@ -115,22 +115,12 @@ tests:
       - ['Bob']
       - ['Alice']
       - ['Alice']
-  # An AGGREGATE ORDER BY key never binds an output alias under the
-  # DEFERRED strip, even when a delimited alias spells the aggregate's
-  # canonical rendering: ORDER BY SUM(s.score) sorts by the aggregate,
-  # not by the "SUM(S.SCORE)"-aliased player column. (The immediate-strip
-  # variant of this collision is a PRE-EXISTING translator field-naming
-  # ambiguity — fails identically on the merge base — tracked in TODO.md.)
+  # The old rendered-key collision witness is not an admissible authored output
+  # name: Java's result-field materialization rejects parentheses with 42602.
   - query: |-
       SELECT SUM(s.score) AS total, s.player AS "SUM(S.SCORE)" FROM scores s, scores t
       WHERE s.id = t.id GROUP BY s.player, s.game ORDER BY SUM(s.score) DESC
-    rows:
-      - [220, 'Alice']
-      - [200, 'Charlie']
-      - [110, 'Bob']
-      - [90, 'Bob']
-      - [85, 'Charlie']
-      - [80, 'Alice']
+    error_code: "42602"
   # A positional ORDER BY in a catalog-built scalar subquery binds the
   # OUTPUT slot, not a same-named source column: item 1 is `id AS score`,
   # so ORDER BY 1 DESC picks the max id (8), never the max SCORE column.

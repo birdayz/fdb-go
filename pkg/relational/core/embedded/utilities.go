@@ -1,14 +1,9 @@
 package embedded
 
 import (
-	"bytes"
 	"database/sql/driver"
-	"encoding/base64"
-	"encoding/hex"
-	"errors"
 	"fmt"
 	"math"
-	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -16,40 +11,10 @@ import (
 
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/functions"
-	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 )
 
-// Pure utility helpers with no dependency on EmbeddedConnection
-// state — used across every execution path.
-//
-//   applyArithmeticOp   map-path arithmetic wrapper over
-//                       functions.ApplyMathOp (int64 preservation,
-//                       div/0 errors, `%` support).
-//   substituteParams    positional `?` placeholder substitution
-//                       (nil → NULL, bool → TRUE/FALSE, int64,
-//                       float64, string with quote escaping,
-//                       []byte as quoted hex). Single-quoted
-//                       strings + -- and /* */ comments are
-//                       preserved verbatim.
-//   evalConstant        parse-tree constant → Go value (int64 /
-//                       float64 / string / bool / nil / []byte via
-//                       hex or base64). Numeric overflow → 22003.
-//   stripBytesWrapper / decodeBase64  bytes-literal support.
-//   valuesEqual         type-strict value equality with numeric
-//                       promotion (int64 / float64 mix OK, exact
-//                       int64 path avoids float-precision loss for
-//                       values > 2^53). Cross-type compares return
-//                       false rather than panicking.
-//
-// Destined for pkg/relational/core/{functions,eval}/ per RFC 021
-// Phase 1c.
-
-// applyArithmeticOp is the map-path arithmetic entry, delegating to
-// functions.ApplyMathOp (div/0 errors per SQL standard, int64
-// preservation, `%` support).
-func applyArithmeticOp(left, right driver.Value, op string) (driver.Value, error) {
-	return functions.ApplyMathOp(left, right, op)
-}
+// SQL driver parameter text transport. Expression evaluation belongs to the
+// shared typed expression compiler, including INFORMATION_SCHEMA filters.
 
 // renderableNaNs maps each NaN bit pattern the SQL text form can express to the
 // text that produces it. There are TWO, because the CAST target changes the
@@ -207,7 +172,7 @@ func substituteParams(query string, args []driver.NamedValue) (string, error) {
 		case int64:
 			fmt.Fprintf(&b, "%d", val)
 		case float64:
-			// NaN and ±Infinity have no BARE literal form — "%g" renders them
+			// NaN and ±Infinity have no BARE literal form — Go formats them
 			// as NaN/+Inf/-Inf, which the parser reads as identifiers and
 			// rejects with a confusing 42601. They do have a CAST form, and it
 			// is the same one on both sides of the port: 'NaN', 'Infinity' and
@@ -240,9 +205,10 @@ func substituteParams(query string, args []driver.NamedValue) (string, error) {
 				// That is the defect this whole item was fixing, one level
 				// down: a write whose stored value depends on which syntax
 				// carried it. Preserving arbitrary bits is not possible here —
-				// parameters reach the engine only as interpolated SQL TEXT
-				// (substituteParams is the sole channel; there is no typed
-				// parameter path), and no literal in this grammar denotes an
+				// the SQL driver passes parameters only as interpolated SQL
+				// TEXT, not through the executor's typed bindings (see the
+				// bound-parameter entry in DIVERGENCES.md and RFC-254), and no
+				// literal in this grammar denotes an
 				// arbitrary double bit pattern. Arithmetic reaches ±Infinity
 				// and one negative NaN, not a payload.
 				//
@@ -276,9 +242,11 @@ func substituteParams(query string, args []driver.NamedValue) (string, error) {
 			case math.IsInf(val, -1):
 				b.WriteString("CAST('-Infinity' AS DOUBLE)")
 			default:
-				// %g with no precision is the shortest representation that
-				// round-trips, so every finite double survives exactly.
-				fmt.Fprintf(&b, "%g", val)
+				// Exponent syntax preserves DOUBLE's type as well as its bits.
+				// %g renders whole doubles as integer literals: -0 loses its
+				// sign, and 3 / 2 selects integer division. Precision -1 keeps
+				// every finite value exact, including subnormals and -0.
+				b.WriteString(strconv.FormatFloat(val, 'e', -1, 64))
 			}
 		case string:
 			// Escape single quotes by doubling them.
@@ -315,170 +283,4 @@ func substituteParams(query string, args []driver.NamedValue) (string, error) {
 			argIdx, len(args))
 	}
 	return b.String(), nil
-}
-
-// parseDecimalLiteralValue mirrors Java's literal-token parsing rules:
-// integer-shape text (no '.', no exponent — DECIMAL_LITERAL) goes to
-// int64; on overflow, error byte-equal with Java's
-// `NumberFormatException: For input string: "<text>"`. Float-shape text
-// (REAL_LITERAL — has '.' or exponent) parses to float64.
-func parseDecimalLiteralValue(text string) (any, error) {
-	isFloatShape := strings.ContainsAny(text, ".eE")
-	if !isFloatShape {
-		iv, err := strconv.ParseInt(text, 10, 64)
-		if err == nil {
-			return iv, nil
-		}
-		// Java's lexer emits the literal as a Long token; Long.parseLong
-		// throws NumberFormatException for any token that overflows long.
-		// The conformance harness compares the deepest cause message,
-		// which is the NumberFormatException's `For input string: "<text>"`.
-		// Match byte-equal (no exception class prefix).
-		return nil, api.NewErrorf(api.ErrCodeInvalidParameter,
-			"For input string: %q", text)
-	}
-	fv, err := strconv.ParseFloat(text, 64)
-	if err != nil {
-		// strconv.ParseFloat returns (±Inf, ErrRange) on magnitude
-		// overflow — treat as 22003 NUMERIC_VALUE_OUT_OF_RANGE. Any
-		// other parse error is a malformed literal → 22023.
-		if errors.Is(err, strconv.ErrRange) {
-			return nil, api.NewErrorf(api.ErrCodeNumericValueOutOfRange, "decimal literal %q overflows float64", text)
-		}
-		return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "cannot parse decimal literal %q: %v", text, err)
-	}
-	return fv, nil
-}
-
-// evalConstant evaluates a constant parse-tree node to a Go value.
-// Returns nil for NULL.
-func evalConstant(c antlrgen.IConstantContext) (any, error) {
-	switch cv := c.(type) {
-	case *antlrgen.DecimalConstantContext:
-		text := cv.DecimalLiteral().GetText()
-		return parseDecimalLiteralValue(text)
-	case *antlrgen.NegativeDecimalConstantContext:
-		text := "-" + cv.DecimalLiteral().GetText()
-		return parseDecimalLiteralValue(text)
-	case *antlrgen.StringConstantContext:
-		raw := cv.StringLiteral().GetText()
-		if len(raw) >= 2 {
-			raw = raw[1 : len(raw)-1]
-		}
-		// Unescape doubled single-quotes produced by substituteParams or typed literally.
-		raw = strings.ReplaceAll(raw, "''", "'")
-		return raw, nil
-	case *antlrgen.NullConstantContext:
-		return nil, nil
-	case *antlrgen.BooleanConstantContext:
-		return cv.BooleanLiteral().TRUE() != nil, nil
-	case *antlrgen.BytesConstantContext:
-		// Grammar produces either HEXADECIMAL_LITERAL ('x' followed by
-		// hex in single quotes) or BASE64_LITERAL ('b64' followed by
-		// base64 in single quotes).
-		bl := cv.BytesLiteral()
-		if bl == nil {
-			return nil, api.NewError(api.ErrCodeInvalidParameter, "empty bytes literal")
-		}
-		if hexLit := bl.HEXADECIMAL_LITERAL(); hexLit != nil {
-			text := hexLit.GetText()
-			// text looks like: x'deadbeef' or X'deadbeef'
-			body := stripBytesWrapper(text, "x")
-			// encoding/hex.DecodeString handles both odd-length and
-			// non-hex-char failures uniformly.
-			out, err := hex.DecodeString(body)
-			if err != nil {
-				return nil, api.NewErrorf(api.ErrCodeInvalidBinaryRepresentation, "invalid hex literal %q: %v", text, err)
-			}
-			return out, nil
-		}
-		if b64 := bl.BASE64_LITERAL(); b64 != nil {
-			text := b64.GetText()
-			body := stripBytesWrapper(text, "b64")
-			out, err := decodeBase64(body)
-			if err != nil {
-				return nil, api.NewErrorf(api.ErrCodeInvalidBinaryRepresentation, "invalid base64 in %q: %v", text, err)
-			}
-			return out, nil
-		}
-		return nil, api.NewError(api.ErrCodeInvalidParameter, "bytes literal must be hex or base64")
-	default:
-		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation, "unsupported constant type %T in WHERE", c)
-	}
-}
-
-// stripBytesWrapper removes the `<prefix>'...'` wrapping from a bytes
-// literal text token. Case-insensitive on the prefix to accept x / X
-// and b64 / B64.
-func stripBytesWrapper(text, prefix string) string {
-	lower := strings.ToLower(text)
-	if strings.HasPrefix(lower, prefix) {
-		text = text[len(prefix):]
-	}
-	text = strings.TrimPrefix(text, "'")
-	text = strings.TrimSuffix(text, "'")
-	return text
-}
-
-// base64StdStrict is the standard Base64 encoding with strict
-// padding (no line breaks, no URL-safe alternative). Mirrors what
-// Java's Base64.getDecoder() accepts for the b64'...' literal form.
-var base64StdStrict = base64.StdEncoding.Strict()
-
-func decodeBase64(s string) ([]byte, error) {
-	return base64StdStrict.DecodeString(s)
-}
-
-// valuesEqual compares two driver values that may have different numeric types.
-func valuesEqual(a, b any) bool {
-	if a == nil && b == nil {
-		return true
-	}
-	if a == nil || b == nil {
-		return false
-	}
-	// Exact int64 comparison avoids float64 precision loss for large integers
-	// (> 2^53 cannot be represented exactly as float64).
-	if ai, ok1 := a.(int64); ok1 {
-		if bi, ok2 := b.(int64); ok2 {
-			return ai == bi
-		}
-	}
-	// Normalise mixed int64/float64 pairs to float64.
-	toFloat := func(v any) (float64, bool) {
-		switch n := v.(type) {
-		case int64:
-			return float64(n), true
-		case float64:
-			return n, true
-		}
-		return 0, false
-	}
-	fa, aIsNum := toFloat(a)
-	fb, bIsNum := toFloat(b)
-	if aIsNum && bIsNum {
-		return fa == fb
-	}
-	// One numeric and one non-numeric → not equal. SQL rejects cross-type
-	// comparison (PostgreSQL errors; we return false to stay non-fatal).
-	if aIsNum != bIsNum {
-		return false
-	}
-	switch av := a.(type) {
-	case string:
-		bv, ok := b.(string)
-		return ok && av == bv
-	case bool:
-		bv, ok := b.(bool)
-		return ok && av == bv
-	case []byte:
-		bv, ok := b.([]byte)
-		return ok && bytes.Equal(av, bv)
-	}
-	// Last resort for exotic driver values: compare only if concrete types
-	// match, avoid `'5' = 5` stringification bugs.
-	if reflect.TypeOf(a) != reflect.TypeOf(b) {
-		return false
-	}
-	return fmt.Sprintf("%v", a) == fmt.Sprintf("%v", b)
 }
