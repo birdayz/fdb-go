@@ -6,11 +6,13 @@ package executor
 // pinned by the FDB tests in pkg/relational/sqldriver/derived_limit_rfc128_test.go.
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer"
@@ -382,5 +384,134 @@ func drainEnvelope(t *testing.T, ctx context.Context, c recordlayer.RecordCursor
 			return out
 		}
 		out = append(out, fieldVal(t, r.GetValue(), "id"))
+	}
+}
+
+// A real sort continuation cannot encode an invalid remaining row. LIMIT must
+// not ask it to serialize while returning rows or an out-of-band boundary;
+// the failure belongs to the consumer that actually requests continuation bytes.
+func TestLimitEnvelopeDefersSortEncoding(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	sorted := &customSortCursor{
+		inner:  recordlayer.Empty[QueryResult](),
+		buf:    []QueryResult{qr("id", int64(1)), {}},
+		loaded: true,
+	}
+	page := recordlayer.LimitRowsCursor[QueryResult](sorted, 1)
+	cursor := newLimitEnvelopeCursor(page, 0, 10)
+	t.Cleanup(func() { _ = cursor.Close() })
+	row, err := cursor.OnNext(ctx)
+	if err != nil || !row.HasNext() {
+		t.Fatalf("emission serialized the sort remainder: hasNext=%t err=%v", row.HasNext(), err)
+	}
+	if got := fieldVal(t, row.GetValue(), "id"); got != 1 {
+		t.Fatalf("row = %d, want 1", got)
+	}
+	boundary, err := cursor.OnNext(ctx)
+	if err != nil || boundary.HasNext() || boundary.GetNoNextReason() != recordlayer.ReturnLimitReached {
+		t.Fatalf("out-of-band boundary serialized the sort remainder: %+v err=%v", boundary, err)
+	}
+	again, err := cursor.OnNext(ctx)
+	if err != nil || again.GetContinuation() != boundary.GetContinuation() {
+		t.Fatalf("terminal boundary was not cached: %+v, %v", again, err)
+	}
+	for _, continuation := range []recordlayer.RecordCursorContinuation{row.GetContinuation(), boundary.GetContinuation()} {
+		if continuation.IsEnd() {
+			t.Fatal("resumable sort position became end-of-stream")
+		}
+		if _, err := continuation.ToBytes(); err == nil || !strings.Contains(err.Error(), "buffered row has no positional layout") {
+			t.Fatalf("deferred sort encode failure = %v", err)
+		}
+		rs := &RecordLayerResultSet{lastContinuation: continuation}
+		if _, err := rs.Continuation(); err == nil || !strings.Contains(err.Error(), "buffered row has no positional layout") {
+			t.Fatalf("result-set swallowed deferred encode failure: %v", err)
+		}
+	}
+}
+
+func TestLimitEnvelopeDelayedSnapshot(t *testing.T) {
+	t.Parallel()
+	for _, limit := range []int{2, -1} {
+		t.Run(fmt.Sprint(limit), func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			rows := []QueryResult{qr("id", int64(1)), qr("id", int64(2)), qr("id", int64(3))}
+			sorted := &customSortCursor{inner: recordlayer.Empty[QueryResult](), buf: rows, loaded: true}
+			cursor := newLimitEnvelopeCursor(sorted, 1, limit)
+			first, err := cursor.OnNext(ctx)
+			if err != nil || !first.HasNext() {
+				t.Fatalf("first: %v", err)
+			}
+			if got := fieldVal(t, first.GetValue(), "id"); got != 2 {
+				t.Fatalf("first row = %d", got)
+			}
+			second, err := cursor.OnNext(ctx)
+			if err != nil || !second.HasNext() {
+				t.Fatalf("second: %v", err)
+			}
+			if got := fieldVal(t, second.GetValue(), "id"); got != 3 {
+				t.Fatalf("second row = %d", got)
+			}
+			end, err := cursor.OnNext(ctx)
+			if err != nil || end.HasNext() || !end.GetContinuation().IsEnd() || end.GetNoNextReason() != recordlayer.SourceExhausted {
+				t.Fatalf("end: %+v, %v", end, err)
+			}
+			if err := cursor.Close(); err != nil {
+				t.Fatal(err)
+			}
+			remaining := limit
+			if remaining >= 0 {
+				remaining--
+			}
+			want, err := encodeLimitContinuation(&sortEmitContinuation{remaining: rows[2:]}, 0, remaining)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := first.GetContinuation().ToBytes()
+			if err != nil || !bytes.Equal(got, want) {
+				t.Fatalf("first snapshot changed after advance/close: got %x err=%v, want %x", got, err, want)
+			}
+			inner, offset, rem, err := decodeLimitContinuation(got, 99, 99)
+			if err != nil || offset != 0 || rem != remaining || len(inner) == 0 {
+				t.Fatalf("snapshot envelope: offset=%d limit=%d bytes=%d err=%v", offset, rem, len(inner), err)
+			}
+		})
+	}
+}
+
+// Literal bytes pin the existing envelope independently of its encoder/decoder,
+// including the absent versus present-empty distinction and signed counters.
+func TestLimitEnvelopeContinuationBytes(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name          string
+		inner         recordlayer.RecordCursorContinuation
+		offset, limit int
+		want          string
+	}{
+		{"nil", nil, 2, 3, "0100000000000000020000000000000003ffffffff"},
+		{"start", &recordlayer.StartContinuation{}, 2, 3, "0100000000000000020000000000000003ffffffff"},
+		{"end", &recordlayer.EndContinuation{}, 2, 3, "0100000000000000020000000000000003ffffffff"},
+		{"empty", recordlayer.NewBytesContinuation([]byte{}), 2, 3, "010000000000000002000000000000000300000000"},
+		{"present", recordlayer.NewBytesContinuation([]byte{1, 2, 3}), 2, 3, "010000000000000002000000000000000300000003010203"},
+		{"unbounded", recordlayer.NewBytesContinuation([]byte{9}), 0, -1, "010000000000000000ffffffffffffffff0000000109"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			continuation := &limitEnvelopeContinuation{inner: tc.inner, remOffset: tc.offset, remLimit: tc.limit}
+			if continuation.IsEnd() {
+				t.Fatal("envelope must retain its window even when the inner position is absent")
+			}
+			for i := 0; i < 2; i++ {
+				got, err := continuation.ToBytes()
+				if err != nil || fmt.Sprintf("%x", got) != tc.want {
+					t.Fatalf("encode %d: got %x err=%v, want %s", i, got, err, tc.want)
+				}
+				// A consumer can mutate its encoded bytes without changing the
+				// immutable position used by subsequent or concurrent consumers.
+				got[0] = 0xff
+			}
+		})
 	}
 }

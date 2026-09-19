@@ -1877,12 +1877,8 @@ func (c *limitEnvelopeCursor) OnNext(ctx context.Context) (recordlayer.RecordCur
 			// cursor from this continuation). Cached in terminal so a
 			// contract-violating re-call on THIS instance replays it verbatim
 			// (Java's cached no-next result) instead of re-pulling the inner.
-			contBytes, encErr := encodeLimitContinuation(result.GetContinuation(), c.remOffset, c.remLimit)
-			if encErr != nil {
-				return recordlayer.RecordCursorResult[QueryResult]{}, encErr
-			}
 			res := recordlayer.NewResultNoNext[QueryResult](
-				reason, recordlayer.NewBytesContinuation(contBytes),
+				reason, &limitEnvelopeContinuation{inner: result.GetContinuation(), remOffset: c.remOffset, remLimit: c.remLimit},
 			)
 			c.terminal = &res
 			return res, nil
@@ -1901,11 +1897,9 @@ func (c *limitEnvelopeCursor) OnNext(ctx context.Context) (recordlayer.RecordCur
 		if !c.unbounded {
 			c.remLimit--
 		}
-		contBytes, encErr := encodeLimitContinuation(result.GetContinuation(), 0, c.remLimit)
-		if encErr != nil {
-			return recordlayer.RecordCursorResult[QueryResult]{}, encErr
-		}
-		return recordlayer.NewResultWithValue(result.GetValue(), recordlayer.NewBytesContinuation(contBytes)), nil
+		return recordlayer.NewResultWithValue(result.GetValue(), &limitEnvelopeContinuation{
+			inner: result.GetContinuation(), remOffset: 0, remLimit: c.remLimit,
+		}), nil
 	}
 }
 
@@ -1947,6 +1941,23 @@ const limitContVersion byte = 1
 // limitContNilInner marks an absent inner continuation (start-from-begin),
 // distinct from a present-but-empty inner continuation (length 0).
 const limitContNilInner uint32 = 0xFFFFFFFF
+
+// limitEnvelopeContinuation snapshots the window without serializing its child.
+// In particular, a sort's continuation owns the remaining rows: encoding it on
+// every emission would repeatedly serialize the same tail. Like Java's
+// RowLimitedCursor and SkipCursor, retain the immutable continuation object
+// until a consumer requests bytes, independently of cursor advancement/closure.
+type limitEnvelopeContinuation struct {
+	inner     recordlayer.RecordCursorContinuation
+	remOffset int
+	remLimit  int
+}
+
+func (c *limitEnvelopeContinuation) ToBytes() ([]byte, error) {
+	return encodeLimitContinuation(c.inner, c.remOffset, c.remLimit)
+}
+
+func (c *limitEnvelopeContinuation) IsEnd() bool { return false }
 
 func encodeLimitContinuation(innerCont recordlayer.RecordCursorContinuation, remOffset, remLimit int) ([]byte, error) {
 	var innerBytes []byte
