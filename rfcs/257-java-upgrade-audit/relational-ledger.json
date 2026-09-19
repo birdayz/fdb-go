@@ -1,0 +1,1624 @@
+{
+  "group": "relational",
+  "report_sha256": "572e24f21749de7161ed3e8bd607ea94258ae53379ac4b4a1971f01e6e9ccac2",
+  "assigned_paths": 404,
+  "ledger_paths": 404,
+  "entries": [
+    {
+      "path": "fdb-relational-api/fdb-relational-api.gradle",
+      "report_line": 575
+    },
+    {
+      "path": "fdb-relational-api/src/main/java/com/apple/foundationdb/relational/api/Options.java",
+      "report_line": 587
+    },
+    {
+      "path": "fdb-relational-api/src/main/java/com/apple/foundationdb/relational/api/exceptions/ErrorCode.java",
+      "report_line": 588
+    },
+    {
+      "path": "fdb-relational-api/src/main/java/com/apple/foundationdb/relational/api/fluentsql/statement/StructuredQuery.java",
+      "report_line": 589
+    },
+    {
+      "path": "fdb-relational-api/src/main/java/com/apple/foundationdb/relational/api/metadata/DataType.java",
+      "report_line": 590
+    },
+    {
+      "path": "fdb-relational-api/src/main/java/com/apple/foundationdb/relational/api/metadata/SchemaTemplate.java",
+      "report_line": 591
+    },
+    {
+      "path": "fdb-relational-api/src/main/java/com/apple/foundationdb/relational/api/metadata/StoredQuery.java",
+      "report_line": 592
+    },
+    {
+      "path": "fdb-relational-api/src/main/java/com/apple/foundationdb/relational/util/Assert.java",
+      "report_line": 593
+    },
+    {
+      "path": "fdb-relational-api/src/testFixtures/java/com/apple/foundationdb/relational/utils/OptionsTestHelper.java",
+      "report_line": 599
+    },
+    {
+      "path": "fdb-relational-cli/fdb-relational-cli.gradle",
+      "report_line": 576
+    },
+    {
+      "path": "fdb-relational-cli/src/main/java/com/apple/foundationdb/relational/cli/sqlline/Customize.java",
+      "report_line": 605
+    },
+    {
+      "path": "fdb-relational-cli/src/main/java/com/apple/foundationdb/relational/cli/sqlline/RelationalSQLLine.java",
+      "report_line": 606
+    },
+    {
+      "path": "fdb-relational-cli/src/test/java/com/apple/foundationdb/relational/cli/SQLLineTest.java",
+      "report_line": 607
+    },
+    {
+      "path": "fdb-relational-core/fdb-relational-core.gradle",
+      "report_line": 577
+    },
+    {
+      "path": "fdb-relational-core/src/jmh/java/com/apple/foundationdb/relational/recordlayer/BenchmarkConnHolder.java",
+      "report_line": 620
+    },
+    {
+      "path": "fdb-relational-core/src/jmh/java/com/apple/foundationdb/relational/recordlayer/DirectAccessVsQueryBenchmark.java",
+      "report_line": 621
+    },
+    {
+      "path": "fdb-relational-core/src/jmh/java/com/apple/foundationdb/relational/recordlayer/IndexScanVsQueryBenchmark.java",
+      "report_line": 622
+    },
+    {
+      "path": "fdb-relational-core/src/main/antlr/RelationalLexer.g4",
+      "report_line": 613
+    },
+    {
+      "path": "fdb-relational-core/src/main/antlr/RelationalParser.g4",
+      "report_line": 614
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/api/catalog/SchemaExistsBehavior.java",
+      "report_line": 628
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/api/catalog/StoreCatalog.java",
+      "report_line": 629
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/api/metrics/RelationalMetric.java",
+      "report_line": 630
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/ArrayRow.java",
+      "report_line": 631
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/EmbeddedRelationalConnection.java",
+      "report_line": 632
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/QueryExecutor.java",
+      "report_line": 633
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/RecordLayerEngine.java",
+      "report_line": 634
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/RecordLayerStorageCluster.java",
+      "report_line": 635
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/RecordTypeTable.java",
+      "report_line": 636
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/catalog/RecordLayerStoreCatalog.java",
+      "report_line": 637
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/ddl/DropSchemaConstantAction.java",
+      "report_line": 638
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/ddl/RecordLayerCreateSchemaConstantAction.java",
+      "report_line": 639
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/ddl/RecordLayerSetStoreStateConstantAction.java",
+      "report_line": 640
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/metadata/DataTypeUtils.java",
+      "report_line": 641
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/metadata/NoOpSchemaTemplate.java",
+      "report_line": 642
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/metadata/RecordLayerIndex.java",
+      "report_line": 643
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/metadata/RecordLayerSchemaTemplate.java",
+      "report_line": 644
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/metadata/RecordLayerTable.java",
+      "report_line": 645
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/metadata/serde/RecordMetadataDeserializer.java",
+      "report_line": 646
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/metadata/serde/RecordMetadataSerializer.java",
+      "report_line": 647
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/metric/RecordLayerMetricCollector.java",
+      "report_line": 648
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/metric/StoreTimerMetricCollector.java",
+      "report_line": 649
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/AstNormalizer.java",
+      "report_line": 650
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/CopyPlan.java",
+      "report_line": 651
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/Expression.java",
+      "report_line": 652
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/Expressions.java",
+      "report_line": 653
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/LogicalOperator.java",
+      "report_line": 654
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/OfflineStoredQueriesProcessor.java",
+      "report_line": 655
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/OptionsUtils.java",
+      "report_line": 656
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/OrderByExpression.java",
+      "report_line": 657
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/PlanGenerator.java",
+      "report_line": 658
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/PlannerConfiguration.java",
+      "report_line": 659
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/QueryParser.java",
+      "report_line": 660
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/QueryPlan.java",
+      "report_line": 661
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/SemanticAnalyzer.java",
+      "report_line": 662
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/WindowSpecExpression.java",
+      "report_line": 663
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/cache/MultiStageCache.java",
+      "report_line": 664
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/ddl/ExtremumEverStorage.java",
+      "report_line": 665
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/ddl/IndexGenerationOptions.java",
+      "report_line": 666
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/ddl/IndexGenerator.java",
+      "report_line": 667
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/ddl/IndexPredicates.java",
+      "report_line": 668
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/ddl/IndexSpec.java",
+      "report_line": 669
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/ddl/MaterializedViewIndexGenerator.java",
+      "report_line": 670
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/ddl/OnSourceIndexGenerator.java",
+      "report_line": 671
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/ddl/ProjectionResolver.java",
+      "report_line": 672
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/ddl/QuantifierValues.java",
+      "report_line": 673
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/ddl/ValueToKeyExpressionVisitor.java",
+      "report_line": 674
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/functions/CompiledSqlFunction.java",
+      "report_line": 675
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/functions/SqlFunctionCatalog.java",
+      "report_line": 676
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/functions/SqlFunctionCatalogImpl.java",
+      "report_line": 677
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/functions/UserDefinedFunctionBuilder.java",
+      "report_line": 678
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/functions/UserDefinedFunctionCatalog.java",
+      "report_line": 679
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/functions/UserDefinedMacroFunctionBuilder.java",
+      "report_line": 680
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/visitors/BaseVisitor.java",
+      "report_line": 681
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/visitors/DdlVisitor.java",
+      "report_line": 682
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/visitors/DelegatingVisitor.java",
+      "report_line": 683
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/visitors/ExpressionVisitor.java",
+      "report_line": 684
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/visitors/IdentifierVisitor.java",
+      "report_line": 685
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/visitors/QueryVisitor.java",
+      "report_line": 686
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/visitors/TypedVisitor.java",
+      "report_line": 687
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/storage/BackingRecordStore.java",
+      "report_line": 688
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/structuredsql/statement/UpdateStatementImpl.java",
+      "report_line": 689
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/util/ExceptionUtil.java",
+      "report_line": 690
+    },
+    {
+      "path": "fdb-relational-core/src/main/java/com/apple/foundationdb/relational/transactionbound/catalog/HollowStoreCatalog.java",
+      "report_line": 691
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/api/RelationalConnectionTest.java",
+      "report_line": 697
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/api/ddl/DdlStatementParsingTest.java",
+      "report_line": 698
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/api/ddl/IndexTest.java",
+      "report_line": 699
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/api/ddl/SqlFunctionTest.java",
+      "report_line": 700
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/autotest/engine/AutoTestEngine.java",
+      "report_line": 701
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/autotest/engine/WorkloadTestDescriptor.java",
+      "report_line": 702
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/memory/InMemoryCatalog.java",
+      "report_line": 703
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/memory/InMemoryRelationalConnection.java",
+      "report_line": 704
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/recordlayer/AbstractRecordLayerResultSetTest.java",
+      "report_line": 705
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/recordlayer/CaseSensitiveDbObjectsTest.java",
+      "report_line": 706
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/recordlayer/CopyCommandTest.java",
+      "report_line": 707
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/recordlayer/EmbeddedRelationalExtension.java",
+      "report_line": 708
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/recordlayer/KeySpacePathParsingTest.java",
+      "report_line": 709
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/recordlayer/OptionScopeTest.java",
+      "report_line": 710
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/recordlayer/QueryLoggingTest.java",
+      "report_line": 711
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/recordlayer/RecordTypeTableSerDeTest.java",
+      "report_line": 712
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/recordlayer/UniqueIndexTests.java",
+      "report_line": 713
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/recordlayer/catalog/CatalogMetaDataProviderTest.java",
+      "report_line": 714
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/recordlayer/catalog/RecordLayerStoreCatalogImplTest.java",
+      "report_line": 715
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/recordlayer/catalog/RecordLayerStoreCatalogTestBase.java",
+      "report_line": 716
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/recordlayer/catalog/RecordLayerStoreCatalogWithNoTemplateOperationsTest.java",
+      "report_line": 717
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/recordlayer/metadata/NoOpSchemaTemplateTests.java",
+      "report_line": 718
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/recordlayer/metric/StoreTimerMetricCollectorFromFDBRecordContextTest.java",
+      "report_line": 719
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/recordlayer/metric/StoreTimerMetricCollectorFromMetricRegistryTest.java",
+      "report_line": 720
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/recordlayer/query/AstNormalizerTests.java",
+      "report_line": 721
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/recordlayer/query/DelegatingVisitorTest.java",
+      "report_line": 722
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/recordlayer/query/ExplainTests.java",
+      "report_line": 723
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/recordlayer/query/ExpressionTests.java",
+      "report_line": 724
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/recordlayer/query/ForceContinuationQueryTests.java",
+      "report_line": 725
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/recordlayer/query/GroupByQueryTests.java",
+      "report_line": 726
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/recordlayer/query/InListNullParameterTest.java",
+      "report_line": 727
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/recordlayer/query/NullParameterParityTest.java",
+      "report_line": 728
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/recordlayer/query/QueryParserTests.java",
+      "report_line": 729
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/recordlayer/query/QueryTestUtils.java",
+      "report_line": 730
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/recordlayer/query/SnapshotIsolationConcurrencyTest.java",
+      "report_line": 731
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/recordlayer/query/StandardQueryTests.java",
+      "report_line": 732
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/recordlayer/query/StoredQueriesTest.java",
+      "report_line": 733
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/recordlayer/query/StringLiteralNormalizationTest.java",
+      "report_line": 734
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/recordlayer/query/UpdateTest.java",
+      "report_line": 735
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/recordlayer/query/cache/ConstraintValidityTests.java",
+      "report_line": 736
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/recordlayer/query/cache/MultiStageCacheTests.java",
+      "report_line": 737
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/recordlayer/query/cache/RelationalPlanCacheTests.java",
+      "report_line": 738
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/recordlayer/query/ddl/ValueToKeyExpressionVisitorTest.java",
+      "report_line": 739
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/recordlayer/query/functions/UserDefinedMacroFunctionBuilderTest.java",
+      "report_line": 740
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/recordlayer/storage/BackingLocatableResolverStoreTest.java",
+      "report_line": 741
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/utils/InMemoryTransactionManager.java",
+      "report_line": 742
+    },
+    {
+      "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/utils/RelationalResultSetAssert.java",
+      "report_line": 743
+    },
+    {
+      "path": "fdb-relational-grpc/fdb-relational-grpc.gradle",
+      "report_line": 578
+    },
+    {
+      "path": "fdb-relational-grpc/src/main/java/com/apple/foundationdb/relational/jdbc/RelationalArrayFacade.java",
+      "report_line": 751
+    },
+    {
+      "path": "fdb-relational-grpc/src/main/java/com/apple/foundationdb/relational/jdbc/RelationalResultSetFacade.java",
+      "report_line": 752
+    },
+    {
+      "path": "fdb-relational-grpc/src/main/java/com/apple/foundationdb/relational/jdbc/RelationalResultSetMetaDataFacade.java",
+      "report_line": 753
+    },
+    {
+      "path": "fdb-relational-grpc/src/main/java/com/apple/foundationdb/relational/jdbc/RelationalStructFacade.java",
+      "report_line": 754
+    },
+    {
+      "path": "fdb-relational-grpc/src/main/java/com/apple/foundationdb/relational/jdbc/TypeConversion.java",
+      "report_line": 755
+    },
+    {
+      "path": "fdb-relational-grpc/src/main/proto/grpc/relational/jdbc/v1/column.proto",
+      "report_line": 761
+    },
+    {
+      "path": "fdb-relational-grpc/src/main/proto/grpc/relational/jdbc/v1/jdbc.proto",
+      "report_line": 762
+    },
+    {
+      "path": "fdb-relational-grpc/src/main/proto/grpc/relational/jdbc/v1/result_set.proto",
+      "report_line": 763
+    },
+    {
+      "path": "fdb-relational-grpc/src/test/java/com/apple/foundationdb/relational/jdbc/ProtobufConversionTest.java",
+      "report_line": 769
+    },
+    {
+      "path": "fdb-relational-grpc/src/test/java/com/apple/foundationdb/relational/jdbc/RelationalResultSetMetadataFacadeTest.java",
+      "report_line": 770
+    },
+    {
+      "path": "fdb-relational-jdbc/fdb-relational-jdbc.gradle",
+      "report_line": 579
+    },
+    {
+      "path": "fdb-relational-jdbc/src/main/java/com/apple/foundationdb/relational/jdbc/JDBCRelationalConnection.java",
+      "report_line": 776
+    },
+    {
+      "path": "fdb-relational-jdbc/src/main/java/com/apple/foundationdb/relational/jdbc/JDBCRelationalDatabaseMetaData.java",
+      "report_line": 777
+    },
+    {
+      "path": "fdb-relational-jdbc/src/test/java/com/apple/foundationdb/relational/jdbc/JDBCRelationalConnectionTest.java",
+      "report_line": 778
+    },
+    {
+      "path": "fdb-relational-server/fdb-relational-server.gradle",
+      "report_line": 580
+    },
+    {
+      "path": "fdb-relational-server/src/main/java/com/apple/foundationdb/relational/server/RelationalServer.java",
+      "report_line": 784
+    },
+    {
+      "path": "fdb-relational-server/src/test/java/com/apple/foundationdb/relational/server/RelationalServerTest.java",
+      "report_line": 785
+    },
+    {
+      "path": "yaml-tests/src/main/java/com/apple/foundationdb/relational/yamltests/Matchers.java",
+      "report_line": 791
+    },
+    {
+      "path": "yaml-tests/src/main/java/com/apple/foundationdb/relational/yamltests/MetricsDiffAnalyzer.java",
+      "report_line": 792
+    },
+    {
+      "path": "yaml-tests/src/main/java/com/apple/foundationdb/relational/yamltests/MetricsInfo.java",
+      "report_line": 793
+    },
+    {
+      "path": "yaml-tests/src/main/java/com/apple/foundationdb/relational/yamltests/MetricsStatistics.java",
+      "report_line": 794
+    },
+    {
+      "path": "yaml-tests/src/main/java/com/apple/foundationdb/relational/yamltests/YamlCorrection.java",
+      "report_line": 795
+    },
+    {
+      "path": "yaml-tests/src/main/java/com/apple/foundationdb/relational/yamltests/YamlExecutionContext.java",
+      "report_line": 796
+    },
+    {
+      "path": "yaml-tests/src/main/java/com/apple/foundationdb/relational/yamltests/YamlFilesMaintainer.java",
+      "report_line": 797
+    },
+    {
+      "path": "yaml-tests/src/main/java/com/apple/foundationdb/relational/yamltests/YamlMetricsMaintainer.java",
+      "report_line": 798
+    },
+    {
+      "path": "yaml-tests/src/main/java/com/apple/foundationdb/relational/yamltests/block/IncludeBlock.java",
+      "report_line": 799
+    },
+    {
+      "path": "yaml-tests/src/main/java/com/apple/foundationdb/relational/yamltests/block/SetupBlock.java",
+      "report_line": 800
+    },
+    {
+      "path": "yaml-tests/src/main/java/com/apple/foundationdb/relational/yamltests/block/TestBlock.java",
+      "report_line": 801
+    },
+    {
+      "path": "yaml-tests/src/main/java/com/apple/foundationdb/relational/yamltests/command/Command.java",
+      "report_line": 802
+    },
+    {
+      "path": "yaml-tests/src/main/java/com/apple/foundationdb/relational/yamltests/command/CommandUtil.java",
+      "report_line": 803
+    },
+    {
+      "path": "yaml-tests/src/main/java/com/apple/foundationdb/relational/yamltests/command/QueryCommand.java",
+      "report_line": 804
+    },
+    {
+      "path": "yaml-tests/src/main/java/com/apple/foundationdb/relational/yamltests/command/QueryConfig.java",
+      "report_line": 805
+    },
+    {
+      "path": "yaml-tests/src/main/java/com/apple/foundationdb/relational/yamltests/command/QueryExecutor.java",
+      "report_line": 806
+    },
+    {
+      "path": "yaml-tests/src/main/java/com/apple/foundationdb/relational/yamltests/command/QueryInterpreter.java",
+      "report_line": 807
+    },
+    {
+      "path": "yaml-tests/src/main/java/com/apple/foundationdb/relational/yamltests/command/queryconfigs/CheckExplainConfig.java",
+      "report_line": 808
+    },
+    {
+      "path": "yaml-tests/src/main/java/com/apple/foundationdb/relational/yamltests/command/queryconfigs/CheckResultMetadataConfig.java",
+      "report_line": 809
+    },
+    {
+      "path": "yaml-tests/src/test/java/CheckExplainTest.java",
+      "report_line": 817
+    },
+    {
+      "path": "yaml-tests/src/test/java/DocumentationQueriesTests.java",
+      "report_line": 818
+    },
+    {
+      "path": "yaml-tests/src/test/java/SupportedVersionTest.java",
+      "report_line": 819
+    },
+    {
+      "path": "yaml-tests/src/test/java/YamlIntegrationTests.java",
+      "report_line": 820
+    },
+    {
+      "path": "yaml-tests/src/test/java/com/apple/foundationdb/relational/yamltests/CheckExplainConfigTest.java",
+      "report_line": 821
+    },
+    {
+      "path": "yaml-tests/src/test/java/com/apple/foundationdb/relational/yamltests/MetricsDiffAnalyzerTest.java",
+      "report_line": 822
+    },
+    {
+      "path": "yaml-tests/src/test/java/com/apple/foundationdb/relational/yamltests/MetricsStatisticsTest.java",
+      "report_line": 823
+    },
+    {
+      "path": "yaml-tests/src/test/java/com/apple/foundationdb/relational/yamltests/ResultSetPrettyPrinterTest.java",
+      "report_line": 824
+    },
+    {
+      "path": "yaml-tests/src/test/java/com/apple/foundationdb/relational/yamltests/YamlCorrectionUnitTest.java",
+      "report_line": 825
+    },
+    {
+      "path": "yaml-tests/src/test/proto/custom_field_option.proto",
+      "report_line": 831
+    },
+    {
+      "path": "yaml-tests/src/test/resources/aggregate-empty-table.metrics.binpb",
+      "report_line": 921
+    },
+    {
+      "path": "yaml-tests/src/test/resources/aggregate-empty-table.metrics.yaml",
+      "report_line": 921
+    },
+    {
+      "path": "yaml-tests/src/test/resources/aggregate-empty-table.yamsql",
+      "report_line": 838
+    },
+    {
+      "path": "yaml-tests/src/test/resources/aggregate-index-tests-count-empty.metrics.binpb",
+      "report_line": 922
+    },
+    {
+      "path": "yaml-tests/src/test/resources/aggregate-index-tests-count-empty.metrics.yaml",
+      "report_line": 922
+    },
+    {
+      "path": "yaml-tests/src/test/resources/aggregate-index-tests-count-empty.yamsql",
+      "report_line": 839
+    },
+    {
+      "path": "yaml-tests/src/test/resources/aggregate-index-tests-count.metrics.binpb",
+      "report_line": 923
+    },
+    {
+      "path": "yaml-tests/src/test/resources/aggregate-index-tests-count.metrics.yaml",
+      "report_line": 923
+    },
+    {
+      "path": "yaml-tests/src/test/resources/aggregate-index-tests-count.yamsql",
+      "report_line": 840
+    },
+    {
+      "path": "yaml-tests/src/test/resources/aggregate-index-tests.metrics.binpb",
+      "report_line": 924
+    },
+    {
+      "path": "yaml-tests/src/test/resources/aggregate-index-tests.metrics.yaml",
+      "report_line": 924
+    },
+    {
+      "path": "yaml-tests/src/test/resources/array-agg-tests.metrics.binpb",
+      "report_line": 925
+    },
+    {
+      "path": "yaml-tests/src/test/resources/array-agg-tests.metrics.yaml",
+      "report_line": 925
+    },
+    {
+      "path": "yaml-tests/src/test/resources/array-agg-tests.yamsql",
+      "report_line": 841
+    },
+    {
+      "path": "yaml-tests/src/test/resources/array-join-at.metrics.binpb",
+      "report_line": 926
+    },
+    {
+      "path": "yaml-tests/src/test/resources/array-join-at.metrics.yaml",
+      "report_line": 926
+    },
+    {
+      "path": "yaml-tests/src/test/resources/array-join-at.yamsql",
+      "report_line": 842
+    },
+    {
+      "path": "yaml-tests/src/test/resources/arrays-cardinality.metrics.binpb",
+      "report_line": 927
+    },
+    {
+      "path": "yaml-tests/src/test/resources/arrays-cardinality.metrics.yaml",
+      "report_line": 927
+    },
+    {
+      "path": "yaml-tests/src/test/resources/arrays-unnesting.metrics.binpb",
+      "report_line": 928
+    },
+    {
+      "path": "yaml-tests/src/test/resources/arrays-unnesting.metrics.yaml",
+      "report_line": 928
+    },
+    {
+      "path": "yaml-tests/src/test/resources/arrays.metrics.binpb",
+      "report_line": 929
+    },
+    {
+      "path": "yaml-tests/src/test/resources/arrays.metrics.yaml",
+      "report_line": 929
+    },
+    {
+      "path": "yaml-tests/src/test/resources/arrays.yamsql",
+      "report_line": 843
+    },
+    {
+      "path": "yaml-tests/src/test/resources/between.metrics.binpb",
+      "report_line": 930
+    },
+    {
+      "path": "yaml-tests/src/test/resources/between.metrics.yaml",
+      "report_line": 930
+    },
+    {
+      "path": "yaml-tests/src/test/resources/bitmap-aggregate-index.metrics.binpb",
+      "report_line": 931
+    },
+    {
+      "path": "yaml-tests/src/test/resources/bitmap-aggregate-index.metrics.yaml",
+      "report_line": 931
+    },
+    {
+      "path": "yaml-tests/src/test/resources/boolean-ddl.yamsql",
+      "report_line": 844
+    },
+    {
+      "path": "yaml-tests/src/test/resources/boolean.yamsql",
+      "report_line": 845
+    },
+    {
+      "path": "yaml-tests/src/test/resources/bytes.yamsql",
+      "report_line": 846
+    },
+    {
+      "path": "yaml-tests/src/test/resources/case-sensitivity.yamsql",
+      "report_line": 847
+    },
+    {
+      "path": "yaml-tests/src/test/resources/case-when.yamsql",
+      "report_line": 848
+    },
+    {
+      "path": "yaml-tests/src/test/resources/cast-tests.metrics.binpb",
+      "report_line": 932
+    },
+    {
+      "path": "yaml-tests/src/test/resources/cast-tests.metrics.yaml",
+      "report_line": 932
+    },
+    {
+      "path": "yaml-tests/src/test/resources/catalog.metrics.binpb",
+      "report_line": 933
+    },
+    {
+      "path": "yaml-tests/src/test/resources/catalog.metrics.yaml",
+      "report_line": 933
+    },
+    {
+      "path": "yaml-tests/src/test/resources/check-explain/addExplain/add-explain.yamsql",
+      "report_line": 849
+    },
+    {
+      "path": "yaml-tests/src/test/resources/check-explain/shouldPass/exact.metrics.binpb",
+      "report_line": 934
+    },
+    {
+      "path": "yaml-tests/src/test/resources/check-explain/shouldPass/exact.metrics.yaml",
+      "report_line": 934
+    },
+    {
+      "path": "yaml-tests/src/test/resources/composite-aggregates.metrics.binpb",
+      "report_line": 935
+    },
+    {
+      "path": "yaml-tests/src/test/resources/composite-aggregates.metrics.yaml",
+      "report_line": 935
+    },
+    {
+      "path": "yaml-tests/src/test/resources/create-drop.metrics.binpb",
+      "report_line": 936
+    },
+    {
+      "path": "yaml-tests/src/test/resources/create-drop.metrics.yaml",
+      "report_line": 936
+    },
+    {
+      "path": "yaml-tests/src/test/resources/create-drop.yamsql",
+      "report_line": 850
+    },
+    {
+      "path": "yaml-tests/src/test/resources/cte.metrics.binpb",
+      "report_line": 937
+    },
+    {
+      "path": "yaml-tests/src/test/resources/cte.metrics.yaml",
+      "report_line": 937
+    },
+    {
+      "path": "yaml-tests/src/test/resources/distinct-from.metrics.binpb",
+      "report_line": 938
+    },
+    {
+      "path": "yaml-tests/src/test/resources/distinct-from.metrics.yaml",
+      "report_line": 938
+    },
+    {
+      "path": "yaml-tests/src/test/resources/distinct-from.yamsql",
+      "report_line": 851
+    },
+    {
+      "path": "yaml-tests/src/test/resources/documentation-queries/array-agg-documentation-queries.yamsql",
+      "report_line": 852
+    },
+    {
+      "path": "yaml-tests/src/test/resources/documentation-queries/comments-documentation-queries.yamsql",
+      "report_line": 853
+    },
+    {
+      "path": "yaml-tests/src/test/resources/documentation-queries/is-distinct-from-operator-queries.yamsql",
+      "report_line": 854
+    },
+    {
+      "path": "yaml-tests/src/test/resources/documentation-queries/isolation-level-snapshot-documentation-queries.yamsql",
+      "report_line": 855
+    },
+    {
+      "path": "yaml-tests/src/test/resources/documentation-queries/like-operator-queries.yamsql",
+      "report_line": 856
+    },
+    {
+      "path": "yaml-tests/src/test/resources/documentation-queries/window-function-documentation-queries.yamsql",
+      "report_line": 857
+    },
+    {
+      "path": "yaml-tests/src/test/resources/enum-distinct-from-function.metrics.binpb",
+      "report_line": 939
+    },
+    {
+      "path": "yaml-tests/src/test/resources/enum-distinct-from-function.metrics.yaml",
+      "report_line": 939
+    },
+    {
+      "path": "yaml-tests/src/test/resources/enum-distinct-from-function.yamsql",
+      "report_line": 858
+    },
+    {
+      "path": "yaml-tests/src/test/resources/enum.metrics.binpb",
+      "report_line": 940
+    },
+    {
+      "path": "yaml-tests/src/test/resources/enum.metrics.yaml",
+      "report_line": 940
+    },
+    {
+      "path": "yaml-tests/src/test/resources/exists-in-select.metrics.binpb",
+      "report_line": 941
+    },
+    {
+      "path": "yaml-tests/src/test/resources/exists-in-select.metrics.yaml",
+      "report_line": 941
+    },
+    {
+      "path": "yaml-tests/src/test/resources/exists-in-select.yamsql",
+      "report_line": 859
+    },
+    {
+      "path": "yaml-tests/src/test/resources/field-index-tests-proto.metrics.binpb",
+      "report_line": 942
+    },
+    {
+      "path": "yaml-tests/src/test/resources/field-index-tests-proto.metrics.yaml",
+      "report_line": 942
+    },
+    {
+      "path": "yaml-tests/src/test/resources/field-index-tests-proto.yamsql",
+      "report_line": 860
+    },
+    {
+      "path": "yaml-tests/src/test/resources/field-options-extension-metadata.json",
+      "report_line": 832
+    },
+    {
+      "path": "yaml-tests/src/test/resources/field-options-extension.yamsql",
+      "report_line": 861
+    },
+    {
+      "path": "yaml-tests/src/test/resources/filter-index.metrics.binpb",
+      "report_line": 943
+    },
+    {
+      "path": "yaml-tests/src/test/resources/filter-index.metrics.yaml",
+      "report_line": 943
+    },
+    {
+      "path": "yaml-tests/src/test/resources/filter-index.yamsql",
+      "report_line": 862
+    },
+    {
+      "path": "yaml-tests/src/test/resources/functions.yamsql",
+      "report_line": 863
+    },
+    {
+      "path": "yaml-tests/src/test/resources/groupby-tests.metrics.binpb",
+      "report_line": 944
+    },
+    {
+      "path": "yaml-tests/src/test/resources/groupby-tests.metrics.yaml",
+      "report_line": 944
+    },
+    {
+      "path": "yaml-tests/src/test/resources/groupby-tests.yamsql",
+      "report_line": 864
+    },
+    {
+      "path": "yaml-tests/src/test/resources/guardiann-semantic-search.metrics.binpb",
+      "report_line": 945
+    },
+    {
+      "path": "yaml-tests/src/test/resources/guardiann-semantic-search.metrics.yaml",
+      "report_line": 945
+    },
+    {
+      "path": "yaml-tests/src/test/resources/guardiann-semantic-search.yamsql",
+      "report_line": 865
+    },
+    {
+      "path": "yaml-tests/src/test/resources/in-predicate.metrics.binpb",
+      "report_line": 946
+    },
+    {
+      "path": "yaml-tests/src/test/resources/in-predicate.metrics.yaml",
+      "report_line": 946
+    },
+    {
+      "path": "yaml-tests/src/test/resources/in-predicate.yamsql",
+      "report_line": 866
+    },
+    {
+      "path": "yaml-tests/src/test/resources/include-block/includes/include-scoped.metrics.binpb",
+      "report_line": 947
+    },
+    {
+      "path": "yaml-tests/src/test/resources/include-block/includes/include-scoped.metrics.yaml",
+      "report_line": 947
+    },
+    {
+      "path": "yaml-tests/src/test/resources/include-block/shouldPass/include-falls-back-to-global-available-uri.metrics.binpb",
+      "report_line": 948
+    },
+    {
+      "path": "yaml-tests/src/test/resources/include-block/shouldPass/include-falls-back-to-global-available-uri.metrics.yaml",
+      "report_line": 948
+    },
+    {
+      "path": "yaml-tests/src/test/resources/include-block/shouldPass/include-prioritize-local-uri.metrics.binpb",
+      "report_line": 949
+    },
+    {
+      "path": "yaml-tests/src/test/resources/include-block/shouldPass/include-prioritize-local-uri.metrics.yaml",
+      "report_line": 949
+    },
+    {
+      "path": "yaml-tests/src/test/resources/include-block/shouldPass/multiple-includes.metrics.binpb",
+      "report_line": 950
+    },
+    {
+      "path": "yaml-tests/src/test/resources/include-block/shouldPass/multiple-includes.metrics.yaml",
+      "report_line": 950
+    },
+    {
+      "path": "yaml-tests/src/test/resources/include-block/shouldPass/multiple-same-includes.metrics.binpb",
+      "report_line": 951
+    },
+    {
+      "path": "yaml-tests/src/test/resources/include-block/shouldPass/multiple-same-includes.metrics.yaml",
+      "report_line": 951
+    },
+    {
+      "path": "yaml-tests/src/test/resources/include-block/shouldPass/nested-includes.metrics.binpb",
+      "report_line": 952
+    },
+    {
+      "path": "yaml-tests/src/test/resources/include-block/shouldPass/nested-includes.metrics.yaml",
+      "report_line": 952
+    },
+    {
+      "path": "yaml-tests/src/test/resources/include-block/shouldPass/simple-include-different-env.metrics.binpb",
+      "report_line": 953
+    },
+    {
+      "path": "yaml-tests/src/test/resources/include-block/shouldPass/simple-include-different-env.metrics.yaml",
+      "report_line": 953
+    },
+    {
+      "path": "yaml-tests/src/test/resources/include-block/shouldPass/simple-include.metrics.binpb",
+      "report_line": 954
+    },
+    {
+      "path": "yaml-tests/src/test/resources/include-block/shouldPass/simple-include.metrics.yaml",
+      "report_line": 954
+    },
+    {
+      "path": "yaml-tests/src/test/resources/index-ddl-aggregates-only.metrics.binpb",
+      "report_line": 955
+    },
+    {
+      "path": "yaml-tests/src/test/resources/index-ddl-aggregates-only.metrics.yaml",
+      "report_line": 955
+    },
+    {
+      "path": "yaml-tests/src/test/resources/index-ddl-values-only.metrics.binpb",
+      "report_line": 956
+    },
+    {
+      "path": "yaml-tests/src/test/resources/index-ddl-values-only.metrics.yaml",
+      "report_line": 956
+    },
+    {
+      "path": "yaml-tests/src/test/resources/index-ddl.metrics.binpb",
+      "report_line": 957
+    },
+    {
+      "path": "yaml-tests/src/test/resources/index-ddl.metrics.yaml",
+      "report_line": 957
+    },
+    {
+      "path": "yaml-tests/src/test/resources/indexed-functions.metrics.binpb",
+      "report_line": 958
+    },
+    {
+      "path": "yaml-tests/src/test/resources/indexed-functions.metrics.yaml",
+      "report_line": 958
+    },
+    {
+      "path": "yaml-tests/src/test/resources/insert-enum.metrics.binpb",
+      "report_line": 959
+    },
+    {
+      "path": "yaml-tests/src/test/resources/insert-enum.metrics.yaml",
+      "report_line": 959
+    },
+    {
+      "path": "yaml-tests/src/test/resources/insert-enum.yamsql",
+      "report_line": 867
+    },
+    {
+      "path": "yaml-tests/src/test/resources/isolation-level-snapshot.yamsql",
+      "report_line": 868
+    },
+    {
+      "path": "yaml-tests/src/test/resources/join-tests-outer.metrics.binpb",
+      "report_line": 960
+    },
+    {
+      "path": "yaml-tests/src/test/resources/join-tests-outer.metrics.yaml",
+      "report_line": 960
+    },
+    {
+      "path": "yaml-tests/src/test/resources/join-tests-outer.yamsql",
+      "report_line": 869
+    },
+    {
+      "path": "yaml-tests/src/test/resources/join-tests.metrics.binpb",
+      "report_line": 961
+    },
+    {
+      "path": "yaml-tests/src/test/resources/join-tests.metrics.yaml",
+      "report_line": 961
+    },
+    {
+      "path": "yaml-tests/src/test/resources/join-tests.yamsql",
+      "report_line": 870
+    },
+    {
+      "path": "yaml-tests/src/test/resources/join-with-order-by-tests.metrics.binpb",
+      "report_line": 962
+    },
+    {
+      "path": "yaml-tests/src/test/resources/join-with-order-by-tests.metrics.yaml",
+      "report_line": 962
+    },
+    {
+      "path": "yaml-tests/src/test/resources/keyword-case-insensitivity.yamsql",
+      "report_line": 871
+    },
+    {
+      "path": "yaml-tests/src/test/resources/like.metrics.binpb",
+      "report_line": 963
+    },
+    {
+      "path": "yaml-tests/src/test/resources/like.metrics.yaml",
+      "report_line": 963
+    },
+    {
+      "path": "yaml-tests/src/test/resources/like.yamsql",
+      "report_line": 872
+    },
+    {
+      "path": "yaml-tests/src/test/resources/literal-tests.metrics.binpb",
+      "report_line": 964
+    },
+    {
+      "path": "yaml-tests/src/test/resources/literal-tests.metrics.yaml",
+      "report_line": 964
+    },
+    {
+      "path": "yaml-tests/src/test/resources/literal-tests.yamsql",
+      "report_line": 873
+    },
+    {
+      "path": "yaml-tests/src/test/resources/nested-tests.yamsql",
+      "report_line": 874
+    },
+    {
+      "path": "yaml-tests/src/test/resources/nested-with-nulls-proto.metrics.binpb",
+      "report_line": 965
+    },
+    {
+      "path": "yaml-tests/src/test/resources/nested-with-nulls-proto.metrics.yaml",
+      "report_line": 965
+    },
+    {
+      "path": "yaml-tests/src/test/resources/nested-with-nulls-proto.yamsql",
+      "report_line": 875
+    },
+    {
+      "path": "yaml-tests/src/test/resources/nested-with-nulls.metrics.binpb",
+      "report_line": 966
+    },
+    {
+      "path": "yaml-tests/src/test/resources/nested-with-nulls.metrics.yaml",
+      "report_line": 966
+    },
+    {
+      "path": "yaml-tests/src/test/resources/nested-with-nulls.yamsql",
+      "report_line": 876
+    },
+    {
+      "path": "yaml-tests/src/test/resources/null-extraction-tests.metrics.binpb",
+      "report_line": 967
+    },
+    {
+      "path": "yaml-tests/src/test/resources/null-extraction-tests.metrics.yaml",
+      "report_line": 967
+    },
+    {
+      "path": "yaml-tests/src/test/resources/null-operator-tests.metrics.binpb",
+      "report_line": 968
+    },
+    {
+      "path": "yaml-tests/src/test/resources/null-operator-tests.metrics.yaml",
+      "report_line": 968
+    },
+    {
+      "path": "yaml-tests/src/test/resources/null-operator-tests.yamsql",
+      "report_line": 877
+    },
+    {
+      "path": "yaml-tests/src/test/resources/orderby.metrics.binpb",
+      "report_line": 969
+    },
+    {
+      "path": "yaml-tests/src/test/resources/orderby.metrics.yaml",
+      "report_line": 969
+    },
+    {
+      "path": "yaml-tests/src/test/resources/primary-key-tests.metrics.binpb",
+      "report_line": 970
+    },
+    {
+      "path": "yaml-tests/src/test/resources/primary-key-tests.metrics.yaml",
+      "report_line": 970
+    },
+    {
+      "path": "yaml-tests/src/test/resources/primary-key-tests.yamsql",
+      "report_line": 878
+    },
+    {
+      "path": "yaml-tests/src/test/resources/pseudo-field-clash.metrics.binpb",
+      "report_line": 971
+    },
+    {
+      "path": "yaml-tests/src/test/resources/pseudo-field-clash.metrics.yaml",
+      "report_line": 971
+    },
+    {
+      "path": "yaml-tests/src/test/resources/record-type-key-tests.metrics.binpb",
+      "report_line": 972
+    },
+    {
+      "path": "yaml-tests/src/test/resources/record-type-key-tests.metrics.yaml",
+      "report_line": 972
+    },
+    {
+      "path": "yaml-tests/src/test/resources/record-type-key-tests.yamsql",
+      "report_line": 879
+    },
+    {
+      "path": "yaml-tests/src/test/resources/recursive-cte.metrics.binpb",
+      "report_line": 973
+    },
+    {
+      "path": "yaml-tests/src/test/resources/recursive-cte.metrics.yaml",
+      "report_line": 973
+    },
+    {
+      "path": "yaml-tests/src/test/resources/right-deep-plan-tests.metrics.binpb",
+      "report_line": 974
+    },
+    {
+      "path": "yaml-tests/src/test/resources/right-deep-plan-tests.metrics.yaml",
+      "report_line": 974
+    },
+    {
+      "path": "yaml-tests/src/test/resources/scenario-tests.yamsql",
+      "report_line": 880
+    },
+    {
+      "path": "yaml-tests/src/test/resources/schema-template-stored-queries.yamsql",
+      "report_line": 881
+    },
+    {
+      "path": "yaml-tests/src/test/resources/scoped-keyset-pagination.metrics.binpb",
+      "report_line": 975
+    },
+    {
+      "path": "yaml-tests/src/test/resources/scoped-keyset-pagination.metrics.yaml",
+      "report_line": 975
+    },
+    {
+      "path": "yaml-tests/src/test/resources/scoped-keyset-pagination.yamsql",
+      "report_line": 882
+    },
+    {
+      "path": "yaml-tests/src/test/resources/select-a-star.metrics.binpb",
+      "report_line": 976
+    },
+    {
+      "path": "yaml-tests/src/test/resources/select-a-star.metrics.yaml",
+      "report_line": 976
+    },
+    {
+      "path": "yaml-tests/src/test/resources/select-without-from.yamsql",
+      "report_line": 883
+    },
+    {
+      "path": "yaml-tests/src/test/resources/semantic-search-advanced-metrics.metrics.binpb",
+      "report_line": 977
+    },
+    {
+      "path": "yaml-tests/src/test/resources/semantic-search-advanced-metrics.metrics.yaml",
+      "report_line": 977
+    },
+    {
+      "path": "yaml-tests/src/test/resources/semantic-search-advanced-metrics.yamsql",
+      "report_line": 884
+    },
+    {
+      "path": "yaml-tests/src/test/resources/semantic-search.metrics.binpb",
+      "report_line": 978
+    },
+    {
+      "path": "yaml-tests/src/test/resources/semantic-search.metrics.yaml",
+      "report_line": 978
+    },
+    {
+      "path": "yaml-tests/src/test/resources/semantic-search.yamsql",
+      "report_line": 885
+    },
+    {
+      "path": "yaml-tests/src/test/resources/showcasing-tests.metrics.binpb",
+      "report_line": 979
+    },
+    {
+      "path": "yaml-tests/src/test/resources/showcasing-tests.metrics.yaml",
+      "report_line": 979
+    },
+    {
+      "path": "yaml-tests/src/test/resources/showcasing-tests.yamsql",
+      "report_line": 886
+    },
+    {
+      "path": "yaml-tests/src/test/resources/simple-query-with-different-debuggers.metrics.binpb",
+      "report_line": 980
+    },
+    {
+      "path": "yaml-tests/src/test/resources/simple-query-with-different-debuggers.metrics.yaml",
+      "report_line": 980
+    },
+    {
+      "path": "yaml-tests/src/test/resources/skipped-field-number-proto.yamsql",
+      "report_line": 887
+    },
+    {
+      "path": "yaml-tests/src/test/resources/sliding-window-semantic-search.yamsql",
+      "report_line": 888
+    },
+    {
+      "path": "yaml-tests/src/test/resources/sql-comments.yamsql",
+      "report_line": 889
+    },
+    {
+      "path": "yaml-tests/src/test/resources/sql-functions.metrics.binpb",
+      "report_line": 981
+    },
+    {
+      "path": "yaml-tests/src/test/resources/sql-functions.metrics.yaml",
+      "report_line": 981
+    },
+    {
+      "path": "yaml-tests/src/test/resources/sql-functions.yamsql",
+      "report_line": 890
+    },
+    {
+      "path": "yaml-tests/src/test/resources/standard-tests-metadata.metrics.binpb",
+      "report_line": 982
+    },
+    {
+      "path": "yaml-tests/src/test/resources/standard-tests-metadata.metrics.yaml",
+      "report_line": 982
+    },
+    {
+      "path": "yaml-tests/src/test/resources/standard-tests-metadata.yamsql",
+      "report_line": 891
+    },
+    {
+      "path": "yaml-tests/src/test/resources/standard-tests-proto.metrics.binpb",
+      "report_line": 983
+    },
+    {
+      "path": "yaml-tests/src/test/resources/standard-tests-proto.metrics.yaml",
+      "report_line": 983
+    },
+    {
+      "path": "yaml-tests/src/test/resources/standard-tests-proto.yamsql",
+      "report_line": 892
+    },
+    {
+      "path": "yaml-tests/src/test/resources/standard-tests.metrics.binpb",
+      "report_line": 984
+    },
+    {
+      "path": "yaml-tests/src/test/resources/standard-tests.metrics.yaml",
+      "report_line": 984
+    },
+    {
+      "path": "yaml-tests/src/test/resources/standard-tests.yamsql",
+      "report_line": 893
+    },
+    {
+      "path": "yaml-tests/src/test/resources/struct-type-nullability-variants.metrics.binpb",
+      "report_line": 985
+    },
+    {
+      "path": "yaml-tests/src/test/resources/struct-type-nullability-variants.metrics.yaml",
+      "report_line": 985
+    },
+    {
+      "path": "yaml-tests/src/test/resources/struct-type-nullability-variants.yamsql",
+      "report_line": 894
+    },
+    {
+      "path": "yaml-tests/src/test/resources/subquery-tests.metrics.binpb",
+      "report_line": 986
+    },
+    {
+      "path": "yaml-tests/src/test/resources/subquery-tests.metrics.yaml",
+      "report_line": 986
+    },
+    {
+      "path": "yaml-tests/src/test/resources/supported-version/current-version-at-file-and-setup-block.yamsql",
+      "report_line": 895
+    },
+    {
+      "path": "yaml-tests/src/test/resources/supported-version/current-version-at-setup-block.yamsql",
+      "report_line": 896
+    },
+    {
+      "path": "yaml-tests/src/test/resources/table-functions.metrics.binpb",
+      "report_line": 987
+    },
+    {
+      "path": "yaml-tests/src/test/resources/table-functions.metrics.yaml",
+      "report_line": 987
+    },
+    {
+      "path": "yaml-tests/src/test/resources/transaction-setup/shouldPass/double-query-metrics.metrics.binpb",
+      "report_line": 988
+    },
+    {
+      "path": "yaml-tests/src/test/resources/transaction-setup/shouldPass/double-query-metrics.metrics.yaml",
+      "report_line": 988
+    },
+    {
+      "path": "yaml-tests/src/test/resources/union-empty-tables.metrics.binpb",
+      "report_line": 989
+    },
+    {
+      "path": "yaml-tests/src/test/resources/union-empty-tables.metrics.yaml",
+      "report_line": 989
+    },
+    {
+      "path": "yaml-tests/src/test/resources/union-empty-tables.yamsql",
+      "report_line": 897
+    },
+    {
+      "path": "yaml-tests/src/test/resources/union.metrics.binpb",
+      "report_line": 990
+    },
+    {
+      "path": "yaml-tests/src/test/resources/union.metrics.yaml",
+      "report_line": 990
+    },
+    {
+      "path": "yaml-tests/src/test/resources/union.yamsql",
+      "report_line": 898
+    },
+    {
+      "path": "yaml-tests/src/test/resources/update-delete-returning.metrics.binpb",
+      "report_line": 991
+    },
+    {
+      "path": "yaml-tests/src/test/resources/update-delete-returning.metrics.yaml",
+      "report_line": 991
+    },
+    {
+      "path": "yaml-tests/src/test/resources/user-defined-macro-function-tests.metrics.binpb",
+      "report_line": 992
+    },
+    {
+      "path": "yaml-tests/src/test/resources/user-defined-macro-function-tests.metrics.yaml",
+      "report_line": 992
+    },
+    {
+      "path": "yaml-tests/src/test/resources/user-defined-macro-function-tests.yamsql",
+      "report_line": 899
+    },
+    {
+      "path": "yaml-tests/src/test/resources/uuid-non-prepared.metrics.binpb",
+      "report_line": 993
+    },
+    {
+      "path": "yaml-tests/src/test/resources/uuid-non-prepared.metrics.yaml",
+      "report_line": 993
+    },
+    {
+      "path": "yaml-tests/src/test/resources/uuid-prepared.metrics.binpb",
+      "report_line": 994
+    },
+    {
+      "path": "yaml-tests/src/test/resources/uuid-prepared.metrics.yaml",
+      "report_line": 994
+    },
+    {
+      "path": "yaml-tests/src/test/resources/valid-identifiers.metrics.binpb",
+      "report_line": 995
+    },
+    {
+      "path": "yaml-tests/src/test/resources/valid-identifiers.metrics.yaml",
+      "report_line": 995
+    },
+    {
+      "path": "yaml-tests/src/test/resources/valid-identifiers.yamsql",
+      "report_line": 900
+    },
+    {
+      "path": "yaml-tests/src/test/resources/vector-engine-preference.metrics.binpb",
+      "report_line": 996
+    },
+    {
+      "path": "yaml-tests/src/test/resources/vector-engine-preference.metrics.yaml",
+      "report_line": 996
+    },
+    {
+      "path": "yaml-tests/src/test/resources/vector-engine-preference.yamsql",
+      "report_line": 901
+    },
+    {
+      "path": "yaml-tests/src/test/resources/vector-mixed-version-metadata.yamsql",
+      "report_line": 902
+    },
+    {
+      "path": "yaml-tests/src/test/resources/vector.metrics.binpb",
+      "report_line": 997
+    },
+    {
+      "path": "yaml-tests/src/test/resources/vector.metrics.yaml",
+      "report_line": 997
+    },
+    {
+      "path": "yaml-tests/src/test/resources/vector.yamsql",
+      "report_line": 903
+    },
+    {
+      "path": "yaml-tests/src/test/resources/versions-tests.metrics.binpb",
+      "report_line": 998
+    },
+    {
+      "path": "yaml-tests/src/test/resources/versions-tests.metrics.yaml",
+      "report_line": 998
+    },
+    {
+      "path": "yaml-tests/src/test/resources/versions-tests.yamsql",
+      "report_line": 904
+    },
+    {
+      "path": "yaml-tests/src/test/resources/versions-with-single-type-tests.metrics.binpb",
+      "report_line": 999
+    },
+    {
+      "path": "yaml-tests/src/test/resources/versions-with-single-type-tests.metrics.yaml",
+      "report_line": 999
+    },
+    {
+      "path": "yaml-tests/yaml-tests.gradle",
+      "report_line": 581
+    }
+  ]
+}

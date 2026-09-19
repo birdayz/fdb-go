@@ -1,0 +1,26 @@
+{
+  "scope": "WS-A design only; later workstreams require detailed design review",
+  "parent": "e48f5b4965543cd4d99b5578356059e12d969c7c",
+  "virtual_tree": "822e4f49bb9f03d26659a7520835953c60998709",
+  "model": "gpt-6-astra",
+  "reasoning": "xhigh",
+  "sandbox": "read-only",
+  "verdicts": {
+    "graefe": {
+      "verdict": "NAK",
+      "report_sha256": "e3ef53a279c993ae64f4fc1b7a503dc09469f8333b9f57be7477a18598b6d8cc"
+    },
+    "torvalds": {
+      "verdict": "ACK",
+      "report_sha256": "16004f1949a4b7825bc53196b2e7e2f74fd602b7bb3dab1b4986ecb0ddfe6123"
+    },
+    "independent": {
+      "verdict": "NAK",
+      "report_sha256": "1bb5bb6e9323f029d3483ecba00b3ef0b7610798773805419092e324a988a892"
+    },
+    "storage": {
+      "verdict": "ACK",
+      "report_sha256": "18417d4b56462d2592503d2e0f60b62ff0917c002e086dc23a050ce572b2d3ed"
+    }
+  }
+}

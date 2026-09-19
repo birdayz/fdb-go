@@ -1,0 +1,13 @@
+**ACK — WS-A design only**, for exact virtual **git tree** `f6efe9b8fd99522d2b95568a99eaac9ae7acb72b`.
+
+The design matches Java 4.14.2.0 source. Implementation must retain these boundaries:
+
+- **Metadata:** preserve field 16 through the carrier, [Build slice copy](/home/birdy/projects/fdb-record-layer-go/pkg/recordlayer/metadata.go:1117), and both cloning boundaries in [metadata_proto.go](/home/birdy/projects/fdb-record-layer-go/pkg/recordlayer/metadata_proto.go:180) (lines 180–197 and 405–422), including presence, unknown bytes and temporary functions.
+- **Coercion:** Java `PromoteValue.computePromotionsTrie:353`, `MessageHelpers.coerceArray:483/coerceMessage:579`, and `LightArrayConstructorValue.withChildren:220` support declared-type recursion and retained-target child promotion. Add structured targets to the [existing descriptor bake](/home/birdy/projects/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/plan_finalize.go:84); retain strict protobuf admission and Go’s raw nullable-array extension.
+- **Vectors:** Java `StorageAdapter.fetchAccessInfo:229/writeAccessInfo:273` reads entries with identity transformation and writes their representation directly. `Insert:223,298,376` uses transformed unquantized entries; `Delete:395` preserves replacement-candidate representation. Conversely, `InliningStorageAdapter.writeNeighbor:283` quantizes. Explicit provenance must therefore reach every candidate, replacement, centroid and neighbor path, correcting [Go’s plain-vector transform assumption](/home/birdy/projects/fdb-record-layer-go/pkg/recordlayer/hnsw.go:250) without blanket transform removal or result/tolerance patches.
+
+Retain exact positive mixed-width tests and metadata-loss/self-distance reproductions. Implementation acceptance requires real-FDB metadata round-trips and Java→Go/Go→Java HNSW lifecycle coverage, with exact persisted-byte assertions.
+
+All five reports and companion ledgers, manifests/history, proto/classpath and failure evidence reconcile: 1,189 net paths plus 84 history-only paths. The 228 commits are accounted for, **not independently reviewed individually**; researchers are not reviewer ACKs.
+
+Later workstreams require detailed designs/reviews. No production implementation is certified; the suite remains red. No builds/tests or agents ran here. C++ **7.3.77 remains unchanged**; any client/error/conflict-contract change requires separate source review.

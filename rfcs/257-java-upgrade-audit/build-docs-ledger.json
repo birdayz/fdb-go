@@ -1,0 +1,512 @@
+{
+  "group": "build-docs",
+  "report_sha256": "caaedff786c2a8ec784d6215c65802f128b86aa3e7d703e13d069aa6d468d1bc",
+  "assigned_paths": 126,
+  "ledger_paths": 126,
+  "entries": [
+    {
+      "path": ".claude/README.md",
+      "report_line": 487
+    },
+    {
+      "path": ".claude/commands/refine.md",
+      "report_line": 488
+    },
+    {
+      "path": ".claude/skills/code-reviewer/SKILL.md",
+      "report_line": 489
+    },
+    {
+      "path": ".claude/skills/code-simplifier/SKILL.md",
+      "report_line": 490
+    },
+    {
+      "path": ".claude/skills/context-resumption/SKILL.md",
+      "report_line": 491
+    },
+    {
+      "path": ".claude/skills/docs-writer/SKILL.md",
+      "report_line": 492
+    },
+    {
+      "path": ".claude/skills/frl-coding-standard/SKILL.md",
+      "report_line": 493
+    },
+    {
+      "path": ".claude/skills/frl-test-coding-standard/SKILL.md",
+      "report_line": 494
+    },
+    {
+      "path": ".claude/skills/relational-query-processor/SKILL.md",
+      "report_line": 495
+    },
+    {
+      "path": ".claude/skills/stacked-prs/SKILL.md",
+      "report_line": 496
+    },
+    {
+      "path": ".claude/skills/test-runner/SKILL.md",
+      "report_line": 497
+    },
+    {
+      "path": ".claude/skills/using-gradle/SKILL.md",
+      "report_line": 498
+    },
+    {
+      "path": ".gitattributes",
+      "report_line": 499
+    },
+    {
+      "path": ".github/copilot-instructions.md",
+      "report_line": 500
+    },
+    {
+      "path": ".github/dependabot.yml",
+      "report_line": 501
+    },
+    {
+      "path": ".github/workflows/create_branch.yml",
+      "report_line": 502
+    },
+    {
+      "path": ".github/workflows/metrics_analysis.yml",
+      "report_line": 503
+    },
+    {
+      "path": ".github/workflows/nightly.yml",
+      "report_line": 504
+    },
+    {
+      "path": ".github/workflows/pr_labels.yml",
+      "report_line": 505
+    },
+    {
+      "path": ".github/workflows/pr_mixed_mode.yml",
+      "report_line": 506
+    },
+    {
+      "path": ".github/workflows/pull_request.yml",
+      "report_line": 507
+    },
+    {
+      "path": ".github/workflows/release.yml",
+      "report_line": 508
+    },
+    {
+      "path": ".github/workflows/teamscale_upload.yml",
+      "report_line": 509
+    },
+    {
+      "path": ".gitignore",
+      "report_line": 510
+    },
+    {
+      "path": ".idea/checkstyle-idea.xml",
+      "report_line": 511
+    },
+    {
+      "path": ".idea/codeInsightSettings.xml",
+      "report_line": 512
+    },
+    {
+      "path": "AGENTS.md",
+      "report_line": 513
+    },
+    {
+      "path": "CLAUDE.md",
+      "report_line": 514
+    },
+    {
+      "path": "CONTRIBUTING.md",
+      "report_line": 515
+    },
+    {
+      "path": "GEMINI.md",
+      "report_line": 516
+    },
+    {
+      "path": "README.md",
+      "report_line": 517
+    },
+    {
+      "path": "SECURITY.md",
+      "report_line": 518
+    },
+    {
+      "path": "actions/gradle-test/action.yml",
+      "report_line": 519
+    },
+    {
+      "path": "actions/setup-base-env/action.yml",
+      "report_line": 520
+    },
+    {
+      "path": "actions/teamscale-upload/action.yml",
+      "report_line": 521
+    },
+    {
+      "path": "build.gradle",
+      "report_line": 522
+    },
+    {
+      "path": "build/affected_subprojects.py",
+      "report_line": 523
+    },
+    {
+      "path": "build/create_release_notes.py",
+      "report_line": 524
+    },
+    {
+      "path": "build/publish-mixed-mode-results.py",
+      "report_line": 525
+    },
+    {
+      "path": "build/test_affected_subprojects.py",
+      "report_line": 526
+    },
+    {
+      "path": "docs/sphinx/requirements.txt",
+      "report_line": 527
+    },
+    {
+      "path": "docs/sphinx/source/Building.md",
+      "report_line": 528
+    },
+    {
+      "path": "docs/sphinx/source/Coding_Best_Practices.md",
+      "report_line": 529
+    },
+    {
+      "path": "docs/sphinx/source/Extending.md",
+      "report_line": 530
+    },
+    {
+      "path": "docs/sphinx/source/FAQ.md",
+      "report_line": 531
+    },
+    {
+      "path": "docs/sphinx/source/GettingStarted.md",
+      "report_line": 532
+    },
+    {
+      "path": "docs/sphinx/source/IndexBuilding.md",
+      "report_line": 533
+    },
+    {
+      "path": "docs/sphinx/source/Overview.md",
+      "report_line": 534
+    },
+    {
+      "path": "docs/sphinx/source/ReleaseNotes.md",
+      "report_line": 535
+    },
+    {
+      "path": "docs/sphinx/source/SQL_Getting_Started.md",
+      "report_line": 536
+    },
+    {
+      "path": "docs/sphinx/source/SQL_Reference.md",
+      "report_line": 537
+    },
+    {
+      "path": "docs/sphinx/source/SchemaEvolution.md",
+      "report_line": 538
+    },
+    {
+      "path": "docs/sphinx/source/Versioning.md",
+      "report_line": 539
+    },
+    {
+      "path": "docs/sphinx/source/_templates/page.html",
+      "report_line": 540
+    },
+    {
+      "path": "docs/sphinx/source/api/index.md.template",
+      "report_line": 541
+    },
+    {
+      "path": "docs/sphinx/source/architecture/index.md",
+      "report_line": 542
+    },
+    {
+      "path": "docs/sphinx/source/architecture/vector-index-design.md",
+      "report_line": 543
+    },
+    {
+      "path": "docs/sphinx/source/conf.py",
+      "report_line": 544
+    },
+    {
+      "path": "docs/sphinx/source/index.md",
+      "report_line": 545
+    },
+    {
+      "path": "docs/sphinx/source/jdbc/advanced.rst",
+      "report_line": 546
+    },
+    {
+      "path": "docs/sphinx/source/jdbc/basic.rst",
+      "report_line": 547
+    },
+    {
+      "path": "docs/sphinx/source/jdbc/direct_access.rst",
+      "report_line": 548
+    },
+    {
+      "path": "docs/sphinx/source/jdbc/index.rst",
+      "report_line": 549
+    },
+    {
+      "path": "docs/sphinx/source/reference/Aggregates.rst",
+      "report_line": 550
+    },
+    {
+      "path": "docs/sphinx/source/reference/Concepts.md",
+      "report_line": 551
+    },
+    {
+      "path": "docs/sphinx/source/reference/Databases_Schemas_SchemaTemplates.rst",
+      "report_line": 552
+    },
+    {
+      "path": "docs/sphinx/source/reference/Expressions.rst",
+      "report_line": 553
+    },
+    {
+      "path": "docs/sphinx/source/reference/Functions.rst",
+      "report_line": 554
+    },
+    {
+      "path": "docs/sphinx/source/reference/Functions/aggregate_functions.rst",
+      "report_line": 555
+    },
+    {
+      "path": "docs/sphinx/source/reference/Functions/aggregate_functions/array_agg.diagram",
+      "report_line": 556
+    },
+    {
+      "path": "docs/sphinx/source/reference/Functions/aggregate_functions/array_agg.rst",
+      "report_line": 557
+    },
+    {
+      "path": "docs/sphinx/source/reference/Functions/scalar_functions.rst",
+      "report_line": 558
+    },
+    {
+      "path": "docs/sphinx/source/reference/Indexes.rst",
+      "report_line": 559
+    },
+    {
+      "path": "docs/sphinx/source/reference/Joins.rst",
+      "report_line": 560
+    },
+    {
+      "path": "docs/sphinx/source/reference/Lexical_Structure.md",
+      "report_line": 561
+    },
+    {
+      "path": "docs/sphinx/source/reference/Lexical_Structure/Comments.md",
+      "report_line": 562
+    },
+    {
+      "path": "docs/sphinx/source/reference/Subqueries.rst",
+      "report_line": 563
+    },
+    {
+      "path": "docs/sphinx/source/reference/sql_commands.rst",
+      "report_line": 564
+    },
+    {
+      "path": "docs/sphinx/source/reference/sql_commands/DDL.rst",
+      "report_line": 565
+    },
+    {
+      "path": "docs/sphinx/source/reference/sql_commands/DDL/CREATE.rst",
+      "report_line": 566
+    },
+    {
+      "path": "docs/sphinx/source/reference/sql_commands/DDL/CREATE/STORED_QUERY.diagram",
+      "report_line": 567
+    },
+    {
+      "path": "docs/sphinx/source/reference/sql_commands/DDL/CREATE/STORED_QUERY.rst",
+      "report_line": 568
+    },
+    {
+      "path": "docs/sphinx/source/reference/sql_commands/DDL/CREATE/TYPE.rst",
+      "report_line": 569
+    },
+    {
+      "path": "docs/sphinx/source/reference/sql_commands/DDL/CREATE/VIEW.rst",
+      "report_line": 570
+    },
+    {
+      "path": "docs/sphinx/source/reference/sql_commands/DDL/DROP.rst",
+      "report_line": 571
+    },
+    {
+      "path": "docs/sphinx/source/reference/sql_commands/DML.rst",
+      "report_line": 572
+    },
+    {
+      "path": "docs/sphinx/source/reference/sql_commands/DQL.rst",
+      "report_line": 573
+    },
+    {
+      "path": "docs/sphinx/source/reference/sql_commands/DQL/Operators.rst",
+      "report_line": 574
+    },
+    {
+      "path": "docs/sphinx/source/reference/sql_commands/DQL/Operators/Comparison.rst",
+      "report_line": 575
+    },
+    {
+      "path": "docs/sphinx/source/reference/sql_commands/DQL/Operators/IN.rst",
+      "report_line": 576
+    },
+    {
+      "path": "docs/sphinx/source/reference/sql_commands/DQL/Operators/IS.rst",
+      "report_line": 577
+    },
+    {
+      "path": "docs/sphinx/source/reference/sql_commands/DQL/Operators/LIKE.rst",
+      "report_line": 578
+    },
+    {
+      "path": "docs/sphinx/source/reference/sql_commands/DQL/Operators/Logical.rst",
+      "report_line": 579
+    },
+    {
+      "path": "docs/sphinx/source/reference/sql_types.rst",
+      "report_line": 580
+    },
+    {
+      "path": "docs/sphinx/source/reference/statement_options.diagram",
+      "report_line": 581
+    },
+    {
+      "path": "docs/sphinx/source/reference/statement_options.rst",
+      "report_line": 582
+    },
+    {
+      "path": "docs/sphinx/source/reference/statement_options/ISOLATION_LEVEL_SNAPSHOT.diagram",
+      "report_line": 583
+    },
+    {
+      "path": "docs/sphinx/source/reference/statement_options/ISOLATION_LEVEL_SNAPSHOT.rst",
+      "report_line": 584
+    },
+    {
+      "path": "docs/sphinx/source/reference/understanding_bitmap.rst",
+      "report_line": 585
+    },
+    {
+      "path": "examples/examples.gradle",
+      "report_line": 586
+    },
+    {
+      "path": "fdb-java-annotations/fdb-java-annotations.gradle",
+      "report_line": 587
+    },
+    {
+      "path": "fdb-java-annotations/src/main/java/com/apple/foundationdb/annotation/GenerateVisitorAnnotationHelper.java",
+      "report_line": 588
+    },
+    {
+      "path": "fdb-java-annotations/src/test/java/com/apple/foundationdb/annotation/GenerateVisitorAnnotationProcessorTest.java",
+      "report_line": 589
+    },
+    {
+      "path": "fdb-record-layer-core-shaded/fdb-record-layer-core-shaded.gradle",
+      "report_line": 590
+    },
+    {
+      "path": "fdb-record-layer-debugger/src/test/java/com/apple/foundationdb/record/query/plan/cascades/debug/CommandsTest.java",
+      "report_line": 591
+    },
+    {
+      "path": "fdb-test-utils/src/main/java/com/apple/foundationdb/test/RootLogLevelExtension.java",
+      "report_line": 592
+    },
+    {
+      "path": "fdb-test-utils/src/main/java/com/apple/foundationdb/test/TestDatabaseExtension.java",
+      "report_line": 593
+    },
+    {
+      "path": "fdb-test-utils/src/main/java/com/apple/test/Tags.java",
+      "report_line": 594
+    },
+    {
+      "path": "gradle.properties",
+      "report_line": 595
+    },
+    {
+      "path": "gradle/antlr.gradle",
+      "report_line": 596
+    },
+    {
+      "path": "gradle/central-publishing.gradle",
+      "report_line": 597
+    },
+    {
+      "path": "gradle/check.gradle",
+      "report_line": 598
+    },
+    {
+      "path": "gradle/codequality/spotbugs_exclude.xml",
+      "report_line": 599
+    },
+    {
+      "path": "gradle/codequality/suppressions.xml",
+      "report_line": 600
+    },
+    {
+      "path": "gradle/libs.versions.toml",
+      "report_line": 601
+    },
+    {
+      "path": "gradle/proto.gradle",
+      "report_line": 602
+    },
+    {
+      "path": "gradle/publishing.gradle",
+      "report_line": 603
+    },
+    {
+      "path": "gradle/root.gradle",
+      "report_line": 604
+    },
+    {
+      "path": "gradle/scripts/log4j-test.properties",
+      "report_line": 605
+    },
+    {
+      "path": "gradle/sphinx.gradle",
+      "report_line": 606
+    },
+    {
+      "path": "gradle/testing.gradle",
+      "report_line": 607
+    },
+    {
+      "path": "gradle/wrapper/gradle-wrapper.jar",
+      "report_line": 608
+    },
+    {
+      "path": "gradle/wrapper/gradle-wrapper.properties",
+      "report_line": 609
+    },
+    {
+      "path": "gradlew",
+      "report_line": 611
+    },
+    {
+      "path": "gradlew.bat",
+      "report_line": 611
+    },
+    {
+      "path": "scripts/YAML-SQL.xml",
+      "report_line": 615
+    }
+  ]
+}

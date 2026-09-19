@@ -1,0 +1,854 @@
+[
+  {
+    "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/AggregatedVector.java",
+    "kind": "rename-source",
+    "base_blob": "b47dcd1131d6705ec02b887e16ef6ea473464242",
+    "target_blob": null,
+    "detail": "fdb-extensions/src/main/java/com/apple/foundationdb/async/common/AggregatedVector.java",
+    "commits": [
+      "4e3d42bc81d40bf5755fbb2f1f618f4e87dbb583"
+    ]
+  },
+  {
+    "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/StorageTransform.java",
+    "kind": "rename-source",
+    "base_blob": "d6b25b1ee775bf4a3ee41a71c39f798c7046cbd2",
+    "target_blob": null,
+    "detail": "fdb-extensions/src/main/java/com/apple/foundationdb/async/common/StorageTransform.java",
+    "commits": [
+      "4e3d42bc81d40bf5755fbb2f1f618f4e87dbb583"
+    ]
+  },
+  {
+    "path": "fdb-extensions/src/test/java/com/apple/foundationdb/async/common/PrimaryKeyAndVector.java",
+    "kind": "intermediate-only",
+    "base_blob": null,
+    "target_blob": null,
+    "detail": "Created and removed or moved within the range; audit final replacement, not intermediate API.",
+    "commits": [
+      "b9ceed781cf8e3cf09369faa944d6d0b72ce2c9a",
+      "4e3d42bc81d40bf5755fbb2f1f618f4e87dbb583"
+    ]
+  },
+  {
+    "path": "fdb-extensions/src/test/java/com/apple/foundationdb/async/guardiann/SiftTestHelpers.java",
+    "kind": "intermediate-only",
+    "base_blob": null,
+    "target_blob": null,
+    "detail": "Created and removed or moved within the range; audit final replacement, not intermediate API.",
+    "commits": [
+      "b9ceed781cf8e3cf09369faa944d6d0b72ce2c9a",
+      "4e3d42bc81d40bf5755fbb2f1f618f4e87dbb583"
+    ]
+  },
+  {
+    "path": "fdb-extensions/src/test/java/com/apple/foundationdb/async/hnsw/BaseTest.java",
+    "kind": "rename-source",
+    "base_blob": "9172d6e4197389849a4c0b48d9598a9af6e7ff78",
+    "target_blob": null,
+    "detail": "fdb-extensions/src/test/java/com/apple/foundationdb/async/common/BaseTest.java",
+    "commits": [
+      "4e3d42bc81d40bf5755fbb2f1f618f4e87dbb583"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/IndexPrefetchRangeKeyValueCursor.java",
+    "kind": "net-zero",
+    "base_blob": "5e1c8ef400fe3176937d5943d8434f6ab5e9997f",
+    "target_blob": "5e1c8ef400fe3176937d5943d8434f6ab5e9997f",
+    "detail": "Identical base/target Git blob; no net port from the reverted/intermediate edits.",
+    "commits": [
+      "f4b15ab3ab11a4a779d5962f42199b2df84d9ee2",
+      "f1c848ef86c0526aac02e5d5d83b9a6b6f107682"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/KeyValueCursor.java",
+    "kind": "net-zero",
+    "base_blob": "15b77d6c5fc6bee05ec1d4a241b2695314455beb",
+    "target_blob": "15b77d6c5fc6bee05ec1d4a241b2695314455beb",
+    "detail": "Identical base/target Git blob; no net port from the reverted/intermediate edits.",
+    "commits": [
+      "f4b15ab3ab11a4a779d5962f42199b2df84d9ee2",
+      "f1c848ef86c0526aac02e5d5d83b9a6b6f107682"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/KeyValueCursorBase.java",
+    "kind": "net-zero",
+    "base_blob": "2c95368af8b2a3528cb80d50f777c14aa50e2589",
+    "target_blob": "2c95368af8b2a3528cb80d50f777c14aa50e2589",
+    "detail": "Identical base/target Git blob; no net port from the reverted/intermediate edits.",
+    "commits": [
+      "f4b15ab3ab11a4a779d5962f42199b2df84d9ee2",
+      "f1c848ef86c0526aac02e5d5d83b9a6b6f107682"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/PendingWriteQueueDrainer.java",
+    "kind": "intermediate-only",
+    "base_blob": null,
+    "target_blob": null,
+    "detail": "Created and removed or moved within the range; audit final replacement, not intermediate API.",
+    "commits": [
+      "244241bd15efb56e856895022ec79b4d787e4c6e",
+      "6a685875a6fff2210c224a5552a310d41ff3ebf7"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/PendingWriteQueueIndexingFactory.java",
+    "kind": "intermediate-only",
+    "base_blob": null,
+    "target_blob": null,
+    "detail": "Created and removed or moved within the range; audit final replacement, not intermediate API.",
+    "commits": [
+      "244241bd15efb56e856895022ec79b4d787e4c6e",
+      "6a685875a6fff2210c224a5552a310d41ff3ebf7"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/NoOpIndexMaintainer.java",
+    "kind": "net-zero",
+    "base_blob": "6d5f548ebe5357edb32c1af2634a1caa3276194b",
+    "target_blob": "6d5f548ebe5357edb32c1af2634a1caa3276194b",
+    "detail": "Identical base/target Git blob; no net port from the reverted/intermediate edits.",
+    "commits": [
+      "244241bd15efb56e856895022ec79b4d787e4c6e",
+      "6a685875a6fff2210c224a5552a310d41ff3ebf7"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/query/plan/plans/RecordQueryIndexPlan.java",
+    "kind": "net-zero",
+    "base_blob": "547cdb1fa254cb098ec9ecbdcd91f8a29dcdb7bb",
+    "target_blob": "547cdb1fa254cb098ec9ecbdcd91f8a29dcdb7bb",
+    "detail": "Identical base/target Git blob; no net port from the reverted/intermediate edits.",
+    "commits": [
+      "f4b15ab3ab11a4a779d5962f42199b2df84d9ee2",
+      "f1c848ef86c0526aac02e5d5d83b9a6b6f107682"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/TestHelpers.java",
+    "kind": "rename-source",
+    "base_blob": "9170496d256e06d22f2a1f53a9655e847ca0a686",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/TestHelpers.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/UnstoredRecord.java",
+    "kind": "rename-source",
+    "base_blob": "4f1a455551e30c7a701602184225a50e3ddebb6e",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/UnstoredRecord.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/metadata/expressions/CollateFunctionKeyExpressionTest.java",
+    "kind": "rename-source",
+    "base_blob": "c2d559b951e4b6c7eb87503177c66fac9000d932",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/metadata/expressions/CollateFunctionKeyExpressionTestBase.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/provider/common/RollingTestKeyManager.java",
+    "kind": "rename-source",
+    "base_blob": "aa263368afc1e2d1efa8a16b9fa4e74015cf6fa1",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/provider/common/RollingTestKeyManager.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/provider/common/text/AllSuffixesTextTokenizer.java",
+    "kind": "rename-source",
+    "base_blob": "0f883405df894e5862976feeab140cc7dcbfeac8",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/provider/common/text/AllSuffixesTextTokenizer.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/provider/common/text/TextCollatorTest.java",
+    "kind": "rename-source",
+    "base_blob": "167b949547346c283fe7b2862ec6fce438eb2b53",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/provider/common/text/TextCollatorTestBase.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/provider/common/text/TextSamples.java",
+    "kind": "rename-source",
+    "base_blob": "efd1cb9d3cfa77171b70a0548d6148d77534521c",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/provider/common/text/TextSamples.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/provider/foundationdb/FDBRecordStoreConcurrentTestBase.java",
+    "kind": "rename-source",
+    "base_blob": "4ae9a2497a42117773b0299dd30ca85c1896e7f2",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/provider/foundationdb/FDBRecordStoreConcurrentTestBase.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/provider/foundationdb/FDBRecordStoreTestBase.java",
+    "kind": "rename-source",
+    "base_blob": "10f58c991e3a688ffdaa88e4efe30962f73197fe",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/provider/foundationdb/FDBRecordStoreTestBase.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/provider/foundationdb/FormatVersionTestUtils.java",
+    "kind": "rename-source",
+    "base_blob": "e6d7183e240921a8be1513c645627c93e17d6401",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/provider/foundationdb/FormatVersionTestUtils.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/provider/foundationdb/KeyValueCursorTest.java",
+    "kind": "net-zero",
+    "base_blob": "d0d4e8c420bb6fe13d6851b9764f1152d9b8eed6",
+    "target_blob": "d0d4e8c420bb6fe13d6851b9764f1152d9b8eed6",
+    "detail": "Identical base/target Git blob; no net port from the reverted/intermediate edits.",
+    "commits": [
+      "f4b15ab3ab11a4a779d5962f42199b2df84d9ee2",
+      "f1c848ef86c0526aac02e5d5d83b9a6b6f107682"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/provider/foundationdb/RootLogLevelExtension.java",
+    "kind": "rename-source",
+    "base_blob": "0e7aa9198597323acf14201daaeaaa0c802d6d82",
+    "target_blob": null,
+    "detail": "fdb-test-utils/src/main/java/com/apple/foundationdb/test/RootLogLevelExtension.java",
+    "commits": [
+      "4e3d42bc81d40bf5755fbb2f1f618f4e87dbb583"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/provider/foundationdb/TerribleIndexMaintainer.java",
+    "kind": "net-zero",
+    "base_blob": "110657397a4f25de39d089f33e75d21a5d8615b7",
+    "target_blob": "110657397a4f25de39d089f33e75d21a5d8615b7",
+    "detail": "Identical base/target Git blob; no net port from the reverted/intermediate edits.",
+    "commits": [
+      "244241bd15efb56e856895022ec79b4d787e4c6e",
+      "6a685875a6fff2210c224a5552a310d41ff3ebf7"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/provider/foundationdb/indexes/TextIndexTestUtils.java",
+    "kind": "rename-source",
+    "base_blob": "f7697e8314e22b208ed5f01f49996304b1213947",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/provider/foundationdb/indexes/TextIndexTestUtils.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/provider/foundationdb/indexes/VectorIndexIndexingTest.java",
+    "kind": "rename-source",
+    "base_blob": "a57a86140331f94569dc607cfd673fc23b430630",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/provider/foundationdb/indexes/HnswVectorIndexIndexingTest.java",
+    "commits": [
+      "1ce8c71dd275290f0cc05b6d5faae60b800e85c6"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/provider/foundationdb/indexes/VectorIndexTest.java",
+    "kind": "rename-source",
+    "base_blob": "922109400f63b36811233c6f9c13616b64db7288",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/provider/foundationdb/indexes/VectorIndexEngineTestSuite.java",
+    "commits": [
+      "1ce8c71dd275290f0cc05b6d5faae60b800e85c6"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/provider/foundationdb/query/DualPlannerExtension.java",
+    "kind": "rename-source",
+    "base_blob": "da1eff7b95fcda523a73ef692745fa5ecf1e9dca",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/provider/foundationdb/query/DualPlannerExtension.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/provider/foundationdb/query/DualPlannerTest.java",
+    "kind": "rename-source",
+    "base_blob": "31de1d151124e9bf3559203d79c1744f07145140",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/provider/foundationdb/query/DualPlannerTest.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/provider/foundationdb/query/FDBCollateQueryTest.java",
+    "kind": "rename-source",
+    "base_blob": "f62533f0f02db504500b6fff91710821963e97b8",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/provider/foundationdb/query/FDBCollateQueryTestBase.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/provider/foundationdb/query/FDBRecordStoreQueryTestBase.java",
+    "kind": "rename-source",
+    "base_blob": "76e5159d737890cab4eb339ca5788eefa55fd576",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/provider/foundationdb/query/FDBRecordStoreQueryTestBase.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/AnyFilterMatcher.java",
+    "kind": "rename-source",
+    "base_blob": "921ff864c9e2a68f2982e1121c491ea1bf8568d3",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/AnyFilterMatcher.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/AnyParentMatcher.java",
+    "kind": "rename-source",
+    "base_blob": "db21a7d85c497e3a86bede7c094523941a605f11",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/AnyParentMatcher.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/ComposedBitmapIndexMatcher.java",
+    "kind": "rename-source",
+    "base_blob": "09c76d4c40c1f267d1f5863e59298e6c37530fc9",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/ComposedBitmapIndexMatcher.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/CoveringIndexMatcher.java",
+    "kind": "rename-source",
+    "base_blob": "19dbf05ef19eeecc1a39cc5cd7fb55cc2185e600",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/CoveringIndexMatcher.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/DescendantMatcher.java",
+    "kind": "rename-source",
+    "base_blob": "92ad979de25838ed2b8fbd9d6dc219c756333886",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/DescendantMatcher.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/EveryLeafMatcher.java",
+    "kind": "rename-source",
+    "base_blob": "59910b457d6c94237f6c19612a4aef7134e7a3e6",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/EveryLeafMatcher.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/FetchMatcher.java",
+    "kind": "rename-source",
+    "base_blob": "90647edc672365c56c5256de5f27ecf9999d4461",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/FetchMatcher.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/FilterMatcher.java",
+    "kind": "rename-source",
+    "base_blob": "0b772b0727f4d7e39aeb6dfb13d3c42d3a7e1dbb",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/FilterMatcher.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/FilterMatcherWithComponent.java",
+    "kind": "rename-source",
+    "base_blob": "ba99aeedc21d4a9f04f26ea5bda899ee3d4bf57b",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/FilterMatcherWithComponent.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/InComparandJoinMatcher.java",
+    "kind": "rename-source",
+    "base_blob": "415ce1c3e3a6a4c3928979901b2726512af57541",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/InComparandJoinMatcher.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/InParameterJoinMatcher.java",
+    "kind": "rename-source",
+    "base_blob": "e0b661a9ee67a5d258f7ac2a3bf6d35f4b655b93",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/InParameterJoinMatcher.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/InValueJoinMatcher.java",
+    "kind": "rename-source",
+    "base_blob": "0650da97c1bf0831eb1f53cb7dca31ac5b24e21d",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/InValueJoinMatcher.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/IndexMatcher.java",
+    "kind": "rename-source",
+    "base_blob": "8a2809460207f096890e36c93e513fb2cc1e03bb",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/IndexMatcher.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/IntersectionMatcher.java",
+    "kind": "rename-source",
+    "base_blob": "f25cefd388dcde46df2c3350159eb21104fc4af1",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/IntersectionMatcher.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/NamedPredicate.java",
+    "kind": "rename-source",
+    "base_blob": "889029fd0501c890773ebdb093f74d2beec2385d",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/NamedPredicate.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/PlanMatcherWithChild.java",
+    "kind": "rename-source",
+    "base_blob": "63c8f5e9a4151bacef4b5de373f82528fdede77c",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/PlanMatcherWithChild.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/PlanMatcherWithChildren.java",
+    "kind": "rename-source",
+    "base_blob": "0d4ac39cfb4dea0466d56a4a23babef91b97c065",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/PlanMatcherWithChildren.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/PlanMatchers.java",
+    "kind": "rename-source",
+    "base_blob": "bb30aff28e4ea8927e8e8edb6790deee7e3b639c",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/PlanMatchers.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/QueryPredicateDescendantMatcher.java",
+    "kind": "rename-source",
+    "base_blob": "29f1aebad891b7e8920901fdf71e748608e8575e",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/QueryPredicateDescendantMatcher.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/ScanComparisonsEmptyMatcher.java",
+    "kind": "rename-source",
+    "base_blob": "6e3a578ac3c3d5e62e5d544663318e927a2bc2ca",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/ScanComparisonsEmptyMatcher.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/ScanComparisonsStringMatcher.java",
+    "kind": "rename-source",
+    "base_blob": "fee11ba5bd80d35306848430b196950cbe67616e",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/ScanComparisonsStringMatcher.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/ScanMatcher.java",
+    "kind": "rename-source",
+    "base_blob": "9672ca247d362240168ac71197f72ac1a2a34433",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/ScanMatcher.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/ScoreForRankMatcher.java",
+    "kind": "rename-source",
+    "base_blob": "05343fa0ff032c10c76e6e30c1c316819063fa8a",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/ScoreForRankMatcher.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/SortMatcher.java",
+    "kind": "rename-source",
+    "base_blob": "1f75200252e0e8b9934d7e8c9707ba0a0594a706",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/SortMatcher.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/TextIndexMatcher.java",
+    "kind": "rename-source",
+    "base_blob": "bb2789ed6a195e225945fa377c2b05a47afc0faa",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/TextIndexMatcher.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/TypeFilterMatcher.java",
+    "kind": "rename-source",
+    "base_blob": "5ca85d9826efb9c47e7ee1cc88b1b66a231db448",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/TypeFilterMatcher.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/TypelessStringMatcher.java",
+    "kind": "rename-source",
+    "base_blob": "48ab9d3e40d0dbe3f44cd3bec318b78ffa7abb55",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/TypelessStringMatcher.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/UnionMatcher.java",
+    "kind": "rename-source",
+    "base_blob": "2f25382baa8249143238a014bf6a6549a9de3ec9",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/UnionMatcher.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/UnorderedPrimaryKeyDistinctMatcher.java",
+    "kind": "rename-source",
+    "base_blob": "e1496f5a3535b6345306b11af22c312cfe2e7fd1",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/UnorderedPrimaryKeyDistinctMatcher.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/UnorderedUnionMatcher.java",
+    "kind": "rename-source",
+    "base_blob": "12bf96bf83b1f80f34552269e246c3c1d3ac2d4d",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/UnorderedUnionMatcher.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/test/FDBDatabaseExtension.java",
+    "kind": "rename-source",
+    "base_blob": "144395abbc23806bb7a8d681353082bfd143e74d",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/test/FDBDatabaseExtension.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/test/TestKeySpace.java",
+    "kind": "rename-source",
+    "base_blob": "a00012f24cae11762dba2bd5b2b5e04f0f3d13aa",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/test/TestKeySpace.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/test/TestKeySpacePathManager.java",
+    "kind": "rename-source",
+    "base_blob": "7f953ee8daa3ba33a660218238524b34b3854131",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/test/TestKeySpacePathManager.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/test/TestKeySpacePathManagerExtension.java",
+    "kind": "rename-source",
+    "base_blob": "d6574cfc976fb7863f25a6970956aab9ebcdc104",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/test/TestKeySpacePathManagerExtension.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/util/RandomSecretUtil.java",
+    "kind": "rename-source",
+    "base_blob": "69e8efbb8e8cb13a35a5586b3d71f583e9141223",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/util/RandomSecretUtil.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/util/RandomUtil.java",
+    "kind": "rename-source",
+    "base_blob": "baea9a6f35e6375ebe6229fefcbd525860cea86c",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/util/RandomUtil.java",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/proto/test_records_1.proto",
+    "kind": "rename-source",
+    "base_blob": "488419957ee398b632fb30ee987abf60c46d5813",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/proto/test_records_1.proto",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/proto/test_records_3.proto",
+    "kind": "rename-source",
+    "base_blob": "f5db702f2c0807af86acb70d2e274b2fa92625b4",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/proto/test_records_3.proto",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/proto/test_records_4.proto",
+    "kind": "rename-source",
+    "base_blob": "ad57af5ccbb9a9e407d8d24c0aa767b3fe810a8e",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/proto/test_records_4.proto",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/proto/test_records_4_wrapper.proto",
+    "kind": "rename-source",
+    "base_blob": "dce3812bcae9b5b0e1c97ce77a4811745fa0a53e",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/proto/test_records_4_wrapper.proto",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/proto/test_records_5.proto",
+    "kind": "rename-source",
+    "base_blob": "eebe293f3421bf57251b947ccad5b3cf8c0446bf",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/proto/test_records_5.proto",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/proto/test_records_bytes.proto",
+    "kind": "rename-source",
+    "base_blob": "f372e397ffc6ae4177069796c77811e7d469b01d",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/proto/test_records_bytes.proto",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/proto/test_records_enum.proto",
+    "kind": "rename-source",
+    "base_blob": "5d5eae6141aaf33fcc8334cd12f6665ea5345aa1",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/proto/test_records_enum.proto",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/proto/test_records_grouped_parent_child.proto",
+    "kind": "rename-source",
+    "base_blob": "2ad60ea6c6217156ebbf48bf0c4e15951ea309c5",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/proto/test_records_grouped_parent_child.proto",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/proto/test_records_join_index.proto",
+    "kind": "rename-source",
+    "base_blob": "d93a5ecff9bb23c047da3421dc00c6ef6ac0c286",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/proto/test_records_join_index.proto",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/proto/test_records_multi.proto",
+    "kind": "rename-source",
+    "base_blob": "fa1623c942452f52b3668aa8f4dde4d0adf97bf3",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/proto/test_records_multi.proto",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/proto/test_records_text.proto",
+    "kind": "rename-source",
+    "base_blob": "cef98fca18a3cb40e36ec70bfd8b97884cfa251c",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/proto/test_records_text.proto",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/proto/test_records_tuple_fields.proto",
+    "kind": "rename-source",
+    "base_blob": "a55b427339ec6f35997e579cac3026951e64af3b",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/proto/test_records_tuple_fields.proto",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/proto/test_records_with_header.proto",
+    "kind": "rename-source",
+    "base_blob": "4f91b728d7bbf06d73ab7430b9bd8311fe14ced5",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/proto/test_records_with_header.proto",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-record-layer-core/src/test/proto/test_records_with_union.proto",
+    "kind": "rename-source",
+    "base_blob": "c219ea719741de58598783502b26f3992b6c1c96",
+    "target_blob": null,
+    "detail": "fdb-record-layer-core/src/testFixtures/proto/test_records_with_union.proto",
+    "commits": [
+      "80a499db83e68d7d5d19e3fef8f181405d78aab3"
+    ]
+  },
+  {
+    "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/recordlayer/metric/RecordLayerMetricCollectorTest.java",
+    "kind": "rename-source",
+    "base_blob": "0c4b38059e01c7607726efd12a6600f60ae50368",
+    "target_blob": null,
+    "detail": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/recordlayer/metric/StoreTimerMetricCollectorFromFDBRecordContextTest.java",
+    "commits": [
+      "53daa4dee0215c95a96c076a5e083697be8adb5f"
+    ]
+  },
+  {
+    "path": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/recordlayer/query/SchemaTemplateStoredQueriesTest.java",
+    "kind": "intermediate-only",
+    "base_blob": null,
+    "target_blob": null,
+    "detail": "Created and removed or moved within the range; audit final replacement, not intermediate API.",
+    "commits": [
+      "02af41b57d6886bfc251b90cf6439eb5adef6cb0",
+      "53daa4dee0215c95a96c076a5e083697be8adb5f"
+    ]
+  }
+]

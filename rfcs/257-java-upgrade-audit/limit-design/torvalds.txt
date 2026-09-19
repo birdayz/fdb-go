@@ -1,0 +1,13 @@
+**ACK — design only.** Reviewed exact tree `7485a5d948bacc3cadc802499d3069acb3340eca`, Go parent `e48f5b4965543cd4d99b5578356059e12d969c7c`, solely RFC-257’s final subsection, lines 879–925.
+
+- The defect is concrete: [sigquit.log:24420](/var/tmp/query-grind-cast/java-upgrade/race-timeout/sigquit.log:24420) shows full-tail encoding through [executor.go:1904](/home/birdy/projects/fdb-record-layer-go/pkg/recordlayer/query/executor/executor.go:1904). Moving serialization into `ToBytes` addresses that repeated work directly.
+
+- Ownership is sound for the inspected sort: [streaming_cursors.go:1157](/home/birdy/projects/fdb-record-layer-go/pkg/recordlayer/query/executor/streaming_cursors.go:1157) retains an unchanged tail; `Close` at 1198 does not clear it. Capture counters by value and retain the continuation, without capturing the mutable LIMIT cursor or copying the entire tail per row. Java target `fdacd162a9c8acfadc49082b89185c823ab8ae4a` agrees: `RowLimitedCursor.java:64`, `SkipCursor.java:60`, and `RecordCursorContinuation.java:47` require object forwarding and validity after advancement/closure.
+
+- Both eager sites—`executor.go:1880` and `:1904`—must change. Preserve end handling at `:1856`/`:1915` and the codec at `:1951`, including absent versus empty inner bytes. Boundary tests should use a failing/counting continuation to expose an incomplete conversion; ordinary sticky-result assertions cannot prove laziness.
+
+- The proposed actual-sort unencodable-tail test detects the original eager emitted-row path deterministically. Byte compatibility and delayed snapshot tests protect separate semantics; expected bytes must represent the earlier position. The bounded race reproducer supplies integration evidence. Enforce **exactly 140** comparisons: [metamorphic_sweep_paging_fdb_test.go:131](/home/birdy/projects/fdb-record-layer-go/pkg/relational/sqldriver/metamorphic_sweep_paging_fdb_test.go:131) currently requires only 70.
+
+One nonblocking documentation correction: RFC line 912 misidentifies the serialization boundary. [resultset.go:411](/home/birdy/projects/fdb-record-layer-go/pkg/recordlayer/query/executor/resultset.go:411) merely returns the object. `Continuation` at `:428` and `cascades_generator.go:2067` serialize and propagate errors; `:2337` returns the paging failure. The intended error contract is supported.
+
+No edits, builds, or tests performed. This grants neither implementation approval nor merge authorization.

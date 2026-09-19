@@ -1,0 +1,425 @@
+{
+  "baseline_sha": "e48f5b4965543cd4d99b5578356059e12d969c7c",
+  "role": "exact parent and merge-base when measured; no current samples yet",
+  "command": "bazelisk test //pkg/relational/sqldriver/stress:stress_test --nocache_test_results --test_output=all --test_arg='--test.run=TestFDB_Stress_1M$' --test_arg=--test.v",
+  "filesystem": "Filesystem      Size  Used Avail Use% Mounted on\n/dev/nvme0n1    932G  844G   88G  91% /home\n",
+  "tracked_source_hashes_verified": 6186,
+  "source_manifest_sha256": "4ddac3ce7daac904267abeb2cb58272852d2320ff46e4d3da32e485f2d8ef4b0",
+  "local_artifacts": "/var/tmp/query-grind-cast/java-upgrade/stress-baseline",
+  "samples": [
+    {
+      "sample": 1,
+      "start": "2026-09-19T00:08:27+02:00",
+      "end": "2026-09-19T00:11:54+02:00",
+      "load_start": "00:08:27 up 13 days, 13:24, 40 users,  load average: 5.59, 3.86, 3.56",
+      "load_end": "00:11:54 up 13 days, 13:27, 40 users,  load average: 5.80, 5.29, 4.24",
+      "run_tests": [
+        "TestFDB_Stress_1M",
+        "TestFDB_Stress_1M/pk_lookup_first",
+        "TestFDB_Stress_1M/pk_lookup_middle",
+        "TestFDB_Stress_1M/pk_lookup_last",
+        "TestFDB_Stress_1M/index_customer_eq",
+        "TestFDB_Stress_1M/index_amount_range",
+        "TestFDB_Stress_1M/index_status_count",
+        "TestFDB_Stress_1M/full_scan_count",
+        "TestFDB_Stress_1M/full_scan_filter",
+        "TestFDB_Stress_1M/group_by_status",
+        "TestFDB_Stress_1M/group_by_status_count_only",
+        "TestFDB_Stress_1M/sum_by_status",
+        "TestFDB_Stress_1M/group_by_customer_having",
+        "TestFDB_Stress_1M/join_10_outer",
+        "TestFDB_Stress_1M/order_by_pk_full",
+        "TestFDB_Stress_1M/order_by_pk_index_filter",
+        "TestFDB_Stress_1M/scan_all_narrow",
+        "TestFDB_Stress_1M/scan_all_wide",
+        "TestFDB_Stress_1M/in_list",
+        "TestFDB_Stress_1M/needle_in_haystack_pk",
+        "TestFDB_Stress_1M/needle_in_haystack_filter",
+        "TestFDB_Stress_1M/full_scan_sparse_filter",
+        "TestFDB_Stress_1M/update_by_index",
+        "TestFDB_Stress_1M/delete_single_row"
+      ],
+      "run_count": 24,
+      "pass_count": 24,
+      "log_sha256": "9151e5a6396cb2b4473fb7c0cea43356ed5369ab5e5795ef2d5e3b99832722ca",
+      "test_result": {
+        "testActionOutput": [
+          {
+            "name": "test.log",
+            "uri": "file:///var/tmp/query-hunt-254/bazel/execroot/_main/bazel-out/k8-fastbuild/testlogs/pkg/relational/sqldriver/stress/stress_test/test.log"
+          },
+          {
+            "name": "test.xml",
+            "uri": "file:///var/tmp/query-hunt-254/bazel/execroot/_main/bazel-out/k8-fastbuild/testlogs/pkg/relational/sqldriver/stress/stress_test/test.xml"
+          }
+        ],
+        "testAttemptDurationMillis": "188025",
+        "status": "PASSED",
+        "testAttemptStartMillisEpoch": "1789769326474",
+        "executionInfo": {
+          "strategy": "linux-sandbox",
+          "timingBreakdown": {
+            "child": [
+              {
+                "name": "parseTime",
+                "time": "0s"
+              },
+              {
+                "name": "fetchTime",
+                "time": "0s"
+              },
+              {
+                "name": "queueTime",
+                "time": "0s"
+              },
+              {
+                "name": "uploadTime",
+                "time": "0s"
+              },
+              {
+                "name": "setupTime",
+                "time": "0s"
+              },
+              {
+                "name": "executionWallTime",
+                "time": "188.025s"
+              },
+              {
+                "name": "processOutputsTime",
+                "time": "0s"
+              },
+              {
+                "name": "networkTime",
+                "time": "0s"
+              }
+            ],
+            "name": "totalTime",
+            "time": "188.025s"
+          }
+        },
+        "testAttemptStart": "2026-09-18T22:08:46.474Z",
+        "testAttemptDuration": "188.025s"
+      },
+      "query_measurements": [
+        {
+          "query": "PK lookup id=0",
+          "rows": 1,
+          "duration": "31.786149ms"
+        },
+        {
+          "query": "PK lookup id=N/2",
+          "rows": 1,
+          "duration": "15.323566ms"
+        },
+        {
+          "query": "PK lookup id=N-1",
+          "rows": 1,
+          "duration": "14.831153ms"
+        },
+        {
+          "query": "idx_customer eq",
+          "rows": 8,
+          "duration": "25.381664ms"
+        },
+        {
+          "query": "idx_amount range >9000",
+          "rows": 100017,
+          "duration": "258.983308ms"
+        },
+        {
+          "query": "idx_status count pending",
+          "rows": 1,
+          "duration": "328.175565ms"
+        },
+        {
+          "query": "full scan filter amount>5000",
+          "rows": 1,
+          "duration": "917.127245ms"
+        },
+        {
+          "query": "GROUP BY status",
+          "rows": 4,
+          "duration": "7.123287ms"
+        },
+        {
+          "query": "GROUP BY status COUNT only",
+          "rows": 4,
+          "duration": "6.130246ms"
+        },
+        {
+          "query": "SUM by status (aggregate index)",
+          "rows": 4,
+          "duration": "6.090841ms"
+        },
+        {
+          "query": "GROUP BY customer HAVING",
+          "rows": 47271,
+          "duration": "630.251776ms"
+        },
+        {
+          "query": "JOIN 10 orders x customers",
+          "rows": 10,
+          "duration": "24.497088ms"
+        },
+        {
+          "query": "ORDER BY PK (full)",
+          "rows": 1000000,
+          "duration": "7.634852382s"
+        },
+        {
+          "query": "ORDER BY PK + index filter",
+          "rows": 8,
+          "duration": "9.275635ms"
+        },
+        {
+          "query": "scan all rows ordered",
+          "rows": 1000000,
+          "duration": "3.832548314s"
+        },
+        {
+          "query": "scan all rows wide",
+          "rows": 1000000,
+          "duration": "4.083509329s"
+        },
+        {
+          "query": "IN-list 5 values",
+          "rows": 46,
+          "duration": "20.308742ms"
+        },
+        {
+          "query": "PK needle id=999999",
+          "rows": 1,
+          "duration": "6.12748ms"
+        },
+        {
+          "query": "PK+filter needle id=500000",
+          "rows": 1,
+          "duration": "7.823304ms"
+        },
+        {
+          "query": "full scan sparse filter",
+          "rows": 97,
+          "duration": "3.555537956s"
+        },
+        {
+          "query": "UPDATE by index",
+          "rows": 8,
+          "duration": "10.001651ms"
+        },
+        {
+          "query": "DELETE single row",
+          "rows": 1,
+          "duration": "6.909082ms"
+        }
+      ],
+      "full_scan_count": 1000000
+    },
+    {
+      "sample": 2,
+      "start": "2026-09-19T00:11:54+02:00",
+      "end": "2026-09-19T00:15:03+02:00",
+      "load_start": "00:11:54 up 13 days, 13:27, 40 users,  load average: 5.80, 5.29, 4.24",
+      "load_end": "00:15:03 up 13 days, 13:30, 40 users,  load average: 5.86, 5.79, 4.64",
+      "run_tests": [
+        "TestFDB_Stress_1M",
+        "TestFDB_Stress_1M/pk_lookup_first",
+        "TestFDB_Stress_1M/pk_lookup_middle",
+        "TestFDB_Stress_1M/pk_lookup_last",
+        "TestFDB_Stress_1M/index_customer_eq",
+        "TestFDB_Stress_1M/index_amount_range",
+        "TestFDB_Stress_1M/index_status_count",
+        "TestFDB_Stress_1M/full_scan_count",
+        "TestFDB_Stress_1M/full_scan_filter",
+        "TestFDB_Stress_1M/group_by_status",
+        "TestFDB_Stress_1M/group_by_status_count_only",
+        "TestFDB_Stress_1M/sum_by_status",
+        "TestFDB_Stress_1M/group_by_customer_having",
+        "TestFDB_Stress_1M/join_10_outer",
+        "TestFDB_Stress_1M/order_by_pk_full",
+        "TestFDB_Stress_1M/order_by_pk_index_filter",
+        "TestFDB_Stress_1M/scan_all_narrow",
+        "TestFDB_Stress_1M/scan_all_wide",
+        "TestFDB_Stress_1M/in_list",
+        "TestFDB_Stress_1M/needle_in_haystack_pk",
+        "TestFDB_Stress_1M/needle_in_haystack_filter",
+        "TestFDB_Stress_1M/full_scan_sparse_filter",
+        "TestFDB_Stress_1M/update_by_index",
+        "TestFDB_Stress_1M/delete_single_row"
+      ],
+      "run_count": 24,
+      "pass_count": 24,
+      "log_sha256": "57f845e9e385849903cb957751446d66eebf318adff6848fbeac3950084ace21",
+      "test_result": {
+        "testActionOutput": [
+          {
+            "name": "test.log",
+            "uri": "file:///var/tmp/query-hunt-254/bazel/execroot/_main/bazel-out/k8-fastbuild/testlogs/pkg/relational/sqldriver/stress/stress_test/test.log"
+          },
+          {
+            "name": "test.xml",
+            "uri": "file:///var/tmp/query-hunt-254/bazel/execroot/_main/bazel-out/k8-fastbuild/testlogs/pkg/relational/sqldriver/stress/stress_test/test.xml"
+          }
+        ],
+        "testAttemptDurationMillis": "188993",
+        "status": "PASSED",
+        "testAttemptStartMillisEpoch": "1789769514840",
+        "executionInfo": {
+          "strategy": "linux-sandbox",
+          "timingBreakdown": {
+            "child": [
+              {
+                "name": "parseTime",
+                "time": "0s"
+              },
+              {
+                "name": "fetchTime",
+                "time": "0s"
+              },
+              {
+                "name": "queueTime",
+                "time": "0s"
+              },
+              {
+                "name": "uploadTime",
+                "time": "0s"
+              },
+              {
+                "name": "setupTime",
+                "time": "0s"
+              },
+              {
+                "name": "executionWallTime",
+                "time": "188.993s"
+              },
+              {
+                "name": "processOutputsTime",
+                "time": "0s"
+              },
+              {
+                "name": "networkTime",
+                "time": "0s"
+              }
+            ],
+            "name": "totalTime",
+            "time": "188.993s"
+          }
+        },
+        "testAttemptStart": "2026-09-18T22:11:54.840Z",
+        "testAttemptDuration": "188.993s"
+      },
+      "query_measurements": [
+        {
+          "query": "PK lookup id=0",
+          "rows": 1,
+          "duration": "8.656082ms"
+        },
+        {
+          "query": "PK lookup id=N/2",
+          "rows": 1,
+          "duration": "8.857103ms"
+        },
+        {
+          "query": "PK lookup id=N-1",
+          "rows": 1,
+          "duration": "5.644625ms"
+        },
+        {
+          "query": "idx_customer eq",
+          "rows": 8,
+          "duration": "6.800676ms"
+        },
+        {
+          "query": "idx_amount range >9000",
+          "rows": 100017,
+          "duration": "197.938105ms"
+        },
+        {
+          "query": "idx_status count pending",
+          "rows": 1,
+          "duration": "434.578696ms"
+        },
+        {
+          "query": "full scan filter amount>5000",
+          "rows": 1,
+          "duration": "743.785275ms"
+        },
+        {
+          "query": "GROUP BY status",
+          "rows": 4,
+          "duration": "14.544048ms"
+        },
+        {
+          "query": "GROUP BY status COUNT only",
+          "rows": 4,
+          "duration": "12.891557ms"
+        },
+        {
+          "query": "SUM by status (aggregate index)",
+          "rows": 4,
+          "duration": "22.779022ms"
+        },
+        {
+          "query": "GROUP BY customer HAVING",
+          "rows": 47271,
+          "duration": "652.351685ms"
+        },
+        {
+          "query": "JOIN 10 orders x customers",
+          "rows": 10,
+          "duration": "22.393271ms"
+        },
+        {
+          "query": "ORDER BY PK (full)",
+          "rows": 1000000,
+          "duration": "3.989194523s"
+        },
+        {
+          "query": "ORDER BY PK + index filter",
+          "rows": 8,
+          "duration": "9.329197ms"
+        },
+        {
+          "query": "scan all rows ordered",
+          "rows": 1000000,
+          "duration": "3.83989102s"
+        },
+        {
+          "query": "scan all rows wide",
+          "rows": 1000000,
+          "duration": "4.052966378s"
+        },
+        {
+          "query": "IN-list 5 values",
+          "rows": 46,
+          "duration": "20.597408ms"
+        },
+        {
+          "query": "PK needle id=999999",
+          "rows": 1,
+          "duration": "5.819788ms"
+        },
+        {
+          "query": "PK+filter needle id=500000",
+          "rows": 1,
+          "duration": "7.946557ms"
+        },
+        {
+          "query": "full scan sparse filter",
+          "rows": 97,
+          "duration": "3.492992901s"
+        },
+        {
+          "query": "UPDATE by index",
+          "rows": 8,
+          "duration": "10.246144ms"
+        },
+        {
+          "query": "DELETE single row",
+          "rows": 1,
+          "duration": "7.294633ms"
+        }
+      ],
+      "full_scan_count": 1000000
+    }
+  ]
+}

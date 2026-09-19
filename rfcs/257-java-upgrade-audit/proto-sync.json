@@ -1,0 +1,85 @@
+{
+  "target": "fdacd162a9c8acfadc49082b89185c823ab8ae4a",
+  "production_protos": [
+    {
+      "canonical": "fdb-record-layer-core/src/main/proto/index_build.proto",
+      "copy": "proto/apple/index_build.proto",
+      "sha256": "f7ffce171078664df64ec4866e5efeb1c9ea7658a29fa2e263b0f3d8f1b2f92a"
+    },
+    {
+      "canonical": "fdb-record-layer-core/src/main/proto/keyspace.proto",
+      "copy": "proto/apple/keyspace.proto",
+      "sha256": "d55c822f60e9db6932391b37cb7c3f6339b6afcfb6a6695cecc33e63010996cb"
+    },
+    {
+      "canonical": "fdb-record-layer-core/src/main/proto/pending_writes_queue.proto",
+      "copy": "proto/apple/pending_writes_queue.proto",
+      "sha256": "65b98bc390938b48f4558701b516f9301a982e5bc186b968881f8480e5a7d86e"
+    },
+    {
+      "canonical": "fdb-record-layer-core/src/main/proto/planner_events.proto",
+      "copy": "proto/apple/planner_events.proto",
+      "sha256": "83a56f54e8c45f4d1cc40abeb46bbd265d693ba6647468b08a4dc4178717f685"
+    },
+    {
+      "canonical": "fdb-record-layer-core/src/main/proto/record_cursor.proto",
+      "copy": "proto/apple/record_cursor.proto",
+      "sha256": "9af5d68ad84962af4a86190a7b6e299ea3f4886365e594eb6afc5b0d4ddd3fac"
+    },
+    {
+      "canonical": "fdb-record-layer-core/src/main/proto/record_key_expression.proto",
+      "copy": "proto/apple/record_key_expression.proto",
+      "sha256": "8258db2cbad2c35d1d6402fd1fc292f35bf19c38e99d853e0cbf5ca51f6f5123"
+    },
+    {
+      "canonical": "fdb-record-layer-core/src/main/proto/record_metadata.proto",
+      "copy": "proto/apple/record_metadata.proto",
+      "sha256": "be4f4605de58d444475a3da902c582b620d983140b7c7a6427d215364f579c45"
+    },
+    {
+      "canonical": "fdb-record-layer-core/src/main/proto/record_metadata_options.proto",
+      "copy": "proto/apple/record_metadata_options.proto",
+      "sha256": "4efd54df53475e34db0619ab6f2678ed8157a17566b4dd1079deb9b1f2858785"
+    },
+    {
+      "canonical": "fdb-record-layer-core/src/main/proto/record_planner_config.proto",
+      "copy": "proto/apple/record_planner_config.proto",
+      "sha256": "f9e9bf61c9d72896809e596b314da7bec07bca9511a79e2f7c9c411621fcedbb"
+    },
+    {
+      "canonical": "fdb-record-layer-core/src/main/proto/record_query_plan.proto",
+      "copy": "proto/apple/record_query_plan.proto",
+      "sha256": "7ab5538dccf93c82b09b8619538824d5764a945a28add5a1ee11583e50242432"
+    },
+    {
+      "canonical": "fdb-record-layer-core/src/main/proto/record_query_runtime.proto",
+      "copy": "proto/apple/record_query_runtime.proto",
+      "sha256": "6020ecaaaf789281587e5214213243251310ee75de6cab9daf155034b0111e5b"
+    },
+    {
+      "canonical": "fdb-record-layer-core/src/main/proto/record_sorting.proto",
+      "copy": "proto/apple/record_sorting.proto",
+      "sha256": "3958203eea6429bfce058fab6984c7f616d12d175ecfa417f36de29a98243e8e"
+    },
+    {
+      "canonical": "fdb-record-layer-core/src/main/proto/resolver_state.proto",
+      "copy": "proto/apple/resolver_state.proto",
+      "sha256": "74a8ae48672100bccf82ac6c47106c68ac8f2d36b9ff174704e646cf7705c3fa"
+    },
+    {
+      "canonical": "fdb-record-layer-core/src/main/proto/string_interning_data.proto",
+      "copy": "proto/apple/string_interning_data.proto",
+      "sha256": "56bb26d33d623d89b40ccaf44082b803d359308e6604692357584daea3626cce"
+    },
+    {
+      "canonical": "fdb-record-layer-core/src/main/proto/time_window_leaderboard.proto",
+      "copy": "proto/apple/time_window_leaderboard.proto",
+      "sha256": "8d95dce5ee828a5724df7a660e464a7b2cbda0e26a778479aea0841ad051846a"
+    },
+    {
+      "canonical": "fdb-record-layer-core/src/main/proto/tuple_fields.proto",
+      "copy": "proto/apple/tuple_fields.proto",
+      "sha256": "4a04119aa4ee486d9005d468b3854d21c85641ff327cc948b805166150518ce5"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+**ACK — WS-A DESIGN ONLY**, exact virtual Git tree `84844bdb679dacefde59a61efe67969f7bc9be11`.
+
+I read the complete delta, full frozen RFC, retained second-round reports/prompts, and relevant Go and Java target source. No blocking design gap remains in this delta.
+
+- **Descriptor lifetime:** [RFC:203](/home/birdy/projects/fdb-record-layer-go/rfcs/257-java-4.14.2.0-upgrade.md:203) specifies a concrete collect/register/seal/bind boundary. Transactional closure registration prevents failed roots from poisoning valid ones; disposable descriptors cannot escape. This addresses the stale descriptor cache at [proto_type.go:242](/home/birdy/projects/fdb-record-layer-go/pkg/recordlayer/query/plan/cascades/values/proto_type.go:242) and matches Java’s final type collection at [QueryPlan.java:670](/home/birdy/projects/fdb-record-layer-go/fdb-record-layer/fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/QueryPlan.java:670). Required pointer-identity, discovery-order, rollback, reconstruction and concurrency tests establish the intended claim. Raw fallbacks, DML constructor exclusion and strict foreign-message copying remain explicit.
+
+- **Encoder dependency:** [RFC:244](/home/birdy/projects/fdb-record-layer-go/rfcs/257-java-4.14.2.0-upgrade.md:244) correctly assigns exact encoding and relevant norm reconstruction to WS-A. Java’s norm-then-square and unclamped calibration differ materially from [rabitq.go:386](/home/birdy/projects/fdb-record-layer-go/pkg/rabitq/rabitq.go:386). Nonzero asymmetric Java goldens, boundary cases, literal header/packing equality and committed compact/inline cold-reopen proofs replace inadequate self-round-trip evidence. GuardiANN integration remains separately owned.
+
+- **Ownership and migration:** [RFC:179](/home/birdy/projects/fdb-record-layer-go/rfcs/257-java-4.14.2.0-upgrade.md:179) retains immutable preparation and drift errors before child evaluation. [RFC:291](/home/birdy/projects/fdb-record-layer-go/rfcs/257-java-4.14.2.0-upgrade.md:291) retains mandatory operator-directed disable/rebuild for legacy or unknown histories, with candidate/cache byte invariants intact.
+
+Audit scope remains 1,189 net plus 84 history-only paths across 228 commits; parent baselines establish no current ratio. Approved extensions and C++ 7.3.77 remain preserved.
+
+No edits, builds/tests, worktrees, branches or agents. **No implementation or later-workstream approval; all acceptance and publication gates remain.**

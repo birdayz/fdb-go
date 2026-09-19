@@ -1,0 +1,67 @@
+{
+  "writer": "e48f5b4965543cd4d99b5578356059e12d969c7c",
+  "writer_hnsw_sha256": "7693f1d839270cd1bc1dd9e90d7cefe7dc96b70764892d27616f4d6c4ee3e8d3",
+  "producer_test": "HNSW with RaBitQ keeps deletion replacements in transformed coordinates after centroid bootstrap",
+  "producer_patch_sha256": "39c7832817647b90db3d38fd50d11e3eb56a04ffc414f58bca01252f5052f96b",
+  "producer_log_sha256": "5be49dc2747205885df05fa72663592333c0ccd7c035f2abbe25c5bcda65b1ff",
+  "config": {
+    "dimensions": 4,
+    "m": 4,
+    "mMax": 4,
+    "mMax0": 8,
+    "metric": "EUCLIDEAN_METRIC",
+    "raBitQExtraBits": 4,
+    "sampleProbability": 1,
+    "maintainProbability": 1,
+    "statsThreshold": 1
+  },
+  "operations": [
+    {
+      "insert": 1,
+      "vector": [
+        1,
+        2,
+        3,
+        4
+      ]
+    },
+    {
+      "insert": 2,
+      "vector": [
+        -3,
+        8,
+        2,
+        6
+      ]
+    },
+    {
+      "delete_entry": 1
+    },
+    {
+      "commit": true
+    },
+    {
+      "cold_reopen": true
+    }
+  ],
+  "remaining_record": {
+    "pk": 2,
+    "vector": [
+      -3,
+      8,
+      2,
+      6
+    ]
+  },
+  "coordinate_defect": "Access-info holds raw DOUBLE [-3,8,2,6] under active transform; canonical entry is transformed DOUBLE [0,0,0,0]. Rebuild required for legacy Go writer history.",
+  "kvs_relative_to_graph_prefix": [
+    {
+      "key_hex": "141405150200",
+      "value_hex": "14050102c00800ff00ff00ff00ff00ff00ff402000ff00ff00ff00ff00ff00ff4000ff00ff00ff00ff00ff00ff00ff401800ff00ff00ff00ff00ff00ff00000500"
+    },
+    {
+      "key_hex": "1501",
+      "value_hex": "1405150200050102c00800ff00ff00ff00ff00ff00ff402000ff00ff00ff00ff00ff00ff4000ff00ff00ff00ff00ff00ff00ff401800ff00ff00ff00ff00ff00ff00001c6eafdf07acc3fc420501024007fffffffffffdc02000ff00ff00ff00ff00ff01bffffffffffffffdc01800ff00ff00ff00ff00ff010000"
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+**NAK — WS-A design and audit ownership only**, for exact virtual Git tree `822e4f49bb9f03d26659a7520835953c60998709`.
+
+One unresolved dependency blocks the stated acceptance contract. [RFC:248](/home/birdy/projects/fdb-record-layer-go/rfcs/257-java-4.14.2.0-upgrade.md:248) requires canonical persisted node/inline-edge bytes after rebuilding, but [RFC:346](/home/birdy/projects/fdb-record-layer-go/rfcs/257-java-4.14.2.0-upgrade.md:346) assigns exact RaBitQ encoding to later WS-D. Existing [Go encoding:386](/home/birdy/projects/fdb-record-layer-go/pkg/rabitq/rabitq.go:386) uses the dot-product sum directly and clamps the calibration square-root argument; [target Java:170](/home/birdy/projects/fdb-record-layer-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/rabitq/RaBitQuantizer.java:170) squares the computed norm and does not clamp. These calculations feed serialized calibration bytes. Correct coordinate provenance alone does not establish byte identity.
+
+**Required revision:** assign the minimal encoder-fidelity prerequisite to WS-A, or explicitly block WS-A acceptance on its separately reviewed completion. Require nonzero, nontrivial Java golden vectors and compact/inline write→cold-reopen byte assertions. The legacy fixture’s transformed zero entry cannot establish encoder fidelity. Keep the exact expectations.
+
+The preparation ownership, candidate/cache separation, and mandatory operator-directed disable/rebuild decisions address the earlier findings. The migration contract honestly excludes transparent rolling upgrades; automatic provenance detection is neither possible nor required. Fixture/source/producer-log hashes match.
+
+Audit accounting reconciles 1,189 net paths plus 84 history-only paths across 228 commits—not 228 independent commit reviews. The recorded classpath matches the frozen MODULE; baseline evidence establishes no current performance comparison.
+
+No implementation approval or later-backend approval. No edits, builds, tests, or agents ran.

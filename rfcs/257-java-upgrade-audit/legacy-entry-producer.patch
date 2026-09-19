@@ -1,0 +1,88 @@
+diff --git a/pkg/recordlayer/vector_index_test.go b/pkg/recordlayer/vector_index_test.go
+index 2d997578d..a08404aaf 100644
+--- a/pkg/recordlayer/vector_index_test.go
++++ b/pkg/recordlayer/vector_index_test.go
+@@ -4,9 +4,11 @@ import (
+ 	"context"
+ 	"encoding/binary"
+ 	"errors"
++	"fmt"
+ 	"math"
+ 	"math/rand"
+ 	"sort"
++	"time"
+ 
+ 	"fdb.dev/gen"
+ 	"fdb.dev/pkg/fdbgo/fdb"
+@@ -1646,6 +1648,71 @@ var _ = Describe("HNSW with RaBitQ", func() {
+ 		Expect(err).NotTo(HaveOccurred())
+ 	})
+ 
++	It("keeps deletion replacements in transformed coordinates after centroid bootstrap", func() {
++		ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
++		defer cancel()
++		config := DefaultHNSWConfig(4)
++		config.M, config.MMax, config.MMax0 = 4, 4, 8
++		config.Quantizer = rabitq.NewQuantizer(rabitq.MetricEuclidean, 4)
++		config.SampleVectorStatsProbability = 1
++		config.MaintainStatsProbability = 1
++		config.StatsThreshold = 1
++		ss := specSubspace().Sub("entry-replacement-coordinates")
++		vectors := map[int64][]float64{1: {1, 2, 3, 4}, 2: {-3, 8, 2, 6}}
++		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
++			tx := rtx.Transaction()
++			for _, pk := range []int64{1, 2} {
++				graph := NewHNSWGraph(newHNSWStorage(ss, config), config)
++				Expect(graph.Insert(tx, tuple.Tuple{pk}, vectors[pk])).To(Succeed())
++			}
++			storage := newHNSWStorage(ss, config)
++			before, err := storage.loadAccessInfo(tx)
++			Expect(err).NotTo(HaveOccurred())
++			Expect(before.hasTransform()).To(BeTrue(), "the replacement must cross the centroid transition")
++			for _, pk := range []int64{1, 2} {
++				raw, _, err := storage.loadNodeLayer(tx, 0, tuple.Tuple{pk})
++				Expect(err).NotTo(HaveOccurred())
++				Expect(raw).To(Equal(serializeVector(vectors[pk])), "both data nodes must have been inserted pre-centroid")
++			}
++			graph := NewHNSWGraph(storage, config)
++			Expect(graph.Delete(tx, before.pk)).To(Succeed())
++			return nil, nil
++		})
++		Expect(err).NotTo(HaveOccurred())
++
++		// Reopen in a separate transaction with no node or transform cache.
++		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
++			tx := rtx.Transaction()
++			storage := newHNSWStorage(ss, config)
++			after, err := storage.loadAccessInfo(tx)
++			Expect(err).NotTo(HaveOccurred())
++			Expect(after.hasTransform()).To(BeTrue())
++			Expect(after.pk).To(Equal(tuple.Tuple{int64(2)}))
++			raw := serializeVector(vectors[2])
++			graph := NewHNSWGraph(storage, config)
++			want := serializeVector(graph.buildTransform(after).apply(vectors[2]))
++			Expect(want).NotTo(Equal(raw), "a fixed-point vector would make this coordinate regression vacuous")
++
++			// The prefix-independent image also serves as a replay fixture when this
++			// regression is run against a pre-fix writer. Keep the full operation
++			// sequence above: a hand-written raw tuple cannot prove an old writer
++			// actually produced the ambiguous access-info representation.
++			kvs, err := tx.GetRange(ss, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}).GetSliceWithError()
++			Expect(err).NotTo(HaveOccurred())
++			for _, kv := range kvs {
++				fmt.Fprintf(GinkgoWriter, "HNSW_ENTRY_FIXTURE key=%x value=%x\n", []byte(kv.Key[len(ss.Bytes()):]), kv.Value)
++			}
++			Expect(after.vectorBytes).To(Equal(want), "access-info must store the transformed replacement, not the original raw node bytes")
++			results, err := graph.Search(tx, vectors[2], 1, 10)
++			Expect(err).NotTo(HaveOccurred())
++			Expect(results).To(HaveLen(1))
++			Expect(results[0].PrimaryKey).To(Equal(tuple.Tuple{int64(2)}))
++			Expect(results[0].Distance).To(Equal(float64(0)))
++			return nil, nil
++		})
++		Expect(err).NotTo(HaveOccurred())
++	})
++
+ 	It("delete works with RaBitQ", func() {
+ 		graph := makeRaBitQGraph(4, 4)
+ 
