@@ -1,0 +1,41 @@
+{
+  "base": "257aa83cae7f90e18ea6595fdf2cf841ca72e802",
+  "target": "fdacd162a9c8acfadc49082b89185c823ab8ae4a",
+  "commits": 228,
+  "net_paths": 1189,
+  "per_commit_unique_paths": 1273,
+  "history_only_paths": 84,
+  "history_categories": {
+    "rename-source": 72,
+    "intermediate-only": 5,
+    "net-zero": 7
+  },
+  "groups": [
+    {
+      "group": "build-docs",
+      "paths": 126,
+      "report_sha256": "caaedff786c2a8ec784d6215c65802f128b86aa3e7d703e13d069aa6d468d1bc"
+    },
+    {
+      "group": "cascades",
+      "paths": 282,
+      "report_sha256": "8bb93a4083fab7ab2d0f7716d9636326b918bd93b5bffc9b39856d7db59eab66"
+    },
+    {
+      "group": "extensions-vector",
+      "paths": 170,
+      "report_sha256": "2273f9c25d36cbfaec6334a45db3f4f4e3b99e432abe69d19b94176c4bcd83e8"
+    },
+    {
+      "group": "record-storage",
+      "paths": 207,
+      "report_sha256": "305e3305453ba38e06c8c2088f3def8914d1bfeb1f823e7b2200a28a0e865143"
+    },
+    {
+      "group": "relational",
+      "paths": 404,
+      "report_sha256": "572e24f21749de7161ed3e8bd607ea94258ae53379ac4b4a1971f01e6e9ccac2"
+    }
+  ],
+  "scope": "Report hashes, exact path assignments, disjoint ledger union, per-commit history reconciliation; not a runtime parity certificate."
+}

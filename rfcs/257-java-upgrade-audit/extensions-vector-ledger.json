@@ -1,0 +1,688 @@
+{
+  "group": "extensions-vector",
+  "report_sha256": "2273f9c25d36cbfaec6334a45db3f4f4e3b99e432abe69d19b94176c4bcd83e8",
+  "assigned_paths": 170,
+  "ledger_paths": 170,
+  "entries": [
+    {
+      "path": "fdb-extensions/fdb-extensions.gradle",
+      "report_line": 650
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/MoreAsyncUtil.java",
+      "report_line": 402
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/common/AggregatedVector.java",
+      "report_line": 408
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/common/DistinctTopK.java",
+      "report_line": 409
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/common/OnKeyValueReadListener.java",
+      "report_line": 410
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/common/OnKeyValueWriteListener.java",
+      "report_line": 411
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/common/RandomHelpers.java",
+      "report_line": 412
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/common/ResultEntry.java",
+      "report_line": 413
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/common/StorageHelpers.java",
+      "report_line": 414
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/common/StorageTransform.java",
+      "report_line": 415
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/common/TimedAsyncIterable.java",
+      "report_line": 416
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/common/TopK.java",
+      "report_line": 417
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/common/VectorEncodingConfig.java",
+      "report_line": 418
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/AbstractDeferredTask.java",
+      "report_line": 424
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/AccessInfo.java",
+      "report_line": 425
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/AlmostSortedAsyncIterator.java",
+      "report_line": 426
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/BounceTask.java",
+      "report_line": 427
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/Cluster.java",
+      "report_line": 428
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/ClusterCapacityExceededException.java",
+      "report_line": 429
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/ClusterMetadata.java",
+      "report_line": 430
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/ClusterMetadataWithDistance.java",
+      "report_line": 431
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/ClusterReference.java",
+      "report_line": 432
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/ClusterView.java",
+      "report_line": 433
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/CollapseTask.java",
+      "report_line": 434
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/Config.java",
+      "report_line": 435
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/Delete.java",
+      "report_line": 436
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/Guardiann.java",
+      "report_line": 437
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/Insert.java",
+      "report_line": 438
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/Locator.java",
+      "report_line": 439
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/OnReadListener.java",
+      "report_line": 440
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/OnWriteListener.java",
+      "report_line": 441
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/PrimaryCopy.java",
+      "report_line": 442
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/Primitives.java",
+      "report_line": 443
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/ReassignTask.java",
+      "report_line": 444
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/ReplicaSelection.java",
+      "report_line": 445
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/ReplicatedCopy.java",
+      "report_line": 446
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/ReplicationStats.java",
+      "report_line": 447
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/RunningStats.java",
+      "report_line": 448
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/Search.java",
+      "report_line": 449
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/SearchConfig.java",
+      "report_line": 450
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/SplitMergeTask.java",
+      "report_line": 451
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/StorageAdapter.java",
+      "report_line": 452
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/StructureSnapshot.java",
+      "report_line": 453
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/TaskKind.java",
+      "report_line": 454
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/VectorId.java",
+      "report_line": 455
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/VectorMetadata.java",
+      "report_line": 456
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/VectorRecord.java",
+      "report_line": 457
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/VectorReference.java",
+      "report_line": 458
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/VectorReferenceAndDistance.java",
+      "report_line": 459
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/VectorReferenceVectorLens.java",
+      "report_line": 460
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/package-info.java",
+      "report_line": 461
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/AbstractNode.java",
+      "report_line": 467
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/AbstractStorageAdapter.java",
+      "report_line": 468
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/AccessInfo.java",
+      "report_line": 469
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/Cardinality.java",
+      "report_line": 470
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/CompactNode.java",
+      "report_line": 471
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/CompactStorageAdapter.java",
+      "report_line": 472
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/Config.java",
+      "report_line": 473
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/Delete.java",
+      "report_line": 474
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/DeleteNeighborsChangeSet.java",
+      "report_line": 475
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/HNSW.java",
+      "report_line": 476
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/InliningNode.java",
+      "report_line": 477
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/InliningStorageAdapter.java",
+      "report_line": 478
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/Insert.java",
+      "report_line": 479
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/NodeFactory.java",
+      "report_line": 480
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/NodeReferenceWithVectorAndAdditionalValues.java",
+      "report_line": 481
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/OnReadListener.java",
+      "report_line": 482
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/OnWriteListener.java",
+      "report_line": 483
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/OutwardTraversalIterator.java",
+      "report_line": 484
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/Primitives.java",
+      "report_line": 485
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/ResultEntry.java",
+      "report_line": 486
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/Search.java",
+      "report_line": 487
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/StorageAdapter.java",
+      "report_line": 488
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/rtree/AbstractNode.java",
+      "report_line": 494
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/rtree/ChildSlot.java",
+      "report_line": 495
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/async/rtree/RTree.java",
+      "report_line": 496
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/clientlog/FDBClientLogEvents.java",
+      "report_line": 497
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/clientlog/TupleKeyCountTree.java",
+      "report_line": 498
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/clientlog/VersionFromTimestamp.java",
+      "report_line": 499
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/kmeans/KMeans.java",
+      "report_line": 505
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/kmeans/PartitionEvaluator.java",
+      "report_line": 506
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/linear/AbstractRealVector.java",
+      "report_line": 512
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/linear/Backend.java",
+      "report_line": 513
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/linear/ColumnMajorRealMatrix.java",
+      "report_line": 514
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/linear/DoubleRealVector.java",
+      "report_line": 515
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/linear/FloatRealVector.java",
+      "report_line": 516
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/linear/HalfRealVector.java",
+      "report_line": 517
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/linear/MetricDefinition.java",
+      "report_line": 518
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/linear/MutableDoubleRealVector.java",
+      "report_line": 519
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/linear/QRDecomposition.java",
+      "report_line": 520
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/linear/Quantizer.java",
+      "report_line": 521
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/linear/RealVector.java",
+      "report_line": 522
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/linear/RealVectorPrimitives.java",
+      "report_line": 523
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/linear/RowMajorRealMatrix.java",
+      "report_line": 524
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/linear/ScalarBackend.java",
+      "report_line": 525
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/linear/Transformed.java",
+      "report_line": 526
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/linear/VectorOperator.java",
+      "report_line": 527
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/linear/simd/SimdBackend.java",
+      "report_line": 528
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/linear/simd/package-info.java",
+      "report_line": 529
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/rabitq/EncodedRealVector.java",
+      "report_line": 535
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/rabitq/RaBitDistanceEstimator.java",
+      "report_line": 536
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/rabitq/RaBitQuantizer.java",
+      "report_line": 537
+    },
+    {
+      "path": "fdb-extensions/src/main/java/com/apple/foundationdb/system/SystemKeyspace.java",
+      "report_line": 538
+    },
+    {
+      "path": "fdb-extensions/src/test/java/com/apple/foundationdb/async/MoreAsyncUtilTest.java",
+      "report_line": 544
+    },
+    {
+      "path": "fdb-extensions/src/test/java/com/apple/foundationdb/async/common/BaseTest.java",
+      "report_line": 545
+    },
+    {
+      "path": "fdb-extensions/src/test/java/com/apple/foundationdb/async/common/CommonTestHelpers.java",
+      "report_line": 546
+    },
+    {
+      "path": "fdb-extensions/src/test/java/com/apple/foundationdb/async/common/DistinctTopKTest.java",
+      "report_line": 547
+    },
+    {
+      "path": "fdb-extensions/src/test/java/com/apple/foundationdb/async/common/PrimaryKeyVectorAndDistance.java",
+      "report_line": 548
+    },
+    {
+      "path": "fdb-extensions/src/test/java/com/apple/foundationdb/async/common/TimedAsyncIterableTest.java",
+      "report_line": 549
+    },
+    {
+      "path": "fdb-extensions/src/test/java/com/apple/foundationdb/async/common/TopKTest.java",
+      "report_line": 550
+    },
+    {
+      "path": "fdb-extensions/src/test/java/com/apple/foundationdb/async/guardiann/AlmostSortedAsyncIteratorTest.java",
+      "report_line": 556
+    },
+    {
+      "path": "fdb-extensions/src/test/java/com/apple/foundationdb/async/guardiann/ClusterMetadataTest.java",
+      "report_line": 557
+    },
+    {
+      "path": "fdb-extensions/src/test/java/com/apple/foundationdb/async/guardiann/CollapseScenarioTest.java",
+      "report_line": 558
+    },
+    {
+      "path": "fdb-extensions/src/test/java/com/apple/foundationdb/async/guardiann/ConfigRecommendation.java",
+      "report_line": 559
+    },
+    {
+      "path": "fdb-extensions/src/test/java/com/apple/foundationdb/async/guardiann/ConfigRecommendationTest.java",
+      "report_line": 560
+    },
+    {
+      "path": "fdb-extensions/src/test/java/com/apple/foundationdb/async/guardiann/ConfigTest.java",
+      "report_line": 561
+    },
+    {
+      "path": "fdb-extensions/src/test/java/com/apple/foundationdb/async/guardiann/DataRecordsTest.java",
+      "report_line": 562
+    },
+    {
+      "path": "fdb-extensions/src/test/java/com/apple/foundationdb/async/guardiann/DeleteReplicationPersistenceTest.java",
+      "report_line": 563
+    },
+    {
+      "path": "fdb-extensions/src/test/java/com/apple/foundationdb/async/guardiann/DeterministicReplayTest.java",
+      "report_line": 564
+    },
+    {
+      "path": "fdb-extensions/src/test/java/com/apple/foundationdb/async/guardiann/MergeScenarioTest.java",
+      "report_line": 565
+    },
+    {
+      "path": "fdb-extensions/src/test/java/com/apple/foundationdb/async/guardiann/ReassignConvergenceTest.java",
+      "report_line": 566
+    },
+    {
+      "path": "fdb-extensions/src/test/java/com/apple/foundationdb/async/guardiann/ReassignScenarioTest.java",
+      "report_line": 567
+    },
+    {
+      "path": "fdb-extensions/src/test/java/com/apple/foundationdb/async/guardiann/RunningStatsTest.java",
+      "report_line": 568
+    },
+    {
+      "path": "fdb-extensions/src/test/java/com/apple/foundationdb/async/guardiann/SearchConfigTest.java",
+      "report_line": 569
+    },
+    {
+      "path": "fdb-extensions/src/test/java/com/apple/foundationdb/async/guardiann/SiftTest.java",
+      "report_line": 570
+    },
+    {
+      "path": "fdb-extensions/src/test/java/com/apple/foundationdb/async/guardiann/SplitMergeSplitScenarioTest.java",
+      "report_line": 571
+    },
+    {
+      "path": "fdb-extensions/src/test/java/com/apple/foundationdb/async/guardiann/SplitMergeTaskTest.java",
+      "report_line": 572
+    },
+    {
+      "path": "fdb-extensions/src/test/java/com/apple/foundationdb/async/guardiann/TestHelpers.java",
+      "report_line": 573
+    },
+    {
+      "path": "fdb-extensions/src/test/java/com/apple/foundationdb/async/hnsw/CardinalityTest.java",
+      "report_line": 579
+    },
+    {
+      "path": "fdb-extensions/src/test/java/com/apple/foundationdb/async/hnsw/ConfigTest.java",
+      "report_line": 580
+    },
+    {
+      "path": "fdb-extensions/src/test/java/com/apple/foundationdb/async/hnsw/DataRecordsTest.java",
+      "report_line": 581
+    },
+    {
+      "path": "fdb-extensions/src/test/java/com/apple/foundationdb/async/hnsw/OperationsTest.java",
+      "report_line": 582
+    },
+    {
+      "path": "fdb-extensions/src/test/java/com/apple/foundationdb/async/hnsw/SiftTest.java",
+      "report_line": 583
+    },
+    {
+      "path": "fdb-extensions/src/test/java/com/apple/foundationdb/async/hnsw/TestHelpers.java",
+      "report_line": 584
+    },
+    {
+      "path": "fdb-extensions/src/test/java/com/apple/foundationdb/kmeans/KMeansTest.java",
+      "report_line": 590
+    },
+    {
+      "path": "fdb-extensions/src/test/java/com/apple/foundationdb/kmeans/PartitionEvaluatorTest.java",
+      "report_line": 591
+    },
+    {
+      "path": "fdb-extensions/src/test/java/com/apple/foundationdb/linear/BackendSelectionTest.java",
+      "report_line": 592
+    },
+    {
+      "path": "fdb-extensions/src/test/java/com/apple/foundationdb/linear/QRDecompositionTest.java",
+      "report_line": 593
+    },
+    {
+      "path": "fdb-extensions/src/test/java/com/apple/foundationdb/linear/RealMatrixParityTest.java",
+      "report_line": 594
+    },
+    {
+      "path": "fdb-extensions/src/test/java/com/apple/foundationdb/linear/RealMatrixTest.java",
+      "report_line": 595
+    },
+    {
+      "path": "fdb-extensions/src/test/java/com/apple/foundationdb/linear/RealVectorExactReductionTest.java",
+      "report_line": 596
+    },
+    {
+      "path": "fdb-extensions/src/test/java/com/apple/foundationdb/linear/RealVectorPrimitivesParityTest.java",
+      "report_line": 597
+    },
+    {
+      "path": "fdb-extensions/src/test/java/com/apple/foundationdb/rabitq/RaBitQuantizerBackendDeterminismTest.java",
+      "report_line": 598
+    },
+    {
+      "path": "fdb-extensions/src/test/java/com/apple/foundationdb/rabitq/RaBitQuantizerTest.java",
+      "report_line": 599
+    },
+    {
+      "path": "fdb-extensions/src/testFixtures/java/com/apple/foundationdb/async/common/PrimaryKeyAndVector.java",
+      "report_line": 605
+    },
+    {
+      "path": "fdb-extensions/src/testFixtures/java/com/apple/foundationdb/async/common/package-info.java",
+      "report_line": 606
+    },
+    {
+      "path": "fdb-extensions/src/testFixtures/java/com/apple/foundationdb/async/guardiann/GuardiannStructureAsserts.java",
+      "report_line": 607
+    },
+    {
+      "path": "fdb-extensions/src/testFixtures/java/com/apple/foundationdb/async/guardiann/SiftTestHelpers.java",
+      "report_line": 608
+    },
+    {
+      "path": "fdb-extensions/src/testFixtures/java/com/apple/foundationdb/async/guardiann/VecsDatasetLoaders.java",
+      "report_line": 609
+    },
+    {
+      "path": "fdb-extensions/src/testFixtures/java/com/apple/foundationdb/async/guardiann/package-info.java",
+      "report_line": 610
+    },
+    {
+      "path": "fdb-record-layer-icu/fdb-record-layer-icu.gradle",
+      "report_line": 651
+    },
+    {
+      "path": "fdb-record-layer-icu/src/test/java/com/apple/foundationdb/record/icu/CollateFunctionKeyExpressionICUTest.java",
+      "report_line": 618
+    },
+    {
+      "path": "fdb-record-layer-icu/src/test/java/com/apple/foundationdb/record/icu/FDBCollateICUQueryTest.java",
+      "report_line": 619
+    },
+    {
+      "path": "fdb-record-layer-icu/src/test/java/com/apple/foundationdb/record/icu/TextCollatorICUTest.java",
+      "report_line": 620
+    },
+    {
+      "path": "fdb-record-layer-lucene/fdb-record-layer-lucene.gradle",
+      "report_line": 652
+    },
+    {
+      "path": "fdb-record-layer-lucene/src/main/java/com/apple/foundationdb/record/lucene/LuceneIndexMaintainer.java",
+      "report_line": 626
+    },
+    {
+      "path": "fdb-record-layer-lucene/src/main/java/com/apple/foundationdb/record/lucene/LuceneIndexSpellCheckQueryPlan.java",
+      "report_line": 627
+    },
+    {
+      "path": "fdb-record-layer-lucene/src/main/java/com/apple/foundationdb/record/lucene/directory/AgileContext.java",
+      "report_line": 628
+    },
+    {
+      "path": "fdb-record-layer-lucene/src/main/java/com/apple/foundationdb/record/lucene/directory/FDBDirectoryWrapper.java",
+      "report_line": 629
+    },
+    {
+      "path": "fdb-record-layer-lucene/src/main/java/com/apple/foundationdb/record/lucene/directory/FDBIndexOutput.java",
+      "report_line": 630
+    },
+    {
+      "path": "fdb-record-layer-lucene/src/main/java/com/apple/foundationdb/record/lucene/directory/PendingWriteQueue.java",
+      "report_line": 631
+    },
+    {
+      "path": "fdb-record-layer-lucene/src/test/java/com/apple/foundationdb/record/lucene/LuceneIndexScrubbingTest.java",
+      "report_line": 637
+    },
+    {
+      "path": "fdb-record-layer-lucene/src/test/java/com/apple/foundationdb/record/lucene/LuceneIndexSpellCheckQueryPlanTest.java",
+      "report_line": 638
+    },
+    {
+      "path": "fdb-record-layer-lucene/src/test/java/com/apple/foundationdb/record/lucene/LuceneIndexTest.java",
+      "report_line": 639
+    },
+    {
+      "path": "fdb-record-layer-lucene/src/test/java/com/apple/foundationdb/record/lucene/LuceneOnlineIndexingTest.java",
+      "report_line": 640
+    },
+    {
+      "path": "fdb-record-layer-lucene/src/test/java/com/apple/foundationdb/record/lucene/directory/AgilityContextTest.java",
+      "report_line": 641
+    },
+    {
+      "path": "fdb-record-layer-lucene/src/test/java/com/apple/foundationdb/record/lucene/directory/FDBLuceneFunctionalityTest.java",
+      "report_line": 642
+    },
+    {
+      "path": "fdb-record-layer-lucene/src/test/java/com/apple/foundationdb/record/lucene/directory/PendingWriteQueueTest.java",
+      "report_line": 643
+    },
+    {
+      "path": "fdb-record-layer-lucene/src/test/java/com/apple/foundationdb/record/lucene/highlight/LuceneScaleTest.java",
+      "report_line": 644
+    },
+    {
+      "path": "fdb-record-layer-spatial/fdb-record-layer-spatial.gradle",
+      "report_line": 653
+    }
+  ]
+}

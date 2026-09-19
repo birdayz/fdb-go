@@ -1,0 +1,11 @@
+**ACK — WS-A DESIGN ONLY**, exact virtual Git tree `84844bdb679dacefde59a61efe67969f7bc9be11`.
+
+Read the complete frozen delta, revised RFC, retained second-round reports/prompts, and relevant Go and Java target `fdacd162a9c8acfadc49082b89185c823ab8ae4a` source.
+
+- **Encoder prerequisite closed:** [RFC:244](/home/birdy/projects/fdb-record-layer-go/rfcs/257-java-4.14.2.0-upgrade.md:244) assigns exact arithmetic, serialization and relevant reconstruction to WS-A. Java `RaBitQuantizer.java:166–192` requires norm-then-square and unclamped calibration; `EncodedRealVector.java:330–379` establishes reconstruction and serialized headers. These directly address Go `rabitq.go:90–96,386–398`. Nonzero asymmetric golden vectors, boundary cases, sweep ties, packing, NaNs/zeros and persisted-byte cold-reopen proofs remain mandatory.
+
+- **Graph lifetime closed:** [RFC:203](/home/birdy/projects/fdb-record-layer-go/rfcs/257-java-4.14.2.0-upgrade.md:203) requires transactional closure registration, sealing, then binding. This addresses `proto_type.go:242,316,367` and `plan_finalize.go:88–91,379`; Java `QueryPlan.java:648–679` and `TypeRepository.java:474–503` support the publication boundary. Disposable descriptors cannot escape; late registration fails. Identity, rollback, reconstruction and concurrency pins preserve raw fallbacks, DML exclusion and strict foreign-message copying.
+
+- **Storage/migration contract holds:** [RFC:266](/home/birdy/projects/fdb-record-layer-go/rfcs/257-java-4.14.2.0-upgrade.md:266) matches Java `CompactStorageAdapter.java:239` and `InliningStorageAdapter.java:290`, while `StorageAdapter.java:247,284` preserves distinct access-info semantics. Cache bytes must match persisted representations. [RFC:286](/home/birdy/projects/fdb-record-layer-go/rfcs/257-java-4.14.2.0-upgrade.md:286) correctly requires operator-directed disable/rebuild for prior-Go/unknown histories. Fixture, writer, producer and retained log hashes agree.
+
+No implementation or later-workstream approval. GuardiANN remains WS-D; approved extensions and C++ 7.3.77 remain preserved. Audit accounting is 1,189 net plus 84 history-only paths across 228 commits; parent samples establish no current ratio. All gates remain. No edits, builds/tests, worktrees, branches or agents.

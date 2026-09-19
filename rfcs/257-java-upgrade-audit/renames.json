@@ -1,0 +1,362 @@
+[
+  {
+    "status": "R052",
+    "source": "fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/AggregatedVector.java",
+    "target": "fdb-extensions/src/main/java/com/apple/foundationdb/async/common/AggregatedVector.java"
+  },
+  {
+    "status": "R090",
+    "source": "fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/StorageTransform.java",
+    "target": "fdb-extensions/src/main/java/com/apple/foundationdb/async/common/StorageTransform.java"
+  },
+  {
+    "status": "R095",
+    "source": "fdb-extensions/src/test/java/com/apple/foundationdb/async/hnsw/BaseTest.java",
+    "target": "fdb-extensions/src/test/java/com/apple/foundationdb/async/common/BaseTest.java"
+  },
+  {
+    "status": "R093",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/provider/foundationdb/indexes/VectorIndexIndexingTest.java",
+    "target": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/provider/foundationdb/indexes/HnswVectorIndexIndexingTest.java"
+  },
+  {
+    "status": "R059",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/provider/foundationdb/indexes/VectorIndexTest.java",
+    "target": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/provider/foundationdb/indexes/VectorIndexEngineTestSuite.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/TestHelpers.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/TestHelpers.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/UnstoredRecord.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/UnstoredRecord.java"
+  },
+  {
+    "status": "R088",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/metadata/expressions/CollateFunctionKeyExpressionTest.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/metadata/expressions/CollateFunctionKeyExpressionTestBase.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/provider/common/RollingTestKeyManager.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/provider/common/RollingTestKeyManager.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/provider/common/text/AllSuffixesTextTokenizer.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/provider/common/text/AllSuffixesTextTokenizer.java"
+  },
+  {
+    "status": "R085",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/provider/common/text/TextCollatorTest.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/provider/common/text/TextCollatorTestBase.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/provider/common/text/TextSamples.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/provider/common/text/TextSamples.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/provider/foundationdb/FDBRecordStoreConcurrentTestBase.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/provider/foundationdb/FDBRecordStoreConcurrentTestBase.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/provider/foundationdb/FDBRecordStoreTestBase.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/provider/foundationdb/FDBRecordStoreTestBase.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/provider/foundationdb/FormatVersionTestUtils.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/provider/foundationdb/FormatVersionTestUtils.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/provider/foundationdb/indexes/TextIndexTestUtils.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/provider/foundationdb/indexes/TextIndexTestUtils.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/provider/foundationdb/query/DualPlannerExtension.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/provider/foundationdb/query/DualPlannerExtension.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/provider/foundationdb/query/DualPlannerTest.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/provider/foundationdb/query/DualPlannerTest.java"
+  },
+  {
+    "status": "R091",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/provider/foundationdb/query/FDBCollateQueryTest.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/provider/foundationdb/query/FDBCollateQueryTestBase.java"
+  },
+  {
+    "status": "R099",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/provider/foundationdb/query/FDBRecordStoreQueryTestBase.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/provider/foundationdb/query/FDBRecordStoreQueryTestBase.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/AnyFilterMatcher.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/AnyFilterMatcher.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/AnyParentMatcher.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/AnyParentMatcher.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/ComposedBitmapIndexMatcher.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/ComposedBitmapIndexMatcher.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/CoveringIndexMatcher.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/CoveringIndexMatcher.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/DescendantMatcher.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/DescendantMatcher.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/EveryLeafMatcher.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/EveryLeafMatcher.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/FetchMatcher.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/FetchMatcher.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/FilterMatcher.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/FilterMatcher.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/FilterMatcherWithComponent.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/FilterMatcherWithComponent.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/InComparandJoinMatcher.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/InComparandJoinMatcher.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/InParameterJoinMatcher.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/InParameterJoinMatcher.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/InValueJoinMatcher.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/InValueJoinMatcher.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/IndexMatcher.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/IndexMatcher.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/IntersectionMatcher.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/IntersectionMatcher.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/NamedPredicate.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/NamedPredicate.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/PlanMatcherWithChild.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/PlanMatcherWithChild.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/PlanMatcherWithChildren.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/PlanMatcherWithChildren.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/PlanMatchers.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/PlanMatchers.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/QueryPredicateDescendantMatcher.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/QueryPredicateDescendantMatcher.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/ScanComparisonsEmptyMatcher.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/ScanComparisonsEmptyMatcher.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/ScanComparisonsStringMatcher.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/ScanComparisonsStringMatcher.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/ScanMatcher.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/ScanMatcher.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/ScoreForRankMatcher.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/ScoreForRankMatcher.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/SortMatcher.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/SortMatcher.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/TextIndexMatcher.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/TextIndexMatcher.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/TypeFilterMatcher.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/TypeFilterMatcher.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/TypelessStringMatcher.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/TypelessStringMatcher.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/UnionMatcher.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/UnionMatcher.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/UnorderedPrimaryKeyDistinctMatcher.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/UnorderedPrimaryKeyDistinctMatcher.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/query/plan/match/UnorderedUnionMatcher.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/query/plan/match/UnorderedUnionMatcher.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/test/FDBDatabaseExtension.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/test/FDBDatabaseExtension.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/test/TestKeySpace.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/test/TestKeySpace.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/test/TestKeySpacePathManager.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/test/TestKeySpacePathManager.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/test/TestKeySpacePathManagerExtension.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/test/TestKeySpacePathManagerExtension.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/util/RandomSecretUtil.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/util/RandomSecretUtil.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/util/RandomUtil.java",
+    "target": "fdb-record-layer-core/src/testFixtures/java/com/apple/foundationdb/record/util/RandomUtil.java"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/proto/test_records_1.proto",
+    "target": "fdb-record-layer-core/src/testFixtures/proto/test_records_1.proto"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/proto/test_records_3.proto",
+    "target": "fdb-record-layer-core/src/testFixtures/proto/test_records_3.proto"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/proto/test_records_4.proto",
+    "target": "fdb-record-layer-core/src/testFixtures/proto/test_records_4.proto"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/proto/test_records_4_wrapper.proto",
+    "target": "fdb-record-layer-core/src/testFixtures/proto/test_records_4_wrapper.proto"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/proto/test_records_5.proto",
+    "target": "fdb-record-layer-core/src/testFixtures/proto/test_records_5.proto"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/proto/test_records_bytes.proto",
+    "target": "fdb-record-layer-core/src/testFixtures/proto/test_records_bytes.proto"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/proto/test_records_enum.proto",
+    "target": "fdb-record-layer-core/src/testFixtures/proto/test_records_enum.proto"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/proto/test_records_grouped_parent_child.proto",
+    "target": "fdb-record-layer-core/src/testFixtures/proto/test_records_grouped_parent_child.proto"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/proto/test_records_join_index.proto",
+    "target": "fdb-record-layer-core/src/testFixtures/proto/test_records_join_index.proto"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/proto/test_records_multi.proto",
+    "target": "fdb-record-layer-core/src/testFixtures/proto/test_records_multi.proto"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/proto/test_records_text.proto",
+    "target": "fdb-record-layer-core/src/testFixtures/proto/test_records_text.proto"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/proto/test_records_tuple_fields.proto",
+    "target": "fdb-record-layer-core/src/testFixtures/proto/test_records_tuple_fields.proto"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/proto/test_records_with_header.proto",
+    "target": "fdb-record-layer-core/src/testFixtures/proto/test_records_with_header.proto"
+  },
+  {
+    "status": "R100",
+    "source": "fdb-record-layer-core/src/test/proto/test_records_with_union.proto",
+    "target": "fdb-record-layer-core/src/testFixtures/proto/test_records_with_union.proto"
+  },
+  {
+    "status": "R099",
+    "source": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/recordlayer/metric/RecordLayerMetricCollectorTest.java",
+    "target": "fdb-relational-core/src/test/java/com/apple/foundationdb/relational/recordlayer/metric/StoreTimerMetricCollectorFromFDBRecordContextTest.java"
+  },
+  {
+    "status": "R088",
+    "source": "fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/provider/foundationdb/RootLogLevelExtension.java",
+    "target": "fdb-test-utils/src/main/java/com/apple/foundationdb/test/RootLogLevelExtension.java"
+  }
+]
