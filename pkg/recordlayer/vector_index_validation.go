@@ -40,8 +40,7 @@ func validateVectorIndexOptionsAtBuild(idx *Index) error {
 	// a missing or malformed value is a MetaDataException either way.
 	dims, ok := idx.Options[IndexOptionVectorNumDimensions]
 	if !ok {
-		return &MetaDataError{Message: fmt.Sprintf(
-			"need to specify the number of dimensions (index %s)", idx.Name)}
+		return &MetaDataError{Message: "need to specify the number of dimensions"}
 	}
 	n, err := strconv.Atoi(dims)
 	if err != nil || n <= 0 {

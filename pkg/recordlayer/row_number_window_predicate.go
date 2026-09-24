@@ -300,8 +300,7 @@ func (idx *Index) RowNumberWindowSpec() (*RowNumberWindowSpec, error) {
 	}
 	rn := qualifyRowNumberWindowPredicateProto(idx.predicateProto)
 	if rn == nil {
-		return nil, &MetaDataError{Message: fmt.Sprintf(
-			"sliding window index requires a RowNumberWindowPredicate (index %s)", idx.Name)}
+		return nil, &MetaDataError{Message: "sliding window index requires a RowNumberWindowPredicate"}
 	}
 	return rowNumberWindowSpecFromProto(rn)
 }

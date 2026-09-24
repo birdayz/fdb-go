@@ -1086,7 +1086,7 @@ var _ = Describe("RebuildIndex", func() {
 					return nil, err
 				}
 				// Old ungrouped count should be gone; per-type count should work.
-				orderCount, err := store.GetSnapshotRecordCountForRecordType("Order")
+				orderCount, err := countKeyGroupForType(store, "Order")
 				if err != nil {
 					return nil, err
 				}

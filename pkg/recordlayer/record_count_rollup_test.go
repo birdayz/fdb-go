@@ -82,10 +82,10 @@ var _ = Describe("RecordCountRollup", func() {
 
 			// The per-group reads are the other direction: an empty count key must
 			// not start summing when the value names one group.
-			orders, err := store.GetSnapshotRecordCountForRecordType("Order")
+			orders, err := countKeyGroupForType(store, "Order")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(orders).To(Equal(int64(7)))
-			customers, err := store.GetSnapshotRecordCountForRecordType("Customer")
+			customers, err := countKeyGroupForType(store, "Customer")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(customers).To(Equal(int64(4)))
 

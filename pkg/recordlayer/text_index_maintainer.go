@@ -84,7 +84,9 @@ func getTextTokenizerVersion(index *Index) (int, error) {
 	}
 	v, err := javaParseInt(versionStr)
 	if err != nil {
-		return 0, &MetaDataError{Message: fmt.Sprintf("tokenizer version could not be parsed as int (index=%q, %s=%q)", index.Name, IndexOptionTextTokenizerVersion, versionStr)}
+		// Java's text (TextIndexMaintainer.java:185); the index and the
+		// option are its log info.
+		return 0, &MetaDataError{Message: "tokenizer version could not be parsed as int"}
 	}
 	return int(v), nil
 }

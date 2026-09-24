@@ -1062,7 +1062,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 	It("basic lifecycle — save records and scan index", func() {
 		ks := specSubspace()
 
-		dimExpr := Dimensions(Concat(Field("price"), Field("quantity")), 0, 2)
+		dimExpr := Dimensions(Concat(Field("coord_x"), Field("coord_y")), 0, 2)
 		mdIdx := NewMultidimensionalIndex("md_price_qty", dimExpr)
 		builder := baseMetaData()
 		builder.AddIndex("Order", mdIdx)
@@ -1077,17 +1077,17 @@ var _ = Describe("MultidimensionalIndex", func() {
 			// Save 3 orders with different (price, quantity).
 			for _, o := range []struct {
 				id       int64
-				price    int32
-				quantity int32
+				price    int64
+				quantity int64
 			}{
 				{1, 100, 10},
 				{2, 200, 20},
 				{3, 300, 30},
 			} {
 				_, err = store.SaveRecord(&gen.Order{
-					OrderId:  proto.Int64(o.id),
-					Price:    proto.Int32(o.price),
-					Quantity: proto.Int32(o.quantity),
+					OrderId: proto.Int64(o.id),
+					CoordX:  proto.Int64(o.price),
+					CoordY:  proto.Int64(o.quantity),
 				})
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -1441,7 +1441,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 	It("delete record clears index entry", func() {
 		ks := specSubspace()
 
-		dimExpr := Dimensions(Concat(Field("price"), Field("quantity")), 0, 2)
+		dimExpr := Dimensions(Concat(Field("coord_x"), Field("coord_y")), 0, 2)
 		mdIdx := NewMultidimensionalIndex("md_price_qty", dimExpr)
 		builder := baseMetaData()
 		builder.AddIndex("Order", mdIdx)
@@ -1455,9 +1455,9 @@ var _ = Describe("MultidimensionalIndex", func() {
 
 			// Save one order.
 			_, err = store.SaveRecord(&gen.Order{
-				OrderId:  proto.Int64(1),
-				Price:    proto.Int32(100),
-				Quantity: proto.Int32(10),
+				OrderId: proto.Int64(1),
+				CoordX:  proto.Int64(100),
+				CoordY:  proto.Int64(10),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -1484,7 +1484,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 	It("update record updates index entry", func() {
 		ks := specSubspace()
 
-		dimExpr := Dimensions(Concat(Field("price"), Field("quantity")), 0, 2)
+		dimExpr := Dimensions(Concat(Field("coord_x"), Field("coord_y")), 0, 2)
 		mdIdx := NewMultidimensionalIndex("md_price_qty", dimExpr)
 		builder := baseMetaData()
 		builder.AddIndex("Order", mdIdx)
@@ -1498,17 +1498,17 @@ var _ = Describe("MultidimensionalIndex", func() {
 
 			// Save original order.
 			_, err = store.SaveRecord(&gen.Order{
-				OrderId:  proto.Int64(1),
-				Price:    proto.Int32(100),
-				Quantity: proto.Int32(10),
+				OrderId: proto.Int64(1),
+				CoordX:  proto.Int64(100),
+				CoordY:  proto.Int64(10),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Update same order with new price and quantity.
 			_, err = store.SaveRecord(&gen.Order{
-				OrderId:  proto.Int64(1),
-				Price:    proto.Int32(500),
-				Quantity: proto.Int32(50),
+				OrderId: proto.Int64(1),
+				CoordX:  proto.Int64(500),
+				CoordY:  proto.Int64(50),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -1527,7 +1527,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 	It("multiple records — save 5 and verify all present", func() {
 		ks := specSubspace()
 
-		dimExpr := Dimensions(Concat(Field("price"), Field("quantity")), 0, 2)
+		dimExpr := Dimensions(Concat(Field("coord_x"), Field("coord_y")), 0, 2)
 		mdIdx := NewMultidimensionalIndex("md_price_qty", dimExpr)
 		builder := baseMetaData()
 		builder.AddIndex("Order", mdIdx)
@@ -1536,8 +1536,8 @@ var _ = Describe("MultidimensionalIndex", func() {
 
 		type order struct {
 			id       int64
-			price    int32
-			quantity int32
+			price    int64
+			quantity int64
 		}
 		orders := []order{
 			{1, 10, 100},
@@ -1554,9 +1554,9 @@ var _ = Describe("MultidimensionalIndex", func() {
 
 			for _, o := range orders {
 				_, err = store.SaveRecord(&gen.Order{
-					OrderId:  proto.Int64(o.id),
-					Price:    proto.Int32(o.price),
-					Quantity: proto.Int32(o.quantity),
+					OrderId: proto.Int64(o.id),
+					CoordX:  proto.Int64(o.price),
+					CoordY:  proto.Int64(o.quantity),
 				})
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -1584,7 +1584,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 	It("mixed save and delete — interleaved operations", func() {
 		ks := specSubspace()
 
-		dimExpr := Dimensions(Concat(Field("price"), Field("quantity")), 0, 2)
+		dimExpr := Dimensions(Concat(Field("coord_x"), Field("coord_y")), 0, 2)
 		mdIdx := NewMultidimensionalIndex("md_price_qty", dimExpr)
 		builder := baseMetaData()
 		builder.AddIndex("Order", mdIdx)
@@ -1599,9 +1599,9 @@ var _ = Describe("MultidimensionalIndex", func() {
 			// Save 3.
 			for _, id := range []int64{1, 2, 3} {
 				_, err = store.SaveRecord(&gen.Order{
-					OrderId:  proto.Int64(id),
-					Price:    proto.Int32(int32(id * 100)),
-					Quantity: proto.Int32(int32(id * 10)),
+					OrderId: proto.Int64(id),
+					CoordX:  proto.Int64(int64(id * 100)),
+					CoordY:  proto.Int64(int64(id * 10)),
 				})
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -1613,9 +1613,9 @@ var _ = Describe("MultidimensionalIndex", func() {
 
 			// Save #4.
 			_, err = store.SaveRecord(&gen.Order{
-				OrderId:  proto.Int64(4),
-				Price:    proto.Int32(400),
-				Quantity: proto.Int32(40),
+				OrderId: proto.Int64(4),
+				CoordX:  proto.Int64(400),
+				CoordY:  proto.Int64(40),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -1644,7 +1644,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 	It("MULTIDIMENSIONAL index with small MaxM forces R-tree splits via index maintainer", func() {
 		ks := specSubspace()
 
-		dimExpr := Dimensions(Concat(Field("price"), Field("quantity")), 0, 2)
+		dimExpr := Dimensions(Concat(Field("coord_x"), Field("coord_y")), 0, 2)
 		mdIdx := NewMultidimensionalIndex("md_price_qty_small", dimExpr)
 		// Configure small MaxM via index options.
 		mdIdx.Options[IndexOptionRTreeMaxM] = "4"
@@ -1661,15 +1661,15 @@ var _ = Describe("MultidimensionalIndex", func() {
 		const n = 25
 		type order struct {
 			id       int64
-			price    int32
-			quantity int32
+			price    int64
+			quantity int64
 		}
 		orders := make([]order, n)
 		for i := 0; i < n; i++ {
 			orders[i] = order{
 				id:       int64(i + 1),
-				price:    int32((i + 1) * 50),
-				quantity: int32((i + 1) * 7),
+				price:    int64((i + 1) * 50),
+				quantity: int64((i + 1) * 7),
 			}
 		}
 
@@ -1680,9 +1680,9 @@ var _ = Describe("MultidimensionalIndex", func() {
 
 			for _, o := range orders {
 				_, err = store.SaveRecord(&gen.Order{
-					OrderId:  proto.Int64(o.id),
-					Price:    proto.Int32(o.price),
-					Quantity: proto.Int32(o.quantity),
+					OrderId: proto.Int64(o.id),
+					CoordX:  proto.Int64(o.price),
+					CoordY:  proto.Int64(o.quantity),
 				})
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -1739,7 +1739,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 	It("MULTIDIMENSIONAL index with small MaxM — update records after splits", func() {
 		ks := specSubspace()
 
-		dimExpr := Dimensions(Concat(Field("price"), Field("quantity")), 0, 2)
+		dimExpr := Dimensions(Concat(Field("coord_x"), Field("coord_y")), 0, 2)
 		mdIdx := NewMultidimensionalIndex("md_price_qty_update", dimExpr)
 		mdIdx.Options[IndexOptionRTreeMaxM] = "4"
 		mdIdx.Options[IndexOptionRTreeMinM] = "2"
@@ -1760,9 +1760,9 @@ var _ = Describe("MultidimensionalIndex", func() {
 			// Insert n records.
 			for i := 1; i <= n; i++ {
 				_, err = store.SaveRecord(&gen.Order{
-					OrderId:  proto.Int64(int64(i)),
-					Price:    proto.Int32(int32(i * 100)),
-					Quantity: proto.Int32(int32(i * 10)),
+					OrderId: proto.Int64(int64(i)),
+					CoordX:  proto.Int64(int64(i * 100)),
+					CoordY:  proto.Int64(int64(i * 10)),
 				})
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -1775,9 +1775,9 @@ var _ = Describe("MultidimensionalIndex", func() {
 			// delete-old-entry + insert-new-entry through the split tree.
 			for i := 1; i <= n; i++ {
 				_, err = store.SaveRecord(&gen.Order{
-					OrderId:  proto.Int64(int64(i)),
-					Price:    proto.Int32(int32(i*100 + 1)),
-					Quantity: proto.Int32(int32(i*10 + 1)),
+					OrderId: proto.Int64(int64(i)),
+					CoordX:  proto.Int64(int64(i*100 + 1)),
+					CoordY:  proto.Int64(int64(i*10 + 1)),
 				})
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -1806,7 +1806,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 	It("continuation token round-trip through ScanIndex", func() {
 		ks := specSubspace()
 
-		dimExpr := Dimensions(Concat(Field("price"), Field("quantity")), 0, 2)
+		dimExpr := Dimensions(Concat(Field("coord_x"), Field("coord_y")), 0, 2)
 		mdIdx := NewMultidimensionalIndex("md_cont_roundtrip", dimExpr)
 		builder := baseMetaData()
 		builder.AddIndex("Order", mdIdx)
@@ -1822,9 +1822,9 @@ var _ = Describe("MultidimensionalIndex", func() {
 			const n = 15
 			for i := 1; i <= n; i++ {
 				_, err = store.SaveRecord(&gen.Order{
-					OrderId:  proto.Int64(int64(i)),
-					Price:    proto.Int32(int32(i * 100)),
-					Quantity: proto.Int32(int32(i * 10)),
+					OrderId: proto.Int64(int64(i)),
+					CoordX:  proto.Int64(int64(i * 100)),
+					CoordY:  proto.Int64(int64(i * 10)),
 				})
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -1879,7 +1879,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 	It("row limit enforcement", func() {
 		ks := specSubspace()
 
-		dimExpr := Dimensions(Concat(Field("price"), Field("quantity")), 0, 2)
+		dimExpr := Dimensions(Concat(Field("coord_x"), Field("coord_y")), 0, 2)
 		mdIdx := NewMultidimensionalIndex("md_row_limit", dimExpr)
 		builder := baseMetaData()
 		builder.AddIndex("Order", mdIdx)
@@ -1894,9 +1894,9 @@ var _ = Describe("MultidimensionalIndex", func() {
 			// Save 10 records.
 			for i := 1; i <= 10; i++ {
 				_, err = store.SaveRecord(&gen.Order{
-					OrderId:  proto.Int64(int64(i)),
-					Price:    proto.Int32(int32(i * 50)),
-					Quantity: proto.Int32(int32(i * 5)),
+					OrderId: proto.Int64(int64(i)),
+					CoordX:  proto.Int64(int64(i * 50)),
+					CoordY:  proto.Int64(int64(i * 5)),
 				})
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -1932,7 +1932,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 	It("negative and boundary coordinates", func() {
 		ks := specSubspace()
 
-		dimExpr := Dimensions(Concat(Field("price"), Field("quantity")), 0, 2)
+		dimExpr := Dimensions(Concat(Field("coord_x"), Field("coord_y")), 0, 2)
 		mdIdx := NewMultidimensionalIndex("md_neg_boundary", dimExpr)
 		builder := baseMetaData()
 		builder.AddIndex("Order", mdIdx)
@@ -1947,8 +1947,8 @@ var _ = Describe("MultidimensionalIndex", func() {
 			// Save records with extreme coordinates.
 			type testCase struct {
 				id       int64
-				price    int32
-				quantity int32
+				price    int64
+				quantity int64
 			}
 			cases := []testCase{
 				{1, -100, -200},
@@ -1959,9 +1959,9 @@ var _ = Describe("MultidimensionalIndex", func() {
 
 			for _, tc := range cases {
 				_, err = store.SaveRecord(&gen.Order{
-					OrderId:  proto.Int64(tc.id),
-					Price:    proto.Int32(tc.price),
-					Quantity: proto.Int32(tc.quantity),
+					OrderId: proto.Int64(tc.id),
+					CoordX:  proto.Int64(tc.price),
+					CoordY:  proto.Int64(tc.quantity),
 				})
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -2011,7 +2011,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 	It("duplicate coordinate points with different PKs", func() {
 		ks := specSubspace()
 
-		dimExpr := Dimensions(Concat(Field("price"), Field("quantity")), 0, 2)
+		dimExpr := Dimensions(Concat(Field("coord_x"), Field("coord_y")), 0, 2)
 		mdIdx := NewMultidimensionalIndex("md_dup_coords", dimExpr)
 		builder := baseMetaData()
 		builder.AddIndex("Order", mdIdx)
@@ -2025,16 +2025,16 @@ var _ = Describe("MultidimensionalIndex", func() {
 
 			// Save two orders with identical (price=100, quantity=10) but different PKs.
 			_, err = store.SaveRecord(&gen.Order{
-				OrderId:  proto.Int64(1),
-				Price:    proto.Int32(100),
-				Quantity: proto.Int32(10),
+				OrderId: proto.Int64(1),
+				CoordX:  proto.Int64(100),
+				CoordY:  proto.Int64(10),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			_, err = store.SaveRecord(&gen.Order{
-				OrderId:  proto.Int64(2),
-				Price:    proto.Int32(100),
-				Quantity: proto.Int32(10),
+				OrderId: proto.Int64(2),
+				CoordX:  proto.Int64(100),
+				CoordY:  proto.Int64(10),
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -2068,7 +2068,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 	It("DeleteAllRecords clears R-tree completely", func() {
 		ks := specSubspace()
 
-		dimExpr := Dimensions(Concat(Field("price"), Field("quantity")), 0, 2)
+		dimExpr := Dimensions(Concat(Field("coord_x"), Field("coord_y")), 0, 2)
 		mdIdx := NewMultidimensionalIndex("md_delete_all", dimExpr)
 		mdIdx.Options[IndexOptionRTreeMaxM] = "4"
 		mdIdx.Options[IndexOptionRTreeMinM] = "2"
@@ -2088,9 +2088,9 @@ var _ = Describe("MultidimensionalIndex", func() {
 			const n = 20
 			for i := 1; i <= n; i++ {
 				_, err = store.SaveRecord(&gen.Order{
-					OrderId:  proto.Int64(int64(i)),
-					Price:    proto.Int32(int32(i * 50)),
-					Quantity: proto.Int32(int32(i * 7)),
+					OrderId: proto.Int64(int64(i)),
+					CoordX:  proto.Int64(int64(i * 50)),
+					CoordY:  proto.Int64(int64(i * 7)),
 				})
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -2110,9 +2110,9 @@ var _ = Describe("MultidimensionalIndex", func() {
 			// Save new records — only new ones should appear.
 			for i := 100; i < 105; i++ {
 				_, err = store.SaveRecord(&gen.Order{
-					OrderId:  proto.Int64(int64(i)),
-					Price:    proto.Int32(int32(i * 10)),
-					Quantity: proto.Int32(int32(i * 3)),
+					OrderId: proto.Int64(int64(i)),
+					CoordX:  proto.Int64(int64(i * 10)),
+					CoordY:  proto.Int64(int64(i * 3)),
 				})
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -2140,7 +2140,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 	It("scan with MBR predicate from scanRange prunes subtrees", func() {
 		ks := specSubspace()
 
-		dimExpr := Dimensions(Concat(Field("price"), Field("quantity")), 0, 2)
+		dimExpr := Dimensions(Concat(Field("coord_x"), Field("coord_y")), 0, 2)
 		mdIdx := NewMultidimensionalIndex("md_mbr_scan", dimExpr)
 		mdIdx.Options[IndexOptionRTreeMaxM] = "4"
 		mdIdx.Options[IndexOptionRTreeMinM] = "2"
@@ -2160,9 +2160,9 @@ var _ = Describe("MultidimensionalIndex", func() {
 			const n = 30
 			for i := 1; i <= n; i++ {
 				_, err = store.SaveRecord(&gen.Order{
-					OrderId:  proto.Int64(int64(i)),
-					Price:    proto.Int32(int32(i * 10)),
-					Quantity: proto.Int32(int32(i * 10)),
+					OrderId: proto.Int64(int64(i)),
+					CoordX:  proto.Int64(int64(i * 10)),
+					CoordY:  proto.Int64(int64(i * 10)),
 				})
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -2209,7 +2209,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 	It("scan with one-sided MBR bounds from scanRange", func() {
 		ks := specSubspace()
 
-		dimExpr := Dimensions(Concat(Field("price"), Field("quantity")), 0, 2)
+		dimExpr := Dimensions(Concat(Field("coord_x"), Field("coord_y")), 0, 2)
 		mdIdx := NewMultidimensionalIndex("md_mbr_onesided", dimExpr)
 		builder := baseMetaData()
 		builder.AddIndex("Order", mdIdx)
@@ -2224,9 +2224,9 @@ var _ = Describe("MultidimensionalIndex", func() {
 			// Save 5 orders.
 			for i := 1; i <= 5; i++ {
 				_, err = store.SaveRecord(&gen.Order{
-					OrderId:  proto.Int64(int64(i)),
-					Price:    proto.Int32(int32(i * 100)),
-					Quantity: proto.Int32(int32(i * 10)),
+					OrderId: proto.Int64(int64(i)),
+					CoordX:  proto.Int64(int64(i * 100)),
+					CoordY:  proto.Int64(int64(i * 10)),
 				})
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -2258,7 +2258,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 	It("scan with MBR predicate and continuation tokens", func() {
 		ks := specSubspace()
 
-		dimExpr := Dimensions(Concat(Field("price"), Field("quantity")), 0, 2)
+		dimExpr := Dimensions(Concat(Field("coord_x"), Field("coord_y")), 0, 2)
 		mdIdx := NewMultidimensionalIndex("md_mbr_cont", dimExpr)
 		mdIdx.Options[IndexOptionRTreeMaxM] = "4"
 		mdIdx.Options[IndexOptionRTreeMinM] = "2"
@@ -2278,9 +2278,9 @@ var _ = Describe("MultidimensionalIndex", func() {
 			const n = 20
 			for i := 1; i <= n; i++ {
 				_, err = store.SaveRecord(&gen.Order{
-					OrderId:  proto.Int64(int64(i)),
-					Price:    proto.Int32(int32(i * 10)),
-					Quantity: proto.Int32(int32(i * 10)),
+					OrderId: proto.Int64(int64(i)),
+					CoordX:  proto.Int64(int64(i * 10)),
+					CoordY:  proto.Int64(int64(i * 10)),
 				})
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -2328,7 +2328,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 		ks := specSubspace()
 
 		// quantity is prefix (PrefixSize=1), price is 1D spatial dimension.
-		dimExpr := Dimensions(Concat(Field("quantity"), Field("price")), 1, 1)
+		dimExpr := Dimensions(Concat(Field("quantity"), Field("coord_x")), 1, 1)
 		mdIdx := NewMultidimensionalIndex("md_prefix_skip", dimExpr)
 		builder := baseMetaData()
 		builder.AddIndex("Order", mdIdx)
@@ -2344,7 +2344,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 			// quantity=10: orders 1,2,3; quantity=20: orders 4,5; quantity=30: orders 6,7,8.
 			orders := []struct {
 				id       int64
-				price    int32
+				price    int64
 				quantity int32
 			}{
 				{1, 100, 10},
@@ -2360,7 +2360,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 			for _, o := range orders {
 				_, err = store.SaveRecord(&gen.Order{
 					OrderId:  proto.Int64(o.id),
-					Price:    proto.Int32(o.price),
+					CoordX:   proto.Int64(o.price),
 					Quantity: proto.Int32(o.quantity),
 				})
 				Expect(err).NotTo(HaveOccurred())
@@ -2392,7 +2392,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 	It("prefix skip-scan with specific prefix scans only that prefix", func() {
 		ks := specSubspace()
 
-		dimExpr := Dimensions(Concat(Field("quantity"), Field("price")), 1, 1)
+		dimExpr := Dimensions(Concat(Field("quantity"), Field("coord_x")), 1, 1)
 		mdIdx := NewMultidimensionalIndex("md_prefix_specific", dimExpr)
 		builder := baseMetaData()
 		builder.AddIndex("Order", mdIdx)
@@ -2406,7 +2406,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 
 			orders := []struct {
 				id       int64
-				price    int32
+				price    int64
 				quantity int32
 			}{
 				{1, 100, 10},
@@ -2420,7 +2420,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 			for _, o := range orders {
 				_, err = store.SaveRecord(&gen.Order{
 					OrderId:  proto.Int64(o.id),
-					Price:    proto.Int32(o.price),
+					CoordX:   proto.Int64(o.price),
 					Quantity: proto.Int32(o.quantity),
 				})
 				Expect(err).NotTo(HaveOccurred())
@@ -2447,7 +2447,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 	It("prefix skip-scan with row limit", func() {
 		ks := specSubspace()
 
-		dimExpr := Dimensions(Concat(Field("quantity"), Field("price")), 1, 1)
+		dimExpr := Dimensions(Concat(Field("quantity"), Field("coord_x")), 1, 1)
 		mdIdx := NewMultidimensionalIndex("md_prefix_limit", dimExpr)
 		builder := baseMetaData()
 		builder.AddIndex("Order", mdIdx)
@@ -2464,7 +2464,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 				qty := int32(((i-1)/4 + 1) * 10) // 10, 10, 10, 10, 20, 20, 20, 20, 30, 30, 30, 30
 				_, err = store.SaveRecord(&gen.Order{
 					OrderId:  proto.Int64(int64(i)),
-					Price:    proto.Int32(int32(i * 100)),
+					CoordX:   proto.Int64(int64(i * 100)),
 					Quantity: proto.Int32(qty),
 				})
 				Expect(err).NotTo(HaveOccurred())
@@ -2494,7 +2494,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 		// forces the row limit to land mid-skip-scan on every page.
 		ks := specSubspace()
 
-		dimExpr := Dimensions(Concat(Field("quantity"), Field("price")), 1, 1)
+		dimExpr := Dimensions(Concat(Field("quantity"), Field("coord_x")), 1, 1)
 		mdIdx := NewMultidimensionalIndex("md_prefix_paginate", dimExpr)
 		builder := baseMetaData()
 		builder.AddIndex("Order", mdIdx)
@@ -2515,10 +2515,10 @@ var _ = Describe("MultidimensionalIndex", func() {
 			for p := 1; p <= numPrefixes; p++ {
 				qty := int32(p * 10)
 				for j := 1; j <= perPrefix; j++ {
-					price := int32(p*1000 + j)
+					price := int64(p*1000 + j)
 					_, err = store.SaveRecord(&gen.Order{
 						OrderId:  proto.Int64(id),
-						Price:    proto.Int32(price),
+						CoordX:   proto.Int64(price),
 						Quantity: proto.Int32(qty),
 					})
 					Expect(err).NotTo(HaveOccurred())
@@ -2595,7 +2595,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 		// rows out of place), not just a wrong total count.
 		ks := specSubspace()
 
-		dimExpr := Dimensions(Concat(Field("quantity"), Field("price")), 1, 1)
+		dimExpr := Dimensions(Concat(Field("quantity"), Field("coord_x")), 1, 1)
 		mdIdx := NewMultidimensionalIndex("md_prefix_sweep", dimExpr)
 		builder := baseMetaData()
 		builder.AddIndex("Order", mdIdx)
@@ -2613,10 +2613,10 @@ var _ = Describe("MultidimensionalIndex", func() {
 			for p, n := range prefixCounts {
 				qty := int32((p + 1) * 10)
 				for j := 0; j < n; j++ {
-					price := int32((p+1)*1000 + j)
+					price := int64((p+1)*1000 + j)
 					_, err = store.SaveRecord(&gen.Order{
 						OrderId:  proto.Int64(id),
-						Price:    proto.Int32(price),
+						CoordX:   proto.Int64(price),
 						Quantity: proto.Int32(qty),
 					})
 					Expect(err).NotTo(HaveOccurred())
@@ -2682,7 +2682,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 	It("prefix skip-scan with empty index returns empty", func() {
 		ks := specSubspace()
 
-		dimExpr := Dimensions(Concat(Field("quantity"), Field("price")), 1, 1)
+		dimExpr := Dimensions(Concat(Field("quantity"), Field("coord_x")), 1, 1)
 		mdIdx := NewMultidimensionalIndex("md_prefix_empty", dimExpr)
 		builder := baseMetaData()
 		builder.AddIndex("Order", mdIdx)
@@ -2707,7 +2707,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 	It("prefix skip-scan after delete from one prefix", func() {
 		ks := specSubspace()
 
-		dimExpr := Dimensions(Concat(Field("quantity"), Field("price")), 1, 1)
+		dimExpr := Dimensions(Concat(Field("quantity"), Field("coord_x")), 1, 1)
 		mdIdx := NewMultidimensionalIndex("md_prefix_delete", dimExpr)
 		builder := baseMetaData()
 		builder.AddIndex("Order", mdIdx)
@@ -2721,7 +2721,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 
 			orders := []struct {
 				id       int64
-				price    int32
+				price    int64
 				quantity int32
 			}{
 				{1, 100, 10},
@@ -2733,7 +2733,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 			for _, o := range orders {
 				_, err = store.SaveRecord(&gen.Order{
 					OrderId:  proto.Int64(o.id),
-					Price:    proto.Int32(o.price),
+					CoordX:   proto.Int64(o.price),
 					Quantity: proto.Int32(o.quantity),
 				})
 				Expect(err).NotTo(HaveOccurred())
@@ -2763,7 +2763,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 	It("RebuildIndex for MULTIDIMENSIONAL", func() {
 		ks := specSubspace()
 
-		dimExpr := Dimensions(Concat(Field("price"), Field("quantity")), 0, 2)
+		dimExpr := Dimensions(Concat(Field("coord_x"), Field("coord_y")), 0, 2)
 		mdIdx := NewMultidimensionalIndex("md_rebuild", dimExpr)
 		builder := baseMetaData()
 		builder.AddIndex("Order", mdIdx)
@@ -2779,9 +2779,9 @@ var _ = Describe("MultidimensionalIndex", func() {
 			const n = 10
 			for i := 1; i <= n; i++ {
 				_, err = store.SaveRecord(&gen.Order{
-					OrderId:  proto.Int64(int64(i)),
-					Price:    proto.Int32(int32(i * 100)),
-					Quantity: proto.Int32(int32(i * 10)),
+					OrderId: proto.Int64(int64(i)),
+					CoordX:  proto.Int64(int64(i * 100)),
+					CoordY:  proto.Int64(int64(i * 10)),
 				})
 				Expect(err).NotTo(HaveOccurred())
 			}

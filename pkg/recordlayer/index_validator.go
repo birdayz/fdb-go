@@ -27,8 +27,10 @@ import (
 // refused by Java's registry ("Unknown index type for ..."), and Go does not
 // refuse it, because Go must load meta-data a Java program wrote with a module
 // Go does not implement (DIVERGENCES.md, "Build does not refuse an index type
-// Go does not maintain"). VECTOR's structural checks are not ported
-// (DIVERGENCES.md, "A vector index's root is not checked at build").
+// Go does not maintain"). VECTOR has no Go validator at Build: Java's
+// VectorIndexValidator (its structure and its options) is not ported, except
+// the option check a windowed VECTOR index runs (DIVERGENCES.md, "VECTOR index
+// metadata validation").
 
 // validateIndexForRecordType is Java's validateIndexForRecordType for idx over
 // rt: MetaDataValidator's key validation, then the type validator's check of

@@ -3069,7 +3069,7 @@ func TestTextTokenizerVersionIsParsedAsJavaParsesIt(t *testing.T) {
 		got, err := getTextTokenizerVersion(&Index{Name: "t", Options: c.options})
 		var mdErr *MetaDataError
 		if c.refused {
-			if !errors.As(err, &mdErr) || !strings.HasPrefix(mdErr.Message, "tokenizer version could not be parsed as int") {
+			if !errors.As(err, &mdErr) || mdErr.Message != "tokenizer version could not be parsed as int" {
 				t.Errorf("%v: %v, want Java's refusal", c.options, err)
 			}
 			continue

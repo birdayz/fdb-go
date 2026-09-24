@@ -68,6 +68,24 @@ func TestThenOfFewerThanTwoChildrenIsRefusedWhereJavaThrows(t *testing.T) {
 		{"a one-child record count key", func() *RecordMetaDataBuilder {
 			return base().SetRecordCountKey(Concat(RecordTypeKey()))
 		}},
+		// Java threw at the concat, so a later set cannot undo it.
+		{"a one-child primary key replaced by a good one", func() *RecordMetaDataBuilder {
+			b := base()
+			b.GetRecordType("Order").SetPrimaryKey(Concat(Field("order_id")))
+			b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+			return b
+		}},
+		{"a one-child record count key replaced by a good one", func() *RecordMetaDataBuilder {
+			return base().SetRecordCountKey(Concat(RecordTypeKey())).SetRecordCountKey(RecordTypeKey())
+		}},
+		// The Then is built before GetRecordType's unknown-type fault, and the
+		// key lands on the placeholder type the builder never holds.
+		{"handed to an unknown record type after it was built", func() *RecordMetaDataBuilder {
+			b := base()
+			key := Concat(Field("order_id"))
+			b.GetRecordType("Nope").SetPrimaryKey(key)
+			return b
+		}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()

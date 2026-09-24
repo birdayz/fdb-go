@@ -38,8 +38,16 @@ func validateKeyExpressionFields(expr KeyExpression, desc protoreflect.MessageDe
 		return nil, nil
 	case *FunctionKeyExpression:
 		return validateKeyExpressionFields(e.arguments, desc)
+	case *CardinalityFunctionKeyExpression:
+		// CardinalityFunctionKeyExpression.validate (:156-161): the argument's
+		// column size is create's check; a duplicate-producing argument is
+		// refused here.
+		if createsDuplicates(e.arguments) {
+			return nil, &KeyExpressionError{Message: "The CARDINALITY() argument must produce a single value."}
+		}
+		return validateKeyExpressionFields(e.arguments, desc)
 	case *DimensionsKeyExpression:
-		return validateKeyExpressionFields(e.WholeKey, desc)
+		return validateDimensionsKeyExpression(e, desc)
 	case *KeyWithValueExpression:
 		return validateKeyWithValueExpression(e, desc)
 	case *SplitKeyExpression:
@@ -94,12 +102,18 @@ func validateFieldKeyExpression(f *FieldKeyExpression, desc protoreflect.Message
 
 	// Message fields are only allowed where the caller admits them (a
 	// nesting's parent).
-	if !allowMessageType && fd.Kind() == protoreflect.MessageKind && !isTupleField(fd) {
+	if !allowMessageType && isMessageField(fd) && !isTupleField(fd) {
 		return &QueryInvalidExpressionError{Message: fmt.Sprintf(
 			"%s is a nested message, but accessed as a scalar", f.fieldName)}
 	}
 
 	return nil
+}
+
+// isMessageField is protobuf-java's getJavaType() == MESSAGE, which a proto2
+// group is too.
+func isMessageField(fd protoreflect.FieldDescriptor) bool {
+	return fd.Kind() == protoreflect.MessageKind || fd.Kind() == protoreflect.GroupKind
 }
 
 // javaFanTypeName is the name of Java's KeyExpression.FanType constant.
@@ -148,7 +162,7 @@ func validateNestingKeyExpression(n *NestingKeyExpression, desc protoreflect.Mes
 		return nil, &KeyExpressionError{Message: fmt.Sprintf(
 			"Descriptor %s does not have field: %s", desc.Name(), n.parentField)}
 	}
-	if fd.Kind() != protoreflect.MessageKind {
+	if !isMessageField(fd) {
 		// Java's parent.getDescriptor calls protobuf-java's getMessageType, which
 		// throws UnsupportedOperationException; the text is protobuf-java's,
 		// measured on the conformance JVM ("Key validation at build, as Java
@@ -160,16 +174,6 @@ func validateNestingKeyExpression(n *NestingKeyExpression, desc protoreflect.Mes
 	fields, err := validateKeyExpressionFields(n.child, fd.Message())
 	if err != nil {
 		return nil, err
-	}
-	if fd.IsMap() {
-		// Go-only, after every check Java makes, so a key Java refuses is
-		// refused with Java's fault. Java fans out a map's entries as the
-		// repeated messages they are; Go's evaluator reads a field as repeated
-		// only when it is a list, so a map would be read as one message.
-		// DIVERGENCES.md, "A proto map field is not fanned out in a key
-		// expression".
-		return nil, &UnsupportedOperationError{Message: fmt.Sprintf(
-			"%s is a map field; Go does not fan out a map in a key expression", n.parentField)}
 	}
 	return fields, nil
 }
@@ -202,4 +206,28 @@ func validateSplitKeyExpression(s *SplitKeyExpression, desc protoreflect.Message
 // follows the sentence (protobuf-java 4.29.3, measured).
 func notMessageTypeText(fd protoreflect.FieldDescriptor) string {
 	return fmt.Sprintf("This field is not of message type. (%s)", fd.FullName())
+}
+
+// validateDimensionsKeyExpression is DimensionsKeyExpression.validate
+// (DimensionsKeyExpression.java:89-101): the prefix and the dimensions fit the
+// whole key's columns, and each dimension column's field is of protobuf type
+// int64 exactly. Java reads the validated field list by column position
+// unguarded, so a dimension column that reads no field (a version or a
+// literal) throws IndexOutOfBoundsException or NullPointerException there; Go
+// reports it as a column that is not INT64.
+func validateDimensionsKeyExpression(d *DimensionsKeyExpression, desc protoreflect.MessageDescriptor) ([]protoreflect.FieldDescriptor, error) {
+	if d.PrefixSize+d.DimensionsSize > d.WholeKey.ColumnSize() {
+		return nil, &KeyExpressionError{Message: "dimensions declared a prefix size and number of dimensions " +
+			"that are together larger than the number of columns in the index"}
+	}
+	fields, err := validateKeyExpressionFields(d.WholeKey, desc)
+	if err != nil {
+		return nil, err
+	}
+	for i := d.PrefixSize; i < d.PrefixSize+d.DimensionsSize; i++ {
+		if i >= len(fields) || fields[i] == nil || fields[i].Kind() != protoreflect.Int64Kind {
+			return nil, &KeyExpressionError{Message: "the declared dimension columns have to be of type INT64"}
+		}
+	}
+	return fields, nil
 }

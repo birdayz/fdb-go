@@ -3,6 +3,7 @@ package recordlayer
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -262,6 +263,64 @@ var _ = Describe("RecordCounting", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	// Java's getSnapshotRecordCountForRecordType (FDBRecordStore.java:
+	// 2431-2453) answers from a COUNT index on the type, else from a universal
+	// COUNT index grouped by record type, and never from the record count key.
+	It("per-type counts come from a COUNT index", func() {
+		build := func(configure func(*RecordMetaDataBuilder)) *RecordMetaData {
+			b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+			b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+			configure(b)
+			md, err := b.Build()
+			Expect(err).NotTo(HaveOccurred())
+			return md
+		}
+		// Each mode's store is its own: specSubspace is one per spec.
+		stores := 0
+		count := func(md *RecordMetaData) (int64, error) {
+			stores++
+			sub := specSubspace().Sub(int64(stores))
+			var n int64
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(sub).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				for i := int64(1); i <= 3; i++ {
+					if _, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i)}); err != nil {
+						return nil, err
+					}
+				}
+				if _, err := store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(9)}); err != nil {
+					return nil, err
+				}
+				n, err = store.GetSnapshotRecordCountForRecordType("Order")
+				return nil, err
+			})
+			return n, err
+		}
+
+		// A record count key grouped by record type is not read.
+		_, err := count(build(func(b *RecordMetaDataBuilder) { b.SetRecordCountKey(RecordTypeKey()) }))
+		var rc *RecordCoreError
+		Expect(errors.As(err, &rc)).To(BeTrue(), "%v", err)
+		Expect(rc.Message).To(Equal("Require a COUNT index on Order"))
+
+		n, err := count(build(func(b *RecordMetaDataBuilder) {
+			b.AddIndex("Order", NewCountIndex("order_count", GroupAll(EmptyKey())))
+		}))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(n).To(Equal(int64(3)))
+
+		n, err = count(build(func(b *RecordMetaDataBuilder) {
+			b.AddUniversalIndex(NewCountIndex("count_by_type", GroupAll(RecordTypeKey())))
+		}))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(n).To(Equal(int64(3)))
+	})
+
 	It("PerTypeCountingWithRecordTypeKey", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
@@ -293,15 +352,15 @@ var _ = Describe("RecordCounting", func() {
 				}
 			}
 
-			// Check per-type counts using GetSnapshotRecordCountForRecordType
-			// (which correctly maps record type name → integer type key)
-			orderCount, err := store.GetSnapshotRecordCountForRecordType("Order")
+			// Check per-type counts in the record count key's groups, read at
+			// each type's integer key (Java's getSnapshotRecordCount(key, value)).
+			orderCount, err := countKeyGroupForType(store, "Order")
 			if err != nil {
 				return nil, err
 			}
 			Expect(orderCount).To(Equal(int64(3)))
 
-			customerCount, err := store.GetSnapshotRecordCountForRecordType("Customer")
+			customerCount, err := countKeyGroupForType(store, "Customer")
 			if err != nil {
 				return nil, err
 			}
@@ -312,14 +371,14 @@ var _ = Describe("RecordCounting", func() {
 				return nil, err
 			}
 
-			orderCount, err = store.GetSnapshotRecordCountForRecordType("Order")
+			orderCount, err = countKeyGroupForType(store, "Order")
 			if err != nil {
 				return nil, err
 			}
 			Expect(orderCount).To(Equal(int64(2)))
 
 			// Customer count should be unchanged
-			customerCount, err = store.GetSnapshotRecordCountForRecordType("Customer")
+			customerCount, err = countKeyGroupForType(store, "Customer")
 			if err != nil {
 				return nil, err
 			}
@@ -623,3 +682,16 @@ var _ = Describe("RecordCounting", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 })
+
+// countKeyGroupForType reads a record type's group of a record count key
+// grouped by record type, at the type's integer key: Java's
+// getSnapshotRecordCount(recordType(), Key.Evaluated.scalar(typeKey)). Java's
+// getSnapshotRecordCountForRecordType does not read the count key; it needs a
+// COUNT index (pinned by "per-type counts come from a COUNT index").
+func countKeyGroupForType(store *FDBRecordStore, recordTypeName string) (int64, error) {
+	rt := store.metaData.GetRecordType(recordTypeName)
+	if rt == nil {
+		return 0, fmt.Errorf("unknown record type %s", recordTypeName)
+	}
+	return store.GetSnapshotRecordCount(tuple.Tuple{rt.GetRecordTypeKey()})
+}

@@ -259,7 +259,12 @@ type RecordMetaDataBuilder struct {
 	// add was refused or the index later removed: Java threw a refused
 	// SetSubspaceKey at the set, so the refusal ends the program wherever the
 	// index went afterwards.
-	addedIndexes    []*Index
+	addedIndexes []*Index
+	// handedKeys is every primary key and record count key handed to a
+	// setter, kept after a later set replaces it: Java threw a refused
+	// constructor where the key was built, so its fault ends the program
+	// whatever the builder holds afterwards, a placeholder type's included.
+	handedKeys      []KeyExpression
 	unionDescriptor protoreflect.MessageDescriptor
 	// preserved carries the unmodelled proto fields through to the built
 	// metadata. See preservedMetaDataFields.
@@ -449,6 +454,7 @@ func (b *RecordMetaDataBuilder) SetRecordCountKey(key KeyExpression) *RecordMeta
 		b.version++ // Matches Java: bumps version when value changes
 	}
 	b.recordCountKey = key
+	b.handedKeys = append(b.handedKeys, key)
 	return b
 }
 
@@ -869,7 +875,7 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 		// Go-only: an empty primary key. Java's validator has no such check;
 		// Go refuses it because such a record's split clear range is the whole
 		// records subspace, every other record type's records included
-		// (DIVERGENCES.md, "Build's record-type checks: the order, and two Go-only refusals").
+		// (DIVERGENCES.md, "Build's record-type checks: the order, and one Go-only refusal").
 		if rt.PrimaryKey.ColumnSize() == 0 {
 			return nil, &MetaDataError{Message: fmt.Sprintf("record type %q has a primary key that produces no columns (EmptyKeyExpression is not a valid primary key)", name)}
 		}
@@ -1309,6 +1315,9 @@ type RecordTypeBuilder struct {
 // SetPrimaryKey sets the primary key expression for this record type
 func (rtb *RecordTypeBuilder) SetPrimaryKey(keyExpr KeyExpression) *RecordTypeBuilder {
 	rtb.recordType.PrimaryKey = keyExpr
+	if rtb.builder != nil {
+		rtb.builder.handedKeys = append(rtb.builder.handedKeys, keyExpr)
+	}
 	return rtb
 }
 
@@ -2205,8 +2214,9 @@ func (b *RecordMetaDataBuilder) recordBuildError(err error) {
 }
 
 // firstFault is the fault recorded first in program order among the
-// builder's calls and the SetSubspaceKey refusals of every index ever handed
-// to AddIndex, or nil.
+// builder's calls, the SetSubspaceKey refusals of every index ever handed to
+// AddIndex, and the constructor refusals in every key ever handed to it, or
+// nil.
 func (b *RecordMetaDataBuilder) firstFault() error {
 	var first error
 	var firstSeq uint64
@@ -2226,6 +2236,11 @@ func (b *RecordMetaDataBuilder) firstFault() error {
 		consider(idx.subspaceKeyErr, idx.subspaceKeyErrSeq)
 		considerKey(idx.RootExpression)
 	}
+	for _, key := range b.handedKeys {
+		considerKey(key)
+	}
+	// A key assigned without a setter (the loader, the records file's
+	// primary_key option) is walked where it sits.
 	for _, rt := range b.recordTypes {
 		considerKey(rt.PrimaryKey)
 	}

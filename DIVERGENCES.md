@@ -2108,8 +2108,9 @@ indistinguishably from a correctly-declared index.
 **What is closed:** the OPTION half, for windowed vector indexes only, as the
 delegate call Java's `SlidingWindowIndexValidator` ends with —
 `validateVectorIndexOptionsAtBuild` in `vector_index_validation.go`, called from
-`validateSlidingWindowIndex`. Scoped there because windowed vector indexes are
-new, so nothing pre-existing can break.
+`validateIndex` after `validateSlidingWindowIndex` for a windowed index. A plain
+VECTOR index runs no validator half at `Build`: `validateIndexType` has no VECTOR
+arm.
 
 **What is open, and why it is an owner call rather than a deferral:** applying
 the same validation to PLAIN vector indexes was implemented and MEASURED, and it
@@ -3095,7 +3096,7 @@ Java's change sets write and clear only the slots that changed. The bytes left a
 and so are the conflicts in effect, since every writer of a node has first read its whole
 range. The call site is `rtreeStorage.writeSlots`.
 
-### Build's record-type checks: the order, and two Go-only refusals (RFC-257 WS-C)
+### Build's record-type checks: the order, and one Go-only refusal (RFC-257 WS-C)
 
 `Build` runs Java's record-type checks in Java's order with Java's texts and classes, but it
 walks the record types by NAME where Java walks its builder's HashMap, so where several record
@@ -3110,8 +3111,8 @@ Java throws where the Then is built.) The call site is the record-type loop of `
 
 Java's `MetaDataValidator` asks its classpath's registry for each index's validator and refuses a
 type no factory registers ("Unknown index type for ..."). Go runs Java's validator for every type
-Go maintains (`validateIndexType`, `index_validator.go`) and builds an index of any other type
-without one, because Go must load meta-data a Java program wrote with a module Go does not
+Go maintains except VECTOR (`validateIndexType`, `index_validator.go`; VECTOR's is open, "VECTOR
+index metadata validation") and builds an index of any other type without one, because Go must load meta-data a Java program wrote with a module Go does not
 implement (Lucene, for one): refusing it would make the whole store unopenable. Such an index fails
 where Go would maintain or scan it. The Go-only `vector_spfresh` type is Go's extension and has no
 Java validator to port.
@@ -3123,18 +3124,6 @@ Java validator to port.
 below and fails at the index's first write (a division by zero, or a negative array size); Go
 refuses it with `RecordCoreArgumentError` when it builds the maintainer, since the same arithmetic
 would panic. The call sites are the maintainer and the chaos model.
-
-### A proto map field is not fanned out in a key expression (RFC-257 WS-C)
-
-Key validation reads a map field as repeated, as protobuf-java's `isRepeated()` does, so every
-refusal Java makes over a map is Go's with Java's text and class (the conformance spec "Key
-validation at build, as Java builds"). One key Java builds is refused: a nesting that fans out
-a map's entries, `NestFanOut("m", Field("value"))`, is an `UnsupportedOperationError` ("m is a
-map field; Go does not fan out a map in a key expression"), after every check Java makes. Java
-evaluates a map's entries as the repeated messages they are on the wire; Go's key evaluator
-reads a field as repeated only when it is a list, and would read the map as one message. The
-call site is `validateNestingKeyExpression`.
-
 
 ### A NaN made by CAST from a string, or by MIN or MAX, has Go's bits, not Java's, and the CAST's grammar is Go's (RFC-257 WS-E)
 

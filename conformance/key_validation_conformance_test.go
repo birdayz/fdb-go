@@ -4,22 +4,30 @@ package conformance_test
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"time"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
+	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
+	"google.golang.org/protobuf/types/dynamicpb"
 )
 
 // mapRecordsFile is a records file whose one record type holds a proto map
-// field, m (map<string, int64>), whose entry message is MEntry. Protobuf-java's
-// isRepeated() is true for a map field, and Go's IsList() is not, so a map is
-// where the two engines' key validation could part.
+// field, m (map<string, int64>), whose entry message is MEntry, and a group, g.
+// Protobuf-java's isRepeated() is true for a map field, and Go's IsList() is
+// not, and protobuf-java's MESSAGE java type covers a group, which Go's
+// MessageKind does not, so these are where the two engines could part.
 func mapRecordsFile() *descriptorpb.FileDescriptorProto {
 	optional := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum()
 	repeated := descriptorpb.FieldDescriptorProto_LABEL_REPEATED.Enum()
@@ -40,6 +48,7 @@ func mapRecordsFile() *descriptorpb.FileDescriptorProto {
 				Field: []*descriptorpb.FieldDescriptorProto{
 					field("id", 1, optional, descriptorpb.FieldDescriptorProto_TYPE_INT64, ""),
 					field("m", 2, repeated, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, ".keyvalidation.MapRec.MEntry"),
+					field("g", 3, optional, descriptorpb.FieldDescriptorProto_TYPE_GROUP, ".keyvalidation.MapRec.G"),
 				},
 				NestedType: []*descriptorpb.DescriptorProto{{
 					Name: proto.String("MEntry"),
@@ -48,6 +57,9 @@ func mapRecordsFile() *descriptorpb.FileDescriptorProto {
 						field("value", 2, optional, descriptorpb.FieldDescriptorProto_TYPE_INT64, ""),
 					},
 					Options: &descriptorpb.MessageOptions{MapEntry: proto.Bool(true)},
+				}, {
+					Name:  proto.String("G"),
+					Field: []*descriptorpb.FieldDescriptorProto{field("x", 1, optional, descriptorpb.FieldDescriptorProto_TYPE_INT64, "")},
 				}},
 			},
 			{
@@ -117,28 +129,31 @@ var _ = Describe("Key validation at build, as Java builds", func() {
 		md   func() *gen.MetaData
 		// class is Java's, empty when Java builds; text is Java's message.
 		class, text string
-		// goOnly is Go's declared refusal where Java builds (DIVERGENCES.md,
-		// "A proto map field is not fanned out in a key expression").
-		goOnly string
 	}{
 		{"a nesting into a scalar field", func() *gen.MetaData {
 			return demoMetaDataWithRoot(recordlayer.Nest("price", recordlayer.Field("type")))
-		}, unsupported, "This field is not of message type. (com.apple.foundationdb.record.Order.price)", ""},
+		}, unsupported, "This field is not of message type. (com.apple.foundationdb.record.Order.price)"},
 		{"a map field read as a scalar", func() *gen.MetaData {
 			return mapMetaData(recordlayer.Field("m"))
-		}, keyInvalid, "m is repeated with FanType.None", ""},
+		}, keyInvalid, "m is repeated with FanType.None"},
 		{"a map field fanned out as a leaf", func() *gen.MetaData {
 			return mapMetaData(recordlayer.FanOut("m"))
-		}, queryInvalid, "m is a nested message, but accessed as a scalar", ""},
+		}, queryInvalid, "m is a nested message, but accessed as a scalar"},
 		{"a map field nested with FanType.None", func() *gen.MetaData {
 			return mapMetaData(recordlayer.Nest("m", recordlayer.Field("value")))
-		}, keyInvalid, "m is repeated with FanType.None", ""},
+		}, keyInvalid, "m is repeated with FanType.None"},
 		{"a map field fanned out into a field its entry lacks", func() *gen.MetaData {
 			return mapMetaData(recordlayer.NestFanOut("m", recordlayer.Field("nope")))
-		}, keyInvalid, "Descriptor MEntry does not have field: nope", ""},
+		}, keyInvalid, "Descriptor MEntry does not have field: nope"},
 		{"a map field fanned out into its entry's value", func() *gen.MetaData {
 			return mapMetaData(recordlayer.NestFanOut("m", recordlayer.Field("value")))
-		}, "", "", "m is a map field; Go does not fan out a map in a key expression"},
+		}, "", ""},
+		{"a group nested into", func() *gen.MetaData {
+			return mapMetaData(recordlayer.Nest("g", recordlayer.Field("x")))
+		}, "", ""},
+		{"a group read as a scalar", func() *gen.MetaData {
+			return mapMetaData(recordlayer.Field("g"))
+		}, queryInvalid, "g is a nested message, but accessed as a scalar"},
 	} {
 		It("builds as Java does: "+c.name, func() {
 			p := c.md()
@@ -151,9 +166,7 @@ var _ = Describe("Key validation at build, as Java builds", func() {
 
 			if c.class == "" {
 				Expect(java.Valid).To(BeTrue(), "Java: %s %s", java.Class, java.Error)
-				var unsupportedErr *recordlayer.UnsupportedOperationError
-				Expect(errors.As(goErr, &unsupportedErr)).To(BeTrue(), "Go: %T %v", goErr, goErr)
-				Expect(unsupportedErr.Message).To(Equal(c.goOnly))
+				Expect(goErr).NotTo(HaveOccurred())
 				return
 			}
 			Expect(java.Valid).To(BeFalse())
@@ -177,6 +190,98 @@ var _ = Describe("Key validation at build, as Java builds", func() {
 				goMessage = e.Message
 			}
 			Expect(goMessage).To(Equal(java.Error))
+		})
+	}
+})
+
+// A map field's entries fanned out by a nesting, and a nesting into a group,
+// maintained as Java maintains them: each engine saves the same records, one
+// transaction each, and the index key-value pairs written are equal.
+var _ = Describe("Map and group key expressions are maintained as Java maintains them", func() {
+	for _, c := range []struct {
+		name string
+		root recordlayer.KeyExpression
+	}{
+		{"a map's entries fanned out", recordlayer.NestFanOut("m", recordlayer.Concat(recordlayer.Field("key"), recordlayer.Field("value")))},
+		{"a group nested into", recordlayer.Nest("g", recordlayer.Field("x"))},
+	} {
+		It(c.name, func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			clusterFile, err := sharedContainer.ClusterFile(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			mdProto := mapMetaData(c.root)
+			md, err := recordlayer.RecordMetaDataFromProto(proto.Clone(mdProto).(*gen.MetaData))
+			Expect(err).NotTo(HaveOccurred())
+			desc := md.GetRecordType("MapRec").Descriptor
+			record := func(id int64, entries map[string]int64, g *int64) []byte {
+				m := dynamicpb.NewMessage(desc)
+				m.Set(desc.Fields().ByName("id"), protoreflect.ValueOfInt64(id))
+				mf := desc.Fields().ByName("m")
+				mm := m.Mutable(mf).Map()
+				for k, v := range entries {
+					mm.Set(protoreflect.ValueOfString(k).MapKey(), protoreflect.ValueOfInt64(v))
+				}
+				if g != nil {
+					gf := desc.Fields().ByName("g")
+					gm := dynamicpb.NewMessage(gf.Message())
+					gm.Set(gf.Message().Fields().ByName("x"), protoreflect.ValueOfInt64(*g))
+					m.Set(gf, protoreflect.ValueOfMessage(gm))
+				}
+				b, err := proto.MarshalOptions{Deterministic: true}.Marshal(m)
+				Expect(err).NotTo(HaveOccurred())
+				return b
+			}
+			seven := int64(7)
+			records := [][]byte{record(1, map[string]int64{"b": 2, "a": 1}, &seven), record(2, nil, nil), record(3, map[string]int64{"c": 3}, nil)}
+			mdBytes, err := proto.Marshal(mdProto)
+			Expect(err).NotTo(HaveOccurred())
+			recordArgs := make([][]int, len(records))
+			for i, r := range records {
+				recordArgs[i] = BytesToIntArray(r)
+			}
+			javaSS := subspace.Sub(tuple.Tuple{"mapgroup_java", uuid.NewString()}...)
+			var java struct {
+				Verdicts []string   `json:"verdicts"`
+				KVs      [][]string `json:"kvs"`
+			}
+			Expect(NewJavaInvoker().InvokeAs(ctx, "saveRecordsAndDumpIndexesJava", map[string]any{
+				"clusterFile": clusterFile, "subspace": BytesToIntArray(javaSS.Bytes()),
+				"metaData": BytesToIntArray(mdBytes), "recordTypeName": "MapRec", "records": recordArgs,
+			}, &java)).To(Succeed())
+			GinkgoWriter.Printf("MAPGROUP %q verdicts=%v kvs=%v\n", c.name, java.Verdicts, java.KVs)
+			Expect(java.Verdicts).To(Equal([]string{"ok", "ok", "ok"}))
+			Expect(java.KVs).NotTo(BeEmpty())
+
+			goSS := subspace.Sub(tuple.Tuple{"mapgroup_go", uuid.NewString()}...)
+			db := recordlayer.NewFDBDatabase(sharedDB)
+			for _, rb := range records {
+				msg := dynamicpb.NewMessage(desc)
+				Expect(proto.Unmarshal(rb, msg)).To(Succeed())
+				_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+					store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(goSS).CreateOrOpen()
+					if err != nil {
+						return nil, err
+					}
+					_, err = store.SaveRecord(msg)
+					return nil, err
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+			goKVs, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				begin, end := goSS.Sub(int64(2)).FDBRangeKeys()
+				kvs, err := rtx.Transaction().GetRange(fdb.KeyRange{Begin: begin, End: end}, fdb.RangeOptions{}).GetSliceWithError()
+				if err != nil {
+					return nil, err
+				}
+				out := make([][]string, 0, len(kvs))
+				for _, kv := range kvs {
+					out = append(out, []string{hex.EncodeToString(kv.Key[len(goSS.Bytes()):]), hex.EncodeToString(kv.Value)})
+				}
+				return out, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(goKVs).To(Equal(java.KVs))
 		})
 	}
 })
@@ -382,6 +487,114 @@ var _ = Describe("Index validation at build, as Java builds", func() {
 			[]validatorIndex{{name: "a", recordType: "Customer", typ: "text", root: recordlayer.Field("name"), options: map[string]string{"textTokenizerName": ""}}},
 			nil,
 			metaData, "unrecognized text tokenizer",
+		},
+		// TEXT: the tokenizer and its version, the value, the text field.
+		{
+			"a text index with an unknown tokenizer", false,
+			[]validatorIndex{{name: "a", recordType: "Customer", typ: "text", root: recordlayer.Field("name"), options: map[string]string{"textTokenizerName": "nope"}}},
+			nil,
+			metaData, "unrecognized text tokenizer",
+		},
+		{
+			"a text index whose tokenizer version is not a number", false,
+			[]validatorIndex{{name: "a", recordType: "Customer", typ: "text", root: recordlayer.Field("name"), options: map[string]string{"textTokenizerVersion": "x"}}},
+			nil,
+			metaData, "tokenizer version could not be parsed as int",
+		},
+		{
+			"a text index whose tokenizer version is above the tokenizer's", false,
+			[]validatorIndex{{name: "a", recordType: "Customer", typ: "text", root: recordlayer.Field("name"), options: map[string]string{"textTokenizerVersion": "99"}}},
+			nil,
+			metaData, "unknown tokenizer version",
+		},
+		{
+			"a text index with a value", false,
+			[]validatorIndex{{name: "a", recordType: "Customer", typ: "text", root: recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("name"), recordlayer.Field("customer_id")), 1)}},
+			nil,
+			keyInvalid, "no value expression allowed in index type",
+		},
+		{
+			"a text index over a number", false,
+			[]validatorIndex{{name: "a", recordType: "Customer", typ: "text", root: recordlayer.Field("customer_id")}},
+			nil,
+			keyInvalid, "text index has non-string type as text field",
+		},
+		{
+			"a text index over a repeated string", false,
+			[]validatorIndex{{name: "a", recordType: "Order", typ: "text", root: recordlayer.FanOut("tags")}},
+			nil,
+			keyInvalid, "text index does not allow a repeated field for text body",
+		},
+		// VERSION.
+		{
+			"a version index of two versions", true,
+			[]validatorIndex{{name: "a", recordType: "Order", typ: "version", root: recordlayer.Concat(recordlayer.VersionKey(), recordlayer.VersionKey())}},
+			nil,
+			keyInvalid, "there must be exactly 1 version entry in index",
+		},
+		{
+			"a version index without a version", true,
+			[]validatorIndex{{name: "a", recordType: "Order", typ: "version", root: recordlayer.Field("price")}},
+			nil,
+			keyInvalid, "there must be exactly 1 version entry in index",
+		},
+		{
+			"a unique version index", true,
+			[]validatorIndex{{name: "a", recordType: "Order", typ: "version", root: recordlayer.VersionKey(), options: map[string]string{"unique": "true"}}},
+			nil,
+			metaData, "index type does not allow unique indexes",
+		},
+		// MAX_EVER_VERSION's version columns.
+		{
+			"a max ever version grouped by a version", true,
+			[]validatorIndex{{name: "a", recordType: "Order", typ: "max_ever_version", root: recordlayer.GroupBy(recordlayer.VersionKey(), recordlayer.VersionKey())}},
+			nil,
+			keyInvalid, "there must be no version entries in grouping key in index",
+		},
+		{
+			"a max ever version of no version", true,
+			[]validatorIndex{{name: "a", recordType: "Order", typ: "max_ever_version", root: grouped("price", "quantity")}},
+			nil,
+			keyInvalid, "there must be exactly 1 version entry in grouped key in index",
+		},
+		// MULTIDIMENSIONAL and the dimensions key.
+		{
+			"dimensions wider than their key", false,
+			[]validatorIndex{{name: "a", recordType: "Order", typ: "multidimensional", root: recordlayer.Dimensions(recordlayer.Concat(recordlayer.Field("coord_x"), recordlayer.Field("coord_y")), 1, 2)}},
+			nil,
+			keyInvalid, "dimensions declared a prefix size and number of dimensions that are together larger than the number of columns in the index",
+		},
+		{
+			"dimensions over int32 fields", false,
+			[]validatorIndex{{name: "a", recordType: "Order", typ: "multidimensional", root: recordlayer.Dimensions(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), 0, 2)}},
+			nil,
+			keyInvalid, "the declared dimension columns have to be of type INT64",
+		},
+		{
+			"dimensions over int64 fields", false,
+			[]validatorIndex{{name: "a", recordType: "Order", typ: "multidimensional", root: recordlayer.Dimensions(recordlayer.Concat(recordlayer.Field("coord_x"), recordlayer.Field("coord_y")), 0, 2)}},
+			nil,
+			"", "",
+		},
+		{
+			"dimensions that do not cover the key", false,
+			[]validatorIndex{{name: "a", recordType: "Order", typ: "multidimensional", root: recordlayer.KeyWithValue(recordlayer.Concat(
+				recordlayer.Dimensions(recordlayer.Concat(recordlayer.Field("coord_x"), recordlayer.Field("coord_y")), 0, 2), recordlayer.Field("price"), recordlayer.Field("quantity")), 3)}},
+			nil,
+			keyInvalid, "dimensions key expression must cover exactly all key parts in index",
+		},
+		// CARDINALITY's argument.
+		{
+			"a cardinality over a fanned-out field", false,
+			[]validatorIndex{{name: "a", recordType: "Order", typ: "value", root: recordlayer.CardinalityExpr(recordlayer.FanOut("tags"))}},
+			nil,
+			keyInvalid, "The CARDINALITY() argument must produce a single value.",
+		},
+		{
+			"a cardinality over a missing field", false,
+			[]validatorIndex{{name: "a", recordType: "Order", typ: "value", root: recordlayer.CardinalityExpr(recordlayer.FieldConcatenate("nope"))}},
+			nil,
+			keyInvalid, "Descriptor Order does not have field: nope",
 		},
 		// A bare root on an aggregate type: Java's Index(proto) wraps it for
 		// RANK, COUNT, MAX_EVER, MIN_EVER and SUM (Index.java:206-213), COUNT

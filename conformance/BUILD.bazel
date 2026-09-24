@@ -171,6 +171,7 @@ go_test(
         "count_conformance_test.go",
         "count_index_conformance_test.go",
         "count_not_null_index_conformance_test.go",
+        "count_per_type_conformance_test.go",
         "count_updates_index_conformance_test.go",
         "covering_index_conformance_test.go",
         "cross_join_order_mechanism_probe_test.go",

@@ -227,20 +227,6 @@ var _ = Describe("MULTIDIMENSIONAL index R-tree options", func() {
 						}
 					}
 					Expect(leafHVs).To(Equal(len(live)), "%s: one leaf slot per record", step)
-					nsiSub := keyspace.Sub(int64(3), indexName, int64(0))
-					var nsi []string
-					for _, kv := range read(nsiSub) {
-						Expect(kv.Value).To(BeEmpty())
-						nsi = append(nsi, string(kv.Key))
-					}
-					if !c.slotIndex {
-						Expect(nsi).To(BeEmpty(), "%s: node slot index entries without the option", step)
-						return nil, nil
-					}
-					// One entry per child slot of every intermediate node:
-					// NodeSlotIndexAdapter.createIndexKeyTuple's (level of the
-					// child, largest Hilbert value, largest key's items, child
-					// id), a leaf's level 0, whole keys compared.
 					var level func(id string) int64
 					level = func(id string) int64 {
 						if leaves[id] {
@@ -249,16 +235,6 @@ var _ = Describe("MULTIDIMENSIONAL index R-tree options", func() {
 						Expect(children).To(HaveKey(id), "%s: node %x is named but not stored", step, id)
 						return level(string(children[id][0].childID)) + 1
 					}
-					var want []string
-					entries := 0
-					for _, slots := range children {
-						for _, slot := range slots {
-							k := append(tuple.Tuple{level(string(slot.childID)), slot.largestHV}, slot.largestKey...)
-							want = append(want, string(nsiSub.Pack(append(k, slot.childID))))
-							entries++
-						}
-					}
-					Expect(entries).To(Equal(max(len(nodes)-1, 0)), "%s: one child slot per node but the root, none in an empty tree", step)
 					// The tree's shape: every stored node but one (the root) is
 					// named as a child exactly once, every named child is
 					// stored, and a node's children are all of one level (a
@@ -281,6 +257,30 @@ var _ = Describe("MULTIDIMENSIONAL index R-tree options", func() {
 					for id := range parents {
 						Expect(nodes).To(HaveKey(id), "%s: child %x is not stored", step, id)
 					}
+					nsiSub := keyspace.Sub(int64(3), indexName, int64(0))
+					var nsi []string
+					for _, kv := range read(nsiSub) {
+						Expect(kv.Value).To(BeEmpty())
+						nsi = append(nsi, string(kv.Key))
+					}
+					if !c.slotIndex {
+						Expect(nsi).To(BeEmpty(), "%s: node slot index entries without the option", step)
+						return nil, nil
+					}
+					// One entry per child slot of every intermediate node:
+					// NodeSlotIndexAdapter.createIndexKeyTuple's (level of the
+					// child, largest Hilbert value, largest key's items, child
+					// id), a leaf's level 0, whole keys compared.
+					var want []string
+					entries := 0
+					for _, slots := range children {
+						for _, slot := range slots {
+							k := append(tuple.Tuple{level(string(slot.childID)), slot.largestHV}, slot.largestKey...)
+							want = append(want, string(nsiSub.Pack(append(k, slot.childID))))
+							entries++
+						}
+					}
+					Expect(entries).To(Equal(max(len(nodes)-1, 0)), "%s: one child slot per node but the root, none in an empty tree", step)
 					slices.Sort(want)
 					slices.Sort(nsi)
 					Expect(nsi).To(Equal(want), "%s: node slot index entries", step)

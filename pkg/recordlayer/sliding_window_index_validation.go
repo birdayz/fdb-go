@@ -1,9 +1,5 @@
 package recordlayer
 
-import (
-	"fmt"
-)
-
 // isSlidingWindowIndex reports whether an index gets sliding-window decoration.
 // Matches Java's SlidingWindowIndexMaintainerFactory.isSlidingWindowIndex
 // (:91-93): VECTOR type AND a row-number window predicate reachable through AND.
@@ -45,8 +41,7 @@ func validateSlidingWindowIndex(recordTypes []*RecordType, idx *Index) error {
 		return &MetaDataError{Message: "sliding window index delegate is defined on an empty set of types"}
 	}
 	if len(recordTypes) != 1 {
-		return &MetaDataError{Message: fmt.Sprintf(
-			"sliding window index delegate has multiple types (index %s)", idx.Name)}
+		return &MetaDataError{Message: "sliding window index delegate has multiple types"}
 	}
 	// Java's third arm. RecordType.IsSynthetic() is a constant false in this
 	// port (synthetic record types are not modelled), so this arm cannot fire —
@@ -58,8 +53,7 @@ func validateSlidingWindowIndex(recordTypes []*RecordType, idx *Index) error {
 	// automatically rather than leaving a hole nobody remembers.
 	for _, rt := range recordTypes {
 		if rt.IsSynthetic() {
-			return &MetaDataError{Message: fmt.Sprintf(
-				"sliding window index is on synthetic record types (index %s)", idx.Name)}
+			return &MetaDataError{Message: "sliding window index is on synthetic record types"}
 		}
 	}
 	// Defensive: restates the decoration gate above.

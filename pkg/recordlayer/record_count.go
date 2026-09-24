@@ -1,7 +1,9 @@
 package recordlayer
 
 import (
+	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -332,23 +334,58 @@ func (store *FDBRecordStore) GetRecordCount() (int64, error) {
 	return store.GetSnapshotRecordCount(tuple.Tuple{})
 }
 
-// GetSnapshotRecordCountForRecordType returns the count of records for a specific record type.
-// Requires that the metadata uses RecordTypeKeyExpression as the count key.
-// Matches Java's getSnapshotRecordCountForRecordType().
+// GetSnapshotRecordCountForRecordType is Java's getSnapshotRecordCountForRecordType
+// (FDBRecordStore.java:2431-2453): a record type's count from a COUNT index,
+// never from the record count key. A COUNT index on the type alone answers
+// first, then a universal COUNT index grouped by record type, read at the
+// type's key; with neither it is Java's RecordCoreException "Require a COUNT
+// index on X". A record count key grouped by record type is read with
+// GetSnapshotRecordCount(tuple.Tuple{typeKey}), as Java's getSnapshotRecordCount.
 func (store *FDBRecordStore) GetSnapshotRecordCountForRecordType(recordTypeName string) (int64, error) {
-	countKey := store.metaData.GetRecordCountKey()
-	if countKey == nil {
-		return 0, fmt.Errorf("record counting is not enabled (recordCountKey is nil)")
+	ctx := store.context.ctx
+	onType := NewCountAggregateFunction(GroupAll(EmptyKey()))
+	idx, err := store.findIndexForAggregateFunction(onType, []string{recordTypeName}, nil)
+	if err == nil {
+		return store.countFromIndex(ctx, onType, idx, TupleRangeAll)
 	}
-	if !IsRecordTypeExpression(countKey) {
-		return 0, fmt.Errorf("per-type counting requires RecordTypeKeyExpression as count key")
+	var unsupported *AggregateFunctionNotSupportedError
+	if !errors.As(err, &unsupported) {
+		return 0, err
 	}
-	// Use the record type key (matching Java), not the string name.
-	rt := store.metaData.GetRecordType(recordTypeName)
-	if rt == nil {
-		return 0, &MetaDataError{Message: fmt.Sprintf("unknown record type %q", recordTypeName)}
+	byType := NewCountAggregateFunction(GroupAll(RecordTypeKey()))
+	idx, err = store.findIndexForAggregateFunction(byType, nil, nil)
+	if err == nil {
+		rt := store.metaData.GetRecordType(recordTypeName)
+		if rt == nil {
+			return 0, &MetaDataError{Message: "Unknown record type " + recordTypeName}
+		}
+		return store.countFromIndex(ctx, byType, idx, TupleRangeAllOf(tuple.Tuple{rt.GetRecordTypeKey()}))
 	}
-	return store.GetSnapshotRecordCount(tuple.Tuple{rt.GetRecordTypeKey()})
+	if !errors.As(err, &unsupported) {
+		return 0, err
+	}
+	return 0, &RecordCoreError{Message: "Require a COUNT index on " + recordTypeName}
+}
+
+// countFromIndex evaluates a COUNT aggregate on idx over scanRange at
+// snapshot isolation.
+func (store *FDBRecordStore) countFromIndex(ctx context.Context, fn *IndexAggregateFunction, idx *Index, scanRange TupleRange) (int64, error) {
+	maintainer, err := store.getIndexMaintainer(idx)
+	if err != nil {
+		return 0, err
+	}
+	result, err := evaluateAggregate(ctx, fn, maintainer, scanRange, IsolationLevelSnapshot)
+	if err != nil {
+		return 0, err
+	}
+	if len(result) == 0 {
+		return 0, fmt.Errorf("count aggregate returned an empty tuple")
+	}
+	total, isInt := result[0].(int64)
+	if !isInt {
+		return 0, fmt.Errorf("count aggregate returned %T, want int64", result[0])
+	}
+	return total, nil
 }
 
 // UpdateRecordCountState transitions the record count state.

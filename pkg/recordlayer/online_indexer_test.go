@@ -2352,7 +2352,7 @@ var _ = Describe("OnlineIndexer", func() {
 		It("keeps or refuses a target copy as Java's Index.equals does, over normalized keys, every root class and the raw type", func() {
 			bytesIndex := NewIndex("Order$bytes", Field("price")).SetSubspaceKey([]byte("ob"))
 			longIndex := NewIndex("Order$long", Field("quantity")).SetSubspaceKey(int64(41))
-			dimsIndex := NewMultidimensionalIndex("Order$dims", Dimensions(Concat(Field("price"), Field("quantity")), 0, 2))
+			dimsIndex := NewMultidimensionalIndex("Order$dims", Dimensions(Concat(Field("coord_x"), Field("coord_y")), 0, 2))
 			minIndex := NewMinEverLongIndex("Order$min", Ungrouped(Field("price")))
 			_, builder := baseMetaData()
 			for _, idx := range []*Index{bytesIndex, longIndex, dimsIndex, minIndex} {
@@ -2378,7 +2378,7 @@ var _ = Describe("OnlineIndexer", func() {
 				{"an int key against the int64", longIndex, copyOf(longIndex, func(i *Index) { i.SetSubspaceKey(int(41)) }), false},
 				// DimensionsKeyExpression.equals is structural.
 				{"a Dimensions root", dimsIndex, copyOf(dimsIndex, func(i *Index) {
-					i.RootExpression = Dimensions(Concat(Field("price"), Field("quantity")), 0, 2)
+					i.RootExpression = Dimensions(Concat(Field("coord_x"), Field("coord_y")), 0, 2)
 				}), false},
 				// Java compares the type as spelled.
 				{"the min_ever alias of min_ever_long", minIndex, copyOf(minIndex, func(i *Index) { i.Type = IndexTypeMinEver }), true},

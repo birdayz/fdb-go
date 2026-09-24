@@ -492,7 +492,7 @@ func TestRandomWithCountUpdatesIndex(t *testing.T) {
 // --- MULTIDIMENSIONAL index chaos tests ---
 
 // buildMultidimensionalMetadata creates metadata with a MULTIDIMENSIONAL index
-// on Order's price and quantity fields as 2D spatial coordinates.
+// on Order's coord_x and coord_y fields, int64 as Java's dimensions must be.
 func buildMultidimensionalMetadata() *recordlayer.RecordMetaData {
 	builder := recordlayer.NewRecordMetaDataBuilder()
 	builder.SetRecords(gen.File_record_layer_demo_proto)
@@ -501,9 +501,9 @@ func buildMultidimensionalMetadata() *recordlayer.RecordMetaData {
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
 	builder.SetRecordCountKey(recordlayer.EmptyKey())
 	builder.AddIndex("Order", recordlayer.NewMultidimensionalIndex(
-		"order_price_qty_md",
+		"order_coords_md",
 		recordlayer.Dimensions(
-			recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")),
+			recordlayer.Concat(recordlayer.Field("coord_x"), recordlayer.Field("coord_y")),
 			0, // prefix size
 			2, // dimensions
 		),
@@ -523,23 +523,23 @@ func TestMultidimensionalBasicSave(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	s.SaveRecord(&gen.Order{
-		OrderId:  proto.Int64(1),
-		Price:    proto.Int32(100),
-		Quantity: proto.Int32(10),
+		OrderId: proto.Int64(1),
+		CoordX:  proto.Int64(100),
+		CoordY:  proto.Int64(10),
 	})
 	s.Verify()
 
 	s.SaveRecord(&gen.Order{
-		OrderId:  proto.Int64(2),
-		Price:    proto.Int32(200),
-		Quantity: proto.Int32(20),
+		OrderId: proto.Int64(2),
+		CoordX:  proto.Int64(200),
+		CoordY:  proto.Int64(20),
 	})
 	s.Verify()
 
 	s.SaveRecord(&gen.Order{
-		OrderId:  proto.Int64(3),
-		Price:    proto.Int32(300),
-		Quantity: proto.Int32(30),
+		OrderId: proto.Int64(3),
+		CoordX:  proto.Int64(300),
+		CoordY:  proto.Int64(30),
 	})
 	s.Verify()
 }
@@ -553,9 +553,9 @@ func TestMultidimensionalCommitUnknownInsert(t *testing.T) {
 
 	s.InjectOnce(FaultCommitUnknown)
 	s.SaveRecord(&gen.Order{
-		OrderId:  proto.Int64(1),
-		Price:    proto.Int32(100),
-		Quantity: proto.Int32(10),
+		OrderId: proto.Int64(1),
+		CoordX:  proto.Int64(100),
+		CoordY:  proto.Int64(10),
 	})
 	s.Verify() // R-tree must have exactly 1 entry, not 2
 }
@@ -569,18 +569,18 @@ func TestMultidimensionalCommitUnknownOverwrite(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	s.SaveRecord(&gen.Order{
-		OrderId:  proto.Int64(1),
-		Price:    proto.Int32(100),
-		Quantity: proto.Int32(10),
+		OrderId: proto.Int64(1),
+		CoordX:  proto.Int64(100),
+		CoordY:  proto.Int64(10),
 	})
 	s.Verify()
 
 	// Overwrite with different coordinates under commit-unknown.
 	s.InjectOnce(FaultCommitUnknown)
 	s.SaveRecord(&gen.Order{
-		OrderId:  proto.Int64(1),
-		Price:    proto.Int32(999),
-		Quantity: proto.Int32(99),
+		OrderId: proto.Int64(1),
+		CoordX:  proto.Int64(999),
+		CoordY:  proto.Int64(99),
 	})
 	s.Verify() // Old (100,10) gone, new (999,99) present, exactly 1 entry
 }
@@ -593,14 +593,14 @@ func TestMultidimensionalCommitUnknownDelete(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	s.SaveRecord(&gen.Order{
-		OrderId:  proto.Int64(1),
-		Price:    proto.Int32(100),
-		Quantity: proto.Int32(10),
+		OrderId: proto.Int64(1),
+		CoordX:  proto.Int64(100),
+		CoordY:  proto.Int64(10),
 	})
 	s.SaveRecord(&gen.Order{
-		OrderId:  proto.Int64(2),
-		Price:    proto.Int32(200),
-		Quantity: proto.Int32(20),
+		OrderId: proto.Int64(2),
+		CoordX:  proto.Int64(200),
+		CoordY:  proto.Int64(20),
 	})
 	s.Verify()
 
@@ -625,9 +625,9 @@ func TestMultidimensionalRandomStress(t *testing.T) {
 		if s.Rng.Float64() < 0.7 {
 			// 70% saves with random coordinates.
 			s.SaveRecord(&gen.Order{
-				OrderId:  proto.Int64(pk),
-				Price:    proto.Int32(s.Rng.Int32N(1000)),
-				Quantity: proto.Int32(s.Rng.Int32N(500)),
+				OrderId: proto.Int64(pk),
+				CoordX:  proto.Int64(s.Rng.Int64N(1000)),
+				CoordY:  proto.Int64(s.Rng.Int64N(500)),
 			})
 		} else {
 			// 30% deletes.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 
@@ -49,10 +50,17 @@ func verifyOneBitmapIndex(
 ) []Violation {
 	var violations []Violation
 
-	// The model reads the size as the maintainer does; an index whose size
-	// the maintainer refuses has no entries to compare.
+	// The model reads the size as the maintainer does. An index whose size
+	// the maintainer refuses refuses every write, so it must hold no entry.
 	entrySize, err := recordlayer.BitmapValueEntrySizeOption(idx)
 	if err != nil {
+		kvs, scanErr := store.GetContext().Transaction().GetRange(store.IndexSubspace(idx), fdb.RangeOptions{Limit: 1}).GetSliceWithError()
+		switch {
+		case scanErr != nil:
+			return []Violation{{Invariant: "bitmap_scan_error", Expected: fmt.Sprintf("index %q scannable", idx.Name), Actual: scanErr.Error()}}
+		case len(kvs) > 0:
+			return []Violation{{Invariant: "bitmap_refused_size_written", Expected: fmt.Sprintf("no entry in index %q, whose entry size is refused (%v)", idx.Name, err), Actual: fmt.Sprintf("%x", []byte(kvs[0].Key))}}
+		}
 		return nil
 	}
 

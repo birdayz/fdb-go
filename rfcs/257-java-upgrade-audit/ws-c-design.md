@@ -1926,7 +1926,8 @@ gates" item 9). The 7.10 sentences it changes are marked [Superseded → 7.11].
 scattered rebuild instructions are withdrawn. The Compatibility section says instead that data only
 a pre-release Go build wrote is unsupported: this build reads everything as Java 4.14.2.0 reads it,
 and nothing migrates, detects or repairs such data. That answers both lists' findings (a
-PERMUTED_MIN/MAX index or a `rankNLevels` that no longer loads cannot be corrected in place, since
+PERMUTED_MIN/MAX index or a `rankNLevels` that no longer loads [Superseded → 7.12: such meta-data
+loads; its writes are refused] cannot be corrected in place, since
 both engines' evolution checks refuse the option change): such a store is recreated, as any
 pre-release store is.
 
@@ -1937,7 +1938,8 @@ compared every record type key equal (`keyExpressionEquals`), and did not flatte
 on it are gone (the evaluator's four paths, `ToKeyExpression`, `countVersionColumns`,
 `createsDuplicatesRec`, the primary-key translation and the rename visitor), and so is the exported
 `GetNestedExpression`. A per-type record count read (`GetSnapshotRecordCountForRecordType`) now
-refuses a nested count key, as Java's does, where it read the count at the type key alone. Pinned
+refuses a nested count key, as Java's does, where it read the count at the type key alone.
+[Superseded → 7.12: Java's never reads the count key; the port reads a COUNT index.] Pinned
 by `TestBug6_RecordTypeKeyNestIsTheThenJavaWrites`: the three shapes of the NAK, each the flat Then
 Java writes, byte for byte, read back equal, and `Nest(a)` unequal to `Nest(b)`.
 
@@ -1947,7 +1949,7 @@ throws `RecordCoreException` "Then must have at least 2 children" where the Then
 throw in program order (`arityFaultSeq`, the counter builder faults use); a Then built from a
 refused one keeps the earlier place, and `GroupBy` carries it through its own flattening.
 `firstFault` walks every key expression handed to the builder (each index added, each primary key,
-the record count key) and returns the earliest as `RecordCoreError`, beside the other builder
+the record count key) [Superseded → 7.12: it walked the current keys only] and returns the earliest as `RecordCoreError`, beside the other builder
 faults. Go had stored a one-child Then that neither engine's loader reads back. The loader's two
 Java texts lose Go's suffixes: "Then must have at least 2 children" and "Exactly one root must be
 specified for an index" (Go appended "(got N)" and "(found N)"), and their test compares the whole
@@ -2017,7 +2019,8 @@ per Java check (`validateGrouping`, `validateNotGrouping`, `validateNotVersion`,
   and the entry says so.
 
 MEASURED: the conformance spec "Index validation at build, as Java builds" gives 30 shapes to both
-loaders and requires the same class and whole text, or both valid: a shape per check above, the
+loaders and requires the same class and whole text, or both valid: a shape per check above
+[Superseded → 7.12: not for every check; 7.12 adds 17], the
 per-index order (a validator before a shared subspace key, an index's own checks before a later
 index's key, the added version before the type's checks, the type's checks before the meta-data
 version, an index before a former index, former indexes before an index sharing a key with one),
@@ -2113,7 +2116,8 @@ The rerun (`ev2/`) is on tree `98dd04f59a2f1a6ef22833a0a22c5057fb3553b6`, which 
 the two test files changed after it (`java_parse_test.go`'s recover, 7.11's corrections; the
 oracle spec's COUNT case), `git diff --stat d3615120 98dd04f5`: `rfc257_oracle_test` and
 `recordlayer_test`, "Executed 2 out of 2 tests: 2 tests pass", the tree unchanged. The gate tree
-differs from `98dd04f5` by this document only.
+differs from `98dd04f5` by this document only [Superseded → 7.12: and the 13 revision-10 review
+files].
 
 **Mutations (revision 11)**, on the same frozen copy at `d3615120`, with 7.10's instrument
 (`wsc-v11/run.sh`, `mutate.sh`, `run.out`, `good/`, each `mut-r*.log` with its perl, marker
@@ -2140,13 +2144,134 @@ passed. Every mutation exits 3 and reddens:
 | r14 the atomic long check admits the fixed kinds | "a sum of an sfixed32" |
 | r15 the bitmap position check refuses them | "a bitmap over an sfixed32 position" |
 | r16 no multidimensional structure check | "a multidimensional index without dimensions" |
-| r17 `GetRecordType` panics | the two "GetRecordType of an unknown type" builder specs |
+| r17 `GetRecordType` panics | the two "GetRecordType of an unknown type" builder specs [Superseded → 7.12: three specs, one of them `[PANICKED!]`] |
 | r18 a multi-type index added before its types are resolved | 27 multi-type specs of the suite and 8 plain tests, `TestAddMultiTypeIndexResolvesItsRecordTypesFirst` among them (a duplicate registration in every multi-type build) |
 | r19 an entry size past the maximum accepted | `TestBitmapValueEntrySizeIsReadAsJavaReadsIt` |
 | r20 the missing-primary-key loop in map order | `TestBuildRecordTypeChecksAreJavasInNameOrder` |
 | r21 an empty tokenizer name read as the default | `TestTextIndexWithAnEmptyTokenizerNameIsRefused` |
-| r22 MAX_EVER_VERSION requires record versions | the MAX_EVER_VERSION maintenance specs |
+| r22 MAX_EVER_VERSION requires record versions | the MAX_EVER_VERSION maintenance specs [Superseded → 7.12: its guard refused every non-unique MAX_EVER_VERSION index, so all 16 specs reddened; only "builds without SetStoreRecordVersions, as Java does" tells the two behaviours apart] |
 
 No mutation survived, so none found a test gap; they confirm each change has a test that fails
 without it. Later revisions use red→green on the changed tests, plus a mutation only where a test
 compares two values that could move together (the owner asked for less of this instrument).
+
+### 7.12 Revision 12: the keys handed to the builder, two key validators, the per-type count, and Java's bare texts
+
+Revision 11's three NAKs (`ws-c-addendum-review-v11/`) find every revision-10 finding resolved
+but half of storage finding 2, and raise Lows: claims wider than the code, one v10 finding half
+resolved, and two key validators and one store method that are not Java's. Revision 12 lands on
+the migration branch (`upgrade/java-4.14.2.0`, the owner's one branch for all migration code), on
+top of `a33336527`. The 7.11 sentences it changes are marked [Superseded → 7.12].
+
+**Every key handed to the builder is walked (graefe 2, torvalds 2, storage nit).** `SetPrimaryKey`
+and `SetRecordCountKey` keep each key they are handed (`handedKeys`), and `firstFault` walks those
+as well as the keys the builder holds, so a refused Then that a later set replaced, or that was
+handed to the placeholder type `GetRecordType("Nope")` returns, is the fault Java threw at its
+`concat`. Pinned by three new shapes of `TestThenOfFewerThanTwoChildrenIsRefusedWhereJavaThrows`.
+The walk is also where FunctionKeyExpression.create's refusals surface (WS-J; `FunctionExpr` and
+`CardinalityExpr` record them as `Concat` records its arity fault), so it is
+`keyConstructionFault`, not `thenArityFault`.
+
+**`DimensionsKeyExpression.validate` and `CardinalityFunctionKeyExpression.validate` are ported
+(storage 1).** Java's (`DimensionsKeyExpression.java:89-101`) refuses a prefix and dimensions wider
+than the whole key ("dimensions declared a prefix size and number of dimensions that are together
+larger than the number of columns in the index") and a dimension column whose field is not of
+protobuf type int64 ("the declared dimension columns have to be of type INT64"); a dimension column
+that reads no field throws IndexOutOfBoundsException or NullPointerException in Java, which Go
+reports as the INT64 refusal (at the site). Java's cardinality validator
+(`CardinalityFunctionKeyExpression.java:156-161`) refuses a duplicate-producing argument ("The
+CARDINALITY() argument must produce a single value.") and validates the argument, which Go skipped
+(the embedded type fell to the switch's default). A MULTIDIMENSIONAL index over an `int32` or
+`sint64` dimension no longer builds.
+
+**`GetSnapshotRecordCountForRecordType` is Java's (graefe 4, torvalds 3, storage nit).** Java's
+(`FDBRecordStore.java:2431-2453`) never reads the record count key: a COUNT index on the type
+alone answers, then a universal COUNT index grouped by record type read at the type's key, and
+with neither it throws RecordCoreException "Require a COUNT index on X". Go read the count key
+alone and called that Java's. The port does what Java does; Go's tests that read a count key's
+per-type group now read it as Java's `getSnapshotRecordCount(recordType(), value)` does
+(`GetSnapshotRecordCount(tuple.Tuple{typeKey})`). MEASURED on the JVM: conformance "RFC-257 a
+record type's count comes from a COUNT index, as Java's", three modes (a count key grouped by
+type: "Require a COUNT index on Order", RecordCoreException, in both; a COUNT index on the type:
+3; a universal COUNT index by type: 3), and `recordlayer_test` "per-type counts come from a COUNT
+index".
+
+**Java's bare texts (graefe 1, torvalds nit c, storage nit).** `LoggableException` does not render
+its log info into `getMessage`, so each of these is now Java's text alone: "unrecognized text
+tokenizer" (Go appended ": X"), "tokenizer version could not be parsed as int" (Go appended the
+index and option), "unknown tokenizer version" (Go appended the tokenizer, version and bounds),
+"sliding window index delegate has multiple types", "sliding window index is on synthetic record
+types", "sliding window index requires a RowNumberWindowPredicate" and "need to specify the number
+of dimensions" (Go appended "(index X)"). The tests compare the whole text.
+
+**The JVM shapes cover every check 7.11 names (graefe 1).** "Index validation at build, as Java
+builds" gains 17 shapes: TEXT's unknown tokenizer, a tokenizer version that is not a number and
+one above the tokenizer's, a value, a number as the text field and a repeated string; VERSION's two
+versions, no version and uniqueness; MAX_EVER_VERSION's version in the grouping key and no version
+in the grouped key; the dimensions key wider than its key, over int32 fields, over int64 fields
+(builds) and not covering a key-with-value's key; CARDINALITY over a fanned-out field and over a
+missing field. Two checks are still not a JVM shape, each for a stated reason: a TEXT index with no
+field after its grouping, where Java's strict guard falls through to `List.get` and throws
+IndexOutOfBoundsException and Go returns the guard's text (declared at `validateTextIndexFields`);
+and the multidimensional validator's own width check, which Java's key validation reaches first
+with the dimensions key's text (the shape "dimensions wider than their key" measures that order).
+
+**A map field's entries are fanned out, and a group is a message (storage nit, torvalds nit d).**
+Go refused a nesting over a map field (declared in DIVERGENCES.md); the refusal is gone and the
+evaluator fans the entries out as Java does, each entry the entry message protobuf-java reads
+(key = 1, value = 2), visited in key order where Java visits the message's order (each entry
+yields its own index entries, so no stored byte depends on it). A proto2 group is a message to key
+validation and to the evaluator, as protobuf-java's MESSAGE java type says; Go refused a nesting
+into one. The DIVERGENCES entry "A proto map field is not fanned out in a key expression" is
+deleted. MEASURED: "Key validation at build, as Java builds" builds a map fan-out and a group
+nesting in both loaders and refuses a group read as a scalar with Java's text, and "Map and group
+key expressions are maintained as Java maintains them" saves the same records through both engines
+and compares every index key-value pair.
+
+**Documentation (graefe 3, torvalds 1, storage 2 and nits).** The CHANGELOG's `rankNLevels` line
+no longer says the option can be corrected: such an index, which only an earlier Go build wrote,
+refuses every write (such meta-data loads, contrary to 7.11's "no longer loads"). The "Rolling
+upgrade" advice and the `value_expression` rebuild instruction are withdrawn under the ruling. The
+Compatibility note names v0.1.0, since the ruling covers old releases. The umbrella RFC's item 8
+no longer lists the legacy-records migration item 9 withdrew, and says the workstreams land on one
+branch. DIVERGENCES: the record-type checks' title says one Go-only refusal, as its body does; the
+VECTOR entry names the call site of the windowed option check (`validateIndex`) and says a plain
+VECTOR index runs no validator half at `Build`; the entry "Build does not refuse an index type Go
+does not maintain" excepts VECTOR. `index_validator.go` cites the VECTOR entry by its title (it
+cited one that does not exist).
+
+**Nits.** The chaos bitmap model checks that an index whose entry size the maintainer refuses holds
+no entry (it returned no violation without looking), pinned by
+`TestBitmapRefusedEntrySizeHoldsNoEntry` through both arms. `TestTranslatePrimaryKeyToValues`'s
+nested-record-type-key assertion was vacuous (the field it named is not in the row); it now pins
+that `RecordTypeKey().Nest(f)` translates as `concat(recordType(), f)` and that two such keys over
+different fields differ. The R-tree conformance spec checks the tree's shape in all its arms, not
+only the two with a node slot index. The WS-J residue the reviews list (the literal-carrier
+widening a rebind admits for templates an earlier Go build stored) is withdrawn with WS-J's code.
+
+VERIFIED (Bazel, test cache on, logs under `/var/tmp/fdb-upgrade-recovery/`):
+- `wsc12-rl.txt`: `recordlayer_test` ("Ran 3712 of 3713", all passed), `chaos_test`, and the
+  `pkg/recordlayer/query/...` and `pkg/relational/core/...` targets: 27 of 27 pass.
+- `wsc12-conf.txt`: `conformance_test` "Ran 1632 of 1751", 1632 passed; `rfc257_oracle_test` 64 of
+  64.
+- `wsc12-a.txt`: the JVM Describes "Key validation at build", "Index validation at build" and the
+  per-type count, "Ran 56", 56 passed, before the map and group shapes were added (the full run
+  above includes them).
+- Red on the old code, `wsc12-red-rl.txt` and `wsc12-red-conf.txt`: the changed tests run on
+  `a33336527`'s tree (the frozen copy `/home/birdy/projects/fdb-wsc10`). Red there, green here: the
+  three new `firstFault` shapes; the per-type count spec (Go and JVM, all three modes); the three
+  TEXT texts in `recordlayer_test` and `TestTextTokenizerVersionIsParsedAsJavaParsesIt`;
+  `TestBitmapRefusedEntrySizeHoldsNoEntry`; and 15 JVM shapes (dimensions wider than their key and
+  over int32 fields, both cardinality shapes, the three TEXT texts, the map fan-out, the group
+  nesting and the group read as a scalar at build, and both maintenance specs). Green on both, as
+  expected: the shapes whose checks Go already made, and `TestTranslatePrimaryKeyToValues` (its
+  rewrite removes a vacuous assertion rather than a bug).
+- No mutation was run (the owner's direction: red→green on the changed tests instead). The one
+  paired comparison in the change, the maintenance specs' Go-versus-Java key-value lists, is not two
+  values that move together: each side is written by its own engine.
+
+Twenty-three `multidimensional_index_test.go` specs, one `online_indexer_test.go` spec and the
+chaos multidimensional tests built dimensions over `price` and `quantity`, `int32` fields Java's
+dimensions key refuses; they now use `coord_x` and `coord_y` (`int64`), and a prefix over
+`quantity` keeps it.
+

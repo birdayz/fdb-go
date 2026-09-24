@@ -171,11 +171,10 @@ var _ = Describe("TEXT index meta-data validation", func() {
 		Expect(err).To(HaveOccurred(), "an index naming a tokenizer that is not in the "+
 			"registry is unusable; accepting it here defers the failure to the first record save")
 		// Java's MetaDataException text (TextTokenizerRegistryImpl.getTokenizer); its
-		// log info (the tokenizer name) is not part of Java's message, and Go
-		// appends it.
+		// log info (the tokenizer name) is not part of Java's message.
 		var mde *MetaDataError
 		Expect(errors.As(err, &mde)).To(BeTrue(), "%T: %v", err, err)
-		Expect(mde.Message).To(HavePrefix("unrecognized text tokenizer"))
+		Expect(mde.Message).To(Equal("unrecognized text tokenizer"))
 	})
 
 	It("rejects a tokenizer version above the tokenizer's maximum", func() {
@@ -190,7 +189,7 @@ var _ = Describe("TEXT index meta-data validation", func() {
 		var mde *MetaDataError
 		Expect(errors.As(err, &mde)).To(BeTrue(),
 			"Java throws MetaDataException here, so Go must surface *MetaDataError")
-		Expect(mde.Message).To(HavePrefix("unknown tokenizer version"))
+		Expect(mde.Message).To(Equal("unknown tokenizer version"))
 	})
 
 	It("rejects a negative tokenizer version", func() {
@@ -204,10 +203,10 @@ var _ = Describe("TEXT index meta-data validation", func() {
 		err := buildWithTextIndex(textIndexWithOptions(map[string]string{
 			IndexOptionTextTokenizerVersion: "not-a-number",
 		}))
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("could not be parsed as int"),
-			"matches Java's MetaDataException message in "+
-				"TextIndexMaintainer.getIndexTokenizerVersion")
+		var mde *MetaDataError
+		Expect(errors.As(err, &mde)).To(BeTrue(), "%T: %v", err, err)
+		Expect(mde.Message).To(Equal("tokenizer version could not be parsed as int"),
+			"Java's MetaDataException text in TextIndexMaintainer.getIndexTokenizerVersion")
 	})
 })
 

@@ -25,7 +25,7 @@ assets carry (`RELEASE.md` §Versioning).
   restored success regressions currently fail in Go. RFC-257 records the full audit and ports.
 - **FDB client option semantics:** unchanged since v0.1.0; the honored / `UnsupportedOptionError` /
   safe-no-op classification in `pkg/fdbgo/fdb/OPTIONS.md` still holds against `libfdb_c` 7.3.77.
-- **Data written by pre-release Go builds is not supported.** This build reads every records file,
+- **Data written by v0.1.0 or any other earlier Go build is not supported.** This build reads every records file,
   key expression, index option and stored template as Java 4.14.2.0 reads it. Meta-data or index
   entries that only an earlier Go build wrote, under a meaning of its own, may be refused or read
   differently, and nothing migrates, detects or repairs them: recreate such stores. Java-written
@@ -260,8 +260,8 @@ assets carry (`RELEASE.md` §Versioning).
   Java does: a Java store's ranked set maintained by Go, or the reverse, then had its counts
   corrupted by the other engine's deletes. `rankNLevels` is read with `Integer.parseInt` and refused
   outside [2, 8] ("levels must be between 2 and 8"): an earlier Go kept the default for a value that
-  was not a positive int, wrote ONE level for "1" and clamped a value above 8 to 8, and such an index
-  now refuses every write until its option is corrected. `rankCountDuplicates` is read with
+  was not a positive int, wrote ONE level for "1" and clamped a value above 8 to 8; such an index, which
+  only an earlier Go build wrote, is refused on every write (Compatibility above). `rankCountDuplicates` is read with
   `Boolean.parseBoolean` ("TRUE" is true). A failed read of the randomness `RANDOM` draws from fails
   the write (a zero hash would put the key on every level). The conformance spec "RANK ranked set per hash
   function" saves the same records through Java and Go and requires byte-identical ranked sets for
@@ -357,9 +357,6 @@ assets carry (`RELEASE.md` §Versioning).
     whatever Go integer kind carries it;
   - index options are stored in Java's insertion order (`unique` first, then the type's options), where
     Go wrote them in map iteration order, so the stored bytes varied from build to build.
-  **Rolling upgrade:** a Go node from before this change refuses to maintain an index over an
-  `int_value` literal ("must be int64"), so upgrade every writer before creating or rebinding a
-  template with a literal-bearing index.
 - **Long-arithmetic key functions read any numeric operand as Java's `getNullableLong` does**
   (truncating toward zero, NaN to 0, saturating), where Go refused every non-`int64` operand; the
   index entries equal the target's byte for byte (WS-J F2b spec). Go does not serve a query from such
@@ -373,10 +370,8 @@ assets carry (`RELEASE.md` §Versioning).
   made by removing it now see. Go ignored `value_expression`, maintaining the index under its bare
   root with no value columns, and took the last-modified version for a missing added version. Go
   never writes a `value_expression`; both shapes come from metadata Java wrote with the deprecated
-  field or before `added_version` existed, or from hand-built protos. **Rebuild every index
-  stored with a `value_expression` that a pre-upgrade Go build maintained**: the entries that build
-  wrote carry no value columns, entries written from now on carry them, and a covering read of an
-  old entry would miss them.
+  field or before `added_version` existed, or from hand-built protos. Entries an earlier Go build
+  maintained for such an index lack the value columns (Compatibility above).
 - **A stored index's subspace key is read as Java reads it** (`Index.java:80-97`, `:221-225`): a
   present key must pack exactly one non-null item. An empty key or a key of several items is a
   `RecordCoreError` ("subspace key must encode a single item tuple"), a null item a

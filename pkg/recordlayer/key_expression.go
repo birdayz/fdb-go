@@ -4,12 +4,14 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"sort"
 	"sync"
 	"sync/atomic"
 
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/dynamicpb"
 )
 
 // fieldDescCache is an atomically-swapped cache entry for FieldKeyExpression.
@@ -917,12 +919,15 @@ func (n *NestingKeyExpression) Evaluate(record *FDBStoredRecord[proto.Message], 
 		// submessage. Go refuses instead, for the reason given at that helper.
 		return nil, &KeyExpressionError{Message: fmt.Sprintf("field %s not found in message", n.parentField)}
 	}
-	if fd.Kind() != protoreflect.MessageKind {
+	if !isMessageField(fd) {
 		return nil, &KeyExpressionError{Message: fmt.Sprintf("field %s is not a message type, cannot nest", n.parentField)}
 	}
 
 	if fd.IsList() {
 		return n.evaluateRepeated(record, m, fd)
+	}
+	if fd.IsMap() {
+		return n.evaluateMap(record, m, fd)
 	}
 
 	// Scalar message field — get the sub-message and evaluate child on it.
@@ -959,6 +964,56 @@ func (n *NestingKeyExpression) evaluateRepeated(record *FDBStoredRecord[proto.Me
 		result = append(result, childTuples...)
 	}
 	return result, nil
+}
+
+// evaluateMap fans out a map field's entries, as Java does: protobuf-java
+// reads a map as the repeated entry messages (key = 1, value = 2) it is on the
+// wire, and NestingKeyExpression evaluates the child over each. Java visits
+// them in the order the message holds them; a Go map has none, so the entries
+// are visited in key order. Each entry yields its own index entries, so the
+// order changes no stored byte.
+func (n *NestingKeyExpression) evaluateMap(record *FDBStoredRecord[proto.Message], m protoreflect.Message, fd protoreflect.FieldDescriptor) ([][]any, error) {
+	if n.fanType != FanTypeFanOut {
+		return nil, &KeyExpressionError{Message: fmt.Sprintf("field %s is repeated, must use NestFanOut", n.parentField)}
+	}
+	entries := m.Get(fd).Map()
+	if entries.Len() == 0 {
+		return nil, nil
+	}
+	keys := make([]protoreflect.MapKey, 0, entries.Len())
+	entries.Range(func(k protoreflect.MapKey, _ protoreflect.Value) bool {
+		keys = append(keys, k)
+		return true
+	})
+	sort.Slice(keys, func(i, j int) bool { return mapKeyLess(keys[i], keys[j]) })
+	entryDesc := fd.Message()
+	keyField, valueField := entryDesc.Fields().ByNumber(1), entryDesc.Fields().ByNumber(2)
+	var result [][]any
+	for _, k := range keys {
+		entry := dynamicpb.NewMessage(entryDesc)
+		entry.Set(keyField, k.Value())
+		entry.Set(valueField, entries.Get(k))
+		childTuples, err := n.child.Evaluate(record, entry)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, childTuples...)
+	}
+	return result, nil
+}
+
+// mapKeyLess orders map keys of one kind: bool, integers, or strings.
+func mapKeyLess(a, b protoreflect.MapKey) bool {
+	switch av := a.Interface().(type) {
+	case bool:
+		return !av && b.Bool()
+	case string:
+		return av < b.String()
+	case int32, int64:
+		return a.Int() < b.Int()
+	default:
+		return a.Uint() < b.Uint()
+	}
 }
 
 // FieldNames returns the parent field name plus child field names.
