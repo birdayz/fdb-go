@@ -572,9 +572,9 @@ follows Java's order exactly: validate the schema → database exists (create, o
 UNDEFINED_DATABASE with Java's message) → template exists at version
 (UNKNOWN_SCHEMA_TEMPLATE, Java's message) → load the existing row, including its
 template (`parseSchemaTable`: when the existing row's template VERSION is gone the
-load fails with Java's "SchemaTemplate=<n>, version=<v> does not exist"; Go today
-tolerates it, `validateSchemaRebind` returns nil on UNKNOWN_SCHEMA_TEMPLATE, and
-follows Java instead) → `shouldWrite` → write. A no-op issues NO write, so it adds no
+load fails with Java's "SchemaTemplate=<n>, version=<v> is not in catalog",
+`RecordLayerStoreSchemaTemplateCatalog.java:203-204`; Go tolerated it, `validateSchemaRebind`
+returning nil on UNKNOWN_SCHEMA_TEMPLATE, and follows Java since step 1) → `shouldWrite` → write. A no-op issues NO write, so it adds no
 write conflict range (Java's comment at :254-256).
 
 Go's rebind validator, reconciled with the policy rather than kept beside it. Under
@@ -662,17 +662,25 @@ that row (`DoesSchemaTemplateExistAtVersion`, its UNKNOWN_SCHEMA_TEMPLATE check)
 creation writes it; so a CREATE SCHEMA that ran before the new row committed read it
 absent and failed on its own, and one after binds the NEW version legitimately. What
 the guard's range read serializes against is a concurrent DROP SCHEMA of a bound schema
-(its index entry is deleted inside the range): that pair conflicts once and converges.
+(its index entry is deleted inside the range): a refused write commits nothing, so that pair
+never conflicts; a guard whose read predates the drop refuses once, naming the schema the drop
+removes, and its retry is accepted (v16 said "conflicts once", which no refused write can do).
+The pair that DOES conflict is `DeleteTemplateVersion(t, v)` against a SaveSchema binding
+(t, v): the delete reads the binding range the bind writes, the bind reads the template row
+the delete removes, so whichever commits second gets not_committed and its retry sees the
+winner.
 The target accepts the re-issue, so this is a declared divergence (section 9): the guard
 only refuses a state in which the target itself silently rebinds data to different
 metadata. Java's gone-version refusal lands with it (step 1 of section 8): SaveSchema's
-load of the existing row fails with Java's "SchemaTemplate=<n>, version=<v> does not
-exist" when the row's template version is gone, where `validateSchemaRebind` returns nil
+load of the existing row fails with Java's "SchemaTemplate=<n>, version=<v> is not in
+catalog" when the row's template version is gone, where `validateSchemaRebind` returns nil
 today (`fdb_store_catalog.go:311-313`). FDB tests: a template with a bound schema
 dropped and recreated is refused, naming the schema; a latest version deleted with
 `DeleteTemplateVersion` and re-saved at the same number is refused the same way; with
 the schema dropped first both are accepted; a schema bound to v1 does not block a new
-v2; the guard's read against a concurrent DROP SCHEMA conflicts once and converges; and
+v2; the guard's read against a concurrent DROP SCHEMA refuses once and its retry is accepted;
+a `DeleteTemplateVersion` racing a bind of the same version conflicts in either commit order;
+and
 a RepairSchema of a schema whose bound version is gone fails with Java's message.
 Driver-stored templates (F11) are covered because the guard runs in the Go catalog, and
 the F11 migration copies MetaData bytes verbatim rather than rebuilding (TODO.md F11
@@ -2548,6 +2556,20 @@ reaches master before then. Within the unit and after it:
    way to strand a schema (today a schema whose bound version was deleted is still
    repairable, because `validateSchemaRebind` returns nil, `fdb_store_catalog.go:
    311-313`), with its FDB tests.
+   STATUS (landed on the branch): the guard in both catalogs (`template_bindings.go`,
+   `firstBinding`, one limit-1 range read of `TEMPLATES_VALUE_INDEX`; the in-memory
+   template catalog reads its store catalog's schemas under the store mutex), the
+   gone-version refusal (`validateSchemaRebind` propagates UNKNOWN_SCHEMA_TEMPLATE; the
+   in-memory `LoadSchema`, `SaveSchema` and `RepairSchema` load the bound version as
+   Java's `parseSchemaTable` does), the `DeleteTemplateVersion` refusal, and Java's texts
+   for the template loads and `SaveSchema`'s database and template checks. Tests:
+   `template_version_guard_fdb_test.go` (each case above, version 0, the delete-vs-bind
+   race in both commit orders with a no-conflict control, the concurrent DROP SCHEMA) and
+   `template_version_guard_test.go` (the in-memory equivalents and a `-race` interleaving
+   that checks after every operation that no schema binds a version the catalog lacks),
+   red on the tree before it. `fleet.RestoreTemplateVersion` is not landed: its
+   carry-compatibility check is section 4's classification, so it lands with step 3's
+   first commit.
 2. 3.4 unify the front ends (no behaviour change; oracle unchanged).
 3. 4 metadata order, companions last, and the carry rule (the EQUIVALENT definition over
    the raw catalog bytes, the re-added-name refusal (the former-index-key arm it relies on

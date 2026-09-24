@@ -2893,9 +2893,10 @@ wire bytes differ.
 
 ### DeleteTemplateVersion refuses a version schemas still bind; DROP SCHEMA TEMPLATE does not (RFC-257 WS-J)
 
-PENDING, not in this build yet: it lands with RFC-257 WS-J section 8 step 1 (the version
-guard and the gone-version refusal), in the same merge; today `DeleteTemplateVersion`
-refuses nothing and `fleet.RestoreTemplateVersion` does not exist.
+The refusal is in this build (both catalogs; `pkg/relational/core/catalog/
+template_version_guard_fdb_test.go`). `fleet.RestoreTemplateVersion` is PENDING: it lands
+with RFC-257 WS-J section 8 step 3 (its carry-compatibility check is that step's
+classification), in the same merge.
 
 `DeleteTemplateVersion(t, v)` is Go-only (the target's catalog drops whole templates).
 With the (name, version) guard it is refused while any schema binds (t, v), because a
@@ -2927,8 +2928,9 @@ operands").
 
 ### Saving a template version is refused while a schema still binds a dropped version above the latest stored (RFC-257 WS-J)
 
-PENDING, not in this build yet: it lands with RFC-257 WS-J section 8 step 1 (the version
-guard), in the same merge as the `DeleteTemplateVersion` refusal above.
+The guard is in this build, in both catalogs (`pkg/relational/core/catalog/
+template_bindings.go`; tests `template_version_guard_fdb_test.go` and
+`template_version_guard_test.go`); the restore named below is PENDING, as above.
 
 Go saves new versions of a stored template (CREATE SCHEMA TEMPLATE over a stored name,
 `fleet.SaveTemplate`); the target's DDL has no such path, and its catalog does not look
@@ -3024,16 +3026,18 @@ version below the latest, and a Go one cannot (ws-j-design.md section 9 (w)).
 
 ### The template restore's refusals, and the inverted history with no exit (RFC-257 WS-J)
 
-PENDING, not in this build yet: it lands with RFC-257 WS-J section 8 steps 1 and 3. Java has
+PENDING, not in this build yet: the restore lands with RFC-257 WS-J section 8 step 3 (step 1's
+guard and gone-version refusal are in this build). Java has
 no restore. Go's `fleet.RestoreTemplateVersion` admits a dropped (t, v) only when it is one
 history with every stored version of t, and it refuses the rest, each with no Java
 counterpart. A template history whose versions invert (a lower template version with a
 higher metadata version) is refused, and it has no exit in Go:
 - its bound schemas bind a version that is not stored, so `RepairSchema` fails the
-  gone-version refusal;
+  gone-version refusal, as the target's does (its `repairSchema` loads the schema's
+  template, `RecordLayerStoreCatalog.java:272-279`);
 - the version guard refuses a new version of t while that binding dangles.
 
-Java admits both. The edited-file route's relaxation R2 admits rebuilds only for the indexes
+Java admits the second (it has no guard) and refuses the first. The edited-file route's relaxation R2 admits rebuilds only for the indexes
 over the retyped field, so a store configured with `allowIndexRebuilds` for every index needs
 a later ordinary save for the rest (ws-j-design.md section 9 (x)).
 

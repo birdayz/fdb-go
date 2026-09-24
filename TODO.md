@@ -15047,3 +15047,11 @@ indexer's and the store builders' copies of it; the BY_INDEX write-only dispatch
 indexes (Java's `updateWhileWriteOnly`, :255-328); `isIndexIdempotent` as Java's maintainers answer
 it. Pinned against the JVM (NO_NULLS, maintainer by maintainer) and by Go specs red on `426da82a5`.
 
+### RFC-257 WS-J step 1: version guard and gone-version refusal (booked 2026-09-25)
+
+LANDED (ws-j-design.md section 8 step 1, STATUS): the (name, version) guard in both catalogs, the
+gone-version refusal with Java's text, the `DeleteTemplateVersion` refusal, and Java's catalog
+texts; FDB and in-memory tests red on `9ba005539`. OPEN in this unit: `fleet.RestoreTemplateVersion`
+(lands with step 3, whose section-4 classification is its carry-compatibility check), then steps 2
+and 3 of section 8. The DIVERGENCES entries for the guard and the delete refusal now say so.
+

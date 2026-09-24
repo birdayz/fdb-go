@@ -37,6 +37,9 @@ type MetaDataEvolutionValidator struct {
 	// proto equality, LiteralKeyExpression.java:213-214, and has no such option); see
 	// SetAllowLiteralCarrierWidening.
 	allowLiteralCarrierWidening bool
+	// literalCarrierWideningSymmetric admits the carrier moves in either
+	// direction; see SetAllowSymmetricLiteralCarrierWidening.
+	literalCarrierWideningSymmetric bool
 }
 
 // allowsAnyFieldRenames reports whether any field-rename option is enabled, gating the
@@ -94,6 +97,19 @@ func (b *MetaDataEvolutionValidatorBuilder) SetAllowNoVersionChange(v bool) *Met
 // Java's proto equality.
 func (b *MetaDataEvolutionValidatorBuilder) SetAllowLiteralCarrierWidening(v bool) *MetaDataEvolutionValidatorBuilder {
 	b.v.allowLiteralCarrierWidening = v
+	return b
+}
+
+// SetAllowSymmetricLiteralCarrierWidening admits an index whose root differs from
+// the old one only in literal carriers that store the same bytes, moved in EITHER
+// direction (literalCarriersEquivalent one way or the other). Go-only, for the
+// template restore (RFC-257 WS-J section 2), which compares two STORED histories,
+// neither of them a rebuild of the other, so the width either one stored is not a
+// direction; the rebind stays one-way (SetAllowLiteralCarrierWidening). It implies
+// that option.
+func (b *MetaDataEvolutionValidatorBuilder) SetAllowSymmetricLiteralCarrierWidening(v bool) *MetaDataEvolutionValidatorBuilder {
+	b.v.allowLiteralCarrierWidening = v
+	b.v.literalCarrierWideningSymmetric = v
 	return b
 }
 
@@ -721,8 +737,7 @@ func (v *MetaDataEvolutionValidator) validateIndex(old *RecordMetaData, oldIdx *
 			expectedExpr = renamed
 		}
 	}
-	if !keyExpressionEquals(newIdx.RootExpression, expectedExpr) &&
-		!(v.allowLiteralCarrierWidening && literalCarriersEquivalent(expectedExpr.ToKeyExpression().ProtoReflect(), newIdx.RootExpression.ToKeyExpression().ProtoReflect(), false)) {
+	if !keyExpressionEquals(newIdx.RootExpression, expectedExpr) && !v.literalCarriersWidened(expectedExpr, newIdx.RootExpression) {
 		if keyExpressionEquals(oldIdx.RootExpression, expectedExpr) {
 			return &MetaDataEvolutionError{
 				Message: fmt.Sprintf("index key expression changed (index=%q)", name),
@@ -1372,6 +1387,17 @@ func validateProtoSyntax(oldDesc, newDesc protoreflect.MessageDescriptor) error 
 		}
 	}
 	return nil
+}
+
+// literalCarriersWidened reports whether the options admit old and new as the
+// same root under the literal-carrier arm: one way, or either way when symmetric.
+func (v *MetaDataEvolutionValidator) literalCarriersWidened(old, new KeyExpression) bool {
+	if !v.allowLiteralCarrierWidening {
+		return false
+	}
+	o, n := old.ToKeyExpression().ProtoReflect(), new.ToKeyExpression().ProtoReflect()
+	return literalCarriersEquivalent(o, n, false) ||
+		(v.literalCarrierWideningSymmetric && literalCarriersEquivalent(n, o, false))
 }
 
 // ValidateEvolution is a convenience function using the default (strictest) validator.

@@ -420,6 +420,18 @@ assets carry (`RELEASE.md` §Versioning).
 - `KeyExpressionInvalidResultError.ActualType` names the Java class of the offending value, matching
   `ExpectedType` (`com.google.protobuf.DynamicMessage` for a message read through a run-time
   descriptor; a Go-generated message keeps its proto full name).
+- **The catalogs guard a template version against re-issue** (RFC-257 WS-J; a declared Go
+  extension, `DIVERGENCES.md`): creating a template, or a new version of one, is refused with
+  42F59 naming the schema while any schema binds a dropped version of it above the latest one
+  stored (every version, for a template stored afresh), and `DeleteTemplateVersion` refuses a
+  version a schema binds. The target accepts the first and rebinds those schemas to the new
+  metadata. Both the FDB-backed and the in-memory catalog apply it.
+- **A schema bound to a template version that is gone is refused as Java refuses it**: `LoadSchema`,
+  `SaveSchema` over it and `RepairSchema` fail with 42F55 "SchemaTemplate=<n>, version=<v> is not
+  in catalog", where Go's `SaveSchema` (both catalogs) and the in-memory `LoadSchema` and
+  `RepairSchema` accepted it, the saves rebinding it without validation. The template loads and `SaveSchema`'s
+  database and template checks now use Java's texts ("SchemaTemplate '<n>' is not in catalog",
+  "Cannot create schema <s> because schema template <n> version <v> does not exist.").
 
 ## [v0.1.0] - 2026-08-26
 

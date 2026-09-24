@@ -1,4 +1,4 @@
-package ddl
+package catalog
 
 import (
 	"fdb.dev/pkg/relational/api"

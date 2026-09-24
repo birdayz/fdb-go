@@ -2,6 +2,7 @@ package ddl
 
 import (
 	"fdb.dev/pkg/relational/api"
+	rlcatalog "fdb.dev/pkg/relational/core/catalog"
 )
 
 // SaveSchemaTemplateConstantAction persists a schema template.
@@ -11,14 +12,14 @@ import (
 type SaveSchemaTemplateConstantAction struct {
 	template  api.SchemaTemplate
 	catalog   api.SchemaTemplateCatalog
-	validator *RelationalSchemaEvolutionValidator
+	validator *rlcatalog.RelationalSchemaEvolutionValidator
 }
 
 func NewSaveSchemaTemplateConstantAction(template api.SchemaTemplate, catalog api.SchemaTemplateCatalog) *SaveSchemaTemplateConstantAction {
 	return &SaveSchemaTemplateConstantAction{
 		template:  template,
 		catalog:   catalog,
-		validator: NewRelationalSchemaEvolutionValidator(),
+		validator: rlcatalog.NewRelationalSchemaEvolutionValidator(),
 	}
 }
 

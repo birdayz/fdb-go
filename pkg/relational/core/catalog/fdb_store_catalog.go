@@ -251,7 +251,7 @@ func (c *RecordLayerStoreCatalog) SaveSchema(txn api.Transaction, s api.Schema, 
 	if !dbExists {
 		if !createDatabaseIfNecessary {
 			return api.NewErrorf(api.ErrCodeUndefinedDatabase,
-				"cannot create schema %s because database %s does not exist",
+				"Cannot create schema %s because database %s does not exist.",
 				s.MetadataName(), s.DatabaseName())
 		}
 		if err := createDatabaseOnStore(store, s.DatabaseName()); err != nil {
@@ -268,7 +268,7 @@ func (c *RecordLayerStoreCatalog) SaveSchema(txn api.Transaction, s api.Schema, 
 	}
 	if !tmplExists {
 		return api.NewErrorf(api.ErrCodeUnknownSchemaTemplate,
-			"cannot create schema %s because schema template %s version %d does not exist",
+			"Cannot create schema %s because schema template %s version %d does not exist.",
 			s.MetadataName(), tmpl.MetadataName(), tmpl.Version())
 	}
 
@@ -301,15 +301,16 @@ func (c *RecordLayerStoreCatalog) SaveSchema(txn api.Transaction, s api.Schema, 
 // existing schema binding when SaveSchema would change which template
 // metadata the schema resolves to. A first-time save (no existing row) and a
 // no-op save (same template name + version) validate nothing. When the OLD
-// binding's template version no longer exists in the catalog, there is
-// nothing to diff against and the save proceeds — the guard protects live
-// data under a KNOWN old shape, it cannot resurrect a dropped one.
+// binding's template version no longer exists in the catalog, the save is
+// refused as Java's is: Java's saveSchema loads the existing row with its
+// template (parseSchemaTable), which fails with
+// "SchemaTemplate=<n>, version=<v> is not in catalog". fleet
+// .RestoreTemplateVersion puts such a version back.
 func (c *RecordLayerStoreCatalog) validateSchemaRebind(txn api.Transaction, s api.Schema) error {
 	existing, err := c.LoadSchema(txn, s.DatabaseName(), s.MetadataName())
 	if err != nil {
 		var apiErr *api.Error
-		if errors.As(err, &apiErr) &&
-			(apiErr.Code == api.ErrCodeUndefinedSchema || apiErr.Code == api.ErrCodeUnknownSchemaTemplate) {
+		if errors.As(err, &apiErr) && apiErr.Code == api.ErrCodeUndefinedSchema {
 			return nil
 		}
 		return err

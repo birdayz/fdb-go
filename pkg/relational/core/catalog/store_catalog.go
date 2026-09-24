@@ -28,11 +28,66 @@ type InMemoryStoreCatalog struct {
 
 // NewInMemoryStoreCatalog returns a fresh, empty catalog.
 func NewInMemoryStoreCatalog() *InMemoryStoreCatalog {
-	return &InMemoryStoreCatalog{
+	c := &InMemoryStoreCatalog{
 		databases: map[string]struct{}{},
 		schemas:   map[string]map[string]api.Schema{},
 		templates: NewInMemorySchemaTemplateCatalog(),
 	}
+	c.templates.bindings = c
+	return c
+}
+
+// firstBindingLocked is the version guard's read (template_bindings.go): the
+// first schema, in the order of Java's TEMPLATES_VALUE_INDEX (template version,
+// database, schema), bound to templateName at a version from `from` through
+// `through` (a negative bound is none). c.mu must be held.
+func (c *InMemoryStoreCatalog) firstBindingLocked(templateName string, from, through int) *boundSchema {
+	var first *boundSchema
+	for dbID, byName := range c.schemas {
+		for name, s := range byName {
+			t := s.SchemaTemplate()
+			if t == nil || t.MetadataName() != templateName {
+				continue
+			}
+			v := t.Version()
+			if (from >= 0 && v < from) || (through >= 0 && v > through) {
+				continue
+			}
+			b := boundSchema{version: v, databaseID: dbID, schema: name}
+			if first == nil || bindingLess(b, *first) {
+				first = &b
+			}
+		}
+	}
+	return first
+}
+
+func bindingLess(a, b boundSchema) bool {
+	if a.version != b.version {
+		return a.version < b.version
+	}
+	if a.databaseID != b.databaseID {
+		return a.databaseID < b.databaseID
+	}
+	return a.schema < b.schema
+}
+
+// boundTemplateLocked is Java's load of a schema row's template
+// (parseSchemaTable): the row's (name, version) must be stored, and is
+// refused with Java's text when it is gone. c.mu must be held.
+func (c *InMemoryStoreCatalog) boundTemplateLocked(txn api.Transaction, s api.Schema) error {
+	t := s.SchemaTemplate()
+	if t == nil {
+		return nil
+	}
+	ok, err := c.templates.DoesSchemaTemplateExistAtVersion(txn, t.MetadataName(), t.Version())
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errTemplateVersionNotInCatalog(t.MetadataName(), t.Version())
+	}
+	return nil
 }
 
 // SchemaTemplateCatalog returns the nested template catalog.
@@ -58,6 +113,9 @@ func (c *InMemoryStoreCatalog) LoadSchema(txn api.Transaction, databaseID, schem
 	if !ok {
 		return nil, api.NewErrorf(api.ErrCodeUndefinedSchema, "Schema <%s/%s> does not exist in the catalog!", databaseID, schemaName)
 	}
+	if err := c.boundTemplateLocked(txn, s); err != nil {
+		return nil, err
+	}
 	return s, nil
 }
 
@@ -82,9 +140,12 @@ func (c *InMemoryStoreCatalog) SaveSchema(txn api.Transaction, dataToWrite api.S
 	dbID := dataToWrite.DatabaseName()
 	name := dataToWrite.MetadataName()
 
-	// Template-existence check first — uses the SchemaTemplateCatalog
-	// without holding our own mutex (the template catalog has its
-	// own). Matches Java's order-of-checks.
+	// The mutex is held from the template check to the write, so the
+	// version guard (which takes it before the template catalog's) cannot
+	// delete the version between the two.
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	tmpl := dataToWrite.SchemaTemplate()
 	if tmpl != nil {
 		exists, err := c.templates.DoesSchemaTemplateExistAtVersion(txn, tmpl.MetadataName(), tmpl.Version())
@@ -98,8 +159,13 @@ func (c *InMemoryStoreCatalog) SaveSchema(txn api.Transaction, dataToWrite api.S
 		}
 	}
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	// Java's saveSchema loads the existing row with its template, which
+	// fails when the bound version is gone.
+	if existing, ok := c.schemas[dbID][name]; ok {
+		if err := c.boundTemplateLocked(txn, existing); err != nil {
+			return err
+		}
+	}
 
 	if _, ok := c.databases[dbID]; !ok {
 		if !createDatabaseIfNecessary {
@@ -116,53 +182,28 @@ func (c *InMemoryStoreCatalog) SaveSchema(txn api.Transaction, dataToWrite api.S
 }
 
 // RepairSchema rebinds schemaName to the latest version of its
-// owning template. For the in-memory impl that means re-running
-// templates.LoadSchemaTemplate and re-generating the schema — no
-// storage rewrite is required.
-//
-// Looking up the template is a separate-mutex call, so we copy the
-// template name out under our lock, release, call
-// templates.LoadSchemaTemplate, and then re-acquire our lock AND
-// re-check the database/schema still exist before writing. A
-// concurrent DeleteDatabase/DeleteSchema between the two lock
-// sections would otherwise panic on a nil-map write.
-//
-// TOCTOU note: between the two lock sections a concurrent SaveSchema
-// could replace the schema with one pointing at a different template.
-// We'd then rebind to the OLD template name, overwriting the newer
-// entry. This matches Java's FDB-backed impl, which uses row-level
-// locking and has the same window. Not worth a fix for the in-memory
-// bridge; the FDB-backed catalog will inherit Java's semantics.
+// owning template, as Java's repairSchema: it loads the schema with its
+// template (refused when the bound version is gone) and saves it onto the
+// latest version. The mutex is held throughout, so the template read and
+// the write see one state.
 func (c *InMemoryStoreCatalog) RepairSchema(txn api.Transaction, databaseID, schemaName string) error {
 	if err := checkOpenTxn(txn); err != nil {
 		return err
 	}
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	existing, ok := c.schemas[databaseID][schemaName]
-	c.mu.Unlock()
 	if !ok {
 		return api.NewErrorf(api.ErrCodeUndefinedSchema, "Schema <%s/%s> does not exist in the catalog!", databaseID, schemaName)
 	}
-	tmplName := existing.SchemaTemplate().MetadataName()
-	latest, err := c.templates.LoadSchemaTemplate(txn, tmplName)
+	if err := c.boundTemplateLocked(txn, existing); err != nil {
+		return err
+	}
+	latest, err := c.templates.LoadSchemaTemplate(txn, existing.SchemaTemplate().MetadataName())
 	if err != nil {
 		return err
 	}
-	refreshed := latest.GenerateSchema(databaseID, schemaName)
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	byDB, ok := c.schemas[databaseID]
-	if !ok {
-		// Database was deleted between our read and our write.
-		return api.NewErrorf(api.ErrCodeUndefinedSchema,
-			"Schema <%s/%s> was deleted during repair", databaseID, schemaName)
-	}
-	if _, ok := byDB[schemaName]; !ok {
-		return api.NewErrorf(api.ErrCodeUndefinedSchema,
-			"Schema <%s/%s> was deleted during repair", databaseID, schemaName)
-	}
-	byDB[schemaName] = refreshed
+	c.schemas[databaseID][schemaName] = latest.GenerateSchema(databaseID, schemaName)
 	return nil
 }
 

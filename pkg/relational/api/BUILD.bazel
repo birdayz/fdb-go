@@ -31,7 +31,10 @@ go_library(
     ],
     importpath = "fdb.dev/pkg/relational/api",
     visibility = ["//visibility:public"],
-    deps = ["@org_uber_go_mock//gomock"],
+    deps = [
+        "//gen",
+        "@org_uber_go_mock//gomock",
+    ],
 )
 
 go_test(

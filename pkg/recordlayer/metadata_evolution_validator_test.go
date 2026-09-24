@@ -198,6 +198,20 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			})
 			Expect(widening.Validate(old, changed)).To(MatchError(ContainSubstring("key expression changed")))
 		})
+
+		It("admits the carriers either way only with the symmetric option, and nothing more", func() {
+			symmetric := NewMetaDataEvolutionValidator().SetAllowSymmetricLiteralCarrierWidening(true).Build()
+			for _, asColumn := range []bool{false, true} {
+				Expect(symmetric.Validate(withLiteral(1, int64(10000), asColumn), withLiteral(2, int32(10000), asColumn))).To(Succeed())
+				Expect(symmetric.Validate(withLiteral(1, int32(10000), asColumn), withLiteral(2, int64(10000), asColumn))).To(Succeed(),
+					"a restore compares two stored histories; neither width is a rebuild of the other")
+				Expect(symmetric.Validate(withLiteral(1, int32(10000), asColumn), withLiteral(2, int64(10001), asColumn))).
+					To(MatchError(ContainSubstring("key expression changed")))
+			}
+			Expect(symmetric.Validate(withLiteral(1, float32(1.5), false), withLiteral(2, float64(1.5), false))).To(Succeed())
+			Expect(symmetric.Validate(withLiteral(1, float32(1.5), true), withLiteral(2, float64(1.5), true))).
+				To(MatchError(ContainSubstring("key expression changed")), "a key-column FLOAT and DOUBLE differ in either direction")
+		})
 	})
 
 	Describe("version validation", func() {
