@@ -1,0 +1,1318 @@
+{
+  "group-alias-full": {
+    "targets": 93,
+    "executed": 93,
+    "counts": {
+      "run": 40665,
+      "pass": 40660,
+      "skip": 5,
+      "fail": 0
+    },
+    "tests": [
+      {
+        "label": "//conformance:rabitq_architecture_test",
+        "counts": {
+          "run": 0,
+          "pass": 0,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "a0ac061f5aad0eeee0711ea97a0bb62191a5ea767aec01d0cc3b1b9f2b07221b",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/conformance__rabitq_architecture_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/txbudgetcensus:txbudgetcensus_test",
+        "counts": {
+          "run": 14,
+          "pass": 14,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "e424213368ccf1d30bb1b04b89766999eaa9b4ea47c07e55c3d54044ceb08bd8",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__txbudgetcensus__txbudgetcensus_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/fdbgo/fdbmetrics:fdbmetrics_test",
+        "counts": {
+          "run": 4,
+          "pass": 4,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "f769ece4fa2f92d37769f3ad126931ccce010990b902868feb21132348ff8c68",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__fdbgo__fdbmetrics__fdbmetrics_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/core/fleet:fleet_test",
+        "counts": {
+          "run": 14,
+          "pass": 14,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "33b6109bd81ae8bfb4d84f841b0fb4d719a2359a1d3f4d8a59cb235313c404d2",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__core__fleet__fleet_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/linters/typeimmutable:typeimmutable_test",
+        "counts": {
+          "run": 19,
+          "pass": 19,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "b1cbab8a5a8f22d3b48d563d6d33df045e38c2b33fcac9da08ad650fb424a071",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__linters__typeimmutable__typeimmutable_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/testutil/allocs:allocs_test",
+        "counts": {
+          "run": 30,
+          "pass": 30,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "d8ccbaa9ba740ef2ee3d25236f53d1f5c8acddfb3d9e2e9ba04f703c32e9883d",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__testutil__allocs__allocs_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/api:api_test",
+        "counts": {
+          "run": 104,
+          "pass": 104,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "44b44f950e837a1edbf8adb380f95eff554597e50801dda9696989b0aa8cf657",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__api__api_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/recordlayer/vectorcodec:vectorcodec_test",
+        "counts": {
+          "run": 12,
+          "pass": 12,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "d68303ced6c7aff4ef236746321d4d9d28ccc152805c8f6fcff9fb044d83fdbe",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__recordlayer__vectorcodec__vectorcodec_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/core/query/semantic/rlcatalog:rlcatalog_test",
+        "counts": {
+          "run": 13,
+          "pass": 13,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "054db26fe7946264a0ae063edfd08060bfad57c751f77dd8d6ee37eb39b7f3fa",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__core__query__semantic__rlcatalog__rlcatalog_test.log",
+        "skips": []
+      },
+      {
+        "label": "//cmd/fuzzrun:fuzzrun_test",
+        "counts": {
+          "run": 22,
+          "pass": 22,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "fabe9ba72c531ac2af565df8e9b212a00c50a6ab1bc97539a3888c27c26bc9a6",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/cmd__fuzzrun__fuzzrun_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/core/functions:functions_test",
+        "counts": {
+          "run": 342,
+          "pass": 342,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "a5cc3d1ec5242aa3c8ce25a8c50ba2486f91eb0321daad719e929207f4b6ad7a",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__core__functions__functions_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/core/ddl:ddl_test",
+        "counts": {
+          "run": 26,
+          "pass": 26,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "c5414aeabe995f8b9b66a8b33847fd71e1e939a0a122a58879cd41ea05f9cbfa",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__core__ddl__ddl_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/simfdb/hunt:hunt_test",
+        "counts": {
+          "run": 26,
+          "pass": 26,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "542ff93f77d1d98699135521f309afe65d0e0472bfb78b2362945c8e98a3752c",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__simfdb__hunt__hunt_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/recordlayer/query/plan/cascades/predicates:predicates_test",
+        "counts": {
+          "run": 570,
+          "pass": 570,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "6d87e8ed6b81c2be97d61f12c51ba186ee7752e8e4952c7a6426e6d102698670",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__recordlayer__query__plan__cascades__predicates__predicates_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/recordlayer/query/plan/plans:plans_test",
+        "counts": {
+          "run": 780,
+          "pass": 780,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "b8a45b84146da5de1bd0e1e26f56264a4f4f68d04c091a3e82702916b667b4e1",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__recordlayer__query__plan__plans__plans_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/recordlayer/query/plan/cascades:cascades_test",
+        "counts": {
+          "run": 3682,
+          "pass": 3682,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "3a39eb0db5e0e14314a635aa46e07f8c866dee61edff138541199d56fe8bf442",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__recordlayer__query__plan__cascades__cascades_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/core/catalog:catalog_test",
+        "counts": {
+          "run": 93,
+          "pass": 93,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "341587aec798b40234fea5b23e77a2a615d328f04b3208f0f1c44c338e1a1dd1",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__core__catalog__catalog_test.log",
+        "skips": []
+      },
+      {
+        "label": "//cmd/verify-corpus-retirement-history:verify-corpus-retirement-history_test",
+        "counts": {
+          "run": 28,
+          "pass": 28,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "97569c9f572de751049b19bd507089325a6c15d8a612d1e45967537a724acae6",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/cmd__verify-corpus-retirement-history__verify-corpus-retirement-history_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/core/session:session_test",
+        "counts": {
+          "run": 12,
+          "pass": 12,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "15679bf35fb59a4814e8e86e1799317fcecbeca1b340d14433e828d2f94b8960",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__core__session__session_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/conformance/javayamsql:javayamsql_test",
+        "counts": {
+          "run": 23,
+          "pass": 23,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "c568005dcd4e3ea3af83bbd919dd78c81ae5821884299bbda2d36864f079f0db",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__conformance__javayamsql__javayamsql_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/core/parser:parser_test",
+        "counts": {
+          "run": 80,
+          "pass": 80,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "96477669478ea4ce83bdcaa005853f12bc4ee5086f335d7c0e390910cf11df1f",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__core__parser__parser_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/linters/gofumpt:gofumpt_test",
+        "counts": {
+          "run": 6,
+          "pass": 6,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "ce8a99a9ec413dd8756f7f82a6897cf44cbe69be8bcfdd1fde552b0cce075a1f",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__linters__gofumpt__gofumpt_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/fdbgo/transport:transport_test",
+        "counts": {
+          "run": 70,
+          "pass": 70,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "60a41bf323d2c033c731e6cfdebe8fbf36d66188353ae37c433b2cae74251735",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__fdbgo__transport__transport_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/fdbgo/fdb/tuple:tuple_test",
+        "counts": {
+          "run": 73,
+          "pass": 73,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "21afa4a88d7efa4b0cffe12fffd3c8704bc6b27a0e134b38b61a9793c4f68606",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__fdbgo__fdb__tuple__tuple_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/simfdb/hunt/rangeconflict:rangeconflict_test",
+        "counts": {
+          "run": 10,
+          "pass": 10,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "28670653433701f9fc2d4ebbcae4df0a6124f3e36a9e6540ad7d7f51b61d5209",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__simfdb__hunt__rangeconflict__rangeconflict_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/simfdb:simfdb_test",
+        "counts": {
+          "run": 296,
+          "pass": 296,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "5a16b339d67c8d873aa8eda51fb0dedba1f4b00ab4a1bdd62c20a07cba876e07",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__simfdb__simfdb_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/recordlayer/query/plan/cascades/properties:properties_test",
+        "counts": {
+          "run": 391,
+          "pass": 391,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "68cee7d4dee0ebba4b8252247ff74c6d761e299a3e732641515e998c70ab7a1f",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__recordlayer__query__plan__cascades__properties__properties_test.log",
+        "skips": []
+      },
+      {
+        "label": "//cmd/factory-plan-census:factory-plan-census_test",
+        "counts": {
+          "run": 24,
+          "pass": 24,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "63674657ac3893cc8b7e53fb3d4705530f650948c2449e0ddc8d3a5e7c251de7",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/cmd__factory-plan-census__factory-plan-census_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/core/query/logical:logical_test",
+        "counts": {
+          "run": 62,
+          "pass": 62,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "55dc3a1986bc036ed1fbc9f15b864e95544e15d7e114d92290f207d425dee965",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__core__query__logical__logical_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/recordlayer/query/plan/cascades/values:values_test",
+        "counts": {
+          "run": 2445,
+          "pass": 2445,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "8fea737d46111161e198a492a78efa51019010a44e0044e9a83e3920852d50ae",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__recordlayer__query__plan__cascades__values__values_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/recordlayer/rlmetrics:rlmetrics_test",
+        "counts": {
+          "run": 15,
+          "pass": 15,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "18385b8d0cdae40e2a1494b5bef9a74d15840436a87197d6ea2ed3681c8d2bfd",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__recordlayer__rlmetrics__rlmetrics_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/simfdb/hunt/sqlpage:sqlpage_test",
+        "counts": {
+          "run": 12,
+          "pass": 12,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "dbf12ed36d39426f077144e721ae3b2969315cfb3f9c901a8c2f0f6d32307ce8",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__simfdb__hunt__sqlpage__sqlpage_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/internal/fdbclient:fdbclient_test",
+        "counts": {
+          "run": 1,
+          "pass": 1,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "2d47c5f895f79aeb409b104ce3ff37ec24355d462520f0d0f2993e46ecc74e09",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__internal__fdbclient__fdbclient_test.log",
+        "skips": []
+      },
+      {
+        "label": "//cmd/test-budget:test-budget_test",
+        "counts": {
+          "run": 6,
+          "pass": 6,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "6789adb85dc1372cf8af4293cdd5350892c2794ff5f7ff0630a52729a9c8889a",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/cmd__test-budget__test-budget_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/conformance/factorycorpus:factorycorpus_test",
+        "counts": {
+          "run": 74,
+          "pass": 74,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "b25b7b1c7d9a3f632c91daaf266f4957db65651cf1292082f31eb8e856791f76",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__conformance__factorycorpus__factorycorpus_test.log",
+        "skips": []
+      },
+      {
+        "label": "//cmd/frl/internal/cmd:cmd_test",
+        "counts": {
+          "run": 373,
+          "pass": 373,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "186327f4e77ef88d3187d9595995fe67a17b1cf78e3e9c61036897d924893d7a",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/cmd__frl__internal__cmd__cmd_test.log",
+        "skips": []
+      },
+      {
+        "label": "//cmd/factory-run:factory-run_test",
+        "counts": {
+          "run": 23,
+          "pass": 23,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "87861c5d56571f3a224bc9907c1f11dc1c8562578dff640326af10fb937777d0",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/cmd__factory-run__factory-run_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/recordlayer/query/plan/cascades/expressions:expressions_test",
+        "counts": {
+          "run": 366,
+          "pass": 366,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "b60e0bf2f9842d8b548173d07eb6eaddef914972393f2f9b5df5bea8cd6d30f3",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__recordlayer__query__plan__cascades__expressions__expressions_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/core/query/expr:expr_test",
+        "counts": {
+          "run": 322,
+          "pass": 322,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "fd99e50ee34767cd91aa94fecb079945ac27a1e2eb87d8e38a30e40ba2280407",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__core__query__expr__expr_test.log",
+        "skips": []
+      },
+      {
+        "label": "//cmd/vulnscan:vulnscan_test",
+        "counts": {
+          "run": 67,
+          "pass": 67,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "e3e31fe5ff63bca7b64b46d5a90a6ed767a08b7c72593df9fd35e7392f23da97",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/cmd__vulnscan__vulnscan_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/recordlayer/protoname:protoname_test",
+        "counts": {
+          "run": 8,
+          "pass": 8,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "19de2f796fa4a3b4e8c24f4dea59b7a5db043bf781b510df8b60643fdb17471c",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__recordlayer__protoname__protoname_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/fdbgo/wire/types:types_test",
+        "counts": {
+          "run": 109,
+          "pass": 109,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "af1219d566b25be8a1fadfb99cc2780b81f25f355740219c2cf632f33327daef",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__fdbgo__wire__types__types_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/linters/norecover:norecover_test",
+        "counts": {
+          "run": 5,
+          "pass": 5,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "ab020203c70eb28a99ecedce0b151bce4da7f6480b75cc754a3afd06206f0ca6",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__linters__norecover__norecover_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/conformance/memoinvariant:memoinvariant_test",
+        "counts": {
+          "run": 4,
+          "pass": 4,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "aa9f8d9deb263d5b51be345cbe85555fbde23353abaa065e421bde5d29f8ae85",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__conformance__memoinvariant__memoinvariant_test.log",
+        "skips": []
+      },
+      {
+        "label": "//cmd/fdb-binding-stress:fdb-binding-stress_test",
+        "counts": {
+          "run": 7,
+          "pass": 7,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "d92f743365860dfe8802b05a1e785eafc83f39fc54c6fe101fe2e932335b1e9f",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/cmd__fdb-binding-stress__fdb-binding-stress_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/docscheck:docscheck_test",
+        "counts": {
+          "run": 917,
+          "pass": 917,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "f7984aa23a6e4f932afdb0b13d1b1f821e20cb870501d3aa2241b686a36d0551",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__docscheck__docscheck_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/simfdb/hunt/golden:golden_test",
+        "counts": {
+          "run": 18,
+          "pass": 18,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "4ccd2b6b0b1c86e3f1f6f956ac186c62e4b8da6065c25882c0ad8ff866cd3774",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__simfdb__hunt__golden__golden_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/core/metadata:metadata_test",
+        "counts": {
+          "run": 61,
+          "pass": 61,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "0d281a268ba247e941166034c0c51140fa1d35c29e4fb8e4809bf63281cc31bf",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__core__metadata__metadata_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/core/embedded:embedded_test",
+        "counts": {
+          "run": 2230,
+          "pass": 2230,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "0a17835639d58fa4876b4a4b5da54473edcde7e1fa7bc7504f6fd9c40d79995d",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__core__embedded__embedded_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/recordlayer/query/executor:executor_test",
+        "counts": {
+          "run": 1945,
+          "pass": 1945,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "9f3153e827d68871285f967a31c44df94fe5ce1f5c5c87f973176181f214d46e",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__recordlayer__query__executor__executor_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/linters/gofmt:gofmt_test",
+        "counts": {
+          "run": 5,
+          "pass": 5,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "6d91fa3283c9fcd660cd17006e98f508f3d586b97c6cd59c75f6a6e039e49f5f",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__linters__gofmt__gofmt_test.log",
+        "skips": []
+      },
+      {
+        "label": "//cmd/dst-hunt:dst-hunt_test",
+        "counts": {
+          "run": 2,
+          "pass": 2,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "e10c4b8fd3ae591ce5f3bc4e7c948341747859b79a1f74ff9b3a97747c824a0d",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/cmd__dst-hunt__dst-hunt_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/conformance/javacorpus:javacorpus_test",
+        "counts": {
+          "run": 386,
+          "pass": 386,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "fbc534c297f27c09cde96b2ffa45cfe74dc3d898c1769598d131aaf8209f8e8d",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__conformance__javacorpus__javacorpus_test.log",
+        "skips": []
+      },
+      {
+        "label": "//cmd/verify-pr-checks:verify-pr-checks_test",
+        "counts": {
+          "run": 17,
+          "pass": 17,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "21306ad6d88a126be89e3a1a02bfbcb860a30f6319fece46353492134573eb55",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/cmd__verify-pr-checks__verify-pr-checks_test.log",
+        "skips": []
+      },
+      {
+        "label": "//cmd/bench-report:bench-report_test",
+        "counts": {
+          "run": 13,
+          "pass": 13,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "dcff5774935e758cbd90edfc2b7caf94c8432ab61907d517b2e51eae26ca3138",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/cmd__bench-report__bench-report_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/recordlayer/chaos:chaos_test",
+        "counts": {
+          "run": 230,
+          "pass": 230,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "bb48c041004cbbfbd509857cf7ba5344a7b82adf7140f2e68952bfb1a117ca7f",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__recordlayer__chaos__chaos_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/recordlayer/query/plan/cascades/internal/fuzzfloor:fuzzfloor_test",
+        "counts": {
+          "run": 12,
+          "pass": 12,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "1bd383168e175c568cb347aa09dfc827a4bdac071a6b16e95d011f7c5369bdb7",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__recordlayer__query__plan__cascades__internal__fuzzfloor__fuzzfloor_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/recordlayer/query/plan/cascades/combinatorics:combinatorics_test",
+        "counts": {
+          "run": 47,
+          "pass": 47,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "9a48cb1a893b817a80373f3da13012b8259ed3100b18d2086a9aa50a9f799ec8",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__recordlayer__query__plan__cascades__combinatorics__combinatorics_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/fdbgo:fdbgo_test",
+        "counts": {
+          "run": 1,
+          "pass": 1,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "88ac6bf55bc0c58131b508f44009a9d7aba2ac5b50aeaab7d626b521645ce536",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__fdbgo__fdbgo_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/rabitq:rabitq_test",
+        "counts": {
+          "run": 273,
+          "pass": 273,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "148960f98ff94e90eaabc31351f80ccffe8292a7d76e2a7313131859a386af8e",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__rabitq__rabitq_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/conformance/explaindiff:explaindiff_test",
+        "counts": {
+          "run": 53,
+          "pass": 53,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "34f163acfab36b25985bd609173e5a874bd550d65865434d8af36f91815382c2",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__conformance__explaindiff__explaindiff_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/recordlayer/keyspace:keyspace_test",
+        "counts": {
+          "run": 39,
+          "pass": 39,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "0e1c03fbf7945b9d60131e153ae876aa5bf9edbe1159c243ebbb5f8c8a3a7b6f",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__recordlayer__keyspace__keyspace_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/core/keyspace:keyspace_test",
+        "counts": {
+          "run": 6,
+          "pass": 6,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "3145e91210c7d89cd7c1016e9cc9eb830bac50c2151d3bf578a8fb243fcecd33",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__core__keyspace__keyspace_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/fdbgo/fdb/subspace:subspace_test",
+        "counts": {
+          "run": 17,
+          "pass": 17,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "d6bf98e9ee2f2bc1e12d2dd6282febb232b540d41dc312949a33913bceec554d",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__fdbgo__fdb__subspace__subspace_test.log",
+        "skips": []
+      },
+      {
+        "label": "//infra:infra_test",
+        "counts": {
+          "run": 39,
+          "pass": 39,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "b9d5fa5fe11a2cba9cb52a69bb3768d0095cabb459953c3497f94ec8c2f3bd4b",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/infra__infra_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/sqldriver:sqldriver_test",
+        "counts": {
+          "run": 6833,
+          "pass": 6833,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "0390a8c14468f3df4cd0c8ad170445e57df66069ba2e049f6b3caff2a18cee67",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__sqldriver__sqldriver_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/fdbgo/wire:wire_test",
+        "counts": {
+          "run": 29,
+          "pass": 29,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "6acbaed8cc255915e4344d3cba7f0b3ccf9f0daec0b4a9d42e252c644828dace",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__fdbgo__wire__wire_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/dst:dst_test",
+        "counts": {
+          "run": 21,
+          "pass": 21,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "5411825bf081cd575e873e12ca78ec56b937a05a950a49ce53cb601a68643120",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__dst__dst_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/fdbgo/bench:bench_test",
+        "counts": {
+          "run": 775,
+          "pass": 775,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "b6a5580039d224def3cc356bfb2a4c19ec1bbc5e3ade763f6173da211a84cbdd",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__fdbgo__bench__bench_test.log",
+        "skips": []
+      },
+      {
+        "label": "//cmd/frl/internal/config:config_test",
+        "counts": {
+          "run": 12,
+          "pass": 12,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "fc8a070f07078da3492020412e419c6ca42954e87180307a442786967e8dcf52",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/cmd__frl__internal__config__config_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/core/query/semantic:semantic_test",
+        "counts": {
+          "run": 157,
+          "pass": 157,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "9f91a3b804cea319b90372707c0f693ce320e4f98172ff95ce0f7aa8676bf8f9",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__core__query__semantic__semantic_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/recordlayer/query/plan/cascades/matching:matching_test",
+        "counts": {
+          "run": 97,
+          "pass": 97,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "cb4cbbad8b0454e8beff393d4e5a2cea1470cf4c11521465b596c2f8dc7c8b71",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__recordlayer__query__plan__cascades__matching__matching_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/simfdb/hunt/atomicops:atomicops_test",
+        "counts": {
+          "run": 27,
+          "pass": 27,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "89f1f38350603bc76b038b1d04b82b6d827468acd1d7b1a4b6a6290e66cce3a6",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__simfdb__hunt__atomicops__atomicops_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/core/query/ddl:ddl_test",
+        "counts": {
+          "run": 2,
+          "pass": 2,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "01a4af167287cb66865b659014402c69474236bf1ce831a0182059bf60cb67db",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__core__query__ddl__ddl_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/fdbgo/fdb:fdb_test",
+        "counts": {
+          "run": 243,
+          "pass": 243,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "af253c14bd84c95cfc12547a2db7150c1697794808ad1808b1c0981c00961a64",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__fdbgo__fdb__fdb_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/conformance/rowdiff:rowdiff_test",
+        "counts": {
+          "run": 202,
+          "pass": 202,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "ad458e015b86c3f9f55c61a7a438257f46ed3b91c512cf8f2ea0e5289eb25002",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__conformance__rowdiff__rowdiff_test.log",
+        "skips": []
+      },
+      {
+        "label": "//cmd/frl/internal/meta:meta_test",
+        "counts": {
+          "run": 9,
+          "pass": 9,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "c209c1d493e03515968df66eea9c6a74e921179647c30d6678ca939366c1ec0f",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/cmd__frl__internal__meta__meta_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/simfdb/hunt/interleave:interleave_test",
+        "counts": {
+          "run": 14,
+          "pass": 14,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "e63d2aa3355935a653731a197c16816afd167e5fd0a37568d230058b81fa3aeb",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__simfdb__hunt__interleave__interleave_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/simfdb/hunt/continuation:continuation_test",
+        "counts": {
+          "run": 7,
+          "pass": 7,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "58eaa2a833a257d84ffddc8665dec1958d41664132eedabf09a462a7506ea1c0",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__simfdb__hunt__continuation__continuation_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/core/query:query_test",
+        "counts": {
+          "run": 517,
+          "pass": 517,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "c3a6e4bacf7b376fff16937ff8eb44f78b455ea0e6eaa67875b5a7f1f2f85e3b",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__core__query__query_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/simfdb/hunt/metamorphic:metamorphic_test",
+        "counts": {
+          "run": 12,
+          "pass": 12,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "91aaff0d14cd16a28504e274555ee37a6a51fc436ff8e728a9b66c01d4800e23",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__simfdb__hunt__metamorphic__metamorphic_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/testcontainers/foundationdb:foundationdb_test",
+        "counts": {
+          "run": 56,
+          "pass": 56,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "373a9a3c6d6e062f1d9e0e83688730e053cb2ed4c5a8390a0bac0be5a77fc9b4",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__testcontainers__foundationdb__foundationdb_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/fdbgo/conformance:conformance_test",
+        "counts": {
+          "run": 2,
+          "pass": 2,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "7161742dc55568c30fb4456daefab56e4a42937040d678213c49e159b76a45a6",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__fdbgo__conformance__conformance_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/conformance/yamsql:yamsql_test",
+        "counts": {
+          "run": 590,
+          "pass": 590,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "4974f241f2294caa910f40717e439263247dcc0d080261fb54a33dd88d926fdf",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__conformance__yamsql__yamsql_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/simfdb/hunt/sqlhunt:sqlhunt_test",
+        "counts": {
+          "run": 55,
+          "pass": 55,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "2dddf83fd225708ac7f25d0883e73a648533a61dceb3383619395e7cd48905dc",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__simfdb__hunt__sqlhunt__sqlhunt_test.log",
+        "skips": []
+      },
+      {
+        "label": "//cmd/factory-rebless:factory-rebless_test",
+        "counts": {
+          "run": 11,
+          "pass": 11,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "113f4f0e199b57b646afba195bf944c3c80a249397fb789e36d98692d61ea485",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/cmd__factory-rebless__factory-rebless_test.log",
+        "skips": []
+      },
+      {
+        "label": "//cmd/factory-rebless-plan-shapes:factory-rebless-plan-shapes_test",
+        "counts": {
+          "run": 3,
+          "pass": 3,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "38f42d8f68a57343fd4994c48a24c15dbb92b3fe8652f46054c0c0ed305eae98",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/cmd__factory-rebless-plan-shapes__factory-rebless-plan-shapes_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/recordlayer:recordlayer_test",
+        "counts": {
+          "run": 2083,
+          "pass": 2083,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "a5972d86c991227817355abe93fcd180cdce234c57624648a63a173a10c6ed89",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__recordlayer__recordlayer_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/conformance/plandiff:plandiff_test",
+        "counts": {
+          "run": 1787,
+          "pass": 1787,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "bad0a0be0f456a3e7da21cb3d3421669b249ac80d2e4d809546a5eda927b7854",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__conformance__plandiff__plandiff_test.log",
+        "skips": []
+      },
+      {
+        "label": "//conformance:conformance_test",
+        "counts": {
+          "run": 70,
+          "pass": 70,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "168fa04aaccea56bf41217bc2839592f0cdbe32830caf2762bd4d6453d1c0154",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/conformance__conformance_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/fdbgo/client:client_test",
+        "counts": {
+          "run": 1824,
+          "pass": 1824,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "8ad9c93053b1c4dffc7abe83e0b93d2067143bc454661644918110d32dbb91ed",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__fdbgo__client__client_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/conformance/factory:factory_test",
+        "counts": {
+          "run": 102,
+          "pass": 97,
+          "skip": 5,
+          "fail": 0
+        },
+        "sha256": "668ea03448c113e41a4e5b3706809cb9b5a7edf7695e85618fac7b3972688f0d",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__conformance__factory__factory_test.log",
+        "skips": [
+          "--- SKIP: TestFDB_NestedShapeHunt (0.00s)",
+          "--- SKIP: TestFDB_PlanDiversityHunt (0.00s)",
+          "--- SKIP: TestFDB_FullShapeHunt (0.00s)",
+          "--- SKIP: TestFDB_ExcludedShapeHunt (0.00s)",
+          "--- SKIP: TestFDB_PredicateEquivalenceHunt (0.00s)"
+        ]
+      },
+      {
+        "label": "//pkg/relational/conformance/factorycorpus/full:full_test",
+        "counts": {
+          "run": 8151,
+          "pass": 8151,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "dbc1679b2d42e8de414619fc3a92c5f672c40a3b36f2985f88f935b7d4b5e284",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-full-logs/pkg__relational__conformance__factorycorpus__full__full_test.log",
+        "skips": []
+      }
+    ],
+    "count_scope": "Go verbose markers including indented subprocess test output; RUN and PASS/SKIP name multisets reconcile per target. Ginkgo population recorded separately."
+  },
+  "group-alias-race": {
+    "targets": 14,
+    "executed": 14,
+    "counts": {
+      "run": 21118,
+      "pass": 21118,
+      "skip": 0,
+      "fail": 0
+    },
+    "tests": [
+      {
+        "label": "//pkg/rabitq:rabitq_test",
+        "counts": {
+          "run": 273,
+          "pass": 273,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "dc568fc0dc349e583f34cb10c1c1e0f39790678891704c333fddf8f77f46ff93",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-race-logs/pkg__rabitq__rabitq_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/core/query/expr:expr_test",
+        "counts": {
+          "run": 322,
+          "pass": 322,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "a602a32e55a34889a46b1937c39bf0aa76fa191eb23c59bd58a5d0b17724d4e8",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-race-logs/pkg__relational__core__query__expr__expr_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/core/query/logical:logical_test",
+        "counts": {
+          "run": 62,
+          "pass": 62,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "14f99674df8fd00b92ac52894446b401fa21805bd1544125069de1cf63bf23c9",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-race-logs/pkg__relational__core__query__logical__logical_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/core/query:query_test",
+        "counts": {
+          "run": 517,
+          "pass": 517,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "997d9329e0868860d6e7d7aae69dd33b4870bff5bef371b037980a61c6284d06",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-race-logs/pkg__relational__core__query__query_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/recordlayer/query/plan/cascades/values:values_test",
+        "counts": {
+          "run": 2445,
+          "pass": 2445,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "3dd4a816cf0910b6b707dbb711abb861b458e79f29b8254e38dc8e94b3603546",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-race-logs/pkg__recordlayer__query__plan__cascades__values__values_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/recordlayer/query/plan/cascades:cascades_test",
+        "counts": {
+          "run": 3682,
+          "pass": 3682,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "0acf88448cd36e756200137207b1e440f40f14663ab12c5ade27a2cdce6b8d97",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-race-logs/pkg__recordlayer__query__plan__cascades__cascades_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/recordlayer/query/executor:executor_test",
+        "counts": {
+          "run": 1945,
+          "pass": 1945,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "e69b5b403093510896052b0f8caf9e99284a97a77e086eb2977bb36288c6b714",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-race-logs/pkg__recordlayer__query__executor__executor_test.log",
+        "skips": []
+      },
+      {
+        "label": "//cmd/frl/internal/cmd:cmd_test",
+        "counts": {
+          "run": 373,
+          "pass": 373,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "17d8a8c732de78c865335ee6b294701b733cd5c585f75c96e1b4bb5cd4e28e63",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-race-logs/cmd__frl__internal__cmd__cmd_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/conformance/explaindiff:explaindiff_test",
+        "counts": {
+          "run": 53,
+          "pass": 53,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "21d2dbdafe3c54879dbf21c6338820a191f2cb1e7ab38b066267190554c16ef9",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-race-logs/pkg__relational__conformance__explaindiff__explaindiff_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/core/embedded:embedded_test",
+        "counts": {
+          "run": 2230,
+          "pass": 2230,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "d4f67760757795fb02bde754f002080e324ac547f59c3703cd41a2459df8fbac",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-race-logs/pkg__relational__core__embedded__embedded_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/recordlayer:recordlayer_test",
+        "counts": {
+          "run": 2083,
+          "pass": 2083,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "300a82f683021b270b12e64138fd49526e4dc2ccb91dc9d0faec691366d1d0d2",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-race-logs/pkg__recordlayer__recordlayer_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/recordlayer/chaos:chaos_test",
+        "counts": {
+          "run": 230,
+          "pass": 230,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "c5b5cb0730563b41e43321e5d8e99e971215bb95c4bc81038ba30bd4505afde5",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-race-logs/pkg__recordlayer__chaos__chaos_test.log",
+        "skips": []
+      },
+      {
+        "label": "//conformance:conformance_test",
+        "counts": {
+          "run": 70,
+          "pass": 70,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "1728e459b118bd2d75755bc4a0398ba304a9d5efdbe8e69d362fb504b33c8788",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-race-logs/conformance__conformance_test.log",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/sqldriver:sqldriver_test",
+        "counts": {
+          "run": 6833,
+          "pass": 6833,
+          "skip": 0,
+          "fail": 0
+        },
+        "sha256": "0e1da360ef136637f4fd9e796e4355e3b6317f4571457a7b405ce2e0d3c7cca0",
+        "log": "/var/tmp/fdb-upgrade-recovery/runtime/group-alias-race-logs/pkg__relational__sqldriver__sqldriver_test.log",
+        "skips": []
+      }
+    ],
+    "count_scope": "Go verbose markers including indented subprocess test output; RUN and PASS/SKIP name multisets reconcile per target. Ginkgo population recorded separately."
+  }
+}

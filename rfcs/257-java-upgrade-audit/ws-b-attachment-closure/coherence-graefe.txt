@@ -1,0 +1,40 @@
+**NAK — the two reported defects are fixed, but range clearing still leaves a late-attachment coherence gap.**
+
+Reviewed Git **tree**: `6ffe8d3b5b541bdd1c668c6e13e45ebe475292a3`, against prior tree `c59322c012c53500679e7f345360fac6706468b9`.
+
+I completed the production/test delta review using the virtual Graefe architecture/Java lifecycle lens, prior actual verdicts, approved design, surrounding initialization/mutation/deletion paths, tagged Java `fdacd162a9c8acfadc49082b89185c823ab8ae4a`, and retained evidence.
+
+**[P1] A range clear can be followed by publication of an older, previously unattached state snapshot.**
+
+[clearRangeWithIndexStateViews at index_state.go:312](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state.go:312) protects only views already registered. However, [loadStoreState at store.go:1921](/home/birdy/projects/fdb-go/pkg/recordlayer/store.go:1921) populates a handle’s local map without registering its view. An ordinary `Open()` with unchanged metadata can return in that condition. Later, [ensureStoreStateLoaded at store.go:178](/home/birdy/projects/fdb-go/pkg/recordlayer/store.go:178) registers that previously loaded map without checking whether a clear intervened.
+
+A sequential reproduction follows directly:
+
+1. Start with a nonempty store and index `I` DISABLED, with its index data empty.
+2. In a fresh context, `Open()` the store using unchanged metadata. Do not call a state getter.
+3. Call `ctx.ClearRange(store.IndexStateSubspace())`. The persisted state key disappears, but no view is registered, so the clear updates no projection.
+4. Call `store.MarkIndexDisabled("I")`. Initialization publishes the pre-clear DISABLED snapshot. The [unchanged-state return at index_state.go:254](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state.go:254) skips the required write.
+5. Commit and cold reopen: the absent state key means READABLE, although the index remains empty and records remain present.
+
+This uses the context clear API, requires no concurrency or direct transaction mutation, and defeats the caller’s explicit request to restore DISABLED. An in-flight lazy load can encounter the same publication problem across a clear.
+
+**Required correction:** coordinate initial state loading/publication with range clearing, including snapshots loaded before registration. Merely locking registration after loading cannot establish freshness. Add a real-FDB regression for the sequence above and a deterministic load-versus-clear interleaving; assert raw bytes, shared state, committed DISABLED state, and cold-open scan rejection.
+
+The new ordering regression [initializes both handles before clearing at index_state_test.go:2588](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state_test.go:2588), so it does not cover this case. This finding is source-derived; I executed no reproducer.
+
+The previous findings have these dispositions:
+
+- **Prior P1 resolved:** `setIndexState` attaches reconciliation handles before mutation, closing the reported v1→v2→v3 drop/re-add sequence.
+- **Prior P2 resolved:** the shared mutex now spans the FDB mutation and publication. Registered-view range clears participate in that ordering.
+- **Lock ordering:** registry serialization prevents competing clears from acquiring view locks in conflicting orders. Point writers acquire one shared view and do not reacquire the registry while holding it. I found no new lock cycle.
+- **Error paths:** public transitions propagate initialization errors before reaching the setter; former-index cleanup follows successful state loading. The new unconditional view access does not introduce a reachable nil-view failure in those paths.
+
+The retained evidence is consistent: all **6,781 frozen hashes** match source tree `a50bfc93d1d3d43a46949eba84b8a7a8ec05b626`; subsequent changes are documentation/evidence only. Evidence hashes reconcile. Logs support **93/93 uncached targets**, **14/14 race targets**, recordlayer **3402/3403** with **2110 RUN/PASS**, conformance **1391/1510** with **70 RUN/PASS**, and executor **1952 RUN/PASS**. The two genuine red reproductions, three green coherence specs, and compiled range-clear mutation kill are retained. They do not cover late attachment.
+
+**The fresh performance residual does not independently block this correctness milestone.** Against baseline `e48f5b4965543cd4d99b5578356059e12d969c7c`, the current measurements show orders **1.0355× (+3.55%)** and customers **1.0629× (+6.29%)**. All four runs retain 24 RUN/PASS, identical query row counts, and zero retries. These are measurable residuals; two sequential samples per tree establish neither parity nor their cause.
+
+The previous five-section review dispositions otherwise stand. Approved extensions and the intentional Java deletion-callback correction remain preserved. Queue/state4/format15 remain disabled; WS-C–K are outside this verdict.
+
+No edits, tests/builds, Git mutations, GitHub requests, publication, or delegation occurred. HEAD remains `71ccd8cf8b3fd0dbafe283e91171818e36af555e`.
+
+Runtime model/effort identity is not independently exposed to me; I cannot attest the requested `gpt-6-astra/xhigh` setting.

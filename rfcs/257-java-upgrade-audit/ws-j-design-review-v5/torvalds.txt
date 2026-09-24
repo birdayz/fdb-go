@@ -1,0 +1,85 @@
+**NAK.** Tree `f041bee2e4f12ba0ee362732fe5393761ceb6d34`; design SHA256 `a0596896a4b4c5ec5efc577759369eafe0009f09cbb51415c3bc175a892e9446`, 1481 lines (both re-hashed, both match). Java `fdacd162a`. This was a read-only review: I ran no tests, probes or mutations.
+
+**Checked and correct**
+- **Evidence hashes:** I re-hashed 16 of the 48 files in evidence-v5 from the tree; all 16 match.
+- **Tree binding:** `just test` run B's tree `010199ee` differs from the candidate only in `README.md` and `evidence-v5.txt`. The A→B diff touches only the specs, pins and docs whose targets run B executed.
+- **Tally:** 166+4+180+4+24+101 = 479.
+- **One guard:** `setRecords` is the only function holding the guard. The two setters and the loader all call it.
+- **Top-level load order:** matches Java's `loadFromProto` (RecordMetaDataBuilder.java:275-278), and the "Unknown record type" message text matches.
+- **Legacy union search:** `refuseAmbiguousLegacyUnion` mirrors the old loader's `findUnionDescriptorName` at `e48f5b496` exactly.
+- **Top check:** it runs before `IndexSpec.collect` (DdlVisitor.java:274 against MaterializedViewIndexGenerator.java:94-97, and the constructor at :64-72 does nothing that can throw). The LIMIT 0AF00 comes from AstNormalizer.java:260.
+- **Test 5 can reach the widening arm:** template save runs only the structural `RelationalSchemaEvolutionValidator`. A WIDENED index keeps its last-modified version, so the root comparison at validator :569 runs.
+- **Carry classes:** which fields each class takes from which side (EQUIVALENT keeps the stored proto; WIDENED is the rebuilt proto with stored added/last-modified/subspace key; CHANGED is the rebuilt proto with stored added/subspace key and a new last-modified version) is consistent with the validator.
+- **Mutations:** all nine v5 mutations record their text and presence.
+
+## HIGH
+
+**1. Shape (d) is refused on load with no working exit** (metadata_proto.go:415-431; design :1250-1252; CHANGELOG (d) remedy).
+- **Why "take the usage from the other message" fails:** Java treats any message named `RecordTypeUnion` as a union candidate unless it carries UNION usage, and NESTED usage throws (RecordMetaDataBuilder.java:335-352).
+  - So for the arm "UnionDescriptor beside RecordTypeUnion, migrated to the legacy choice", the migrated file is refused with "Only one union descriptor is allowed".
+- **The target's-choice arm stays refused:** migrating to the target's choice "leaves the file as the target reads it". But the refusal fires on the mere presence of a message named `UnionDescriptor` that is not the union, so this loader refuses the migrated file forever. That includes Java-written files the target loads.
+- **Fix:**
+  - Define a marker that survives a reload and that Java reads identically, or declare these arms unmigratable.
+  - Unit-pin that every migrated (d) output passes both `fetchUnionDescriptor` and `refuseAmbiguousLegacyUnion`.
+
+## MEDIUM
+
+**2. The load-order fix is incomplete.**
+- **Index faults:** Java resolves each index's record types before `new Index(proto)`, one index at a time (RecordMetaDataBuilder.java:187-219). Go builds every index first (metadata_proto.go:273-281) and associates them afterwards (:283-310).
+  - A duplicate-option or key-expression fault therefore hides an unknown record type, in the same index or in an earlier one.
+- **RecordType entries:** Java throws on a RecordType entry naming an unknown type (:221-222 → :986-990). Go `continue`s (metadata_proto.go:316-318).
+- **Fix:** add JVM shapes for both.
+
+**3. The template-save lane refusal is bypassable and unscheduled** (design :559-566).
+- The public `api.SchemaTemplateCatalog.CreateTemplate` (api/catalog.go:36) bypasses both named paths. The oracle stores its no-lane `long_value` fixture through exactly that call (conformance :1664).
+- The check needs §6's lane table, yet §8 assigns it to no step.
+- **Fix:** put it at the catalog chokepoint, or declare that path unguarded. Schedule it, and give the fixture a raw-write route.
+
+**4. Test 5's no-rebuild assertion is vacuous** (:1055).
+- "Entries byte-equal before and after" also holds for a CHANGED index rebuilt inline (at most 200 records). Only the versions assertion catches the CHANGED mutation.
+- **Fix:** use more than 200 records so a CHANGED index is left DISABLED and the index-served read changes, as test 10 does.
+- The "counter the test reads" (:1053) is racy under `t.Parallel()` if it is process-global. Scope it to the validator or catalog.
+
+**5. The never-covered rule is mis-stated** (:505).
+- It says coverage "exposes the key's operand fields". An `i + 1` index stores `(i+1, pk)`, not `i`. Taken literally, `SELECT i … WHERE i + 1 = 6` would read `i` from an entry that lacks it.
+- **Fix:** say only the stored columns are covered, and pin that an operand projection fetches the record.
+- DIVERGENCES :2813 turns two measured reads into "the target never serves a function-key VALUE". The reason behind the 0AF00 is a hypothesis, not a measurement.
+
+**6. Merge-unit mechanics.**
+- **No extraction mechanism:** "Unless the landed WS-J fixes are first taken out" (:1422, gate 8, the TODO block) has nothing behind it. The WS-J hunks share files with WS-D, WS-E and WS-F; `sql_plan_steps.java` in v5 also carries non-WS-J teardown and simplification changes. Provide a WS-J patch/manifest, or state that the tree merges as one.
+- **DIVERGENCES describes code that does not exist:** DIVERGENCES :2803 describes a `DeleteTemplateVersion` refusal and `fleet.RestoreTemplateVersion` in the present tense.
+  - `RestoreTemplateVersion` has 0 hits in `.go` files; the same grep finds `AmbiguousLegacyUnionError` in 3 files.
+  - `DeleteTemplateVersion` (fdb_template_catalog.go:232) refuses nothing.
+  - This is the defect v5 fixed in CHANGELOG with PENDING; mark it the same way.
+- **Step 1 omits the exits:** §8 step 1 ships the gone-version refusal but does not name the `DeleteTemplateVersion` refusal or the restore, which are the only exits from the state it creates.
+
+## LOW
+
+7. **Orphaned doc comment again (v4 #10's defect class, now in Go):** the new declarations sit between `loadSubspaceKeySettingsFromProto`'s doc (metadata_proto.go:375-389) and its function (:433). That doc now merges into `legacyUnionNames`'s, and the function is undocumented. Also, the `RecordTypeUnion` entry in `legacyUnionNames` can never refuse: if that message exists and the search succeeds, it is the found union.
+8. **`literalKeyCarrier`:**
+   - `Typ == nil` with a non-nil value passes through unchanged (generator.go:922-924), which contradicts "every pair … refused" (:917-920).
+   - The `literalInteger` doc (:980) still says the caller "leaves it as it is".
+   - The STRING keep-arm is unpinned; the test keeps only BOOLEAN and BYTES.
+9. **LIMIT decision ignores OFFSET:** Java refuses OFFSET before LIMIT, and both before semantic analysis (AstNormalizer.java:255-260). Decide OFFSET and pin the precedence.
+10. **Stale counts:**
+    - Design :69-74 and :193-202, and README :18-22, still say 59 shapes, 475 runs and evidence-v4. v5 has 479 runs and 24 both-reject.
+    - The mutation header says "all eight" but lists nine.
+    - The F12 digest measure says "of the 475".
+    - The Go comment cites RecordMetaData.java:826; the loader actually throws via `throwUnknownRecordType` (RecordMetaDataBuilder.java:199, :994-996). The text is the same.
+11. **(d) coverage gaps:**
+    - §9 omits the (d) refusal.
+    - Only (d1) is measured on the JVM; "the target loads (d2)" is still source-level.
+    - `TODO.md` is not among the 48 hashed files.
+12. **Two unmeasured premises:**
+    - The F2b FLOAT pin never stores a `double_value` variant, so the float arm's "same bytes" premise is arithmetic, not measured.
+    - `RestoreTemplateVersion` trusts the caller's bytes. At least check them against each bound store's header metadata version.
+
+**Measured vs hypothesis.** Measured:
+- the top_* codes;
+- the INT-edge 0AF00;
+- the F2b FLOAT entries (both engines);
+- the duplicate-option message through Go's loader;
+- (d1) loading in the target;
+- the load-order shapes tested.
+
+Still source-only: the carry classes, the (d) migration (shown broken above), the guard and restore, the lane refusal, and the coverage rule.

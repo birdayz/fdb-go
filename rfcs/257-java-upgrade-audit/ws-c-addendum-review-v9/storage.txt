@@ -1,0 +1,71 @@
+**NAK.** Tree `d6ad3e9c2c5bc3a32c42cf0399c97afade52e098`; design SHA256 `3d3898502df800e95c35f86d54c7da360fe19e879338b2b56c92b9d647b472c6`, 1668 lines (recomputed). Read-only review: no tests, probes or edits. A finding is from reading source unless it says **measured**.
+
+Every revision-8 finding is resolved in the code, and the new parsers and bytes match Java. The NAK is for an incomplete upgrade instruction that leads to silent corruption when both engines share a store, plus two claims wider than the code.
+
+## Findings, most severe first
+
+**1. Medium (docs; wire consequence): the upgrade note misses node-slot-index R-trees.** The note is at design `:1589-1592` and CHANGELOG `:289-290`.
+- Before this revision, Go wrote no node slot index at all: v8's `rtree_storage.go` has no node-slot-index code.
+- `flushNodeSlotIndex` only updates entries for the nodes an operation touches. So a `{rtreeUseNodeSlotIndex: true}` index that Go maintained before stays partial forever.
+- Go never reads that index, but Java finds leaves through it for every insert and delete (`NodeSlotIndexAdapter.java:106-176`, `RTree.java:1497`). Java then picks the wrong leaves and corrupts the tree silently. This index is not in the rebuild list.
+- "Created by Go" is also too narrow. A Java-created BY_SLOT or node-slot-index index that an earlier Go maintained is corrupt too, as the CHANGELOG itself says at `:280-282`.
+- Lesser cases with the same cause: `rankCountDuplicates`, `unique` or `textOmitPositions` spelled "True"/"TRUE" were read as false by earlier Go, so the existing entries were written under the other meaning.
+- **Fix:** say "every multidimensional index with `rtreeStorage`, a true `rtreeUseNodeSlotIndex`, or `rtreeStoreHilbertValues` without storage, that an earlier Go release maintained", and list the boolean cases.
+
+**2. Low: "`Build`'s index and record-type checks … are in a fixed order" is not true of the whole of Build.** The claim is at design `:1559-1563` and CHANGELOG `:248`. Three error-returning loops still range over the `b.recordTypes` map in `metadata.go`:
+- `:834`, the primary-key checks;
+- `:1034`, the record-type-key collision. Its message names `prevName, name` (`:1045-1046`), so even with only two colliding types the names swap from run to run;
+- `:1319`, the since-version check.
+
+Sort them and pin them, or narrow the claim.
+
+**3. Low: "every index ever handed to its `AddIndex`" (design `:1573-1575`) misses one path.**
+- `AddIndex` with an unknown record type returns before `addIndexCommon` (`metadata.go:581-586`), so the index never reaches `addedIndexes` (`:621`).
+- So `SetSubspaceKey(nil)` followed by `AddIndex("Nope", idx)` builds to "Unknown record type". Java throws at the setter.
+- **Fix:** record the index before the type lookup, and pin it.
+
+**4. Nits**
+- **Stale "Go kept the default" for RANK levels** (CHANGELOG `:272-273`). v8 used "1" as one level and clamped values above 8 to 8 (`97d0b918:ranked_set.go:88-93`); only a non-int or ≤0 took the default. Such an index now fails every write, and the CHANGELOG should say so.
+- **Wrong comment on deletes** (`ranked_set.go:113-114`). "A delete re-tosses them, as in Java" is false: neither engine hashes on remove (`RankedSet.java:382` is the only `getKeyHash` call). Also, `:120-122` silently turns a randomness read error into hash 0.
+- **Mutation label for m84/c2.** The mutant keeps the storage gate and only flips "absent means false". The other half (not read without storage) is pinned by a unit case and the JVM set "Hilbert false without storage keeps them", but no mutation covers it. Rename the row.
+- **Vector wording.** CHANGELOG `:240-241` still says the vector checks compare effective values "as Java's do", without 7.9's scope to the `hnsw*` names only.
+
+## Revision-8 findings, checked against Java and the code
+- **Parsers match Java:**
+  - `javaParseInt` matches `Integer.parseInt`: signs, accumulation, int32 limits, BMP Nd digits, and a surrogate is not a digit.
+  - `javaParseBoolean` matches `parseBoolean`.
+  - The hash registry holds Java's four names, looked up exactly, with the "hash function not found" refusal. `murmur3Hash` is Guava's `hashBytes` (seed 0, little-endian tail, fmix).
+  - `setNLevels` enforces [2, 8] with `MAX_LEVELS = 8`.
+  - `parseRTreeConfig` reads options in `getConfig`'s order, including the storage-gated Hilbert quirk, with the `valueOf` text.
+  - Both option checks read the old config first, as Java does.
+- **Bytes match Java's adapters:**
+  - BY_SLOT keys are `(nodeId, kind, slotKey…)` and values are `slotValue`, with a null Hilbert value when values are not stored.
+  - A BY_SLOT leaf is sorted on read when Hilbert values are not stored.
+  - A node-slot-index entry is `(childLevel, largestHV, largestKey items…, childId)`, stored under `secondary/0`.
+  - Java does not touch the node slot index on moveIn/moveOut (level -1), so root split, root promotion (leaf and intermediate) and fuse all leave the same set Go's difference leaves.
+  - `deleteWhere` clears the node slot index under its prefix, and `clearIndexData` clears the secondary subspace.
+- **Validators and Build:**
+  - The rename visitor now uses Java's messages and classes.
+  - The rename walk follows the union order; the text-option, base-option and `RecordTypesForIndex` walks are sorted.
+  - The union-less path is deleted.
+  - Build's messages are Java's texts.
+  - Build returns the first fault by a global sequence.
+  - `RemoveIndex`, a refused set on already-built meta-data (declared) and a typed-nil enum pointer are handled; a refused set no longer marks the key explicit.
+  - The rootless refusal and `KeyExpressionDeserializationError` are in place.
+  - The 7.7 claims are annotated, doc comments are restored, and the double normalization is gone.
+
+## Measured
+- **Mutations:** m81–m104 and c1–c5 each show marker count 1, the diff, bazel exit 3, the tabled red set, and "restored". `run.out` reads ALL-DONE, with no "NOT RESTORED".
+- **Mutation lines:** every mutated line's text sits at the same line number in the candidate blob (checked for all 29).
+- **Baselines:**
+  - Unit: "Ran 3715 of 3716", 3715 passed. All 15 named plain tests show `--- PASS` in `baseline.full.log`.
+  - JVM: 46 of 1642, all passed.
+- **Source hashes:** six candidate blobs hash to the values in `ev13/src.sha` (`rtree_storage.go`, `rtree.go`, `ranked_set.go`, `metadata.go`, the validator, and the MD conformance test). `check.txt` reads ok 1039.
+- **ev13 runs:**
+  - `jvm-wsc`: 185 of 185.
+  - `just test`: 94 of 94.
+  - `MD_OPTIONS`: slot-index entries equal nodes minus 1 at every step.
+  - `RANK_HASH_BYTES` level-1 populations: JDK 8, CRC 9, MURMUR3 7.
+- **Not verified:** the `good/` copies are not byte-verified, because hashing under `/var/tmp` was denied.
+
+The preserved boundaries are unaffected.

@@ -1,0 +1,74 @@
+**NAK.** Tree `97d0b9181d02696345e166b12d9ba09b18141c49`. I recomputed the design hash: `ws-c-design.md` is SHA256 `2e97dd6796b4740432364e8d63ab16e4ecb1dcf84aacf1e3fc340bb3bea92400`, 1477 lines, which matches. The review was read-only: I ran no tests, probes or mutations. A finding is from reading source unless marked **measured**.
+
+Nearly every revision-7 finding is resolved. The NAK is for one new verdict gap that lets through a change Java refuses (fail-open), plus the same class of finding as v7: claims that go further than the code does.
+
+## Findings, most severe first
+
+**1. Medium: the RANK and R-tree "effective values" are Go's parsers, not Java's configs. One of them, new in revision 8, admits a change Java refuses.**
+- **Rank hash function.** `rankHashFunctionName` (`metadata_evolution_validator.go:969`) treats every name except "CRC" as "JDK".
+  - Java knows four hash functions: JDK, CRC, RANDOM and MURMUR3. An unknown name throws "hash function not found" (`RankedSetHashFunctions.java:47-59`).
+  - So JDK↔MURMUR3, JDK↔RANDOM and unset↔MURMUR3 are now **admitted**. Java refuses each one ("rank hash function changed").
+  - Revision 7 compared raw strings and refused them.
+  - The root cause is in the maintainer: `parseRankedSetConfig` (`rank_index_maintainer.go:61-67`) also folds MURMUR3 and RANDOM into JDK. A Java MURMUR3 rank index maintained by Go therefore hashes differently, which is a wire divergence. It is not tracked anywhere: "murmur" has 0 hits in TODO.md and DIVERGENCES.md, while the control `crcHash` hits 4 files.
+- **R-tree Hilbert values.** Java reads `rtreeStoreHilbertValues` only when `rtreeStorage` is set (`MultiDimensionalIndexHelper.java:62-65`, which tests `rtreeStorage != null`). With the storage option set and the Hilbert option unset, Java's effective value is `false`. `parseRTreeConfig` (`multidimensional_index_maintainer.go:78-82`) always defaults to `true`. The consequences:
+  - `{storage}` → `{storage, hilbert:"true"}`: Java refuses, Go admits.
+  - `{}` → `{hilbert:"false"}`: Java admits, Go refuses.
+  - `rtree_storage.go:198` writes a leaf slot's Hilbert value according to this flag, so Go writes such a Java index differently. That is wire-level, and "hilbert" has 0 hits in TODO.md and DIVERGENCES.md.
+- **Booleans.** Go matches strings exactly: `== "true"` for count-duplicates and node-slot-index (`:1133`), `== "false"` for Hilbert. Java's `Boolean.parseBoolean` ignores case.
+- **Fix:**
+  - Port `getHashFunction` (Java's four names; refuse an unknown one) and `MultiDimensionalIndexHelper.getConfig`, quirk included, with Java's boolean parsing.
+  - Add JVM shapes for the option families. None exists today; m78 and the default-value spec cover only Go's own view.
+  - Book the two maintainer divergences in TODO.md, or fix them.
+
+**2. Low: "every `MetaDataEvolutionError` now starts with Java's message" covers only the validator file.**
+- The census covered the validator's `Message:` literals only. `rename_fields_visitor.go:196`, `:202`, `:216` and `:221` also build `MetaDataEvolutionError`, and they are not Java's text.
+- Java's messages are "field not found in source/target descriptor", "parent field not found" and "parent field is not of message type" (`RenameFieldsVisitor.java:127`, `:134`, `:299`, `:306`).
+- `:167` is Java's `RecordCoreArgumentException` (`RenameFieldsVisitor.java:149`, `:214`), not a `MetaDataException`.
+- These are mostly unreachable with valid meta-data. The fix is to port them or narrow the sentence.
+
+**3. Low: "a nil key is refused on every path" still misses two paths.**
+- **Already-built meta-data.** `SetSubspaceKey(nil)` on an index of an already-built `RecordMetaData` records an error that nothing reads. The only reader is `Build` (`metadata.go:791`), and the key stays unchanged. The v7 reviews (Graefe 2) raised this path. 7.8 neither closes it nor declares it.
+- **RemoveIndex.** A refused set followed by `RemoveIndex` before `Build` is lost, because `Build` walks only `b.indexes`.
+- **Enum typed nil.** A typed-nil generated-enum pointer panics at `subspace_key_identity.go:160` (`Number()` through a nil pointer).
+- **Fix:** declare the first at the setter and in the CHANGELOG, carry the refusal through `RemoveIndex`, guard nil enum pointers, and pin each.
+
+**4. Nits**
+- **Map order is still used** despite "changed options are walked by name":
+  - `validateTextIndexOptions` (`:900`): when the tokenizer name and version both change, the message varies from run to run.
+  - `getTypeRenames` (`:238`): walks `pairs` under `disallowTypeRenames`, where Java walks the union's fields in order.
+  - `validateMessages` (`:1187`).
+- **Misplaced doc comments.** `isNilSubspaceKey` (`subspace_key_identity.go:98`) sits under `tupleEquivalentValue`'s doc, which now attaches to it and still says "Only nil maps to nil" (`:89`), false since the typed nils. `formerIndexNameSuffix` (`metadata.go:2275`) sits under `formerIndexNameOrUnknown`'s doc in the same way.
+- **Vector "as Java's do".** Java checks every wire name of each option, the `hnsw*` canonical name and its `vector*` alias (`VectorIndexOptionsHelper.java:160-168`). Go knows only the `hnsw*` names: `"vectorMetric"`, `"vectorNumDimensions"` and `"vectorEngine"` have 0 hits in `pkg/*.go`, against a control of 3 files for `"hnswMetric"`. The umbrella RFC assigns aliases to WS-D, so 7.8 should say so. Go also accepts the metric spellings `cosine` and `inner_product`, which Java's `Metric.valueOf` rejects.
+- **Mutation baselines** are not byte-verified; hashing under `/var/tmp` was denied to me. The applied diffs land on the candidate's lines (m77 at `:1311`, m78 at `:954`).
+
+## Revision-7 findings, checked
+- **Graefe 1, Torvalds 2, storage 2:** resolved in the validator.
+  - Every Java message is a prefix of Go's, apart from the three declared ones and finding 2 above.
+  - `validateIndex` runs name, versions, type, record types, root, positions, options in Java's order (`MetaDataEvolutionValidator.java:629-755`).
+  - Roots, primary keys and rename agreement use `keyExpressionEquals`, with the receiver on the same side as Java's.
+  - `validateField` runs name, deprecation, type, label (as an else-if chain), enum, message, matching `:283-328`.
+  - Former-index and index version messages match `MetaDataValidator.java:124-178`.
+- **Graefe 2, Torvalds 1, storage 1:** resolved except finding 3.
+  - The refusal is sticky, and `Build` checks every index's refusal.
+  - A struct literal is keyed by its name; typed nils are refused; `Build` refuses a nil former-index key.
+  - A literal index that is removed saves and reloads.
+- **Torvalds 3 (merge wording):** resolved. The superseded phrase has 0 hits in the CHANGELOG, DIVERGENCES, the design, `pkg` and `conformance`, against a control of 2, 2 and 11 hits for "mutual builder".
+- **Nits:** all resolved.
+  - The count is corrected.
+  - The m56 file and the `just test` tree move are explained.
+  - The conformance specs now assert `HavePrefix(java.Error)`.
+  - Rendering and HashMap order are declared.
+  - `fdb.Key` is copied.
+  - The BY_INDEX nested-tuple case is declared and pinned.
+  - The stale comments are corrected, and m71–m76 are added.
+
+## Measured
+- **Source hashes.** Six candidate blobs match `ev12/src.sha`; `run.out` shows "ok 1135 notok 0".
+- **`just test` tree.** It ran on `79499fef`, which differs from the candidate only in 12 review and evidence files under `rfcs/`. Result: 94 tests pass.
+- **JVM specs.** `jvm-subspace2`: 36 of 36 passed, every line printed, and Java valid wherever the design says so (int32→int64, optional→required, null interpretation).
+- **WS-C focus run.** 603 of 603, including the merge spec.
+- **Final targets.** 3708 of 3709. All six new plain tests show `--- PASS`.
+- **Mutations m61–m80.** Each has marker count 1, bazel exit 3, the red set as tabled, and "restored". The baseline passed 462 of 462.
+
+## Graefe lens
+From the diff, no non-test session file changed between v7 and v8: launcher and catcher, session start, per-transaction state checks and publication all stand as accepted at v6/v7. The merge's lock-out is now measured. Two behaviours remain Go-only and undeclared: the option parsers (finding 1) and the setter on built meta-data (finding 3). The preserved boundaries are unaffected.

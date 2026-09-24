@@ -65,7 +65,7 @@ func TestFDB_ForkCollidingSubfield(t *testing.T) {
 				{Name: proto.String("ID"), Number: proto.Int32(1), Label: optl, Type: i64},
 				{Name: proto.String("ARR"), Number: proto.Int32(2), Label: rep, Type: msg, TypeName: tn("E1")},
 			}},
-			{Name: proto.String("UnionDescriptor"), Field: []*descriptorpb.FieldDescriptorProto{
+			{Name: proto.String("RecordTypeUnion"), Field: []*descriptorpb.FieldDescriptorProto{
 				{Name: proto.String("_TC"), Number: proto.Int32(1), Label: optl, Type: msg, TypeName: tn("TC")},
 			}},
 		},

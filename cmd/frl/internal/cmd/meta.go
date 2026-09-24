@@ -86,6 +86,7 @@ func newMetaEvolveCheckCmd() *cobra.Command {
 		allowNoVersionChange        bool
 		allowIndexRebuilds          bool
 		allowUnsplitToSplit         bool
+		allowLiteralWidening        bool
 	)
 	c := &cobra.Command{
 		Use:   "evolve-check",
@@ -118,6 +119,7 @@ func newMetaEvolveCheckCmd() *cobra.Command {
 				SetAllowNoVersionChange(allowNoVersionChange).
 				SetAllowIndexRebuilds(allowIndexRebuilds).
 				SetAllowUnsplitToSplit(allowUnsplitToSplit).
+				SetAllowLiteralCarrierWidening(allowLiteralWidening).
 				Build()
 			if err := validator.Validate(oldMeta, newMeta); err != nil {
 				return fmt.Errorf("incompatible evolution: %w", err)
@@ -135,11 +137,14 @@ func newMetaEvolveCheckCmd() *cobra.Command {
 	c.Flags().StringVar(&newPath, "new", "", "path to the proposed MetaData.pb (required)")
 	c.Flags().StringVarP(&outputFmt, "output", "o", "text", "output format: text or json")
 	c.Flags().BoolVar(&allowNoVersionChange, "allow-no-version-change", false,
-		"accept evolutions where the metadata version hasn't advanced")
+		"accept an unchanged metadata version (a lower one is still refused)")
 	c.Flags().BoolVar(&allowIndexRebuilds, "allow-index-rebuilds", false,
 		"accept changes that trigger a full index rebuild")
 	c.Flags().BoolVar(&allowUnsplitToSplit, "allow-unsplit-to-split", false,
 		"accept toggling split_long_records from false to true")
+	c.Flags().BoolVar(&allowLiteralWidening, "allow-literal-carrier-widening", false,
+		"accept a key literal that moved from long_value to int_value (or, inside long arithmetic, "+
+			"double_value to float_value) with the same value, as a relational schema rebind does")
 	_ = c.MarkFlagRequired("old")
 	_ = c.MarkFlagRequired("new")
 	return c

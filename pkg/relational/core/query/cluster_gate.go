@@ -879,7 +879,7 @@ func (t *cascadesTranslator) clusterArity(op logical.LogicalOperator) int {
 			return a
 		}
 		return 1
-	case *logical.LogicalInlineValues:
+	case *logical.LogicalInlineValues, *logical.LogicalSingleton:
 		return 1
 	case *logical.LogicalCTE:
 		if o.Recursive() {

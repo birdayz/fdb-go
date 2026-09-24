@@ -621,16 +621,20 @@ func (t *cascadesTranslator) translateGatheredInnerCluster(j *logical.LogicalJoi
 // executor binds legs by ALIAS, so RC leg order is independent of cursor
 // outer/inner roles). Returns nil when a leg is untranslatable (same rule as
 // the anchored seed). The seed shape is asserted loud
-// (values.AssertOrdinalJoinSeed — every seed must pass this invariant check).
+// (values.ValidateOrdinalJoinSeedForLegs checks every declared input, including
+// zero-width legs).
 // The returned legTypes map (UPPER alias → bakeLegType) feeds
 // bakeGatedJoinPredicates at the seed and the WHERE-merge site.
 func (t *cascadesTranslator) buildOrdinalJoinResultValue(legs []clusterLeg) (values.Value, map[string]bakeLegType) {
-	fields, legTypes := t.ordinalJoinSeedFields(legs)
+	fields, legTypes, owners := t.ordinalJoinSeedFields(legs)
 	if fields == nil {
 		return nil, nil
 	}
 	rc := values.NewRawRecordConstructorValue(fields...)
-	values.AssertOrdinalJoinSeed(rc)
+	if err := values.ValidateOrdinalJoinSeedForLegs(rc, owners); err != nil {
+		t.setTranslateErr(err)
+		return nil, nil
+	}
 	return rc, legTypes
 }
 
@@ -640,13 +644,14 @@ func (t *cascadesTranslator) buildOrdinalJoinResultValue(legs []clusterLeg) (val
 // mixed/partial shapes legitimately skip AssertOrdinalJoinSeed) before
 // deciding on the assert. nil fields = a leg is untranslatable (same decline
 // rule as the seed).
-func (t *cascadesTranslator) ordinalJoinSeedFields(legs []clusterLeg) ([]values.RecordConstructorField, map[string]bakeLegType) {
-	var fields []values.RecordConstructorField
+func (t *cascadesTranslator) ordinalJoinSeedFields(legs []clusterLeg) ([]values.RecordConstructorField, map[string]bakeLegType, []values.QuantifiedObjectValue) {
+	fields := make([]values.RecordConstructorField, 0)
+	owners := make([]values.QuantifiedObjectValue, 0, len(legs))
 	legTypes := make(map[string]bakeLegType, len(legs))
 	for _, leg := range legs {
 		entry, ok := t.legBakeEntry(leg)
 		if !ok {
-			return nil, nil
+			return nil, nil, nil
 		}
 		typ := entry.typ
 		// BINDING-keyed: == UPPER alias for every non-duplicate leg; the
@@ -680,8 +685,9 @@ func (t *cascadesTranslator) ordinalJoinSeedFields(legs []clusterLeg) ([]values.
 		}
 		qov, err := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(leg.binding), typ)
 		if err != nil {
-			return nil, nil
+			return nil, nil, nil
 		}
+		owners = append(owners, qov)
 		for i := range typ.Fields {
 			// This is the one purpose boundary that mints the physical seed's
 			// top-level positional references. Ordinary resolved FieldValues are
@@ -690,16 +696,16 @@ func (t *cascadesTranslator) ordinalJoinSeedFields(legs []clusterLeg) ([]values.
 			// loud seed invariant below.
 			resolved, err := values.ResolveOrdinalSeedField(qov, i)
 			if err != nil {
-				return nil, nil
+				return nil, nil, nil
 			}
 			fv, ok := values.AsFieldValue(resolved)
 			if !ok {
-				return nil, nil
+				return nil, nil, nil
 			}
 			fields = append(fields, values.RecordConstructorField{Name: fv.DisplayName(), Value: fv})
 		}
 	}
-	return fields, legTypes
+	return fields, legTypes, owners
 }
 
 // bakeGatedJoinPredicates rewrites a gated join's CROSS-LEG predicates so

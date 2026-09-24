@@ -1,0 +1,40 @@
+**NAK — IMPLEMENTATION CODE** at tree `e1496e0d87778d57a90b5fd3287f39a38da04dec`.
+
+Two source-derived regressions remain. Neither was executed during this read-only review.
+
+1. **P2 — Star expansion can still overwrite an explicit alias’s owner.**
+
+   ```sql
+   SELECT t.id AS v, t.* FROM t ORDER BY v
+   ```
+
+   [logical_predicate.go:3152](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:3152) correctly counts only the authored alias. However, star expansion still populates `projAliases` with inherited names in both construction paths ([select_parser.go:948](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/select_parser.go:948), [logical_predicate.go:7007](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:7007)).
+
+   The binding map at [logical_predicate.go:6026](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:6026) then overwrites `V → slot 0` with `V → slot 2`. Line 6188 copies the star-expanded `T.V` Value instead of the explicit alias’s `T.ID` Value. Oppositely ordered ID/V data therefore sorts incorrectly. Java’s [alias filtering:942](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/visitors/QueryVisitor.java:942) leaves the explicit alias as the unique owner.
+
+   The new [star regression:832](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/order_by_exact_metadata_test.go:832) puts the explicit alias last, masking this overwrite.
+
+   **Required fix:** use the same phase-specific eligible candidates for cardinality and binding, carrying the unique output owner through both constructors. Add explicit-alias-before-star coverage asserting slot 0, exact Value/source ordinal, and discriminating ordered rows; retain the reverse-order and grouped controls.
+
+2. **P2 — Moving duplicate validation loses it entirely for lifted UNION ordering.**
+
+   ```sql
+   SELECT id FROM t UNION ALL SELECT id FROM t ORDER BY id, id
+   ```
+
+   The prior parser rejected this with `42701`. The replacement validator is called only at [logical_predicate.go:6328](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:6328), but UNION lifting clears `sq.orderBy` at [line 5954](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:5954). Consequently, that validator never sees these keys.
+
+   [validateUnionOrderByColumns:7314](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:7314) resolves both keys to output position 1 without checking duplicates. Both catalog UNION paths therefore lose the rejection. Java’s [validateOrderByColumns:347](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/SemanticAnalyzer.java:347) rejects repeated resolved names.
+
+   **Required fix:** retain authored ORDER expressions/segments across lifting and validate duplicates after UNION semantic resolution. Add both-constructor regressions for repeated valid names and resolution-error precedence, preserving the approved combined-result sorting extension.
+
+The frozen delta, prior reviews/prompts, Java source, and evidence reconcile. All **6,411 frozen hashes** match the tree and workspace. The launch header confirms **gpt-6-astra / xhigh / read-only**. The two corrected grouped expectations retain their original queries and positive assertions. The **35 Java records**, three compiled mutation kills, and **9,115 RUN/PASS entries across two uncached affected targets** do not cover these remaining cases. The invalid historical mutation and formatting-only build failure receive no credit.
+
+Separate execution/publication gates:
+
+- The single inspected verification snapshot credits **30-second/four-worker fuzz: 3,937,316 executions**. Full93, race14, `just test`, and nominal1M ABBA remain uncredited. Cancelled suites are not full greens. Repairs require refreezing and verification.
+- Bounded GRV/RPC attribution stands; universal parity remains unestablished. Historical startup-timeout causation still lacks original artifacts.
+- Legacy RaBitQ disable/rebuild remains prerequisite. HEAD remains `71ccd8cf8b3fd0dbafe283e91171818e36af555e`; commit/push/merge remain unauthorized and PR786 remains draft/unchanged.
+- Storage scope ACK stands; FDB C++ remains **7.3.77**. Approved nullable-array/raw/scalar/sorting extensions remain; **WS-B–K remain open**.
+
+No edits, builds/tests, agents, worktrees, Git mutations, or GitHub contact occurred.

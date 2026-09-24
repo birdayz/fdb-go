@@ -217,22 +217,38 @@ func childSlotEqual(a, b ChildSlot) bool {
 	return true
 }
 
+// RTreeStorage is Java's RTree.Storage: how a node's slots are laid out.
+type RTreeStorage string
+
+const (
+	// RTreeStorageByNode stores a node as one key/value pair, its slots a
+	// nested tuple in the value (Java's ByNodeStorageAdapter). The default.
+	RTreeStorageByNode RTreeStorage = "BY_NODE"
+	// RTreeStorageBySlot stores each slot of a node as its own key/value pair
+	// under the node's key (Java's BySlotStorageAdapter).
+	RTreeStorageBySlot RTreeStorage = "BY_SLOT"
+)
+
 // RTreeConfig configures the R-tree behavior.
 // Matches Java's RTree.Config.
 type RTreeConfig struct {
-	MinM               int  // Min slots per non-root node (default 16)
-	MaxM               int  // Max slots per node (default 32)
-	SplitS             int  // Siblings involved in split/fuse (default 2)
-	StoreHilbertValues bool // Store HV in leaf slots (default true)
-	NumDimensions      int  // Number of spatial dimensions
+	MinM               int          // Min slots per non-root node (default 16)
+	MaxM               int          // Max slots per node (default 32)
+	SplitS             int          // Siblings involved in split/fuse (default 2)
+	Storage            RTreeStorage // Node layout (default BY_NODE)
+	StoreHilbertValues bool         // Store HV in leaf slots (default true)
+	UseNodeSlotIndex   bool         // Maintain the node slot index (default false)
+	NumDimensions      int          // Number of spatial dimensions
 }
 
-// DefaultRTreeConfig returns the default R-tree configuration.
+// DefaultRTreeConfig returns the default R-tree configuration, Java's
+// RTree.DEFAULT_CONFIG.
 func DefaultRTreeConfig(numDimensions int) RTreeConfig {
 	return RTreeConfig{
 		MinM:               16,
 		MaxM:               32,
 		SplitS:             2,
+		Storage:            RTreeStorageByNode,
 		StoreHilbertValues: true,
 		NumDimensions:      numDimensions,
 	}
@@ -273,6 +289,17 @@ type leafNode struct {
 type intermediateNode struct {
 	id    []byte
 	slots []ChildSlot
+
+	// height is the node's level in the tree, a leaf's being 0, so its child
+	// slots name children at height-1 in the node slot index. The RTree sets
+	// it from the path it walked.
+	height int
+	// orig, origHeight and fetched are what the node was when read from FDB,
+	// for the node slot index difference an operation makes: fetched says
+	// orig holds the slots it was read with, at origHeight.
+	orig       []ChildSlot
+	origHeight int
+	fetched    bool
 }
 
 // compareHilbertValueAndKey compares (hv1, key1) with (hv2, key2).

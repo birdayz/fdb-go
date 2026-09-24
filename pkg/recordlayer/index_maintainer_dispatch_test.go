@@ -186,7 +186,8 @@ var _ = Describe("index maintainer dispatch", func() {
 			// value maintainer: absent type flattened to "" and came back correct
 			// by accident. With the dispatch failing closed, the default has to be
 			// real or Java-authored metadata stops opening.
-			idx, err := indexFromProto(&gen.Index{Name: proto.String("Order$notype")})
+			// A root, which Java's Index(proto) requires (KeyExpression.java:404-405).
+			idx, err := indexFromProto(&gen.Index{Name: proto.String("Order$notype"), RootExpression: Field("price").ToKeyExpression()})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(idx.Type).To(Equal(IndexTypeValue))
 		})
@@ -196,8 +197,9 @@ var _ = Describe("index maintainer dispatch", func() {
 			// is a type no maintainer implements and must reach the dispatch and
 			// be refused there — Java draws the line in the same place.
 			idx, err := indexFromProto(&gen.Index{
-				Name: proto.String("Order$emptytype"),
-				Type: proto.String(""),
+				Name:           proto.String("Order$emptytype"),
+				Type:           proto.String(""),
+				RootExpression: Field("price").ToKeyExpression(), // Java requires a root
 			})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(idx.Type).To(Equal(""))

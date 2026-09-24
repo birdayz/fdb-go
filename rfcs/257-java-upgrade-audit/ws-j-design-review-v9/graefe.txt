@@ -1,0 +1,93 @@
+**NAK.** I reviewed tree `f8abe2d742df8c35b44fb0c6f854f86c3cd3a016` and recomputed the design's hash from it: `b285bfa37aace7554d0af471a642346bcad339688e7cd10df21d031cb8fa3f94`, 2196 lines, matching what you gave. Java is at `fdacd162a` (read from `.git/HEAD`). The review was read-only: I ran nothing.
+
+## What holds
+- **Evidence:**
+  - Five hashes in evidence-v9 match the tree's blobs.
+  - The `just test` tree `f2f272dc` differs from the candidate only in `ws-c-design.md`, the oracle README and evidence-v9. It executed `recordlayer_test`, `catalog_test` and `sqldriver_test`.
+  - Both WS-J passes ran 27 of 51 specs, all passing, with the same tally. The JVM spec has 35 `VALIDATE_RECORDS` lines.
+  - All 15 wm9 logs show the marker count at 1, the target failing, and the file restored. wm9-7 now reddens all six fault arms. The wm9-0 baseline shows 17 subtests, all passing.
+- **Java claims checked:**
+  - `ToOrderedBytesValue` and `CollateValue` are BYTES; `CardinalityValue` is INT.
+  - `PhysicalOperator` has 107 rows.
+  - `encapsulate` refuses in two steps (`ArithmeticValue.java:213-231`).
+  - `visitInPredicate` checks the nested SELECT and the NULL items at entry (`AstNormalizer.java:458-463`).
+  - Among an IN list's items, only EXISTS holds a query (`RelationalParser.g4:1245-1276`).
+  - `Index(proto)` groups, then folds `value_expression`, and defaults a missing added version to 1 (`:194-233`).
+- **The (d) replay against e48f5b496:** the name-first loop, the top-level-only `ByName` lookup, and loader steps 4 and 5 all match. The "only if" wording in `metadata_proto.go:405-440` is correct.
+- **v8 findings:** each has a textual answer. Two answers are incomplete (findings 1 and 2 below), and one leaves stale copies (finding 3).
+
+## MEDIUM
+
+**1. A concurrent drop and fresh create can defeat the restore's "nothing binds" refusal (design :491, :528-536).**
+- The listing checks that some schema binds (t, v). The final transaction only re-checks that (t, v) is not stored and adds a conflict range. The design calls a DROP SCHEMA in the window harmless ("only shrinks the set", :534). Under the v9 rule it is not harmless.
+- **Sequence:**
+  1. The restore lists S, the only schema bound to (t, 3), and reads its header.
+  2. DROP SCHEMA S commits.
+  3. CREATE SCHEMA TEMPLATE t commits a fresh v1: the guard sees no bindings.
+  4. The restore commits: no conflict, because both writes came before its read version.
+- That is the v8 Torvalds #2 two-history state again.
+- **Fix:**
+  - In the final transaction, re-read with limit 1 that some (t, v) binding remains. This is O(1) and keeps the conflict range.
+  - Correct :534.
+  - Add this interleaving as an FDB test.
+
+**2. The edited-file route bypasses evolution validation (:1865-1885, (p)).**
+- The route admits an edited file when:
+  - it frames every stored record type at the same field number;
+  - it loads;
+  - its version is stored + 1.
+- It checks nothing else. `SaveRecordMetaData` runs the evolution validator (`metadata_store.go:111-117`); this route cannot, because the stored file does not load.
+- So the route admits these edits unchecked:
+  - an index root changed with its last-modified version kept, whose old entries are then served as-is;
+  - a changed primary key or record-type key;
+  - a non-holding field retyped;
+  - a holding field retyped to a message with a different wire meaning.
+- "Which is the whole requirement" (:1877) overclaims.
+- **Fix:**
+  - Require everything outside the two union candidates and the named holding fields to be proto-equal to the stored file, apart from the version and pure additions.
+  - Restrict a holding field to removal or a wire-compatible retype.
+  - Add refusal tests for an index-root edit and a primary-key edit.
+
+## LOW
+
+**3. Superseded claims remain outside the design.** `DIVERGENCES.md:2981-2995` still says:
+- "the DDL half with section 6's lane port" (v9 moved it to step 3);
+- "either `CreateTemplate`" (missing `CreateTemplateFromProto`);
+- "Order, cardinality and collation keys are outside the check" (v9 types them as operands and refuses `bitand(order_desc(a),1)`).
+
+`TODO.md:14838-14841` and the umbrella's gate 8 (`:748-751`) list neither the step-3 DDL-origin refusal nor `CreateTemplateFromProto`. Grep for each superseded phrase until it returns zero.
+
+**4. The carried route is underspecified.**
+- :839 says the in-memory catalog runs no (d) check. But its `CreateTemplateFromProto` loads from `md`, and `Build` refuses (d) on any load (`metadata.go:1509-1510`).
+- The design does not name:
+  - the FDB route's SQLSTATE for (d) (`deserializeTemplate` wraps it as 0A000, `fdb_template_catalog.go:302-305`);
+  - the reader that gives `carryNumbering` "the catalog row itself" (:1308). No raw-bytes reader exists, and the in-memory catalog's answer is unstated.
+- `fleet.SaveTemplate` returns only an error (`migrate.go:49-53`), so the caller's `tmpl` holds the numbering before the carry. State that, or return the stored template.
+
+**5. :866 is wrong for the eight DDL shapes Go stores today.**
+- :866 says stored templates holding a no-lane key are covered by 3.5's decline and section 4's WIDENED class.
+- The eight shapes (`goNow`) are not WIDENED. After step 3 their own DDL is refused at the clause, so no new version of such a template can be saved without dropping the index.
+- (m) and DIVERGENCES scope the decline to the `long_value` bitmap only.
+- Declare this in CHANGELOG and (m).
+
+**6. (t)'s "no divergence once step 3 lands" (:2184) is scoped too wide.**
+- It holds for the ten measured single-fault key shapes.
+- The generator check runs after translation. So a no-lane operator in an index WHERE, and the precedence against translation-time faults (a WHERE fault, the top-node check), keep Go's outcome until step 6.
+- The lane rule also has no answer for an operand with no Java Value, such as a custom function key. State that it fails closed.
+
+**7. The in-memory catalog's rationale (:847-855) misses rebinding by name.**
+- `RepairSchema` rebinds by name to the latest version (`store_catalog.go:136-150`).
+- **Sequence:** DROP SCHEMA TEMPLATE t, a fresh t saved to a version above the one S holds, then `RepairSchema` S. UPGRADE admits it and the validator passes a predicate-only difference.
+- **Fix:** refuse a fresh create while any held schema names t, or declare it.
+
+## Measured and source-only
+- **Measured:**
+  - WSJIX options (`{unique=true}`);
+  - WSJLANE `goNow` (eight OK, two XX000);
+  - the faults test's six arms;
+  - wm9-1 to wm9-12 under Bazel, and wm9-17 to wm9-19;
+  - the 35 descriptor shapes;
+  - the unchanged tally.
+- **Source only:**
+  - findings 1-7;
+  - everything unbuilt in steps 1-3: `CreateTemplateFromProto`, the guard from latest + 1, the restore, the lane check with result typing, the DDL-origin XX000, the IN walk, the migration and the edited-file route.

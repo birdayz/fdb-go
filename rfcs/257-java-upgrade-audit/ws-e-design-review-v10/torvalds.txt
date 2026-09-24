@@ -1,0 +1,65 @@
+**NAK: RFC-257 WS-E design v10 (Torvalds lens)**
+
+- **Tree:** `4d41fb8144ee269e1f5cd5e145f9f54ab0e0e99d`
+- **Design:** `rfcs/257-java-upgrade-audit/ws-e-design.md`, SHA-256 `df8dfdc91782423462b8ef3855db836c72406decb7408098199b8033b55938a6`, 3294 lines. I recomputed the hash from `git show`.
+- **Method:** read-only. I read the three v9 verdicts, the full v10 design and its diff from v9, the v10 Describe, the evidence and the prototype logs, WS-F v2, and the Java and Go sources cited below. I ran nothing.
+
+**Resolved from v9.** The provenance prune is withdrawn. The `nested_ins` shape is derived from a memo dump. The chain's WS-F dependencies are named. The column claims are withdrawn, with a catalog-reload test. The year domain now covers RFC 3339 offsets. The census matcher covers `Eval`. The dedup uses `deepValueEqual`. `LiteralFanout`, the signed-zero continuation, the registry note and "ok 10 notok 0" are all addressed. Four problems remain: NaN (M1), one parser (M2), the second crossing (H2d) and #7 (M3).
+
+## HIGH
+
+**H1. 4.3 "THE COMPARISON" has no mechanism (design:1401-1409, property test :1427-1430).**
+- It says a DATE and a TIMESTAMP "compare under their common type TIMESTAMP: the DATE promotes". Go never injects that promotion:
+  - The comparison constructor promotes only ENUM (`expr.go:911-925`).
+  - IN items are promoted only to UUID or ENUM (`expr.go:1830-1843`).
+  - `cmpAny` compares string with string as text.
+- With the `time.Time` arms deleted, `CAST('2024-01-01' AS DATE) = CAST('2024-01-01 00:00:00' AS TIMESTAMP)` compares the two texts: `=` is FALSE and `<` is TRUE. The same happens to a DATE probe against a TIMESTAMP IN list.
+- The withdrawn lane was replaced by a sentence, and the promised property test fails by construction. (SOURCE)
+- **Fix:** name the promotion's sites (the comparison constructor, the IN probe and the explode's equality), with `compilePromotion`'s new arm as the runtime, and pin midnight `=` and `<`.
+
+**H2. 5.4 is not converted to the physical prune.**
+- **(a) The counterfactual test cannot run.** (j) runs it "with WS-F's physical prune off (its test-only option)" (design:2699-2704). WS-F removes the non-prune path when that option becomes the default: the designated final goes, `Verify(==1)` becomes a checked error, and D9-D12 "never run without it" (ws-f-design.md 2.6 step 7). WS-E lands after that point.
+- **(b) The tie text is stale.** It says one-source ties are decided "in PLANNING, whose hash rung is `costExprHash`". It also says a PLANNING-hash mutation reddens them, and it names the "rung (REWRITING's or PLANNING's)" (design:2644-2646, 2654-2658, 2686-2687). With one member crossing, PLANNING cannot decide a fold. A grep for the superseded claim was not done.
+- **(c) WS-F's comparator changes are misdescribed.** v10 says WS-F's two changes touch none of the deciding rungs (design:2426-2428). WS-F's second change is the dense level producer, which is the level rung (ws-f-design.md 2.3). Meanwhile (g) says WS-E does NOT take the dense map. It books that to TODO "Finding 6-followup" and puts a comment at `designated_final.go:278-287`, whose mechanism WS-F deletes (design:2627-2636).
+- **(d) The RFC-182 claim has no support in WS-F.** v10 says "WS-F's census covers the RFC-182 leg" (design:2407-2410). `git grep 'RFC-182|AdvanceStagePreservingMembers|unfinalized|union leg'` finds nothing in ws-f-design.md; the same `git grep` finds the D1-D12 lines, which is the positive control. `unified_tasks.go:98-108` still carries a group with no finals into PLANNING with all its members, which is exactly where the cardinality rung can still rescue a fold.
+
+## MEDIUM
+
+**M1. The NaN mapping has no runtime mechanism (design:1030-1045).**
+- The plan keeps the target's `[EQUALS q0, EQUALS q1]`. 5.4(b) stops folding `CAST('NaN' AS DOUBLE)`, so the NaN is known only when the scan is bound.
+- The binder would then have to drop the later comparisons and filter the entries itself. No entry-level filter exists: `residual|postfilter` has 0 hits in `scan_range_binding.go`.
+- The range-tail refusals at `:988` and `:1045` are unaddressed.
+- The dynamic terminal `SuccessfulSeekUpperBound=1` is documented "for a non-NaN execution" (`physical_equality_shape.go:20-24, 416-429`). Once NaN executes, that bound is exceeded.
+- **Fix:** name the scan-level key filter and its continuation semantics, update the seek bounds, and state what happens to range tails.
+
+**M2. The temporal deletions contradict the UUID lane.**
+- 4.3 deletes `functions.CastValue` (`cast.go:28-221`) as dead (design:1350-1355). That is true: its only callers are functions tests and `embedded_test.go:732`.
+- But the UUID lane still counts `cast.go:172`, inside `CastValue`, among its "six" sites. It routes per-row CAST through it and requires a test per path (design:1649-1676).
+- The measured per-row CAST goes through `values.go` instead: the `cast_column_to_date_where` GO line carries `values.go:4543`'s message.
+- The `time.Time` arms of the value CAST and of the date-part functions stay (`values.go:4535-4537, 4550-4552, 3343-3347`), yet the design says no `time.Time` reaches the executor.
+- `CAST(? AS DATE)` cites `:4536-4537` as its mechanism (design:1394-1395), but the bound value is now text.
+
+**M3. 4.1 overlaps WS-F F-7, and #7's suspect does not fit its own control.**
+- **The overlap:**
+  - F-7 replaces the `memberSatisfiesOrdering` admission with the target's union ordering and deletes the unordered arm. 4.1 widens the inner to "every member that satisfies the leg's ordering".
+  - The size check is claimed twice: 4.1(b) says "product size checked" (design:806), while 4.1(c) says it "is WS-F's" (:943-946).
+  - The multi-binding need (the four `a_in_b_in` tests) and #7 were measured on the admission F-7 deletes. #7's `COMPARE BY (_.VAL, _.ID)` is F-7's union ordering, yet only D5 is named.
+- **The suspect:** the control implements `cat = 20` but not `cat = q1`. The difference is correlation to an explode alias, not admission timing, so the D5 re-queue does not explain it. The prototype can discriminate this now. (Measured: the member exists and the rule fires once. SOURCE: D5.)
+
+## LOW
+
+1. The date-part functions gain a whitespace trim (`values.go:3348-3353` parses the raw string), so `YEAR(' 2024-01-01')` changes from 22023 to an answer. This is not declared.
+2. Java's "can do it in lower" branch is `PartitionSelectRule.java:201-205`, not `:197-200`.
+3. The "system rows carry no `time.Time`" evidence greps only `system_rows.go`. The claim holds at package scope: no `time.(Time|Now|Unix)` producer feeds the system rows. Re-scope the evidence.
+4. The strict order holds steps (5)-(7) behind WS-F F-5 (still NAK) without a stated dependency. Say which steps actually depend on it.
+5. "Member set … (the fold alone)" follows from `Verify(==1)` and adds nothing. Assert the survivor.
+
+**Checked:**
+- The v10 Describe has 12 probes and 12 pins.
+- Both runs report "Ran 10 of 58", with 457 blocks.
+- I checked 4 of the 10 source hashes against the tree blobs; all 4 match.
+- M10 reddens exactly its row (want `[[9]]`, got `[[2]]`).
+- The prototype suite reds are plan pins only: 4 yamsql scenarios and the 2 zero-widening subtests.
+- The `Evaluate(nil)` census gives 20 lines, and `Eval(nil)` gives 1.
+
+**Measured vs SOURCE:** the oracle rows, hashes, counts and prototype logs are measured. H1, H2, M1, M2's reachability and M3's interaction are derived from source.

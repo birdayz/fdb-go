@@ -341,7 +341,7 @@ Wire-level compatibility is the whole point. These match Java exactly: subspace 
 
 FDB constraints: 5s tx limit, 100KB value limit, 10MB tx limit, ~10KB key limit. Cursors need `TimeScanLimiter` + continuations; values use split records.
 
-Java source at `fdb-record-layer/` (gitignored, tag **4.12.11.0**, matches MODULE.bazel pins).
+Java source at `fdb-record-layer/` (gitignored, tag **4.14.2.0**, matches MODULE.bazel pins).
 
 ## Design principles
 

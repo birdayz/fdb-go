@@ -1,0 +1,92 @@
+**NAK.** v5 gets most of the mechanism right, but the admission table goes against the oracle measurements it cites as its source, and inline maintenance mode is still not designed.
+
+**Reviewed:** tree `d0ce9ed51b2ffce11e96ae5db2a98cda56882e07`, `ws-d-design.md` SHA256 `c3b80bc41e3d34e134410a089e420414bc793f5e7b8e7632e60038d2309379cb` (recomputed with `git show TREE:path | sha256sum`; it matches).
+
+**Coverage:**
+- **Read:** all four v4 verdicts, the full v5 design (770 lines), the v4→v5 diff, the oracle README and the whole oracle Go test. The Java probe I only grepped for call shapes.
+- **Source delta:** `git diff --stat f0cb2957 d0ce9ed5 -- pkg gen proto cmd` is empty. The unfiltered v4→v5 diff lists `conformance/`, `rfcs/` and `TODO.md`, which confirms the filter works.
+- **Not checked:** the Java files come from the `fdb-record-layer/` working tree. My `rev-parse` was denied, so I could not confirm it is at `fdacd162`.
+- **Not done:** no tests, probes or edits.
+
+## P1-1 — The admission table contradicts the golden it says it is derived from
+- **collapseConcurrency.** Design:175 files `collapseConcurrency<1` under "consumer throws → refuse merge … Parity".
+  - Its only consumer is `CollapseTask.java:180-182`.
+  - The golden (`guardiann_probe_conformance_test.go:379`) shows Java at 0 running grow (8 tasks) and shrink (2 tasks) cleanly. Only the duplicate-collapse path throws.
+  - Go would refuse every merge on the index. "Inserts continue" (:192-194) then runs into the hard cap with nothing to relieve it. A distinct-vector workload that Java serves indefinitely stalls in Go.
+- **Builds fail too.** Inserts still raise the caller-merge signal (only deletes suppress it, :236-238). The build's follow-up merge is then refused after the first range, and the build fails.
+- **mergeNumNearestClusters.** Design:186-190 refuses inserts permanently (the knob is immutable) because the index "can never drain the backlog its inserts create".
+  - The golden (:372) shows grow draining 8 tasks. Only delete-driven merges and duplicate collapses livelock.
+- **bounceConcurrency** (:380) is the same: Java runs the task kinds the knob doesn't touch.
+- **Needed:**
+  - Refuse at the task kind the golden shows failing, not index-wide from config. That is the design's own rule (:164-166).
+  - Throw-class kinds then fail at that task (real parity); livelock kinds get the declared refusal at that kind.
+  - Build the insert row only from knobs under which splits cannot drain (kMeans*, metric, splitNumNearest).
+  - State what a build or caller-signalled merge does when a merge is refused.
+
+## P1-2 — Inline maintenance mode (`autoMergeDuringCommit`, `VectorIndexMaintainer.java:374`) is unspecified, and the hard cap in both modes turns a working Java state into a Go stall
+- **Where the check goes is undefined.** Java drains one task before it picks the primary cluster (`Insert.java:206-215`), then writes tag-5 (:293), then checks the cap (:334).
+  - The design says Go checks "before the tag-5 write and every other engine write" (:400-403).
+  - In inline mode that is either before the drain, refusing on a topology the drain (possibly the cluster's own split) would change, or after it.
+  - If after, the claim is false, and because capacity errors do not poison (:405-408), a caller that catches and commits keeps the drained task.
+- **The stall.** A refused insert rolls back its own inline drain, which is inline mode's only relief.
+  - Take a backlog built in deferred mode, then served with auto-merge on (a per-store runtime switch).
+  - Java inserts past hardMax, draining one task per insert.
+  - Go refuses every insert into the hot cluster and never advances the queue head.
+  - ":652-655 only changes behaviour where the target already fails" is an unmeasured hypothesis, and false here. Every oracle call uses `maintainInTransaction=false` (probe :90, :97).
+- **Still unanswered:** what an inline insert does under a mutable merge-blocking knob (v4 SPFresh P2-1).
+- **Needed:**
+  - Say where the cap check sits relative to the inline drain.
+  - Either restrict the inline-mode cap to the unsplittable-cluster state that justifies it, or make sure the drain survives the refusal.
+  - Measure inline mode in the oracle.
+
+## P2
+1. **deleteConcurrency refused "at engine entry" (:177) is not parity.** Java returns before using that knob when access-info or the tag-5 row is missing (`Delete.java:110-123`; the knob is consumed at :176).
+   - Go would refuse and poison deletes Java completes: records not yet built during a WRITE_ONLY build, never-indexed primary keys, an empty index.
+   - Check at the consumer instead.
+2. **The foreign-lease backoff can lose the build's own session.**
+   - The wait (:512-515) can last up to the merge lease's 60 s window (`VectorIndexMergeLock.java:63`), with no transaction running.
+   - The build heartbeat lease is 30 s in Go (`online_indexer.go:643-644`) and 10 s in Java, and stale heartbeats are presumed dead (`indexing_heartbeat.go:87,140`).
+   - A competitor can take the build over mid-hand-off. Wait in slices shorter than the heartbeat lease, refreshing or verifying ownership in each.
+
+## P3
+1. **Reconcile vs. progress rule.** ":661-662 the reconcile never lowers its primary count" is false.
+   - The primary count is RunningStats n (`ClusterMetadata.java:88-89`).
+   - The reconcile rebuilds those stats from survivors after dropping stale references (:626-634), which is exactly the stale-inflated shape the design names at :618-619.
+   - Make this agree with the progress rule (:544-545).
+2. **Progress baseline.** Java's exception reports n+1 (`Insert.java:336`). "Fewer primaries than when it failed" must use the stored n, or every hand-off counts as progress.
+3. **Measured vs. hypothesis is overstated.**
+   - :663-664 calls the stale-inflated cluster "now MEASURED"; oracle item 3 is only the 10+1 case.
+   - The empty-core, vanished-neighbour, n<k and rollback shapes (:714-717) are unmeasured but missing from the REMAINING list (:587-590).
+4. **Poison key and scope.**
+   - Store deletion cancels commit checks under `pendingWriteCommitCheckPrefix` (`store_api.go:181-182`). State the poison key and whether that cancellation is intended.
+   - Poisoning read-only refusals (search, continuation) blocks unrelated writes Java would commit. Scope poisoning to operations that can buffer writes, or declare it.
+5. **Hand-off may never return.** The drain runs until the prefix count is 0 or a drain executes nothing (:526-527). Under sustained concurrent ingest neither happens. Add "blocked cluster relieved" as a stop condition.
+6. **Empty-cluster claim.** ":705-707 no empty cluster unless the index is empty" assumes a merge threshold above 0. With primaryClusterMin 0 (oracle item 4), the kept empty cluster is not undersized and stays, as in Java. Qualify the claim.
+
+## Verified correct
+- **Commit checks:** keyed and run before commit (`database.go:1063-1110`). The poison mechanism is buildable.
+- **Common-entry filter:** `removeCommonEntries` exists (`index_maintainer.go:720`), and the vector `Update` lacks it today.
+- **Session id:** `admittedHeartbeat` is the same object as `sessionHeartbeat` (`online_indexer.go:1167`; merger at `indexing_merger.go:38`).
+- **Merge lease:** snapshot count/lease reads and the negative-count disable path (`VectorIndexMaintainer.java:553-554, 605-616, 654`).
+- **Java references:**
+  - `MUTABLE_OPTIONS` (`GuardiannVectorIndexEngine.java:84-97`)
+  - the `whenAll` merges (`IndexingBase.java:1089-1096`)
+  - `enqueueMergeTaskIfUndersizedMaybe` with the MULTIPLE guard (`Primitives.java:1324-1359`)
+- **Construction widths:** rejected at parse time (`SearchConfig.java:95-96`).
+- **v4 findings answered:** the join rule, lock order, pass-2 rebuild, collapse helper and executor scoping.
+- **Preserved boundaries:** hold.
+
+## Measured vs. still hypothesis
+- **Measured by the oracle:**
+  - the VectorId hash
+  - the two split stalls
+  - queue-replay stranding
+  - deferred-mode backpressure
+  - the knob golden (deferred mode only, and only the values 0 / −1)
+- **Still hypotheses:**
+  - everything about inline mode
+  - build-range stranding
+  - the stale-inflated cluster
+  - the empty merge core
+  - deletes that enqueue a task under 9 extra bits
+  - the four conditional corrective contracts

@@ -37,6 +37,10 @@ type ScopeSource struct {
 	// enclosing query (column qualifier). For `FROM t AS x` → Alias
 	// is `x`; for `FROM t` with no alias → Alias is `t`.
 	Alias Identifier
+	// UnqualifiedOutput distinguishes unnamed SQL operators from their private
+	// runtime correlation aliases. Their inherited output names remain eligible
+	// for SELECT alias lookup; named operators qualify those same attributes.
+	UnqualifiedOutput bool
 	// CorrelationName is the identifier the analyzer uses to tie
 	// this source back to a Quantifier when building
 	// QuantifiedObjectValue / FieldValue trees that reference it.

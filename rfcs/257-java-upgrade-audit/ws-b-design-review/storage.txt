@@ -1,0 +1,21 @@
+**ACK — WS-B design only. No required design changes.**
+
+Reviewed the complete 213-line design, parent WS-B, both retained research reports, pinned Java sources and relevant current Go implementations. The design SHA256 matches `699f084274f4acf98ebf40c9329a577bac952657e4c57f527f34ce5cb1b17390`; Go HEAD and Java revision match the requested pins. Session metadata confirms **gpt-6-astra / xhigh / read-only**.
+
+All five sections provide concrete implementation contracts:
+
+1. **Sliding windows — ACK.** [ws-b-design.md:23](/home/birdy/projects/fdb-go/rfcs/257-java-upgrade-audit/ws-b-design.md:23) correctly checks the tracked entry before mutations, preserves corruption detection, and distinguishes ordinary/write-only callbacks from eviction and promotion callbacks. The replay matrix checks bookkeeping and delegate operations, while preserving the size-one correction. Queue capability, state 4 and format 15 remain deferred.
+
+2. **Deletion/cache — ACK.** [ws-b-design.md:50](/home/birdy/projects/fdb-go/rfcs/257-java-upgrade-audit/ws-b-design.md:50) specifies the correct header-only serializable read, conditional stamp mutation, protobuf edge cases and tuple-subspace clear boundaries. Cache admission, older-entry invalidation, header cloning and pending-version cleanup address the necessary prerequisites. Pinned read versions, sentinel writes and first-commit assertions make the conflict requirements meaningfully testable.
+
+3. **Replacement lifecycle — ACK.** [ws-b-design.md:81](/home/birdy/projects/fdb-go/rfcs/257-java-upgrade-audit/ws-b-design.md:81) separates reconciliation enumeration from build eligibility and covers fresh creation. Originals bypass rebuild policy; retirement requires every replacement to be exactly READABLE. Transaction-visible state, conflicts on negative maintenance decisions, lock-safe transitions, named context checks and consistent commit paths form an implementable lifecycle. Explicit original rebuilds and preservation of build locks are covered.
+
+4. **Options/metadata identity — ACK.** [ws-b-design.md:132](/home/birdy/projects/fdb-go/rfcs/257-java-upgrade-audit/ws-b-design.md:132) correctly copies configuration and validates only the supplied changed-option remainder. Explicitly ignoring `unique` agrees with Java; unrelated validation remains intact. UNION-tag correspondence, descriptor-pair recursion, separate serialization/default-key/decoding tags and descriptor-compatible message factories address the rename, swap, alias and persisted-schema hazards. Unionless typed-key identity remains separate.
+
+5. **Rank values — ACK.** [ws-b-design.md:175](/home/birdy/projects/fdb-go/rfcs/257-java-upgrade-audit/ws-b-design.md:175) specifies validated dispatch, declared score-column extraction, absolute group ranks and exact integer/NULL tuples. Cursor behavior and stored bytes remain preservation requirements. The retained [snapshot-preload/serializable-lookup contract](/home/birdy/projects/fdb-go/rfcs/257-java-upgrade-audit/ws-b-research/metadata-rank-research.txt:115) is essential during implementation. Value-aware, lossless conformance output closes the existing key-only comparison gap.
+
+The delayed-retirement disposition at [ws-b-design.md:110](/home/birdy/projects/fdb-go/rfcs/257-java-upgrade-audit/ws-b-design.md:110) is acceptable: retain the live pinned-Java probe before implementing that composition, enforce no resurrection in Go, and document an intentional correction if confirmed. **The probe remains pending; this review supplies no runtime proof.** External publication remains unauthorized.
+
+The acceptance requirements at [ws-b-design.md:201](/home/birdy/projects/fdb-go/rfcs/257-java-upgrade-audit/ws-b-design.md:201), together with the section matrices and retained reports, adequately require real-FDB lifecycle/conflict tests, bidirectional Java interop, exact values/bytes, regressions and mutation checks. Existing approved Go extensions remain preservation obligations.
+
+No edits, builds, tests, Git mutations, agents or GitHub contact were performed. Final implementation review remains separate; WS-C–K and the whole upgrade remain open.

@@ -1,0 +1,98 @@
+**NAK.** I reviewed tree `1718c9c7437d3038bdadd6defd996d7ca6824997`. The design has SHA256 `d2b84437093a214f195cb3bd03d46b9ae7305b2617bd38f5b63439a6e77f936a` and 1799 lines; I recomputed both from the tree and they match. Java is at `fdacd162a`. This was a read-only review: I ran no tests, probes or mutations.
+
+**Checked and correct**
+- **Evidence.** 10 of the 49 hashes in `evidence-v7` match the tree's blobs. The `just test` tree `79bbc95e` differs from the candidate only in review outputs, the design, the README and `evidence-v7`.
+- **Logs.**
+  - `wsj7-vr-jvm.log`: 31/31.
+  - `wsj7-ev1.log`: both WSJUD lines nil.
+  - wm1 reddens the two new JVM shapes; wm2 reddens both halves with `AmbiguousLegacyUnionError`; wm3 reddens five `SetRecords` cases; wm4 is red.
+  - The WSJSAT equality is non-vacuous: the target's own entries are pinned, so the Go entries are compared against something that exists.
+- **v6 findings resolved:**
+  - (d) now runs last in `Build`, gated by `unionNamed` (metadata.go:363, :1486), and the loader-only call is gone.
+  - The reachability walk has replaced the any-field rule, and the Holder, envelope and self-holding shapes are pinned.
+  - The header check is now ≤, and the fresh-template guard covers the whole name.
+  - EQUIVALENT is compared as Java's `new Index(proto)` reads it, which matches Index.java:194-235.
+  - The write-path table is in place.
+  - The lane table has 107 rows, matching ArithmeticValue.java:405-522 (25 + 4×16 + 12 + 6).
+  - The LIMIT walk matches AstNormalizer.java:176-188 and :254-262.
+  - Test 5's discriminating reads, the coverage wording, the synthetic-type entry and the TODO correction are all done.
+- **Graefe lens.** Sections 3.3, 3.5 and 6 and section 4's assembly order are unchanged since v6 and still match Java. The findings below sit in the carry policy and in the lane check's contact with Go's current DDL front end.
+
+## MEDIUM
+
+**1. The EQUIVALENT carrier has no sound mechanism (design :1118-1124).**
+- The design relies on "every setter of `Index` clears" `storedProto`. But `Type`, `RootExpression`, `Options`, `AddedVersion`, `LastModifiedVersion` and `Predicate` are exported fields (index.go:166-198), and the builders write them directly (metadata.go:596, :601; metadata/builder.go:547, :563).
+- `carryNumbering` must also rewrite union field numbers. Those live in the records descriptor, so the metadata has to be rebuilt after the carry.
+- A carrier on the in-memory `Index` is therefore lost or stale. A stale one silently stores a definition other than the one that was validated.
+- **Fix:**
+  - Carry at the proto level: `carryNumbering` emits the `gen.MetaData` to store, with the stored `gen.Index` spliced in for EQUIVALENT indexes.
+  - Validate and lane-check `RecordMetaDataFromProto` of exactly those bytes.
+  - Drop `storedProto`.
+
+**2. The new-version guard lets one name hold two histories after a partial restore (:366-378).**
+- **Sequence:**
+  1. t is stored at versions 1 to 3, with schemas bound to 1 and 3 only.
+  2. DROP SCHEMA TEMPLATE t.
+  3. `Restore(t,1)`.
+  4. CREATE SCHEMA TEMPLATE t creates v2, carried from 1. The `(t,2)` prefix is empty, so it is admitted.
+  5. `Restore(t,3)` is admitted, because it refuses only a stored (t,3).
+- The stored versions {1, 2′, 3} are now two histories. That falsifies :375-378 and the premise at :1189-1194.
+- **Consequence:**
+  - A predicate changed in both 2′ and the original 2 gets the same last-modified version. The validator compares no predicates (:1113).
+  - So a schema bound to 2′ and rebound to a v4 carried from 3 keeps index entries built under 2′'s predicate, with no rebuild. A read through that index returns wrong rows.
+- **Fix:**
+  - For any save, read the range `(t, latest+1 … end)`. Every binding in it dangles, because no version at or above latest+1 is stored. With latest = 0 this is the fresh case, so one rule replaces both arms.
+  - Add this sequence as an FDB test.
+
+**3. The landed reachability rule still lets a legacy union through when the found union reaches it (metadata_proto.go:424; design :1451).**
+- **Shape:** a record type holding `repeated UnionDescriptor` (the envelope, but as a record type), or a new union that lists UnionDescriptor as a field.
+- The pre-upgrade build framed records by UnionDescriptor, which it chose by name (`e48f5b496:metadata_proto.go:791-793`). Go now reads those records under the found union. That is the misread the refusal exists to prevent.
+- The data-message tests pin only a scalar UnionDescriptor (test :400-408).
+- **Fix:**
+  - Also refuse when the legacy message has a message-typed field whose type is a record type of the file. The measured SQL table and STRUCT shapes have no such field, so they still load.
+  - Pin the record-type-envelope shape on both engines.
+  - Rescope :1451 and (r).
+
+**4. The lane check and Go's own DDL (:661, :674-675).**
+- **The claim at :674 is false.** It says Go's DDL cannot produce a no-lane key after F2. But the generator builds bit and bitmap keys with no operand-type check (generator.go:865-880), and Go's query path accepts `d & 1` and `bitmap_bucket_offset(d)` over DOUBLE and STRING (section 6).
+- So `CREATE INDEX … SELECT d & 1 … ORDER BY d & 1` over a DOUBLE column builds in Go. The target refuses it at DDL with XX000 (ArithmeticValue.java:213-231).
+  - This is source only: the oracle has no such shape, and its bit and bitmap index shapes use BIGINT operands only.
+- **Interim divergence:** from step 3 until step 6, which merges separately, Go refuses this shared DDL with 42F59 and a Go-only message.
+- **The scope at :661 is too broad.** "Every function key is expanded through the lane table", read literally, refuses the order functions and CARDINALITY, which have no row in the table.
+- **Fix:**
+  - Scope the check to the arithmetic family.
+  - When the refused key came from DDL, raise the target's two-step outcome: the typed error section 6 will raise.
+  - Add oracle index shapes now: bit and bitmap operators over DOUBLE, FLOAT, STRING and BOOLEAN, plus a non-primitive operand.
+  - Correct :674 and (t).
+
+## LOW
+
+**5. A (d) metadata built with a named union cannot be stored.**
+- `SetRecordsWithUnionName(fd, found)` builds it. But `FDBMetaDataStore.SaveRecordMetaData` rebuilds the proto through the loader (metadata_store.go:79), which finds the union rather than naming it, so the save is refused and so is every later load.
+- The CHANGELOG and design :1474-1476 therefore promise an exit that works only for metadata that is never stored.
+- **Fix:** say so, and pin the refused save with migrate-then-save as the passing arm.
+
+**6. The restore's batching argument (:422-430) holds only while (t, v) stays unstored, and only the final transaction checks that.**
+- Between the batch reads and the final transaction, three things can happen: a second restore of (t, v) with a higher metadata version, an open of a bound store under it, and a template drop. All three pass the final re-reads.
+- This fails closed (`StaleMetaDataVersionError`, store_builder.go:308-311).
+- **Fix:** scope the claim, and state the final transaction's cost: a range read of every bound schema's index entry.
+
+**7. The migration's (d2) default arm removes `RecordTypeUnion`, "which no field uses as its type" (:1516).**
+- That is the same unmeasured absolute v6 flagged for UnionDescriptor.
+- The UnionDescriptor arm now refuses, naming the field (:1523-1527). This arm should refuse the same way.
+
+**8. Stale or missing text.**
+- **:625** still says test 5's v1 is "stored with `wsjWidenIntLiterals`' rewrite", which contradicts :1236-1240.
+- **Divergence (t)** still has no DIVERGENCES entry. A search for "build path", "CreateTemplate" and "42F59" finds nothing; a search for "PENDING" finds 3 lines, as the control.
+- **The LIMIT test list (:801)** lists "OFFSET" and "both" as separate shapes. OFFSET parses only after LIMIT (RelationalParser.g4:582-584 in Java, :578-580 in Go), so they are one shape.
+
+## Measured vs. hypothesis
+- **Measured:**
+  - the 31 descriptor shapes, on both engines;
+  - the UnionDescriptor table and struct, through Go's catalog and SQL driver;
+  - the Build-time order and the `SetRecords` path (unit tests, wm3 and wm4);
+  - the saturated-operand bytes and the sign-flip mutation;
+  - the unchanged 479-run tally.
+- **Source only:**
+  - findings 1–7;
+  - everything in steps 1–3 (the carry, its carrier, the guard, the restore, the lane check and the migration), all still unbuilt.

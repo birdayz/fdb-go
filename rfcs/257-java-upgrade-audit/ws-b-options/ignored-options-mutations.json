@@ -1,0 +1,44 @@
+[
+  {
+    "name": "build-copy",
+    "exit": 3,
+    "compiled": true,
+    "killed": true,
+    "log": "ignored-options-mutant-build-copy.log"
+  },
+  {
+    "name": "builder-copy",
+    "exit": 3,
+    "compiled": true,
+    "killed": true,
+    "log": "ignored-options-mutant-builder-copy.log"
+  },
+  {
+    "name": "nil-clears",
+    "exit": 3,
+    "compiled": true,
+    "killed": true,
+    "log": "ignored-options-mutant-nil-clears.log"
+  },
+  {
+    "name": "filter",
+    "exit": 3,
+    "compiled": true,
+    "killed": true,
+    "log": "ignored-options-mutant-filter.log"
+  },
+  {
+    "name": "supplied-set",
+    "exit": 3,
+    "compiled": true,
+    "killed": true,
+    "log": "ignored-options-mutant-supplied-set.log"
+  },
+  {
+    "name": "tokenizer-default",
+    "exit": 3,
+    "compiled": true,
+    "killed": true,
+    "log": "ignored-options-mutant-tokenizer-default.log"
+  }
+]

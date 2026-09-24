@@ -216,7 +216,11 @@ func (store *FDBRecordStore) findIndexForAggregateFunction(
 		if idx == nil {
 			return nil, fmt.Errorf("aggregate function %q: %w", fn.Name, &IndexNotFoundError{IndexName: fn.Index})
 		}
-		if store.IsIndexReadable(idx.Name) {
+		state, err := store.readIndexState(idx.Name)
+		if err != nil {
+			return nil, err
+		}
+		if state == IndexStateReadable {
 			return idx, nil
 		}
 	}
@@ -230,7 +234,11 @@ func (store *FDBRecordStore) findIndexForAggregateFunction(
 	// rolling-up. Ties keep the first candidate, as Java's Stream.min does.
 	var best *Index
 	for _, idx := range candidates {
-		if !store.IsIndexReadable(idx.Name) {
+		state, err := store.readIndexState(idx.Name)
+		if err != nil {
+			return nil, err
+		}
+		if state != IndexStateReadable {
 			continue
 		}
 		if queryable != nil && !queryable(idx) {
@@ -565,7 +573,7 @@ func evaluateRankAggregate(
 	}
 
 	// Prefetch sparse upper skip-list levels for Rank/GetNth calls below.
-	rankedSet.PreloadForLookup(rm.tx)
+	rankedSet.PreloadForLookup(rm.tx.Snapshot())
 
 	switch fn.Name {
 	case FunctionNameCount, FunctionNameCountDistinct:

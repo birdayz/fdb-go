@@ -1132,7 +1132,11 @@ func (r *Resolver) walkScalarFunction(s *antlrgen.ScalarFunctionCallContext) (va
 				Shape: fmt.Sprintf("%s requires exactly 1 argument, got %d", name, len(args)),
 			}
 		}
-		args = append(args, &values.ConstantValue{Value: int64(10000), Typ: values.NullableLong})
+		// Java appends `new LiteralValue<>(BITMAP_DEFAULT_ENTRY_SIZE)` with an
+		// int constant (SemanticAnalyzer.java:106,1115), so the entry size is
+		// INT-typed. The index key expression stores it as int_value; a LONG
+		// type here made Go store long_value, which Java cannot plan over.
+		args = append(args, &values.ConstantValue{Value: int64(10000), Typ: values.NullableInt})
 	}
 	typ, ok := values.ScalarFunctionResultType(name, args)
 	if !ok {
@@ -1564,15 +1568,9 @@ func (r *Resolver) walkArrayConstructor(ac antlrgen.IArrayConstructorContext) (v
 		if err != nil {
 			return nil, err
 		}
-		// A NULL literal walks as NullValue with the Unknown type tag;
-		// Java types it Type.nullType, which MaximumType folds as "the
-		// other side, made nullable" — use NullType for the fold so
-		// `[10, NULL, 30]` resolves to a nullable INT element type
-		// instead of dying on Unknown.
+		// SQL NULL already has Type.nullType, so the common-type fold and
+		// the subsequent prepared promotion see the same declared source.
 		vt := v.Type()
-		if _, isNull := v.(*values.NullValue); isNull && (vt == nil || vt.Code() == values.TypeCodeUnknown) {
-			vt = values.NullType
-		}
 		if elemType == nil {
 			elemType = vt
 		} else if elemType = values.MaximumType(elemType, vt); elemType == nil {
@@ -1784,10 +1782,9 @@ func (r *Resolver) walkPredicatedExpression(pred *antlrgen.PredicatedExpressionC
 		}
 		return predicates.NewConstantPredicate(predicates.TriFalse), nil
 	}
-	// 2. NULL → unknown constant (Java :384, `value instanceof NullValue`).
-	//    Detected by VALUE type, not Type().Code(): a NULL literal is built as
-	//    NewNullValue(TypeUnknown), so its type code is Unknown — only the
-	//    value-type assertion identifies it. Must be folded HERE: the
+	// 2. NULL → constant (Java :384, `value instanceof NullValue`).
+	//    Match the Value rather than its annotation: typed NULLs can carry a
+	//    non-NULL type code too. Must be folded HERE: the
 	//    comparison-form lift below bypasses ValuePredicateConstantFoldRule
 	//    (which matches only *ValuePredicate) that `WHERE NULL` relied on.
 	if _, isNull := v.(*values.NullValue); isNull {

@@ -562,18 +562,19 @@ func (b *Builder) Build() (*RecordLayerSchemaTemplate, error) {
 				if idx.indexType != "" {
 					rl.Type = idx.indexType
 				}
-				for k, v := range idx.options {
-					rl.Options[k] = v
-				}
 				// Java's generator builder ALWAYS writes the unique option —
 				// setUnique(isUnique) stores "true"/"false" alike
 				// (RecordLayerIndex.java:216-218, called unconditionally by
-				// both generators, MaterializedViewIndexGenerator.java:157 /
-				// OnSourceIndexGenerator's builder). An omitted-when-false
-				// option is a stored-metadata divergence the D11 cross-engine
-				// comparison catches: Java's index carries unique=false where
-				// Go's carried nothing.
-				rl.Options[recordlayer.IndexOptionUnique] = strconv.FormatBool(idx.unique)
+				// both generators through MaterializedViewIndexGenerator.java:107).
+				// An omitted-when-false option is a stored-metadata divergence
+				// the D11 cross-engine comparison catches: Java's index carries
+				// unique=false where Go's carried nothing. It is written FIRST:
+				// the options are stored in insertion order, and the generator
+				// calls setUnique before the type-specific options (the permuted
+				// size, :174), so a permuted min/max index stores
+				// [unique, permutedSize].
+				rl.SetOption(recordlayer.IndexOptionUnique, strconv.FormatBool(idx.unique))
+				setOptionsSorted(rl, idx.options)
 				if idx.predicate != nil {
 					if perr := rl.SetPredicateProto(idx.predicate); perr != nil {
 						return nil, api.WrapErrorf(perr, api.ErrCodeInvalidSchemaTemplate,
@@ -1149,19 +1150,29 @@ func buildVectorIndex(idx indexSpec) (*recordlayer.Index, error) {
 	if idx.vectorMethod == "SPFRESH" {
 		rl := recordlayer.NewIndex(idx.name, root)
 		rl.Type = recordlayer.IndexTypeVectorSPFresh
-		rl.Options = map[string]string{
-			recordlayer.IndexOptionSPFreshNumDimensions: fmt.Sprintf("%d", idx.numDimensions),
-		}
-		for k, v := range idx.options {
-			rl.Options[k] = v
-		}
+		rl.SetOption(recordlayer.IndexOptionSPFreshNumDimensions, fmt.Sprintf("%d", idx.numDimensions))
+		setOptionsSorted(rl, idx.options)
 		return rl, nil
 	}
 	rl := recordlayer.NewVectorIndex(idx.name, root, idx.numDimensions)
-	for k, v := range idx.options {
-		rl.Options[k] = v
-	}
+	setOptionsSorted(rl, idx.options)
 	return rl, nil
+}
+
+// setOptionsSorted sets a DDL option map on an index in key order, so the stored
+// option list is a function of the DDL. The vector clause options' own order
+// (Java's OnSourceIndexGenerator collects them into a HashMap, so the target
+// stores its iteration order after unique) belongs to the vector DDL port,
+// WS-D/WS-K of RFC-257.
+func setOptionsSorted(rl *recordlayer.Index, options map[string]string) {
+	keys := make([]string, 0, len(options))
+	for k := range options {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		rl.SetOption(k, options[k])
+	}
 }
 
 func buildAggregateIndex(idx indexSpec) (*recordlayer.Index, error) {

@@ -1,0 +1,76 @@
+**NAK.** I reviewed tree `8d721bd13b28b59be91f59a35b71acbd15d7131c`. `rfcs/257-java-upgrade-audit/ws-f-design.md` hashes to SHA256 `c54897e41bf8cee43fbeb32d7402452a25a0757361304d3c936c95e33c2608f9`, 1480 lines, recomputed from the tree blob. This was read-only: nothing was run or edited.
+
+**What holds**
+- **Evidence and mutations:**
+  - The 7 evidence hashes match this tree's blobs.
+  - m1, m2, m3b and m4b are red with the right messages, each marker counted once, each restored. m3 and m4 were build failures and are correctly not counted.
+  - `wsdf14` shows 61 of 61 specs passing.
+- **Grep counts reproduce:** D7's 12 call sites; section 4.2's closure (14 lines in 7 files); section 2.8's closure (108 lines in 30 files).
+- **Java confirms the 4.3 cause:** the match check stops at the record-type position (`AbstractDataAccessRule.java:779-845`, `ValueIndexLikeMatchCandidate.java:76-113`).
+- **The cycle is measured:** the COVERING-vs-SCAN verdict holds across the name sets while the hash order moves.
+- **v2 findings closed:** `outerJoinCount` and its REWRITING-RESULT rendering, since Java's un-rewritten form is a distinct `OuterJoinExpression`; F-7a's metadata; the size-less constructors; the check-first placement; the CHANGELOG entry; the tie rows; the plan-identity correction.
+
+**On WS-E v11's question: v3 does not state the RFC-182 second crossing.** Searching the design for `RFC-182|PreservingMembers|second crossing` finds nothing. The same search's `boundary` alternative does hit (:229), so the command ran.
+
+## High
+
+1. **The group-without-finals crossing is undecided.**
+   - Java requires exactly one final at every crossing: `advancePlannerStage` does `Verify(finalMembers.size()==1)` (`Reference.java:208-211`), called from `CascadesPlanner.java:745-749`.
+   - Go's `AdvanceStagePreservingMembers` branch (`unified_tasks.go:98-108`) carries every exploratory member of a group that has no finals. Java has no counterpart.
+   - D7 ("any child with none → no yield") keeps producing such groups. Section 2.3's checked invariant never says whether this branch is deleted, errors, or prunes. Section 2.8's closure grep misses its spellings.
+   - Meanwhile `ws-e-design.md:2595-2603` says "v3 prunes that crossing".
+   - **Fix:** decide it in D9/D12. Put the RFC-182 asymmetric-union test and WS-E's `[union_leg_type_annulling_fold_where]` into the step-7 census, and add `RFC-182|AdvanceStagePreservingMembers` to the closure grep.
+
+2. **The acceptance ratchet cannot see any plan change.**
+   - Every EXPLAIN and trace row is `DIFF` today and `DIFF` at acceptance, so none can be open.
+   - `wsfOpenUntil` names only F-1, F-7b, WS-J F6 and WS-E §4. F-5, F-6, F-7a and F-7c own zero entries.
+   - A phase that fails to move a plan stays green. `wsfGoPins` detects that a plan moved, not whether it moved toward the target.
+   - Section 13's yamsql pins have no code link. Its rule "each pin asserts the target's plan" also contradicts the declared access-path divergences (`w8_eq_order_by_id`, `w6_left_join_preserved_only`, the covering class), which carry the same generic "explain syntax" reason.
+   - **Fix:** add an access-path normaliser (leaf, index, fetch side, IN operator, bound comparison types) with a SAME-PATH verdict and a per-phase owner. Give declared access-path divergences their own reason class.
+
+3. **The binding-sequence probes don't measure a plan cache on either engine.**
+   - The target engine is built with `planCache = null` (`sql_plan_steps.java:150-168`). So `runPreparedSequence`'s doc (:318-325) and section 5's "MEASURED … same-connection" plan every execution fresh. The target's plan-constraint safety stays a SOURCE claim.
+   - On the Go side, nothing asserts that the second execution was a `PlanCacheHit` (`cascades_generator.go:367-370`).
+   - This repeats v2's failure mode: a claim labelled MEASURED that the instrument cannot support.
+   - **Fix:** relabel the claim. Either enable a cache in the target step or say it has none, and assert the Go cache hit.
+
+4. **Section 4.3 item 2 names no data source, and "admits exactly" over-claims.**
+   - Go's in-union reads `PropRichOrdering` (`rule_implement_in_union.go:271-285`). There the record-type part is just a fixed binding, and nothing marks where an index's primary-key suffix starts. An index that names `id` explicitly (the I4 shape) must stay admitted.
+   - Java's missing I1 leg comes from the requested orderings its data-access rule saw for that reference, not from any per-leg rule. `w8_iup_no_order` shows the same reference holding the I1 plans under PRESERVE.
+   - After F-7c, Go's rank penalises a lone primary scan while the extension offers index routes. So `w8_in_union_explain` and `w8_in25_order_by_id_explain` are unlikely to reach the target's `SCAN | FILTER`, and that is undeclared.
+   - **Fix:** name the carrier, for example a horizon flag set in `ComputeMatchedOrderingParts` (`match_candidate_index.go:807`). Pin the I4 shape. State Go's plan for these rows after F-7b and after F-7c.
+
+## Medium
+
+5. **Two in-join rows have an unmeasured cause and no mechanism.**
+   - The no-ORDER-BY fetch placement (target `INJOIN{ISCAN}` vs Go `Fetch(InJoin(COVERING))`) is deferred to "measured again at F-7c". Its cause is an unlabelled hypothesis, while section 13 requires the fetch placements to match and 4.2 item 3 keeps a rank that prefers covering.
+   - The T5 DESC row (target in-join SORTED DESC, Go `InMemorySort`) is owned by F-7b, but section 4.3 covers only the in-union and gives no mechanism for it.
+   - **Fix:** run ROOT-PAIRS on both queries, then state a mechanism or declare the divergence.
+
+6. **Section 4.2 item 3's claims rest on data the oracle throws away.**
+   - The Java step sorts the root members by name before printing (`sql_plan_steps.java:1790`), so memo order is never measured.
+   - `wsfRootPairs` drops the `ROOT members: N preference=` line, so the pins don't even record that PREFER_INDEX was in force.
+   - OptimizeGroup picks its winner sequentially (`CascadesPlanner.java:650-658`), so under a cycle the target's final plan depends on member order. The declared divergence must therefore cover the final plan, not only the pairwise verdict.
+   - `wsfRootPairs` also silently drops lines it cannot parse and collapses members that render the same. Make both fatal.
+
+7. **F-7a is missing from section 12.** The rule-level comparators also serve record-layer planner callers when `Stats == nil` (`expression_rule_call.go:107`, `implementation_rule.go:115`), so F-7a reaches `executor.ExecutePlan` callers. It needs rows in the transitions table.
+
+8. **The size check must count the product of all IN lists.**
+   - Java multiplies across every IN source (`RecordQueryInUnionPlan.java:331-337`). Section 4.3 item 5 says only "the execution's values".
+   - **Fix:** specify the product, and pin a 5×5 query, which is 25 and over the limit.
+
+9. **The verdict vocabulary differs between design and code.**
+   - Section 13 defines SAME and DIFF and lists the BIGINT-subscript rows as declared DIFFs.
+   - The code uses a third verdict, SAME-STATE, for those rows and for the IN-subquery rows. The latter appear nowhere in section 13.
+
+## Low
+
+10. **The in-tree evidence still records neither HEAD nor `git status`.** The stronger binding (`wsdf14`, the dirty set against HEAD) lives off-tree, is not cited in the evidence file, and doesn't record the HEAD SHA either. The mutations still cover pin equality and the ratchet, not the renderers or the Java trace step.
+11. **The 2.8 grep can't be run as printed.** Its regex wraps inside the quotes (`virtual`⏎`prune`, :519-520), so pasting it verbatim gives the wrong count.
+12. **Section 9.3's "per process" is wrong.** The plan cache is per connection (`cascades_generator.go:58-65`); the conclusion still holds.
+13. **D7 mislabels one rule.** Its "five push-through-fetch rules" include `rule_push_distinct_below_filter.go`, which doesn't push through a fetch.
+14. **The sequence runner has two small gaps.**
+    - With statement reuse, a prepare failure is rendered as every execution's answer, not as SETUP-ERROR (`go_runner.go:216-219`).
+    - The null-then-value re-prepared order is missing, although section 5 claims it.
+
+**Not covered:** W6 D1–D6 against `CascadesPlanner`, W7 D1–D9 internals, and `wsf_record_layer_probe.java` beyond its pins.

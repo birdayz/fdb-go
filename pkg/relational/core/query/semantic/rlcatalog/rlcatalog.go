@@ -411,26 +411,21 @@ func protoKindToSQL(k protoreflect.Kind) string {
 	switch k {
 	case protoreflect.BoolKind:
 		return "BOOL"
-	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind,
+		protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
 		// Genuine 32-bit INTEGER: Java types these INT and runs the
 		// int32-bounded arithmetic lane. The old all-integers→"INT"
 		// conflation was harmless only while "INT" aliased to the LONG
 		// type; with real width typing it would have put BIGINT columns
-		// on the int32 lane.
+		// on the int32 lane. The 32-bit unsigned kinds are INT too
+		// (Type.java:909-914): protobuf-java reads them as a signed Integer,
+		// and so does every Go reader (values.ProtoScalarKindToRowValue), so
+		// a value never exceeds the 32-bit bound. Record-metadata validation
+		// refuses unsigned fields in record types (as Java's validateRecords),
+		// so this arm only keeps a descriptor that bypassed it consistent.
 		return "INTEGER"
-	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
-		return "BIGINT"
-	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind,
+	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind,
 		protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
-		// Deliberate divergence for the 32-bit unsigned kinds: Java maps
-		// UINT32/FIXED32 → TypeCode.INT (Type.java
-		// fromProtobufFieldDescriptor), which is sound there only because
-		// Java protobuf wraps uint32 into a Java int. Go decodes unsigned
-		// kinds as genuine unsigned values (up to 2^32-1), so an "INTEGER"
-		// typing would put values beyond MaxInt32 under a false 32-bit
-		// arithmetic bound. BIGINT keeps them on the long lane. Reachable
-		// only defensively: record-metadata validation rejects unsigned
-		// fields in record types (matching Java).
 		return "BIGINT"
 	case protoreflect.FloatKind:
 		return "FLOAT"

@@ -71,6 +71,28 @@ var _ = Describe("Record Version Conformance", func() {
 		return params
 	}
 
+	It("preserves incomplete versionstamp conversions exactly like Java", func() {
+		for _, local := range []int{0, 5, 65535} {
+			var result struct {
+				Bytes    string `json:"bytes"`
+				Complete bool   `json:"complete"`
+				Local    int    `json:"local"`
+			}
+			Expect(java.InvokeAs(ctx, "incompleteVersionstampConversion", map[string]any{"local": local}, &result)).To(Succeed())
+			version, err := recordlayer.IncompleteVersion(local)
+			Expect(err).NotTo(HaveOccurred())
+			stamp, err := version.ToVersionstamp()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(stamp).To(Equal(tuple.IncompleteVersionstamp(uint16(local))))
+			Expect(result.Bytes).To(Equal(base64.StdEncoding.EncodeToString(version.ToBytes())))
+			Expect(result.Complete).To(BeFalse())
+			Expect(result.Local).To(Equal(local))
+			back := recordlayer.FromVersionstamp(stamp)
+			Expect(back.IsComplete()).To(BeFalse())
+			Expect(back.GetLocalVersion()).To(Equal(local))
+		}
+	})
+
 	saveOrderWithGoVersioned := func(order *gen.Order) []byte {
 		_, vs, err := env.RecordDB.RunWithVersionstamp(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			store, err := recordlayer.NewStoreBuilder().

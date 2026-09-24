@@ -83,6 +83,8 @@ func deriveLogicalResultType(op logical.LogicalOperator, md *recordlayer.RecordM
 		return nil, fmt.Errorf("cannot type a nil logical operator")
 	}
 	switch typed := op.(type) {
+	case *logical.LogicalSingleton:
+		return &values.RecordType{Fields: []values.Field{}}, nil
 	case *logical.LogicalFilter:
 		return deriveLogicalResultType(typed.Input, md, env, unionType)
 	case *logical.LogicalSort:

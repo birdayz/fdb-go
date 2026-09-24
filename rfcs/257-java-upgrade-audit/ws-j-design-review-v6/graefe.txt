@@ -1,0 +1,73 @@
+**NAK.** Tree `10a2023678daaa361c9d5cad4826ae1609c51324`. Design SHA256 `8e62bbd0aaecdc2c1fe9ccfc4f40582d986c35e00845df848eea4ce8a4fc85aa`, 1650 lines; I recomputed the hash and it matches. Java is at `fdacd162a`. This was a read-only review: I ran no tests, probes or mutations.
+
+**Checked and correct**
+- **Evidence.** I re-hashed 12 of the 49 files in evidence-v6 from the tree, and all 12 match. The tree `just test` ran on (`38730525`) differs from the candidate only in review outputs and WS-J documents. `wsj_go_classes.json` did not change between v5 and v6, so the untyped-literal refusal moved no corpus run.
+- **Loader order** now matches `loadProtoExceptRecords` (RecordMetaDataBuilder.java:187-236):
+  - each index's record types are resolved before the index is read;
+  - each index is added before the next is read ("Index X already defined");
+  - RecordType entries are checked through `getRecordType`;
+  - the (d) refusal runs after `Build` (metadata_proto.go:376).
+  - `wsj6-vr-jvm.log` has 29 `VALIDATE_RECORDS` lines.
+- **fetchUnionDescriptor** (:322-358) backs the (d2) removal: a message with RECORD or UNSET usage still goes through the name check, and NESTED usage on `RecordTypeUnion` throws.
+- **AstNormalizer** walks DDL statements and refuses OFFSET before LIMIT (:176-188, :254-262, :315-318).
+- **Also correct:** the six coverage reads (pinned for both engines); the FLOAT-only rows (with a both-accept-or-both-refuse assertion); the restored doc comment; the empty-name and untyped-literal refusals; the five v6 mutations.
+
+## MEDIUM
+
+**1. The landed (d) exemption covers more files than the ones it was meant for** (metadata_proto.go:424, :436).
+- The exemption applies when `UnionDescriptor` is the type of any field anywhere in the file. That includes fields of messages the found union never reaches, and fields of the legacy message itself.
+- The SQL shapes it is meant to admit are exactly the messages reachable from the found union: a table is a union field, and a STRUCT is reachable from a table. `FileDescriptorSerializer.java:118-139` emits only reachable types.
+- **The gap:** in a hand-written (d1) file, a legacy `UnionDescriptor` union that an envelope references (`message Batch { repeated UnionDescriptor records = 1; }`) now loads silently under the other union. That is a misread, the one outcome the refusal exists to prevent.
+- The design's ":1335 A legacy union is never a field's type" is an unmeasured absolute. No Java test proto uses a union message as a field type (control: `MySimpleRecord` in 3 files), but that shows the shape is rare, not that it cannot occur.
+- **Fix:**
+  - Exempt only messages reachable from the found union.
+  - Pin the envelope shape as refused, in a unit test and the JVM spec.
+  - Scope the sentence.
+  - Declare that migrating toward the target's union is refused for this shape, because removing the message leaves a dangling reference.
+
+**2. The EQUIVALENT class contradicts itself and has no way to write its output** (section 8 step 3).
+- **The comparison (:1004)** covers `index_type`, `value_expression`, unknown fields and extensions. A DDL rebuild never carries any of them. So the test at :1029, which expects EQUIVALENT for such an index, cannot pass: the index becomes CHANGED and loses those fields.
+- **Java normalizes them:** `index_type` becomes the type plus its options, and the stored option list is ignored (Index.java:198-204). `value_expression` is folded into the root (:215-218).
+- **Nothing emits the stored proto:** the save path is `CreateTemplate` → `serializeTemplate` → `ToProto` → `indexToProto` (fdb_template_catalog.go:151, :250-252; metadata_proto.go:533), which builds a fresh `gen.Index`. So "re-emitted verbatim, byte for byte" (:1026) has no mechanism, and an unmarshal followed by a marshal is not byte-stable anyway.
+- **Fix:**
+  - Compare the known fields as Java normalizes them.
+  - Leave unknown fields and extensions out of the comparison.
+  - Add an Index-level raw carrier that `indexToProto` emits for EQUIVALENT indexes.
+  - Claim proto equality, unless raw sub-message bytes are spliced in.
+  - Declare what WIDENED and CHANGED drop.
+
+**3. "Every template WRITE goes through one chokepoint" (:603) collides with the unit's own verbatim writers.**
+- `RestoreTemplateVersion` (step 1) must store the backup's exact bytes, which `CreateTemplate` cannot do, because it re-serializes. So the restore bypasses the chokepoint, and the sentence is false.
+- If the restore did go through `CreateTemplate`, the tenants that most need it would be refused: a pre-F2 bitmap version with no lane.
+- Test 5's v1 (:1128-1129, a pre-port bitmap template) would be refused by the check that lands in its own step. So would the F11 byte copy.
+- `CreateTemplate` has two implementations (fdb_template_catalog.go:127, template_catalog.go:87).
+- **Fix:** put the check on the build path, name the exempt raw-write routes, and store test 5's fixture and the oracle's through the raw route.
+
+**4. The restore's header check refuses correct restores** (:386).
+- `RepairSchema` rewrites only the schema row and never opens the store (fdb_store_catalog.go:482-491).
+- So a tenant rebound to (t, v) and not opened since holds an older header version, and requiring equality refuses its only way out.
+- A correct metadata version legitimately sits above a header. The real contradiction is a header above the metadata version.
+- **Fix:** refuse only when a header's version is greater than the metadata version. State how many bound stores one transaction can check. Correct DIVERGENCES:2819 to match.
+
+## LOW
+
+5. **LIMIT/OFFSET scope (:710).** Java refuses a limit clause anywhere in the statement: a derived table inside an index query, a view body, a function body. Check every `LimitClauseContext` in tree order before `rejectUnsupportedTemplateClauses` runs, and add those shapes to the tests.
+6. **Stale count.** :181 and :553 say 21 Go pins; `wsjNonIntGoPins` now has 27 entries.
+7. **A cited record that does not exist.** The landed comment at metadata_proto.go:279 and the design's :1268 and (u) cite a DIVERGENCES entry for synthetic types. `synthetic|joined|unnested|out-of-scope` gets 0 hits in DIVERGENCES.md (control: `divergence` matches 49 lines). Divergence (t) has no PENDING entry either.
+8. **Test 5's rewrite is a no-op.** The pre-port builder already stores `long_value`, so running `wsjWidenIntLiterals` changes nothing, and the oracle's "touched at least one literal" assertion would fail. Assert that the literals are already `long_value` instead.
+9. **Coverage wording (:546).** "Only the primary-key columns … are covered" overstates for a mixed key, where a plain column sits beside a function column. Scope it to the function columns; mixed keys are unmeasured.
+10. **Migration output check (:1395).** It checks only that the output loads. Also assert that the union found is the union named.
+11. **The UnionDescriptor spec's reach.** It uses the tooling builder and `RecordMetaDataFromProto`, not the catalog with the production builder. Under the mutation only the Java half ran, because the first failing `Expect` aborts the spec.
+
+## Measured vs. hypothesis
+- **Measured:**
+  - the 29 records shapes, including (d1), (d2) and the three new load-order shapes;
+  - the two target-created UnionDescriptor templates, loaded by Go;
+  - the six coverage reads;
+  - the FLOAT-only overflow rows;
+  - the v6 mutations.
+- **Source only:**
+  - the envelope misread in 1;
+  - the Java normalization in 2;
+  - the false refusal in 4;
+  - all of steps 1–3: the carry rule, the restore, the lane check and the migration.

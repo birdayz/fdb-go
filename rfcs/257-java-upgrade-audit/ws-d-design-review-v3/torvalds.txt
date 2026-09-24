@@ -1,0 +1,70 @@
+**NAK.** I reviewed the v3 design itself; no implementation exists yet.
+
+- **Tree:** `1390a2feec185fc510f4b17c679bd1ae307951af`
+- **Design SHA256:** `2686aaeba1ad9eac4a4959ab771abaec6b7dea48f3a86ffc2d0651bee205b349`, checked with `git show TREE:path | sha256sum`.
+
+The review is complete and read-only. I read the v1 and v2 verdicts, the full v3 design, the v2→v3 diff, `ws-d-research/README.md`, and the three research reports (the maintenance report fully, the others by targeted search). I checked v3's claims against Java 4.14.2.0 and the tree's Go. The only changes since WS-C are `TODO.md` and files under `rfcs/`. I ran no tests or probes and made no edits.
+
+v3 fixes most of what Graefe raised in v2. Two new P1 gaps remain.
+
+### P1 — The lock model promises things the Go lock it names cannot do (design:44-60)
+- **The existing lock can't be cancelled.** "Go already mirrors Java's LockRegistry" points at `database.go:1370-1409`, which is a map of plain `sync.RWMutex`. Those waits cannot be interrupted, and the store's lock methods take no context (`index_maintainer.go:175-181`). Seven other maintainers share that interface. So "lock waits honour the operation context… never an uninterruptible hang" needs a new lock and an interface change, and the design never says so.
+- **A literal port releases the read lock twice.** Java's `AsyncLockCursor` releases in `onNext` on exhaustion or error, and again in `close()` (`AsyncLockCursor.java:63-77`). That is safe in Java only because `AsyncLock.release()` ignores a second call (`AsyncLock.java:127-133`). On an `RWMutex`, every fully read and then closed scan unlocks twice. If another reader holds the lock, a writer gets in while a reader is still active; otherwise the process dies. Require a release that can only fire once.
+- **Other lock rules are unspecified.**
+  - Java's ordering must be kept: reads wait for earlier writes, and writes wait for everything earlier (`AsyncLock.java:77-95`).
+  - A waiter cancelled while queued must not strand the waiters behind it.
+  - A cursor that is never closed must be handled.
+- **One planned test proves nothing.** "Grouped scan/write/deleteWhere under the race detector" passes with no locks at all, because per-operation caches leave nothing shared to race on. Require deterministic tests instead:
+  - cancel while queued
+  - close twice
+  - an abandoned cursor turns a later write into a deadline error
+  - a mutation that removes the lock turns them red
+- **Stale comment.** The tree's `hnsw.go:3-16` still says locks are not needed.
+
+### P1 — The same stall v3 fixes elsewhere still exists in the split path (a source reading, not measured)
+- **The failure.** When no split candidate is usable and collapse does not apply, Java calls `orElseThrow()` (`SplitMergeTask.java:386-397`). The task rolls back and fails again on the same inputs, stalling the partition's key-ordered drain — the exact stall design:392-393 cites.
+- **Why it can happen.**
+  - Only `minChildFraction` marks a candidate invalid (`PartitionEvaluator.java:62-66`), and it defaults to 0.1 (`Config.java:148-149`).
+  - KMeans runs with lambda 0 (`SplitMergeTask.java:1111`), so it minimises distance error only.
+  - With a single cluster, the 2→3 candidate is null (`:341-347`).
+  - So a lone cluster with a distant sub-group under 10% of its vectors produces only invalid candidates.
+- **The gap.** The n<k/reconcile rule (design:408-431) covers only candidates that are too small by count. This case needs a decided conditional rule and a retained JVM fixture.
+
+### P2
+1. **Build-range recovery step 1 doesn't exist today (design:317-318).**
+   - Both build-range retry checks refuse to retry anything that is not an FDB "lessen work" error (`indexing_throttle.go:70`, `online_indexer.go:1038`). Tests pin that list to Java's.
+   - Specify a separate capacity branch in that single retry owner, rather than widening `shouldLessenWork`.
+   - Define what scanned count a failed attempt reports. `decreaseLimit` uses it, so a zero sends the limit straight to 1.
+   - Share one recovery helper between the queue-replay iterator (`throttled_retrying_iterator.go:92`) and the build loop.
+   - v3 also dropped v2's "a recovery error propagates"; merger failures during recovery need a stated outcome.
+2. **The declared divergence is narrower than what v3 actually changes.**
+   - design:325-326 runs maintenance after *every* committed replay batch, not only during recovery. Java drains the whole queue, then merges (`IndexingBase.java:1069-1071`).
+   - That reorders inserts relative to splits in sessions Java completes normally. The resulting clusters and stored rows then differ from Java's.
+   - "Without changing any stored bytes" (:307) holds for the storage format only. The DIVERGENCES entry and JVM fixture cover only the stranded case.
+   - Either run the interleaving only during recovery (step 2 already gives liveness), or declare it, add a fixture, and exclude it from cross-engine byte comparisons.
+3. **Dissolving the whole core loses the forced repair (design:399-401).**
+   - Dropping every new cluster empties the cause set. Java then forces a reassign of a neighbouring cluster only past a threshold (`Primitives.java:1222-1226`).
+   - `ReassignTask` adds replicas only for under-replicated vectors or cause clusters (`ReassignTask.java:570-573`).
+   - The dissolved vectors arrive as under-replicated (`SplitMergeTask.java:643-650`) with no repair scheduled. "Sound" covers ownership, not replication.
+   - Specify the cause set for this branch and have the fixture assert the repair happens.
+
+### P3
+- **design:401-403 overstates.** "Counts, stats and lifetime peak unchanged" is false when an empty neighbour receives replicas (`SplitMergeTask.java:667-668`) or gains the REASSIGN state (`Primitives.java:1245-1248`).
+- **design:397-398 claims an alignment that can't be tested.** Every case where Go diverges fails in Java at `:909`, so there is no Java sequence of random draws to stay aligned with. The skipped per-cluster task-ID draws do shift. Pin Go's own sequence with a golden file instead.
+- **design:441-444, hash source and version pins.**
+  - Go must *compute* `VectorId` hashes in production, so they cannot "come from oracle output". State the formula Go implements; the oracle validates it.
+  - fdb-java 7.1.26 is only a transitive dependency (`classpath.json:27`). The tree's `MODULE.bazel` never pins it.
+  - Have the oracle assert the JDK and fdb-java versions at runtime.
+- **Admission table (design:122,132).**
+  - Admitting deletes with inline maintenance suppressed is a divergence in which Go succeeds where Java fails. The DIVERGENCES entry is scoped only to the refusal rows.
+  - `MergeIndexes` stops at the first failing target (`indexing_merger.go:172-176`), so one maintenance-incapable index blocks merges of later capable ones. Specify that each index is handled separately.
+- **Duplicate logic.** The reconcile path (design:414-421) repeats `CollapseTask`'s full metadata rewrite (`:412-424`). Share one helper.
+
+### Verified correct
+- `KMeans.java:135-153`: validation and the metric lookup run before the k=1 shortcut.
+- `RandomHelpers.java:213-218`: one RNG split per candidate, including null candidates.
+- `isBetterCandidate` (`:1248-1256`): matches v3's tie rule.
+- `VectorIndexMaintainer`: resuming from a continuation takes no lock (`:208-223`); inserts and deletes take the partition write lock (`:390`); `deleteWhere` and merge take no partition lock (`:496-618`).
+- Collapsed representatives count once (`CollapseTask.java:273-274`), so reconcile's counting is consistent.
+- Java references for the drain, the throttle and `autoMergeDuringCommit`.
+- The preserved boundaries hold.

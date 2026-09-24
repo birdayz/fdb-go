@@ -90,7 +90,7 @@ func buildChainedUnnestMetadata(t *testing.T) *recordlayer.RecordMetaData {
 		},
 	}
 	union := &descriptorpb.DescriptorProto{
-		Name: proto.String("UnionDescriptor"),
+		Name: proto.String("RecordTypeUnion"),
 		Field: []*descriptorpb.FieldDescriptorProto{
 			{
 				Name: proto.String("_T4"), Number: proto.Int32(1), Label: opt, Type: msg,

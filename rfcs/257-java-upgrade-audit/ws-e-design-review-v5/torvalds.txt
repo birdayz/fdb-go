@@ -1,0 +1,73 @@
+**NAK.** RFC-257 WS-E design v5
+
+- **Tree:** `c9fd46b8655f19cb0b897f5d272f311121626463`
+- **Design:** `ws-e-design.md`, SHA-256 `478dc077b98af12d13987f7e9d95cf93798d7276ebd6e46f3d91d35f96267358`, 1726 lines. I recomputed the hash and line count; both match.
+- **Java:** `fdacd162a9`, read from `.git/HEAD`.
+- **Method:** read-only. I read the three v4 verdicts, the full v5 design, its diff from v4, the oracle, the evidence, the harness, and the Java and Go sources cited below.
+
+**What holds**
+- **Evidence:** all eight source hashes match this tree's blobs. `wse6-all1.log` and `wse6-all2.log` each show "Ran 6 of 30", 6 passed, with 333 anchored blocks and 333 JAVA lines. M1–M4, the template mutation and the `withTeardown` mutation are recorded.
+- **Answered from v4:** the per-scanned-index conflicts (measured), the collapse in both value sets, the rule set threaded through recursion, the update flag and the `RowsAffected` check, the indexed read-scope controls, the SYS URL, the `[N]byte`/`[]any`/DSN typing, the §5.3 census, and the uniqueness mutation.
+
+## HIGH
+
+**H1. In Go, a fold to TRUE is not a deterministic win (design lines 1081, 1212).**
+- Java's conjunct count drops tautologies and returns 0 for `[true]` (`NormalizedResidualPredicateProperty.java:82-90, 105-121`).
+- Go's `residualConjuncts` adds up `normalFormSize` for every predicate (`designated_final.go:246-262`), and a ConstantPredicate takes the default arm, which counts 1 (`normal_form.go:215-216`).
+- So `[true]` against the original is 1 vs 1 in Go, and `deepHash` decides. That covers `null_strict_div0_cast_null_is_null_where`, the COALESCE rows with an erroring tail, `coalesce_not_cast_null_head_where` and the AND case of 5.4h.
+- "Every outcome decided before the hash is therefore the target's" is false for the model as it stands, and the design lists no change to it.
+- 5.4h's NOT case says "the NOT is evaluated per row" (line 1227). By 5.4g's own rule that is a tie. It is decided only if NotOverComparison rewrites it to `false ≠ true`, that folds to TRUE, and the tautology filter is ported.
+- **Fix:** port the tautology filter, at every level and at the expression. State its effect on REWRITING survivors outside WS-E (this is a query-engine change) and re-run the plan goldens.
+
+**H2. The one place the generic fold is said to survive is dead code (lines 1169, 1178-1180).**
+- `embedded.foldConstantProjections` does not exist; its only mention is the comment at `values/folder.go:10`.
+- `DefaultFolder` (`folder.go:31-40`) and `SimplifyAll` (`values_helpers.go:76-79`) have no non-test callers.
+- Non-test `SimplifyValue` callers outside the simplifier: `match_info_merge.go:588`, `pullup.go:83` and `simplifier_predicate_values.go:27,30,47`.
+- So the census in 5.4a assigns two test-only seams, and 5.4b's three properties and their tests target nothing.
+- **Fix:** delete the generic fold outright (the target has none) and the dead seams, and correct the census.
+
+## MEDIUM
+
+- **M1. A second, unconverted set of predicate rules.**
+  - `foldPredicateAtNull` runs `SimplifyPredicateValues`, then `Simplify(DefaultSimplifyRules())` (`rule_eliminate_null_on_empty.go:149-153`). Those rules are Go-only: `NotConstantSimplifyRule`, `ValuePredicateConstantFoldRule` and others (`simplifier.go:145-159`). It also does its own null-strict collapse.
+  - Java runs `ConstantFoldingRuleSet` there (`ConstantPredicateFoldingUtil.java:177-193`).
+  - `QueryPredicateSimplificationRule` calls only `SimplifyPredicateValues` (`rule_query_predicate_simplification.go:49-52`), so Java's DefaultQueryPredicateRuleSet rules (identity, annulment, NotOverComparison) never run there. "runs ConstantFoldingRuleSet" (line 1161) does not say how those rules get in.
+  - `rejectsNull` decides when an outer join becomes an inner join, and it changes with the fold regime.
+  - **Fix:** one port serving both consumers; retire the old driver and the bespoke collapse.
+- **M2. The tie rows' acceptance is vacuous (line 1218).**
+  - "One of two members" passes either answer. Go's tie-break is its own deterministic `deepHash` (`designated_final.go:171-179, 294-334`).
+  - State which member Go keeps for each tie row and pin that answer. Otherwise a change to `tieBreakNodeHash` flips error ↔ rows with every test green. The 20-run test proves only determinism.
+- **M3. The join-inner row is not proven parity (lines 476, 527).**
+  - `in_cast_null_join_inner_empty` depends on which side of the join the explode sits.
+  - TODO "An identifier-sensitive cost tie decides join nesting (RFC-235 §17)" measured nesting as identifier-hash-decided in BOTH engines.
+  - Go matches today only because its plan-time fold yields `[nil]` (GO line `OK []`); after 4.1(b), Go's nesting decides.
+  - **Fix:** trace it, or classify it with the ties, and pin Go's EXPLAIN.
+- **M4. The guard is deleted without its replacement invariant (lines 506, 519).**
+  - `IsConstantValue` exists because `FieldValue.Evaluate(nil)` returns `(nil, nil)`, which yields a silent `b IN (NULL, 999)` (`rule_in_to_explode.go:100-128`).
+  - "`InSourceComparand` for every other comparand" admits a comparand correlated to a sibling quantifier, and replaces `isSupportedExplodeValue` (`rule_implement_in_join.go:611-635`) without a stated rule.
+  - **Fix:** specify IN sources only for a comparand uncorrelated to the select's own quantifiers, and fail closed on an unbound alias. Test that `b IN (a, 999)` gets no IN-join plan.
+- **M5. The time.Time constant is not "ONE value" (lines 689-705).**
+  - Every other DATE/TIMESTAMP value in the engine is text: CAST (`values.go:4528-4552`) and the write path (`proto_value.go:317-318`).
+  - Probe-key coercion has no DATE/TIMESTAMP arm (`executor.go:1151-1181`).
+  - A DATE index probe is unspecified. Converting with `FormatDate` would match a non-midnight constant through the index, while the stated residual (midnight only) would not — the plan-dependence v4 H2 excluded.
+  - **Fix:** bind the canonical text typed TIMESTAMP, or enumerate every consumer's conversion.
+
+## LOW
+
+- **L1. Java teardown catch is too narrow.** `teardown()` catches only `SQLException`, but `withFdbRetry` rethrows `RuntimeException` (`sql_plan_steps.java:1305-1311`). A runtime drop failure skips the template drop. In the failure path it replaces the operation's own error, contrary to the Javadoc.
+- **L2. Go teardown wiring is unpinned.** The named-return defer wiring in `runEphemeralFollowUp` has no test: deleting `rows, err = …` keeps `TestWithTeardown` green. A Go teardown failure in the WS-E oracle also lands in an unpinned GO line.
+- **L3. A dead instrument is pinned.** Every trace pin ends "SIMPLIFIED-REF final plan members: 0 of 2". A REWRITING reference never holds physical plans, so that ranking can never fire. Remove it, and fix the comment in `trace()`.
+- **L4. Two teardown checks can pass vacuously.**
+  - `ephemeralTeardownProbe` re-derives the template name by string surgery; a naming change makes the absence check vacuous.
+  - The dry-run absence check accepts any error. Assert the not-found SQLSTATE.
+- **L5. The index-state probe is misdescribed.** Line 1534 says "B marks an index DISABLED". The probe writes the raw state key in a bare FDB transaction. The Go FDB tests must do the same raw write, or they measure a different conflict set.
+- **L6. EffectiveConstant's NOT_NULL arm makes every Go result-type nullability observable.** An IS [NOT] NULL over a subtree Go types NOT NULL is decided without evaluating it. Only catalog functions and arithmetic are censused. Add CAST, PROMOTE, CASE/IF, subscripts and field access, each tested with an erroring child.
+- **L7. Binding gaps.**
+  - `[][]int` becomes ARRAY<ARRAY<INT>> (line 661), against 4.2's "direct nested array stays unsupported".
+  - `[]*T` element kinds are unassigned.
+  - Canonicalization of time.Time elements is unstated.
+- **L8. Run records.**
+  - The `just test` logs bind no tree hash; 92 of the 94 greens are cached from a tree that differed in `go_runner_test.go`.
+  - The TODO block's "Each of those checks has a recorded mutation" does not hold for the non-empty-listing guards.
+
+**Measured vs SOURCE.** H1, H2, M1, M4 and M5 are defects of the design against current Go and Java source; no target measurement is disputed. M3 is a SOURCE hypothesis, backed by the cross-join tie data already in TODO. The v5 target rows themselves are sound measurements.

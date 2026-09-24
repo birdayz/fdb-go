@@ -1,0 +1,76 @@
+**NAK.** Tree `aa29308afd7637d7e98a42ef1d108335013ead8c`, `ws-j-design.md` SHA256 `33a8fc1e35d537978db7e69ad40a140870911b3829df9d6a108e6bc7abdbf608`, 2532 lines (both recomputed from the tree). Java at `fdacd162a`. The review was read-only: I ran no tests, probes or mutations.
+
+## What holds
+- **Evidence matches the tree.** I re-hashed six files evidence-v11 lists (metadata_proto.go, builder.go, fdb_template_catalog.go, metadata_proto_test.go, the WS-J spec, DIVERGENCES); all six match.
+  - wsj-ev1 and wsj-ev2 each show "Ran 31 of 57", all passing; jvm-md shows "Ran 57 of 1582".
+  - final-recordlayer-test.log has PASS lines for `TestReusedIndexMessageKeepsAnEmptySubspaceKey` and the fourth shape of `TestStoredIndexSubspaceKeyIsReadAsJavaReadsIt`.
+- **The option order is fixed.** Options are now read with the type, before the root and key (`metadata_proto.go:843-856`), as `Index.java:198-221` does. WSJIXK checks the Go class for each of the four shapes, and Go's side is now read from marshalled bytes.
+- **The error is marked in place** (`builder.go:761-764`), so wrappers survive. Both call sites create a fresh error.
+- **The pooling census is right:** 0 hits for the three pool functions; positive control `UnionDescriptorFromVTPool`: 2 hits.
+- **v10 findings resolved:**
+  - Graefe 2, 4-9;
+  - storage 2, 3, 5, 6;
+  - Torvalds 2, 4-6, 8, 9.
+  - Graefe 3 is resolved except for finding 4.
+- **Only partly resolved:** the framing finding all three v10 reviewers raised (finding 1), storage 4 (finding 3), Torvalds 3 (finding 2) and Torvalds 7 (finding 5).
+
+## MEDIUM
+
+**1. The stored side is framed name-first, but everything that checks it is type-first** (design `:2139`, `:2170`, `:2207`, `:2063`).
+- Pre-upgrade Go wrote and read records as raw bytes by field number, parsed with the framed type's descriptor, whatever the field's declared type (`e48f5b496:store.go:2052-2077`, `:2121-2196`). So a `_X` field typed by another message, or a scalar `_T`, did carry data.
+- Step (ii)'s validator does not follow that framing. It pairs union fields by declared message type (Go `metadata_evolution_validator.go:319-338`, Java `MetaDataEvolutionValidator.java:197-207`). It also refuses any non-message old union field. That undoes the suspension step (i) grants: scalar-framed shapes are refused at (ii), and a record type framed by name is compared through the wrong message.
+- The migration's output check and step (iii) compare only the UNION. The current loader frames each field by its message type (`metadata.go:392-401`). So a `_X` field typed by a nested `Outer.X` loads under a different descriptor, and nothing notices.
+- "The records carry only union field numbers, which do not change" is therefore not the whole safety argument for arms (a), (b) and (d).
+- **Fix:**
+  - Require the output's framing to equal `legacyUnionRecordTypes`' framing, field number by field number (record-type name and descriptor), in the migration's output check and at (iii).
+  - Declare that (ii) refuses scalar-framed fields, or specify a validator mode that pairs by the stored framing.
+  - Pin the nested-`X` and scalar-`_T` shapes.
+
+**2. R1's reach bound is false for predicates** (`:2157`).
+- `SetPredicateProto` compiles without a descriptor (`index.go:600-620`), and `Build` never checks index predicates against record types.
+- So a sparse index whose predicate reads the removed holding field still loads. It then stays READABLE without a rebuild while its predicate now evaluates differently.
+- **Fix:** refuse R1, or class the index CHANGED, when any predicate reads through the removed field. Test it.
+
+**3. The restore's carry-invariant check is too weak** (`:618-627`). It compares record-type keys and union numbers only for names both versions define. It misses two things:
+- **Index definitions.** A predicate-only difference with equal versions passes the rebind validator. That is the design's own reason for refusing a restore nothing binds (`:556-560`). Tenants on fresh v1 are then repaired onto the restored v3.
+- **Inverse collisions.** Two different names on one key or union number are admitted as a rename, because the rebind validator does not disallow renames (`fdb_store_catalog.go:352-353`).
+- **Fix:** require section 4's carry compatibility in both directions:
+  - a one-to-one map of key and union number;
+  - each index EQUIVALENT, or its last-modified version above the lower version's metadata version;
+  - former-index keys disjoint from the other side's live indexes.
+  
+  Test both holes.
+
+**4. `CreateTemplate` does not own the `v′ > latest` refusal.**
+- The refusal lives only in the save action (`save_schema_template.go:36-43`). The FDB `CreateTemplate` refuses only an exact duplicate (`fdb_template_catalog.go:142-150`).
+- A library caller's `CreateTemplate(t, v′ < latest)`, for a version that is not stored, is carried and written. The guard's range starts at `(t, latest+1)` (`:499`), so it never sees a dangling `(t, v′)` binding. A pre-upgrade `DeleteTemplateVersion` can leave exactly such a binding, and this call re-issues the version.
+- **Fix:** move the refusal into `CreateTemplate`, or have the guard read `(t, v′)` as well. Test it.
+
+## LOW
+
+5. **The lock-order premise is false** (`:966-970`).
+   - `SaveSchema` checks the template before taking its mutex (`store_catalog.go:84-102`), and `RepairSchema` releases its mutex around the load (`:140-154`).
+   - As specified, a bind can land after a guarded `DeleteTemplateVersion` saw no binding.
+   - Hold the store mutex across the template read, and say so.
+6. **An absent `root_expression` still loads.**
+   - Java refuses it with "Exactly one root must be specified for an index" (`KeyExpression.java:404-405`), before the key.
+   - Go skips it (`metadata_proto.go:858`), so Go loads metadata Java refuses, and a malformed key beside it is reported first. It is the same class as v10's precedence finding.
+7. **The remedy marking.**
+   - The carried route runs `deserializeTemplate` (`:1525`), so a (d) shape introduced by the new DDL gets the load-site "stored" remedy on a store.
+   - `HeldBy`'s value is never asserted: WSJTT checks only that it is non-empty (`ws_j_…_test.go:2993`).
+   - A hand-built record-type holder is marked as SQL; state this.
+8. **Stale text.**
+   - Section 9 (p) (`:2481-2484`) still says "the latter also admits a caller-edited file … relaxed only for the holding fields of type UnionDescriptor". That is v10's rule and v10's entry point.
+   - `:952` says "nothing exported takes a template's bytes", but `fleet.RestoreTemplateVersion(ks,t,v,md)` does.
+   - `:499` says latest = 0 covers every version, which misses a stored `(t, 0)`; `validateSchema` admits version 0.
+9. **Evidence.** No ev11 log shows a line from `TestLegacyUnionTemplateErrorRemedies`. It is in srcs (`BUILD.bazel:38`) and its target ran uncached, but only as "4 tests pass".
+
+## Measured vs. source only
+- **Measured:**
+  - the four WSJIXK shapes on both engines;
+  - WSJTT's marking and suffixes on both paths;
+  - the unchanged tally (twice);
+  - the new unit tests.
+- **Source only:**
+  - findings 1-9;
+  - everything unbuilt in steps 1-3: `loadStoredAsWritten`, R1/R2, the migration, the in-memory wiring, the restore's reads and checks, the carried `CreateTemplate`.

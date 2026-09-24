@@ -1,0 +1,69 @@
+**NAK**
+
+- **Tree:** `4b8b8c15a3b65ce74c1856f8175ff2d3e7883c8d`
+- **Design hash:** `rfcs/257-java-upgrade-audit/ws-d-design.md` SHA256 `81fdd5f9c7a4d15222c0ad47c7056494f108e7e6bc3f689b788adbe2126809a8`. I recomputed it with `git show TREE:path | sha256sum`.
+
+The review is complete and read-only. I read all prior verdicts (v1 ×4, v2 Graefe, v3 ×4), the full v4 design, its diff from v3, the research README and the three research reports. I checked the claims against Java 4.14.2.0 and the Go in the tree.
+
+- **Source delta:** `git diff --stat f0cb2957 4b8b8c15 -- pkg cmd conformance gen proto` returns nothing. The unrestricted diff lists only `TODO.md` and files under `rfcs/`, which is the positive control.
+- **Papers:** `pdftotext` isn't installed, so I read the SPANN and SPFresh PDFs directly.
+- **No actions taken:** no tests, probes, edits or staging.
+
+**Confirmed**
+- **SPFresh is unaffected by the inherited paths.**
+  - `spfreshIndexMaintainer` embeds `standardIndexMaintainer` (`spfresh_index_maintainer.go:30-31`), so it inherits the queue refusal (`index_maintainer_queue.go:12`), the no-op `MergeIndex` (`index_deferred_maintenance.go:248`) and the maintenance gate (`store.go:1013-1014`).
+  - `spfresh*.go` has 0 hits for the lock, queue, merge, iterator and throttle APIs. Positive control: `vector_index_maintainer.go:342,1140`.
+  - `IndexTypeVectorSPFresh` is a separate type from `IndexTypeVector`, so engine parsing and admission never reach SPFresh. LIRE is unchanged.
+- **Every v3 item has a corresponding v4 change, and the source behind each checks out:**
+  - Java materializes the full search result before the lock cursor wraps it (`VectorIndexMaintainer.java:225-259`), so the shorter search-lock hold loses nothing.
+  - Java's per-range merge and `mergeIndexes` both use `whenAll` (`IndexingBase.java:1070,1093`).
+  - Java writes the tag-5 row before the hard-cap throw (`Insert.java:293,334-337`).
+  - Cause IDs are only tested with `contains()` (`ReassignTask.java:419-425,567-571`), so dropped IDs in the cause set are harmless and the forced reassign does repair underreplicated primaries.
+  - The throw site is where v4 says (`SplitMergeTask.java:386-397`).
+  - `VectorId` is declared as the design's formula assumes (`VectorId.java:64`).
+
+**P2-1 — The GuardiANN insert admission row is narrower than the merge row (design:149 vs :154).**
+- **Why inserts need the merge knobs:** with inline maintenance on, a Java insert runs one deferred task *before* inserting (`Insert.java:206-211`). That consumes the split/merge, reassign, collapse and bounce concurrency knobs and the neighbour counts. The insert row doesn't require them.
+- **Mutable-knob failure:** such an insert is admitted and the record write is buffered. The inline task then fails, which breaks the guarantees at design:102-103 and :204-206 (no committable writes, including after catch-and-commit).
+- **Immutable-knob failure:** the "knobs are mutable, repair by evolving" claim (design:156-158) is wrong for most of the merge row. Java's mutable set is only the statistics knobs, sample batch size, the five concurrency knobs and the hard max (`GuardiannVectorIndexEngine.java:84-97`). KMeans settings, neighbour counts, `replicatedClusterTarget` and `deleteMaxCandidateClusters` are immutable. With a bad immutable value, inserts are admitted and keep enqueuing tasks that can never run, until the hard cap stops them. That contradicts divergence (b).
+- **Needed:**
+  - GuardiANN insert requires the full merge row. For mutable-knob failures, either require them too or suppress inline maintenance as deletes already do, and state that the hard cap then applies.
+  - Correct the mutability sentence.
+  - Add fixtures for both cases.
+
+**P2-2 — Paper/LIRE: a split with no usable candidate leaves the posting permanently oversized (design:525-529).**
+- **What the papers require:** SPANN §3.2.1 bounds posting length with balanced clustering (Eq. 1, λ). SPFresh §3.2 and §4.2.1 define split as: garbage-collect, then balanced-split if still over the limit.
+- **Java already has the mechanism:** `SplitMergeTask.java:1111` passes `KMeans.overflowQuadraticPenalty()` with λ=0.00, which switches off the soft size balancing that `KMeans.java:54-55,115-119` provides.
+- **Under inline maintenance it gets worse:**
+  - The hard cap is bypassed (`Insert.java:334`).
+  - Every insert re-arms the split (`Primitives.java:1161-1164`).
+  - Each re-armed task runs a full split evaluation plus a reconcile that serializably reads every reference and its metadata (design:511-513), inside the user's insert transaction.
+  - The result is unbounded posting growth and O(n) cost and conflict footprint per insert. Once that work passes the 5 s transaction limit, the stall this rule was meant to remove comes back.
+- **Needed:**
+  - After the reconcile, if the cluster is still above `primaryClusterMax`, evaluate 1→2 with λ>0 (a fixed constant pinned by a golden test) and apply it if it is valid.
+  - Only a population that cannot be separated (e.g. at least max identical vectors, which ends in the zero-primary drop) takes the unrelievable path.
+  - Add a fixture with inline maintenance on.
+
+**P2-3 — The empty merge core leaves a cluster that nothing will ever merge (design:557-570).**
+- **Why nothing re-arms it:**
+  - The kept cluster has zero primaries and cleared states, and it is in the cause set, so it gets no reassign.
+  - Java enqueues merges only from deletes (`Delete.java:204`) or after a reassign of the target (`ReassignTask.java:773`). Neither can fire for this cluster.
+- **The termination claim fails:** two disjoint empty pairs end as two retained empty clusters with no pending tasks. That contradicts design:568-569.
+- **In a non-empty index:** an undersized cluster stays unmerged, which violates SPFresh §3.2 (Merge). Neighbours' forced reassigns also seed replicas into it (`ReassignTask.java:567-571`), leaving a replica-only cluster.
+- **Needed:**
+  - Apply the reconcile's merge-eligibility rule (design:522-523) through `enqueueMergeTaskIfUndersizedMaybe` (`Primitives.java:1324`, cardinality MULTIPLE).
+  - Termination still holds: every empty-core merge deletes at least one centroid.
+  - Add a fixture with two disjoint empty pairs.
+
+**P3**
+1. **Two different capacity-recovery stop rules.** design:437-441 continues if the merge "executed ≥1 task". design:528-529 treats the cluster as unrelievable once its task runs "without freeing capacity". The first rule doesn't measure relief, so on a busy prefix recovery can burn the whole retry budget (`throttled_retrying_iterator.go:41`, 100 retries). Use the cluster and count carried by the typed error (design:430) as the single stop rule.
+2. **Follow-up merges still stop at the first failure.** The continue-past-failure rule (design:170-172) isn't applied to `mergeRequestedIndexes` (`indexing_merger.go:135-143`), even though Java's per-range merge is the same `whenAll` (`IndexingBase.java:1070`). Item (d) at design:201 also labels this Java parity as a divergence.
+3. **The executor changes in §2 reach SPFresh.** The executor vector path and the fingerprint salt are shared with SPFresh (`executor.go:683-736,752-761,888`).
+   - Scope the tri-state return-vectors default, the Java efSearch default and the new salt fields to `IndexTypeVector`.
+   - Keep SPFresh's `kc` default and its ordered-stream horizon floor unchanged (SPANN §3.2.3 probe budget).
+   - Say whether SPFresh continuations issued before the salt change get rejected, and pin it with a test.
+4. **The "no lock cycle" argument only covers partition locks (design:77-78).** Writes take `stateMu` → maintenance gate (`store.go:1011-1014`) → window lock (`sliding_window_index_maintainer.go:269-271`) → partition lock, and v4 adds a new read-lock site in the scan path.
+   - State this total order.
+   - Forbid taking a store-level lock, or re-taking a partition lock, while a partition lock is held (for example during the inline task drain or a centroid-HNSW search).
+   - Go's `RWMutex` writer preference turns any violation into a deadlock.
+5. **Pass 2 must not merge the stats updates twice.** Pass 2 (design:537-541) must replace, not merge a second time, the standard-deviation updates (`SplitMergeTask.java:622-624`; `AbstractDeferredTask.java:541-543`).

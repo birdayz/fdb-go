@@ -1,0 +1,1215 @@
+# WS-J design v4 evidence
+
+Two uncached passes of every WS-J spec, //conformance:rfc257_oracle_test --ginkgo.focus='WS-J',
+on the bytes hashed below (hashed before pass 1, verified after pass 2 and after `just test`).
+The hashed set is every file the WS-J work landed or changed, code and tests, not only the
+instrument (the v3 reviews found 10 hashes covering part of it).
+
+## sha256 of every landed WS-J file and test (43 files)
+c76d96aeaf5375d8e5a76b5e33f58ebd1800ea077e5192e87406074d610c2829  CHANGELOG.md
+b983ebdf417fd65734f22ae8c7c5239512d6f477928c5a7c946eab4f982c15cf  cmd/frl/internal/cmd/meta.go
+cfe3e5dc3e6aecfe10c88048b14078771d9dfde9a0d4264c2b89b72042c57a2d  cmd/frl/internal/cmd/meta_test.go
+b27a16fc110cbf315107934152e519158f2599192f6fd9cec713651a115373c7  conformance/metadata_proto_conformance_test.go
+e3822652b61aae1b44cfc2915d272ce9f26741fd59a6d08b8ff370b5f60a7545  conformance/sql_plan_steps.java
+355ef016ad8184c8c0ab78b37f1d2f8502ccafdad22cc75c052f9cc4d6b7e2bb  conformance/testdata/rfc257/java_index_templates.json
+5058672cd8b805bb6ac11cf232ac728275dc21caefedd50ed81b5db6e39ce564  conformance/testdata/rfc257/wsj_go_classes.json
+0e1e2b546cf5ba27ebc6a1fa1a812455eb1807535c0bcbea7890812d29372caf  conformance/testdata/rfc257/wsj_java_pins.json
+24a692d27dd5aa90da4e263fa0eb8cb325018bdede3c684c06abb944c37133b3  conformance/ws_j_index_fidelity_conformance_test.go
+8c3f1da9cf4cb8ea92a5c69e6ff0bf62511a6575f2e7ce90026fce66e014865e  DIVERGENCES.md
+f701d33489ccacc8022471e7381b71989f478e4b868d394dc52235356e72cdef  pkg/recordlayer/errors.go
+664b5252a6816bec8431958e97b028e4972f1a98ae28e39d5554bbce30d0f622  pkg/recordlayer/index.go
+bd105a2cb169ff157d05924b69f132f1a2b1dd124ce7cdedd1c57cd332e786fd  pkg/recordlayer/index_option_order_test.go
+47a06c42ce4a46fb73ec35e46ea9f7b233700b5b1edbc66cdd04e5bf1a2ea97e  pkg/recordlayer/index_predicate.go
+f6b996367d6db9e86a627dd0f7b2cfcb0ba51f36a7571abf2814938f49fb7af9  pkg/recordlayer/key_expression_fastpath_test.go
+84556da7f1f2ab06b0a2759cd1f721ebb4cee90af5ea08b40cb1f6c98464e9a2  pkg/recordlayer/key_expression.go
+6cd2b54c386f2b22cb88461f187d15d6ecfde1fba9e30ace70eaa92ab27d12a2  pkg/recordlayer/long_arithmetic_function.go
+4b5d4a31e36f644dd1cd3d4d05d70a6e587a180ceb6ce858a8483c0953b96530  pkg/recordlayer/long_arithmetic_function_test.go
+a1d1f89edada94d0f84c7a89fa1037626c034fd2ac364bbafd4ac245a77e1242  pkg/recordlayer/metadata_evolution_validator.go
+349deeb9aae58138f7b729ef089e0f29d4c0572b42598a53f7254703555c751f  pkg/recordlayer/metadata_evolution_validator_test.go
+a7cfe89ac20320f2af7006659d96a95c305d7b875fde15744d769022a0cf52a4  pkg/recordlayer/metadata.go
+d6da6e2613796b191678c4b2beccb42692f43034c1456a50bb12963eacd7a06c  pkg/recordlayer/metadata_proto.go
+5ff7a95eb6a5caecb3dd81e1fda0233e6149bd5ea2004ff473b27345a9184c44  pkg/recordlayer/metadata_union_evolution_test.go
+84cd6a1416a1a1baafc928fa978491743cfa39c1e4de16ebd16579a8277aa3b3  pkg/recordlayer/metadata_validate_records.go
+c2316b83360cf07be5b1a5723905181277248ffdb03848a62dfbeedc84d99ac6  pkg/recordlayer/metadata_validate_records_test.go
+13a5bcede6abbaaf10e2d888100d7cea0177adff62b7c326501b98858d7c85e1  pkg/recordlayer/query/executor/executor.go
+dcc0bce6fe04aad387e2129489e48695bcd9e481908762ff559e5557c30a19de  pkg/recordlayer/query/executor/executor_test.go
+fb1554ab4b4fd0cc6694aba9770e7f6c3c992a3584a62d40ce9eb65314860fa8  pkg/recordlayer/query/plan/cascades/value_equivalence.go
+574d53511d8b509b8b13a4cda408c5d346278f7248fe78c1e458dbff899c52cd  pkg/recordlayer/query/plan/cascades/values/proto_field_type.go
+c27b40d5525853108e1d77dc7eca81b3304342820da7502f95cd55cfa4a5b6cb  pkg/recordlayer/query/plan/cascades/values/proto_scalar_shape_test.go
+ddf2f587ce3f48be758ca9a059dece5c3d3b8e5610d12407dc89b4cfd5f2f2a7  pkg/recordlayer/query/plan/cascades/values/values.go
+e9f7a6369b1b53a01d5140f098e4665ff4c4c2464de46a06c1ee3e54af3e0038  pkg/relational/core/catalog/fdb_catalog_test.go
+370bd65d1ff888c86628f1f6ad76859cba65cb009937462a07ed8a2202439c09  pkg/relational/core/catalog/fdb_store_catalog.go
+c7eebe70fc55a2506a7f0c70ed9d0a7f804576a36e4d40ac8f7ae0e9b80ba070  pkg/relational/core/embedded/index_ddl_field_trie_test.go
+386becd8045996796408cda2e57a970a5548e589d92260c03310e22c6b0cca64  pkg/relational/core/embedded/query_hash.go
+36275c248934663ae17b760096e8a7950073fe409feb2ec6b38ab3e1ef2f81e6  pkg/relational/core/functions/proto_value.go
+86421fb06671823d85dd265996ff18bf45d355c199a86889c4e29cea10aad06c  pkg/relational/core/functions/proto_value_test.go
+53193a635a9fb4839dd097b1478ed9bdb68d52cec9cf363c9b4fc46a481cbfe0  pkg/relational/core/metadata/builder.go
+646392e8a6ade7eafaf50e440fbf9f3a5a1aa52d497a7a073906fb799cc780d6  pkg/relational/core/query/ddl/generator.go
+51edab4a2146e2ff0bea78c36750f2e78511e9df784f430fca75fb461d64e664  pkg/relational/core/query/ddl/literal_key_carrier_test.go
+c42a2336179cba38776f946c873ef45e63b791d19afb8eddc8ad244861d3194f  pkg/relational/core/query/semantic/rlcatalog/rlcatalog.go
+ea5b28cbc0f34de70773e815c699cf19cde6d2806f1b95324efd30e302d40f74  pkg/relational/sqldriver/arithmetic_index_operand_fdb_test.go
+8f2104e5fae9ebe034d88c1932d8a9fdbe6598389f6cb88ea437733eae6a9979  pkg/relational/sqldriver/index_definition_production_fdb_test.go
+
+## pass 1 (/var/tmp/fdb-upgrade-recovery/wsj4-ev1.log)
+Ran 8 of 31 Specs in 29.528 seconds
+SUCCESS! -- 8 Passed | 0 Failed | 0 Pending | 23 Skipped
+WSJG long_value variant rewrote 3 literals
+WSJG discriminating=9 of 15
+WSJ-TALLY map[both-accept-companion:4 both-accept-equal:166 both-accept-index-diverge:4 both-accept-metadata-diverge:180 both-reject:20 java-accept-go-reject:101]
+WSJ-GO-BUILT-TWICE 354
+## pass 2 (/var/tmp/fdb-upgrade-recovery/wsj4-ev2.log)
+Ran 8 of 31 Specs in 29.785 seconds
+SUCCESS! -- 8 Passed | 0 Failed | 0 Pending | 23 Skipped
+WSJG long_value variant rewrote 3 literals
+WSJG discriminating=9 of 15
+WSJ-TALLY map[both-accept-companion:4 both-accept-equal:166 both-accept-index-diverge:4 both-accept-metadata-diverge:180 both-reject:20 java-accept-go-reject:101]
+WSJ-GO-BUILT-TWICE 354
+
+## pass 1 against pass 2
+WSJ lines: 475 and 475; differing as sorted sets: 0
+WSJ-CLASS lines (class and Go outcome): 475 and 475; differing: 0
+
+## the unit, JVM and FDB pins: `just test` on the same hashed bytes (/var/tmp/fdb-upgrade-recovery/wsj4-justtest.log)
+Executed 54 out of 94 tests: 94 tests pass.
+Executed this invocation (not cached) and PASSED, read from each target's test.log:
+  //pkg/recordlayer:recordlayer_test: TestValidateRecordsMatchesJava, TestPreviouslyStoredMetaDataIsRefusedOnLoad,
+    TestSetRecordsWithUnionNameRefusesAnotherUnion, TestJavaTupleValueClassName, TestKeyExpressionFastPath_UnsignedFieldsReadSigned
+    (by name, "--- PASS" lines); its Ginkgo suite ran in full, 3620 of 3621 specs, the "MetaDataEvolutionValidator
+    literal carrier widening" specs among them (a non-verbose log does not list specs; they are listed by name in the
+    focused run /var/tmp/fdb-upgrade-recovery/wsj4-evol.log, taken before the hashes)
+  //pkg/relational/core/query/ddl:ddl_test: TestLiteralKeyCarrier, TestLiteralKeyCarrierRefusesOutOfRangeInt
+  //pkg/recordlayer/query/executor:executor_test: TestScalarProtoToGo_Uint32Kinds
+  //pkg/relational/core/functions:functions_test: TestConvertToProtoValue_Uint32_IntRange, TestRoundTrip_UnsignedKinds
+  //pkg/relational/core/catalog:catalog_test: TestFDB_SchemaRebindAcceptsLiteralCarrierWidening
+  //pkg/relational/sqldriver:sqldriver_test: TestFDB_IndexDefinitionProductionPathStoresTargetShapes,
+    TestFDB_ArithmeticIndex_NonIntegerOperandTruncatesLikeJava
+  //cmd/frl/internal/cmd:cmd_test: TestMetaEvolveCheck_LiteralCarrierWidening
+  //conformance:conformance_test: Ran 1424 of 1543 Specs (119 skips are the inherited RFC-257 WS-K set), 5 more than
+    v3's 1419: the five records-descriptor shapes v4 adds; the 18 "Java refuses the same records descriptors" shapes
+    by name, each with both engines' message: /var/tmp/fdb-upgrade-recovery/wsj4-vr-jvm.log (18 of 18, taken before
+    the hashes; the spec file's hash is above and it did not change after that run).
+
+## pass 1: every WSJ line (one per run, with its class)
+WSJ aggregate-empty-table.yamsql:21 java=OK(8) go=OK(9) equal=8 diff=[] missing=[] extra=[T2_I6__GROUP_COUNT(companion)] version(go=10 java=9) md-bytes-differ(indexes,version) md-canonical-equal class=both-accept-companion
+WSJ aggregate-empty-table.yamsql:21{index:t2_i1} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ aggregate-empty-table.yamsql:21{index:t2_i2} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ aggregate-empty-table.yamsql:21{index:t2_i3} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ aggregate-empty-table.yamsql:21{index:t2_i4} java=OK(1) go=OK(2) equal=1 diff=[] missing=[] extra=[T2_I4__GROUP_COUNT(companion)] version(go=3 java=2) md-bytes-differ(records,indexes,record_types,version) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ aggregate-empty-table.yamsql:21{index:t2_i5} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ aggregate-empty-table.yamsql:21{index:t2_i6} java=OK(1) go=OK(2) equal=1 diff=[] missing=[] extra=[T2_I6__GROUP_COUNT(companion)] version(go=3 java=2) md-bytes-differ(records,indexes,record_types,version) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ aggregate-empty-table.yamsql:21{index:t3_i1} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ aggregate-empty-table.yamsql:21{index:t3_i2} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ aggregate-index-tests-count-empty.yamsql:21 java=OK(6) go=OK(7) equal=0 diff=[MV1:versions(go=2/2 java=3/3) MV2:versions(go=3/3 java=4/4) MV3:versions(go=4/4 java=5/5) MV4:versions(go=5/5 java=6/6) MV5:versions(go=7/7 java=2/2) MV6:versions(go=6/6 java=7/7)] missing=[] extra=[MV6__GROUP_COUNT(companion)] version(go=8 java=7) md-bytes-differ(records,indexes,record_types,version) md-canonical-differ(records,indexes,record_types) class=both-accept-index-diverge
+WSJ aggregate-index-tests-count-empty.yamsql:21{index:mv1} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ aggregate-index-tests-count-empty.yamsql:21{index:mv2} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ aggregate-index-tests-count-empty.yamsql:21{index:mv3} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ aggregate-index-tests-count-empty.yamsql:21{index:mv4} java=OK(1) go=OK(2) equal=1 diff=[] missing=[] extra=[MV4__GROUP_COUNT(companion)] version(go=3 java=2) md-bytes-differ(records,indexes,record_types,version) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ aggregate-index-tests-count-empty.yamsql:21{index:mv5} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ aggregate-index-tests-count-empty.yamsql:21{index:mv6} java=OK(1) go=OK(2) equal=1 diff=[] missing=[] extra=[MV6__GROUP_COUNT(companion)] version(go=3 java=2) md-bytes-differ(records,indexes,record_types,version) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ aggregate-index-tests-count.yamsql:21 java=OK(5) go=OK(5) equal=5 diff=[] missing=[] extra=[] version(go=6 java=6) md-bytes-equal class=both-accept-equal
+WSJ aggregate-index-tests-count.yamsql:21{index:mv1} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ aggregate-index-tests-count.yamsql:21{index:mv2} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ aggregate-index-tests-count.yamsql:21{index:mv3} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ aggregate-index-tests-count.yamsql:21{index:mv4} java=OK(1) go=OK(2) equal=1 diff=[] missing=[] extra=[MV4__GROUP_COUNT(companion)] version(go=3 java=2) md-bytes-differ(records,indexes,record_types,version) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ aggregate-index-tests-count.yamsql:21{index:mv5} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ aggregate-index-tests.yamsql:21 java=OK(23) go=ERROR 42F00 "Unknown database T6"
+WSJ aggregate-index-tests.yamsql:21{index:vi1} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ aggregate-index-tests.yamsql:21{index:vi2} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ aggregate-index-tests.yamsql:21{index:mv1} java=OK(1) go=OK(2) equal=1 diff=[] missing=[] extra=[MV1__GROUP_COUNT(companion)] version(go=3 java=2) md-bytes-differ(records,indexes,record_types,version) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ aggregate-index-tests.yamsql:21{index:mv2} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ aggregate-index-tests.yamsql:21{index:mv3} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ aggregate-index-tests.yamsql:21{index:mv4} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ aggregate-index-tests.yamsql:21{index:mv5} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ aggregate-index-tests.yamsql:21{index:mv6} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ aggregate-index-tests.yamsql:21{index:mv7} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ aggregate-index-tests.yamsql:21{index:mv8} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ aggregate-index-tests.yamsql:21{index:mv9} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ aggregate-index-tests.yamsql:21{index:mv10} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ aggregate-index-tests.yamsql:21{index:mv11} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ aggregate-index-tests.yamsql:21{index:mv12} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ aggregate-index-tests.yamsql:21{index:mv13} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ aggregate-index-tests.yamsql:21{index:mv14} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ aggregate-index-tests.yamsql:21{index:mv15} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ aggregate-index-tests.yamsql:21{index:mv16} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ aggregate-index-tests.yamsql:21{index:mv17} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ aggregate-index-tests.yamsql:21{index:mv18} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ aggregate-index-tests.yamsql:21{index:mv19} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ aggregate-index-tests.yamsql:21{index:mv20} java=OK(1) go=ERROR 42F00 "Unknown database T6"
+WSJ aggregate-index-tests.yamsql:21{index:mv21} java=OK(1) go=OK(2) equal=1 diff=[] missing=[] extra=[MV21__GROUP_COUNT(companion)] version(go=3 java=2) md-bytes-differ(records,indexes,record_types,version) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ array-agg-tests.yamsql:27 java=OK(4) go=OK(4) equal=4 diff=[] missing=[] extra=[] version(go=5 java=5) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ array-agg-tests.yamsql:27{index:T1_grp} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ array-agg-tests.yamsql:27{index:T2_grp} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ array-agg-tests.yamsql:27{index:T3_grp} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ array-agg-tests.yamsql:27{index:doc_asset_by_rid} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ array-agg-tests.yamsql:83 java=ERROR 0A000 RelationalException "Aggregate result value does not align with grouping value" go=ERROR 42803 "column \"VAL\" must appear in the GROUP BY clause or be used in an aggregate function"
+WSJ arrays-cardinality.yamsql:27 java=OK(3) go=OK(3) equal=3 diff=[] missing=[] extra=[] version(go=4 java=4) md-bytes-differ(records,record_types) md-canonical-equal class=both-accept-equal
+WSJ arrays-cardinality.yamsql:27{index:"tab1_indexed_index"} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ arrays-cardinality.yamsql:27{index:"tab1_indexed_nn_index"} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ arrays-cardinality.yamsql:27{index:"tab2_index"} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-equal class=both-accept-equal
+WSJ arrays-unnesting.yamsql:32 java=OK(3) go=ERROR 0A000 "views (CREATE VIEW) are not yet supported in a schema template"
+WSJ arrays-unnesting.yamsql:32{-views-functions} java=OK(2) go=ERROR 42F00 "Unknown database row"
+WSJ arrays-unnesting.yamsql:32{index:"T1_indexed_index"} java=OK(1) go=ERROR 42F00 "Unknown database row"
+WSJ arrays-unnesting.yamsql:32{index:"T2_view_index"} java=OK(1) go=ERROR 0A000 "views (CREATE VIEW) are not yet supported in a schema template"
+WSJ arrays-unnesting.yamsql:32{index:"mv"} java=OK(1) go=ERROR 42F00 "Unknown database RR"
+WSJ between.yamsql:25 java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ bitmap-aggregate-index.yamsql:21 java=OK(4) go=OK(4) equal=4 diff=[] missing=[] extra=[] version(go=5 java=5) md-bytes-equal class=both-accept-equal
+WSJ bitmap-aggregate-index.yamsql:21{index:bitmapIndex1} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ bitmap-aggregate-index.yamsql:21{index:bitmapIndex2} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ bitmap-aggregate-index.yamsql:21{index:agg_index_1} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ bitmap-aggregate-index.yamsql:21{index:agg_index_2} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ boolean-ddl.yamsql:26 java=OK(3) go=OK(3) equal=3 diff=[] missing=[] extra=[] version(go=4 java=4) md-bytes-equal class=both-accept-equal
+WSJ boolean-ddl.yamsql:26{index:idx_true} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ boolean-ddl.yamsql:26{index:idx_false} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ boolean-ddl.yamsql:26{index:idx_null} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ case-sensitivity.yamsql:28 java=ERROR 42F59 RelationalException "table with name 'TABLE1' already exists" go=ERROR 0A000 "SQL functions (CREATE FUNCTION) are not yet supported in a schema template"
+WSJ case-sensitivity.yamsql:28{-views-functions} java=ERROR 42F59 RelationalException "table with name 'TABLE1' already exists" go=ERROR 42F59 "42F59: table with name 'TABLE1' already exists"
+WSJ case-sensitivity.yamsql:28{index:i1} java=ERROR 42F59 RelationalException "table with name 'TABLE1' already exists" go=ERROR 42F59 "42F59: table with name 'TABLE1' already exists"
+WSJ case-sensitivity.yamsql:28{index:I1} java=ERROR 42F59 RelationalException "table with name 'TABLE1' already exists" go=ERROR 42F59 "42F59: table with name 'TABLE1' already exists"
+WSJ composite-aggregates.yamsql:24 java=OK(13) go=OK(16) equal=13 diff=[] missing=[] extra=[T1_I1__GROUP_COUNT(companion) T1_I2__GROUP_COUNT(companion) T1_I3__GROUP_COUNT(companion)] version(go=17 java=14) md-bytes-differ(indexes,version) md-canonical-equal class=both-accept-companion
+WSJ composite-aggregates.yamsql:24{index:t1_i1} java=OK(1) go=OK(2) equal=1 diff=[] missing=[] extra=[T1_I1__GROUP_COUNT(companion)] version(go=3 java=2) md-bytes-differ(records,indexes,record_types,version) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ composite-aggregates.yamsql:24{index:t1_i2} java=OK(1) go=OK(2) equal=1 diff=[] missing=[] extra=[T1_I2__GROUP_COUNT(companion)] version(go=3 java=2) md-bytes-differ(records,indexes,record_types,version) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ composite-aggregates.yamsql:24{index:t1_i3} java=OK(1) go=OK(2) equal=1 diff=[] missing=[] extra=[T1_I3__GROUP_COUNT(companion)] version(go=3 java=2) md-bytes-differ(records,indexes,record_types,version) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ composite-aggregates.yamsql:24{index:t1_i4} java=OK(1) go=OK(2) equal=1 diff=[] missing=[] extra=[T1_I4__GROUP_COUNT(companion)] version(go=3 java=2) md-bytes-differ(records,indexes,record_types,version) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ composite-aggregates.yamsql:24{index:t2_i1} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ composite-aggregates.yamsql:24{index:t2_i2} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ composite-aggregates.yamsql:24{index:t2_i3} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ composite-aggregates.yamsql:24{index:t2_i4} java=OK(1) go=OK(2) equal=1 diff=[] missing=[] extra=[T2_I4__GROUP_COUNT(companion)] version(go=3 java=2) md-bytes-differ(records,indexes,record_types,version) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ composite-aggregates.yamsql:24{index:t2_i5} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ composite-aggregates.yamsql:24{index:t2_i6} java=OK(1) go=OK(2) equal=1 diff=[] missing=[] extra=[T2_I6__GROUP_COUNT(companion)] version(go=3 java=2) md-bytes-differ(records,indexes,record_types,version) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ composite-aggregates.yamsql:24{index:t2_i7} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ composite-aggregates.yamsql:24{index:t3_i1} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ composite-aggregates.yamsql:24{index:t3_i2} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ create-drop-create-template.yamsql:25 java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ create-drop-create-template.yamsql:47 java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ cte.yamsql:21 java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ distinct-from.yamsql:25 java=OK(3) go=OK(3) equal=3 diff=[] missing=[] extra=[] version(go=4 java=4) md-bytes-equal class=both-accept-equal
+WSJ distinct-from.yamsql:25{index:i1} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ distinct-from.yamsql:25{index:cnt} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ distinct-from.yamsql:25{index:i2} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ enum-distinct-from-function.yamsql:48 java=OK(1) go=ERROR 0A000 "enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template"
+WSJ enum-distinct-from-function.yamsql:48{-views-functions} java=OK(1) go=ERROR 0A000 "enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template"
+WSJ enum.yamsql:25 java=OK(1) go=ERROR 0A000 "enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template"
+WSJ exists-in-select.yamsql:23 java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ filter-index.yamsql:25 java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ groupby-tests.yamsql:21 java=OK(3) go=OK(3) equal=3 diff=[] missing=[] extra=[] version(go=4 java=4) md-bytes-equal class=both-accept-equal
+WSJ groupby-tests.yamsql:21{index:i1} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ groupby-tests.yamsql:21{index:i2} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ groupby-tests.yamsql:21{index:i3} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ guardiann-semantic-search.yamsql:32 java=OK(1) go=ERROR 42601 "syntax error: CREATE SCHEMA TEMPLATE \"<T>\" create table documents(zone string, docId string, bookshelf string, title string, embedding vector(3, half), primary …"
+WSJ in-predicate.yamsql:20 java=OK(2) go=ERROR 0A000 "SQL functions (CREATE FUNCTION) are not yet supported in a schema template"
+WSJ in-predicate.yamsql:20{-views-functions} java=OK(2) go=ERROR 0A000 "Unsupported query, expected to find exactly one type filter operator"
+WSJ in-predicate.yamsql:20{index:f1} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ in-predicate.yamsql:20{index:fruits} java=OK(1) go=ERROR 0A000 "Unsupported query, expected to find exactly one type filter operator"
+WSJ index-ddl-aggregates-only.yamsql:29 java=OK(26) go=ERROR 0A000 "views (CREATE VIEW) are not yet supported in a schema template"
+WSJ index-ddl-aggregates-only.yamsql:29{-views-functions} java=OK(13) go=OK(16) equal=13 diff=[] missing=[] extra=[IDX_MV_SUM_BY_ALL__GROUP_COUNT(companion) IDX_MV_SUM_BY_CAT_REGION__GROUP_COUNT(companion) IDX_MV_SUM_BY_REGION__GROUP_COUNT(companion)] version(go=17 java=14) md-bytes-differ(records,indexes,record_types,version) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ index-ddl-aggregates-only.yamsql:29{index:idx_mv_sum_by_category} java=OK(1) go=OK(2) equal=1 diff=[] missing=[] extra=[IDX_MV_SUM_BY_CATEGORY__GROUP_COUNT(companion)] version(go=3 java=2) md-bytes-differ(records,indexes,record_types,version) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ index-ddl-aggregates-only.yamsql:29{index:idx_mv_sum_by_region} java=OK(1) go=OK(2) equal=1 diff=[] missing=[] extra=[IDX_MV_SUM_BY_REGION__GROUP_COUNT(companion)] version(go=3 java=2) md-bytes-differ(records,indexes,record_types,version) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ index-ddl-aggregates-only.yamsql:29{index:idx_mv_sum_by_cat_region} java=OK(1) go=OK(2) equal=1 diff=[] missing=[] extra=[IDX_MV_SUM_BY_CAT_REGION__GROUP_COUNT(companion)] version(go=3 java=2) md-bytes-differ(records,indexes,record_types,version) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ index-ddl-aggregates-only.yamsql:29{index:idx_mv_sum_by_all} java=OK(1) go=OK(2) equal=1 diff=[] missing=[] extra=[IDX_MV_SUM_BY_ALL__GROUP_COUNT(companion)] version(go=3 java=2) md-bytes-differ(records,indexes,record_types,version) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ index-ddl-aggregates-only.yamsql:29{index:idx_mv_count_by_category} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ index-ddl-aggregates-only.yamsql:29{index:idx_mv_count_qty_by_region} java=OK(1) go=OK(2) equal=1 diff=[] missing=[] extra=[IDX_MV_COUNT_QTY_BY_REGION__GROUP_COUNT(companion)] version(go=3 java=2) md-bytes-differ(records,indexes,record_types,version) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ index-ddl-aggregates-only.yamsql:29{index:idx_mv_cat_region_sum} java=OK(1) go=OK(2) equal=1 diff=[] missing=[] extra=[IDX_MV_CAT_REGION_SUM__GROUP_COUNT(companion)] version(go=3 java=2) md-bytes-differ(records,indexes,record_types,version) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ index-ddl-aggregates-only.yamsql:29{index:idx_mv_min_amount_by_category} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ index-ddl-aggregates-only.yamsql:29{index:idx_mv_max_amount_by_region} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ index-ddl-aggregates-only.yamsql:29{index:idx_mv_min_ever_qty_by_category} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ index-ddl-aggregates-only.yamsql:29{index:idx_mv_max_ever_qty_by_region} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ index-ddl-aggregates-only.yamsql:29{index:idx_mv_cat_max_region} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ index-ddl-aggregates-only.yamsql:29{index:idx_mv_min_cat_region} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ index-ddl-aggregates-only.yamsql:29{index:idx_iot_sum_by_category} java=OK(1) go=ERROR 0A000 "views (CREATE VIEW) are not yet supported in a schema template"
+WSJ index-ddl-aggregates-only.yamsql:29{index:idx_iot_sum_by_region} java=OK(1) go=ERROR 0A000 "views (CREATE VIEW) are not yet supported in a schema template"
+WSJ index-ddl-aggregates-only.yamsql:29{index:idx_iot_sum_by_cat_region} java=OK(1) go=ERROR 0A000 "views (CREATE VIEW) are not yet supported in a schema template"
+WSJ index-ddl-aggregates-only.yamsql:29{index:idx_iot_sum_by_all} java=OK(1) go=ERROR 0A000 "views (CREATE VIEW) are not yet supported in a schema template"
+WSJ index-ddl-aggregates-only.yamsql:29{index:idx_iot_count_by_category} java=OK(1) go=ERROR 0A000 "views (CREATE VIEW) are not yet supported in a schema template"
+WSJ index-ddl-aggregates-only.yamsql:29{index:idx_iot_count_qty_by_region} java=OK(1) go=ERROR 0A000 "views (CREATE VIEW) are not yet supported in a schema template"
+WSJ index-ddl-aggregates-only.yamsql:29{index:idx_iot_cat_region_sum} java=OK(1) go=ERROR 0A000 "views (CREATE VIEW) are not yet supported in a schema template"
+WSJ index-ddl-aggregates-only.yamsql:29{index:idx_iot_min_amount_by_category} java=OK(1) go=ERROR 0A000 "views (CREATE VIEW) are not yet supported in a schema template"
+WSJ index-ddl-aggregates-only.yamsql:29{index:idx_iot_max_amount_by_region} java=OK(1) go=ERROR 0A000 "views (CREATE VIEW) are not yet supported in a schema template"
+WSJ index-ddl-aggregates-only.yamsql:29{index:idx_iot_min_ever_qty_by_category} java=OK(1) go=ERROR 0A000 "views (CREATE VIEW) are not yet supported in a schema template"
+WSJ index-ddl-aggregates-only.yamsql:29{index:idx_iot_max_ever_qty_by_region} java=OK(1) go=ERROR 0A000 "views (CREATE VIEW) are not yet supported in a schema template"
+WSJ index-ddl-aggregates-only.yamsql:29{index:idx_iot_cat_max_region} java=OK(1) go=ERROR 0A000 "views (CREATE VIEW) are not yet supported in a schema template"
+WSJ index-ddl-aggregates-only.yamsql:29{index:idx_iot_min_cat_region} java=OK(1) go=ERROR 0A000 "views (CREATE VIEW) are not yet supported in a schema template"
+WSJ index-ddl-values-only.yamsql:28 java=OK(28) go=ERROR 0A000 "views (CREATE VIEW) are not yet supported in a schema template"
+WSJ index-ddl-values-only.yamsql:28{-views-functions} java=OK(25) go=OK(25) equal=25 diff=[] missing=[] extra=[] version(go=26 java=26) md-bytes-differ(record_types) md-canonical-equal class=both-accept-equal
+WSJ index-ddl-values-only.yamsql:28{index:idx_mv_price} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ index-ddl-values-only.yamsql:28{index:idx_mv_category} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ index-ddl-values-only.yamsql:28{index:idx_mv_cat_price} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ index-ddl-values-only.yamsql:28{index:idx_mv_name_rating} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ index-ddl-values-only.yamsql:28{index:idx_mv_price_covering} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ index-ddl-values-only.yamsql:28{index:idx_mv_cat_price_covering} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ index-ddl-values-only.yamsql:28{index:idx_mv_cat_desc_price_asc} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ index-ddl-values-only.yamsql:28{index:idx_mv_price_desc} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ index-ddl-values-only.yamsql:28{index:idx_mv_rating_nulls_first} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ index-ddl-values-only.yamsql:28{index:idx_mv_rating_nulls_last} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ index-ddl-values-only.yamsql:28{index:idx_mv_supplier_desc_nulls_first} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ index-ddl-values-only.yamsql:28{index:idx_mv_filtered_expensive} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ index-ddl-values-only.yamsql:28{index:idx_mv_filtered_electronics} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ index-ddl-values-only.yamsql:28{index:idx_mv_filtered_multi} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ index-ddl-values-only.yamsql:28{index:idx_iot_price} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(record_types) md-canonical-equal class=both-accept-equal
+WSJ index-ddl-values-only.yamsql:28{index:idx_iot_category} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(record_types) md-canonical-equal class=both-accept-equal
+WSJ index-ddl-values-only.yamsql:28{index:idx_iot_cat_price} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(record_types) md-canonical-equal class=both-accept-equal
+WSJ index-ddl-values-only.yamsql:28{index:idx_iot_name_rating} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(record_types) md-canonical-equal class=both-accept-equal
+WSJ index-ddl-values-only.yamsql:28{index:idx_iot_price_covering} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(record_types) md-canonical-equal class=both-accept-equal
+WSJ index-ddl-values-only.yamsql:28{index:idx_iot_cat_price_covering} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(record_types) md-canonical-equal class=both-accept-equal
+WSJ index-ddl-values-only.yamsql:28{index:idx_iot_cat_desc_price_asc} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(record_types) md-canonical-equal class=both-accept-equal
+WSJ index-ddl-values-only.yamsql:28{index:idx_iot_price_desc} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(record_types) md-canonical-equal class=both-accept-equal
+WSJ index-ddl-values-only.yamsql:28{index:idx_iot_rating_nulls_first} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(record_types) md-canonical-equal class=both-accept-equal
+WSJ index-ddl-values-only.yamsql:28{index:idx_iot_rating_nulls_last} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(record_types) md-canonical-equal class=both-accept-equal
+WSJ index-ddl-values-only.yamsql:28{index:idx_iot_supplier_desc_nulls_first} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(record_types) md-canonical-equal class=both-accept-equal
+WSJ index-ddl-values-only.yamsql:28{index:idx_iot_filtered_expensive} java=OK(1) go=ERROR 0A000 "views (CREATE VIEW) are not yet supported in a schema template"
+WSJ index-ddl-values-only.yamsql:28{index:idx_iot_filtered_electronics} java=OK(1) go=ERROR 0A000 "views (CREATE VIEW) are not yet supported in a schema template"
+WSJ index-ddl-values-only.yamsql:28{index:idx_iot_filtered_multi} java=OK(1) go=ERROR 0A000 "views (CREATE VIEW) are not yet supported in a schema template"
+WSJ index-ddl.yamsql:27 java=OK(28) go=ERROR 0A000 "views (CREATE VIEW) are not yet supported in a schema template"
+WSJ index-ddl.yamsql:27{-views-functions} java=OK(24) go=OK(24) equal=0 diff=[IDX_IOT_ASC_DESC:versions(go=19/19 java=5/5) IDX_IOT_DESC_NULLS_FIRST:versions(go=23/23 java=9/9) IDX_IOT_DESC_NULLS_LAST:versions(go=24/24 java=10/10) IDX_IOT_EMAIL:versions(go=17/17 java=3/3) IDX_IOT_INCLUDE:versions(go=20/20 java=6/6) IDX_IOT_MULTI:versions(go=18/18 java=4/4) IDX_IOT_NAME:versions(go=16/16 java=2/2) IDX_IOT_NULLS_FIRST:versions(go=21/21 java=7/7) IDX_IOT_NULLS_LAST:versions(go=22/22 java=8/8) IDX_IOT_UNIQUE_PROFESSION:versions(go=25/25 java=11/11) IDX_MV_AGE_MAX_EXTREMUM:versions(go=15/15 java=25/25) IDX_MV_AGE_MAX_NO_LEGACY:versions(go=13/13 java=23/23) IDX_MV_AGE_MIN_EXTREMUM:versions(go=14/14 java=24/24) IDX_MV_AGE_MIN_NO_LEGACY:versions(go=12/12 java=22/22) IDX_MV_ASC_DESC:versions(go=5/5 java=15/15) IDX_MV_DESC_NULLS_FIRST:versions(go=9/9 java=19/19) IDX_MV_DESC_NULLS_LAST:versions(go=10/10 java=20/20) IDX_MV_EMAIL:versions(go=3/3 java=13/13) IDX_MV_INCLUDE:versions(go=6/6 java=16/16) IDX_MV_MULTI:versions(go=4/4 java=14/14) IDX_MV_NAME:versions(go=2/2 java=12/12) IDX_MV_NULLS_FIRST:versions(go=7/7 java=17/17) IDX_MV_NULLS_LAST:versions(go=8/8 java=18/18) IDX_MV_UNIQUE_PROFESSION:versions(go=11/11 java=21/21)] missing=[] extra=[] version(go=25 java=25) md-bytes-differ(records,indexes,record_types) md-canonical-differ(records,indexes,record_types) class=both-accept-index-diverge
+WSJ index-ddl.yamsql:27{index:idx_mv_name} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ index-ddl.yamsql:27{index:idx_mv_email} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ index-ddl.yamsql:27{index:idx_mv_multi} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ index-ddl.yamsql:27{index:idx_mv_asc_desc} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ index-ddl.yamsql:27{index:idx_mv_include} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ index-ddl.yamsql:27{index:idx_mv_nulls_first} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ index-ddl.yamsql:27{index:idx_mv_nulls_last} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ index-ddl.yamsql:27{index:idx_mv_desc_nulls_first} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ index-ddl.yamsql:27{index:idx_mv_desc_nulls_last} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ index-ddl.yamsql:27{index:idx_iot_name} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ index-ddl.yamsql:27{index:idx_iot_email} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ index-ddl.yamsql:27{index:idx_iot_multi} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ index-ddl.yamsql:27{index:idx_iot_asc_desc} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ index-ddl.yamsql:27{index:idx_iot_include} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ index-ddl.yamsql:27{index:idx_iot_nulls_first} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ index-ddl.yamsql:27{index:idx_iot_nulls_last} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ index-ddl.yamsql:27{index:idx_iot_desc_nulls_first} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ index-ddl.yamsql:27{index:idx_iot_desc_nulls_last} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ index-ddl.yamsql:27{index:idx_mv_unique_profession} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ index-ddl.yamsql:27{index:idx_iot_unique_profession} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ index-ddl.yamsql:27{index:idx_mv_age_min_no_legacy} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ index-ddl.yamsql:27{index:idx_mv_age_max_no_legacy} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ index-ddl.yamsql:27{index:idx_iot_age_min_no_legacy} java=OK(1) go=ERROR 0A000 "views (CREATE VIEW) are not yet supported in a schema template"
+WSJ index-ddl.yamsql:27{index:idx_iot_age_max_no_legacy} java=OK(1) go=ERROR 0A000 "views (CREATE VIEW) are not yet supported in a schema template"
+WSJ index-ddl.yamsql:27{index:idx_mv_age_min_extremum} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ index-ddl.yamsql:27{index:idx_mv_age_max_extremum} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ index-ddl.yamsql:27{index:idx_iot_age_min_extremum} java=OK(1) go=ERROR 0A000 "views (CREATE VIEW) are not yet supported in a schema template"
+WSJ index-ddl.yamsql:27{index:idx_iot_age_max_extremum} java=OK(1) go=ERROR 0A000 "views (CREATE VIEW) are not yet supported in a schema template"
+WSJ indexed-functions.yamsql:21 java=OK(4) go=OK(4) equal=4 diff=[] missing=[] extra=[] version(go=5 java=5) md-bytes-equal class=both-accept-equal
+WSJ indexed-functions.yamsql:21{index:bPlusC} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ indexed-functions.yamsql:21{index:bPlusCByE} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ indexed-functions.yamsql:21{index:dMask2} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ indexed-functions.yamsql:21{index:dMask1} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ inserts-updates-deletes.yamsql:21 java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ isolation-level-snapshot.yamsql:30 java=OK(3) go=OK(4) equal=3 diff=[] missing=[] extra=[SUM_COL2_BY_COL1__GROUP_COUNT(companion)] version(go=5 java=4) md-bytes-differ(records,indexes,record_types,version) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ isolation-level-snapshot.yamsql:30{index:max_ever_col2} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ isolation-level-snapshot.yamsql:30{index:max_ever_col2_by_col1} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ isolation-level-snapshot.yamsql:30{index:sum_col2_by_col1} java=OK(1) go=OK(2) equal=1 diff=[] missing=[] extra=[SUM_COL2_BY_COL1__GROUP_COUNT(companion)] version(go=3 java=2) md-bytes-differ(records,indexes,record_types,version) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ isolation-level-snapshot.yamsql:79 java=ERROR 42601 RelationalException "syntax error: CREATE SCHEMA TEMPLATE \"<T>\" CREATE TABLE tt(id BIGINT, v BIGINT, PRIMARY KEY(id)) CREATE INDEX bad_idx AS SELECT v FROM tt OPTIONS (ISOLATION LEV…" go=ERROR 42601 "syntax error: CREATE SCHEMA TEMPLATE \"<T>\" CREATE TABLE tt(id BIGINT, v BIGINT, PRIMARY KEY(id)) CREATE INDEX bad_idx AS SELECT v FROM tt OPTIONS (ISOLATION LEV…"
+WSJ join-tests-outer.yamsql:24 java=OK(2) go=OK(2) equal=2 diff=[] missing=[] extra=[] version(go=3 java=3) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ join-tests-outer.yamsql:24{index:"emp$fname"} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ join-tests-outer.yamsql:24{index:"dept$name"} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ join-tests.yamsql:21 java=OK(3) go=OK(3) equal=3 diff=[] missing=[] extra=[] version(go=4 java=4) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ join-tests.yamsql:21{index:empDept} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ join-tests.yamsql:21{index:empName} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ join-tests.yamsql:21{index:deptName} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ join-with-order-by-tests.yamsql:27 java=OK(8) go=ERROR 0A000 "SQL functions (CREATE FUNCTION) are not yet supported in a schema template"
+WSJ join-with-order-by-tests.yamsql:27{-views-functions} java=OK(8) go=OK(8) equal=8 diff=[] missing=[] extra=[] version(go=9 java=9) md-bytes-equal class=both-accept-equal
+WSJ join-with-order-by-tests.yamsql:27{index:"t1$a1"} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ join-with-order-by-tests.yamsql:27{index:"t1$a1_a2"} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ join-with-order-by-tests.yamsql:27{index:"t2$b1"} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ join-with-order-by-tests.yamsql:27{index:"t2$b1_b3"} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ join-with-order-by-tests.yamsql:27{index:"t3$c1"} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ join-with-order-by-tests.yamsql:27{index:"t3$c1_c2_c3"} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ join-with-order-by-tests.yamsql:27{index:"t3$aRef"} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ join-with-order-by-tests.yamsql:27{index:"t3$c1_c2"} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ like.yamsql:23 java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ nested-with-nulls.yamsql:21 java=OK(2) go=OK(2) equal=2 diff=[] missing=[] extra=[] version(go=3 java=3) md-bytes-equal class=both-accept-equal
+WSJ nested-with-nulls.yamsql:21{index:i1} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ nested-with-nulls.yamsql:21{index:i2} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ null-extraction-tests.yamsql:27 java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ null-operator-tests.yamsql:21 java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ orderby.yamsql:21 java=OK(8) go=ERROR 0A000 "SQL functions (CREATE FUNCTION) are not yet supported in a schema template"
+WSJ orderby.yamsql:21{-views-functions} java=OK(8) go=OK(8) equal=8 diff=[] missing=[] extra=[] version(go=9 java=9) md-bytes-differ(record_types) md-canonical-equal class=both-accept-equal
+WSJ orderby.yamsql:21{index:i1} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ orderby.yamsql:21{index:i2} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ orderby.yamsql:21{index:i3} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ orderby.yamsql:21{index:i4} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ orderby.yamsql:21{index:i5} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ orderby.yamsql:21{index:i6} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ orderby.yamsql:21{index:i7} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ orderby.yamsql:21{index:i8} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(record_types) md-canonical-equal class=both-accept-equal
+WSJ pseudo-field-clash.yamsql:21 java=OK(4) go=OK(4) equal=4 diff=[] missing=[] extra=[] version(go=5 java=5) md-bytes-equal class=both-accept-equal
+WSJ pseudo-field-clash.yamsql:21{index:t2_version} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ pseudo-field-clash.yamsql:21{index:t2_col1_version} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ pseudo-field-clash.yamsql:21{index:t3_version} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ pseudo-field-clash.yamsql:21{index:t3_col1_version} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ record-type-key-tests.yamsql:20 java=OK(2) go=OK(2) equal=2 diff=[] missing=[] extra=[] version(go=3 java=3) md-bytes-equal class=both-accept-equal
+WSJ record-type-key-tests.yamsql:20{index:i1} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ record-type-key-tests.yamsql:20{index:i2} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ recursive-cte.yamsql:2 java=OK(3) go=OK(3) equal=3 diff=[] missing=[] extra=[] version(go=4 java=4) md-bytes-equal class=both-accept-equal
+WSJ recursive-cte.yamsql:2{index:parentIdx} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ recursive-cte.yamsql:2{index:childIdx} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ recursive-cte.yamsql:2{index:childIdxNoNulls} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ schema-template-stored-queries.yamsql:32 java=OK(3) go=ERROR 42601 "syntax error: CREATE SCHEMA TEMPLATE \"<T>\" create table t1(id bigint, col1 bigint, col2 bigint, primary key(id)) create index i1 as select col1 from t1 create t…"
+WSJ scoped-keyset-pagination.yamsql:26 java=OK(1) go=ERROR 0A000 "SQL functions (CREATE FUNCTION) are not yet supported in a schema template"
+WSJ scoped-keyset-pagination.yamsql:26{-views-functions} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ select-a-star.yamsql:21 java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ semantic-search-advanced-metrics.yamsql:23 java=OK(4) go=ERROR 0A000 "views (CREATE VIEW) are not yet supported in a schema template"
+WSJ semantic-search-advanced-metrics.yamsql:23{-views-functions} java=OK(0) go=OK(0) equal=0 diff=[] missing=[] extra=[] version(go=1 java=1) md-bytes-differ(record_types) md-canonical-equal class=both-accept-equal
+WSJ semantic-search-advanced-metrics.yamsql:23{index:documentsEuclideanSquareIndex} java=OK(1) go=ERROR 0A000 "views (CREATE VIEW) are not yet supported in a schema template"
+WSJ semantic-search-advanced-metrics.yamsql:23{index:documentsDotProductIndex} java=OK(1) go=ERROR 0A000 "views (CREATE VIEW) are not yet supported in a schema template"
+WSJ semantic-search-advanced-metrics.yamsql:23{index:multiTypeEuclideanSquareIndex} java=OK(1) go=ERROR 0A000 "views (CREATE VIEW) are not yet supported in a schema template"
+WSJ semantic-search-advanced-metrics.yamsql:23{index:multiTypeDotProductIndex} java=OK(1) go=ERROR 0A000 "views (CREATE VIEW) are not yet supported in a schema template"
+WSJ semantic-search.yamsql:23 java=OK(4) go=ERROR 0A000 "views (CREATE VIEW) are not yet supported in a schema template"
+WSJ semantic-search.yamsql:23{-views-functions} java=OK(0) go=OK(0) equal=0 diff=[] missing=[] extra=[] version(go=1 java=1) md-bytes-differ(record_types) md-canonical-equal class=both-accept-equal
+WSJ semantic-search.yamsql:23{index:documentsEuclideanIndex} java=OK(1) go=ERROR 0A000 "views (CREATE VIEW) are not yet supported in a schema template"
+WSJ semantic-search.yamsql:23{index:documentsCosineIndex} java=OK(1) go=ERROR 0A000 "views (CREATE VIEW) are not yet supported in a schema template"
+WSJ semantic-search.yamsql:23{index:multiTypeEuclideanIndex} java=OK(1) go=ERROR 0A000 "views (CREATE VIEW) are not yet supported in a schema template"
+WSJ semantic-search.yamsql:23{index:multiTypeCosineIndex} java=OK(1) go=ERROR 0A000 "views (CREATE VIEW) are not yet supported in a schema template"
+WSJ serialization-options.yamsql:28 java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ showcasing-tests.yamsql:400[initialVersionAtLeast:4.12.15.0] java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ sliding-window-semantic-search.yamsql:23 java=OK(4) go=ERROR 0A000 "views (CREATE VIEW) are not yet supported in a schema template"
+WSJ sliding-window-semantic-search.yamsql:23{-views-functions} java=OK(0) go=OK(0) equal=0 diff=[] missing=[] extra=[] version(go=1 java=1) md-bytes-differ(record_types) md-canonical-equal class=both-accept-equal
+WSJ sliding-window-semantic-search.yamsql:23{index:documentsEuclideanIndex} java=OK(1) go=ERROR 0A000 "views (CREATE VIEW) are not yet supported in a schema template"
+WSJ sliding-window-semantic-search.yamsql:23{index:documentsCosineIndex} java=OK(1) go=ERROR 0A000 "views (CREATE VIEW) are not yet supported in a schema template"
+WSJ sliding-window-semantic-search.yamsql:23{index:multiTypeEuclideanIndex} java=OK(1) go=ERROR 0A000 "views (CREATE VIEW) are not yet supported in a schema template"
+WSJ sliding-window-semantic-search.yamsql:23{index:multiTypeCosineIndex} java=OK(1) go=ERROR 0A000 "views (CREATE VIEW) are not yet supported in a schema template"
+WSJ sparse-index-tests.yamsql:21 java=OK(5) go=OK(5) equal=5 diff=[] missing=[] extra=[] version(go=6 java=6) md-bytes-differ(record_types) md-canonical-equal class=both-accept-equal
+WSJ sparse-index-tests.yamsql:21{index:i1} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ sparse-index-tests.yamsql:21{index:i2} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ sparse-index-tests.yamsql:21{index:i3} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ sparse-index-tests.yamsql:21{index:i4} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ sparse-index-tests.yamsql:21{index:i6} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(record_types) md-canonical-equal class=both-accept-equal
+WSJ sql-functions.yamsql:23 java=OK(6) go=ERROR 0A000 "SQL functions (CREATE FUNCTION) are not yet supported in a schema template"
+WSJ sql-functions.yamsql:23{-views-functions} java=OK(6) go=OK(7) equal=6 diff=[] missing=[] extra=[T1_IDX3__GROUP_COUNT(companion)] version(go=8 java=7) md-bytes-differ(indexes,version) md-canonical-equal class=both-accept-companion
+WSJ sql-functions.yamsql:23{index:t1_idx1} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ sql-functions.yamsql:23{index:t1_idx2} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ sql-functions.yamsql:23{index:t1_idx3} java=OK(1) go=OK(2) equal=1 diff=[] missing=[] extra=[T1_IDX3__GROUP_COUNT(companion)] version(go=3 java=2) md-bytes-differ(records,indexes,record_types,version) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ sql-functions.yamsql:23{index:t1_idx4} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ sql-functions.yamsql:23{index:t2_idx1} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ sql-functions.yamsql:23{index:t2_idx2} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ standard-tests.yamsql:21 java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ subquery-tests.yamsql:21 java=OK(3) go=ERROR 42F00 "Unknown database R"
+WSJ subquery-tests.yamsql:21{index:ib} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-equal class=both-accept-equal
+WSJ subquery-tests.yamsql:21{index:ir} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ subquery-tests.yamsql:21{index:ir_f} java=OK(1) go=ERROR 42F00 "Unknown database R"
+WSJ union-empty-tables.yamsql:21 java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ union.yamsql:21 java=OK(4) go=OK(4) equal=4 diff=[] missing=[] extra=[] version(go=5 java=5) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ union.yamsql:21{index:vi1} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ union.yamsql:21{index:mv10} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ union.yamsql:21{index:mv11} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ union.yamsql:21{index:mv12} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(record_types) md-canonical-equal class=both-accept-equal
+WSJ user-defined-macro-function-tests.yamsql:23 java=OK(2) go=ERROR 0A000 "SQL functions (CREATE FUNCTION) are not yet supported in a schema template"
+WSJ user-defined-macro-function-tests.yamsql:23{-views-functions} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records) md-canonical-equal class=both-accept-equal
+WSJ user-defined-macro-function-tests.yamsql:23{index:i2} java=OK(1) go=ERROR 0A000 "SQL functions (CREATE FUNCTION) are not yet supported in a schema template"
+WSJ user-defined-macro-function-tests.yamsql:23{index:deep_idx} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records) md-canonical-equal class=both-accept-equal
+WSJ uuid-non-prepared.yamsql:23 java=OK(2) go=OK(2) equal=2 diff=[] missing=[] extra=[] version(go=3 java=3) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ uuid-non-prepared.yamsql:23{index:tc1} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ uuid-non-prepared.yamsql:23{index:tc2} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ uuid-prepared.yamsql:23 java=OK(2) go=OK(2) equal=2 diff=[] missing=[] extra=[] version(go=3 java=3) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ uuid-prepared.yamsql:23{index:tc1} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ uuid-prepared.yamsql:23{index:tc2} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ valid-identifiers.yamsql:23 java=OK(14) go=ERROR 0A000 "SQL functions (CREATE FUNCTION) are not yet supported in a schema template"
+WSJ valid-identifiers.yamsql:23{-views-functions} java=OK(14) go=ERROR 0A000 "enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template"
+WSJ valid-identifiers.yamsql:23{index:"foo.table$nested.idx"} java=OK(1) go=ERROR 0A000 "enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template"
+WSJ valid-identifiers.yamsql:23{index:"foo.table$nested.repeated.idx.field.1.3"} java=OK(1) go=ERROR 0A000 "enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template"
+WSJ valid-identifiers.yamsql:23{index:"foo.table$nested.repeated.idx.field.1.2.1"} java=OK(1) go=ERROR 0A000 "enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template"
+WSJ valid-identifiers.yamsql:23{index:"foo.table$nested.repeated.idx.field.1.1.1"} java=OK(1) go=ERROR 0A000 "enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template"
+WSJ valid-identifiers.yamsql:23{index:"foo.table$repeated.1"} java=OK(1) go=ERROR 0A000 "enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template"
+WSJ valid-identifiers.yamsql:23{index:"foo.table$repeated.2"} java=OK(1) go=ERROR 0A000 "enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template"
+WSJ valid-identifiers.yamsql:23{index:"foo.tableA.idx"} java=OK(1) go=ERROR 0A000 "enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template"
+WSJ valid-identifiers.yamsql:23{index:"foo.tableA.idx2"} java=OK(1) go=ERROR 0A000 "enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template"
+WSJ valid-identifiers.yamsql:23{index:"foo.tableA.idx3"} java=OK(1) go=ERROR 0A000 "enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template"
+WSJ valid-identifiers.yamsql:23{index:"foo$tableC$idx"} java=OK(1) go=ERROR 0A000 "enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template"
+WSJ valid-identifiers.yamsql:23{index:"foo$tableC$idx2"} java=OK(1) go=ERROR 0A000 "enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template"
+WSJ valid-identifiers.yamsql:23{index:"__foo__tableD$idx"} java=OK(1) go=ERROR 0A000 "enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template"
+WSJ valid-identifiers.yamsql:23{index:"__foo__tableD$idx2"} java=OK(1) go=ERROR 0A000 "enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template"
+WSJ valid-identifiers.yamsql:23{index:"foo.enum.type$enum__1"} java=OK(1) go=ERROR 0A000 "enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template"
+WSJ vector-engine-preference.yamsql:40 java=OK(9) go=ERROR 42601 "syntax error: CREATE SCHEMA TEMPLATE \"<T>\" create table documents(zone string, docId string, bookshelf string, title string, embedding vector(3, half), primary …"
+WSJ vector-mixed-version-metadata.yamsql:39 java=OK(1) go=ERROR 0A000 "views (CREATE VIEW) are not yet supported in a schema template"
+WSJ vector-mixed-version-metadata.yamsql:39{-views-functions} java=OK(0) go=OK(0) equal=0 diff=[] missing=[] extra=[] version(go=1 java=1) md-bytes-equal class=both-accept-equal
+WSJ versions-tests.yamsql:21 java=OK(9) go=ERROR 0A000 "SQL functions (CREATE FUNCTION) are not yet supported in a schema template"
+WSJ versions-tests.yamsql:21{-views-functions} java=OK(9) go=ERROR 0A000 "Unsupported query, expected to find exactly one type filter operator"
+WSJ versions-tests.yamsql:21{index:i1} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ versions-tests.yamsql:21{index:t1_version_index} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ versions-tests.yamsql:21{index:grouped_version_index} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ versions-tests.yamsql:21{index:t2_col2} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ versions-tests.yamsql:21{index:t3_version_with_col1} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ versions-tests.yamsql:21{index:t4_col2} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-equal class=both-accept-equal
+WSJ versions-tests.yamsql:21{index:t4_col2_col4} java=OK(1) go=ERROR 0A000 "Unsupported query, expected to find exactly one type filter operator"
+WSJ versions-tests.yamsql:21{index:t4_col3_version} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-equal class=both-accept-equal
+WSJ versions-tests.yamsql:21{index:t4_col4_version} java=OK(1) go=ERROR 0A000 "Unsupported query, expected to find exactly one type filter operator"
+WSJ views.yamsql:24 java=OK(1) go=ERROR 0A000 "SQL functions (CREATE FUNCTION) are not yet supported in a schema template"
+WSJ views.yamsql:24{-views-functions} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ documentation-queries/aggregate-functions-documentation-queries.yamsql:5 java=OK(2) go=OK(2) equal=2 diff=[] missing=[] extra=[] version(go=3 java=3) md-bytes-equal class=both-accept-equal
+WSJ documentation-queries/aggregate-functions-documentation-queries.yamsql:5{index:product_idx} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ documentation-queries/aggregate-functions-documentation-queries.yamsql:5{index:region_idx} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ documentation-queries/array-agg-documentation-queries.yamsql:28 java=OK(2) go=OK(2) equal=2 diff=[] missing=[] extra=[] version(go=3 java=3) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ documentation-queries/array-agg-documentation-queries.yamsql:28{index:product_idx} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ documentation-queries/array-agg-documentation-queries.yamsql:28{index:child_by_pid} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ documentation-queries/array-agg-documentation-queries.yamsql:106 java=ERROR 0A000 RelationalException "Aggregate result value does not align with grouping value" go=ERROR 42803 "column \"VAL\" must appear in the GROUP BY clause or be used in an aggregate function"
+WSJ documentation-queries/between-operator-queries.yamsql:2 java=OK(3) go=OK(3) equal=3 diff=[] missing=[] extra=[] version(go=4 java=4) md-bytes-equal class=both-accept-equal
+WSJ documentation-queries/between-operator-queries.yamsql:2{index:price_idx} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ documentation-queries/between-operator-queries.yamsql:2{index:category_idx} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ documentation-queries/between-operator-queries.yamsql:2{index:name_idx} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ documentation-queries/case-documentation-queries.yamsql:2 java=OK(3) go=OK(3) equal=3 diff=[] missing=[] extra=[] version(go=4 java=4) md-bytes-equal class=both-accept-equal
+WSJ documentation-queries/case-documentation-queries.yamsql:2{index:name_idx} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ documentation-queries/case-documentation-queries.yamsql:2{index:price_idx} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ documentation-queries/case-documentation-queries.yamsql:2{index:name_price_idx} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ documentation-queries/comments-documentation-queries.yamsql:14 java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ documentation-queries/group-by-documentation-queries.yamsql:5 java=OK(3) go=OK(3) equal=3 diff=[] missing=[] extra=[] version(go=4 java=4) md-bytes-equal class=both-accept-equal
+WSJ documentation-queries/group-by-documentation-queries.yamsql:5{index:dept_idx} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ documentation-queries/group-by-documentation-queries.yamsql:5{index:role_idx} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ documentation-queries/group-by-documentation-queries.yamsql:5{index:dept_role_idx} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ documentation-queries/in-operator-queries.yamsql:2 java=OK(3) go=OK(3) equal=3 diff=[] missing=[] extra=[] version(go=4 java=4) md-bytes-equal class=both-accept-equal
+WSJ documentation-queries/in-operator-queries.yamsql:2{index:price_idx} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ documentation-queries/in-operator-queries.yamsql:2{index:category_idx} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ documentation-queries/in-operator-queries.yamsql:2{index:name_idx} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ documentation-queries/index-documentation-queries.yamsql:5 java=OK(16) go=OK(17) equal=0 diff=[IDX_CATEGORY_DESC_PRICE_ASC:versions(go=5/5 java=8/8) IDX_CATEGORY_PRICE:versions(go=3/3 java=6/6) IDX_COUNT_BY_REGION:versions(go=16/16 java=3/3) IDX_MAX_BY_CATEGORY:versions(go=17/17 java=4/4) IDX_ON_CATEGORY_DESC:versions(go=10/10 java=13/13) IDX_ON_CATEGORY_PRICE:versions(go=8/8 java=11/11) IDX_ON_CATEGORY_PRICE_COVERING:versions(go=9/9 java=12/12) IDX_ON_COMPLEX:versions(go=14/14 java=17/17) IDX_ON_PRICE:versions(go=7/7 java=10/10) IDX_ON_RATING_NULLS_LAST:versions(go=11/11 java=14/14) IDX_ON_STOCK_NULLS_LAST:versions(go=13/13 java=16/16) IDX_ON_SUPPLIER_DESC_NULLS_FIRST:versions(go=12/12 java=15/15) IDX_PRICE:versions(go=2/2 java=5/5) IDX_PRICE_DESC:versions(go=4/4 java=7/7) IDX_RATING_NULLS_LAST:versions(go=6/6 java=9/9) IDX_SALES_BY_CATEGORY:versions(go=15/15 java=2/2)] missing=[] extra=[IDX_SALES_BY_CATEGORY__GROUP_COUNT(companion)] version(go=18 java=17) md-bytes-differ(records,indexes,record_types,version) md-canonical-differ(records,indexes,record_types) class=both-accept-index-diverge
+WSJ documentation-queries/index-documentation-queries.yamsql:5{index:idx_price} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ documentation-queries/index-documentation-queries.yamsql:5{index:idx_category_price} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ documentation-queries/index-documentation-queries.yamsql:5{index:idx_sales_by_category} java=OK(1) go=OK(2) equal=1 diff=[] missing=[] extra=[IDX_SALES_BY_CATEGORY__GROUP_COUNT(companion)] version(go=3 java=2) md-bytes-differ(indexes,record_types,version) md-canonical-equal class=both-accept-companion
+WSJ documentation-queries/index-documentation-queries.yamsql:5{index:idx_count_by_region} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(record_types) md-canonical-equal class=both-accept-equal
+WSJ documentation-queries/index-documentation-queries.yamsql:5{index:idx_max_by_category} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(record_types) md-canonical-equal class=both-accept-equal
+WSJ documentation-queries/index-documentation-queries.yamsql:5{index:idx_price_desc} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ documentation-queries/index-documentation-queries.yamsql:5{index:idx_category_desc_price_asc} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ documentation-queries/index-documentation-queries.yamsql:5{index:idx_rating_nulls_last} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ documentation-queries/index-documentation-queries.yamsql:5{index:idx_on_price} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ documentation-queries/index-documentation-queries.yamsql:5{index:idx_on_category_price} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ documentation-queries/index-documentation-queries.yamsql:5{index:idx_on_category_price_covering} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ documentation-queries/index-documentation-queries.yamsql:5{index:idx_on_category_desc} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ documentation-queries/index-documentation-queries.yamsql:5{index:idx_on_rating_nulls_last} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ documentation-queries/index-documentation-queries.yamsql:5{index:idx_on_supplier_desc_nulls_first} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ documentation-queries/index-documentation-queries.yamsql:5{index:idx_on_stock_nulls_last} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ documentation-queries/index-documentation-queries.yamsql:5{index:idx_on_complex} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ documentation-queries/is-distinct-from-operator-queries.yamsql:2 java=OK(3) go=OK(3) equal=3 diff=[] missing=[] extra=[] version(go=4 java=4) md-bytes-equal class=both-accept-equal
+WSJ documentation-queries/is-distinct-from-operator-queries.yamsql:2{index:price_idx} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ documentation-queries/is-distinct-from-operator-queries.yamsql:2{index:category_idx} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ documentation-queries/is-distinct-from-operator-queries.yamsql:2{index:name_idx} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ documentation-queries/isolation-level-snapshot-documentation-queries.yamsql:30 java=OK(2) go=OK(2) equal=2 diff=[] missing=[] extra=[] version(go=3 java=3) md-bytes-equal class=both-accept-equal
+WSJ documentation-queries/isolation-level-snapshot-documentation-queries.yamsql:30{index:document_count} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ documentation-queries/isolation-level-snapshot-documentation-queries.yamsql:30{index:max_folder_id} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ documentation-queries/like-operator-queries.yamsql:2 java=OK(3) go=OK(3) equal=3 diff=[] missing=[] extra=[] version(go=4 java=4) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ documentation-queries/like-operator-queries.yamsql:2{index:price_idx} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ documentation-queries/like-operator-queries.yamsql:2{index:category_idx} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ documentation-queries/like-operator-queries.yamsql:2{index:name_idx} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ documentation-queries/order-by-documentation-queries.yamsql:5 java=OK(3) go=OK(3) equal=3 diff=[] missing=[] extra=[] version(go=4 java=4) md-bytes-equal class=both-accept-equal
+WSJ documentation-queries/order-by-documentation-queries.yamsql:5{index:price_idx} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ documentation-queries/order-by-documentation-queries.yamsql:5{index:category_idx} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ documentation-queries/order-by-documentation-queries.yamsql:5{index:category_price_idx} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ documentation-queries/subqueries-documentation-queries.yamsql:2 java=OK(4) go=ERROR 42F00 "Unknown database R"
+WSJ documentation-queries/subqueries-documentation-queries.yamsql:2{index:a_ida_idx} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ documentation-queries/subqueries-documentation-queries.yamsql:2{index:a_x_idx} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ documentation-queries/subqueries-documentation-queries.yamsql:2{index:ib} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(records,record_types) md-canonical-differ(records,record_types) class=both-accept-metadata-diverge
+WSJ documentation-queries/subqueries-documentation-queries.yamsql:2{index:ir} java=OK(1) go=ERROR 42F00 "Unknown database R"
+WSJ documentation-queries/udf-documentation-queries.yamsql:23 java=OK(1) go=ERROR 0A000 "SQL functions (CREATE FUNCTION) are not yet supported in a schema template"
+WSJ documentation-queries/udf-documentation-queries.yamsql:23{-views-functions} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ documentation-queries/window-function-documentation-queries.yamsql:23 java=OK(2) go=ERROR 0A000 "views (CREATE VIEW) are not yet supported in a schema template"
+WSJ documentation-queries/window-function-documentation-queries.yamsql:23{-views-functions} java=OK(0) go=OK(0) equal=0 diff=[] missing=[] extra=[] version(go=1 java=1) md-bytes-equal class=both-accept-equal
+WSJ documentation-queries/window-function-documentation-queries.yamsql:23{index:documentsEuclideanIndex} java=OK(1) go=ERROR 0A000 "views (CREATE VIEW) are not yet supported in a schema template"
+WSJ documentation-queries/window-function-documentation-queries.yamsql:23{index:documentsCosineIndex} java=OK(1) go=ERROR 0A000 "views (CREATE VIEW) are not yet supported in a schema template"
+WSJ include-block/shouldPass/simple-include-different-env.yamsql:24 java=OK(3) go=OK(3) equal=3 diff=[] missing=[] extra=[] version(go=4 java=4) md-bytes-equal class=both-accept-equal
+WSJ include-block/shouldPass/simple-include-different-env.yamsql:24{index:i1} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ include-block/shouldPass/simple-include-different-env.yamsql:24{index:i2} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ include-block/shouldPass/simple-include-different-env.yamsql:24{index:i3} java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ shape:nested_then_top java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ shape:top_then_nested java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ shape:nested_siblings java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ shape:nested_siblings_reordered java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ shape:nested_disconnected java=ERROR 0A000 IllegalArgumentException "Multiple entries with same key: S;1;LONG AS X, LONG AS Y=com.apple.foundationdb.relational.recordlayer.query.FieldValueTrieNode@919a6968 and S;1;LONG AS X, LONG…" go=ERROR 0A000 "Index with multiple disconnected references to the same column are not supported"
+WSJ shape:nested_then_top_no_order java=ERROR 0A000 RelationalException "Unsupported index definition, value indexes must have an order by clause at the top level" go=ERROR 0A000 "Unsupported index definition, value indexes must have an order by clause at the top level"
+WSJ shape:top_pair_no_order java=ERROR 0A000 RelationalException "Unsupported index definition, value indexes must have an order by clause at the top level" go=ERROR 0A000 "Unsupported index definition, value indexes must have an order by clause at the top level"
+WSJ shape:nested_covering java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ shape:nested_desc java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ shape:nested_nulls_last java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ shape:grouped_by_nested java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ shape:sum_grouped_by_nested_and_top java=ERROR XX000 RelationalException "condition is not met!" go=ERROR XX000 "index generator: aggregate operand built a *recordlayer.NestingKeyExpression key expression"
+WSJ shape:deep_nesting java=ERROR 0A000 IllegalArgumentException "Multiple entries with same key: I;0;LONG AS A, LONG AS B=com.apple.foundationdb.relational.recordlayer.query.FieldValueTrieNode@91b694a9 and I;0;LONG AS A, LONG…" go=ERROR 0A000 "Index with multiple disconnected references to the same column are not supported"
+WSJ shape:deep_nesting_shared java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ shape:literal_int_arith java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ shape:literal_long_arith java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ shape:literal_double_arith java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ shape:literal_int_bitand java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ shape:bitmap_bucket_offset_value java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ shape:literal_int_int_column java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ shape:on_source_nested java=ERROR 42601 RelationalException "syntax error: CREATE SCHEMA TEMPLATE \"<T>\" create type as struct sc(x bigint, y bigint) create table t(id bigint, s sc, ts bigint, primary key(id)) create index…" go=ERROR 42601 "syntax error: CREATE SCHEMA TEMPLATE \"<T>\" create type as struct sc(x bigint, y bigint) create table t(id bigint, s sc, ts bigint, primary key(id)) create index…"
+WSJ shape:on_source_include java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ shape:unnest_comma java=OK(1) go=ERROR 0A000 "Unsupported query, expected to find exactly one type filter operator"
+WSJ shape:unnest_derived java=OK(1) go=ERROR 42F00 "Unknown database T6"
+WSJ shape:unnest_same_array_twice java=OK(1) go=ERROR 0A000 "Unsupported query, expected to find exactly one type filter operator"
+WSJ shape:enum_value_index java=OK(1) go=ERROR 0A000 "enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template"
+WSJ shape:array_no_unnest java=ERROR 0A000 RelationalException "Unsupported index definition, cannot create index on array field 'COL4' without unnesting" go=ERROR 0A000 "Unsupported index definition, cannot create index on array field 'COL4' without unnesting"
+WSJ shape:multi_table_order java=OK(3) go=OK(3) equal=0 diff=[IA:versions(go=2/2 java=3/3) IA2:versions(go=3/3 java=4/4) IB:versions(go=4/4 java=2/2)] missing=[] extra=[] version(go=4 java=4) md-bytes-differ(records,indexes,record_types) md-canonical-differ(records,indexes,record_types) class=both-accept-index-diverge
+WSJ shape:literal_int_float_column java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ shape:literal_int_double_column java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ shape:literal_double_int_column java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ shape:dotted_table_name java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ shape:literal_float_suffix java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ shape:literal_double_suffix java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ shape:literal_half_suffix java=ERROR 42601 RelationalException "syntax error: CREATE SCHEMA TEMPLATE \"<T>\" create table t(id bigint, c double, primary key(id)) create index ix as select c + 1.5h from t order by c + 1.5h ^" go=ERROR 42601 "syntax error: CREATE SCHEMA TEMPLATE \"<T>\" create table t(id bigint, c double, primary key(id)) create index ix as select c + 1.5h from t order by c + 1.5h ^"
+WSJ shape:literal_long_suffix java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ shape:literal_int_suffix java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ shape:literal_negative_int java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ shape:literal_negative_double java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ shape:literal_constant_subexpression java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ shape:literal_int_max java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ shape:literal_long_min_above_int java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ shape:literal_int_min java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ shape:literal_float_double_column java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ shape:literal_long_int_column java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal class=both-accept-equal
+WSJ shape:unnest_nested java=OK(1) go=ERROR 0A000 "Unsupported query, expected to find exactly one type filter operator"
+WSJ shape:unnest_nested_derived java=OK(1) go=ERROR 42F01 "Unknown table A"
+WSJ shape:derived_no_unnest java=OK(1) go=ERROR 0A000 "Unsupported query, expected to find exactly one type filter operator"
+WSJ shape:unnest_inner_predicate java=ERROR 0A000 RelationalException "Unsupported predicate '<alias> GREATER_THAN 1'" go=ERROR 42F00 "Unknown database R"
+WSJ shape:unnest_outer_predicate java=OK(1) go=ERROR 42F00 "Unknown database R"
+WSJ shape:having java=ERROR 0A000 RelationalException "Unsupported index definition, found predicate in select-having" go=ERROR 0A000 "Unsupported index definition, found predicate in select-having"
+WSJ shape:join_plain java=ERROR 0A000 RelationalException "Unsupported query, expected to find exactly one type filter operator" go=ERROR 0A000 "Unsupported query, expected to find exactly one type filter operator"
+WSJ shape:join_with_unnest java=ERROR 0A000 RelationalException "Unsupported query, expected to find exactly one type filter operator" go=ERROR 0A000 "Unsupported query, expected to find exactly one type filter operator"
+WSJ shape:enum_predicate_index java=ERROR XXXXX RecordCoreException "attempt to create PoJo index comparison from unsupported comparison" go=ERROR 0A000 "enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template"
+WSJ shape:enum_on_moved_table java=OK(1) go=ERROR 0A000 "enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template"
+WSJ shape:enums_sharing_value_name java=OK(1) go=ERROR 0A000 "enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template"
+WSJ shape:enum_unreferenced java=OK(1) go=ERROR 0A000 "enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template"
+WSJ shape:extremum_ever_legacy java=OK(2) go=OK(2) equal=2 diff=[] missing=[] extra=[] version(go=3 java=3) md-bytes-equal class=both-accept-equal
+WSJ shape:extremum_ever_tuple java=OK(2) go=OK(2) equal=2 diff=[] missing=[] extra=[] version(go=3 java=3) md-bytes-equal class=both-accept-equal
+
+## pass 1: every WSJ-CLASS line (class and Go outcome)
+WSJ-CLASS "aggregate-empty-table.yamsql:21": "both-accept-companion OK ed9c4735d46a",
+WSJ-CLASS "aggregate-empty-table.yamsql:21{index:t2_i1}": "both-accept-metadata-diverge OK 1aa18f060aa2",
+WSJ-CLASS "aggregate-empty-table.yamsql:21{index:t2_i2}": "both-accept-metadata-diverge OK 1b191ca13a22",
+WSJ-CLASS "aggregate-empty-table.yamsql:21{index:t2_i3}": "both-accept-metadata-diverge OK 267715132c9a",
+WSJ-CLASS "aggregate-empty-table.yamsql:21{index:t2_i4}": "both-accept-metadata-diverge OK dfe6743126d4",
+WSJ-CLASS "aggregate-empty-table.yamsql:21{index:t2_i5}": "both-accept-metadata-diverge OK 3e98d95d7991",
+WSJ-CLASS "aggregate-empty-table.yamsql:21{index:t2_i6}": "both-accept-metadata-diverge OK ccd1976ce516",
+WSJ-CLASS "aggregate-empty-table.yamsql:21{index:t3_i1}": "both-accept-equal OK 113ebc548f11",
+WSJ-CLASS "aggregate-empty-table.yamsql:21{index:t3_i2}": "both-accept-equal OK b9ae9d603c7b",
+WSJ-CLASS "aggregate-index-tests-count-empty.yamsql:21": "both-accept-index-diverge OK 923bd7ab67e3",
+WSJ-CLASS "aggregate-index-tests-count-empty.yamsql:21{index:mv1}": "both-accept-metadata-diverge OK 65e536f80d2e",
+WSJ-CLASS "aggregate-index-tests-count-empty.yamsql:21{index:mv2}": "both-accept-metadata-diverge OK af64b606ca0a",
+WSJ-CLASS "aggregate-index-tests-count-empty.yamsql:21{index:mv3}": "both-accept-metadata-diverge OK 631a7aa2ffba",
+WSJ-CLASS "aggregate-index-tests-count-empty.yamsql:21{index:mv4}": "both-accept-metadata-diverge OK 16b879e63fce",
+WSJ-CLASS "aggregate-index-tests-count-empty.yamsql:21{index:mv5}": "both-accept-equal OK 27ff3cf30cdf",
+WSJ-CLASS "aggregate-index-tests-count-empty.yamsql:21{index:mv6}": "both-accept-metadata-diverge OK 7d2b3c85c4b6",
+WSJ-CLASS "aggregate-index-tests-count.yamsql:21": "both-accept-equal OK 04b90d0a0137",
+WSJ-CLASS "aggregate-index-tests-count.yamsql:21{index:mv1}": "both-accept-metadata-diverge OK 65e536f80d2e",
+WSJ-CLASS "aggregate-index-tests-count.yamsql:21{index:mv2}": "both-accept-metadata-diverge OK af64b606ca0a",
+WSJ-CLASS "aggregate-index-tests-count.yamsql:21{index:mv3}": "both-accept-metadata-diverge OK 631a7aa2ffba",
+WSJ-CLASS "aggregate-index-tests-count.yamsql:21{index:mv4}": "both-accept-metadata-diverge OK 16b879e63fce",
+WSJ-CLASS "aggregate-index-tests-count.yamsql:21{index:mv5}": "both-accept-equal OK 27ff3cf30cdf",
+WSJ-CLASS "aggregate-index-tests.yamsql:21": "java-accept-go-reject ERROR 42F00 8c56971d6bae",
+WSJ-CLASS "aggregate-index-tests.yamsql:21{index:mv10}": "both-accept-metadata-diverge OK 058adac136f3",
+WSJ-CLASS "aggregate-index-tests.yamsql:21{index:mv11}": "both-accept-metadata-diverge OK 8a9fe38c809a",
+WSJ-CLASS "aggregate-index-tests.yamsql:21{index:mv12}": "both-accept-metadata-diverge OK 849bd181c721",
+WSJ-CLASS "aggregate-index-tests.yamsql:21{index:mv13}": "both-accept-metadata-diverge OK 8af4691ea0f8",
+WSJ-CLASS "aggregate-index-tests.yamsql:21{index:mv14}": "both-accept-metadata-diverge OK 365a3a635400",
+WSJ-CLASS "aggregate-index-tests.yamsql:21{index:mv15}": "both-accept-metadata-diverge OK 52d4cca3bde5",
+WSJ-CLASS "aggregate-index-tests.yamsql:21{index:mv16}": "both-accept-metadata-diverge OK 7c572a3dfc4e",
+WSJ-CLASS "aggregate-index-tests.yamsql:21{index:mv17}": "both-accept-metadata-diverge OK 3ab2c3f525d3",
+WSJ-CLASS "aggregate-index-tests.yamsql:21{index:mv18}": "both-accept-metadata-diverge OK 26723a24bc0e",
+WSJ-CLASS "aggregate-index-tests.yamsql:21{index:mv19}": "both-accept-metadata-diverge OK 39a5324079df",
+WSJ-CLASS "aggregate-index-tests.yamsql:21{index:mv1}": "both-accept-metadata-diverge OK 289c0db8a209",
+WSJ-CLASS "aggregate-index-tests.yamsql:21{index:mv20}": "java-accept-go-reject ERROR 42F00 8c56971d6bae",
+WSJ-CLASS "aggregate-index-tests.yamsql:21{index:mv21}": "both-accept-metadata-diverge OK 6a7f6287cb5c",
+WSJ-CLASS "aggregate-index-tests.yamsql:21{index:mv2}": "both-accept-metadata-diverge OK e85ecfe1cf13",
+WSJ-CLASS "aggregate-index-tests.yamsql:21{index:mv3}": "both-accept-metadata-diverge OK c4057ce7921f",
+WSJ-CLASS "aggregate-index-tests.yamsql:21{index:mv4}": "both-accept-metadata-diverge OK 5f1859b5b72f",
+WSJ-CLASS "aggregate-index-tests.yamsql:21{index:mv5}": "both-accept-metadata-diverge OK 8ac1ee628760",
+WSJ-CLASS "aggregate-index-tests.yamsql:21{index:mv6}": "both-accept-metadata-diverge OK f8b90f0e3dc9",
+WSJ-CLASS "aggregate-index-tests.yamsql:21{index:mv7}": "both-accept-metadata-diverge OK 3f16d0bd3f4c",
+WSJ-CLASS "aggregate-index-tests.yamsql:21{index:mv8}": "both-accept-metadata-diverge OK d93699271524",
+WSJ-CLASS "aggregate-index-tests.yamsql:21{index:mv9}": "both-accept-metadata-diverge OK 510d2e3f53b5",
+WSJ-CLASS "aggregate-index-tests.yamsql:21{index:vi1}": "both-accept-metadata-diverge OK 43f34d513308",
+WSJ-CLASS "aggregate-index-tests.yamsql:21{index:vi2}": "both-accept-metadata-diverge OK ef63535b65a4",
+WSJ-CLASS "array-agg-tests.yamsql:27": "both-accept-metadata-diverge OK de181ceadb8b",
+WSJ-CLASS "array-agg-tests.yamsql:27{index:T1_grp}": "both-accept-metadata-diverge OK 2e258d73f29c",
+WSJ-CLASS "array-agg-tests.yamsql:27{index:T2_grp}": "both-accept-metadata-diverge OK 889d2ad4042d",
+WSJ-CLASS "array-agg-tests.yamsql:27{index:T3_grp}": "both-accept-metadata-diverge OK d210453bcc1d",
+WSJ-CLASS "array-agg-tests.yamsql:27{index:doc_asset_by_rid}": "both-accept-metadata-diverge OK b28e53bdf23a",
+WSJ-CLASS "array-agg-tests.yamsql:83": "both-reject ERROR 42803 8634a9f762fb",
+WSJ-CLASS "arrays-cardinality.yamsql:27": "both-accept-equal OK 382b0a8eefa7",
+WSJ-CLASS "arrays-cardinality.yamsql:27{index:\"tab1_indexed_index\"}": "both-accept-metadata-diverge OK 00022cd24646",
+WSJ-CLASS "arrays-cardinality.yamsql:27{index:\"tab1_indexed_nn_index\"}": "both-accept-metadata-diverge OK 34c6d273578f",
+WSJ-CLASS "arrays-cardinality.yamsql:27{index:\"tab2_index\"}": "both-accept-equal OK 4bfd8478b3ad",
+WSJ-CLASS "arrays-unnesting.yamsql:32": "java-accept-go-reject ERROR 0A000 2b4eac6a848a",
+WSJ-CLASS "arrays-unnesting.yamsql:32{-views-functions}": "java-accept-go-reject ERROR 42F00 a480f7192d8d",
+WSJ-CLASS "arrays-unnesting.yamsql:32{index:\"T1_indexed_index\"}": "java-accept-go-reject ERROR 42F00 a480f7192d8d",
+WSJ-CLASS "arrays-unnesting.yamsql:32{index:\"T2_view_index\"}": "java-accept-go-reject ERROR 0A000 2b4eac6a848a",
+WSJ-CLASS "arrays-unnesting.yamsql:32{index:\"mv\"}": "java-accept-go-reject ERROR 42F00 eee23b4ae844",
+WSJ-CLASS "between.yamsql:25": "both-accept-equal OK af42d6d685cd",
+WSJ-CLASS "bitmap-aggregate-index.yamsql:21": "both-accept-equal OK 2a90ce17a0e1",
+WSJ-CLASS "bitmap-aggregate-index.yamsql:21{index:agg_index_1}": "both-accept-equal OK b4a1c1f8b5b1",
+WSJ-CLASS "bitmap-aggregate-index.yamsql:21{index:agg_index_2}": "both-accept-equal OK 6ddcccb119b2",
+WSJ-CLASS "bitmap-aggregate-index.yamsql:21{index:bitmapIndex1}": "both-accept-metadata-diverge OK 57cd7c064a36",
+WSJ-CLASS "bitmap-aggregate-index.yamsql:21{index:bitmapIndex2}": "both-accept-metadata-diverge OK fb50a66a7dbb",
+WSJ-CLASS "boolean-ddl.yamsql:26": "both-accept-equal OK 6c9bf8608c2a",
+WSJ-CLASS "boolean-ddl.yamsql:26{index:idx_false}": "both-accept-equal OK a186271414a1",
+WSJ-CLASS "boolean-ddl.yamsql:26{index:idx_null}": "both-accept-equal OK 639e4c9f437e",
+WSJ-CLASS "boolean-ddl.yamsql:26{index:idx_true}": "both-accept-equal OK e32cfc13c867",
+WSJ-CLASS "case-sensitivity.yamsql:28": "both-reject ERROR 0A000 b7d894b89cb6",
+WSJ-CLASS "case-sensitivity.yamsql:28{-views-functions}": "both-reject ERROR 42F59 350b1177bafa",
+WSJ-CLASS "case-sensitivity.yamsql:28{index:I1}": "both-reject ERROR 42F59 350b1177bafa",
+WSJ-CLASS "case-sensitivity.yamsql:28{index:i1}": "both-reject ERROR 42F59 350b1177bafa",
+WSJ-CLASS "composite-aggregates.yamsql:24": "both-accept-companion OK 69ca5540f022",
+WSJ-CLASS "composite-aggregates.yamsql:24{index:t1_i1}": "both-accept-metadata-diverge OK d5286b02dad4",
+WSJ-CLASS "composite-aggregates.yamsql:24{index:t1_i2}": "both-accept-metadata-diverge OK 64c99afe8d4a",
+WSJ-CLASS "composite-aggregates.yamsql:24{index:t1_i3}": "both-accept-metadata-diverge OK ff775dd876df",
+WSJ-CLASS "composite-aggregates.yamsql:24{index:t1_i4}": "both-accept-metadata-diverge OK 4b4bf0ef6d18",
+WSJ-CLASS "composite-aggregates.yamsql:24{index:t2_i1}": "both-accept-metadata-diverge OK 8ab4d0927dc8",
+WSJ-CLASS "composite-aggregates.yamsql:24{index:t2_i2}": "both-accept-metadata-diverge OK 79d9910d1218",
+WSJ-CLASS "composite-aggregates.yamsql:24{index:t2_i3}": "both-accept-metadata-diverge OK c732a0feb183",
+WSJ-CLASS "composite-aggregates.yamsql:24{index:t2_i4}": "both-accept-metadata-diverge OK 8101adb7f8f3",
+WSJ-CLASS "composite-aggregates.yamsql:24{index:t2_i5}": "both-accept-metadata-diverge OK 415a6971d11b",
+WSJ-CLASS "composite-aggregates.yamsql:24{index:t2_i6}": "both-accept-metadata-diverge OK ae3513d1928d",
+WSJ-CLASS "composite-aggregates.yamsql:24{index:t2_i7}": "both-accept-metadata-diverge OK f97f6e6f8874",
+WSJ-CLASS "composite-aggregates.yamsql:24{index:t3_i1}": "both-accept-equal OK 0fd6760ed2bc",
+WSJ-CLASS "composite-aggregates.yamsql:24{index:t3_i2}": "both-accept-equal OK 1616676fd587",
+WSJ-CLASS "create-drop-create-template.yamsql:25": "both-accept-metadata-diverge OK 06fb6b14018c",
+WSJ-CLASS "create-drop-create-template.yamsql:47": "both-accept-metadata-diverge OK 06fb6b14018c",
+WSJ-CLASS "cte.yamsql:21": "both-accept-equal OK b83ddb58b99d",
+WSJ-CLASS "distinct-from.yamsql:25": "both-accept-equal OK 42be387c8be8",
+WSJ-CLASS "distinct-from.yamsql:25{index:cnt}": "both-accept-equal OK b4f0b8043de6",
+WSJ-CLASS "distinct-from.yamsql:25{index:i1}": "both-accept-equal OK af42d6d685cd",
+WSJ-CLASS "distinct-from.yamsql:25{index:i2}": "both-accept-equal OK 40d7b1a6fcb4",
+WSJ-CLASS "documentation-queries/aggregate-functions-documentation-queries.yamsql:5": "both-accept-equal OK 0a25b16a7d45",
+WSJ-CLASS "documentation-queries/aggregate-functions-documentation-queries.yamsql:5{index:product_idx}": "both-accept-equal OK 66c113696dd3",
+WSJ-CLASS "documentation-queries/aggregate-functions-documentation-queries.yamsql:5{index:region_idx}": "both-accept-equal OK 6e99eeca66b7",
+WSJ-CLASS "documentation-queries/array-agg-documentation-queries.yamsql:106": "both-reject ERROR 42803 8634a9f762fb",
+WSJ-CLASS "documentation-queries/array-agg-documentation-queries.yamsql:28": "both-accept-metadata-diverge OK 3cdcce78f672",
+WSJ-CLASS "documentation-queries/array-agg-documentation-queries.yamsql:28{index:child_by_pid}": "both-accept-metadata-diverge OK 08aa832c4f75",
+WSJ-CLASS "documentation-queries/array-agg-documentation-queries.yamsql:28{index:product_idx}": "both-accept-metadata-diverge OK 2b42f77545a2",
+WSJ-CLASS "documentation-queries/between-operator-queries.yamsql:2": "both-accept-equal OK 8de35c61b3cb",
+WSJ-CLASS "documentation-queries/between-operator-queries.yamsql:2{index:category_idx}": "both-accept-equal OK 70b78258493d",
+WSJ-CLASS "documentation-queries/between-operator-queries.yamsql:2{index:name_idx}": "both-accept-equal OK 5b4f7d574503",
+WSJ-CLASS "documentation-queries/between-operator-queries.yamsql:2{index:price_idx}": "both-accept-equal OK 9ba756a7587e",
+WSJ-CLASS "documentation-queries/case-documentation-queries.yamsql:2": "both-accept-equal OK 289189130292",
+WSJ-CLASS "documentation-queries/case-documentation-queries.yamsql:2{index:name_idx}": "both-accept-equal OK 5b4f7d574503",
+WSJ-CLASS "documentation-queries/case-documentation-queries.yamsql:2{index:name_price_idx}": "both-accept-equal OK fc79b234d4d1",
+WSJ-CLASS "documentation-queries/case-documentation-queries.yamsql:2{index:price_idx}": "both-accept-equal OK 9ba756a7587e",
+WSJ-CLASS "documentation-queries/comments-documentation-queries.yamsql:14": "both-accept-equal OK 9832a61853f5",
+WSJ-CLASS "documentation-queries/group-by-documentation-queries.yamsql:5": "both-accept-equal OK 6450aecf001e",
+WSJ-CLASS "documentation-queries/group-by-documentation-queries.yamsql:5{index:dept_idx}": "both-accept-equal OK a2972950aa82",
+WSJ-CLASS "documentation-queries/group-by-documentation-queries.yamsql:5{index:dept_role_idx}": "both-accept-equal OK fcc26bd2b69e",
+WSJ-CLASS "documentation-queries/group-by-documentation-queries.yamsql:5{index:role_idx}": "both-accept-equal OK ffbd7a8ba8a0",
+WSJ-CLASS "documentation-queries/in-operator-queries.yamsql:2": "both-accept-equal OK 8de35c61b3cb",
+WSJ-CLASS "documentation-queries/in-operator-queries.yamsql:2{index:category_idx}": "both-accept-equal OK 70b78258493d",
+WSJ-CLASS "documentation-queries/in-operator-queries.yamsql:2{index:name_idx}": "both-accept-equal OK 5b4f7d574503",
+WSJ-CLASS "documentation-queries/in-operator-queries.yamsql:2{index:price_idx}": "both-accept-equal OK 9ba756a7587e",
+WSJ-CLASS "documentation-queries/index-documentation-queries.yamsql:5": "both-accept-index-diverge OK ff2060d62f7a",
+WSJ-CLASS "documentation-queries/index-documentation-queries.yamsql:5{index:idx_category_desc_price_asc}": "both-accept-metadata-diverge OK 929550453530",
+WSJ-CLASS "documentation-queries/index-documentation-queries.yamsql:5{index:idx_category_price}": "both-accept-metadata-diverge OK e2df99a5b155",
+WSJ-CLASS "documentation-queries/index-documentation-queries.yamsql:5{index:idx_count_by_region}": "both-accept-equal OK 01549cd65a3f",
+WSJ-CLASS "documentation-queries/index-documentation-queries.yamsql:5{index:idx_max_by_category}": "both-accept-equal OK 7c236ee007c7",
+WSJ-CLASS "documentation-queries/index-documentation-queries.yamsql:5{index:idx_on_category_desc}": "both-accept-metadata-diverge OK 4f4fcbe5a825",
+WSJ-CLASS "documentation-queries/index-documentation-queries.yamsql:5{index:idx_on_category_price_covering}": "both-accept-metadata-diverge OK 00775eafe250",
+WSJ-CLASS "documentation-queries/index-documentation-queries.yamsql:5{index:idx_on_category_price}": "both-accept-metadata-diverge OK 0c5edf7d75d0",
+WSJ-CLASS "documentation-queries/index-documentation-queries.yamsql:5{index:idx_on_complex}": "both-accept-metadata-diverge OK cca5fce9a5a8",
+WSJ-CLASS "documentation-queries/index-documentation-queries.yamsql:5{index:idx_on_price}": "both-accept-metadata-diverge OK 5b7809c8e45e",
+WSJ-CLASS "documentation-queries/index-documentation-queries.yamsql:5{index:idx_on_rating_nulls_last}": "both-accept-metadata-diverge OK bd34ffb4c9f8",
+WSJ-CLASS "documentation-queries/index-documentation-queries.yamsql:5{index:idx_on_stock_nulls_last}": "both-accept-metadata-diverge OK 80a6fb136c8e",
+WSJ-CLASS "documentation-queries/index-documentation-queries.yamsql:5{index:idx_on_supplier_desc_nulls_first}": "both-accept-metadata-diverge OK e09f9671d45b",
+WSJ-CLASS "documentation-queries/index-documentation-queries.yamsql:5{index:idx_price_desc}": "both-accept-metadata-diverge OK e9ceb1095c0e",
+WSJ-CLASS "documentation-queries/index-documentation-queries.yamsql:5{index:idx_price}": "both-accept-metadata-diverge OK 7fbfc426ac89",
+WSJ-CLASS "documentation-queries/index-documentation-queries.yamsql:5{index:idx_rating_nulls_last}": "both-accept-metadata-diverge OK bb5f1d91901c",
+WSJ-CLASS "documentation-queries/index-documentation-queries.yamsql:5{index:idx_sales_by_category}": "both-accept-companion OK b933a2959138",
+WSJ-CLASS "documentation-queries/is-distinct-from-operator-queries.yamsql:2": "both-accept-equal OK 8de35c61b3cb",
+WSJ-CLASS "documentation-queries/is-distinct-from-operator-queries.yamsql:2{index:category_idx}": "both-accept-equal OK 70b78258493d",
+WSJ-CLASS "documentation-queries/is-distinct-from-operator-queries.yamsql:2{index:name_idx}": "both-accept-equal OK 5b4f7d574503",
+WSJ-CLASS "documentation-queries/is-distinct-from-operator-queries.yamsql:2{index:price_idx}": "both-accept-equal OK 9ba756a7587e",
+WSJ-CLASS "documentation-queries/isolation-level-snapshot-documentation-queries.yamsql:30": "both-accept-equal OK 468f20e653ed",
+WSJ-CLASS "documentation-queries/isolation-level-snapshot-documentation-queries.yamsql:30{index:document_count}": "both-accept-metadata-diverge OK 4e2e1ad25e90",
+WSJ-CLASS "documentation-queries/isolation-level-snapshot-documentation-queries.yamsql:30{index:max_folder_id}": "both-accept-equal OK 0f1825156266",
+WSJ-CLASS "documentation-queries/like-operator-queries.yamsql:2": "both-accept-metadata-diverge OK f436cff032db",
+WSJ-CLASS "documentation-queries/like-operator-queries.yamsql:2{index:category_idx}": "both-accept-metadata-diverge OK 1935d3b94b39",
+WSJ-CLASS "documentation-queries/like-operator-queries.yamsql:2{index:name_idx}": "both-accept-metadata-diverge OK 7fe50ad7cd94",
+WSJ-CLASS "documentation-queries/like-operator-queries.yamsql:2{index:price_idx}": "both-accept-metadata-diverge OK 64dbbb7048ea",
+WSJ-CLASS "documentation-queries/order-by-documentation-queries.yamsql:5": "both-accept-equal OK 4a142fed0dfe",
+WSJ-CLASS "documentation-queries/order-by-documentation-queries.yamsql:5{index:category_idx}": "both-accept-equal OK 601f03a83510",
+WSJ-CLASS "documentation-queries/order-by-documentation-queries.yamsql:5{index:category_price_idx}": "both-accept-equal OK f9076b668217",
+WSJ-CLASS "documentation-queries/order-by-documentation-queries.yamsql:5{index:price_idx}": "both-accept-equal OK be837bb5bd6a",
+WSJ-CLASS "documentation-queries/subqueries-documentation-queries.yamsql:2": "java-accept-go-reject ERROR 42F00 80b46944a023",
+WSJ-CLASS "documentation-queries/subqueries-documentation-queries.yamsql:2{index:a_ida_idx}": "both-accept-metadata-diverge OK 076fa48534ab",
+WSJ-CLASS "documentation-queries/subqueries-documentation-queries.yamsql:2{index:a_x_idx}": "both-accept-metadata-diverge OK 5f3118f7f1d1",
+WSJ-CLASS "documentation-queries/subqueries-documentation-queries.yamsql:2{index:ib}": "both-accept-metadata-diverge OK a79c6d3793b8",
+WSJ-CLASS "documentation-queries/subqueries-documentation-queries.yamsql:2{index:ir}": "java-accept-go-reject ERROR 42F00 80b46944a023",
+WSJ-CLASS "documentation-queries/udf-documentation-queries.yamsql:23": "java-accept-go-reject ERROR 0A000 b7d894b89cb6",
+WSJ-CLASS "documentation-queries/udf-documentation-queries.yamsql:23{-views-functions}": "both-accept-equal OK 80cae4776540",
+WSJ-CLASS "documentation-queries/window-function-documentation-queries.yamsql:23": "java-accept-go-reject ERROR 0A000 2b4eac6a848a",
+WSJ-CLASS "documentation-queries/window-function-documentation-queries.yamsql:23{-views-functions}": "both-accept-equal OK d1e6ce86aa11",
+WSJ-CLASS "documentation-queries/window-function-documentation-queries.yamsql:23{index:documentsCosineIndex}": "java-accept-go-reject ERROR 0A000 2b4eac6a848a",
+WSJ-CLASS "documentation-queries/window-function-documentation-queries.yamsql:23{index:documentsEuclideanIndex}": "java-accept-go-reject ERROR 0A000 2b4eac6a848a",
+WSJ-CLASS "enum-distinct-from-function.yamsql:48": "java-accept-go-reject ERROR 0A000 2e4af437e1c4",
+WSJ-CLASS "enum-distinct-from-function.yamsql:48{-views-functions}": "java-accept-go-reject ERROR 0A000 2e4af437e1c4",
+WSJ-CLASS "enum.yamsql:25": "java-accept-go-reject ERROR 0A000 2e4af437e1c4",
+WSJ-CLASS "exists-in-select.yamsql:23": "both-accept-equal OK caacc04fa79c",
+WSJ-CLASS "filter-index.yamsql:25": "both-accept-equal OK c3d28347f36a",
+WSJ-CLASS "groupby-tests.yamsql:21": "both-accept-equal OK 8254d65e2081",
+WSJ-CLASS "groupby-tests.yamsql:21{index:i1}": "both-accept-metadata-diverge OK 56095ae5c83a",
+WSJ-CLASS "groupby-tests.yamsql:21{index:i2}": "both-accept-metadata-diverge OK e5fc80ff51dd",
+WSJ-CLASS "groupby-tests.yamsql:21{index:i3}": "both-accept-equal OK c1973b34ee04",
+WSJ-CLASS "guardiann-semantic-search.yamsql:32": "java-accept-go-reject ERROR 42601 c13d56d1c0fd",
+WSJ-CLASS "in-predicate.yamsql:20": "java-accept-go-reject ERROR 0A000 b7d894b89cb6",
+WSJ-CLASS "in-predicate.yamsql:20{-views-functions}": "java-accept-go-reject ERROR 0A000 b6645b36f62e",
+WSJ-CLASS "in-predicate.yamsql:20{index:f1}": "both-accept-metadata-diverge OK cddcd110a595",
+WSJ-CLASS "in-predicate.yamsql:20{index:fruits}": "java-accept-go-reject ERROR 0A000 b6645b36f62e",
+WSJ-CLASS "include-block/shouldPass/simple-include-different-env.yamsql:24": "both-accept-equal OK e8649e2df765",
+WSJ-CLASS "include-block/shouldPass/simple-include-different-env.yamsql:24{index:i1}": "both-accept-equal OK 0e5a9b44bca7",
+WSJ-CLASS "include-block/shouldPass/simple-include-different-env.yamsql:24{index:i2}": "both-accept-equal OK 6889c0349f52",
+WSJ-CLASS "include-block/shouldPass/simple-include-different-env.yamsql:24{index:i3}": "both-accept-equal OK d2356baebc25",
+WSJ-CLASS "index-ddl-aggregates-only.yamsql:29": "java-accept-go-reject ERROR 0A000 2b4eac6a848a",
+WSJ-CLASS "index-ddl-aggregates-only.yamsql:29{-views-functions}": "both-accept-metadata-diverge OK d172e42acfe7",
+WSJ-CLASS "index-ddl-aggregates-only.yamsql:29{index:idx_iot_cat_max_region}": "java-accept-go-reject ERROR 0A000 2b4eac6a848a",
+WSJ-CLASS "index-ddl-aggregates-only.yamsql:29{index:idx_iot_cat_region_sum}": "java-accept-go-reject ERROR 0A000 2b4eac6a848a",
+WSJ-CLASS "index-ddl-aggregates-only.yamsql:29{index:idx_iot_count_by_category}": "java-accept-go-reject ERROR 0A000 2b4eac6a848a",
+WSJ-CLASS "index-ddl-aggregates-only.yamsql:29{index:idx_iot_count_qty_by_region}": "java-accept-go-reject ERROR 0A000 2b4eac6a848a",
+WSJ-CLASS "index-ddl-aggregates-only.yamsql:29{index:idx_iot_max_amount_by_region}": "java-accept-go-reject ERROR 0A000 2b4eac6a848a",
+WSJ-CLASS "index-ddl-aggregates-only.yamsql:29{index:idx_iot_max_ever_qty_by_region}": "java-accept-go-reject ERROR 0A000 2b4eac6a848a",
+WSJ-CLASS "index-ddl-aggregates-only.yamsql:29{index:idx_iot_min_amount_by_category}": "java-accept-go-reject ERROR 0A000 2b4eac6a848a",
+WSJ-CLASS "index-ddl-aggregates-only.yamsql:29{index:idx_iot_min_cat_region}": "java-accept-go-reject ERROR 0A000 2b4eac6a848a",
+WSJ-CLASS "index-ddl-aggregates-only.yamsql:29{index:idx_iot_min_ever_qty_by_category}": "java-accept-go-reject ERROR 0A000 2b4eac6a848a",
+WSJ-CLASS "index-ddl-aggregates-only.yamsql:29{index:idx_iot_sum_by_all}": "java-accept-go-reject ERROR 0A000 2b4eac6a848a",
+WSJ-CLASS "index-ddl-aggregates-only.yamsql:29{index:idx_iot_sum_by_cat_region}": "java-accept-go-reject ERROR 0A000 2b4eac6a848a",
+WSJ-CLASS "index-ddl-aggregates-only.yamsql:29{index:idx_iot_sum_by_category}": "java-accept-go-reject ERROR 0A000 2b4eac6a848a",
+WSJ-CLASS "index-ddl-aggregates-only.yamsql:29{index:idx_iot_sum_by_region}": "java-accept-go-reject ERROR 0A000 2b4eac6a848a",
+WSJ-CLASS "index-ddl-aggregates-only.yamsql:29{index:idx_mv_cat_max_region}": "both-accept-metadata-diverge OK 48308b40aa77",
+WSJ-CLASS "index-ddl-aggregates-only.yamsql:29{index:idx_mv_cat_region_sum}": "both-accept-metadata-diverge OK d787ee6f504b",
+WSJ-CLASS "index-ddl-aggregates-only.yamsql:29{index:idx_mv_count_by_category}": "both-accept-metadata-diverge OK 1e28cd2378b5",
+WSJ-CLASS "index-ddl-aggregates-only.yamsql:29{index:idx_mv_count_qty_by_region}": "both-accept-metadata-diverge OK 720da9475db9",
+WSJ-CLASS "index-ddl-aggregates-only.yamsql:29{index:idx_mv_max_amount_by_region}": "both-accept-metadata-diverge OK 2b1759e7b1b8",
+WSJ-CLASS "index-ddl-aggregates-only.yamsql:29{index:idx_mv_max_ever_qty_by_region}": "both-accept-metadata-diverge OK c95d9b1790a9",
+WSJ-CLASS "index-ddl-aggregates-only.yamsql:29{index:idx_mv_min_amount_by_category}": "both-accept-metadata-diverge OK 67defbc86cb3",
+WSJ-CLASS "index-ddl-aggregates-only.yamsql:29{index:idx_mv_min_cat_region}": "both-accept-metadata-diverge OK 8325dffeeb63",
+WSJ-CLASS "index-ddl-aggregates-only.yamsql:29{index:idx_mv_min_ever_qty_by_category}": "both-accept-metadata-diverge OK 35dcc0ea1076",
+WSJ-CLASS "index-ddl-aggregates-only.yamsql:29{index:idx_mv_sum_by_all}": "both-accept-metadata-diverge OK 1d98d7e2d213",
+WSJ-CLASS "index-ddl-aggregates-only.yamsql:29{index:idx_mv_sum_by_cat_region}": "both-accept-metadata-diverge OK 0fef7428b715",
+WSJ-CLASS "index-ddl-aggregates-only.yamsql:29{index:idx_mv_sum_by_category}": "both-accept-metadata-diverge OK f3f032ad22ca",
+WSJ-CLASS "index-ddl-aggregates-only.yamsql:29{index:idx_mv_sum_by_region}": "both-accept-metadata-diverge OK 25951fcec0dc",
+WSJ-CLASS "index-ddl-values-only.yamsql:28": "java-accept-go-reject ERROR 0A000 2b4eac6a848a",
+WSJ-CLASS "index-ddl-values-only.yamsql:28{-views-functions}": "both-accept-equal OK 906a14aefdca",
+WSJ-CLASS "index-ddl-values-only.yamsql:28{index:idx_iot_cat_desc_price_asc}": "both-accept-equal OK 01b90de433de",
+WSJ-CLASS "index-ddl-values-only.yamsql:28{index:idx_iot_cat_price_covering}": "both-accept-equal OK 20df1def7507",
+WSJ-CLASS "index-ddl-values-only.yamsql:28{index:idx_iot_cat_price}": "both-accept-equal OK 79353cb6e17a",
+WSJ-CLASS "index-ddl-values-only.yamsql:28{index:idx_iot_category}": "both-accept-equal OK ed96f9304837",
+WSJ-CLASS "index-ddl-values-only.yamsql:28{index:idx_iot_filtered_electronics}": "java-accept-go-reject ERROR 0A000 2b4eac6a848a",
+WSJ-CLASS "index-ddl-values-only.yamsql:28{index:idx_iot_filtered_expensive}": "java-accept-go-reject ERROR 0A000 2b4eac6a848a",
+WSJ-CLASS "index-ddl-values-only.yamsql:28{index:idx_iot_filtered_multi}": "java-accept-go-reject ERROR 0A000 2b4eac6a848a",
+WSJ-CLASS "index-ddl-values-only.yamsql:28{index:idx_iot_name_rating}": "both-accept-equal OK 0f4f0f290f6e",
+WSJ-CLASS "index-ddl-values-only.yamsql:28{index:idx_iot_price_covering}": "both-accept-equal OK f02f6a8b69ac",
+WSJ-CLASS "index-ddl-values-only.yamsql:28{index:idx_iot_price_desc}": "both-accept-equal OK 8d5a747f50f4",
+WSJ-CLASS "index-ddl-values-only.yamsql:28{index:idx_iot_price}": "both-accept-equal OK 166619e3e844",
+WSJ-CLASS "index-ddl-values-only.yamsql:28{index:idx_iot_rating_nulls_first}": "both-accept-equal OK f202af787b89",
+WSJ-CLASS "index-ddl-values-only.yamsql:28{index:idx_iot_rating_nulls_last}": "both-accept-equal OK 46b75323b6d9",
+WSJ-CLASS "index-ddl-values-only.yamsql:28{index:idx_iot_supplier_desc_nulls_first}": "both-accept-equal OK 167db3aa3232",
+WSJ-CLASS "index-ddl-values-only.yamsql:28{index:idx_mv_cat_desc_price_asc}": "both-accept-metadata-diverge OK f969c9214c20",
+WSJ-CLASS "index-ddl-values-only.yamsql:28{index:idx_mv_cat_price_covering}": "both-accept-metadata-diverge OK 9864b7668cdd",
+WSJ-CLASS "index-ddl-values-only.yamsql:28{index:idx_mv_cat_price}": "both-accept-metadata-diverge OK cabee76e6fe4",
+WSJ-CLASS "index-ddl-values-only.yamsql:28{index:idx_mv_category}": "both-accept-metadata-diverge OK 0f7a42d3cf27",
+WSJ-CLASS "index-ddl-values-only.yamsql:28{index:idx_mv_filtered_electronics}": "both-accept-metadata-diverge OK 3c7af0a6cd5f",
+WSJ-CLASS "index-ddl-values-only.yamsql:28{index:idx_mv_filtered_expensive}": "both-accept-metadata-diverge OK 7a2d61d0b020",
+WSJ-CLASS "index-ddl-values-only.yamsql:28{index:idx_mv_filtered_multi}": "both-accept-metadata-diverge OK d58fdea4aba8",
+WSJ-CLASS "index-ddl-values-only.yamsql:28{index:idx_mv_name_rating}": "both-accept-metadata-diverge OK e899eb557093",
+WSJ-CLASS "index-ddl-values-only.yamsql:28{index:idx_mv_price_covering}": "both-accept-metadata-diverge OK 2dbfb2627d11",
+WSJ-CLASS "index-ddl-values-only.yamsql:28{index:idx_mv_price_desc}": "both-accept-metadata-diverge OK fd23395775d5",
+WSJ-CLASS "index-ddl-values-only.yamsql:28{index:idx_mv_price}": "both-accept-metadata-diverge OK c66276d014ff",
+WSJ-CLASS "index-ddl-values-only.yamsql:28{index:idx_mv_rating_nulls_first}": "both-accept-metadata-diverge OK 8715a2e7566c",
+WSJ-CLASS "index-ddl-values-only.yamsql:28{index:idx_mv_rating_nulls_last}": "both-accept-metadata-diverge OK 03ac10977b8d",
+WSJ-CLASS "index-ddl-values-only.yamsql:28{index:idx_mv_supplier_desc_nulls_first}": "both-accept-metadata-diverge OK 126382dc95e0",
+WSJ-CLASS "index-ddl.yamsql:27": "java-accept-go-reject ERROR 0A000 2b4eac6a848a",
+WSJ-CLASS "index-ddl.yamsql:27{-views-functions}": "both-accept-index-diverge OK 4583f6054ba0",
+WSJ-CLASS "index-ddl.yamsql:27{index:idx_iot_age_max_extremum}": "java-accept-go-reject ERROR 0A000 2b4eac6a848a",
+WSJ-CLASS "index-ddl.yamsql:27{index:idx_iot_age_max_no_legacy}": "java-accept-go-reject ERROR 0A000 2b4eac6a848a",
+WSJ-CLASS "index-ddl.yamsql:27{index:idx_iot_age_min_extremum}": "java-accept-go-reject ERROR 0A000 2b4eac6a848a",
+WSJ-CLASS "index-ddl.yamsql:27{index:idx_iot_age_min_no_legacy}": "java-accept-go-reject ERROR 0A000 2b4eac6a848a",
+WSJ-CLASS "index-ddl.yamsql:27{index:idx_iot_asc_desc}": "both-accept-equal OK c9f3e3554d10",
+WSJ-CLASS "index-ddl.yamsql:27{index:idx_iot_desc_nulls_first}": "both-accept-equal OK ec3801704d16",
+WSJ-CLASS "index-ddl.yamsql:27{index:idx_iot_desc_nulls_last}": "both-accept-equal OK 9aaa77c74113",
+WSJ-CLASS "index-ddl.yamsql:27{index:idx_iot_email}": "both-accept-equal OK f6de3a74177c",
+WSJ-CLASS "index-ddl.yamsql:27{index:idx_iot_include}": "both-accept-equal OK 8b5eaaaf8e03",
+WSJ-CLASS "index-ddl.yamsql:27{index:idx_iot_multi}": "both-accept-equal OK b4ae3ceda6ef",
+WSJ-CLASS "index-ddl.yamsql:27{index:idx_iot_name}": "both-accept-equal OK 2fca6ff7033c",
+WSJ-CLASS "index-ddl.yamsql:27{index:idx_iot_nulls_first}": "both-accept-equal OK 549662aa697b",
+WSJ-CLASS "index-ddl.yamsql:27{index:idx_iot_nulls_last}": "both-accept-equal OK 21cf0178d6f1",
+WSJ-CLASS "index-ddl.yamsql:27{index:idx_iot_unique_profession}": "both-accept-equal OK 9b5ad923374c",
+WSJ-CLASS "index-ddl.yamsql:27{index:idx_mv_age_max_extremum}": "both-accept-metadata-diverge OK 371d2750c60a",
+WSJ-CLASS "index-ddl.yamsql:27{index:idx_mv_age_max_no_legacy}": "both-accept-metadata-diverge OK 1a2955b67975",
+WSJ-CLASS "index-ddl.yamsql:27{index:idx_mv_age_min_extremum}": "both-accept-metadata-diverge OK 103de2abfdf9",
+WSJ-CLASS "index-ddl.yamsql:27{index:idx_mv_age_min_no_legacy}": "both-accept-metadata-diverge OK 986c901e6423",
+WSJ-CLASS "index-ddl.yamsql:27{index:idx_mv_asc_desc}": "both-accept-metadata-diverge OK 029990be8a4a",
+WSJ-CLASS "index-ddl.yamsql:27{index:idx_mv_desc_nulls_first}": "both-accept-metadata-diverge OK 73283d377b59",
+WSJ-CLASS "index-ddl.yamsql:27{index:idx_mv_desc_nulls_last}": "both-accept-metadata-diverge OK 7974c7266bba",
+WSJ-CLASS "index-ddl.yamsql:27{index:idx_mv_email}": "both-accept-metadata-diverge OK d598cda64df0",
+WSJ-CLASS "index-ddl.yamsql:27{index:idx_mv_include}": "both-accept-metadata-diverge OK 049bf6f86d80",
+WSJ-CLASS "index-ddl.yamsql:27{index:idx_mv_multi}": "both-accept-metadata-diverge OK 42d06982c402",
+WSJ-CLASS "index-ddl.yamsql:27{index:idx_mv_name}": "both-accept-metadata-diverge OK 7dda7cff1baf",
+WSJ-CLASS "index-ddl.yamsql:27{index:idx_mv_nulls_first}": "both-accept-metadata-diverge OK 3e1b6e94b44c",
+WSJ-CLASS "index-ddl.yamsql:27{index:idx_mv_nulls_last}": "both-accept-metadata-diverge OK f46b1a3a0998",
+WSJ-CLASS "index-ddl.yamsql:27{index:idx_mv_unique_profession}": "both-accept-metadata-diverge OK f56128745f74",
+WSJ-CLASS "indexed-functions.yamsql:21": "both-accept-equal OK 6506cf2bcccd",
+WSJ-CLASS "indexed-functions.yamsql:21{index:bPlusCByE}": "both-accept-equal OK 4b423be38dbd",
+WSJ-CLASS "indexed-functions.yamsql:21{index:bPlusC}": "both-accept-equal OK ff58cc49925c",
+WSJ-CLASS "indexed-functions.yamsql:21{index:dMask1}": "both-accept-equal OK 40b3557598d5",
+WSJ-CLASS "indexed-functions.yamsql:21{index:dMask2}": "both-accept-equal OK 2e423f5654d5",
+WSJ-CLASS "inserts-updates-deletes.yamsql:21": "both-accept-metadata-diverge OK 06fb6b14018c",
+WSJ-CLASS "isolation-level-snapshot.yamsql:30": "both-accept-metadata-diverge OK afced46bc825",
+WSJ-CLASS "isolation-level-snapshot.yamsql:30{index:max_ever_col2_by_col1}": "both-accept-metadata-diverge OK d02e2608122b",
+WSJ-CLASS "isolation-level-snapshot.yamsql:30{index:max_ever_col2}": "both-accept-metadata-diverge OK dba74eea61ab",
+WSJ-CLASS "isolation-level-snapshot.yamsql:30{index:sum_col2_by_col1}": "both-accept-metadata-diverge OK ca09b2b6cab4",
+WSJ-CLASS "isolation-level-snapshot.yamsql:79": "both-reject ERROR 42601 afdc0ca58917",
+WSJ-CLASS "join-tests-outer.yamsql:24": "both-accept-metadata-diverge OK 3dd4ff4d25bf",
+WSJ-CLASS "join-tests-outer.yamsql:24{index:\"dept$name\"}": "both-accept-metadata-diverge OK f775ec64c3e5",
+WSJ-CLASS "join-tests-outer.yamsql:24{index:\"emp$fname\"}": "both-accept-metadata-diverge OK 5ea5df7d8f32",
+WSJ-CLASS "join-tests.yamsql:21": "both-accept-metadata-diverge OK 3815ae22e6f9",
+WSJ-CLASS "join-tests.yamsql:21{index:deptName}": "both-accept-metadata-diverge OK 1a19d6ae4a8b",
+WSJ-CLASS "join-tests.yamsql:21{index:empDept}": "both-accept-metadata-diverge OK c909c48b7991",
+WSJ-CLASS "join-tests.yamsql:21{index:empName}": "both-accept-metadata-diverge OK 0a623a5a4e98",
+WSJ-CLASS "join-with-order-by-tests.yamsql:27": "java-accept-go-reject ERROR 0A000 b7d894b89cb6",
+WSJ-CLASS "join-with-order-by-tests.yamsql:27{-views-functions}": "both-accept-equal OK 6ea3180b8c4a",
+WSJ-CLASS "join-with-order-by-tests.yamsql:27{index:\"t1$a1\"}": "both-accept-metadata-diverge OK b82462e75afa",
+WSJ-CLASS "join-with-order-by-tests.yamsql:27{index:\"t1$a1_a2\"}": "both-accept-metadata-diverge OK 6c569301d85e",
+WSJ-CLASS "join-with-order-by-tests.yamsql:27{index:\"t2$b1\"}": "both-accept-metadata-diverge OK 86d9213c11ba",
+WSJ-CLASS "join-with-order-by-tests.yamsql:27{index:\"t2$b1_b3\"}": "both-accept-metadata-diverge OK 22b580bf3f76",
+WSJ-CLASS "join-with-order-by-tests.yamsql:27{index:\"t3$aRef\"}": "both-accept-equal OK efeabc2bd625",
+WSJ-CLASS "join-with-order-by-tests.yamsql:27{index:\"t3$c1\"}": "both-accept-equal OK 788b36181616",
+WSJ-CLASS "join-with-order-by-tests.yamsql:27{index:\"t3$c1_c2\"}": "both-accept-equal OK 9a4c15179762",
+WSJ-CLASS "join-with-order-by-tests.yamsql:27{index:\"t3$c1_c2_c3\"}": "both-accept-equal OK f986af147394",
+WSJ-CLASS "like.yamsql:23": "both-accept-equal OK 5efe300ec9b9",
+WSJ-CLASS "nested-with-nulls.yamsql:21": "both-accept-equal OK dd9b83f5d4f8",
+WSJ-CLASS "nested-with-nulls.yamsql:21{index:i1}": "both-accept-equal OK a5336f1e1edb",
+WSJ-CLASS "nested-with-nulls.yamsql:21{index:i2}": "both-accept-equal OK f402e050c475",
+WSJ-CLASS "null-extraction-tests.yamsql:27": "both-accept-equal OK 85abfa10c7c8",
+WSJ-CLASS "null-operator-tests.yamsql:21": "both-accept-equal OK 50e93eae9062",
+WSJ-CLASS "orderby.yamsql:21": "java-accept-go-reject ERROR 0A000 b7d894b89cb6",
+WSJ-CLASS "orderby.yamsql:21{-views-functions}": "both-accept-equal OK e13ddc1ae02a",
+WSJ-CLASS "orderby.yamsql:21{index:i1}": "both-accept-metadata-diverge OK fc564631a70c",
+WSJ-CLASS "orderby.yamsql:21{index:i2}": "both-accept-metadata-diverge OK 8acee7bc21ec",
+WSJ-CLASS "orderby.yamsql:21{index:i3}": "both-accept-metadata-diverge OK 60462e72d018",
+WSJ-CLASS "orderby.yamsql:21{index:i4}": "both-accept-metadata-diverge OK c5fc562e2157",
+WSJ-CLASS "orderby.yamsql:21{index:i5}": "both-accept-metadata-diverge OK 5d0df7c55a0b",
+WSJ-CLASS "orderby.yamsql:21{index:i6}": "both-accept-metadata-diverge OK 6eb9d985ae42",
+WSJ-CLASS "orderby.yamsql:21{index:i7}": "both-accept-metadata-diverge OK 91146510faa4",
+WSJ-CLASS "orderby.yamsql:21{index:i8}": "both-accept-equal OK 933b39abee61",
+WSJ-CLASS "pseudo-field-clash.yamsql:21": "both-accept-equal OK 54c299bc41ca",
+WSJ-CLASS "pseudo-field-clash.yamsql:21{index:t2_col1_version}": "both-accept-metadata-diverge OK cafe219a63cc",
+WSJ-CLASS "pseudo-field-clash.yamsql:21{index:t2_version}": "both-accept-metadata-diverge OK d6f98a160c7c",
+WSJ-CLASS "pseudo-field-clash.yamsql:21{index:t3_col1_version}": "both-accept-equal OK 4640cf6720ea",
+WSJ-CLASS "pseudo-field-clash.yamsql:21{index:t3_version}": "both-accept-equal OK b37015ab3abc",
+WSJ-CLASS "record-type-key-tests.yamsql:20": "both-accept-equal OK c071b662d50e",
+WSJ-CLASS "record-type-key-tests.yamsql:20{index:i1}": "both-accept-metadata-diverge OK 8dbd8902270e",
+WSJ-CLASS "record-type-key-tests.yamsql:20{index:i2}": "both-accept-equal OK 6591af0285cf",
+WSJ-CLASS "recursive-cte.yamsql:2": "both-accept-equal OK 40cd5a96033a",
+WSJ-CLASS "recursive-cte.yamsql:2{index:childIdxNoNulls}": "both-accept-equal OK 2680d7d2617a",
+WSJ-CLASS "recursive-cte.yamsql:2{index:childIdx}": "both-accept-equal OK 076231c98f6e",
+WSJ-CLASS "recursive-cte.yamsql:2{index:parentIdx}": "both-accept-equal OK 6549fb81d7b4",
+WSJ-CLASS "schema-template-stored-queries.yamsql:32": "java-accept-go-reject ERROR 42601 8d111619529e",
+WSJ-CLASS "scoped-keyset-pagination.yamsql:26": "java-accept-go-reject ERROR 0A000 b7d894b89cb6",
+WSJ-CLASS "scoped-keyset-pagination.yamsql:26{-views-functions}": "both-accept-equal OK 29cd18d86b66",
+WSJ-CLASS "select-a-star.yamsql:21": "both-accept-metadata-diverge OK e8c2478364ee",
+WSJ-CLASS "semantic-search-advanced-metrics.yamsql:23": "java-accept-go-reject ERROR 0A000 2b4eac6a848a",
+WSJ-CLASS "semantic-search-advanced-metrics.yamsql:23{-views-functions}": "both-accept-equal OK 1aac5839fb40",
+WSJ-CLASS "semantic-search-advanced-metrics.yamsql:23{index:documentsDotProductIndex}": "java-accept-go-reject ERROR 0A000 2b4eac6a848a",
+WSJ-CLASS "semantic-search-advanced-metrics.yamsql:23{index:documentsEuclideanSquareIndex}": "java-accept-go-reject ERROR 0A000 2b4eac6a848a",
+WSJ-CLASS "semantic-search-advanced-metrics.yamsql:23{index:multiTypeDotProductIndex}": "java-accept-go-reject ERROR 0A000 2b4eac6a848a",
+WSJ-CLASS "semantic-search-advanced-metrics.yamsql:23{index:multiTypeEuclideanSquareIndex}": "java-accept-go-reject ERROR 0A000 2b4eac6a848a",
+WSJ-CLASS "semantic-search.yamsql:23": "java-accept-go-reject ERROR 0A000 2b4eac6a848a",
+WSJ-CLASS "semantic-search.yamsql:23{-views-functions}": "both-accept-equal OK b0f729f8162e",
+WSJ-CLASS "semantic-search.yamsql:23{index:documentsCosineIndex}": "java-accept-go-reject ERROR 0A000 2b4eac6a848a",
+WSJ-CLASS "semantic-search.yamsql:23{index:documentsEuclideanIndex}": "java-accept-go-reject ERROR 0A000 2b4eac6a848a",
+WSJ-CLASS "semantic-search.yamsql:23{index:multiTypeCosineIndex}": "java-accept-go-reject ERROR 0A000 2b4eac6a848a",
+WSJ-CLASS "semantic-search.yamsql:23{index:multiTypeEuclideanIndex}": "java-accept-go-reject ERROR 0A000 2b4eac6a848a",
+WSJ-CLASS "serialization-options.yamsql:28": "both-accept-equal OK 765bb1d77776",
+WSJ-CLASS "shape:array_no_unnest": "both-reject ERROR 0A000 01be3c81dd53",
+WSJ-CLASS "shape:bitmap_bucket_offset_value": "both-accept-equal OK fa0fb478d6f0",
+WSJ-CLASS "shape:deep_nesting": "both-reject ERROR 0A000 1409fbaf48c2",
+WSJ-CLASS "shape:deep_nesting_shared": "both-accept-equal OK 9419f3fde2d6",
+WSJ-CLASS "shape:derived_no_unnest": "java-accept-go-reject ERROR 0A000 b6645b36f62e",
+WSJ-CLASS "shape:dotted_table_name": "both-accept-equal OK 377e7da456f7",
+WSJ-CLASS "shape:enum_on_moved_table": "java-accept-go-reject ERROR 0A000 2e4af437e1c4",
+WSJ-CLASS "shape:enum_predicate_index": "both-reject ERROR 0A000 2e4af437e1c4",
+WSJ-CLASS "shape:enum_unreferenced": "java-accept-go-reject ERROR 0A000 2e4af437e1c4",
+WSJ-CLASS "shape:enum_value_index": "java-accept-go-reject ERROR 0A000 2e4af437e1c4",
+WSJ-CLASS "shape:enums_sharing_value_name": "java-accept-go-reject ERROR 0A000 2e4af437e1c4",
+WSJ-CLASS "shape:extremum_ever_legacy": "both-accept-equal OK 11c6b2efd943",
+WSJ-CLASS "shape:extremum_ever_tuple": "both-accept-equal OK 15f9af2b2e2d",
+WSJ-CLASS "shape:grouped_by_nested": "both-accept-equal OK cbed5fc0b3a7",
+WSJ-CLASS "shape:having": "both-reject ERROR 0A000 12c525e8caee",
+WSJ-CLASS "shape:join_plain": "both-reject ERROR 0A000 b6645b36f62e",
+WSJ-CLASS "shape:join_with_unnest": "both-reject ERROR 0A000 b6645b36f62e",
+WSJ-CLASS "shape:literal_constant_subexpression": "both-accept-equal OK db5ff0d0bf43",
+WSJ-CLASS "shape:literal_double_arith": "both-accept-equal OK 015fabeed529",
+WSJ-CLASS "shape:literal_double_int_column": "both-accept-equal OK 5162eed8a7dd",
+WSJ-CLASS "shape:literal_double_suffix": "both-accept-equal OK efe81e164fac",
+WSJ-CLASS "shape:literal_float_double_column": "both-accept-equal OK 07d98c3d6f2e",
+WSJ-CLASS "shape:literal_float_suffix": "both-accept-equal OK bdc3943ea042",
+WSJ-CLASS "shape:literal_half_suffix": "both-reject ERROR 42601 ed94a72e4e67",
+WSJ-CLASS "shape:literal_int_arith": "both-accept-equal OK e4a181f24402",
+WSJ-CLASS "shape:literal_int_bitand": "both-accept-equal OK 60861928b9ab",
+WSJ-CLASS "shape:literal_int_double_column": "both-accept-equal OK bb210c92ef79",
+WSJ-CLASS "shape:literal_int_float_column": "both-accept-equal OK 66441afffea2",
+WSJ-CLASS "shape:literal_int_int_column": "both-accept-equal OK ec11028dff55",
+WSJ-CLASS "shape:literal_int_max": "both-accept-equal OK 0ba732d54d8d",
+WSJ-CLASS "shape:literal_int_min": "both-accept-equal OK 7321a9dc754c",
+WSJ-CLASS "shape:literal_int_suffix": "both-accept-equal OK e4a181f24402",
+WSJ-CLASS "shape:literal_long_arith": "both-accept-equal OK 2075c4d4820b",
+WSJ-CLASS "shape:literal_long_int_column": "both-accept-equal OK 938d6c903fdc",
+WSJ-CLASS "shape:literal_long_min_above_int": "both-accept-equal OK 0ea1defddf8a",
+WSJ-CLASS "shape:literal_long_suffix": "both-accept-equal OK 652d9a91dbb7",
+WSJ-CLASS "shape:literal_negative_double": "both-accept-equal OK 15ec912052e4",
+WSJ-CLASS "shape:literal_negative_int": "both-accept-equal OK c4aa4dadaedb",
+WSJ-CLASS "shape:multi_table_order": "both-accept-index-diverge OK c81cf7a7045d",
+WSJ-CLASS "shape:nested_covering": "both-accept-equal OK 9008c27e37be",
+WSJ-CLASS "shape:nested_desc": "both-accept-equal OK f35724efc2c6",
+WSJ-CLASS "shape:nested_disconnected": "both-reject ERROR 0A000 1409fbaf48c2",
+WSJ-CLASS "shape:nested_nulls_last": "both-accept-equal OK 50ed3c972549",
+WSJ-CLASS "shape:nested_siblings": "both-accept-equal OK 0d76594d4537",
+WSJ-CLASS "shape:nested_siblings_reordered": "both-accept-equal OK 54c3d67378b6",
+WSJ-CLASS "shape:nested_then_top": "both-accept-equal OK e891b29e42b1",
+WSJ-CLASS "shape:nested_then_top_no_order": "both-reject ERROR 0A000 c8f6dbf6753e",
+WSJ-CLASS "shape:on_source_include": "both-accept-equal OK bf47c027677a",
+WSJ-CLASS "shape:on_source_nested": "both-reject ERROR 42601 a50fb635a7f2",
+WSJ-CLASS "shape:sum_grouped_by_nested_and_top": "both-reject ERROR XX000 cbeb43e8e430",
+WSJ-CLASS "shape:top_pair_no_order": "both-reject ERROR 0A000 c8f6dbf6753e",
+WSJ-CLASS "shape:top_then_nested": "both-accept-equal OK 453322c5bc5b",
+WSJ-CLASS "shape:unnest_comma": "java-accept-go-reject ERROR 0A000 b6645b36f62e",
+WSJ-CLASS "shape:unnest_derived": "java-accept-go-reject ERROR 42F00 8c56971d6bae",
+WSJ-CLASS "shape:unnest_inner_predicate": "both-reject ERROR 42F00 80b46944a023",
+WSJ-CLASS "shape:unnest_nested": "java-accept-go-reject ERROR 0A000 b6645b36f62e",
+WSJ-CLASS "shape:unnest_nested_derived": "java-accept-go-reject ERROR 42F01 e6bc960dc0a3",
+WSJ-CLASS "shape:unnest_outer_predicate": "java-accept-go-reject ERROR 42F00 80b46944a023",
+WSJ-CLASS "shape:unnest_same_array_twice": "java-accept-go-reject ERROR 0A000 b6645b36f62e",
+WSJ-CLASS "showcasing-tests.yamsql:400[initialVersionAtLeast:4.12.15.0]": "both-accept-equal OK 2ab7a9a83333",
+WSJ-CLASS "sliding-window-semantic-search.yamsql:23": "java-accept-go-reject ERROR 0A000 2b4eac6a848a",
+WSJ-CLASS "sliding-window-semantic-search.yamsql:23{-views-functions}": "both-accept-equal OK 23cdfedc5ae7",
+WSJ-CLASS "sliding-window-semantic-search.yamsql:23{index:documentsCosineIndex}": "java-accept-go-reject ERROR 0A000 2b4eac6a848a",
+WSJ-CLASS "sliding-window-semantic-search.yamsql:23{index:documentsEuclideanIndex}": "java-accept-go-reject ERROR 0A000 2b4eac6a848a",
+WSJ-CLASS "sliding-window-semantic-search.yamsql:23{index:multiTypeCosineIndex}": "java-accept-go-reject ERROR 0A000 2b4eac6a848a",
+WSJ-CLASS "sliding-window-semantic-search.yamsql:23{index:multiTypeEuclideanIndex}": "java-accept-go-reject ERROR 0A000 2b4eac6a848a",
+WSJ-CLASS "sparse-index-tests.yamsql:21": "both-accept-equal OK 8d1e92f8fc9b",
+WSJ-CLASS "sparse-index-tests.yamsql:21{index:i1}": "both-accept-metadata-diverge OK c97e92045304",
+WSJ-CLASS "sparse-index-tests.yamsql:21{index:i2}": "both-accept-metadata-diverge OK f84eaab14880",
+WSJ-CLASS "sparse-index-tests.yamsql:21{index:i3}": "both-accept-metadata-diverge OK 11c6a2aeb0e7",
+WSJ-CLASS "sparse-index-tests.yamsql:21{index:i4}": "both-accept-metadata-diverge OK d1552be8eff0",
+WSJ-CLASS "sparse-index-tests.yamsql:21{index:i6}": "both-accept-equal OK 87b84a5935f7",
+WSJ-CLASS "sql-functions.yamsql:23": "java-accept-go-reject ERROR 0A000 b7d894b89cb6",
+WSJ-CLASS "sql-functions.yamsql:23{-views-functions}": "both-accept-companion OK 27e657b5ca1c",
+WSJ-CLASS "sql-functions.yamsql:23{index:t1_idx1}": "both-accept-metadata-diverge OK 200f28fb048a",
+WSJ-CLASS "sql-functions.yamsql:23{index:t1_idx2}": "both-accept-metadata-diverge OK 31ae18e90712",
+WSJ-CLASS "sql-functions.yamsql:23{index:t1_idx3}": "both-accept-metadata-diverge OK c4982905c96c",
+WSJ-CLASS "sql-functions.yamsql:23{index:t1_idx4}": "both-accept-metadata-diverge OK adf113082702",
+WSJ-CLASS "sql-functions.yamsql:23{index:t2_idx1}": "both-accept-equal OK 45d1b6867980",
+WSJ-CLASS "sql-functions.yamsql:23{index:t2_idx2}": "both-accept-equal OK c998876edec1",
+WSJ-CLASS "standard-tests.yamsql:21": "both-accept-equal OK 50e93eae9062",
+WSJ-CLASS "subquery-tests.yamsql:21": "java-accept-go-reject ERROR 42F00 80b46944a023",
+WSJ-CLASS "subquery-tests.yamsql:21{index:ib}": "both-accept-equal OK 2db392f7e1b2",
+WSJ-CLASS "subquery-tests.yamsql:21{index:ir_f}": "java-accept-go-reject ERROR 42F00 80b46944a023",
+WSJ-CLASS "subquery-tests.yamsql:21{index:ir}": "both-accept-metadata-diverge OK b2b59637f2e6",
+WSJ-CLASS "union-empty-tables.yamsql:21": "both-accept-metadata-diverge OK 8067e3c3f521",
+WSJ-CLASS "union.yamsql:21": "both-accept-metadata-diverge OK 4d89ae30cd0d",
+WSJ-CLASS "union.yamsql:21{index:mv10}": "both-accept-metadata-diverge OK e45401b00d29",
+WSJ-CLASS "union.yamsql:21{index:mv11}": "both-accept-metadata-diverge OK 59fe26cd6b9f",
+WSJ-CLASS "union.yamsql:21{index:mv12}": "both-accept-equal OK 34b9c5ad5d73",
+WSJ-CLASS "union.yamsql:21{index:vi1}": "both-accept-metadata-diverge OK 844b4369707f",
+WSJ-CLASS "user-defined-macro-function-tests.yamsql:23": "java-accept-go-reject ERROR 0A000 b7d894b89cb6",
+WSJ-CLASS "user-defined-macro-function-tests.yamsql:23{-views-functions}": "both-accept-equal OK 29805a9864bf",
+WSJ-CLASS "user-defined-macro-function-tests.yamsql:23{index:deep_idx}": "both-accept-equal OK 29805a9864bf",
+WSJ-CLASS "user-defined-macro-function-tests.yamsql:23{index:i2}": "java-accept-go-reject ERROR 0A000 b7d894b89cb6",
+WSJ-CLASS "uuid-non-prepared.yamsql:23": "both-accept-metadata-diverge OK 0f815c8ba556",
+WSJ-CLASS "uuid-non-prepared.yamsql:23{index:tc1}": "both-accept-metadata-diverge OK 0dcd86de4721",
+WSJ-CLASS "uuid-non-prepared.yamsql:23{index:tc2}": "both-accept-metadata-diverge OK 6c33611d3f74",
+WSJ-CLASS "uuid-prepared.yamsql:23": "both-accept-metadata-diverge OK 0f815c8ba556",
+WSJ-CLASS "uuid-prepared.yamsql:23{index:tc1}": "both-accept-metadata-diverge OK 0dcd86de4721",
+WSJ-CLASS "uuid-prepared.yamsql:23{index:tc2}": "both-accept-metadata-diverge OK 6c33611d3f74",
+WSJ-CLASS "valid-identifiers.yamsql:23": "java-accept-go-reject ERROR 0A000 b7d894b89cb6",
+WSJ-CLASS "valid-identifiers.yamsql:23{-views-functions}": "java-accept-go-reject ERROR 0A000 2e4af437e1c4",
+WSJ-CLASS "valid-identifiers.yamsql:23{index:\"__foo__tableD$idx\"}": "java-accept-go-reject ERROR 0A000 2e4af437e1c4",
+WSJ-CLASS "valid-identifiers.yamsql:23{index:\"__foo__tableD$idx2\"}": "java-accept-go-reject ERROR 0A000 2e4af437e1c4",
+WSJ-CLASS "valid-identifiers.yamsql:23{index:\"foo$tableC$idx\"}": "java-accept-go-reject ERROR 0A000 2e4af437e1c4",
+WSJ-CLASS "valid-identifiers.yamsql:23{index:\"foo$tableC$idx2\"}": "java-accept-go-reject ERROR 0A000 2e4af437e1c4",
+WSJ-CLASS "valid-identifiers.yamsql:23{index:\"foo.enum.type$enum__1\"}": "java-accept-go-reject ERROR 0A000 2e4af437e1c4",
+WSJ-CLASS "valid-identifiers.yamsql:23{index:\"foo.table$nested.idx\"}": "java-accept-go-reject ERROR 0A000 2e4af437e1c4",
+WSJ-CLASS "valid-identifiers.yamsql:23{index:\"foo.table$nested.repeated.idx.field.1.1.1\"}": "java-accept-go-reject ERROR 0A000 2e4af437e1c4",
+WSJ-CLASS "valid-identifiers.yamsql:23{index:\"foo.table$nested.repeated.idx.field.1.2.1\"}": "java-accept-go-reject ERROR 0A000 2e4af437e1c4",
+WSJ-CLASS "valid-identifiers.yamsql:23{index:\"foo.table$nested.repeated.idx.field.1.3\"}": "java-accept-go-reject ERROR 0A000 2e4af437e1c4",
+WSJ-CLASS "valid-identifiers.yamsql:23{index:\"foo.table$repeated.1\"}": "java-accept-go-reject ERROR 0A000 2e4af437e1c4",
+WSJ-CLASS "valid-identifiers.yamsql:23{index:\"foo.table$repeated.2\"}": "java-accept-go-reject ERROR 0A000 2e4af437e1c4",
+WSJ-CLASS "valid-identifiers.yamsql:23{index:\"foo.tableA.idx\"}": "java-accept-go-reject ERROR 0A000 2e4af437e1c4",
+WSJ-CLASS "valid-identifiers.yamsql:23{index:\"foo.tableA.idx2\"}": "java-accept-go-reject ERROR 0A000 2e4af437e1c4",
+WSJ-CLASS "valid-identifiers.yamsql:23{index:\"foo.tableA.idx3\"}": "java-accept-go-reject ERROR 0A000 2e4af437e1c4",
+WSJ-CLASS "vector-engine-preference.yamsql:40": "java-accept-go-reject ERROR 42601 f7c1f4366137",
+WSJ-CLASS "vector-mixed-version-metadata.yamsql:39": "java-accept-go-reject ERROR 0A000 2b4eac6a848a",
+WSJ-CLASS "vector-mixed-version-metadata.yamsql:39{-views-functions}": "both-accept-equal OK d1e6ce86aa11",
+WSJ-CLASS "versions-tests.yamsql:21": "java-accept-go-reject ERROR 0A000 b7d894b89cb6",
+WSJ-CLASS "versions-tests.yamsql:21{-views-functions}": "java-accept-go-reject ERROR 0A000 b6645b36f62e",
+WSJ-CLASS "versions-tests.yamsql:21{index:grouped_version_index}": "both-accept-metadata-diverge OK c6f34c7ee8c6",
+WSJ-CLASS "versions-tests.yamsql:21{index:i1}": "both-accept-metadata-diverge OK a502cd58c46c",
+WSJ-CLASS "versions-tests.yamsql:21{index:t1_version_index}": "both-accept-metadata-diverge OK d0cc7b16cee0",
+WSJ-CLASS "versions-tests.yamsql:21{index:t2_col2}": "both-accept-metadata-diverge OK 73fa4169cb9c",
+WSJ-CLASS "versions-tests.yamsql:21{index:t3_version_with_col1}": "both-accept-metadata-diverge OK 9e2646a8c6e2",
+WSJ-CLASS "versions-tests.yamsql:21{index:t4_col2_col4}": "java-accept-go-reject ERROR 0A000 b6645b36f62e",
+WSJ-CLASS "versions-tests.yamsql:21{index:t4_col2}": "both-accept-equal OK 46736464255d",
+WSJ-CLASS "versions-tests.yamsql:21{index:t4_col3_version}": "both-accept-equal OK 2c4893d3b006",
+WSJ-CLASS "versions-tests.yamsql:21{index:t4_col4_version}": "java-accept-go-reject ERROR 0A000 b6645b36f62e",
+WSJ-CLASS "views.yamsql:24": "java-accept-go-reject ERROR 0A000 b7d894b89cb6",
+WSJ-CLASS "views.yamsql:24{-views-functions}": "both-accept-equal OK f81be433ff57",
+
+## pass 1: every other WS-J spec line
+WSJG driver-stored template seen by the target: 42F55 "SchemaTemplate 'WSJ_DRV_fc69fd53' is not in catalog"
+WSJG long_value variant rewrote 3 literals
+WSJG "EXPLAIN SELECT bitmap_bucket_offset(id) FROM T1 ORDER BY bitmap_bucket_offset(id)"
+WSJG "SELECT bitmap_bucket_offset(id) FROM T1 ORDER BY bitmap_bucket_offset(id)"
+WSJG "EXPLAIN SELECT id FROM T2 ORDER BY d & 1"
+WSJG "SELECT id, d & 1 FROM T2 ORDER BY d & 1, id"
+WSJG "EXPLAIN SELECT id FROM T2 ORDER BY d + 1"
+WSJG "SELECT d + 1 FROM T2 ORDER BY d + 1"
+WSJG "EXPLAIN SELECT bitmap_construct_agg(bitmap_bit_position(id)) AS b, category, bitmap_bucket_offset(id) AS o FROM T1 GROUP BY category, bitmap_bucket_offset(id)"
+WSJG "EXPLAIN SELECT id FROM T2 WHERE d & 1 = 1"
+WSJG "SELECT id FROM T2 WHERE d & 1 = 1"
+WSJG "EXPLAIN SELECT id FROM T2 WHERE d + 1 = 5"
+WSJG "SELECT id FROM T2 WHERE d + 1 = 5"
+WSJG "SELECT id FROM T1 WHERE id = 20005"
+WSJG "EXPLAIN SELECT id FROM T1 WHERE id = 20005"
+WSJG "SELECT category FROM T1 ORDER BY id"
+WSJG "SELECT count(*) FROM T1"
+WSJG-PIN "EXPLAIN SELECT bitmap_bucket_offset(id) FROM T1 ORDER BY bitmap_bucket_offset(id)"
+WSJG-PIN "SELECT bitmap_bucket_offset(id) FROM T1 ORDER BY bitmap_bucket_offset(id)"
+WSJG-PIN "EXPLAIN SELECT id FROM T2 ORDER BY d & 1"
+WSJG-PIN "SELECT id, d & 1 FROM T2 ORDER BY d & 1, id"
+WSJG-PIN "EXPLAIN SELECT id FROM T2 ORDER BY d + 1"
+WSJG-PIN "SELECT d + 1 FROM T2 ORDER BY d + 1"
+WSJG-PIN "EXPLAIN SELECT bitmap_construct_agg(bitmap_bit_position(id)) AS b, category, bitmap_bucket_offset(id) AS o FROM T1 GROUP BY category, bitmap_bucket_offset(id)"
+WSJG-PIN "EXPLAIN SELECT id FROM T2 WHERE d & 1 = 1"
+WSJG-PIN "SELECT id FROM T2 WHERE d & 1 = 1"
+WSJG-PIN "EXPLAIN SELECT id FROM T2 WHERE d + 1 = 5"
+WSJG-PIN "SELECT id FROM T2 WHERE d + 1 = 5"
+WSJG-PIN "SELECT id FROM T1 WHERE id = 20005"
+WSJG-PIN "EXPLAIN SELECT id FROM T1 WHERE id = 20005"
+WSJG-PIN "SELECT category FROM T1 ORDER BY id"
+WSJG-PIN "SELECT count(*) FROM T1"
+WSJG discriminating=9 of 15
+WSJV "SELECT s.x, ts FROM T ORDER BY s.x, ts"
+WSJV "SELECT id FROM T WHERE s.x = 5"
+WSJV "SELECT id, ts FROM T WHERE s.x = 5 AND ts > 3"
+WSJV "SELECT s.y FROM T ORDER BY s.y"
+WSJV "SELECT id FROM T WHERE s.y > 2"
+WSJV "SELECT * FROM T WHERE s.x = 5"
+WSJV-PIN "SELECT s.x, ts FROM T ORDER BY s.x, ts":
+WSJV-PIN "SELECT id FROM T WHERE s.x = 5":
+WSJV-PIN "SELECT id, ts FROM T WHERE s.x = 5 AND ts > 3":
+WSJV-PIN "SELECT s.y FROM T ORDER BY s.y":
+WSJV-PIN "SELECT id FROM T WHERE s.y > 2":
+WSJV-PIN "SELECT * FROM T WHERE s.x = 5":
+WSJN-GO double_plus_double "SELECT id FROM T" -> OK [[1] [2] [3]]
+WSJN-GO double_plus_double "EXPLAIN SELECT id FROM T WHERE d + d = 2" -> PLAN Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))
+WSJN-GO double_plus_double "SELECT id FROM T WHERE d + d = 2" -> OK []
+WSJN-GO double_plus_double "SELECT id FROM T WHERE d + d = 3" -> OK [[1]]
+WSJN-GO double_plus_double "EXPLAIN SELECT d + d FROM T ORDER BY d + d" -> PLAN Project([(_current.D#1 + _current.D#1)], InMemorySort([(_current.D#1 + _current.D#1) ASC], Scan(T)))
+WSJN-GO double_plus_double "SELECT d + d FROM T ORDER BY d + d" -> OK [[-3] [3] [4]]
+WSJN double_plus_double "SELECT id FROM T" -> OK [[2] [1] [3]]
+WSJN double_plus_double "EXPLAIN SELECT id FROM T WHERE d + d = 2" -> PLAN COVERING(ARITH_D [EQUALS promote(@c9 AS DOUBLE)] -> [ID: KEY:[2]]) | MAP (_.ID AS ID)
+WSJN double_plus_double "SELECT id FROM T WHERE d + d = 2" -> OK []
+WSJN double_plus_double "SELECT id FROM T WHERE d + d = 3" -> OK []
+WSJN double_plus_double "EXPLAIN SELECT d + d FROM T ORDER BY d + d" -> PLAN ISCAN(ARITH_D <,>) | MAP (_.D + _.D AS _0)
+WSJN double_plus_double "SELECT d + d FROM T ORDER BY d + d" -> OK [[-3] [3] [4]]
+WSJN-GO double_times_literal "EXPLAIN SELECT id FROM T WHERE c * 1.5 = 2" -> PLAN Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))
+WSJN-GO double_times_literal "SELECT id FROM T WHERE c * 1.5 = 2" -> OK []
+WSJN-GO double_times_literal "SELECT id FROM T WHERE c * 1.5 = 3" -> OK [[1]]
+WSJN double_times_literal "EXPLAIN SELECT id FROM T WHERE c * 1.5 = 2" -> PLAN COVERING(IX [EQUALS promote(@c9 AS DOUBLE)] -> [ID: KEY:[2]]) | MAP (_.ID AS ID)
+WSJN double_times_literal "SELECT id FROM T WHERE c * 1.5 = 2" -> OK []
+WSJN double_times_literal "SELECT id FROM T WHERE c * 1.5 = 3" -> OK []
+WSJN-GO float_plus_int "EXPLAIN SELECT id FROM T WHERE f + 1 = 2" -> PLAN Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))
+WSJN-GO float_plus_int "SELECT id FROM T WHERE f + 1 = 2" -> OK []
+WSJN-GO float_plus_int "EXPLAIN SELECT id FROM T WHERE f + 1 = 2.5" -> PLAN Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))
+WSJN-GO float_plus_int "SELECT id FROM T WHERE f + 1 = 2.5" -> OK [[1]]
+WSJN float_plus_int "EXPLAIN SELECT id FROM T WHERE f + 1 = 2" -> PLAN COVERING(IX [EQUALS promote(@c9 AS FLOAT)] -> [ID: KEY:[2]]) | MAP (_.ID AS ID)
+WSJN float_plus_int "SELECT id FROM T WHERE f + 1 = 2" -> OK []
+WSJN float_plus_int "EXPLAIN SELECT id FROM T WHERE f + 1 = 2.5" -> PLAN ISCAN(IX <,>) | FILTER promote(_.F + @c7 AS DOUBLE) EQUALS promote(@c9 AS DOUBLE) | MAP (_.ID AS ID)
+WSJN float_plus_int "SELECT id FROM T WHERE f + 1 = 2.5" -> OK [[1]]
+WSJN-GO int_max_plus_one "EXPLAIN SELECT id FROM T WHERE i + 1 = 2147483648" -> PLAN Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))
+WSJN-GO int_max_plus_one "SELECT id FROM T WHERE i + 1 = 2147483648" -> ERROR 22003 "integer overflow"
+WSJN-GO int_max_plus_one "EXPLAIN SELECT id FROM T WHERE i + 1 = 6" -> PLAN Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))
+WSJN-GO int_max_plus_one "SELECT id FROM T WHERE i + 1 = 6" -> ERROR 22003 "integer overflow"
+WSJN-GO int_max_plus_one "SELECT i + 1 FROM T WHERE id = 1" -> ERROR 22003 "integer overflow"
+WSJN-GO int_max_plus_one "SELECT id FROM T WHERE i + 1 > 0 ORDER BY id" -> ERROR 22003 "integer overflow"
+WSJN int_max_plus_one "EXPLAIN SELECT id FROM T WHERE i + 1 = 2147483648" -> PLAN ISCAN(IX <,>) | FILTER promote(_.I + @c7 AS LONG) EQUALS promote(@c9 AS LONG) | MAP (_.ID AS ID)
+WSJN int_max_plus_one "SELECT id FROM T WHERE i + 1 = 2147483648" -> ERROR XXXXX ArithmeticException "integer overflow"
+WSJN int_max_plus_one "EXPLAIN SELECT id FROM T WHERE i + 1 = 6" -> PLAN COVERING(IX [EQUALS promote(@c9 AS INT)] -> [ID: KEY:[2]]) | MAP (_.ID AS ID)
+WSJN int_max_plus_one "SELECT id FROM T WHERE i + 1 = 6" -> OK [[2]]
+WSJN int_max_plus_one "SELECT i + 1 FROM T WHERE id = 1" -> ERROR XXXXX ArithmeticException "integer overflow"
+WSJN int_max_plus_one "SELECT id FROM T WHERE i + 1 > 0 ORDER BY id" -> ERROR XXXXX ArithmeticException "integer overflow"
+WSJN-GO-PIN "double_plus_double \"EXPLAIN SELECT d + d FROM T ORDER BY d + d\"": "PLAN Project([(_current.D#1 + _current.D#1)], InMemorySort([(_current.D#1 + _current.D#1) ASC], Scan(T)))",
+WSJN-GO-PIN "double_plus_double \"EXPLAIN SELECT id FROM T WHERE d + d = 2\"": "PLAN Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))",
+WSJN-GO-PIN "double_plus_double \"SELECT d + d FROM T ORDER BY d + d\"": "OK [[-3] [3] [4]]",
+WSJN-GO-PIN "double_plus_double \"SELECT id FROM T WHERE d + d = 2\"": "OK []",
+WSJN-GO-PIN "double_plus_double \"SELECT id FROM T WHERE d + d = 3\"": "OK [[1]]",
+WSJN-GO-PIN "double_plus_double \"SELECT id FROM T\"": "OK [[1] [2] [3]]",
+WSJN-GO-PIN "double_times_literal \"EXPLAIN SELECT id FROM T WHERE c * 1.5 = 2\"": "PLAN Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))",
+WSJN-GO-PIN "double_times_literal \"SELECT id FROM T WHERE c * 1.5 = 2\"": "OK []",
+WSJN-GO-PIN "double_times_literal \"SELECT id FROM T WHERE c * 1.5 = 3\"": "OK [[1]]",
+WSJN-GO-PIN "float_plus_int \"EXPLAIN SELECT id FROM T WHERE f + 1 = 2\"": "PLAN Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))",
+WSJN-GO-PIN "float_plus_int \"EXPLAIN SELECT id FROM T WHERE f + 1 = 2.5\"": "PLAN Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))",
+WSJN-GO-PIN "float_plus_int \"SELECT id FROM T WHERE f + 1 = 2\"": "OK []",
+WSJN-GO-PIN "float_plus_int \"SELECT id FROM T WHERE f + 1 = 2.5\"": "OK [[1]]",
+WSJN-GO-PIN "int_max_plus_one \"EXPLAIN SELECT id FROM T WHERE i + 1 = 2147483648\"": "PLAN Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))",
+WSJN-GO-PIN "int_max_plus_one \"EXPLAIN SELECT id FROM T WHERE i + 1 = 6\"": "PLAN Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))",
+WSJN-GO-PIN "int_max_plus_one \"SELECT i + 1 FROM T WHERE id = 1\"": "ERROR 22003 \"integer overflow\"",
+WSJN-GO-PIN "int_max_plus_one \"SELECT id FROM T WHERE i + 1 = 2147483648\"": "ERROR 22003 \"integer overflow\"",
+WSJN-GO-PIN "int_max_plus_one \"SELECT id FROM T WHERE i + 1 = 6\"": "ERROR 22003 \"integer overflow\"",
+WSJN-GO-PIN "int_max_plus_one \"SELECT id FROM T WHERE i + 1 > 0 ORDER BY id\"": "ERROR 22003 \"integer overflow\"",
+WSJF2B d=-1.5 java=OK go=OK arith_d java=-2/13fd go=-2/13fd
+WSJF2B d=2.9999 java=OK go=OK arith_d java=4/1504 go=4/1504
+WSJF2B d=NaN java=OK go=OK arith_d java=0/14 go=0/14
+WSJF2B d=Infinity java=ERROR XXXXX ArithmeticException long overflow go=ERROR evaluate index "ARITH_D" for new record: function add: long overflow: 9223372036854775807 + 9223372036854775807 arith_d java=-/ go=-/
+WSJF2B d=-Infinity java=ERROR XXXXX ArithmeticException long overflow go=ERROR evaluate index "ARITH_D" for new record: function add: long overflow: -9223372036854775808 + -9223372036854775808 arith_d java=-/ go=-/
+WSJF2B d=9.223372036854776e+18 java=ERROR XXXXX ArithmeticException long overflow go=ERROR evaluate index "ARITH_D" for new record: function add: long overflow: 9223372036854775807 + 9223372036854775807 arith_d java=-/ go=-/
+WSJF2B served=[[101]] plan=[[COVERING(NPLUS [EQUALS promote(@c9 AS LONG)] -> [ID: KEY:[2]]) | MAP (_.ID AS ID) 1.690598405e+09 digraph G {
+WSJF2B-PIN "d=-1.5 java=OK arith_d=-2 raw=13fd",
+WSJF2B-PIN "d=2.9999 java=OK arith_d=4 raw=1504",
+WSJF2B-PIN "d=NaN java=OK arith_d=0 raw=14",
+WSJF2B-PIN "d=Infinity java=ERROR XXXXX ArithmeticException long overflow arith_d=- raw=",
+WSJF2B-PIN "d=-Infinity java=ERROR XXXXX ArithmeticException long overflow arith_d=- raw=",
+WSJF2B-PIN "d=9.223372036854776e+18 java=ERROR XXXXX ArithmeticException long overflow arith_d=- raw=",
+WSJQ bucket_offset_int java=OK [INTEGER] [[10000]] go=OK [BIGINT] [[10000]]
+WSJQ bucket_offset_long java=OK [BIGINT] [[10000]] go=OK [BIGINT] [[10000]]
+WSJQ bit_position_int java=OK [INTEGER] [[2345]] go=OK [BIGINT] [[2345]]
+WSJQ bucket_offset_int_min java=ERROR XXXXX ArithmeticException "integer overflow" go=OK [BIGINT] [[-2147490000]]
+WSJQ bucket_offset_long_min java=ERROR XXXXX ArithmeticException "long overflow" go=ERROR 22003 "integer overflow"
+WSJQ bit_position_int_min java=ERROR XXXXX ArithmeticException "integer overflow" go=OK [BIGINT] [[6352]]
+WSJQ bitand_int_literal java=OK [INTEGER] [[1]] go=OK [BIGINT] [[1]]
+WSJQ bitand_long_literal java=OK [BIGINT] [[1]] go=OK [BIGINT] [[1]]
+WSJQ bitor_int_literal java=OK [INTEGER] [[12347]] go=OK [BIGINT] [[12347]]
+WSJQ bitxor_int_literal java=OK [INTEGER] [[12346]] go=OK [BIGINT] [[12346]]
+WSJQ bitand_int_long_literal java=OK [BIGINT] [[4096]] go=OK [BIGINT] [[4096]]
+WSJQ bitand_int_long_column java=OK [BIGINT] [[12345]] go=OK [BIGINT] [[12345]]
+WSJQ bitand_double_int java=ERROR XX000 VerifyException "unable to encapsulate arithmetic operation due to type mismatch(es)" go=OK [BIGINT] [[NULL]]
+WSJQ bitand_string_int java=ERROR XX000 VerifyException "unable to encapsulate arithmetic operation due to type mismatch(es)" go=OK [BIGINT] [[NULL]]
+WSJQ bucket_offset_double java=ERROR XX000 VerifyException "unable to encapsulate arithmetic operation due to type mismatch(es)" go=OK [BIGINT] [[NULL]]
+WSJQ bucket_offset_string java=ERROR XX000 VerifyException "unable to encapsulate arithmetic operation due to type mismatch(es)" go=OK [BIGINT] [[NULL]]
+WSJQ bucket_number_int java=ERROR 0AF00 RelationalException "Unsupported operator bitmap_bucket_number" go=ERROR 0AF00 "Unsupported operator BITMAP_BUCKET_NUMBER"
+WSJQ mod_int_literal java=OK [INTEGER] [[4]] go=OK [INTEGER] [[4]]
+WSJQ bitand_enum_int java=ERROR XX000 SemanticException "The argument to an arithmetic operator expecting an argument of a primitive type, is invoked with an argument of a complex type, e.g. an array or a record." go=ERROR 0A000 "enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template"
+WSJQ bitand_uuid_int java=ERROR XX000 SemanticException "The argument to an arithmetic operator expecting an argument of a primitive type, is invoked with an argument of a complex type, e.g. an array or a record." go=ERROR 0A000 "enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template"
+WSJQ bitand_array_int java=ERROR XX000 SemanticException "The argument to an arithmetic operator expecting an argument of a primitive type, is invoked with an argument of a complex type, e.g. an array or a record." go=ERROR 0A000 "enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template"
+WSJQ bitand_null_int java=ERROR XX000 VerifyException "unable to encapsulate arithmetic operation due to type mismatch(es)" go=ERROR 0A000 "enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template"
+WSJQ bitand_cast_null_int java=OK [BIGINT] [[NULL]] go=ERROR 0A000 "enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template"
+WSJQ bucket_offset_enum java=ERROR XX000 SemanticException "The argument to an arithmetic operator expecting an argument of a primitive type, is invoked with an argument of a complex type, e.g. an array or a record." go=ERROR 0A000 "enum types (CREATE TYPE AS ENUM) are not yet supported in a schema template"
+WSJQ-JAVA "bit_position_int": "OK [INTEGER] [[2345]]",
+WSJQ-JAVA "bit_position_int_min": "ERROR XXXXX ArithmeticException \"integer overflow\"",
+WSJQ-JAVA "bitand_array_int": "ERROR XX000 SemanticException \"The argument to an arithmetic operator expecting an argument of a primitive type, is invoked with an argument of a complex type, e.g. an array or a record.\"",
+WSJQ-JAVA "bitand_cast_null_int": "OK [BIGINT] [[NULL]]",
+WSJQ-JAVA "bitand_double_int": "ERROR XX000 VerifyException \"unable to encapsulate arithmetic operation due to type mismatch(es)\"",
+WSJQ-JAVA "bitand_enum_int": "ERROR XX000 SemanticException \"The argument to an arithmetic operator expecting an argument of a primitive type, is invoked with an argument of a complex type, e.g. an array or a record.\"",
+WSJQ-JAVA "bitand_int_literal": "OK [INTEGER] [[1]]",
+WSJQ-JAVA "bitand_int_long_column": "OK [BIGINT] [[12345]]",
+WSJQ-JAVA "bitand_int_long_literal": "OK [BIGINT] [[4096]]",
+WSJQ-JAVA "bitand_long_literal": "OK [BIGINT] [[1]]",
+WSJQ-JAVA "bitand_null_int": "ERROR XX000 VerifyException \"unable to encapsulate arithmetic operation due to type mismatch(es)\"",
+WSJQ-JAVA "bitand_string_int": "ERROR XX000 VerifyException \"unable to encapsulate arithmetic operation due to type mismatch(es)\"",
+WSJQ-JAVA "bitand_uuid_int": "ERROR XX000 SemanticException \"The argument to an arithmetic operator expecting an argument of a primitive type, is invoked with an argument of a complex type, e.g. an array or a record.\"",
+WSJQ-JAVA "bitor_int_literal": "OK [INTEGER] [[12347]]",
+WSJQ-JAVA "bitxor_int_literal": "OK [INTEGER] [[12346]]",
+WSJQ-JAVA "bucket_number_int": "ERROR 0AF00 RelationalException \"Unsupported operator bitmap_bucket_number\"",
+WSJQ-JAVA "bucket_offset_double": "ERROR XX000 VerifyException \"unable to encapsulate arithmetic operation due to type mismatch(es)\"",
+WSJQ-JAVA "bucket_offset_enum": "ERROR XX000 SemanticException \"The argument to an arithmetic operator expecting an argument of a primitive type, is invoked with an argument of a complex type, e.g. an array or a record.\"",
+WSJQ-JAVA "bucket_offset_int": "OK [INTEGER] [[10000]]",
+WSJQ-JAVA "bucket_offset_int_min": "ERROR XXXXX ArithmeticException \"integer overflow\"",
+WSJQ-JAVA "bucket_offset_long": "OK [BIGINT] [[10000]]",
+WSJQ-JAVA "bucket_offset_long_min": "ERROR XXXXX ArithmeticException \"long overflow\"",
+WSJQ-JAVA "bucket_offset_string": "ERROR XX000 VerifyException \"unable to encapsulate arithmetic operation due to type mismatch(es)\"",
+WSJQ-JAVA "mod_int_literal": "OK [INTEGER] [[4]]",
+WSJ-TALLY map[both-accept-companion:4 both-accept-equal:166 both-accept-index-diverge:4 both-accept-metadata-diverge:180 both-reject:20 java-accept-go-reject:101]
+WSJ-UNSPLITTABLE [guardiann-semantic-search.yamsql:32 isolation-level-snapshot.yamsql:79 schema-template-stored-queries.yamsql:32 vector-engine-preference.yamsql:40]
+WSJ-GO-BUILT-TWICE 354
+WSJD go_pin_input "ERROR java.lang.IllegalArgumentException Multiple entries with same key: unique=false and unique=true"
+WSJD adjacent "ERROR java.lang.IllegalArgumentException Multiple entries with same key: a=2 and a=1"
+WSJD no_duplicate "OK {unique=true, x=1}"

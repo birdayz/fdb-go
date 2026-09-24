@@ -33,18 +33,18 @@ const (
 // SlidingWindowIndexMaintainer.SlidingWindowCounter / SlidingWindowEvent /
 // SlidingWindowSizeEvent enums (:722-792) name for name.
 var (
-	CountSWItemAddedToWindowFilling  = Event{"sw_item_added_to_window_filling", "item added to window while filling up", KindCount}
-	CountSWItemAddedToEntriesOnly    = Event{"sw_item_added_to_entries_only", "item worse than boundary added to entries", KindCount}
-	CountSWDeleteUntracked           = Event{"sw_delete_untracked", "delete called for untracked record", KindCount}
-	CountSWOverflowEntryDeleted      = Event{"sw_overflow_entry_deleted", "overflow entry deleted from entries", KindCount}
-	CountSWWindowEntryDeleted        = Event{"sw_window_entry_deleted", "in-window non-boundary entry deleted", KindCount}
-	CountSWItemPromotedFromOverflow  = Event{"sw_item_promoted_from_overflow", "item promoted from overflow into window", KindCount}
-	CountSWWindowShrunkNoOverflow    = Event{"sw_window_shrunk_no_overflow", "window shrunk: no overflow available for re-election", KindCount}
-	CountSWPartitionEmptied          = Event{"sw_partition_emptied", "partition emptied (no entries remain)", KindCount}
-	CountSWEvictedRecordMissing      = Event{"sw_evicted_record_missing", "boundary record could not be loaded for eviction", KindCount}
-	CountSWPromotedRecordMissing     = Event{"sw_promoted_record_missing", "overflow record could not be loaded for promotion", KindCount}
-	CountSWPreemptiveDeleteWriteOnly = Event{"sw_preemptive_delete_write_only", "preemptive delete during write-only index build", KindCount}
-	CountSWPartitionCleared          = Event{"sw_partition_cleared", "partition cleared via deleteWhere", KindCount}
+	CountSWItemAddedToWindowFilling = Event{"sw_item_added_to_window_filling", "item added to window while filling up", KindCount}
+	CountSWItemAddedToEntriesOnly   = Event{"sw_item_added_to_entries_only", "item worse than boundary added to entries", KindCount}
+	CountSWDeleteUntracked          = Event{"sw_delete_untracked", "delete called for untracked record", KindCount}
+	CountSWOverflowEntryDeleted     = Event{"sw_overflow_entry_deleted", "overflow entry deleted from entries", KindCount}
+	CountSWWindowEntryDeleted       = Event{"sw_window_entry_deleted", "in-window non-boundary entry deleted", KindCount}
+	CountSWItemPromotedFromOverflow = Event{"sw_item_promoted_from_overflow", "item promoted from overflow into window", KindCount}
+	CountSWWindowShrunkNoOverflow   = Event{"sw_window_shrunk_no_overflow", "window shrunk: no overflow available for re-election", KindCount}
+	CountSWPartitionEmptied         = Event{"sw_partition_emptied", "partition emptied (no entries remain)", KindCount}
+	CountSWEvictedRecordMissing     = Event{"sw_evicted_record_missing", "boundary record could not be loaded for eviction", KindCount}
+	CountSWPromotedRecordMissing    = Event{"sw_promoted_record_missing", "overflow record could not be loaded for promotion", KindCount}
+	CountSWReinsertAlreadyTracked   = Event{"sw_reinsert_already_tracked", "reinsert of an already-tracked entry, needing no window maintenance", KindCount}
+	CountSWPartitionCleared         = Event{"sw_partition_cleared", "partition cleared via deleteWhere", KindCount}
 
 	EventSWEvictAndReplace           = Event{"sw_evict_and_replace", "evict boundary and insert better entry", KindTimed}
 	EventSWReElectFromOverflow       = Event{"sw_re_elect_from_overflow", "re-elect overflow entry into window", KindTimed}
@@ -269,17 +269,29 @@ func (m *slidingWindowIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRec
 	lockKey := string(m.swSubspace.Bytes())
 	m.store.AcquireWriteLock(lockKey)
 	defer m.store.ReleaseWriteLock(lockKey)
-	return m.updateLocked(oldRecord, newRecord)
+	return m.updateLocked(oldRecord, newRecord, false)
 }
 
-func (m *slidingWindowIndexMaintainer) updateLocked(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+func (m *slidingWindowIndexMaintainer) updateLocked(oldRecord, newRecord *FDBStoredRecord[proto.Message], writeOnly bool) error {
+	update := m.delegate.Update
+	if writeOnly {
+		update = m.delegate.UpdateWhileWriteOnly
+	}
 	if oldRecord != nil && m.shouldMaintain(oldRecord) {
-		if err := m.handleDelete(oldRecord); err != nil {
+		key, err := m.entryKeyOf(oldRecord)
+		if err != nil {
+			return err
+		}
+		if err := m.handleDelete(key, func() error { return update(oldRecord, nil) }); err != nil {
 			return err
 		}
 	}
 	if newRecord != nil && m.shouldMaintain(newRecord) {
-		if err := m.handleInsert(newRecord); err != nil {
+		key, err := m.entryKeyOf(newRecord)
+		if err != nil {
+			return err
+		}
+		if err := m.handleInsert(key, func() error { return update(nil, newRecord) }); err != nil {
 			return err
 		}
 	}
@@ -300,37 +312,13 @@ func (m *slidingWindowIndexMaintainer) shouldMaintain(record *FDBStoredRecord[pr
 }
 
 // UpdateWhileWriteOnly maintains the window during an online index build.
-// Matches Java's SlidingWindowIndexMaintainer.updateWhileWriteOnly (:395-424).
-//
-// A sliding window is NOT idempotent: it keeps a count, so applying the same
-// insert twice inflates the count and then evicts a record that should have
-// stayed. During a build the indexer may already have processed newRecord in an
-// earlier range scan, so update(null, newRecord) alone would double-count.
-//
-// Java's answer is a preemptive delete of newRecord before the ordinary update,
-// and it is deliberately simpler than the standard maintainer's range-set check:
-//   - if newRecord was not previously indexed the delete is a no-op, because
-//     the entry is simply absent from the entry list;
-//   - if it was, the delete removes it and decrements the count, so the
-//     following insert cannot double-count.
-//
-// Both calls run under ONE lock acquisition. Java's two `update` calls each take
-// the write lock, but its lock is re-entrant per context; Go's is not, so
-// nesting would deadlock. Holding it across both is also the stronger
-// guarantee — the preemptive delete and the re-insert are one atomic window
-// mutation, which is what the comment above claims they are.
+// The same tracked-entry check protects both build-before-write and
+// write-before-build replay. Only the delegate callback differs from Update.
 func (m *slidingWindowIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
 	lockKey := string(m.swSubspace.Bytes())
 	m.store.AcquireWriteLock(lockKey)
 	defer m.store.ReleaseWriteLock(lockKey)
-
-	if newRecord != nil {
-		m.timer.Increment(CountSWPreemptiveDeleteWriteOnly)
-		if err := m.updateLocked(newRecord, nil); err != nil {
-			return err
-		}
-	}
-	return m.updateLocked(oldRecord, newRecord)
+	return m.updateLocked(oldRecord, newRecord, true)
 }
 
 // partitionSubspaces resolves the three subspaces a record's partition uses.
@@ -390,42 +378,64 @@ func evaluateSingletonKey(
 	return out, nil
 }
 
-// entryKeyFor builds the sorted entry key for a record: the window value
-// followed by the FULL primary key.
-// Matches Java's `windowValue.addAll(primaryKey)` (:448).
-//
-// The primary key is NOT trimmed here even though the delegate trims it for the
-// HNSW graph. The suffix is what makes two records with equal window values
-// distinct entries in one sorted list; trimming it could collapse them onto one
-// key and lose an entry.
-func (m *slidingWindowIndexMaintainer) entryKeyFor(record *FDBStoredRecord[proto.Message]) (tuple.Tuple, error) {
-	windowValue, err := m.evaluateWindowValue(record)
-	if err != nil {
-		return nil, err
-	}
-	entryKey := make(tuple.Tuple, 0, len(windowValue)+len(record.PrimaryKey))
-	entryKey = append(entryKey, windowValue...)
-	entryKey = append(entryKey, record.PrimaryKey...)
-	return entryKey, nil
+// slidingWindowEntryKey separates window bookkeeping from delegate operations.
+// Primary keys are complete, even when the delegate trims overlapping columns.
+type slidingWindowEntryKey struct {
+	partition   tuple.Tuple
+	windowValue tuple.Tuple
+	primaryKey  tuple.Tuple
 }
 
-// handleInsert is Java's handleInsert (:435-499).
-func (m *slidingWindowIndexMaintainer) handleInsert(record *FDBStoredRecord[proto.Message]) error {
-	partitionTuple, err := m.evaluatePartition(record)
-	if err != nil {
-		return err
-	}
-	entriesSub, metaSub := m.partitionSubspaces(partitionTuple)
+func (key slidingWindowEntryKey) entriesKey() tuple.Tuple {
+	entry := make(tuple.Tuple, 0, len(key.windowValue)+len(key.primaryKey))
+	entry = append(entry, key.windowValue...)
+	return append(entry, key.primaryKey...)
+}
 
-	entryKey, err := m.entryKeyFor(record)
+func (m *slidingWindowIndexMaintainer) entryKeyOf(record *FDBStoredRecord[proto.Message]) (slidingWindowEntryKey, error) {
+	partition, err := m.evaluatePartition(record)
 	if err != nil {
-		return err
+		return slidingWindowEntryKey{}, err
+	}
+	window, err := m.evaluateWindowValue(record)
+	if err != nil {
+		return slidingWindowEntryKey{}, err
+	}
+	return slidingWindowEntryKey{partition: partition, windowValue: window, primaryKey: record.PrimaryKey}, nil
+}
+
+// handleInsert preserves bookkeeping for entries already tracked by a write or
+// builder pass. Only an in-window entry may need its delegate refreshed.
+func (m *slidingWindowIndexMaintainer) handleInsert(key slidingWindowEntryKey, delegateInsert func() error) error {
+	entriesSub, metaSub := m.partitionSubspaces(key.partition)
+	entryKey := key.entriesKey()
+	existing, err := m.tx.Get(entriesSub.Pack(entryKey)).Get()
+	if err != nil {
+		return fmt.Errorf("sliding window index %q: read entry: %w", m.index.Name, err)
+	}
+	if existing != nil {
+		m.timer.Increment(CountSWReinsertAlreadyTracked)
+		boundaryBytes, err := m.tx.Get(metaSub.Pack(tuple.Tuple{slidingWindowBoundaryKey})).Get()
+		if err != nil {
+			return fmt.Errorf("sliding window index %q: read boundary: %w", m.index.Name, err)
+		}
+		if boundaryBytes == nil {
+			return &SlidingWindowCorruptionError{IndexName: m.index.Name, Message: "sliding window boundary is missing but entry exists, possible corruption"}
+		}
+		boundary, err := tuple.Unpack(boundaryBytes)
+		if err != nil {
+			return fmt.Errorf("sliding window index %q: unpack boundary: %w", m.index.Name, err)
+		}
+		if m.extremumType.isInWindow(entryKey, boundary) {
+			return m.instrument(EventSWDelegateInsert, delegateInsert)
+		}
+		return nil
 	}
 
-	// The entry is written unconditionally: the entry list tracks every record
+	// A new entry is always tracked: the entry list holds every record
 	// in the partition, in window and overflow alike. Only the delegate index
 	// is restricted to the window.
-	m.tx.Set(entriesSub.Pack(entryKey), record.PrimaryKey.Pack())
+	m.tx.Set(entriesSub.Pack(entryKey), key.primaryKey.Pack())
 
 	counterKey := metaSub.Pack(tuple.Tuple{slidingWindowCountKey})
 	boundaryMetaKey := metaSub.Pack(tuple.Tuple{slidingWindowBoundaryKey})
@@ -441,7 +451,7 @@ func (m *slidingWindowIndexMaintainer) handleInsert(record *FDBStoredRecord[prot
 
 	if count < int64(m.windowSize) {
 		m.timer.Increment(CountSWItemAddedToWindowFilling)
-		if err := m.delegateInsert(record); err != nil {
+		if err := m.instrument(EventSWDelegateInsert, delegateInsert); err != nil {
 			return err
 		}
 		boundaryBytes, err := m.tx.Get(boundaryMetaKey).Get()
@@ -485,22 +495,14 @@ func (m *slidingWindowIndexMaintainer) handleInsert(record *FDBStoredRecord[prot
 		return nil
 	}
 	return m.instrument(EventSWEvictAndReplace, func() error {
-		return m.evictBoundaryAndReplace(record, entryKey, entriesSub, boundaryEntryKey, boundaryMetaKey)
+		return m.evictBoundaryAndReplace(entryKey, entriesSub, boundaryEntryKey, boundaryMetaKey, delegateInsert)
 	})
 }
 
-// handleDelete is Java's handleDelete (:501-561).
-func (m *slidingWindowIndexMaintainer) handleDelete(record *FDBStoredRecord[proto.Message]) error {
-	partitionTuple, err := m.evaluatePartition(record)
-	if err != nil {
-		return err
-	}
-	entriesSub, metaSub := m.partitionSubspaces(partitionTuple)
-
-	entryKey, err := m.entryKeyFor(record)
-	if err != nil {
-		return err
-	}
+// handleDelete removes tracked window entries and re-elects from overflow.
+func (m *slidingWindowIndexMaintainer) handleDelete(key slidingWindowEntryKey, delegateDelete func() error) error {
+	entriesSub, metaSub := m.partitionSubspaces(key.partition)
+	entryKey := key.entriesKey()
 	packedEntryKey := entriesSub.Pack(entryKey)
 
 	entryValue, err := m.tx.Get(packedEntryKey).Get()
@@ -554,7 +556,7 @@ func (m *slidingWindowIndexMaintainer) handleDelete(record *FDBStoredRecord[prot
 	m.tx.Set(counterKey, encodeSlidingWindowLong(newCount))
 	m.timer.RecordSize(SizeSWWindowCount, newCount)
 
-	if err := m.delegateDelete(record); err != nil {
+	if err := m.instrument(EventSWDelegateDelete, delegateDelete); err != nil {
 		return err
 	}
 
@@ -572,11 +574,11 @@ func (m *slidingWindowIndexMaintainer) handleDelete(record *FDBStoredRecord[prot
 // the new record, and moves the pointer one entry inward.
 // Matches Java's evictBoundaryAndReplace (:563-602).
 func (m *slidingWindowIndexMaintainer) evictBoundaryAndReplace(
-	newRecord *FDBStoredRecord[proto.Message],
 	newEntryKey tuple.Tuple,
 	entriesSub subspace.Subspace,
 	boundaryEntryKey tuple.Tuple,
 	boundaryMetaKey fdb.Key,
+	delegateInsert func() error,
 ) error {
 	if len(boundaryEntryKey) < m.windowKeyColumnSize {
 		return &SlidingWindowCorruptionError{
@@ -603,7 +605,7 @@ func (m *slidingWindowIndexMaintainer) evictBoundaryAndReplace(
 		return err
 	}
 
-	if err := m.delegateInsert(newRecord); err != nil {
+	if err := m.instrument(EventSWDelegateInsert, delegateInsert); err != nil {
 		return err
 	}
 

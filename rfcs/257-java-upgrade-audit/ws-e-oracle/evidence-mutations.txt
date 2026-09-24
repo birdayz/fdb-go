@@ -1,0 +1,176 @@
+# Mutation run (both mutations verified present with grep -c = 1, then restored and cmp-verified)
+##   golden: like_escape_is_percent 2200B -> 22019
+##   harness: runPreparedWithSetup binds setLong(position, 0) instead of setNull for kind null
+##   log: /var/tmp/fdb-upgrade-recovery/ws-e-oracle-mut.log
+[FAIL] WS-E target oracle [It] records LIKE, comment, literal, variadic, IN-NULL and statement-option outcomes
+  mismatches reported: like_escape_is_percent, prepared_in_typed_null, prepared_in_literal_and_typed_null,
+  prepared_array_typed_null_element, prepared_is_null_param (and more)
+Ran 1 of 14 Specs in 16.500 seconds
+FAIL! -- 0 Passed | 1 Failed | 0 Pending | 13 Skipped
+
+## v2 pin guard: prepared_select_then_where pinned to Go's [[100]] instead of Java's [] (line 494, presence confirmed = 1)
+<string>: prepared_select_then_where: want OK [BIGINT] [NOT NULL] "[[100]]" got OK [BIGINT] [NOT NULL] "[]"
+Executed 1 out of 1 test: 1 fails locally.
+restored and re-verified
+
+## v2 extended pin guard (design v3): in_array_parameter pinned to [[1]] instead of Java's [[1] [3]] (the failure's
+##   "want" shows the mutated pin in effect); restored and cmp-verified; log: /var/tmp/fdb-upgrade-recovery/ws-e3-mut.log
+      <string>: in_array_parameter: want OK [BIGINT] [NULL] "[[1]]" got OK [BIGINT] [NULL] "[[1] [3]]"
+Ran 1 of 23 Specs in 8.573 seconds / Executed 1 out of 1 test: 1 fails locally.
+## v3 pin guard: too_many_parameters pinned to [[9]] instead of Java's [[1]] (grep -c of the mutated pin = 1 before
+##   the run); restored and cmp-verified; log: /var/tmp/fdb-upgrade-recovery/ws-e4-mut.log
+      <string>: too_many_parameters: want OK [BIGINT] [NULL] [[9]] got OK [BIGINT] [NULL] [[1]]
+Ran 1 of 23 Specs in 11.954 seconds / Executed 1 out of 1 test: 1 fails locally.
+
+
+
+## Design v4 (shared wseRender, update counts, the v4 Describe), on the spec whose sha256 is in evidence-run.txt.
+##   Two mutation runs over all five Describes; each mutation was applied by /var/tmp/fdb-upgrade-recovery/wse5-mut.py, which asserts that every
+##   replaced pin occurs exactly once before replacing it ("M1 applied 5", "M2 applied 5"); after each run the spec was
+##   restored from /var/tmp/fdb-upgrade-recovery/wse5-final.go and the six source sha256 values re-verified (all OK).
+## M1, one pin VALUE per Describe (a re-rendered type, a re-rendered nullability, two update counts, a v4 row):
+##   log: /var/tmp/fdb-upgrade-recovery/wse5-M1.log
+      nullability_greatest_nullable: want OK [BIGINT] [NOT NULL] [[NULL]] got OK [BIGINT] [NULL] [[NULL]]
+      greatest_one_null: want OK [BIGINT] [NULL] [[NULL]] got OK [INTEGER] [NULL] [[NULL]]
+      dry_run_connection_delete: want OK [BIGINT BIGINT] [NULL NULL] [] COUNT 1 got OK [BIGINT BIGINT] [NULL NULL] [[1 10]] COUNT 1
+      update_set_then_where_order: want OK [BIGINT BIGINT] [NULL NULL] [[1 10]] COUNT 1 got OK [BIGINT BIGINT] [NULL NULL] [[1 10]] COUNT 0
+      insert_int_into_int_column: want OK [INTEGER] [NULL] [[7]] COUNT 0 got OK [INTEGER] [NULL] [[7]] COUNT 1
+Ran 5 of 27 Specs in 46.679 seconds
+FAIL! -- 0 Passed | 5 Failed | 0 Pending | 22 Skipped
+## M2, one pin DELETED per Describe (like_not, b64_literal_lower, uuid_parameter, in_list_order, greatest_zero_doubles):
+##   the probe-set = pin-set check fails in each (got vs want lengths); log: /var/tmp/fdb-upgrade-recovery/wse5-M2.log
+##   "every probe is pinned and every pin is probed" failures: 5
+      <[]string | len:89, cap:89>: [       <[]string | len:88, cap:88>: [
+      <[]string | len:74, cap:74>: [       <[]string | len:73, cap:73>: [
+      <[]string | len:12, cap:12>: [       <[]string | len:11, cap:11>: [
+      <[]string | len:37, cap:37>: [       <[]string | len:36, cap:36>: [
+      <[]string | len:46, cap:46>: [       <[]string | len:45, cap:45>: [
+Ran 5 of 27 Specs in 46.548 seconds
+FAIL! -- 0 Passed | 5 Failed | 0 Pending | 22 Skipped
+
+## Harness teardown pin (conformance_test spec "Conformance server ephemeral schema teardown", Java step ephemeralTeardownProbe):
+##   passing run /var/tmp/fdb-upgrade-recovery/teardown-1.log (10 of 1538 specs with the RFC-090 retry specs, all passed); mutation 1 (the old schema-less
+##   teardown URL) fails the step with 42F51 "No Schema specified" (/var/tmp/fdb-upgrade-recovery/teardown-mut1.log); mutation 2 (that URL with the error
+##   swallowed, the old behaviour) fails with "the harness left /TEST/PLAN_DIFF_... behind" (/var/tmp/fdb-upgrade-recovery/teardown-mut2.log); restored, cmp-verified.
+
+## Design v5 (the sixth Describe, "WS-E target oracle v5", 75 pins), on the spec whose sha256 is in evidence-run.txt.
+##   Three mutation runs over all six Describes, each applied by /var/tmp/fdb-upgrade-recovery/wse6-mut.py, which asserts that every mutated pin
+##   occurs exactly once and, for M1, that its current value is the one being replaced ("M1 applied 6", "M2 applied 6",
+##   "M3 applied 1"); after each run the spec was restored from /var/tmp/fdb-upgrade-recovery/wse6-final.go, cmp-verified, and the eight source
+##   sha256 values of evidence-run.txt re-verified (all OK).
+## M1, one pin VALUE per Describe (the five v4 mutations again, plus not_false_select's nullability in v5):
+##   log: /var/tmp/fdb-upgrade-recovery/wse6-M1.log
+      insert_int_into_int_column: want OK [INTEGER] [NULL] [[7]] COUNT 0 got OK [INTEGER] [NULL] [[7]] COUNT 1
+      nullability_greatest_nullable: want OK [BIGINT] [NOT NULL] [[NULL]] got OK [BIGINT] [NULL] [[NULL]]
+      dry_run_connection_delete: want OK [BIGINT BIGINT] [NULL NULL] [] COUNT 1 got OK [BIGINT BIGINT] [NULL NULL] [[1 10]] COUNT 1
+      greatest_one_null: want OK [BIGINT] [NULL] [[NULL]] got OK [INTEGER] [NULL] [[NULL]]
+      update_set_then_where_order: want OK [BIGINT BIGINT] [NULL NULL] [[1 10]] COUNT 1 got OK [BIGINT BIGINT] [NULL NULL] [[1 10]] COUNT 0
+      not_false_select: want OK [BOOLEAN] [NOT NULL] [[true]] got OK [BOOLEAN] [NULL] [[true]]
+Ran 6 of 30 Specs in 56.072 seconds
+FAIL! -- 0 Passed | 6 Failed | 0 Pending | 24 Skipped
+## M2, one pin DELETED per Describe (like_not, b64_literal_lower, uuid_parameter, in_list_order, greatest_zero_doubles,
+##   in_cast_null_or_empty_table): the probe-set = pin-set check fails in each; log: /var/tmp/fdb-upgrade-recovery/wse6-M2.log
+##   "every probe is pinned and every pin is probed" failures: 6
+Ran 6 of 30 Specs in 55.768 seconds
+FAIL! -- 0 Passed | 6 Failed | 0 Pending | 24 Skipped
+## M3, probe-name uniqueness: the v5 probe true_and_true_select renamed to the existing not_false_select; the v5 Describe
+##   fails on "probe names are unique" and the other five pass; log: /var/tmp/fdb-upgrade-recovery/wse6-M3.log
+      [FAILED] probe names are unique
+Ran 6 of 30 Specs in 50.763 seconds
+FAIL! -- 5 Passed | 1 Failed | 0 Pending | 24 Skipped
+
+## Harness teardown, v5 (conformance_test spec "Conformance server ephemeral schema teardown", Java step ephemeralTeardownProbe, which
+##   now also reports the ephemeral TEMPLATE and how many rows each catalog listing returned):
+##   passing run /var/tmp/fdb-upgrade-recovery/wse6-teardown.log (Ran 1 of 1538 Specs in 6.854 seconds); mutation 3, the template drop removed from
+##   teardown() (presence grep -c = 1), fails with "the harness left template PLAN_DIFF_T_a574354bccdf45b69c95715872213054 behind"
+##   (/var/tmp/fdb-upgrade-recovery/wse6-teardown-mut3.log); restored, cmp-verified.
+## Go runner teardown (withTeardown, pkg/relational/conformance/plandiff/go_runner.go): TestWithTeardown under Bazel
+##   (/var/tmp/fdb-upgrade-recovery/wse6-plandiff-unit.log: "=== RUN   TestWithTeardown", "--- PASS"); mutation, withTeardown returning the run's error whatever
+##   the teardown did (presence grep -c = 1), fails with "go_runner_test.go:78: clean run, failed teardown: got <nil>, want both drop failures"
+##   (/var/tmp/fdb-upgrade-recovery/wse6-plandiff-mut.log); restored, cmp-verified.
+## M4, the dry-run template cleanup (v4 Describe): the drop step pointed at WSE5_DRYRUN_TPL_MUTATED instead of the
+##   template the probe created (presence grep -c = 1); the Describe fails with "the dry-run template is still described
+##   after its drop"; log: /var/tmp/fdb-upgrade-recovery/wse6-M4.log (Ran 1 of 30 Specs in 16.985 seconds); restored from
+##   /var/tmp/fdb-upgrade-recovery/wse6-final.go, cmp-verified, source sha256 re-verified.
+
+## Design v6 (the seventh Describe, "WS-E target oracle v6", 51 pins), on the spec whose sha256 is in evidence-run.txt.
+##   Two mutation runs over the v6 Describe, each applied by /var/tmp/fdb-upgrade-recovery/wse7-mut.py, which asserts that every mutated pin occurs exactly
+##   once inside wsE7Pins and, for M1, that the replaced value is the current one ("M1 applied 2", "M2 applied 1"; the diff against the
+##   saved spec has 4 and 1 changed lines); after each run the spec was restored from /var/tmp/fdb-upgrade-recovery/wse7-final.go, cmp-verified, and the nine
+##   source sha256 values of evidence-run.txt re-verified with sha256sum -c (0 not OK).
+## M1, two pin VALUES: cast_uuid_wide_first_component's masked first component unmasked, and is_null_case_div0_branch_where's 22000
+##   replaced by the empty result Go returns today; log: /var/tmp/fdb-upgrade-recovery/wse7-M1.log (Ran 1 of 32 Specs, 1 Failed), both named in the mismatch list:
+##     cast_uuid_wide_first_component: want OK [OTHER] [NOT NULL] [[123456789-0001-0001-0001-000000000001]] got OK [OTHER] [NOT NULL] [[23456789-0001-0001-0001-000000000001]]
+##     is_null_case_div0_branch_where: want OK [BIGINT] [NULL] [] got ERROR 22000 SemanticException "A value cannot be assigned ..."
+## M2, one pin DELETED (conj_true_where): "every probe is pinned and every pin is probed" fails; log: /var/tmp/fdb-upgrade-recovery/wse7-M2.log (Ran 1 of 32 Specs, 1 Failed).
+## Harness teardown, v6 (conformance_test spec "Conformance server ephemeral schema teardown"; Java step ephemeralTeardownProbe reports how many
+##   rows each catalog listing returned and the Go spec fails on zero, so an empty listing cannot read as "nothing left behind"):
+##   passing runs /var/tmp/fdb-upgrade-recovery/wse7-teardown.log and /var/tmp/fdb-upgrade-recovery/wse7-teardown2.log (Ran 1 of 1543 Specs, 1 Passed); mutation, the SHOW DATABASES row
+##   counter removed from the listing loop in conformance/sql_plan_steps.java (presence grep -c = 1), fails with "SHOW DATABASES listed nothing"
+##   (/var/tmp/fdb-upgrade-recovery/wse7-listmut.log, Ran 1 of 1543 Specs, [FAILED] at fault_inject_retry_conformance_test.go:220); restored from
+##   /var/tmp/fdb-upgrade-recovery/sql_plan_steps.java.pre-listmut, cmp-verified.
+## Go runner teardown wiring (runEphemeralFollowUp's deferred drops, pkg/relational/conformance/plandiff/go_runner.go): TestWithTeardown and
+##   TestGoSQLRunner_TeardownFailureIsReported under Bazel (/var/tmp/fdb-upgrade-recovery/wse7-td-wire.log: both "=== RUN" and "--- PASS"); mutation, the deferred
+##   "rows, err = RowSet{}, withTeardown(err, teardown)" reduced to "rows = RowSet{}" (presence grep -c = 1), fails with
+##   "go_runner_test.go:376: the teardown's failed drops are not in the returned error: phases [] in plandiff/go: query: context canceled"
+##   while TestWithTeardown still passes (/var/tmp/fdb-upgrade-recovery/wse7-td-wire-mut2.log); restored from /var/tmp/fdb-upgrade-recovery/go_runner.go.pre-wiremut2, cmp-verified.
+
+## Harness teardown, v7.
+##   The templates-listing guard: the SHOW SCHEMA TEMPLATES row counter removed from ephemeralTeardownProbe's loop in
+##   conformance/sql_plan_steps.java ("// MUTATION listing-count-templates", presence 1) fails the spec with "SHOW SCHEMA TEMPLATES
+##   listed nothing" (/var/tmp/fdb-upgrade-recovery/wse8-tplmut.log, Ran 1 of 1548 Specs, [FAILED] at
+##   fault_inject_retry_conformance_test.go:221); restored from /var/tmp/fdb-upgrade-recovery/sql_plan_steps.java.pre-tplmut, cmp-verified.
+##   The Go runner's teardown now drops under context.WithoutCancel(ctx) with its own timeout, through an unexported teardownExec seam.
+##   TestWithTeardown, TestGoSQLRunner_TeardownFailureIsReported (drops made to fail through the seam on a run that succeeded, then
+##   cleaned up) and TestGoSQLRunner_CanceledRunStillTearsDown (a run canceled mid-statement drops both objects and reports no teardown
+##   failure; a strict re-drop of each finds nothing) pass under Bazel (/var/tmp/fdb-upgrade-recovery/wse8-td.log: three "=== RUN", three
+##   "--- PASS"). Mutation teardown-inherits-cancel (the drop context built from ctx instead of WithoutCancel(ctx), presence 1) fails
+##   TestGoSQLRunner_CanceledRunStillTearsDown with "the teardown failed under the canceled run's context: phases map[DROP DATABASE:true
+##   DROP SCHEMA TEMPLATE:true]" (wse8-td-mut-inherit.log); mutation teardown-unwired ("rows, err = RowSet{}, withTeardown(err,
+##   teardown)" reduced to "rows = RowSet{}", presence 1) fails TestGoSQLRunner_TeardownFailureIsReported with "the teardown's failed
+##   drops are not in the returned error: phases map[] in <nil>" (wse8-td-mut-unwired.log); restored from
+##   /var/tmp/fdb-upgrade-recovery/go_runner.go.wse8, cmp-verified.
+
+## Design v7, the UUID boundary rows (Describe "WS-E target oracle v6", now 54 pins).
+##   M7-long-max: the pin of cast_uuid_component_long_max changed from ...0004-ffffffffffff to ...0004-7fffffffffffffff
+##   ("// MUTATION M7-long-max", presence 1). The Describe fails on exactly that row ("cast_uuid_component_long_max: want ... got
+##   OK [OTHER] [NOT NULL] [[00000001-0002-0003-0004-ffffffffffff]]"; Ran 1 of 32 Specs, 0 Passed | 1 Failed;
+##   /var/tmp/fdb-upgrade-recovery/wse8-M7.log). Restored from /var/tmp/fdb-upgrade-recovery/ws_e_probe.go.pre-m7, cmp-verified, and
+##   wse8-src.sha re-checked afterwards (9 of 9 OK).
+
+## Harness teardown, v8.
+##   TestGoSQLRunner_TeardownFailureIsReported now cleans up in a t.Cleanup registered before the run (dropThroughRealExec, so a
+##   failed assertion leaks nothing), and TestGoSQLRunner_CanceledRunStillTearsDown's strict re-drop of each object must fail with
+##   the not-found code of what it drops, 42F63 (api.ErrCodeUnknownDatabase) for the database and 42F55
+##   (api.ErrCodeUnknownSchemaTemplate) for the template, where v7 accepted any error. Both pass under Bazel
+##   (/var/tmp/fdb-upgrade-recovery/wse8-teardown/baseline.log: two "=== RUN", two "--- PASS", "Executed 1 out of 1 test: 1 test
+##   passes"). Mutation codes-swapped (the two expected codes exchanged in the test, "// MUTANT" on both lines, grep -c = 2; the
+##   applied diff in wse8-teardown/mut-swap.diff) fails TestGoSQLRunner_CanceledRunStillTearsDown on both objects
+##   ("DROP DATABASE /PLAN_DIFF_… = 42F63: database … does not exist, want 42F55" and "DROP SCHEMA TEMPLATE PLAN_DIFF_T_… = 42F55:
+##   could not delete unknown schema template …, want 42F63"; wse8-teardown/mut-swap.log, "Executed 1 out of 1 test: 1 fails
+##   locally") while TestGoSQLRunner_TeardownFailureIsReported still passes; restored from wse8-teardown/go_runner_test.go.good,
+##   cmp-verified.
+
+## Design v8, the fold-decision rows (Describe "WS-E target oracle v8", 31 pins).
+##   M8-annul: the pin of pk_type_annulling_fold_where changed from "OK [BIGINT] [NULL] []" to "OK [BIGINT] [NULL] [[5]]"
+##   ("// MUTATION M8-annul", presence 1; the applied diff is the one line). The Describe fails on exactly that row
+##   ("pk_type_annulling_fold_where: want OK [BIGINT] [NULL] [[5]] got OK [BIGINT] [NULL] []"; Ran 1 of 52 Specs, 0 Passed | 1 Failed;
+##   /var/tmp/fdb-upgrade-recovery/wse9-M8.log). Restored from /var/tmp/fdb-upgrade-recovery/ws_e_probe.go.pre-m8, cmp-verified, and
+##   wse9-src.sha re-checked afterwards (9 of 9 OK).
+
+## Design v9, round v9 (Describe "WS-E target oracle v9", 27 pins).
+##   M9-nested: the pin of nested_ins_where changed from "[[1] [2] [3] [6]]" to "[[1] [2] [3]]" ("// MUTATION M9-nested", presence 1). The
+##   Describe fails on exactly that row ("nested_ins_where: want OK [BIGINT] [NULL] [[1] [2] [3]] got OK [BIGINT] [NULL] [[1] [2] [3] [6]]";
+##   Ran 1 of 57 Specs, 0 Passed | 1 Failed; /var/tmp/fdb-upgrade-recovery/wse10-M9.log). Restored from
+##   /var/tmp/fdb-upgrade-recovery/ws_e_probe.go.pre-m9, cmp-verified, and wse10-src.sha re-checked afterwards (10 of 10 OK).
+## Harness teardown, v9: TestGoSQLRunner_CanceledRunStillTearsDown asserts errors.Is(err, context.Canceled) where v8 asserted only a non-nil
+##   error; it passes under Bazel (wse10-td-final.log, three "=== RUN", three "--- PASS").
+
+## Design v10, round v10 (Describe "WS-E target oracle v10", 12 pins).
+##   M10-nan: the pin of nan_then_eq_where changed from "OK [BIGINT] [NULL] [[2]]" to "OK [BIGINT] [NULL] [[9]]"
+##   ("// MUTATION M10-nan", presence 1 by grep -c in the same invocation). The first attempt put the marker before the line's comma and
+##   FAILED TO BUILD ("Executed 0 out of 1 test: 1 fails to build"), which is recorded here because a build failure reads as a red; the
+##   marker was moved after the comma and the run repeated. The Describe fails on exactly that row ("nan_then_eq_where: want OK [BIGINT]
+##   [NULL] [[9]] got OK [BIGINT] [NULL] [[2]]", one "want OK" line in the log; Ran 1 of 58 Specs, 0 Passed | 1 Failed; "Executed 1 out of
+##   1 test: 1 fails locally"; /var/tmp/fdb-upgrade-recovery/wse11-M10.log). Restored from
+##   /var/tmp/fdb-upgrade-recovery/ws_e_probe.go.pre-m10, cmp-verified, and wse11-src.sha re-checked afterwards (10 lines ": OK").

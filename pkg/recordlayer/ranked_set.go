@@ -5,7 +5,9 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash/crc32"
+	"math/bits"
 
+	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -37,6 +39,10 @@ type rankedSetConfig struct {
 	// HashFunction determines which levels a key appears on.
 	// Default: jdkArrayHash (matches Java's Arrays.hashCode).
 	HashFunction rankedSetHashFunction
+	// HashFunctionName is HashFunction's name in rankedSetHashFunctions, the
+	// identity Java's option check compares (RankIndexMaintainerFactory's
+	// getHashFunction().equals), since a Go func value has none.
+	HashFunctionName string
 	// NLevels is the number of skip-list levels (2-8, default 6).
 	NLevels int
 	// CountDuplicates tracks duplicate keys separately, increasing ranks below them.
@@ -44,8 +50,15 @@ type rankedSetConfig struct {
 }
 
 // rankedSetHashFunction computes a hash for level determination.
-// Must return int32 to match Java's int semantics.
-type rankedSetHashFunction func(key []byte) int32
+// Must return int32 to match Java's int semantics. Only RANDOM can fail: its
+// draw reads a randomness source, and a failed read fails the write rather
+// than choosing levels.
+type rankedSetHashFunction func(key []byte) (int32, error)
+
+// pureHash is a hash of the key alone, which cannot fail.
+func pureHash(f func(key []byte) int32) rankedSetHashFunction {
+	return func(key []byte) (int32, error) { return f(key), nil }
+}
 
 const (
 	rankedSetLevelFanPow   = 4
@@ -63,8 +76,28 @@ func init() {
 
 // defaultRankedSetConfig is the default configuration matching Java's defaults.
 var defaultRankedSetConfig = rankedSetConfig{
-	HashFunction: jdkArrayHash,
-	NLevels:      rankedSetDefaultLevels,
+	HashFunction:     pureHash(jdkArrayHash),
+	HashFunctionName: rankedSetHashJDK,
+	NLevels:          rankedSetDefaultLevels,
+}
+
+// The names Java's RankedSetHashFunctions knows for the rankHashFunction
+// index option.
+const (
+	rankedSetHashJDK     = "JDK"
+	rankedSetHashCRC     = "CRC"
+	rankedSetHashRandom  = "RANDOM"
+	rankedSetHashMurmur3 = "MURMUR3"
+)
+
+// rankedSetHashFunctions is Java's RankedSetHashFunctions extent: the option
+// value is looked up exactly, and a name it does not hold is refused
+// ("hash function not found", RankedSetHashFunctions.java:47-59).
+var rankedSetHashFunctions = map[string]rankedSetHashFunction{
+	rankedSetHashJDK:     pureHash(jdkArrayHash),
+	rankedSetHashCRC:     pureHash(crcHash),
+	rankedSetHashRandom:  randomHashFrom(nil),
+	rankedSetHashMurmur3: pureHash(murmur3Hash),
 }
 
 // jdkArrayHash matches Java's Arrays.hashCode(byte[]).
@@ -83,6 +116,70 @@ func crcHash(key []byte) int32 {
 	return int32(crc32.ChecksumIEEE(key))
 }
 
+// randomHashFrom matches Java's RankedSet.RANDOM_HASH: a uniformly random int
+// per call, whatever the key (ThreadLocalRandom.current().nextInt()). A key's
+// levels are then a coin toss on insert; a delete draws nothing, in either
+// engine (Java's remove never calls the hash, RankedSet.java:487-491, nor does
+// Remove), so it removes the key from every level that holds it. The draw
+// decides persisted ranked-set bytes, so it goes through the DST randomness
+// seam: a nil env is production's crypto/rand, and a maintainer binds its
+// store's env (withEnv) so a seeded run replays. A failed read is returned:
+// a zero hash would put the key on every level.
+func randomHashFrom(env *dst.Env) rankedSetHashFunction {
+	return func([]byte) (int32, error) {
+		var b [4]byte
+		if _, err := env.Read(b[:]); err != nil {
+			return 0, fmt.Errorf("ranked set RANDOM hash: %w", err)
+		}
+		return int32(binary.LittleEndian.Uint32(b[:])), nil
+	}
+}
+
+// withEnv binds a RANDOM hash to env's randomness; other hashes are pure.
+func (c rankedSetConfig) withEnv(env *dst.Env) rankedSetConfig {
+	if c.HashFunctionName == rankedSetHashRandom {
+		c.HashFunction = randomHashFrom(env)
+	}
+	return c
+}
+
+// murmur3Hash matches Java's MURMUR3 entry, Guava's
+// Hashing.murmur3_32_fixed().hashBytes(key).asInt(): MurmurHash3 x86_32 with
+// seed 0, blocks read little-endian. ("fixed" repairs Guava's hashString of
+// supplementary characters; hashBytes is the same in both.)
+func murmur3Hash(key []byte) int32 {
+	const c1, c2 = 0xcc9e2d51, 0x1b873593
+	var h uint32
+	n := len(key)
+	i := 0
+	for ; i+4 <= n; i += 4 {
+		k := binary.LittleEndian.Uint32(key[i:])
+		k *= c1
+		k = bits.RotateLeft32(k, 15)
+		k *= c2
+		h ^= k
+		h = bits.RotateLeft32(h, 13)
+		h = h*5 + 0xe6546b64
+	}
+	var k uint32
+	for j := n - 1; j >= i; j-- {
+		k = k<<8 | uint32(key[j])
+	}
+	if i < n {
+		k *= c1
+		k = bits.RotateLeft32(k, 15)
+		k *= c2
+		h ^= k
+	}
+	h ^= uint32(n)
+	h ^= h >> 16
+	h *= 0x85ebca6b
+	h ^= h >> 13
+	h *= 0xc2b2ae35
+	h ^= h >> 16
+	return int32(h)
+}
+
 // newRankedSet creates a rankedSet backed by the given subspace.
 func newRankedSet(sub subspace.Subspace, config rankedSetConfig) *rankedSet {
 	if config.NLevels <= 0 {
@@ -92,7 +189,7 @@ func newRankedSet(sub subspace.Subspace, config rankedSetConfig) *rankedSet {
 		config.NLevels = rankedSetMaxLevels
 	}
 	if config.HashFunction == nil {
-		config.HashFunction = jdkArrayHash
+		config.HashFunction, config.HashFunctionName = pureHash(jdkArrayHash), rankedSetHashJDK
 	}
 	return &rankedSet{subspace: sub, config: config}
 }
@@ -132,7 +229,10 @@ func (rs *rankedSet) Add(tx fdb.WritableTransaction, key []byte) (bool, error) {
 		return false, &rankedSetEmptyKeyError{}
 	}
 
-	keyHash := rs.config.HashFunction(key)
+	keyHash, err := rs.config.HashFunction(key)
+	if err != nil {
+		return false, err
+	}
 
 	count, err := rs.countCheckedKey(tx, key)
 	if err != nil {

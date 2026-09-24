@@ -1,0 +1,88 @@
+**NAK** on RFC-257 WS-E design v3.
+
+- **Tree:** `204151ab1e3aafa12c1b0202bc6c76c5f45c6c09`
+- **Design:** `rfcs/257-java-upgrade-audit/ws-e-design.md`, SHA-256 `cbb0316f31798de432948a57aef6379728854e31b3d9d3fe2f7a43a7e1eb65d1`, 963 lines (both re-checked).
+- **Evidence:** the six source hashes in `evidence-run.txt` match this tree's files, and the d/e logs each show "4 of 23 Specs, 4 Passed".
+- **Java:** checked at `fdacd162a9`.
+
+The review was read-only: I ran nothing and edited nothing.
+
+v3 fixes most of v2:
+- nullability is now set per catalog entry, and COALESCE folding follows the target's two regimes;
+- options merge as the target merges them, with DRY_RUN and SNAPSHOT over DDL and SHOW measured;
+- a Go `int` is typed like a literal, and too few parameters give 42F02;
+- the parameter-order defect is measured on writes and declared;
+- the snapshot continuation contract is booked under CQ-78;
+- `runPreparedWithSetup` now calls `bindExtended`, and all four Describes check that every probe is pinned.
+
+## HIGH
+
+**1. Array-comparison admission (§4.2, lines 424-443) uses the wrong mechanism and breaks the preserved pin.** (SOURCE)
+- Java's comparison check does compare element nullability. `RelOpValue.java:365-370` removes only the outer nullability, and array equality includes element nullability (`Type.java:1106, 3313-3314`).
+- Java answers `arr = [m]` because `handleArray` promotes every element to not-null (`ExpressionVisitor.java:1186-1203`). §4.2 already states that rule.
+- The v3 rule ("element nullability no longer decides admission", and a NULL literal takes the other side's element type) admits `[1,NULL] = [1,2]`. The same paragraph promises to keep that row's 42804 pin (`array_comparison_java_probe_test.go:53`).
+- It also widens the extension to column operands, e.g. `arr = [1, NULL]` on an INTEGER ARRAY column.
+- Fix: port the element promotion and keep Go's existing check at `expr.go:977-981`. The cited `walk.go:477-485` is the CAST-to-ARRAY code, not the check. All three approved pins then hold unchanged.
+
+**2. The §8 acceptance comparison still cannot pass as written.** Rows it would fail on are neither fixed nor declared:
+- `array_cast_null_empty_table`: Java reports type `ARRAY`, Go reports `BIGINT`. This is the ARRAY type-name truncation tracked as CQ-74 (the ARRAY case of `cascadesTypeName` in `cascades_generator.go`).
+- `nn_bitand_literals`: Java `INTEGER`, Go `BIGINT`. This needs WS-J's lane port.
+- `arith_untyped_null_param` also depends on WS-J, as §4.3 itself says.
+- §8 declares a cross-workstream dependency only for `like_enum_operand`.
+
+## MEDIUM
+
+**3. "The IN list is checked at planning" (lines 403-412) is inferred, not measured.**
+- Failing over an empty table does not separate planning from the start of execution.
+- The Java source points to execution:
+  - ordinary predicates get a null type repository (`Expression.java:423`), so `InOpValue` builds a runtime `ValueComparison` (`:126-127`);
+  - `CAST(NULL…)` is not a constant IN item (`ParseHelpers.java:129-144`), so it becomes `__internal_array` (`ExpressionVisitor.java:748-749`).
+- If Go checks the list "when the IN comparison is built", a Go EXPLAIN fails, and so does a mixed list such as `IN (CAST(NULL AS BIGINT), x)` over an empty table.
+- Add an EXPLAIN probe and a mixed-list probe.
+
+**4. Snapshot admission misclassifies DESCRIBE (lines 832-836).** (SOURCE)
+- `DESCRIBE` or `DESC` followed by a query is the same grammar rule as EXPLAIN (`RelationalParser.g4:720-748`), so the target admits it.
+- `DESCRIBE SCHEMA` and `HELP` are utility statements (`AstNormalizer.java:345-347`), so the target rejects them.
+- Go's grammar has both forms (`…/grammar/RelationalParser.g4:710-738`). Base the rule on the grammar rule, not the keyword, and probe both forms.
+
+**5. The declared GREATEST defect covers too few inputs (lines 739-745).** (SOURCE)
+- GREATEST starts from `MIN_VALUE` and uses a strict `>`. So any arguments that are all ≤ 0 are affected: `GREATEST(0.0, 0.0)` returns 4.9E-324. NaN arguments are skipped.
+- LEAST over DOUBLE and FLOAT starts from `MAX_VALUE`, so `LEAST(+Inf, …)` returns `MAX_VALUE` (`VariadicFunctionValue.java:417-432, 466-481`).
+- `greatest_negative_longs` returns INTEGER, so the LONG lane is unmeasured.
+
+**6. DML update counts never reach the pins.**
+- The Java step adds `updateCount` (`sql_plan_steps.java:335-340`); its Javadoc (`:298-303`) wrongly calls it an "extra column".
+- `RowSet` has no field for it (`runsql.go:41-49`), and the Go runner discards rows-affected (`go_runner.go:165-166`).
+- So the count DRY_RUN reports (1 in Java's own test) and Go's RowsAffected under DRY_RUN are unpinned and unspecified. The UPDATE ordering probe can't show 0 versus 1 rows updated.
+
+**7. The §6.4 snapshot read census (lines 856-864) is wrong.**
+- "Go has no TEXT index" is false: `text_index_maintainer.go` ports Java's TextIndexMaintainer and chooses its read by isolation at `:402-403`.
+- Also missing: the time-window leaderboard reads, and `LoadRecordVersion(…, snapshot)` (`store_version.go:130-157`). Java's list includes version loads.
+- For each site, state whether SQL can reach it, or test it.
+
+**8. The UTF-8 premise in §1.5b (lines 233-239) is false.**
+- `git grep utf8.Valid` over non-test `pkg/recordlayer` and `pkg/relational` finds only two conformance files, so no write path validates UTF-8.
+- Go library writers can store invalid proto2 strings. The design's "explicit error" on such a row is a divergence from Java's lenient decoding, and §8 does not declare it.
+
+## LOW
+
+**9. Some probes don't measure what they're cited for.**
+- `in_list_order`, bound (2, 3, 6), returns `[[3]]` whether the IN list or the trailing conjunct binds first.
+- `order_by_then_where_order` has no ORDER BY.
+- `nn_pk_plus_literal` is arithmetic, which is always nullable, so it can't show the primary key is nullable (cited at line 690). Every `SELECT id` row already shows it.
+- `where_then_having_order` has no literal control. So §8's "HAVING read-side reach" label is unsupported; a GROUP BY with no ordering index is the likelier cause.
+
+**10. Renders and duplication.**
+- The v2 and v2-extended Describes still render values with `fmt.Sprint` (`:362`, `:571`), which prints `<nil>` and floats in `%v` form. That contradicts lines 65-66 and §8's "exact values".
+- The render, argument-binding and Java-invoke blocks are copied four times.
+- `runPreparedWithSetup` is just `runPreparedExtended` with no options and no update, and its Javadoc's list of parameter kinds is stale.
+
+**11. Evidence doesn't bind the current bytes.**
+- The first Describe's only mutation run is the v1 run ("1 of 14 Specs"), which predates the re-render.
+- No mutation shows the new probe-set/pin-set checks can fail.
+- The 23-of-23 oracle claim can't be checked: `rfc257-wse3.log` records no spec counts or tree hash, and `bazel-testlogs` now holds a later 24-spec WS-F failure.
+
+**12. Smaller gaps.**
+- The parameter typing table omits Go `uint` and named integer types.
+- A custom `driver.Valuer` that returns int64 into an INTEGER column becomes a 22000 error, which is not declared.
+- The CQ-78 item (`TODO.md:7109`) doesn't point to the new block at `:14666`.

@@ -35,6 +35,209 @@ import java.util.Map;
 import java.util.Optional;
 
 class ContinuationSteps extends ConformanceBase {
+    @ConformanceStep("pendingQueueNestedAny")
+    public boolean pendingQueueNestedAny(String kind, byte[] payload) {
+        try {
+            var data = com.google.protobuf.Any.parseFrom(payload);
+            switch (kind) {
+                case "vector":
+                    data.unpack(com.apple.foundationdb.record.IndexBuildProto.OldAndNewIndexEntries.class);
+                    break;
+                case "sliding":
+                    data.unpack(com.apple.foundationdb.record.IndexBuildProto.SlidingWindowQueueEntry.class);
+                    break;
+                case "delete-where":
+                    data.unpack(com.apple.foundationdb.record.IndexBuildProto.DeleteWhere.class);
+                    break;
+                default:
+                    throw new IllegalArgumentException("unknown nested queue payload: " + kind);
+            }
+            return true;
+        } catch (com.google.protobuf.InvalidProtocolBufferException ex) {
+            return false;
+        }
+    }
+
+    @ConformanceStep("pendingQueueLimits")
+    public Map<String, Object> pendingQueueLimits(String clusterFile, byte[] subspace, int scanLimit, long byteLimit,
+                                                 int rowLimit, boolean reverse, boolean fail, String tenantName) {
+        var root = new Subspace(subspace).subspace(com.apple.foundationdb.tuple.Tuple.from("pendingQueueLimits"));
+        var entries = root.subspace(com.apple.foundationdb.tuple.Tuple.from("entries"));
+        var queue = new com.apple.foundationdb.record.provider.foundationdb.queue.PendingWritesQueue<>(
+            entries, root.subspace(com.apple.foundationdb.tuple.Tuple.from("size")), 0, Order.class);
+        runInContext(clusterFile, tenantName, context -> {
+            context.ensureActive().clear(root.range());
+            for (long id = 1; id <= 3; id++) {
+                var payload = Order.newBuilder().setOrderId(id);
+                if (id < 3) {
+                    payload.addTags("x".repeat(120000));
+                }
+                queue.enqueue(context, payload.build(), 0).join();
+            }
+            return null;
+        });
+        return runInContext(clusterFile, tenantName, context -> {
+            var builder = ExecuteProperties.newBuilder().setReturnedRowLimit(rowLimit).setFailOnScanLimitReached(fail);
+            if (scanLimit > 0) {
+                builder.setScannedRecordsLimit(scanLimit);
+            }
+            if (byteLimit > 0) {
+                builder.setScannedBytesLimit(byteLimit);
+            }
+            var props = builder.build();
+            var physical = context.ensureActive().getRange(entries.range()).asList().join();
+            List<Integer> physicalBytes = new ArrayList<>();
+            for (var kv : physical) {
+                physicalBytes.add(kv.getKey().length + kv.getValue().length);
+            }
+            List<Long> ids = new ArrayList<>();
+            Map<String, Object> response = new HashMap<>();
+            response.put("physicalBytes", physicalBytes);
+            response.put("ids", ids);
+            try (var cursor = queue.getQueueCursor(context, new ScanProperties(props, reverse), null)) {
+                var result = cursor.getNext();
+                while (result.hasNext()) {
+                    var payload = result.get().getPayload();
+                    if (payload.getOrderId() < 3 && !payload.getTags(0).equals("x".repeat(120000))) {
+                        throw new IllegalStateException("split payload truncated");
+                    }
+                    ids.add(payload.getOrderId());
+                    result = cursor.getNext();
+                }
+                response.put("reason", result.getNoNextReason().name());
+                response.put("end", result.getContinuation().isEnd());
+                response.put("continuation", result.getContinuation().toBytes() == null ? "" : Base64.getEncoder().encodeToString(result.getContinuation().toBytes()));
+                List<Long> resumed = new ArrayList<>();
+                if (!result.getContinuation().isEnd()) {
+                    try (var next = queue.getQueueCursor(context, new ScanProperties(ExecuteProperties.SERIAL_EXECUTE, reverse), result.getContinuation().toBytes())) {
+                        var item = next.getNext();
+                        while (item.hasNext()) {
+                            resumed.add(item.get().getPayload().getOrderId());
+                            item = next.getNext();
+                        }
+                    }
+                }
+                response.put("resumed", resumed);
+                response.put("terminalCached", result == cursor.getNext());
+            } catch (RuntimeException ex) {
+                boolean found = false;
+                for (Throwable cause = ex; cause != null; cause = cause.getCause()) {
+                    if (cause instanceof com.apple.foundationdb.record.ScanLimitReachedException) {
+                        response.put("errorClass", cause.getClass().getSimpleName());
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    throw ex;
+                }
+            }
+            response.put("scans", props.getState().getRecordsScanned());
+            response.put("bytes", props.getState().getBytesScanned());
+            return response;
+        });
+    }
+
+    @ConformanceStep("pendingQueueEnvelope")
+    public Map<String, Object> pendingQueueEnvelope(String clusterFile, byte[] subspace, byte[] envelope, boolean indexPayload, String tenantName) {
+        var root = new Subspace(subspace).subspace(com.apple.foundationdb.tuple.Tuple.from("pendingQueueEnvelope"));
+        var entries = root.subspace(com.apple.foundationdb.tuple.Tuple.from("entries"));
+        var counter = root.subspace(com.apple.foundationdb.tuple.Tuple.from("size"));
+        runInContext(clusterFile, tenantName, context -> {
+            context.ensureActive().clear(root.range());
+            var version = com.apple.foundationdb.record.provider.foundationdb.FDBRecordVersion.incomplete(context.claimLocalVersion());
+            com.apple.foundationdb.record.provider.foundationdb.SplitHelper.saveWithSplit(context, entries,
+                com.apple.foundationdb.tuple.Tuple.from(7, version.toVersionstamp()), envelope,
+                null, true, false, false, null, null);
+            return null;
+        });
+        return runInContext(clusterFile, tenantName, context -> {
+            try {
+                if (indexPayload) {
+                    var queue = new com.apple.foundationdb.record.provider.foundationdb.queue.PendingWritesQueue<>(
+                        entries, counter, 0, com.apple.foundationdb.record.IndexBuildProto.PendingWritesQueueEntry.class);
+                    try (var cursor = queue.getQueueCursor(context, ScanProperties.FORWARD_SCAN, null)) {
+                        var entry = cursor.getNext().get();
+                        return Map.of("value", entry.getPayload().getOperation().getNumber(),
+                            "typeUrl", entry.getPayloadTypeUrl(), "timestamp", entry.getEnqueueTimestamp(),
+                            "incarnation", entry.getIncarnation(),
+                            "serialized", java.util.Base64.getEncoder().encodeToString(entry.getPayload().toByteArray()));
+                    }
+                }
+                var queue = new com.apple.foundationdb.record.provider.foundationdb.queue.PendingWritesQueue<>(entries, counter, 0, Order.class);
+                try (var cursor = queue.getQueueCursor(context, ScanProperties.FORWARD_SCAN, null)) {
+                    var entry = cursor.getNext().get();
+                    return Map.of("value", entry.getPayload().getOrderId(),
+                        "typeUrl", entry.getPayloadTypeUrl(), "timestamp", entry.getEnqueueTimestamp(),
+                        "incarnation", entry.getIncarnation());
+                }
+            } catch (RuntimeException ex) {
+                // Preserve the queue's public exception rather than the HTTP
+                // dispatcher's deepest-cause-only error classification.
+                for (Throwable cause = ex; cause != null; cause = cause.getCause()) {
+                    if (cause instanceof com.apple.foundationdb.record.RecordCoreStorageException) {
+                        var storage = (com.apple.foundationdb.record.RecordCoreStorageException)cause;
+                        var result = new java.util.HashMap<String, Object>();
+                        result.put("errorClass", cause.getClass().getSimpleName());
+                        result.put("errorMessage", cause.getMessage());
+                        var info = new java.util.HashMap<String, Object>();
+                        for (String key : List.of("version", "stored_version", "expected_type", "actual_type")) {
+                            if (storage.getLogInfo().containsKey(key)) {
+                                info.put(key, storage.getLogInfo().get(key));
+                            }
+                        }
+                        result.put("info", info);
+                        return result;
+                    }
+                }
+                throw ex;
+            }
+        });
+    }
+
+    @ConformanceStep("pendingQueueSkip")
+    public Map<String, Object> pendingQueueSkip(String clusterFile, byte[] subspace, int skip, boolean seed, String tenantName) {
+        var root = new Subspace(subspace).subspace(com.apple.foundationdb.tuple.Tuple.from("pendingQueueSkip"));
+        var queue = new com.apple.foundationdb.record.provider.foundationdb.queue.PendingWritesQueue<>(
+            root.subspace(com.apple.foundationdb.tuple.Tuple.from("entries")),
+            root.subspace(com.apple.foundationdb.tuple.Tuple.from("size")), 0, Order.class);
+        if (seed) {
+            runInContext(clusterFile, tenantName, context -> {
+                context.ensureActive().clear(root.range());
+                for (long id = 1; id <= 3; id++) {
+                    queue.enqueue(context, Order.newBuilder().setOrderId(id).build(), 0).join();
+                }
+                return null;
+            });
+        }
+        return runInContext(clusterFile, tenantName, context -> {
+            var props = new ScanProperties(ExecuteProperties.newBuilder().setSkip(skip).setReturnedRowLimit(2).build());
+            List<Long> ids = new ArrayList<>();
+            byte[] continuation;
+            String reason;
+            try (var cursor = queue.getQueueCursor(context, props, null)) {
+                var result = cursor.getNext();
+                while (result.hasNext()) {
+                    ids.add(result.get().getPayload().getOrderId());
+                    result = cursor.getNext();
+                }
+                reason = result.getNoNextReason().name();
+                continuation = result.getContinuation().toBytes();
+            }
+            List<Long> resumed = new ArrayList<>();
+            try (var cursor = queue.getQueueCursor(context, ScanProperties.FORWARD_SCAN, continuation)) {
+                var result = cursor.getNext();
+                while (result.hasNext()) {
+                    resumed.add(result.get().getPayload().getOrderId());
+                    result = cursor.getNext();
+                }
+                return Map.of("ids", ids, "reason", reason, "resumed", resumed,
+                    "exhausted", result.getNoNextReason().isSourceExhausted(),
+                    "size", queue.getQueueSizeNoConflict(context).join());
+            }
+        });
+    }
+
     @ConformanceStep("firstOrDefaultRequest")
     public Map<String, Object> firstOrDefaultRequest(String clusterFile, byte[] subspace, int count, int skip, boolean mapped, String tenantName) {
         return runInContext(clusterFile, tenantName, context -> {

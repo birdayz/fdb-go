@@ -1,0 +1,42 @@
+**NAK — IMPLEMENTATION CODE** at tree `e1496e0d87778d57a90b5fd3287f39a38da04dec`.
+
+Two regressions remain. These are source-derived findings; I executed no queries or tests.
+
+1. **P2 — Moving duplicate validation leaves lifted UNION ordering unchecked.**  
+   The new call at [logical_predicate.go:6328](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:6328) is bypassed by:
+   
+   ```sql
+   SELECT id AS z FROM t
+   UNION ALL SELECT id AS z FROM t
+   ORDER BY z, z
+   ```
+   
+   [UNION lifting:5954](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:5954) clears `sq.orderBy` before SELECT validation. [validateUnionOrderByColumns:7314](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:7314) subsequently resolves both names to output ordinals but never checks duplicates. Both catalog UNION paths therefore accept a query that previously received `42701`. The approved combined-result sorting extension does not justify removing this existing rejection.
+   
+   **Required fix:** retain authored ORDER metadata across lifting and validate named duplicates after UNION output resolution. Cover both catalog paths with repeated-name negatives, distinct-key positives, and quoted-segment controls.
+
+2. **P2 — Authored-AS-only eligibility incorrectly excludes unnamed-source attributes.**  
+   [logical_predicate.go:3152](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:3152) assumes every ordinary inherited attribute is qualified. Consider:
+   
+   ```sql
+   SELECT "_0", 99 AS "_0"
+   FROM VALUES (42)
+   ORDER BY "_0"
+   ```
+   
+   Java’s [visitInlineTableItem:734](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/visitors/QueryVisitor.java:734) creates an **unnamed** operator when no inline definition is supplied. Its generated `_0` attribute remains unqualified. Consequently, both selected expressions qualify for alias lookup, producing `42702 / Ambiguous alias _0`. The new Go filter counts only the authored alias and lets it own ORDER BY.
+   
+   **Required fix:** carry resolved SQL-name qualification or eligibility into output slots. Preserve inherited-name eligibility for unnamed sources while excluding qualified table attributes. Add exact Java probes and both-constructor coverage for unnamed VALUES, including star expansion and a named-source control.
+
+The requested plain-table/grouped repairs otherwise address the preceding findings. The two corrected grouped oracles retain their original queries, exact diagnostics, and positive row assertions. The 35 Java records, three compiled mutation failures, source/log hashes, and restoration checks reconcile. The invalid historical inherited-name mutation and initial gofumpt failure receive no credit.
+
+I reviewed the complete delta, frozen added content, prior reviews/prompts, and corresponding Java source. All **6,411 frozen hashes** match the candidate and workspace. Session metadata confirms **gpt-6-astra / xhigh / read-only**.
+
+Separate execution/publication gates:
+
+- Completed evidence supports **two uncached affected targets, 9,115 RUN/PASS, zero skips**, plus **30-second/four-worker fuzz: 3,937,316 executions**.
+- At the inspected snapshot, full93, race14, `just test`, and nominal1M ABBA lacked completed results and remain uncredited. Fixes require refreezing and verification against the resulting tree. Cancelled suites are not full greens.
+- Bounded GRV/RPC latency attribution remains accepted; universal parity is unestablished. Historical startup-timeout causation still lacks original artifacts. LegacyRaBitQ disable/rebuild remains prerequisite.
+- HEAD remains `71ccd8cf8b3fd0dbafe283e91171818e36af555e`. No commit/push/merge authorization; PR786 remains draft under unchanged publication restrictions.
+
+Storage acceptance and approved nullable-array/raw/scalar/sorting extensions stand. FDB C++ remains **7.3.77**; WS-B–K and whole-upgrade completion remain open. No edits, builds/tests, agents/worktrees, Git mutations, or GitHub contact occurred.

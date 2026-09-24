@@ -43,7 +43,8 @@
   },
   "SA1019": {
     "exclude_files": {
-      "metadata_proto": "uses deprecated proto fields intentionally"
+      "metadata_proto": "uses deprecated proto fields intentionally",
+      "metadata_extension_options": "reads the deprecated (field).indexed option, as Java's setRecords does"
     }
   },
   "SA5011": {

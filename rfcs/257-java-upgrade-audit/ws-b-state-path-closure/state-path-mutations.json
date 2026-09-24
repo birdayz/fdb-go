@@ -1,0 +1,22 @@
+[
+  {
+    "name": "omit-state-conflict",
+    "exit": 3,
+    "compiled_and_killed": true
+  },
+  {
+    "name": "isolate-state-handles",
+    "exit": 3,
+    "compiled_and_killed": true
+  },
+  {
+    "name": "omit-write-liveness",
+    "exit": 3,
+    "compiled_and_killed": true
+  },
+  {
+    "name": "omit-executor-readable-gate",
+    "exit": 3,
+    "compiled_and_killed": true
+  }
+]

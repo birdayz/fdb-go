@@ -188,7 +188,7 @@ func parseHNSWConfig(index *Index) HNSWConfig {
 	}
 	if v, ok := index.Options[IndexOptionHNSWStatsThreshold]; ok {
 		var t int
-		if n, _ := fmt.Sscanf(v, "%d", &t); n == 1 && t > 0 {
+		if n, _ := fmt.Sscanf(v, "%d", &t); n == 1 {
 			config.StatsThreshold = t
 		}
 	}
@@ -312,66 +312,24 @@ func (m *vectorIndexMaintainer) splitPrefixAndVector(entry indexEntry) (prefix t
 // graph, matching Java's VectorIndexMaintainer.updateIndexKeys() which calls
 // state.index.trimPrimaryKey(primaryKeyParts) at line 343.
 func (m *vectorIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
-	// Each entry mutates exactly one per-prefix HNSW graph; serialize only that
-	// graph, matching Java, which takes doWithWriteLock(LockIdentifier(rtSubspace))
-	// where rtSubspace = indexSubspace.subspace(prefixKey) — a PER-PREFIX lock, not
-	// a whole-index one. (The lock lives on the per-transaction context, so it only
-	// orders mutations within a transaction; distinct prefix graphs never contend,
-	// and neither do distinct transactions.) Locking the whole index here was a
-	// Go-only over-serialization that blocked concurrent per-prefix builds.
-	if oldRecord != nil {
-		entries, err := m.evaluateIndex(oldRecord)
+	for i, record := range []*FDBStoredRecord[proto.Message]{oldRecord, newRecord} {
+		if record == nil {
+			continue
+		}
+		entries, err := m.evaluateIndex(record)
 		if err != nil {
-			return fmt.Errorf("evaluate vector index %q for old record: %w", m.index.Name, err)
+			which := "old"
+			if i == 1 {
+				which = "new"
+			}
+			return fmt.Errorf("evaluate vector index %q for %s record: %w", m.index.Name, which, err)
 		}
 		for _, entry := range entries {
-			// Java's remove branch never decodes the vector — it removes by primary key
-			// (graph.Delete keys on the PK) and only skips a null vectorBytes. So on
-			// delete: skip a truly absent/null vector, but for a PRESENT vector —
-			// decodable OR not — proceed to remove by PK. Decode-and-error belongs to
-			// the insert path alone; erroring here would make a record saved-unindexed
-			// by an older binary un-deletable, a Go-only divergence.
-			prefix, vector, verr := m.splitPrefixAndVector(entry)
-			if verr == nil && vector == nil {
-				continue // absent/null vector — nothing was indexed, nothing to remove
-			}
-			trimmedPK, err := m.index.TrimPrimaryKey(entry.primaryKey)
-			if err != nil {
-				return fmt.Errorf("trim primary key for vector index %q delete: %w", m.index.Name, err)
-			}
-			if err := m.withPrefixWriteLock(prefix, func(graph *hnswGraph) error {
-				return graph.Delete(m.tx, trimmedPK)
-			}); err != nil {
+			if err := m.applyIndexEntry(entry, i == 0); err != nil {
 				return err
 			}
 		}
 	}
-
-	if newRecord != nil {
-		entries, err := m.evaluateIndex(newRecord)
-		if err != nil {
-			return fmt.Errorf("evaluate vector index %q for new record: %w", m.index.Name, err)
-		}
-		for _, entry := range entries {
-			prefix, vector, verr := m.splitPrefixAndVector(entry)
-			if verr != nil {
-				return fmt.Errorf("vector index %q: decode vector for new record: %w", m.index.Name, verr)
-			}
-			if vector == nil {
-				continue
-			}
-			trimmedPK, err := m.index.TrimPrimaryKey(entry.primaryKey)
-			if err != nil {
-				return fmt.Errorf("trim primary key for vector index %q insert: %w", m.index.Name, err)
-			}
-			if err := m.withPrefixWriteLock(prefix, func(graph *hnswGraph) error {
-				return graph.Insert(m.tx, trimmedPK, vector)
-			}); err != nil {
-				return err
-			}
-		}
-	}
-
 	return nil
 }
 
@@ -1335,9 +1293,13 @@ func (store *FDBRecordStore) ScanVectorIndexWithPrefix(
 	continuation []byte,
 	scanProperties ScanProperties,
 ) RecordCursor[*IndexEntry] {
-	if !store.IsIndexScannable(index.Name) {
+	state, err := store.readIndexState(index.Name)
+	if err != nil {
+		return &errorCursor[*IndexEntry]{err: err}
+	}
+	if !state.IsScannable() {
 		return &errorCursor[*IndexEntry]{
-			err: &IndexNotReadableError{IndexName: index.Name, CurrentState: store.GetIndexState(index.Name)},
+			err: &IndexNotReadableError{IndexName: index.Name, CurrentState: state},
 		}
 	}
 	maintainer, err := store.getIndexMaintainer(index)
@@ -1378,8 +1340,12 @@ func (store *FDBRecordStore) SearchVectorIndexWithPrefix(
 	k int,
 	efSearch int,
 ) ([]VectorSearchResult, error) {
-	if !store.IsIndexScannable(index.Name) {
-		return nil, &IndexNotReadableError{IndexName: index.Name, CurrentState: store.GetIndexState(index.Name)}
+	state, err := store.readIndexState(index.Name)
+	if err != nil {
+		return nil, err
+	}
+	if !state.IsScannable() {
+		return nil, &IndexNotReadableError{IndexName: index.Name, CurrentState: state}
 	}
 	maintainer, err := store.getIndexMaintainer(index)
 	if err != nil {

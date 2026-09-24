@@ -275,6 +275,14 @@ func TestPermutedAggregateGroupingLayout(t *testing.T) {
 			wantErr: "want *GroupingKeyExpression",
 		},
 		{
+			// Integer.parseInt reads any Unicode decimal digit; Build and the
+			// maintainer accept this size, so the scan must too.
+			name:       "an Arabic-Indic digit",
+			index:      permutedIndexWithOption(root, "\u0662"),
+			wantGroups: 2,
+			wantPrefix: 0,
+		},
+		{
 			name:    "not an integer",
 			index:   permutedIndexWithOption(root, "not-a-number"),
 			wantErr: "invalid permutedSize",

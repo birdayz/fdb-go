@@ -392,7 +392,7 @@ func (store *FDBRecordStore) checkPossiblyRebuild(storeHeader *gen.DataStoreInfo
 	}
 
 	// Find indexes added since the old version.
-	indexesToBuild := store.metaData.GetIndexesToBuildSince(oldMetaDataVersion)
+	indexesToBuild := store.metaData.GetIndexesSince(oldMetaDataVersion)
 	if len(indexesToBuild) > 0 {
 		// Empty-store unsplit-format upgrade: when a store that still omits the unsplit
 		// record suffix gains indexes at format >= SAVE_UNSPLIT_WITH_SUFFIX and is empty,
@@ -426,13 +426,20 @@ func (store *FDBRecordStore) checkPossiblyRebuild(storeHeader *gen.DataStoreInfo
 
 		for _, index := range indexesToBuild {
 			indexOnNewRecordTypes := store.areAllRecordTypesSince(index, oldMetaDataVersion)
-			desiredState := store.indexRebuildPolicy(index, recordCount, indexOnNewRecordTypes)
+			desiredState := IndexStateDisabled
+			if len(index.GetReplacedByIndexNames()) == 0 {
+				desiredState = store.indexRebuildPolicy(index, recordCount, indexOnNewRecordTypes)
+			}
 
 			switch desiredState {
 			case IndexStateReadable:
 				if err := store.RebuildIndex(index); err != nil {
 					return fmt.Errorf("auto-rebuild index %q on metadata version change (%d -> %d): %w",
 						index.Name, oldMetaDataVersion, newMetaDataVersion, err)
+				}
+			case IndexStateWriteOnlyWithQueue:
+				if _, err := store.ClearAndMarkIndexWriteOnlyWithQueue(index.Name); err != nil {
+					return fmt.Errorf("mark index %q write-only with queue: %w", index.Name, err)
 				}
 			case IndexStateWriteOnly:
 				// Always clear and re-mark, matching Java's rebuildOrMarkIndex().
@@ -466,7 +473,7 @@ func (store *FDBRecordStore) checkPossiblyRebuild(storeHeader *gen.DataStoreInfo
 		return fmt.Errorf("update store header after rebuild: %w", err)
 	}
 
-	return nil
+	return store.removeReplacedIndexes()
 }
 
 // areAllRecordTypesSince returns true if every record type associated with
@@ -1081,6 +1088,14 @@ func (store *FDBRecordStore) checkStoreExists() (bool, *gen.DataStoreInfo, error
 // Caller must hold stateMu (write lock) or be in a builder path (pre-concurrent access).
 func (store *FDBRecordStore) writeStoreHeader(storeInfo *gen.DataStoreInfo) error {
 	oldCacheable := store.storeHeader != nil && store.storeHeader.GetCacheable()
+	initializeStamp := false
+	if !oldCacheable && storeInfo.GetCacheable() {
+		stamp, err := store.context.GetMetaDataVersionStamp()
+		if err != nil {
+			return fmt.Errorf("read metadata version stamp before header update: %w", err)
+		}
+		initializeStamp = stamp == nil
+	}
 
 	headerBytes, err := storeInfo.MarshalVT()
 	if err != nil {
@@ -1096,16 +1111,9 @@ func (store *FDBRecordStore) writeStoreHeader(storeInfo *gen.DataStoreInfo) erro
 
 	// Bump metadata version stamp when appropriate.
 	// Matches Java's updateStoreHeaderAsync() cache invalidation logic.
-	newCacheable := storeInfo.GetCacheable()
-	if oldCacheable {
-		// Old header was cacheable → always bump to invalidate cached entries.
+	if oldCacheable || initializeStamp {
+		// Invalidate old cacheable state, or initialize the first stamp.
 		store.context.SetMetaDataVersionStamp()
-	} else if newCacheable {
-		// Transitioning to cacheable → initialize stamp if not yet set.
-		stamp, _ := store.context.GetMetaDataVersionStamp()
-		if stamp == nil {
-			store.context.SetMetaDataVersionStamp()
-		}
 	}
 
 	return nil
@@ -1339,6 +1347,25 @@ func (b *StoreBuilder) validateBuilder() error {
 	return nil
 }
 
+// initializeNewIndexStates applies Java's new-store rebuild policy: replaced
+// originals are disabled without consulting policy, while ordinary indexes
+// have no records to build and remain readable unless explicitly disabled.
+func (store *FDBRecordStore) initializeNewIndexStates() error {
+	store.indexStates = make(map[string]IndexState)
+	for _, index := range store.metaData.GetAllIndexes() {
+		desired := IndexStateDisabled
+		if len(index.GetReplacedByIndexNames()) == 0 {
+			desired = store.indexRebuildPolicy(index, 0, true)
+		}
+		if desired == IndexStateDisabled {
+			if _, err := store.MarkIndexDisabled(index.Name); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // Create creates a new record store, fails if store already exists
 func (b *StoreBuilder) Create() (*FDBRecordStore, error) {
 	startTime := time.Now()
@@ -1363,8 +1390,11 @@ func (b *StoreBuilder) Create() (*FDBRecordStore, error) {
 		return nil, err
 	}
 	store.storeHeader = storeHeader
-	store.indexStates = make(map[string]IndexState)
+	if err := store.initializeNewIndexStates(); err != nil {
+		return nil, err
+	}
 
+	store.rememberRetirementMetadata()
 	b.context.Timer().RecordSince(EventOpenStore, startTime)
 
 	return store, nil
@@ -1374,6 +1404,12 @@ func (b *StoreBuilder) Create() (*FDBRecordStore, error) {
 // When the current metadata version is higher than the stored version,
 // new indexes are automatically rebuilt inline (matching Java's checkVersion flow).
 func (b *StoreBuilder) Open() (*FDBRecordStore, error) {
+	return b.openWithPreflight(nil)
+}
+
+// openWithPreflight admits an indexing session against persisted state before
+// metadata reconciliation can erase the heartbeat evidence used for admission.
+func (b *StoreBuilder) openWithPreflight(preflight func(*FDBRecordStore) error) (*FDBRecordStore, error) {
 	startTime := time.Now()
 	if err := b.validateBuilder(); err != nil {
 		return nil, err
@@ -1396,6 +1432,11 @@ func (b *StoreBuilder) Open() (*FDBRecordStore, error) {
 	if err := validateStoreLockState(store.storeHeader, b.bypassFullStoreLockReason); err != nil {
 		return nil, err
 	}
+	if preflight != nil {
+		if err := preflight(store); err != nil {
+			return nil, err
+		}
+	}
 
 	// Check if metadata has evolved — rebuild new indexes if needed.
 	if !b.skipPossiblyRebuild {
@@ -1404,6 +1445,7 @@ func (b *StoreBuilder) Open() (*FDBRecordStore, error) {
 		}
 	}
 
+	store.rememberRetirementMetadata()
 	b.context.Timer().RecordSince(EventOpenStore, startTime)
 
 	return store, nil
@@ -1435,7 +1477,9 @@ func (b *StoreBuilder) CreateOrOpen() (*FDBRecordStore, error) {
 			return nil, err
 		}
 		store.storeHeader = storeHeader
-		store.indexStates = make(map[string]IndexState)
+		if err := store.initializeNewIndexStates(); err != nil {
+			return nil, err
+		}
 	} else {
 		// Validate format version is supported.
 		if err := store.validateFormatVersion(store.storeHeader); err != nil {
@@ -1454,6 +1498,7 @@ func (b *StoreBuilder) CreateOrOpen() (*FDBRecordStore, error) {
 		}
 	}
 
+	store.rememberRetirementMetadata()
 	b.context.Timer().RecordSince(EventOpenStore, startTime)
 
 	return store, nil

@@ -21,6 +21,9 @@ import com.apple.foundationdb.record.RecordLayerDemo;
 import com.apple.foundationdb.record.RecordLayerDemo.Order;
 import com.apple.foundationdb.linear.DoubleRealVector;
 import com.apple.foundationdb.linear.RealVector;
+import com.apple.foundationdb.linear.Metric;
+import com.apple.foundationdb.rabitq.RaBitQuantizer;
+import com.apple.foundationdb.rabitq.EncodedRealVector;
 import com.apple.foundationdb.subspace.Subspace;
 import com.apple.foundationdb.tuple.Tuple;
 import com.google.protobuf.ByteString;
@@ -29,6 +32,7 @@ import com.google.protobuf.Message;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 
@@ -43,6 +47,66 @@ import java.util.Map;
 class VectorIndexSteps extends ConformanceBase {
 
     private static final int NUM_DIMENSIONS = 3;
+
+    @ConformanceStep("encodeRaBitQVector")
+    public String encodeRaBitQVector(String vectorJson, long numExBits) {
+        RaBitQuantizer quantizer = new RaBitQuantizer(Metric.EUCLIDEAN_SQUARE_METRIC,
+            Math.toIntExact(numExBits));
+        return HexFormat.of().formatHex(quantizer.encode(
+            new DoubleRealVector(parseVector(vectorJson))).getRawData());
+    }
+
+    @ConformanceStep("decodeRaBitQVector")
+    public String decodeRaBitQVector(String encodedHex, long numDimensions, long numExBits) {
+        EncodedRealVector vector = EncodedRealVector.fromBytes(HexFormat.of().parseHex(encodedHex),
+            Math.toIntExact(numDimensions), Math.toIntExact(numExBits));
+        return HexFormat.of().formatHex(serializeVector(vector.getData()));
+    }
+
+    @ConformanceStep("exerciseRebuiltRaBitQIndex")
+    public Map<String, Object> exerciseRebuiltRaBitQIndex(String clusterFile, byte[] subspace,
+            byte[] metadataBytes, String indexName, String action, long orderId,
+            String vectorJson, String tenantName) throws com.google.protobuf.InvalidProtocolBufferException {
+        com.google.protobuf.ExtensionRegistry registry = com.google.protobuf.ExtensionRegistry.newInstance();
+        com.apple.foundationdb.record.RecordMetaDataOptionsProto.registerAllExtensions(registry);
+        RecordMetaData metadata = RecordMetaData.build(
+            com.apple.foundationdb.record.RecordMetaDataProto.MetaData.parseFrom(metadataBytes, registry));
+        return runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = FDBRecordStore.newBuilder().setContext(context)
+                .setSubspace(new Subspace(subspace)).setMetaDataProvider(metadata).open();
+            Index index = metadata.getIndex(indexName);
+            if (action.equals("save")) {
+                com.google.protobuf.Descriptors.Descriptor descriptor = metadata.getRecordType("Order").getDescriptor();
+                store.saveRecord(com.google.protobuf.DynamicMessage.newBuilder(descriptor)
+                    .setField(descriptor.findFieldByName("order_id"), orderId)
+                    .setField(descriptor.findFieldByName("vector_data"), ByteString.copyFrom(serializeVector(parseVector(vectorJson))))
+                    .build());
+            } else if (action.equals("delete")) {
+                if (!store.deleteRecord(Tuple.from(orderId))) {
+                    throw new IllegalStateException("migration test record missing: " + orderId);
+                }
+            } else if (!action.equals("search")) {
+                throw new IllegalArgumentException("unknown migration test action: " + action);
+            }
+            Map<String, Object> result = new HashMap<>();
+            result.put("state", store.getIndexState(index).name());
+            VectorIndexScanBounds bounds = new VectorIndexScanBounds(TupleRange.ALL,
+                Comparisons.Type.DISTANCE_RANK_LESS_THAN_OR_EQUAL,
+                new DoubleRealVector(parseVector(vectorJson)), 100, VectorIndexScanOptions.empty());
+            try {
+                List<IndexEntry> entries = store.scanIndex(index, bounds, null, ScanProperties.FORWARD_SCAN).asList().join();
+                List<Long> ids = new ArrayList<>();
+                for (IndexEntry entry : entries) {
+                    ids.add(entry.getPrimaryKey().getLong(0));
+                }
+                result.put("ids", ids);
+                result.put("refused", false);
+            } catch (com.apple.foundationdb.record.provider.foundationdb.ScanNonReadableIndexException exception) {
+                result.put("refused", true);
+            }
+            return result;
+        });
+    }
 
     /**
      * Create metadata with an ungrouped VECTOR index on Order.vector_data.
@@ -87,6 +151,49 @@ class VectorIndexSteps extends ConformanceBase {
             buf.putDouble(v);
         }
         return buf.array();
+    }
+
+    @ConformanceStep("replayVectorPendingEntry")
+    public Map<String, Object> replayVectorPendingEntry(String clusterFile, byte[] subspace,
+            String operation, String payloadHex, String tenantName) {
+        return runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = openVectorStore(context, subspace);
+            Index index = store.getRecordMetaData().getIndex("order_vector");
+            FDBStoredRecord<Order> oldRecord = FDBStoredRecord.newBuilder(Order.newBuilder()
+                .setOrderId(42).setVectorData(ByteString.copyFrom(serializeVector(new double[]{1, 2, 3}))).build())
+                .setPrimaryKey(Tuple.from(42L)).setRecordType(store.getRecordMetaData().getRecordType("Order")).build();
+            FDBStoredRecord<Order> newRecord = FDBStoredRecord.newBuilder(Order.newBuilder()
+                .setOrderId(42).setVectorData(ByteString.copyFrom(serializeVector(new double[]{4, 5, 6}))).build())
+                .setPrimaryKey(Tuple.from(42L)).setRecordType(store.getRecordMetaData().getRecordType("Order")).build();
+            com.apple.foundationdb.record.provider.foundationdb.IndexMaintainer maintainer = store.getIndexMaintainer(index);
+            com.google.protobuf.Any captured;
+            if (operation.equals("insert")) {
+                captured = maintainer.serializePendingWriteQueue(null, oldRecord);
+            } else if (operation.equals("update")) {
+                captured = maintainer.serializePendingWriteQueue(oldRecord, newRecord);
+            } else if (operation.equals("delete")) {
+                captured = maintainer.serializePendingWriteQueue(newRecord, null);
+            } else {
+                throw new IllegalArgumentException("unknown pending operation: " + operation);
+            }
+            try {
+                maintainer.updateFromQueue(com.google.protobuf.Any.parseFrom(HexFormat.of().parseHex(payloadHex))).join();
+            } catch (com.google.protobuf.InvalidProtocolBufferException ex) {
+                throw new IllegalArgumentException(ex);
+            }
+            VectorIndexScanBounds bounds = new VectorIndexScanBounds(TupleRange.ALL,
+                Comparisons.Type.DISTANCE_RANK_LESS_THAN_OR_EQUAL,
+                new DoubleRealVector(new double[]{4, 5, 6}), 100, VectorIndexScanOptions.empty());
+            List<Long> ids = new ArrayList<>();
+            for (IndexEntry entry : store.scanIndex(index, bounds, null, ScanProperties.FORWARD_SCAN).asList().join()) {
+                ids.add(entry.getPrimaryKey().getLong(0));
+            }
+            Map<String, Object> result = new HashMap<>();
+            result.put("payload", HexFormat.of().formatHex(captured.toByteArray()));
+            result.put("ids", ids);
+            result.put("recordCount", store.scanRecords(null, ScanProperties.FORWARD_SCAN).getCount().join());
+            return result;
+        });
     }
 
     @ConformanceStep("saveOrderWithVectorIndex")

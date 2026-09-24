@@ -157,21 +157,18 @@ func withNullability(t Type, nullable bool) Type {
 	}
 }
 
-// TypeProtoRepository is the protobuf surface of a type repository: Java's
-// TypeRepository.Builder plus the built TypeRepository, folded into one
-// object because Go has no need for the two-phase split (Java's Builder
-// exists to accumulate a FileDescriptorProto that is validated once; here the
-// file is recompiled on demand and memoised).
-//
-// It is Java's addTypeIfNeeded dedup: a Type already defined is never defined
-// twice, and its descriptor is handed back from the cache. Safe for
-// concurrent use — a single repository is shared by every row of a query, and
-// rows are produced concurrently.
+// TypeProtoRepository collects computed types and publishes their descriptor graph.
+// RegisterType validates each complete closure transactionally. Seal compiles the
+// final graph before any plan binds descriptors; subsequent registration cannot
+// replace it. Incremental MessageDescriptorFor callers remain supported, but only
+// the sealed publication path guarantees identity across registrations.
 type TypeProtoRepository struct {
 	mu sync.Mutex
 	// messages accumulates the synthesised DescriptorProtos in definition
 	// order — Java's fileDescProtoBuilder.addMessageType.
 	messages []*descriptorpb.DescriptorProto
+	enums    []*descriptorpb.EnumDescriptorProto
+	sealed   bool
 	// entries is Java's typeToNameMap BiMap. A LINEAR SCAN over Type.Equals,
 	// not a hash map over a derived key: Equals is the authoritative
 	// structural comparison this package already defines, and an invented
@@ -225,21 +222,31 @@ func (r *TypeRepository) MessageDescriptorFor(t Type) (protoreflect.MessageDescr
 // MessageDescriptorFor returns the synthetic descriptor for t, defining it on
 // first use and serving it from the cache afterwards.
 func (p *TypeProtoRepository) MessageDescriptorFor(t Type) (protoreflect.MessageDescriptor, error) {
-	if t == nil {
+	if isNilBinding(t) {
 		return nil, &ProtoTypeError{TypeName: "<nil>", Reason: "nil type"}
+	}
+	switch t.(type) {
+	case *RecordType, *ArrayType:
+	default:
+		return nil, &ProtoTypeError{TypeName: t.String(), Reason: "type has no message form"}
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	name, err := p.defineAndResolveLocked(t)
-	if err != nil {
+	if err := p.registerTypeLocked(t); err != nil {
 		return nil, err
 	}
-	if name == "" {
-		return nil, &ProtoTypeError{TypeName: t.String(), Reason: "type has no message form"}
+	if array, ok := t.(*ArrayType); ok && array.ElementType != nil {
+		t = nullableArrayWrapperType(array.ElementType)
 	}
+	// Registration owns all definition work, including array wrappers. Lookup
+	// must never extend or invalidate a graph that may already be sealed.
 	idx := p.indexOfLocked(t)
-	if idx >= 0 && p.entries[idx].desc != nil {
+	if idx < 0 {
+		return nil, &ProtoTypeError{TypeName: t.String(), Reason: "type has no registered message form"}
+	}
+	name := p.entries[idx].name
+	if p.entries[idx].desc != nil {
 		return p.entries[idx].desc, nil
 	}
 	fd, err := p.compileLocked()
@@ -253,10 +260,74 @@ func (p *TypeProtoRepository) MessageDescriptorFor(t Type) (protoreflect.Message
 			Reason:   fmt.Sprintf("synthesised message %q missing from the compiled file", name),
 		}
 	}
-	if idx >= 0 {
-		p.entries[idx].desc = md
-	}
+	p.entries[idx].desc = md
 	return md, nil
+}
+
+// SealedTypeRepositoryError reports an attempt to extend a published graph.
+// A new type requires a new repository, never mutation of descriptors in use.
+type SealedTypeRepositoryError struct{ TypeName string }
+
+func (e *SealedTypeRepositoryError) Error() string {
+	return fmt.Sprintf("sealed type repository has no registered type %s", e.TypeName)
+}
+
+// RegisterType validates a complete type closure without publishing descriptors.
+// Failed roots leave neither names nor partial definitions behind.
+func (p *TypeProtoRepository) RegisterType(t Type) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.registerTypeLocked(t)
+}
+
+func (p *TypeProtoRepository) registerTypeLocked(t Type) error {
+	if t == nil {
+		return &ProtoTypeError{TypeName: "<nil>", Reason: "nil type"}
+	}
+	owned, err := copyPromotionType(t, make(map[Type]bool))
+	if err != nil {
+		return &ProtoTypeError{TypeName: fmt.Sprintf("%T", t), Reason: err.Error()}
+	}
+	t = owned
+	if p.indexOfLocked(t) >= 0 {
+		return nil
+	}
+	if p.sealed {
+		return &SealedTypeRepositoryError{TypeName: t.String()}
+	}
+	messages, enums, counter, compiled := p.messages, p.enums, p.counter, p.compiled
+	entries := append([]typeNameEntry(nil), p.entries...)
+	_, err = p.defineAndResolveLocked(t)
+	if err == nil {
+		_, err = p.compileLocked()
+	}
+	if err != nil {
+		p.messages, p.enums, p.counter, p.compiled, p.entries = messages, enums, counter, compiled, entries
+		return err
+	}
+	// Preparation's validation graph must not escape. Seal (or an incremental
+	// lookup) compiles the graph that callers may bind.
+	p.invalidateLocked()
+	return nil
+}
+
+// Seal publishes one immutable descriptor graph. Lookups are safe concurrently;
+// callers must register every type before handing any descriptor to a plan.
+func (p *TypeProtoRepository) Seal() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if _, err := p.compileLocked(); err != nil {
+		return err
+	}
+	p.sealed = true
+	return nil
+}
+
+func (p *TypeProtoRepository) invalidateLocked() {
+	p.compiled = nil
+	for i := range p.entries {
+		p.entries[i].desc = nil
+	}
 }
 
 // indexOfLocked finds t's cache entry by CANONICAL structural equality.
@@ -313,7 +384,7 @@ func (p *TypeProtoRepository) registerLocked(t Type, name string) error {
 		}
 	}
 	p.entries = append(p.entries, typeNameEntry{typ: canonical, name: name})
-	p.compiled = nil
+	p.invalidateLocked()
 	return nil
 }
 
@@ -337,6 +408,8 @@ func (p *TypeProtoRepository) defineProtoTypeLocked(t Type) error {
 		return p.defineRecordLocked(v)
 	case *ArrayType:
 		return p.defineArrayLocked(v)
+	case *EnumType:
+		return p.defineEnumLocked(v)
 	default:
 		return nil
 	}
@@ -400,12 +473,41 @@ func (p *TypeProtoRepository) defineRecordLocked(rt *RecordType) error {
 	return nil
 }
 
+// defineEnumLocked follows Type.Enum.defineProtoType, including escaped member
+// names and the declared numeric values (not their positions).
+func (p *TypeProtoRepository) defineEnumLocked(et *EnumType) error {
+	name := et.EnumName
+	if name == "" {
+		name = p.uniqueTypeNameLocked()
+	} else {
+		var err error
+		name, err = protoname.ToProtoBufCompliantName(name)
+		if err != nil {
+			return &ProtoTypeError{TypeName: et.String(), Reason: err.Error()}
+		}
+	}
+	definition := &descriptorpb.EnumDescriptorProto{Name: proto.String(name)}
+	for _, member := range et.Values {
+		memberName, err := protoname.ToProtoBufCompliantName(member.Name)
+		if err != nil {
+			return &ProtoTypeError{TypeName: et.String(), Reason: err.Error()}
+		}
+		definition.Value = append(definition.Value, &descriptorpb.EnumValueDescriptorProto{Name: proto.String(memberName), Number: proto.Int32(member.Number)})
+	}
+	if err := p.registerLocked(et, name); err != nil {
+		return err
+	}
+	p.enums = append(p.enums, definition)
+	return nil
+}
+
 // defineArrayLocked ports Type.Array.defineProtoType (Type.java:3251-3262).
 // A NULLABLE array of a known element type is represented by a synthetic
 // single-field wrapper message `{ repeated E values = 1; }` — the
 // NullableArrayWrapper identity — because a bare repeated field cannot
 // distinguish "empty array" from NULL. A non-nullable array flattens into its
-// parent as a repeated field and defines only its element type.
+// parent as a repeated field. Go also defines its wrapper so standalone array
+// descriptor lookup has a message form, irrespective of registration order.
 func (p *TypeProtoRepository) defineArrayLocked(at *ArrayType) error {
 	if at.ElementType == nil {
 		return &ProtoTypeError{TypeName: at.String(), Reason: "erased array (no element type)"}
@@ -415,11 +517,10 @@ func (p *TypeProtoRepository) defineArrayLocked(at *ArrayType) error {
 	if err := p.registerLocked(at, p.uniqueTypeNameLocked()); err != nil {
 		return err
 	}
-	if at.Nullable && at.ElementType.Code() != TypeCodeUnknown {
-		_, err := p.defineAndResolveLocked(nullableArrayWrapperType(at.ElementType))
-		return err
-	}
-	_, err := p.defineAndResolveLocked(at.ElementType)
+	// MessageDescriptorFor exposes a wrapper even for a flat array root.
+	// Validate that complete representation inside the registration transaction;
+	// an UNKNOWN element cannot leave a registered array with no usable wrapper.
+	_, err := p.defineAndResolveLocked(nullableArrayWrapperType(at.ElementType))
 	return err
 }
 
@@ -495,16 +596,11 @@ func (p *TypeProtoRepository) addProtoFieldLocked(
 	case TypeCodeUuid:
 		f.TypeName = proto.String(uuidProtoTypeName)
 	case TypeCodeEnum:
-		// Java emits an EnumDescriptorProto here. Go's plan-time computed
-		// records cannot carry one: no expression in this engine produces a
-		// values.EnumType (enums arrive only from a STORED descriptor, which
-		// already has its own). Loud rather than silently emitting a wrong
-		// shape — if an expression ever does produce one, this is where the
-		// EnumDescriptorProto arm goes.
-		return &ProtoTypeError{
-			TypeName: t.String(),
-			Reason:   "enum types have no synthesised form; they come from a stored descriptor",
+		if typeName == "" {
+			return &ProtoTypeError{TypeName: t.String(), Reason: "enum type was not defined"}
 		}
+		f.Type = descriptorpb.FieldDescriptorProto_TYPE_ENUM.Enum()
+		f.TypeName = proto.String(typeName)
 	default:
 		pt, ok := primitiveProtoType(t.Code())
 		if !ok {
@@ -568,6 +664,7 @@ func (p *TypeProtoRepository) compileLocked() (protoreflect.FileDescriptor, erro
 		Name:        proto.String(syntheticFileName),
 		Dependency:  []string{gen.File_tuple_fields_proto.Path()},
 		MessageType: p.messages,
+		EnumType:    p.enums,
 	}
 	resolver := &protoregistry.Files{}
 	// Duplicate registration is not an error worth surfacing: the global
@@ -618,5 +715,6 @@ func (p *TypeProtoRepository) FileDescriptorProtoForTest() *descriptorpb.FileDes
 		Name:        proto.String(syntheticFileName),
 		Dependency:  []string{gen.File_tuple_fields_proto.Path()},
 		MessageType: p.messages,
+		EnumType:    p.enums,
 	}
 }

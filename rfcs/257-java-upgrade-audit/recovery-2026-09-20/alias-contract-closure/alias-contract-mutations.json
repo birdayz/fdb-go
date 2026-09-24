@@ -1,0 +1,80 @@
+[
+  {
+    "name": "whole-object-qualification",
+    "file": "pkg/relational/core/embedded/logical_predicate.go",
+    "old": "(source.UnqualifiedOutput || column.UnqualifiedOutput)",
+    "new": "(source.UnqualifiedOutput || column.UnqualifiedOutput && false)",
+    "mutation_sha256": "513e4a78d69187401c031eb2867d8b60f2c582639e00082f691b7afd17773c2b",
+    "command": [
+      "bazelisk",
+      "test",
+      "//pkg/relational/core/embedded:embedded_test",
+      "//pkg/relational/sqldriver:sqldriver_test",
+      "--nocache_test_results",
+      "--test_output=all",
+      "--test_arg=--test.run=^TestOrderByExactMetadata_|^TestFDB_NoFromSelectProbe$"
+    ],
+    "exit": 3,
+    "failures": [
+      "TestOrderByExactMetadata_UnnamedSourceAlias (0.04s)",
+      "TestOrderByExactMetadata_UnnamedSourceAlias/SELECT_x,_99_AS_x_FROM_items_t,_items_t.items_AS_x_ORDER_BY_x,_x (0.01s)",
+      "TestFDB_NoFromSelectProbe (0.05s)",
+      "TestFDB_NoFromSelectProbe/whole_object_alias_precedence (0.00s)"
+    ],
+    "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-contract-mutant2-whole-object-qualification.log",
+    "sha256": "3f3d9d341617abbbbbe1dbee31d320fcdd1cbd9909d6ca8fff4240ef7ef02b85"
+  },
+  {
+    "name": "projectionless-union",
+    "file": "pkg/relational/core/embedded/logical_predicate.go",
+    "old": "// Output labels are a property of the branch, not of an optional project.",
+    "new": "if findProjection(leftBranch) == nil {\n\t\treturn nil\n\t}\n\t// Output labels are a property of the branch, not of an optional project.",
+    "mutation_sha256": "bd2dad75c03da087889c7323a962a4cb82c5f6056bb885a2064ae5a6406b208c",
+    "command": [
+      "bazelisk",
+      "test",
+      "//pkg/relational/core/embedded:embedded_test",
+      "//pkg/relational/sqldriver:sqldriver_test",
+      "--nocache_test_results",
+      "--test_output=all",
+      "--test_arg=--test.run=^TestOrderByExactMetadata_|^TestFDB_NoFromSelectProbe$"
+    ],
+    "exit": 3,
+    "failures": [
+      "TestOrderByExactMetadata_UnionNamedDuplicates (0.03s)",
+      "TestOrderByExactMetadata_UnionNamedDuplicates/SELECT_*_FROM_t_UNION_ALL_SELECT_id,_v_FROM_t_ORDER_BY_id,_id (0.01s)",
+      "TestOrderByExactMetadata_UnionNamedDuplicates/SELECT_*_FROM_t_UNION_ALL_SELECT_*_FROM_t_ORDER_BY_id,_id (0.04s)",
+      "TestOrderByExactMetadata_UnionNamedDuplicates/SELECT_*_FROM_t_UNION_ALL_SELECT_*_FROM_t_ORDER_BY_missing,_missing (0.03s)",
+      "TestOrderByExactMetadata_UnionNamedDuplicates/SELECT_*_FROM_t_UNION_ALL_SELECT_*_FROM_t_ORDER_BY_id,_v (0.04s)",
+      "TestFDB_NoFromSelectProbe (0.05s)",
+      "TestFDB_NoFromSelectProbe/union_star_duplicate_name (0.00s)",
+      "TestFDB_NoFromSelectProbe/union_star_missing_name (0.04s)",
+      "TestFDB_NoFromSelectProbe/union_star_distinct_keys (0.16s)"
+    ],
+    "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-contract-mutant2-projectionless-union.log",
+    "sha256": "be73378f14ec53306c977a5face57ec33d3993cc6fe9a8504ba708fd818ad8c1"
+  },
+  {
+    "name": "qualified-union-segments",
+    "file": "pkg/relational/core/embedded/logical_predicate.go",
+    "old": "ordinal, found := leftOrdinals[bareName]",
+    "new": "ordinal, found := leftOrdinals[upper]\n\t\tif !found {\n\t\t\tordinal, found = leftOrdinals[bareName]\n\t\t}",
+    "mutation_sha256": "4fbe54922eb1cf16a29ec148bb889e052352ae8000bb445f86b6b320b9acf756",
+    "command": [
+      "bazelisk",
+      "test",
+      "//pkg/relational/core/embedded:embedded_test",
+      "//pkg/relational/sqldriver:sqldriver_test",
+      "--nocache_test_results",
+      "--test_output=all",
+      "--test_arg=--test.run=^TestOrderByExactMetadata_|^TestFDB_NoFromSelectProbe$"
+    ],
+    "exit": 3,
+    "failures": [
+      "TestOrderByExactMetadata_UnionNamedDuplicates (0.04s)",
+      "TestOrderByExactMetadata_UnionNamedDuplicates/SELECT_id_AS_\"T.V\",_v_FROM_t_UNION_ALL_SELECT_id_AS_\"T.V\",_v_FROM_t_ORDER_BY_\"T.V\",_t.v (0.02s)"
+    ],
+    "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-contract-mutant2-qualified-union-segments.log",
+    "sha256": "eb234b165ab90275d044d537289f00239991b92622f27f40bc9a851cd13caad1"
+  }
+]

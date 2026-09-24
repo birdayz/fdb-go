@@ -1,0 +1,85 @@
+**NAK.** Tree `e23ae6f5589da822c878fb9ab436db9a09095ef2`; `ws-j-design.md` SHA256 `3308f31a9674a12f79514a357d59694900289454f235ef12e1733fb7dab47254`, 3178 lines (both recomputed from the tree). Java is at `fdacd162a`. The review was read-only: I ran no tests, probes or mutations.
+
+## Measured, and it holds
+- **Evidence binds to the tree.** Six WS-J files at the candidate hash-match `wsc-v10/ev2/src.sha`: `metadata.go`, `metadata_proto.go`, `key_expression_proto.go`, `errors.go`, `metadata_validate_records.go` and the WS-J spec. `512ae248` and the candidate differ in no WS-J code.
+- **Oracle:** `oracle.log` shows 61 of 61 passed, the tally unchanged at 166/4/180/4/24/101, and BUILT-TWICE 354. The absent-root row is at `:796`.
+- **HeldBy mutation:** 1 marker, exit 3, exactly the array-element subtest reddens, and the file is restored. The mutated line (`:515`) matches the candidate's blob, but the run was on the working tree at `71ccd8cf8`.
+- **m97, m98, m103** ran on `3b1587fa`. There, `metadata_proto.go` and `key_expression_proto.go` differ from the candidate only by WS-C's Then hunks, which are outside the mutated sites.
+
+## HIGH
+**H1. The store-open probe can refuse stores Java opens** (`:2520-2533`).
+- A record type U whose primary key does not begin with `recordType()` stores its records under `(p, …)` whenever its first key element equals p. The limit-1 read at p then finds U's record.
+- The design skips the probe only when another type's EXPLICIT key equals p. So Go locks itself out of a Java store, the outcome v14 withdrew `LegacyFramingError` to avoid.
+- "Java never writes a record of T under that number" holds only under `FDBMetaDataStore`'s validator. A Java store opened with in-code metadata gets no evolution check.
+- A store holding rows under both p and the smallest number gets a remedy (explicit key p) that strands the rows under the smallest number.
+- **Fix:**
+  - require the found record to parse as T through one of T's union fields, or require every type's key to be type-prefixed;
+  - also read the target's number, and refuse a store holding both with no route offered;
+  - scope the "never" claim.
+
+**H2. Section 3.6 says deserialization becomes "Java's, whole", but `NullStandin` is missing.**
+- Go keeps only a UNIQUE bit (`key_expression.go:91-98`), and its comment says UNIQUE is "not yet" evaluated.
+- A Java `NOT_NULL` field is read as NULL, where Java reads the type's default (`FieldKeyExpression.java:205`, `:234`). It is re-saved as `NOT_UNIQUE`.
+- So primary-key and index bytes for unset fields differ from Java's. That is a wire difference.
+- It is not tracked anywhere: `NullStandin` and "null interpretation" match 0 lines in DIVERGENCES.md, TODO.md and the design. The positive control, PENDING, matches 19, 77 and 4 in the same files.
+- **Fix:** port `NullStandin` in step 3, or narrow 3.6's claim and book the gap.
+
+## MEDIUM
+**M1. Several of 3.6's refusals are ones Java cannot reach as stated.**
+- `field_name` and `fan_type` are proto2 `required` (`record_key_expression.proto:36-37`), and FanType is a closed enum.
+  - Stored bytes fail at parse in both engines: Java's `parseFrom`, and Go's `proto.Unmarshal` (`metadata_store.go:146`, `fdb_template_catalog.go:286`).
+  - The arms only apply to protos built in memory, so the design must say how the JVM oracle builds them (for example `buildPartial`).
+- "Invalid fan type" (`KeyExpression.java:197`) is dead code in Java: a wire value 7 becomes an unknown field, and Java reports "missing fan type". The `:1637` pin expecting "Invalid fan type 7" is wrong.
+- Java also wraps a failed record-count-key read (`RecordMetaDataBuilder.java:260-266`; Go's `:366`), which `:1625-1627` leaves out.
+- Function refusals:
+  - Java's arity check counts `arguments.getColumnSize()`, and `fromProto` wraps any `RecordCoreException` from `create` (`FunctionKeyExpression.java:236-240`).
+  - Go's registry has no arity bounds.
+  - Go's registry holds `get_versionstamp_incarnation`, which Java has only as a SQL Value, so Go would load a key Java refuses.
+  - Lucene and geo functions move from an evaluation-time failure to a whole-store load refusal in Go.
+- The citation `:1619` is stale; the error is at `key_expression.go:1569-1570`.
+
+**M2. The framing policy contradicts itself.**
+- Shape (d) stays refused "because a loader cannot tell who wrote the records" (`:2352-2353`), including SQL templates Java creates (r).
+- 9 (y) (`:3141-3145`) withdraws the (f)/(g) refusal because a refusal locks Go out of Java stores.
+- **Fix:** state the criterion that separates them (which engine's convention produced the shape), apply it to both, and put both to the owner as one decision.
+
+**M3. The writer argument is per metadata, but the writer is a property of each record store** (`:2458-2474`).
+- One `FDBMetaDataStore` can serve a Go-written store and a Java-written store. No single writer is then correct. Declare this.
+- For shape (g) with a type-prefixed key, the route should check the stated writer with the probe's reads.
+
+**M4. `checkReservedNumbers(storedProto, newProto)` (`:2635`) cannot pair messages "as the validator pairs them" for the two legacy writers.**
+- The pairing needs `union` and the writer's framing. With the raw proto alone, a `_X` of type Y pairs stored Y with the new X.
+- "Every reservation of every message" conflicts with pairing. Unpaired messages include the candidate the migration's (d) arms remove. If removing it counts as dropping its reservations, the migration refuses whenever that candidate has a `reserved` statement.
+
+## LOW
+1. **9 (x) is wrong about Java** (`:3128-3130`).
+   - Java refuses `RepairSchema` of a gone version too: `repairSchema` → `loadSchema` → `parseSchemaTable :489` loads (t, v). Section 2 (`:649-651`) already says so.
+   - So Java cannot serve such a tenant; its only exit is re-issuing (t, v). Correct the owner item.
+2. **The probe has no stated exit for a Java store of shape (g):** it reads on every open. An ordinary save setting an explicit key equal to the smallest number silences it; Java's validator admits that, since the key value does not change.
+3. **The migration's writer is implicit.** Every arm's input except (d) toward the target's choice was written by pre-upgrade Go. That includes (c) files whose union both builds choose. State it.
+4. **Wording and citations:**
+   - (z) says "limit 1", but `LoadSchemaTemplate` reads through a cursor's `OnNext`. The conflict range is at least as wide, so the conclusion holds.
+   - The `LegacyRecordTypeKeyError` sentence sits under (z).
+   - `:2337` cites `DdlVisitor.java:223-224`, which is column-nullability code; `build()` is at `:263`, `:281` and `:319`.
+
+## v13 findings
+- **Resolved** (text, as designed):
+  - Graefe H1, M1, M2, L1–L5;
+  - storage H1, M1, M2, L2–L7;
+  - Torvalds 1–7 and 9;
+  - Graefe F6 and storage #11.
+- **Checked against source:**
+  - The smallest-field key (`RecordType.java:171-179`) and the last-field overwrite (`e48f5b496:metadata.go:340-374`, `:1837`) are as described.
+  - `EnumType.Equal` (`:189`) compares values in order.
+  - `VectorType.Equal` (`:45`) compares precision and dimensions, which is what `vectorOptions` stores.
+  - Java refuses a field rename by default (`MetaDataEvolutionValidator.java:288-300`), so the restore's checks also catch two same-typed columns swapped between histories.
+  - Section 9 (z)'s reverse scan is serializable.
+  - The DIVERGENCES entries and the appended TODO v14 block are present.
+- **Partly resolved:** Torvalds 8 and storage L1, the deserialization port; see H2 and M1.
+
+## Graefe lens
+- Sections 3.3–3.5, 4 and 6 are unchanged in v14. The anchor I spot-checked, `visitEnumDefinition :481`, holds.
+- The planned class hierarchy is Java's shape: `KeyExpressionDeserializationError` unwraps to `RecordCoreError`, and `MetaDataProtoDeserializationError` unwraps to both `MetaDataError` and its cause.
+- Reading (f)/(g) as the target does is Java's reading. The residual is scoped correctly apart from H1, M2 and M3.
+
+Everything in steps 1–3 is unbuilt: all findings above come from reading source, and none was measured.

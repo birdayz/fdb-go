@@ -1,0 +1,30 @@
+**NAK — IMPLEMENTATION CODE** at `c48ee4de085fbc77ebe98b857c002b6d00a6300d`.
+
+**P2 — Repair2 remains incomplete for qualified access to the whole-object attribute.**
+
+Using the existing `items_t` fixture:
+
+```sql
+SELECT x.x, 99 AS x
+FROM items_t, items_t.items AS x
+ORDER BY x, x
+```
+
+Pinned Java resolves `X.X` to the whole-struct attribute named **unqualified `X`**: [SemanticAnalyzer.java:598](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/SemanticAnalyzer.java:598) matches the operator-qualified spelling but returns the original attribute. [ExpressionVisitor.java:186](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/visitors/ExpressionVisitor.java:186) preserves that name without `AS`. Both outputs therefore participate in alias lookup, requiring **42702 / Ambiguous alias X**.
+
+Go has two obstacles on this path:
+
+- Qualified projection binding rejects the exact record-valued QOV: [plan_visitor.go:1855](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/plan_visitor.go:1855) accepts only non-record QOVs. The ordinary unique-alias path consequently reaches an ordinal-binding error before alias validation—[visitor:720](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/plan_visitor.go:720), [catalog shell:2369](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:2369).
+- Fixing that projection gate alone is insufficient. [orderByOutputAliasNames:3177](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:3177) discards every multi-segment SELECT reference before consulting `Column.UnqualifiedOutput`. It would count only `99 AS x`, leaving the ambiguity undetected and allowing the later duplicate-key diagnostic.
+
+**Required fix:** preserve the exact whole-object value through qualified projection binding, and derive alias eligibility/name from the resolved output attribute rather than the authored reference’s segment count. Retain ordinary member qualification. Add both-constructor and pinned-Java regressions for this qualified whole-object collision, asserting the exact ambiguity diagnostic and retaining the member-owner control. The current [whole-object regression:997](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/order_by_exact_metadata_test.go:997) exercises only bare `x`.
+
+This finding is source-derived; I executed neither the reproducer nor tests.
+
+The preceding UNION NAK is addressed: [logical_predicate.go:7325](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:7325) uses LEFT output labels independently of projection presence, binds ordinals structurally, then checks authored duplicates.
+
+I reviewed the complete 19-file delta, frozen additions, prior NAKs/prompts, and pinned Java source. All **6,440 frozen hashes** match tree and workspace. Evidence reconciles **9,352 RUN/PASS entries across four uncached targets**, **47 Java records**, and three compiled mutation kills with matching reconstructed source/log hashes. The initial compilation failure and historic invalid mutation receive no credit.
+
+**Execution gates:** the single inspected snapshot credits fuzz **30 seconds / four workers / 4,033,280 executions**, without coverage guidance. Full93, race15, `just test`, and nominal1M ABBA remain uncredited. The interrupted prior full run is not green. Repairs require refreezing and verification.
+
+**Publication/scope:** session metadata confirms **gpt-6-astra/xhigh/read-only**. HEAD is unchanged; no edits, builds/tests, agents, worktrees, Git mutations, or GitHub contact occurred. Commit/push/merge remain unauthorized; PR786 stays draft. WS-B–K remain open. Storage-scope ACK, FDB C++7.3.77, approved extensions, and legacyRaBitQ disable/rebuild prerequisite stand. Bounded latency attribution stands; universal parity and historical startup-timeout causation remain unestablished.

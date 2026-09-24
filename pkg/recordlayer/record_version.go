@@ -314,22 +314,19 @@ func (v *FDBRecordVersion) Prev() (*FDBRecordVersion, error) {
 	return &FDBRecordVersion{raw: raw, complete: false}, nil
 }
 
-// FromVersionstamp creates a complete FDBRecordVersion from an FDB tuple.Versionstamp.
+// FromVersionstamp preserves the completeness of an FDB tuple.Versionstamp.
 // Matches Java's FDBRecordVersion.fromVersionstamp(Versionstamp).
 func FromVersionstamp(vs tuple.Versionstamp) *FDBRecordVersion {
 	var raw [VersionBytes]byte
 	copy(raw[:GlobalVersionBytes], vs.TransactionVersion[:])
 	binary.BigEndian.PutUint16(raw[GlobalVersionBytes:], vs.UserVersion)
-	return &FDBRecordVersion{raw: raw, complete: true}
+	return &FDBRecordVersion{raw: raw, complete: isGlobalVersionComplete(raw[:GlobalVersionBytes])}
 }
 
-// ToVersionstamp converts this complete version to an FDB tuple.Versionstamp.
-// Returns an error if the version is incomplete.
+// ToVersionstamp converts complete or incomplete versions to an FDB tuple.Versionstamp.
+// Incomplete versions preserve the placeholder and local version for key mutations.
 // Matches Java's FDBRecordVersion.toVersionstamp().
 func (v *FDBRecordVersion) ToVersionstamp() (tuple.Versionstamp, error) {
-	if !v.complete {
-		return tuple.Versionstamp{}, fmt.Errorf("cannot convert incomplete FDBRecordVersion to Versionstamp")
-	}
 	var vs tuple.Versionstamp
 	copy(vs.TransactionVersion[:], v.raw[:GlobalVersionBytes])
 	vs.UserVersion = binary.BigEndian.Uint16(v.raw[GlobalVersionBytes:])

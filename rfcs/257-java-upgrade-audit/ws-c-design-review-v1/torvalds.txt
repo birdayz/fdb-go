@@ -1,0 +1,29 @@
+**NAK — WS-C design authorization only.** This is a correctness, lock-ordering, and completeness review; no implementation or whole-upgrade approval.
+
+Read the entire [design](/home/birdy/projects/fdb-go/rfcs/257-java-upgrade-audit/ws-c-design.md), parent WS-C, relevant tagged Java source, and Go integration paths. Inspected Go production files match accepted tree `48b50548b11a53bd1452a627689c440535a3d093`. Published HEAD remains `71ccd8cf8b3fd0dbafe283e91171818e36af555e`.
+
+Exact design SHA256, checked again before this verdict:
+
+```text
+3b18df4350eaa955bf6e195e7b18c8eeec71b725eb5252be610453b7290dbe0c
+```
+
+Required corrections:
+
+1. **Close the same-transaction readable bypass.** A serializable empty-range read cannot see queue chunks still buffered as version mutations. Enqueue followed by a checked readable setter can therefore pass the proposed guard with unapplied work. Specify rejection/accounting for pending queue mutations in shared built-index validation, including another store handle sharing the context. [Go commits checks before flushing those mutations](/home/birdy/projects/fdb-go/pkg/recordlayer/database.go:303); [Java enqueue uses the buffered split writer](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/SplitHelper.java:206). Require this case explicitly.
+
+2. **Choose the heartbeat migration protocol now.** “Explicit, tested rolling-upgrade policy” is an unfinished decision. [Old Go ignores non-string keys](/home/birdy/projects/fdb-go/pkg/recordlayer/indexing_heartbeat.go:113), while [Java unconditionally decodes UUIDs](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexing/IndexingHeartbeat.java:201). A new dual reader writing UUIDs cannot protect itself from old Go peers. Specify admission fencing or quiescence, live/stale legacy handling, and when Java builders may enter.
+
+3. **Resolve sliding-window replay’s indirect paths.** Enqueued callbacks avoid reevaluation, but eviction and overflow promotion reload current records and invoke ordinary delegates. [Go promotion](/home/birdy/projects/fdb-go/pkg/recordlayer/sliding_window_index_maintainer.go:760) reaches [predicate evaluation](/home/birdy/projects/fdb-go/pkg/recordlayer/index_maintainer.go:503); [Java does likewise](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/SlidingWindowIndexMaintainer.java:791). Narrow the guarantee or design the additional historical-data mechanism explicitly. Cover records changed/deleted before drain, eviction, promotion, and the window-lock → delegate-lock order.
+
+4. **Write executable cursor contracts.** Specify physical scan charging, buffered-lookahead byte charging, time anchoring, terminal-reason precedence, and soft-limit versus fail-mode behavior. [Java processes pending lookahead through `append` again](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/SplitHelper.java:1005), charging its bytes again; `tryRecordScan` can throw during assembly. “Match Java” plus “completion across resource limits” does not resolve that distinction. Identify how shared machinery preserves Go’s existing logical-record accounting.
+
+5. **Pin retry ownership and failure behavior.** [Java’s drain iterator](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/runners/throttled/ThrottledRetryingIterator.java:268) retries every failure except `RunnerClosed`, with no inner retries. Specify this precisely, including cancellation and permanent payload errors. Name the single-attempt Go transaction path; nesting it inside `FDBDatabase.Run` would duplicate retries. Preserve callbacks outside registration locks and register them before the commit-check snapshot.
+
+6. **Finish backend disposition.** Decide SPFresh queue eligibility and its concrete replay/maintenance integration before authorization. Explicitly assign GuardiANN integration to WS-D and retain Lucene as unresolved. Universal backend heartbeat consumption is also a safety deviation: [tagged vector merge](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/VectorIndexMaintainer.java:529) receives session control without consuming its callback. Document that departure and its regression requirement.
+
+The mixed-state decision matches source: startup rejects mixed resumed states; batch validation accepts the write-only family, permitting fresh mixed builds. Keep those phase rules distinct. Snapshot conflicts, lost-ownership aborts, and scoped cleanup are justified corrections.
+
+The retained skip probe ran **one selected spec with three skip values**. Additional Any evidence appeared during review; neither establishes split-limit behavior.
+
+No edits, tests, git mutations, publication, or delegation occurred. Session model/effort identity is not exposed to me, so I cannot certify `gpt-6-astra/xhigh`.

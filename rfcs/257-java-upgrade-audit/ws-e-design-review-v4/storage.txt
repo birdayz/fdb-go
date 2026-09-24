@@ -1,0 +1,76 @@
+**NAK**, because two High findings remain.
+
+- **Tree:** `0253cfe9f8e88ce044374b20e6d7ee3fba036cb7`
+- **Design:** `rfcs/257-java-upgrade-audit/ws-e-design.md`, SHA-256 `22c3582f858fa323d83b3dbf4b9fae5cf049bc764d6cc4728836eb0ba9403337`, 1384 lines. I recomputed the hash and it matches.
+- **Java:** `fdacd162a9`, read from `fdb-record-layer/.git/HEAD`.
+- **Method:** read-only. I read all three v3 verdicts, the full v4 design, its diff from v3, the oracle, the evidence, the Java harness steps and the Go and Java sources cited below.
+
+## High
+
+**H1. The index-state conflict change (lines 1241-1249) contradicts Java's SQL read path and would pin a divergence as parity.**
+- `getAllIndexStates` (a conflict range over the whole index-state subspace) is not on Java's query path. Its only core caller is `vacuumReadableIndexesBuildData` (`FDBRecordStore.java:5332`).
+- Java's SQL path adds index-state read conflicts in one place only:
+  - Planning reads `store.getRecordStoreState()` with no conflict (`PlanContext.java:250-251`).
+  - The plan-constraint check (`DatabaseObjectDependenciesPredicate.java:98`) also adds none.
+  - `scanIndex` adds one conflict KEY per index it actually scans (`FDBRecordStore.java:1500` → `:4241-4242` → `:4187-4198`).
+- Porting the range makes a Go reader's commit fail when an index it never touched changes state. The target does not fail there.
+- Go already takes more conflicts than the target: a key for every metadata index at planning (`cascades_generator.go` `fetchIndexStateSnapshot`) and again on every page (`:2246`).
+- The design contradicts itself: (iii) at lines 1235-1237 cites the per-key shape as Java's.
+- **Fix:**
+  - Measure it: a reader in an explicit transaction scans index I1; concurrently, the state of an unused I2 changes, and in a second case I1's; the reader writes and commits.
+  - Port per-scanned-index keys.
+  - State what Go's planning-time open adds.
+
+**H2. A bound time.Time is kept at full precision but stored and cached at second precision (lines 595-597, 697-699).**
+- Stored text is UTC to the second (`functions/time.go:7,14-15`), and `CAST` to TIMESTAMP truncates the same way (`values.go:4543-4546`).
+- The residual comparator compares instants exactly (`predicates/comparisons.go:677-705`). A constant "whose runtime value is the time.Time itself" therefore gives:
+  - **Plan-dependent answers.** INSERT `time.Now()` and then `WHERE ts = ?` with the same value: an index lookup matches (the key is the truncated text), a residual filter does not. Today both sides truncate, so it matches.
+  - **Cache-dependent answers.** The cache key is the truncated text, but the plan inlines the first instant. So `t` and `t+0.5s` share an entry, and warm and cold executions of the same statement differ.
+- A comparison of a DATE column against a time.Time that is not at midnight is unspecified.
+- **Fix:**
+  - Canonicalize the value at bind so the runtime value, the stored text, the index key and the cache key are one value.
+  - Specify the DATE comparison.
+  - Test a sub-second value warm and cold, through an index and through a residual filter.
+
+## Medium
+
+**M1. Valuer order (lines 560-567).**
+- database/sql checks for a `driver.Valuer` BEFORE dereferencing a pointer; the design dereferences first.
+- A `Value()` with a pointer receiver, passed as `&v`, then loses its method set and falls through to the kind rule: a struct becomes 22023, and a named map or slice gets the wrong type.
+- Today these values work, via `ErrSkip` and the default converter (`connection.go:970`).
+- Fix: at each dereference level, check for a Valuer on the pointer first; a nil pointer whose `Value()` has a value receiver → NULL, as database/sql does.
+
+**M2. Array parameters and nested assignment (lines 578-588, 701-707).**
+- **Value-dependent element types.** `Int` and similar kinds are typed per VALUE, so `[]int{1, 3000000000}` gets mixed element types, and an empty `[]int` has no value to type from. Java types an empty array as NONE, with `NONE_TO_ARRAY` (`PromoteValue.java:90,374-380`).
+- **Fixed-size byte arrays.** Only slices of bytes become BYTES, so a `[N]byte` becomes ARRAY<INT>. Meanwhile the engine treats a bare `[16]byte` as its UUID representation (`values.go:4521-4526`). State both.
+- **Nested narrowing.** Java's promotion lattice recurses into ARRAY elements and RECORD fields (`PromoteValue.java:394-399`). So `[1.5]` or a `[]float64` into ARRAY<FLOAT>, or a DOUBLE struct field into a FLOAT field, is 22000. The design names only the three top-level sources.
+- **Incomplete lattice list.** It omits `STRING_TO_ENUM` and `STRING_TO_UUID` (`:93-94`), which decide the stored bytes for bound strings into ENUM and UUID columns.
+- Measure one nested case per lane.
+
+## Low
+
+- **Read-scope evidence.**
+  - `read_scope_covering_snapshot_update` (cited at line 1197) has no serializable control. B updates `w`, not the indexed `v`, so it may commit OK without the option and prove nothing. Add `read_scope_covering_serializable_update`.
+  - The census dropped v3's point that store-open reads stay serializable. The header read at open is a fourth class, always serializable (`FDBRecordStore.java:452-453`); state Go's equivalent.
+- **Legacy invalid-UTF-8 rows.** With the save-path refusal, a Go UPDATE of any column of such a row fails with `InvalidUTF8StringError`. Declare this and the repair.
+- **IN-list claim.** "Every execution answers what the target answers" is measured only on top-level lists. A row-independent list on the inner side of a join, which the target may never open, is evaluated at planning in Go. It is labelled neither SOURCE nor measured.
+- **Run record.** The counts 1419 of 1538 and 27/27 are not in `just-test-wse4.log`, which shows only "Executed 4 out of 94". They appear in `conformance-full-1.log` and `rfc257-v12-*.log`, whose tree is not stated.
+
+## Checked and correct
+
+- **Evidence integrity.**
+  - All six evidence source hashes match this tree.
+  - Blocks per tag are 74/37/12/46/89, which sums to 258.
+  - `wse5-d.log` and `wse5-e.log` each show "Ran 5 of 27 Specs", 5 passed.
+  - The M1 and M2 mutation runs are recorded, each with its presence check.
+- **Read-scope probe.**
+  - The reader's own write goes to the separate table `WR`, so every conflict comes from the read.
+  - The record fetch after an index scan is measured serializable under SNAPSHOT.
+- **DRY_RUN.**
+  - It reuses `DryRunSaveRecord` and `DryRunDeleteRecord` (`store_api.go:299,429`), which already port Java's existence check and lock skip.
+  - DELETE and DDL are measured.
+- **Options, harness and tracking.**
+  - `SetOption`, the pool reset and the DSN parameters answer v3 H1.
+  - The teardown fix is pinned.
+  - The CQ-78 pointers go both ways.
+- **Other v3 storage findings.** H2 (every top-level source measured), H3 (the text table), M1 and M3-M5, and L1-L6 are otherwise answered.

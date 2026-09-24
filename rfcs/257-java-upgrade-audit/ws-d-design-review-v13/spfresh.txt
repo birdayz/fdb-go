@@ -1,0 +1,96 @@
+**NAK** on the RFC-257 WS-D design v13.
+
+- **Tree:** `3a934039479f337069d5b483269ecfaffc47817e`. **Design:** SHA256 `87bfa1569cf9f133d14f6578f11063ae7dc293a7143449f21a72d84416d8355b`, 1791 lines. I recomputed both from the tree.
+- **Java:** `fdacd162` (read from `.git/HEAD`).
+- **Read:** all four v12 verdicts; v13's D-0 and peel sections and the diff from v12; RFC-094 §2 (corrected), §6 and §12; oracle README items 26, 29 and 30; all six v13 run logs; the Go and Java sources cited below.
+- **Paper PDFs:** neither `pdftotext` nor `pdftoppm` is installed, so paper points rely on RFC-094's mapping.
+- Nothing was run or edited.
+
+## P1: v13's own evidence runs contradict B, the same finding all four v12 reviewers raised
+
+- **How B was set.** Design 1393-1402 and README:385-392 take the worst refit rate over `wsd-corner-1`, `v12-1` and `v12-2`, which is 1.02e-7 s per n·d. The v13 evidence runs that README item 30 binds to this design are worse:
+  - `rfc257-v13-1.log:2126`: 437.6 ms at n=2000, d=1250, which is **1.75e-7**.
+  - Inside the admitted corner, `:2134`: 265.0 ms at n=2000, d=980, which is 1.35e-7. A peel at the bound then takes about 2.65 s, not 2.0 s.
+  - `:2120`: refit total 918.0 ms. Design 1404 says "at most 0.91 s", and 1405 and README:392 give the worst single refit as 170.6 ms.
+- **By the design's own rule, B is about 1.14e7.** That admits n=2000 only up to d≤571 and n=1001 up to d≤1268. Both acceptance fixtures (W = 1.54e7 and 1.85e7) and the re-measured corner fall outside it.
+- **Why it recurs:**
+  - The calibration population leaves out the runs taken for this design.
+  - Item 30 excludes timing lines from its identity check.
+  - `v13-1` is about 1.5× slower across the board, which points to unrecorded load.
+- **Needed:**
+  - Derive B over every run the design binds, with the load average recorded for each run.
+  - Restate the admitted corner, the fixtures and README item 29.
+  - Pin the W = B edge: n=2000, d=980 gives exactly 1.96e7.
+
+## P2: SPFresh foreground liveness rests on an unmeasured window
+
+The claim (design 1026-1028; RFC-094:127-128) is that a SEAL→SPLIT window "closes within the split's two transactions, far inside ten attempts". The source contradicts this in three ways:
+
+1. **The chunked drain spans many transactions** (RFC-094:333-340; `spfresh_split.go:414+`).
+   - The parent stays SEALED across the plan transaction, every chunk transaction and the final one.
+   - The plan publishes no changelog; only the final transaction does (`:484`).
+   - The write path's SEALED arm never follows the children (`spfresh_write.go:361-363`).
+   - The synthetic 1020 returns without the cache reload that the stale-route loop performs (`:410-419` vs `:115-148`).
+   - RFC-094:333-334 says the 1M foreground fill reached exactly this path.
+2. **Deletes stretch the window.** SPLIT's real read of the posting is aborted on purpose by concurrent updates and deletes (094:351-353; §12, 094:552-553), and it retries without bound.
+3. **Ten attempts can pass quickly.** ExponentialDelay draws each delay uniformly in [0, current) (`ExponentialDelay.java:64-71`), so ten attempts can elapse in far less than 3.3 s.
+
+**Paper lens.** LIRE keeps foreground updates independent of background rebalancing (SPFresh §3, as RFC-094 §2 and §6 map it). The synthetic 1020 is where a write waits on a split, and D-0 turns that wait into a failure. The design declares this only for a stalled seal.
+
+**The fixtures (1103-1107) cannot show it as written:**
+- The stalled-seal insert returns 1020 only when every routed candidate is SEALED (a lone posting, or a wave of splits). Otherwise it goes to the next-nearest ACTIVE centroid and succeeds (`spfresh_write.go:361-363`). The fixture must name that shape.
+- "Completes within the bound" must be sequenced through the attempt observer, not by wall-clock timing.
+
+**Census (5), 1072-1082,** leaves out `TestSPFreshForegroundFillBenchmark` (`bench/spfresh_sift_benchmark_test.go:462`). It is env-gated, writes batches through Run, and fails on any writer error.
+
+**Needed:**
+- Label the window as a hypothesis.
+- Add fixtures for a chunked-drain window and for a window stretched by deletes.
+- Run the fill benchmark before and after D-0, with attempt histograms.
+- Decide and declare whether a drain of two or more chunks may fail writers during cold start.
+
+## P3
+
+1. **SimFDB still caps the client-loop route at 100 retries** (`simfdb.go:14, 183-205`, unchanged). So "unbounded" (design 1012) and RFC-094:108-111 are false on a backend where D-0's fixtures must run.
+2. **"Commit-then-re-execute … that route's real behaviour" (1057) holds only for 1021.** A real 1020 or 1007 means the body ran, did not commit, and was retried.
+   - Needed: inject that case once inside the inner loop, which the unbounded loop absorbs.
+   - Needed: tie the route mark to the call rather than the context, so an inherited mark cannot make a non-committing arm spin an unbounded loop.
+3. **Dropping the maybe-committed self-conflict fence (895-898) is justified by Java's fresh-context runner.** That argument does not cover Go-only owners (statistics, fleet, frl, chaos, the hunts).
+   - Needed: the evidence should state, for each line, that the body is idempotent after a commit that landed.
+   - Needed: `StoreModel` should say how a landed 1021 that exhausts the attempts is recorded. `TrySaveRecord` records successes only (`scenario.go:283-300`).
+4. **The 1200 fixture (1088) has nothing to inject it.** The arms in (4) produce only 1021, 1020, 1007 and read errors.
+5. **Stale copies:**
+   - `TODO.md:14700-14702` says "every attempt of every record-layer owner … retry limit at 0", then exempts SPFresh a few lines later.
+   - `connection.go:46` still says autocommit statements run "via fdbDB.Run()", the misreading v13 withdraws.
+
+## Verified
+
+- **Preserved boundaries hold.** Since `f0cb295` these are unchanged (empty diff; the positive control shows the `simfdb/txn.go` change):
+  - SPFresh and `pkg/rabitq`;
+  - the queue refusal (`index_maintainer_queue.go:12`);
+  - the no-op `MergeIndex` (`index_deferred_maintenance.go:246-248`).
+- **The background exemption is sound.** Today `spfreshRun` is `db.Run` (`spfresh_util.go:11-16`), so `runClientLoop` is required.
+- **Foreground writes:**
+  - `Update` and `UpdateWhileWriteOnly` run in the caller's transaction (`spfresh_index_maintainer.go:212, :287`).
+  - The synthetic 1020 maps to 40001 (`connection.go:980-981`).
+  - Re-execution is idempotent because it is driven by the membership key.
+- **SimFDB:** OnError checks the limit before classifying the error; the limit persists across OnError and is cleared by Reset; `ReadTransact` retries through OnError.
+- **1200 is raised before a proxy is selected** (`commitpath.go:60-62`), so it is never maybe-committed.
+- **Census:** 75 lines on the tree. Excluding the comment at `connection.go:46`, the `exec.Cmd` at `sql.go:744` and the other non-FDBDatabase receivers leaves 53.
+- **Arithmetic:**
+  - 9·1001·2175 = 19,594,575 ≤ B, and 9·1001·2176 = 19,603,584 > B;
+  - 20000·980 = B exactly;
+  - the volumes; I=16 gives 3.07e7; I=1, R=0 gives 8.19e7.
+- **Balance in the corner:** 11 peel rows plus one row usable at round 0, smaller child 0.286–0.480 of n, with pins identical across all four v13 runs. The peel stays nearest-centroid and separate from LIRE.
+- **Superseded v12 wording:** 0 lines outside the review directories (positive control: 3).
+- **Heartbeat pair:** declared and pinned in both engines.
+
+## Measured vs still hypothesis
+
+- **Measured:**
+  - the corner balance pins;
+  - JVM timings (printed, not pinned), which refute B;
+  - the heartbeat pair in both engines;
+  - SimFDB's retry limit (from the recorded log; I did not rerun it).
+- **Checked against source only:** the SPFresh foreground routes and the SQL error mapping, SimFDB's parity with the C++ option semantics, and 1200 being raised before dispatch.
+- **Still hypothesis:** every D-0 mechanism, the SPFresh window against ten attempts, the Go peel rate and B, and the census outcomes.

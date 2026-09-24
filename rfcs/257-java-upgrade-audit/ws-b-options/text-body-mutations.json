@@ -1,0 +1,30 @@
+[
+  {
+    "name": "non-string",
+    "exit": 3,
+    "compiled": true,
+    "killed": true,
+    "log": "text-body-mutant-non-string.log"
+  },
+  {
+    "name": "repeated",
+    "exit": 3,
+    "compiled": true,
+    "killed": true,
+    "log": "text-body-mutant-repeated.log"
+  },
+  {
+    "name": "group-position",
+    "exit": 3,
+    "compiled": true,
+    "killed": true,
+    "log": "text-body-mutant-group-position.log"
+  },
+  {
+    "name": "universal",
+    "exit": 3,
+    "compiled": true,
+    "killed": true,
+    "log": "text-body-mutant-universal.log"
+  }
+]

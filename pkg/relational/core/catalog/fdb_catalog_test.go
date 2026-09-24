@@ -839,3 +839,76 @@ func TestFDB_Initialize(t *testing.T) {
 		return nil
 	})).To(gomega.Succeed())
 }
+
+// TestFDB_SchemaRebindAcceptsLiteralCarrierWidening pins the upgrade path of RFC-257
+// WS-J F2 on real FDB. A template Go stored before F2 carries an INT literal of an
+// index as long_value; the same DDL now builds Java's int_value. The two store
+// identical index bytes, so the rebind (RepairSchema) must be admitted with no index
+// change, while a literal whose VALUE changed is still refused.
+func TestFDB_SchemaRebindAcceptsLiteralCarrierWidening(t *testing.T) {
+	t.Parallel()
+	g := gomega.NewWithT(t)
+	cat, run := newFDBCatalogInSubspace(t)
+	tc := cat.SchemaTemplateCatalog()
+
+	// version tags the template; lit is the literal of the index `add(V, lit)`.
+	build := func(version int, lit *gen.Value) api.SchemaTemplate {
+		b := metadata.NewSchemaTemplateBuilder().SetName("widen-tmpl")
+		b.AddTable("T", []metadata.ColumnSpec{
+			metadata.NewColumnSpec("ID", api.NewLongType(false), 1),
+			metadata.NewColumnSpec("V", api.NewLongType(true), 2),
+		}, []string{"ID"})
+		tmpl, err := b.Build()
+		g.Expect(err).ToNot(gomega.HaveOccurred())
+		mdProto, err := tmpl.Underlying().ToProto()
+		g.Expect(err).ToNot(gomega.HaveOccurred())
+		mdProto.Indexes = append(mdProto.Indexes, &gen.Index{
+			Name:                proto.String("VPLUS"),
+			RecordType:          []string{"T"},
+			AddedVersion:        proto.Int32(1),
+			LastModifiedVersion: proto.Int32(1),
+			RootExpression: &gen.KeyExpression{Function: &gen.Function{
+				Name: proto.String("add"),
+				Arguments: &gen.KeyExpression{Then: &gen.Then{Child: []*gen.KeyExpression{
+					{Field: &gen.Field{FieldName: proto.String("V"), FanType: gen.Field_SCALAR.Enum()}},
+					{Value: lit},
+				}}},
+			}},
+		})
+		md, err := recordlayer.RecordMetaDataFromProto(mdProto)
+		g.Expect(err).ToNot(gomega.HaveOccurred())
+		out, err := metadata.NewRecordLayerSchemaTemplateWithVersion("widen-tmpl", md, version)
+		g.Expect(err).ToNot(gomega.HaveOccurred())
+		return out
+	}
+
+	v1 := build(1, &gen.Value{LongValue: proto.Int64(1)})
+	g.Expect(run(func(tx api.Transaction) error {
+		g.Expect(tc.CreateTemplate(tx, v1)).To(gomega.Succeed())
+		return cat.SaveSchema(tx, v1.GenerateSchema("/widendb", "pub"), true)
+	})).To(gomega.Succeed())
+
+	// v2 differs only in the carrier: rebind admitted, bound to v2.
+	g.Expect(run(func(tx api.Transaction) error {
+		return tc.CreateTemplate(tx, build(2, &gen.Value{IntValue: proto.Int32(1)}))
+	})).To(gomega.Succeed())
+	g.Expect(run(func(tx api.Transaction) error {
+		return cat.RepairSchema(tx, "/widendb", "pub")
+	})).To(gomega.Succeed(), "an int_value/long_value change of equal value stores the same bytes")
+	g.Expect(run(func(tx api.Transaction) error {
+		s, err := cat.LoadSchema(tx, "/widendb", "pub")
+		g.Expect(err).ToNot(gomega.HaveOccurred())
+		g.Expect(s.SchemaTemplate().Version()).To(gomega.Equal(2))
+		return nil
+	})).To(gomega.Succeed())
+
+	// v3 changes the VALUE: refused, the binding stays at v2.
+	g.Expect(run(func(tx api.Transaction) error {
+		return tc.CreateTemplate(tx, build(3, &gen.Value{IntValue: proto.Int32(2)}))
+	})).To(gomega.Succeed())
+	rebindErr := run(func(tx api.Transaction) error {
+		return cat.RepairSchema(tx, "/widendb", "pub")
+	})
+	g.Expect(rebindErr).To(gomega.HaveOccurred())
+	g.Expect(rebindErr.Error()).To(gomega.ContainSubstring("key expression changed"))
+}

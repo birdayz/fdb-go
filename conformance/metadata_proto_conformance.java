@@ -27,6 +27,259 @@ class MetaDataProtoSteps extends ConformanceBase {
         RecordMetaDataOptionsProto.registerAllExtensions(EXTENSION_REGISTRY);
     }
 
+    @ConformanceStep("evolveUnionRecord")
+    public Map<String, Object> evolveUnionRecord(String clusterFile, byte[] subspace, String tenantName,
+                                                 byte[] protoBytes) throws InvalidProtocolBufferException {
+        final var metadata = RecordMetaData.build(RecordMetaDataProto.MetaData.parseFrom(protoBytes, EXTENSION_REGISTRY));
+        return runInContext(clusterFile, tenantName, context -> {
+            final var store = com.apple.foundationdb.record.provider.foundationdb.FDBRecordStore.newBuilder()
+                    .setMetaDataProvider(metadata).setContext(context)
+                    .setSubspace(new com.apple.foundationdb.subspace.Subspace(subspace)).setFormatVersion(14).open();
+            final var loaded = store.loadRecord(com.apple.foundationdb.tuple.Tuple.from(10L));
+            if (loaded == null) {
+                throw new IllegalStateException("missing old union record");
+            }
+            final var record = loaded.getRecord();
+            final var descriptor = record.getDescriptorForType();
+            final var updated = record.toBuilder().setField(descriptor.findFieldByName("id"), 11L).build();
+            store.saveRecord(updated);
+            return Map.of("recordName", loaded.getRecordType().getName(),
+                    "payload", record.getField(descriptor.findFieldByName("payload")),
+                    "typeKey", loaded.getRecordType().getRecordTypeKey(),
+                    "tag", metadata.getUnionFieldForRecordType(loaded.getRecordType()).getNumber());
+        });
+    }
+
+    @ConformanceStep("validateMetaDataEvolutionOptions")
+    public Map<String, Object> validateMetaDataEvolutionOptions(byte[] oldProtoBytes, byte[] newProtoBytes,
+                                                               List<String> ignoredOptions) throws InvalidProtocolBufferException {
+        final var oldMetadata = RecordMetaData.build(RecordMetaDataProto.MetaData.parseFrom(oldProtoBytes, EXTENSION_REGISTRY));
+        final var newMetadata = RecordMetaData.build(RecordMetaDataProto.MetaData.parseFrom(newProtoBytes, EXTENSION_REGISTRY));
+        final var validator = com.apple.foundationdb.record.metadata.MetaDataEvolutionValidator.newBuilder()
+                .setIgnoredIndexOptions(ignoredOptions).build();
+        try {
+            validator.validate(oldMetadata, newMetadata);
+            return Map.of("valid", true, "error", "");
+        } catch (com.apple.foundationdb.record.metadata.MetaDataException ex) {
+            return Map.of("valid", false, "error", ex.getMessage());
+        }
+    }
+
+    /**
+     * Validate an evolution with the validator flags that govern former indexes and
+     * index rebuilds. MetaDataException is the verdict; any other exception fails the
+     * step.
+     */
+    @ConformanceStep("validateMetaDataEvolutionFlags")
+    public Map<String, Object> validateMetaDataEvolutionFlags(byte[] oldProtoBytes, byte[] newProtoBytes,
+                                                             boolean allowMissingFormerIndexNames,
+                                                             boolean allowOlderFormerIndexAddedVersions,
+                                                             boolean allowIndexRebuilds) throws InvalidProtocolBufferException {
+        final var oldMetadata = RecordMetaData.build(RecordMetaDataProto.MetaData.parseFrom(oldProtoBytes, EXTENSION_REGISTRY));
+        final var newMetadata = RecordMetaData.build(RecordMetaDataProto.MetaData.parseFrom(newProtoBytes, EXTENSION_REGISTRY));
+        final var validator = com.apple.foundationdb.record.metadata.MetaDataEvolutionValidator.newBuilder()
+                .setAllowMissingFormerIndexNames(allowMissingFormerIndexNames)
+                .setAllowOlderFormerIndexAddedVerions(allowOlderFormerIndexAddedVersions)
+                .setAllowIndexRebuilds(allowIndexRebuilds)
+                .build();
+        try {
+            validator.validate(oldMetadata, newMetadata);
+            return Map.of("valid", true, "error", "");
+        } catch (com.apple.foundationdb.record.metadata.MetaDataException ex) {
+            return Map.of("valid", false, "error", ex.getMessage());
+        }
+    }
+
+    /**
+     * Java's MetaDataEvolutionValidator with its default options over two
+     * serialized meta-data, reporting ANY runtime exception as the verdict: its
+     * class's simple name and message. The index option checks parse options
+     * with the JDK and the RankedSet/RTree config builders, so a refusal there
+     * is a RecordCoreArgumentException, a NumberFormatException or an
+     * IllegalArgumentException, not a MetaDataException.
+     */
+    @ConformanceStep("validateMetaDataEvolutionAnyVerdict")
+    public Map<String, Object> validateMetaDataEvolutionAnyVerdict(byte[] oldProtoBytes, byte[] newProtoBytes)
+            throws InvalidProtocolBufferException {
+        final var oldMetadata = RecordMetaData.build(RecordMetaDataProto.MetaData.parseFrom(oldProtoBytes, EXTENSION_REGISTRY));
+        final var newMetadata = RecordMetaData.build(RecordMetaDataProto.MetaData.parseFrom(newProtoBytes, EXTENSION_REGISTRY));
+        try {
+            com.apple.foundationdb.record.metadata.MetaDataEvolutionValidator.getDefaultInstance().validate(oldMetadata, newMetadata);
+            return Map.of("valid", true, "error", "", "class", "");
+        } catch (RuntimeException ex) {
+            return Map.of("valid", false, "error", String.valueOf(ex.getMessage()), "class", ex.getClass().getSimpleName());
+        }
+    }
+
+    /**
+     * Build meta-data from proto bytes, which runs Java's MetaDataValidator,
+     * reporting ANY runtime exception as the verdict with its FULL class name:
+     * KeyExpression.InvalidExpressionException and Query.InvalidExpressionException
+     * share a simple name, and key validation throws both.
+     */
+    /**
+     * Java's in-code build over a records file: RecordMetaData.build(FileDescriptor),
+     * which runs setRecords with processExtensionOptions true, so the file's
+     * schema, record type and field options are read. The file depends only on
+     * record_metadata_options.proto. Reports the built meta-data's proto, or any
+     * runtime exception with its full class name.
+     */
+    @ConformanceStep("buildInCodeMetaData")
+    public Map<String, Object> buildInCodeMetaData(byte[] fileDescriptorProto) throws Exception {
+        final var fdp = com.google.protobuf.DescriptorProtos.FileDescriptorProto.parseFrom(fileDescriptorProto, EXTENSION_REGISTRY);
+        final var fd = com.google.protobuf.Descriptors.FileDescriptor.buildFrom(fdp,
+                new com.google.protobuf.Descriptors.FileDescriptor[] {RecordMetaDataOptionsProto.getDescriptor()});
+        try {
+            final RecordMetaData md = RecordMetaData.build(fd);
+            final List<Integer> bytes = new ArrayList<>();
+            for (byte b : md.toProto().toByteArray()) {
+                bytes.add((int) b);
+            }
+            return Map.of("valid", true, "error", "", "class", "", "metaData", bytes);
+        } catch (RuntimeException ex) {
+            return Map.of("valid", false, "error", String.valueOf(ex.getMessage()), "class", ex.getClass().getName(), "metaData", List.of());
+        }
+    }
+
+    /**
+     * Java's query-side read of a record's field,
+     * MessageHelpers.getFieldOnMessage, over a message of a records file that
+     * depends on nothing: whether the field reads as null, and otherwise its
+     * value's string form.
+     */
+    @ConformanceStep("getFieldOnMessageJava")
+    public Map<String, Object> getFieldOnMessageJava(byte[] fileDescriptorProto, String messageName, byte[] message, String fieldName)
+            throws Exception {
+        final var fdp = com.google.protobuf.DescriptorProtos.FileDescriptorProto.parseFrom(fileDescriptorProto);
+        final var fd = com.google.protobuf.Descriptors.FileDescriptor.buildFrom(fdp, new com.google.protobuf.Descriptors.FileDescriptor[0]);
+        final var msg = com.google.protobuf.DynamicMessage.parseFrom(fd.findMessageTypeByName(messageName), message);
+        final Object value = com.apple.foundationdb.record.query.plan.cascades.values.MessageHelpers.getFieldOnMessage(msg, fieldName);
+        return Map.of("isNull", value == null, "value", String.valueOf(value));
+    }
+
+    /**
+     * Every key function the JVM's registry holds (FunctionKeyExpression.Registry
+     * reads the same service loader): its name, the factory that registers it,
+     * the bounds and column size of an instance, and what it returns for an
+     * argument of nulls ("NULL" for Key.Evaluated.NULL, "null" for a plain null,
+     * "value" for a non-null, "error: ..." when it throws).
+     */
+    @ConformanceStep("keyFunctionRegistryJava")
+    public List<Map<String, Object>> keyFunctionRegistryJava() {
+        final List<Map<String, Object>> out = new ArrayList<>();
+        for (final var factory : java.util.ServiceLoader.load(com.apple.foundationdb.record.metadata.expressions.FunctionKeyExpression.Factory.class)) {
+            for (final var builder : factory.getBuilders()) {
+                final var fn = builder.build(com.apple.foundationdb.record.metadata.expressions.EmptyKeyExpression.EMPTY);
+                String nullResult;
+                try {
+                    final Object[] nulls = new Object[fn.getMinArguments()];
+                    final var result = fn.evaluateFunction(null, null,
+                            com.apple.foundationdb.record.metadata.Key.Evaluated.concatenate(java.util.Arrays.asList(nulls)));
+                    final Object first = result.get(0).values().get(0);
+                    nullResult = first == com.apple.foundationdb.record.metadata.Key.Evaluated.NullStandin.NULL ? "NULL"
+                            : first == null ? "null" : "value";
+                } catch (RuntimeException ex) {
+                    nullResult = "error: " + ex.getClass().getName();
+                }
+                final Map<String, Object> row = new HashMap<>();
+                row.put("name", builder.getName());
+                row.put("factory", factory.getClass().getName());
+                row.put("min", fn.getMinArguments());
+                row.put("max", fn.getMaxArguments());
+                row.put("columnSize", fn.getColumnSize());
+                row.put("nullResult", nullResult);
+                out.add(row);
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Java's FunctionKeyExpression.create (the in-code path) and fromProto (the
+     * load path) over a serialized Function: each one's verdict, with the
+     * exception's full class name and message.
+     */
+    @ConformanceStep("functionKeyExpressionVerdictsJava")
+    public Map<String, Object> functionKeyExpressionVerdictsJava(byte[] functionProto) throws InvalidProtocolBufferException {
+        final var function = com.apple.foundationdb.record.expressions.RecordKeyExpressionProto.Function.parseFrom(functionProto);
+        final Map<String, Object> out = new HashMap<>();
+        try {
+            final var args = com.apple.foundationdb.record.metadata.expressions.KeyExpression.fromProto(function.getArguments());
+            com.apple.foundationdb.record.metadata.expressions.FunctionKeyExpression.create(function.getName(), args);
+            out.put("createClass", "");
+            out.put("createError", "");
+        } catch (RuntimeException ex) {
+            out.put("createClass", ex.getClass().getName());
+            out.put("createError", String.valueOf(ex.getMessage()));
+        }
+        try {
+            com.apple.foundationdb.record.metadata.expressions.FunctionKeyExpression.fromProto(function);
+            out.put("loadClass", "");
+            out.put("loadError", "");
+        } catch (RuntimeException ex) {
+            out.put("loadClass", ex.getClass().getName());
+            out.put("loadError", String.valueOf(ex.getMessage()));
+        }
+        return out;
+    }
+
+    /**
+     * Java's KeyExpression.fromProto over a serialized KeyExpression parsed
+     * PARTIALLY, so a proto2 required child may be absent as it can be in
+     * memory: the verdict with the exception's full class name and message.
+     */
+    @ConformanceStep("keyExpressionFromPartialProtoJava")
+    public Map<String, Object> keyExpressionFromPartialProtoJava(byte[] expression) throws InvalidProtocolBufferException {
+        final var proto = com.apple.foundationdb.record.expressions.RecordKeyExpressionProto.KeyExpression.parser().parsePartialFrom(expression);
+        try {
+            KeyExpression.fromProto(proto);
+            return Map.of("class", "", "error", "");
+        } catch (RuntimeException ex) {
+            return Map.of("class", ex.getClass().getName(), "error", String.valueOf(ex.getMessage()));
+        }
+    }
+
+    @ConformanceStep("buildMetaDataAnyVerdict")
+    public Map<String, Object> buildMetaDataAnyVerdict(byte[] protoBytes) throws InvalidProtocolBufferException {
+        final var proto = RecordMetaDataProto.MetaData.parseFrom(protoBytes, EXTENSION_REGISTRY);
+        try {
+            RecordMetaData.build(proto);
+            return Map.of("valid", true, "error", "", "class", "");
+        } catch (RuntimeException ex) {
+            return Map.of("valid", false, "error", String.valueOf(ex.getMessage()), "class", ex.getClass().getName());
+        }
+    }
+
+    /**
+     * Build meta-data from proto bytes, which runs Java's MetaDataValidator.
+     * MetaDataException is the verdict; any other exception fails the step.
+     */
+    @ConformanceStep("buildMetaDataVerdict")
+    public Map<String, Object> buildMetaDataVerdict(byte[] protoBytes) throws InvalidProtocolBufferException {
+        final var proto = RecordMetaDataProto.MetaData.parseFrom(protoBytes, EXTENSION_REGISTRY);
+        try {
+            RecordMetaData.build(proto);
+            return Map.of("valid", true, "error", "");
+        } catch (com.apple.foundationdb.record.metadata.MetaDataException ex) {
+            return Map.of("valid", false, "error", ex.getMessage());
+        }
+    }
+
+    /**
+     * Read one serialized RecordMetaDataProto.FormerIndex as Java's FormerIndex(proto)
+     * does: "OK" and the subspace key, or "ERROR", the exception class and its message.
+     */
+    @ConformanceStep("formerIndexFromProtoVerdict")
+    public Map<String, Object> formerIndexFromProtoVerdict(byte[] formerIndexProto) throws InvalidProtocolBufferException {
+        final var proto = RecordMetaDataProto.FormerIndex.parseFrom(formerIndexProto, EXTENSION_REGISTRY);
+        try {
+            final var formerIndex = new com.apple.foundationdb.record.metadata.FormerIndex(proto);
+            return Map.of("outcome", "OK " + formerIndex.getSubspaceKey());
+        } catch (RuntimeException e) {
+            return Map.of("outcome", "ERROR " + e.getClass().getName() + " " + e.getMessage());
+        }
+    }
+
     /**
      * Deserialize Go-produced metadata proto bytes and return a detailed summary.
      * This validates that Java can parse what Go serializes.

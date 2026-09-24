@@ -43,7 +43,9 @@ import (
 //
 // Transaction model:
 //
-//	Auto-commit: every statement runs in its own FDB transaction via fdbDB.Run().
+//	Auto-commit: every statement runs in its own FDB transaction. A DML
+//	statement's is opened by beginTransaction and committed once, never
+//	replayed; a DDL statement and each result page run through fdbDB.Run().
 //	Explicit transaction: BeginTx opens an FDB transaction; all statements in
 //	the transaction share it. Commit/Rollback close it.
 type EmbeddedConnection struct {

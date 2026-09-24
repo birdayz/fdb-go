@@ -1,0 +1,56 @@
+# WS-J design v10 evidence (run together with WS-C addendum revision 6's)
+
+Two uncached passes of every WS-J spec, //conformance:rfc257_oracle_test --ginkgo.focus='WS-J', on the bytes hashed below
+(hashed before pass 1, verified with sha256sum -c after `just test`: 0 not OK). The hashed set is the whole change set
+against HEAD (71ccd8cf8), deleted files excluded, less the WS-E design, its oracle directory and its running gate's
+directory (ws-e-design-review-v8, whose reviewers wrote their logs meanwhile), and this file and the oracle README:
+1626 files (/var/tmp/fdb-upgrade-recovery/ev10-files.txt, hashes in ev10/src.sha). Drivers
+/var/tmp/fdb-upgrade-recovery/ev10a.sh and ev10b.sh (the `just test` tree snapshots exclude that gate directory), outputs
+ev10a.out and ev10b.out; logs in /var/tmp/fdb-upgrade-recovery/ev10/. No file was edited while ev10b ran.
+
+## Results
+- WS-J pass 1: "Ran 31 of 56 Specs in 30.708 seconds", SUCCESS! -- 31 Passed | 0 Failed | 0 Pending | 25 Skipped (ev10/wsj-ev1.log); pass 2 identical (ev10/wsj-ev2.log).
+  v10 adds four Its: WSJTT's two shapes (a column named _A, a table named "UUID"), WSJLANE's two-fault shape, and WSJIX's
+  malformed subspace keys; WSJIX gains the index_type-beside-an-option-list case.
+- JVM records-descriptor spec: "Ran 35 of 1560 Specs in 6.158 seconds", 35 Passed (ev10/wsj-vr-jvm.log).
+- WS-C revision 6 focus (revision 5's with the Describe "a standalone MergeIndexes session") and the FDBMetaDataStore
+  Describe: "Ran 391 of 3704 Specs in 15.968 seconds", SUCCESS! -- 391 Passed (ev10/wsc-focus.log).
+- 40 uncached runs of the WS-C loop pair (ev10/wsc-loop40.log): 40 "SUCCESS! -- 2 Passed | 0 Failed", 0 FAIL!.
+- `just test` on tree 6cef98241e4a652184b9b9dfd6ca0462439c9fe0 (snapshot before and after the run: equal):
+  "Executed 41 out of 94 tests: 94 tests pass." (ev10/justtest.log; the 41 executed are
+  ev10/justtest-executed.txt).
+
+## The corpus tally, both passes
+WSJ-TALLY map[both-accept-companion:4 both-accept-equal:166 both-accept-index-diverge:4 both-accept-metadata-diverge:180 both-reject:24 java-accept-go-reject:101]
+WSJ-TALLY map[both-accept-companion:4 both-accept-equal:166 both-accept-index-diverge:4 both-accept-metadata-diverge:180 both-reject:24 java-accept-go-reject:101]
+md-canonical-differ values, pass 1 then pass 2:
+      4 md-canonical-differ(records,indexes,record_types)
+    180 md-canonical-differ(records,record_types)
+      4 md-canonical-differ(records,indexes,record_types)
+    180 md-canonical-differ(records,record_types)
+
+## The v10 pins' lines (pass 1)
+WSJIX index_type UNIQUE beside an option list java=field:{field_name:"order_id"  fan_type:SCALAR  nullInterpretation:NOT_UNIQUE} go=field:{field_name:"order_id"  fan_type:SCALAR  nullInterpretation:NOT_UNIQUE} added=1/1 type=value/value
+WSJIX index_type UNIQUE beside an option list options java={unique=true} go=map[unique:true]
+WSJIXK present and empty java=ERROR com.apple.foundationdb.record.RecordCoreException subspace key must encode a single item tuple go=index WSJ_IDX: subspace key must encode a single item tuple
+WSJIXK two items java=ERROR com.apple.foundationdb.record.RecordCoreException subspace key must encode a single item tuple go=index WSJ_IDX: subspace key must encode a single item tuple
+WSJIXK a null item java=ERROR com.apple.foundationdb.record.RecordCoreArgumentException Index subspace key cannot be null go=index WSJ_IDX: Index subspace key cannot be null (index="WSJ_IDX", subspace_key=<nil>)
+WSJLANE bitand_double_then_bad_table target=ERROR 42F18 RelationalException "could not find type 'NOSUCHTYPE'" go=ERROR 42F18 "could not find type 'NOSUCHTYPE'"
+WSJTT a UUID table beside a UUID column target-stored=0A000: a table or STRUCT named UnionDescriptor that the pre-upgrade Go loader read as the union is not supported: records file names two union candidates: UnionDescriptor (the pre-upgrade Go choice) and RecordTypeUnion (the union the target uses); a SQL schema template cannot edit its records file, so give the table or STRUCT another name go-dr
+WSJTT table with a column named for a table target-stored=0A000: a table or STRUCT named UnionDescriptor that the pre-upgrade Go loader read as the union is not supported: records file names two union candidates: UnionDescriptor (the pre-upgrade Go choice) and RecordTypeUnion (the union the target uses); a SQL schema template cannot edit its records file, so give the table or STRUCT another name g
+
+## Hashed-set spot checks
+bd390a9a24ff6e90da115f789ff04be33ec33c807b213a53ff48b5252eba6f26  CHANGELOG.md
+0ccd390810f2273ae0a3605c9295c1785cfff312181c28f826f12aa60736ff6e  conformance/ws_j_index_fidelity_conformance_test.go
+e5f35359dfbf545e03423b9b80c196e00c55e9988bee5c71298d5234178cc997  DIVERGENCES.md
+0a22cec2e16c724bd0b217e2ef6dc9269bd0a52b6e8f3263e441b093f9c88935  pkg/recordlayer/index.go
+f12e4347d5b4b3362f4ab2a6a2c733d0d5b249d2278725c305af858b1dc2ea24  pkg/recordlayer/indexing_merger_test.go
+26339abb23d3f23fd3dd02758904f45cb92135512c054c4e29adc769c631531a  pkg/recordlayer/metadata_proto.go
+894c0aa891c7cae4aad1e3ef47d47cb482db4b4aa6e87fa37c8c7da735a837d7  pkg/recordlayer/metadata_proto_test.go
+60166ef7ad4e673191e1a53103f3489ff610bbc2cd967f3d3ab884e4b6e810cc  pkg/recordlayer/online_indexer.go
+6aa5473cd6d8cf0c2afd5526cdcc222175a8246aa52ed64372634ac3d02b6c22  pkg/recordlayer/online_indexer_test.go
+6d508b9d999421be5be89e803251b4d26bc1f991ff208dc9c23fbfa8617ed2ff  pkg/recordlayer/rank_scan.go
+09f61f7f9213af42afee7a276c104f815269f7958d016d2249f0ae73298cfaba  pkg/relational/core/metadata/builder.go
+1bc2045d2c17aba354871b16eddcc9bc41113d8aa623ee0f45e2e8e15194107f  rfcs/257-java-upgrade-audit/ws-c-design.md
+bcccfc9e77a3c12ab751b2b09ffdf9ca76233e3b39058da0fd2d55e275bfe8b6  rfcs/257-java-upgrade-audit/ws-j-design.md
+be5b39e5e21faa331c10f467b901e4d3cb61a10023406993d6c07ae53acf1364  TODO.md

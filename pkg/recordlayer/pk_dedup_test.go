@@ -377,20 +377,20 @@ var _ = Describe("PrimaryKeyComponentDeduplication", func() {
 		// one, and it shipped green because the only tests covering the shape
 		// were these, which encoded it.
 		It("does not compute primaryKeyComponentPositions for a multi-type index", func() {
-			// A multi-type index on (order_id, price) spanning Order+Customer.
-			// order_id overlaps Order's PK, so positions WOULD be computed if
+			// A multi-type index on (price, literal 999) spanning Order+Customer.
+			// price overlaps Order's PK, so positions WOULD be computed if
 			// this index were single-type. It is not, so they are not.
-			compositeIdx := NewIndex("multi_order_id_price", Concat(Field("order_id"), Field("price")))
+			compositeIdx := NewIndex("multi_price_literal", Concat(Field("price"), Literal(int64(999))))
 
 			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
-			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
-			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder.GetRecordType("Order").SetPrimaryKey(Field("price"))
+			builder.GetRecordType("Customer").SetPrimaryKey(Field("price"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 			builder.AddMultiTypeIndex([]string{"Order", "Customer"}, compositeIdx)
 			md, err := builder.Build()
 			Expect(err).NotTo(HaveOccurred())
 
-			idx := md.GetIndex("multi_order_id_price")
+			idx := md.GetIndex("multi_price_literal")
 			Expect(idx).NotTo(BeNil())
 			Expect(idx.HasPrimaryKeyComponentPositions()).To(BeFalse(),
 				"a multi-type index must have no primaryKeyComponentPositions: Java's only "+
@@ -400,29 +400,29 @@ var _ = Describe("PrimaryKeyComponentDeduplication", func() {
 			// SAME key on the SAME record type, registered single-type, DOES get
 			// positions. Without it, a Build that stopped computing positions
 			// entirely would satisfy the check.
-			ctlIdx := NewIndex("single_order_id_price", Concat(Field("order_id"), Field("price")))
+			ctlIdx := NewIndex("single_price_literal", Concat(Field("price"), Literal(int64(999))))
 			ctlBuilder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
-			ctlBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
-			ctlBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			ctlBuilder.GetRecordType("Order").SetPrimaryKey(Field("price"))
+			ctlBuilder.GetRecordType("Customer").SetPrimaryKey(Field("price"))
 			ctlBuilder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 			ctlBuilder.AddIndex("Order", ctlIdx)
 			ctlMD, err := ctlBuilder.Build()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(ctlMD.GetIndex("single_order_id_price").HasPrimaryKeyComponentPositions()).To(BeTrue(),
+			Expect(ctlMD.GetIndex("single_price_literal").HasPrimaryKeyComponentPositions()).To(BeTrue(),
 				"CONTROL: a single-type index on the same key must still get positions")
 		})
 
 		It("writes the full primary key into a multi-type index entry", func() {
 			ks := specSubspace()
 
-			// Index on (order_id, price), Order's PK = order_id. Java appends
-			// the untrimmed PK, so the entry key is 3 elements and order_id
+			// Index on (price, literal 999), Order's PK = price. Java appends
+			// the untrimmed PK, so the entry key is 3 elements and price
 			// appears twice.
-			compositeIdx := NewIndex("multi_oid_price", Concat(Field("order_id"), Field("price")))
+			compositeIdx := NewIndex("multi_oid_price", Concat(Field("price"), Literal(int64(999))))
 
 			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
-			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
-			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder.GetRecordType("Order").SetPrimaryKey(Field("price"))
+			builder.GetRecordType("Customer").SetPrimaryKey(Field("price"))
 			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 			builder.AddMultiTypeIndex([]string{"Order", "Customer"}, compositeIdx)
 			md, err := builder.Build()
@@ -435,7 +435,7 @@ var _ = Describe("PrimaryKeyComponentDeduplication", func() {
 
 				_, err = store.SaveRecord(&gen.Order{
 					OrderId: proto.Int64(42),
-					Price:   proto.Int32(999),
+					Price:   proto.Int32(42),
 				})
 				Expect(err).NotTo(HaveOccurred())
 
@@ -450,7 +450,7 @@ var _ = Describe("PrimaryKeyComponentDeduplication", func() {
 				// which is why the length-only version of this spec passed while
 				// the entry bytes were wrong.
 				Expect(entry.Key).To(Equal(tuple.Tuple{int64(42), int64(999), int64(42)}),
-					"a multi-type index entry carries the FULL primary key, so order_id appears "+
+					"a multi-type index entry carries the FULL primary key, so price appears "+
 						"twice: once from the index key and once from the untrimmed PK")
 				Expect(entry.PrimaryKey()).To(Equal(tuple.Tuple{int64(42)}))
 

@@ -109,6 +109,41 @@ class MetaDataStoreSteps extends ConformanceBase {
         });
     }
 
+    @ConformanceStep("saveStoredQueryMetaDataJava")
+    public Map<String, Object> saveStoredQueryMetaDataJava(String clusterFile, byte[] subspace, int version) {
+        return runInContext(clusterFile, null, context -> {
+            RecordMetaDataBuilder builder = RecordMetaData.newBuilder().setRecords(createTestMetaData().toProto());
+            builder.addStoredQuery("warm_orders", "SELECT * FROM Order WHERE price > minimum_price()",
+                    List.of("CREATE TEMPORARY FUNCTION minimum_price() AS 100",
+                            "CREATE TEMPORARY FUNCTION maximum_price() AS 1000"));
+            builder.addStoredQuery("warm_customers", "SELECT * FROM Customer", List.of());
+            builder.setVersion(version);
+            byte[] serialized = builder.build().toProto().toByteArray();
+            SplitHelper.saveWithSplit(context, new Subspace(subspace), Tuple.from((Object) null), serialized, null);
+            return Map.of("savedBytes", serialized.length);
+        });
+    }
+
+    @ConformanceStep("loadStoredQueryMetaDataJava")
+    public Map<String, Object> loadStoredQueryMetaDataJava(String clusterFile, byte[] subspace) {
+        return runInContext(clusterFile, null, context -> {
+            byte[] data = context.ensureActive().get(new Subspace(subspace).pack(Tuple.from((Object) null, 0L))).join();
+            if (data == null) {
+                throw new IllegalStateException("stored-query metadata is missing");
+            }
+            final RecordMetaData metaData;
+            try {
+                metaData = RecordMetaData.build(RecordMetaDataProto.MetaData.parseFrom(data, EXTENSION_REGISTRY));
+            } catch (InvalidProtocolBufferException e) {
+                throw new RuntimeException("Failed to parse stored-query metadata", e);
+            }
+            Map<String, Object> queries = new HashMap<>();
+            metaData.getStoredQueries().forEach((name, query) -> queries.put(name,
+                    Map.of("query", query.getQuery(), "tempFunctions", query.getTempFunctions())));
+            return Map.of("version", metaData.getVersion(), "queries", queries);
+        });
+    }
+
     /**
      * Save historical metadata version using Java's SplitHelper.
      */
@@ -1043,5 +1078,55 @@ class MetaDataStoreSteps extends ConformanceBase {
                 throw new RuntimeException("unsupported field type " + fd.getJavaType()
                     + " for field " + fd.getName());
         }
+    }
+
+    /**
+     * Save each record in its own transaction into a store built from the
+     * meta-data proto, and report each save's verdict ("ok", or the root
+     * exception's full class name: a unique index's violation surfaces at
+     * commit), then every index key-value pair the saves wrote (the store's
+     * INDEX keyspace, 2), as hex relative to the store subspace. Records are
+     * serialized messages of recordTypeName.
+     */
+    @ConformanceStep("saveRecordsAndDumpIndexesJava")
+    public Map<String, Object> saveRecordsAndDumpIndexesJava(String clusterFile, byte[] subspace, byte[] metaData,
+                                                             String recordTypeName, byte[][] records)
+            throws InvalidProtocolBufferException {
+        final RecordMetaData md = RecordMetaData.build(RecordMetaDataProto.MetaData.parseFrom(metaData, EXTENSION_REGISTRY));
+        final Descriptors.Descriptor descriptor = md.getRecordType(recordTypeName).getDescriptor();
+        final Subspace ss = new Subspace(subspace);
+        final List<String> verdicts = new ArrayList<>();
+        for (byte[] rec : records) {
+            final DynamicMessage msg = DynamicMessage.parseFrom(descriptor, rec);
+            try {
+                runInContext(clusterFile, null, context -> {
+                    FDBRecordStore.newBuilder().setMetaDataProvider(md).setContext(context).setSubspace(ss)
+                            .setUserVersionChecker(ALWAYS_READABLE_CHECKER).createOrOpen().saveRecord(msg);
+                    return null;
+                });
+                verdicts.add("ok");
+            } catch (RuntimeException ex) {
+                Throwable t = ex;
+                while ((t instanceof java.util.concurrent.CompletionException || t instanceof java.util.concurrent.ExecutionException)
+                        && t.getCause() != null) {
+                    t = t.getCause();
+                }
+                verdicts.add(t.getClass().getName());
+            }
+        }
+        final List<List<String>> kvs = runInContext(clusterFile, null, context -> {
+            final byte[] prefix = ss.getKey();
+            final List<List<String>> out = new ArrayList<>();
+            for (com.apple.foundationdb.KeyValue kv : context.ensureActive().getRange(ss.range(Tuple.from(2L))).asList().join()) {
+                final byte[] rel = java.util.Arrays.copyOfRange(kv.getKey(), prefix.length, kv.getKey().length);
+                out.add(List.of(java.util.HexFormat.of().formatHex(rel),
+                        java.util.HexFormat.of().formatHex(kv.getValue())));
+            }
+            return out;
+        });
+        final Map<String, Object> result = new HashMap<>();
+        result.put("verdicts", verdicts);
+        result.put("kvs", kvs);
+        return result;
     }
 }

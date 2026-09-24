@@ -30,12 +30,18 @@ func newTimeWindowLeaderboardIndexMaintainer(
 	indexSubspace, secondarySubspace subspace.Subspace,
 	tx fdb.WritableTransaction,
 	store indexStoreContext,
-) *timeWindowLeaderboardIndexMaintainer {
+) (*timeWindowLeaderboardIndexMaintainer, error) {
+	// Java's maintainer constructor reads the config the same way
+	// (TimeWindowLeaderboardIndexMaintainer.java:100).
+	config, err := parseRankedSetConfig(index)
+	if err != nil {
+		return nil, err
+	}
 	return &timeWindowLeaderboardIndexMaintainer{
 		standardIndexMaintainer: *newStandardIndexMaintainer(index, indexSubspace, tx, store),
 		secondarySubspace:       secondarySubspace,
-		rankedSetConfig:         parseRankedSetConfig(index),
-	}
+		rankedSetConfig:         config.withEnv(store.Env()),
+	}, nil
 }
 
 // Update handles insert/delete/update for the TIME_WINDOW_LEADERBOARD index.
@@ -610,7 +616,7 @@ func (m *timeWindowLeaderboardIndexMaintainer) rankRangeToScoreRange(
 		}
 	}
 
-	rankedSet.PreloadForLookup(m.tx)
+	rankedSet.PreloadForLookup(m.tx.Snapshot())
 
 	lowRankVal := int64(0)
 	if !startFromBeginning {
@@ -937,7 +943,7 @@ func (m *timeWindowLeaderboardIndexMaintainer) timeWindowRankAndEntry(
 	}
 	rankSubspace := m.secondarySubspace.Sub(leaderboardGroupKey...)
 	rankedSet := newRankedSet(rankSubspace, config)
-	rankedSet.PreloadForLookup(m.tx)
+	rankedSet.PreloadForLookup(m.tx.Snapshot())
 
 	// Rank lookup uses the negated scoreKey (as stored in the ranked set).
 	scoreBytes := bestScore.scoreKey.Pack()
@@ -1084,7 +1090,7 @@ func (m *timeWindowLeaderboardIndexMaintainer) EvaluateTimeWindowAggregate(
 	}
 	rankSubspace := m.secondarySubspace.Sub(leaderboardGroupKey...)
 	rankedSet := newRankedSet(rankSubspace, config)
-	rankedSet.PreloadForLookup(m.tx)
+	rankedSet.PreloadForLookup(m.tx.Snapshot())
 
 	switch fn.Name {
 	case FunctionNameTimeWindowCount:

@@ -1,0 +1,87 @@
+**NAK.** I reviewed tree `cc94face9f554e277346f6061becf84c658abc3b` and `ws-d-design.md`, SHA256 `e8a870a4739015a2c9d3e5e83831c08424ac64e1a64e2443e014ae6c6f889814`. The hash matches when recomputed with `git show TREE:path | sha256sum`; the file is 1111 lines. Java is at `fdacd162` (`fdb-record-layer/.git/HEAD`).
+
+**What I checked** (nothing run, edited or staged):
+- **Reviews and design:** all four v7 verdicts, the full v8 design and the v7→v8 diff.
+- **Oracle:** the README and both evidence files. All four source hashes match `evidence-run.txt:4-7`. The GuardiANN spec file has 13 `It` specs and the WS-E file 1, which matches "Ran 14 of 14". The new target is not tagged `manual`.
+- **Java:** BounceTask, SplitMergeTask, Primitives, KMeans, StorageAdapter and GuardiannVectorIndexEngine.
+- **Other delta:** the heartbeat-admin delta and its DIVERGENCES entry.
+
+## P2-1 — Poisoning depends on the error's type, not on where it is raised, and the capacity rule contradicts itself (design 197-206, 575-576, 962-967)
+- **The stated reason covers more than the rule.** Lines 200-203 justify poisoning because the task's removal is buffered before the error. That is true of *any* error returned after `executeSingleDeferredTask` removes the task (Primitives.java:1025-1026), typed or not.
+- **Cancellation is the sharpest case.** Section 1's stop flag is checked "before each mutation" (54-57). A cancelled task can return `ctx.Err()` with its removal and, say, the HNSW centroid replacement already buffered, but no metadata or references. Untyped invariant errors and read errors behave the same way. All of these stay committable under a typed-only rule.
+- **The design contradicts itself on capacity errors:**
+  - Lines 197-199 make the reconcile's capacity failure poison.
+  - Lines 204-206 and 575-576 say capacity errors never poison and are "the target's own errors". At the reconcile they are not: the target throws `NoSuchElementException` there.
+- **Reusing the insert-cap type misleads callers and the driver:**
+  - Java's translation (GuardiannVectorIndexEngine.java:140-164) turns it into "a background merge must drain the deferred split backlog". No merge can relieve this cluster.
+  - It is the same type the hand-off driver keys on, and the design tells the two apart only by call site (759-760).
+- **Needed:**
+  - Poison in one place, the task-execution wrapper, for any non-nil error once the removal is buffered.
+  - Give the reconcile failure its own type or an origin field, and state its record-layer mapping.
+  - Qualify lines 204-206 and 575-576.
+  - Add a fixture that cancels a task mid-run and shows catch-and-commit failing.
+
+## P2-2 — The n<k claim contradicts Java, and (h) misses a second throw site (design 862-873, 314, 968-969, 414-417)
+- **Java does not skip n<k candidates.** `SplitMergeTask.kMeans` passes the cleaned primaries straight to `KMeans.fit` (:1097-1111), and the per-candidate lambda (:352-368) has no n<k check. `KMeans.fit` throws `IllegalArgumentException("vectors.size() must be >= k")` at KMeans.java:136, before the maxIterations check at :137.
+- **So the target fails elsewhere than the design says.** An over-max cluster with fewer than two live primaries (the stale-inflated shape) fails forever at :136, not at :397. An empty merge core (k=1, n=0) fails the same way.
+- **"n<k is simply INVALID … never passed to KMeans" is therefore a Go-only rule**, and it converts a Java throw at a site that nothing declares:
+  - (h) is keyed to ":397";
+  - lines 314 and 968-969 say the reconcile runs "only where the target's task throws at :397".
+- **Needed:**
+  - Label n<k and empty-core handling as source-derived Go rules at KMeans.java:136.
+  - Extend (h)/(i) to name that site, and correct lines 314, 863 and 968-969.
+  - State whether `consumerOutcome` checks the KMeans knobs before or after these rules.
+
+## P2-3 — `consumerOutcome`'s snapshot isolation leaks into `runTask` (design 290-309)
+- **What the text says.** The decision is made by "the same code", `runTask` calls that code, and "every read of the skip decision … is a SNAPSHOT read". Read literally, the task prologue becomes a snapshot read.
+- **What Java does.** Its prologue reads are serializable: `fetchClusterMetadata(transaction, …)` at SplitMergeTask.java:169 (Primitives.java:609-612), and the dependency fetches at BounceTask.java:130-131.
+- **The resulting race.** A false-alarm clear (SplitMergeTask.java:183-185) could commit without conflicting with a concurrent insert. That insert saw SPLIT_MERGE set, so it did not re-arm (Primitives.java:1161-1163). The result is a cluster above max with no flag and no task.
+- **Needed:**
+  - Make isolation a parameter. Only a skip may rely on snapshot reads; a task that runs goes through the serializable presence check (:1019) and serializable prologue reads.
+  - Have the bounce branch return the outstanding-task list and its pick, and have `BounceTask.runTask` use them instead of recomputing, keeping Java's draw order (`nextInt` at :161, then `randomUuid` at :190).
+
+## P3
+1. **The bounce branch misses a quantizer consumer.**
+   - When no dependency is outstanding, or after it runs the last one, the bounce writes a follow-up split or reassign task, and that write builds the quantizer (BounceTask.java:147-149, 199-200, 309 → SplitMergeTask.java:135).
+   - Under trained bits 9 with an idle target cluster, both engines throw there and Go's inline delete fails. That falsifies "exactly … nowhere else" (290-291, 309-312).
+   - Lines 315-318 should also list the inline deletes that still fail: this bounce case, and a failing reconcile above hardMax.
+2. **The peel bound's rationale contradicts its own golden.**
+   - The claim that "the slowest measured pattern at least halves M" (893-894, and the Go test comment at :697-698) is false: the mass goes 15→9 at n=100 (four seeds) and 600→312 at n=1000 (seed 1).
+   - Outlier shapes lose one or two members per round, so the round count follows the number of outlier groups, not log n.
+   - Call the bound a cost cap, and pin every exit arm of the peel, including bound exhaustion (for example, more than 12 graduated outliers at n=1000).
+3. **Stray fragment at line 913:** "child holds no member of M." The identical-mass sentence was cut off in the edit.
+4. **There is no recorded green full run.**
+   - Lines 701-702 claim a full `just test` run for the lease change. The only full run recorded (TODO.md:14564ff) was red. After that, only two conformance targets were re-run.
+   - No `//pkg/recordlayer` result is recorded at this tree, which also adds `indexing_heartbeat_admin*.go`.
+5. **The reconcile's frequency and cost are unpriced.**
+   - A reconciled cluster between max and hardMax re-arms on every insert into it (Primitives.java:1161-1163).
+   - So each such insert pays a full evaluation, up to ceil(log2 n)+2 refits, and a serializable read of the whole posting and its metadata. In inline mode that work runs inside the user's transaction.
+   - Measure it at n≈2000 against the 5 s transaction limit. If it is too slow, the target's prompt failure becomes a `transaction_too_old` retry loop.
+6. **The different-cluster claim-race fixture is timing-dependent.** It needs the holder to drain for more than 60 s of wall time (745-748). Specify an injectable wait cap or clock.
+7. **"Relief is the target's" (983) is inaccurate.** The target recovers at ≤ primaryClusterMax (SplitMergeTask.java:180-181); Go recovers at ≤ hardMax.
+
+## Closed from v7 (verified)
+- **Insert-side cap:** withdrawn. The collapse→REASSIGN→reassign chain at 986-991 matches the source.
+- **The v7 finding on the delete skip (d):**
+  - The skip is now derived from each consumer's prologue.
+  - The bounce's pick is deterministic: `ImmutableSet` keeps stored order (StorageAdapter.java:331-335), and the RNG is seeded from the task id (:123).
+- **Labels and wording:**
+  - The knob-table labels are corrected.
+  - Peel counts are labelled as samples, and the lone-cluster cost statement is corrected.
+  - The livelock refusal is keyed on the knob value.
+  - (j) is restated.
+  - Insert.java:226-228 is cited.
+  - The lease-peer claim is qualified.
+  - DOT_PRODUCT and EUCLIDEAN_SQUARE are pinned failing.
+  - The claim-race fixture has two arms.
+- **Heartbeat-admin divergence:** accurate (OnlineIndexer.java:461-462).
+
+## Measured vs still hypothesis
+- **Measured:** oracle items 1-17, including bits-9 obsolete consumption, the reassignNumNeighboringClusters −1 livelock, and the peel at n=1000 (pure algorithm with the probe's own seeds).
+- **Still hypothesis:**
+  - the n<k and stale-inflated site (the source says :136);
+  - the bits-9 bounce and delete rows;
+  - every REMAINING row;
+  - populations that exhaust the peel bound;
+  - the reconcile's cost;
+  - every Go-only mechanism.

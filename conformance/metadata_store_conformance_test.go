@@ -5,6 +5,7 @@ package conformance_test
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
@@ -127,6 +128,84 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 			Expect(loaded).NotTo(BeNil())
 			Expect(loaded.GetVersion()).To(Equal(int32(99)))
 		})
+	})
+
+	It("preserves Java stored queries through a Go metadata-model rewrite and FDB save", func() {
+		bounded, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		defer cancel()
+		params := map[string]any{
+			"clusterFile": clusterFile,
+			"subspace":    BytesToIntArray(ss.Bytes()),
+		}
+		var saved struct {
+			SavedBytes int `json:"savedBytes"`
+		}
+		err := java.InvokeAs(bounded, "saveStoredQueryMetaDataJava", map[string]any{
+			"clusterFile": clusterFile,
+			"subspace":    BytesToIntArray(ss.Bytes()),
+			"version":     33,
+		}, &saved)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(saved.SavedBytes).To(BeNumerically(">", 0))
+
+		want := map[string]*gen.PStoredQuery{
+			"warm_orders": {
+				Name:  proto.String("warm_orders"),
+				Query: proto.String("SELECT * FROM Order WHERE price > minimum_price()"),
+				TempFunctions: []string{
+					"CREATE TEMPORARY FUNCTION minimum_price() AS 100",
+					"CREATE TEMPORARY FUNCTION maximum_price() AS 1000",
+				},
+			},
+			"warm_customers": {Name: proto.String("warm_customers"), Query: proto.String("SELECT * FROM Customer")},
+		}
+		assertQueries := func(metadata *gen.MetaData) {
+			Expect(metadata.GetStoredQueries()).To(HaveLen(len(want)))
+			seen := make(map[string]bool)
+			for _, query := range metadata.GetStoredQueries() {
+				Expect(seen[query.GetName()]).To(BeFalse(), "duplicate stored query")
+				seen[query.GetName()] = true
+				Expect(proto.Equal(query, want[query.GetName()])).To(BeTrue(), "stored-query content: %v", query)
+			}
+		}
+		_, err = goRecordDB.Run(bounded, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store := recordlayer.NewFDBMetaDataStore(ss)
+			loaded, err := store.LoadRecordMetaDataProto(rtx.Transaction())
+			if err != nil {
+				return nil, err
+			}
+			assertQueries(loaded)
+			model, err := recordlayer.RecordMetaDataFromProto(loaded)
+			if err != nil {
+				return nil, err
+			}
+			rewritten, err := model.ToProto()
+			if err != nil {
+				return nil, err
+			}
+			assertQueries(rewritten)
+			rewritten.Version = proto.Int32(34)
+			return nil, store.SaveRecordMetaData(rtx.Transaction(), rewritten)
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		var readBack struct {
+			Version int `json:"version"`
+			Queries map[string]struct {
+				Query         string   `json:"query"`
+				TempFunctions []string `json:"tempFunctions"`
+			} `json:"queries"`
+		}
+		err = java.InvokeAs(bounded, "loadStoredQueryMetaDataJava", params, &readBack)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(readBack.Version).To(Equal(34))
+		Expect(readBack.Queries).To(HaveLen(len(want)))
+		for name, expected := range want {
+			actual, exists := readBack.Queries[name]
+			Expect(exists).To(BeTrue(), name)
+			Expect(actual.Query).To(Equal(expected.GetQuery()), name)
+			Expect(actual.TempFunctions).To(Equal(append([]string{}, expected.GetTempFunctions()...)), name)
+		}
 	})
 
 	// Track A2 — Catalog wire format Go↔Java functional round-trip.
@@ -1021,9 +1100,18 @@ var _ = Describe("FDBMetaDataStore Conformance", func() {
 					return nil, scanErr
 				}
 				for _, rec := range records {
-					if order, ok := rec.Record.(*gen.Order); ok {
-						scannedOrders = append(scannedOrders, order)
+					// Loaded metadata supplies its own descriptors. Do not silently
+					// discard dynamic messages just because a generated Go type exists.
+					Expect(rec.Record.ProtoReflect().Descriptor()).To(BeIdenticalTo(md.GetRecordType("Order").Descriptor))
+					data, marshalErr := proto.Marshal(rec.Record)
+					if marshalErr != nil {
+						return nil, marshalErr
 					}
+					order := &gen.Order{}
+					if unmarshalErr := proto.Unmarshal(data, order); unmarshalErr != nil {
+						return nil, unmarshalErr
+					}
+					scannedOrders = append(scannedOrders, order)
 				}
 				return nil, nil
 			})

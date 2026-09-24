@@ -3,7 +3,6 @@ package chaos
 import (
 	"context"
 	"fmt"
-	"strconv"
 
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
@@ -50,11 +49,11 @@ func verifyOneBitmapIndex(
 ) []Violation {
 	var violations []Violation
 
-	entrySize := int64(10000) // default
-	if v, ok := idx.Options[recordlayer.IndexOptionBitmapValueEntrySize]; ok {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
-			entrySize = n
-		}
+	// The model reads the size as the maintainer does; an index whose size
+	// the maintainer refuses has no entries to compare.
+	entrySize, err := recordlayer.BitmapValueEntrySizeOption(idx)
+	if err != nil {
+		return nil
 	}
 
 	gke, ok := idx.RootExpression.(*recordlayer.GroupingKeyExpression)

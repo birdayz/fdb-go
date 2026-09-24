@@ -1,0 +1,697 @@
+{
+ "source": {
+  "tag": "4.14.2.0",
+  "commit": "fdacd162a9c8acfadc49082b89185c823ab8ae4a",
+  "root": "yaml-tests/src/test/resources"
+ },
+ "census": {
+  "occurrences": 360,
+  "in_template_bodies": 352,
+  "on_comment_lines": [
+   {
+    "file": "boolean-ddl.yamsql",
+    "line": 24
+   },
+   {
+    "file": "enum-distinct-from-function.yamsql",
+    "line": 28
+   },
+   {
+    "file": "index-ddl-aggregates-only.yamsql",
+    "line": 21
+   },
+   {
+    "file": "index-ddl-aggregates-only.yamsql",
+    "line": 21
+   },
+   {
+    "file": "index-ddl-values-only.yamsql",
+    "line": 21
+   },
+   {
+    "file": "index-ddl-values-only.yamsql",
+    "line": 21
+   },
+   {
+    "file": "index-ddl.yamsql",
+    "line": 20
+   },
+   {
+    "file": "index-ddl.yamsql",
+    "line": 20
+   }
+  ],
+  "harvested_statements": 352,
+  "variant_duplicates": 0
+ },
+ "templates": [
+  {
+   "file": "aggregate-empty-table.yamsql",
+   "line": 21,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "4fba4be8349110b2",
+   "body": "create table t1(id bigint, col1 bigint, col2 bigint, primary key(id)) create table t2(id bigint, col1 bigint, col2 bigint, primary key(id)) create table t3(id bigint, col1 bigint, col2 bigint, primary key(id)) create index t2_i1 as select count(*) from t2 create index t2_i2 as select count(*) from t2 group by col1 create index t2_i3 as select count(col2) from t2 create index t2_i4 as select count(col2) from t2 group by col1 create index t2_i5 as select sum(col1) from t2 create index t2_i6 as select sum(col1) from t2 group by col2 create index t3_i1 as select col1 from t3 create index t3_i2 as select col2 from t3"
+  },
+  {
+   "file": "aggregate-index-tests-count-empty.yamsql",
+   "line": 21,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "5d67975b7b27b6b8",
+   "body": "create table t1(id bigint, col1 bigint, col2 bigint, primary key(id)) create index mv1 as select count(*) from t1 create index mv2 as select count(*) from t1 group by col2 create index mv3 as select count(col1) from t1 create index mv4 as select count(col1) from t1 group by col2 create table t2(id bigint, col1 bigint, col2 bigint, col3 bigint, primary key(id)) create index mv5 as select col2 from t2 create index mv6 as select count(col2) from t1 group by col1, col2"
+  },
+  {
+   "file": "aggregate-index-tests-count.yamsql",
+   "line": 21,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "f357e8b79f83f318",
+   "body": "create table t1(id bigint, col1 bigint, col2 bigint, primary key(id)) create index mv1 as select count(*) from t1 create index mv2 as select count(*) from t1 group by col2 create index mv3 as select count(col1) from t1 create index mv4 as select count(col1) from t1 group by col2 create table t2(id bigint, col1 bigint, col2 bigint, col3 bigint, primary key(id)) create index mv5 as select col2 from t2"
+  },
+  {
+   "file": "aggregate-index-tests.yamsql",
+   "line": 21,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "f343f9fb2aef27dc",
+   "body": "create table t1(id bigint, col1 bigint, col2 bigint, primary key(id)) create table t2(id bigint, col1 bigint, col2 bigint, col3 bigint, primary key(id)) create table t3(id bigint, a bigint, b bigint, primary key(id)) create table t4(id bigint, col1 string, col2 bigint, primary key(id)) create index vi1 as select col1 from t1 create index vi2 as select col2 from t2 create index mv1 as select sum(col2) from t1 group by col1 create index mv2 as select col1, col2 from t2 order by col1, col2 create index mv3 as select col1, col3 from t2 order by col1, col3 create index mv4 as select min_ever(col3) from T2 group by col1, col2 create index mv5 as select max_ever(col3) from t2 group by col1, col2 create index mv6 as select max_ever(col2) from t1 group by col1 create index mv7 as select min_ever(col3) from t2 create index mv8 as select col1, max(col2) from t1 group by col1 order by col1 create index mv9 as select col1, max(col2), col3 from T2 group by col1, col3 order by col1, max(col2), col3 create index mv10 as select a+3, max(b) from t3 group by a+3 create index mv11 as select a+b, b+10, min(b) from t3 group by a+b, b+10 create index mv12 as select min_ever(col2) from t1 group by col1 with attributes LEGACY_EXTREMUM_EVER create index mv13 as select max_ever(col2) from t1 group by col1 with attributes LEGACY_EXTREMUM_EVER create index mv14 as select min_ever(col1) from t4 group by col2 create index mv15 as select max_ever(col1) from t4 group by col2 create table t5(id bigint, a bigint, b string, c bigint, d bigint, e string, x bigint, primary key(id)) create index mv16 as select a, b, max(x), c, d, e from t5 group by a, b, c, d, e order by a, b, max(x), c, d, e create index mv17 as select a, b, min(x), c, d, e from t5 group by a, b, c, d, e order by a, b, min(x), c, d, e create index mv18 as select a, b, c, max(x), d, e from t5 group by a, b, c, d, e order by a, b, c, max(x), d, e create index mv19 as select a, b, c, min(x), d, e from t5 group by a, b, c, d, e order by a, b, c, min(x), d, e create type as struct t6_item(k string) create table t6(id bigint, a bigint, b bigint, c t6_item array, d bigint, primary key(id)) create index mv20 as select a, ek.k, b, max(d) from t6, (select k from t6.c) as ek group by a, ek.k, b order by a, ek.k, max(d), b create index mv21 as select sum(col3) from t2 group by col2, col1, col3"
+  },
+  {
+   "file": "array-agg-tests.yamsql",
+   "line": 27,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "61039f272231d94e",
+   "body": "CREATE TABLE T1 (id BIGINT, grp BIGINT, val BIGINT, PRIMARY KEY (id)) CREATE INDEX T1_grp AS SELECT grp FROM T1 ORDER BY grp CREATE TABLE keywords (array_agg BIGINT, respect BIGINT, PRIMARY KEY (array_agg)) CREATE TYPE AS STRUCT Struct1 (a BIGINT, b BIGINT) CREATE TABLE T2 (id BIGINT, grp BIGINT, s Struct1, PRIMARY KEY (id)) CREATE INDEX T2_grp AS SELECT grp FROM T2 ORDER BY grp CREATE TYPE AS STRUCT Struct2 (u UUID, b BYTES) CREATE TABLE T3 (id BIGINT, grp BIGINT, u UUID, b BYTES, s Struct2, PRIMARY KEY (id)) CREATE INDEX T3_grp AS SELECT grp FROM T3 ORDER BY grp CREATE TABLE doc_meta (mid BIGINT, owner STRING, PRIMARY KEY (mid)) CREATE TABLE doc_rev (rid BIGINT, title STRING, tags STRING ARRAY, PRIMARY KEY (rid)) CREATE TABLE doc_asset (aid BIGINT, rid BIGINT, url STRING, PRIMARY KEY (aid)) CREATE INDEX doc_asset_by_rid AS SELECT rid FROM doc_asset ORDER BY rid CREATE TABLE big (id BIGINT, val BIGINT, PRIMARY KEY (id))"
+  },
+  {
+   "file": "array-agg-tests.yamsql",
+   "line": 83,
+   "form": "query",
+   "variant": "",
+   "sha256": "61039f272231d94e",
+   "body": "CREATE TABLE tab (id BIGINT, grp BIGINT, val BIGINT, PRIMARY KEY (id)) CREATE INDEX idx AS SELECT ARRAY_AGG(val) FROM tab GROUP BY grp"
+  },
+  {
+   "file": "arrays-cardinality.yamsql",
+   "line": 27,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "0e88822bd667447a",
+   "body": "CREATE TABLE \"dummy\" (\"id\" INTEGER, PRIMARY KEY (\"id\")) CREATE TABLE \"tab1\" (\"id\" INTEGER, \"int_arr\" INTEGER ARRAY NULL, PRIMARY KEY (\"id\")) CREATE TABLE \"tab1_nn\" (\"id\" INTEGER, \"int_arr\" INTEGER ARRAY NOT NULL, PRIMARY KEY (\"id\")) CREATE TABLE \"tab1_indexed\" (\"id\" INTEGER, \"int_arr\" INTEGER ARRAY NULL, PRIMARY KEY (\"id\")) CREATE INDEX \"tab1_indexed_index\" AS SELECT CARDINALITY(\"int_arr\") AS \"card\" FROM \"tab1_indexed\" ORDER BY \"card\" CREATE TABLE \"tab1_indexed_nn\" (\"id\" INTEGER, \"int_arr\" INTEGER ARRAY NOT NULL, PRIMARY KEY (\"id\")) CREATE INDEX \"tab1_indexed_nn_index\" AS SELECT CARDINALITY(\"int_arr\") AS \"card\" FROM \"tab1_indexed_nn\" ORDER BY \"card\" CREATE TYPE AS STRUCT \"Struct1\" (\"int_arr\" INTEGER ARRAY) CREATE TABLE \"tab2\" (\"id\" INTEGER, \"struct\" \"Struct1\", PRIMARY KEY (\"id\")) CREATE INDEX \"tab2_index\" AS SELECT CARDINALITY(\"struct\".\"int_arr\") AS \"card\" FROM \"tab2\" ORDER BY \"card\""
+  },
+  {
+   "file": "arrays-unnesting.yamsql",
+   "line": 32,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "543656ff4872eb78",
+   "body": "CREATE TABLE T1 (\"id\" BIGINT, \"items\" STRING ARRAY, PRIMARY KEY (\"id\")) CREATE TABLE \"T1_indexed\" (\"id\" BIGINT, \"items\" STRING ARRAY, PRIMARY KEY (\"id\")) CREATE INDEX \"T1_indexed_index\" AS SELECT SQ.\"item\" FROM \"T1_indexed\" AS \"row\", (SELECT \"item\" FROM \"row\".\"items\" AS \"item\") AS SQ ORDER BY SQ.\"item\" CREATE TABLE \"T2\" (\"id\" BIGINT, \"items\" STRING ARRAY, PRIMARY KEY (\"id\")) CREATE VIEW \"T2_view\" AS SELECT SQ.\"item\" FROM \"T2\" AS \"row\", (SELECT \"item\" FROM \"row\".\"items\" AS \"item\") AS SQ CREATE INDEX \"T2_view_index\" ON \"T2_view\" (\"item\") CREATE TYPE AS STRUCT \"Struct\" (\"integer\" INTEGER) CREATE TABLE T3 (\"id\" BIGINT, \"structs\" \"Struct\" ARRAY, \"integers\" INTEGER ARRAY, PRIMARY KEY (\"id\")) CREATE TABLE T4 (\"id\" BIGINT, \"vectors\" VECTOR(3, FLOAT) ARRAY, PRIMARY KEY (\"id\")) CREATE TYPE AS STRUCT \"restaurant_review\" (\"reviewer\" STRING, \"rating\" BIGINT) CREATE TABLE \"restaurant\" (\"rest_no\" BIGINT, \"name\" STRING, \"reviews\" \"restaurant_review\" ARRAY, PRIMARY KEY (\"rest_no\")) CREATE INDEX \"mv\" AS SELECT SQ.\"rating\" FROM \"restaurant\" AS RR, (SELECT \"rating\" FROM RR.\"reviews\") SQ"
+  },
+  {
+   "file": "between.yamsql",
+   "line": 25,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "42e7984883381bdd",
+   "body": "create table t1(id integer, col1 integer, col2 integer, primary key(id)) create index i1 as select col1 from t1"
+  },
+  {
+   "file": "bitmap-aggregate-index.yamsql",
+   "line": 21,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "102059128021fe38",
+   "body": "CREATE TABLE T1(id bigint, category string, PRIMARY KEY(id)) create index bitmapIndex1 as select bitmap_construct_agg(bitmap_bit_position(id)), bitmap_bucket_offset(id) from T1 group by bitmap_bucket_offset(id) create index bitmapIndex2 as select bitmap_construct_agg(bitmap_bit_position(id)), category, bitmap_bucket_offset(id) from T1 group by category, bitmap_bucket_offset(id) CREATE TABLE T2(id bigint, category string, PRIMARY KEY(id)) create index agg_index_1 as select bitmap_bucket_offset(id) from T2 order by bitmap_bucket_offset(id) create index agg_index_2 as select category, bitmap_bucket_offset(id) from T2 order by category, bitmap_bucket_offset(id)"
+  },
+  {
+   "file": "boolean-ddl.yamsql",
+   "line": 26,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "f608f8907ddfa406",
+   "body": "CREATE TABLE T (\"id\" INTEGER, \"col1\" INTEGER, PRIMARY KEY (\"id\")) CREATE INDEX idx_true AS SELECT \"col1\" FROM T WHERE TRUE ORDER BY \"col1\" CREATE INDEX idx_false AS SELECT \"col1\" FROM T WHERE FALSE ORDER BY \"col1\" CREATE INDEX idx_null AS SELECT \"col1\" FROM T WHERE NULL ORDER BY \"col1\""
+  },
+  {
+   "file": "case-sensitivity.yamsql",
+   "line": 28,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "bbc7edeca0be5ffc",
+   "body": "create table Table1(id bigint, col1 bigint, col2 bigint, primary key(id)) create table TaBlE1(x bigint, y string, primary key(x)) create table TABLE2(a bigint, b string, primary key(a)) create table table2(id bigint, col1 bigint, col2 bigint, primary key(id)) create index i1 as select col2, col1 from Table1 order by col2, col1 create index I1 as select y, x from TaBlE1 order by y, x create function f1 ( in a bigint, in b bigint ) as select col1 as x, col2 from Table1 where col1 = a and col2 = b create function F1 ( in A bigint, in B bigint ) as select col1 + 100 as X, col2 from Table1 where col1 = A and col2 = B create function f2 (in c bigint) as select * from f1(a => 10, b => 1) where x + c = 10 create function F2 (in C bigint) as select * from F1(A => 10, B => 1) where X + C = 110 create type as struct st1(a bigint, b bigint) create table table3(id bigint, col1 st1, primary key(id)) create function f3 (in x TYPE st1) RETURNS bigint AS x.a create function F3 (in x TYPE st1) RETURNS bigint AS x.b"
+  },
+  {
+   "file": "composite-aggregates.yamsql",
+   "line": 24,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "01447ac3f160d2e8",
+   "body": "create table t1(id bigint, col1 bigint, col2 bigint, col3 bigint, primary key(id)) create table t2(id bigint, col1 bigint, col2 bigint, primary key(id)) create table t3(id bigint, col1 bigint, col2 bigint, col3 bigint, primary key(id)) create index t1_i1 as select count(col1) from t1 group by col2, col3 create index t1_i2 as select col2, sum(col1) from t1 group by col2 create index t1_i3 as select col3, col2, sum(col1) from t1 group by col3, col2 create index t1_i4 as select col2, col3, sum(col1) from t1 group by col2, col3 create index t2_i1 as select count(*) from t2 create index t2_i2 as select count(*) from t2 group by col1 create index t2_i3 as select count(col2) from t2 create index t2_i4 as select count(col2) from t2 group by col1 create index t2_i5 as select sum(col1) from t2 create index t2_i6 as select sum(col2) from t2 group by col1 create index t2_i7 as select count(*) from t2 group by col1, col2 create index t3_i1 as select col1, max(col2), col3 from T3 group by col1, col3 order by col1, max(col2), col3 create index t3_i2 as select col1, min(col2), col3 from T3 group by col1, col3 order by col1, min(col2), col3"
+  },
+  {
+   "file": "create-drop-create-template.yamsql",
+   "line": 25,
+   "form": "query",
+   "variant": "",
+   "sha256": "b9018fce278fc7f5",
+   "body": "create type as struct S(S1 bigint, S2 bigint) create table A(A1 bigint, A2 bigint, A3 bigint, primary key(A1)) create table B(B1 bigint, B2 bigint, B3 S, primary key(B1)) create index A_idx as select A1, A2, A3 FROM A order by A1, A2, A3"
+  },
+  {
+   "file": "create-drop-create-template.yamsql",
+   "line": 47,
+   "form": "query",
+   "variant": "",
+   "sha256": "b9018fce278fc7f5",
+   "body": "create type as struct S(S1 bigint, S2 bigint) create table A(A1 bigint, A2 bigint, A3 bigint, primary key(A1)) create table B(B1 bigint, B2 bigint, B3 S, primary key(B1)) create index A_idx as select A1, A2, A3 FROM A order by A1, A2, A3"
+  },
+  {
+   "file": "cte.yamsql",
+   "line": 21,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "285e5077e3bd9e6b",
+   "body": "create table t1(id bigint, col1 bigint, col2 bigint, primary key(id)) create index i1 as select col2, col1 from t1 order by col2, col1"
+  },
+  {
+   "file": "distinct-from.yamsql",
+   "line": 25,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "990f6d17329e965f",
+   "body": "create table t1(id integer, col1 integer, col2 integer, primary key(id)) create index i1 as select col1 from t1 create index cnt as select count(*) from t1 create index i2 as select col2 from t1"
+  },
+  {
+   "file": "enum-distinct-from-function.yamsql",
+   "line": 48,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "45c26221a72ce628",
+   "body": "CREATE TYPE AS ENUM MOOD ('JOYFUL', 'HAPPY', 'SAD') CREATE TABLE T (ID BIGINT, M MOOD, PRIMARY KEY(ID)) CREATE INDEX T_M_IDX AS SELECT M, ID FROM T ORDER BY M, ID CREATE FUNCTION NOT_HAPPY() AS SELECT ID, M FROM T WHERE M IS DISTINCT FROM 'HAPPY' CREATE FUNCTION HAPPY() AS SELECT ID, M FROM T WHERE M IS NOT DISTINCT FROM 'HAPPY' CREATE FUNCTION EQ_HAPPY() AS SELECT ID, M FROM T WHERE M = 'HAPPY' CREATE FUNCTION NEQ_HAPPY() AS SELECT ID, M FROM T WHERE M <> 'HAPPY' CREATE FUNCTION NOT_HAPPY_OR_LOW_ID() AS SELECT ID, M FROM T WHERE ID < 2 OR M IS DISTINCT FROM 'HAPPY' CREATE FUNCTION NOT_MOOD(IN WANTED STRING) AS SELECT ID, M FROM T WHERE M IS DISTINCT FROM WANTED"
+  },
+  {
+   "file": "enum.yamsql",
+   "line": 25,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "9a1e927683b9716c",
+   "body": "CREATE TYPE AS ENUM MOOD ( 'JOYFUL', 'HAPPY', 'RELAXED', 'INDIFFERENT', 'CONFUSED', 'SAD', 'ANXIOUS', 'ANGRY' ) CREATE TABLE TABLE_A (\"id\" BIGINT, \"name\" STRING, \"mood\" MOOD, PRIMARY KEY(\"id\") ) CREATE TABLE TABLE_B (\"id\" BIGINT, \"name\" STRING, \"mood\" MOOD, PRIMARY KEY(\"id\") ) CREATE INDEX \"B$MOOD\" AS SELECT \"mood\" FROM TABLE_B WITH OPTIONS(ENABLE_LONG_ROWS=true)"
+  },
+  {
+   "file": "exists-in-select.yamsql",
+   "line": 23,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "35fd773006b0c823",
+   "body": "create table t1(id bigint, col1 bigint, primary key(id)) create table t2(id bigint, t1_id bigint, primary key(id)) create table t3(id bigint, t2_id bigint, label string, primary key(id)) create index t3_t2_id as select t2_id from t3"
+  },
+  {
+   "file": "filter-index.yamsql",
+   "line": 25,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "f90b77dd49d34f66",
+   "body": "CREATE TABLE table_a (\"id\" BIGINT, \"name\" STRING, PRIMARY KEY(\"id\") ) create index i1 as select \"name\", \"id\" from table_a where \"name\" = 'bar' OR \"name\" = 'foo' order by \"name\", \"id\" WITH OPTIONS(ENABLE_LONG_ROWS=true)"
+  },
+  {
+   "file": "groupby-tests.yamsql",
+   "line": 21,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "508b106d10ec4c6e",
+   "body": "create table t1(id bigint, col1 bigint, col2 bigint, primary key(id)) create index i1 as select col1 from t1 create type as struct st1(y bigint, z bigint) create type as struct st2(w bigint, x bigint) create type as struct st3(u st2, v st1) create type as struct st4(s bigint, t bigint) create table nested(id bigint, q st4, r st3, primary key(q.s, r.u.w)) create index i2 as select r.v.z from nested order by r.v.z create table t2(pk bigint, a bigint, b bigint, c bigint, primary key(pk)) create index i3 as select a from t2 order by a"
+  },
+  {
+   "file": "guardiann-semantic-search.yamsql",
+   "line": 32,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "f26b72e853cdb791",
+   "body": "create table documents(zone string, docId string, bookshelf string, title string, embedding vector(3, half), primary key (zone, docId)) create view documentsView as select embedding, zone, bookshelf, docId, title from documents create vector index documentsGuardiannIndex using guardiann on documentsView(embedding) partition by(zone, bookshelf) options (metric = euclidean_metric, primary_cluster_min = 1, primary_cluster_max = 100, collapse_min_duplicates = 50)"
+  },
+  {
+   "file": "in-predicate.yamsql",
+   "line": 20,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "62c96700aa75f05f",
+   "body": "create type as struct ts(sa bigint, sb bigint) create type as struct fruit_type(name string, color string) create table ta(a bigint, b bigint, c double, d boolean, e string, f ts, primary key(a)) create index f1 as select f.sa, f.sb from ta order by f.sa, f.sb create table array_table(id bigint, fruits string array, numbers bigint array, fruit_records fruit_type array, primary key(id)) create index fruits as select \"fruit\" from array_table as t, t.fruits as \"fruit\" create table t_parent(id string, lst string array, primary key(id)) create table t_child(id string, t_link fruit_type, num bigint, primary key(id)) CREATE FUNCTION get_key(IN r TYPE fruit_type) RETURNS STRING AS r.name"
+  },
+  {
+   "file": "index-ddl-aggregates-only.yamsql",
+   "line": 29,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "be69ebfb6dd3d90f",
+   "body": "create table sales_mat_view( id bigint, product_id bigint, category string, region string, amount bigint, quantity bigint, primary key(id) ) create index idx_mv_sum_by_category as select sum(amount) from sales_mat_view group by category create index idx_mv_sum_by_region as select sum(amount) from sales_mat_view group by region create index idx_mv_sum_by_cat_region as select sum(amount) from sales_mat_view group by category, region create index idx_mv_sum_by_all as select sum(amount) from sales_mat_view group by category, region, product_id create index idx_mv_count_by_category as select count(*) from sales_mat_view group by category create index idx_mv_count_qty_by_region as select count(quantity) from sales_mat_view group by region create index idx_mv_cat_region_sum as select category, region, sum(amount) from sales_mat_view group by category, region create index idx_mv_min_amount_by_category as select min(amount) from sales_mat_view group by category create index idx_mv_max_amount_by_region as select max(amount) from sales_mat_view group by region create index idx_mv_min_ever_qty_by_category as select min_ever(quantity) from sales_mat_view group by category create index idx_mv_max_ever_qty_by_region as select max_ever(quantity) from sales_mat_view group by region create index idx_mv_cat_max_region as select category, max(amount), region from sales_mat_view group by category, region create index idx_mv_min_cat_region as select min(amount), category, region from sales_mat_view group by category, region create table sales_index_on( id bigint, product_id bigint, category string, region string, amount bigint, quantity bigint, primary key(id) ) create view v_iot_sum_by_category as select sum(amount) as total_amount, category from sales_index_on group by category create index idx_iot_sum_by_category on v_iot_sum_by_category(category) include(total_amount) create view v_iot_sum_by_region as select sum(amount) as total_amount, region from sales_index_on group by region create index idx_iot_sum_by_region on v_iot_sum_by_region(region) include(total_amount) create view v_iot_sum_by_cat_region as select sum(amount) as total_amount, category, region from sales_index_on group by category, region create index idx_iot_sum_by_cat_region on v_iot_sum_by_cat_region(category, region) include(total_amount) create view v_iot_sum_by_all as select sum(amount) as total_amount, category, region, product_id from sales_index_on group by category, region, product_id create index idx_iot_sum_by_all on v_iot_sum_by_all(category, region, product_id) include(total_amount) create view v_iot_count_by_category as select count(*) as record_count, category from sales_index_on group by category create index idx_iot_count_by_category on v_iot_count_by_category(category) include(record_count) create view v_iot_count_qty_by_region as select count(quantity) as qty_count, region from sales_index_on group by region create index idx_iot_count_qty_by_region on v_iot_count_qty_by_region(region) include(qty_count) create view v_iot_cat_region_sum as select category, region, sum(amount) as total_amount from sales_index_on group by category, region create index idx_iot_cat_region_sum on v_iot_cat_region_sum(category, region) include(total_amount) create view v_iot_min_amount_by_category as select min(amount) as min_amount, category from sales_index_on group by category create index idx_iot_min_amount_by_category on v_iot_min_amount_by_category(category) include(min_amount) create view v_iot_max_amount_by_region as select max(amount) as max_amount, region from sales_index_on group by region create index idx_iot_max_amount_by_region on v_iot_max_amount_by_region(region) include(max_amount) create view v_iot_min_ever_qty_by_category as select min_ever(quantity) as min_qty, category from sales_index_on group by category create index idx_iot_min_ever_qty_by_category on v_iot_min_ever_qty_by_category(category) include(min_qty) create view v_iot_max_ever_qty_by_region as select max_ever(quantity) as max_qty, region from sales_index_on group by region create index idx_iot_max_ever_qty_by_region on v_iot_max_ever_qty_by_region(region) include(max_qty) create view v_iot_cat_max_region as select category, max(amount) as max_amount, region from sales_index_on group by category, region create index idx_iot_cat_max_region on v_iot_cat_max_region(category, max_amount, region) create view v_iot_min_cat_region as select min(amount) as min_amount, category, region from sales_index_on group by category, region create index idx_iot_min_cat_region on v_iot_min_cat_region(min_amount, category, region)"
+  },
+  {
+   "file": "index-ddl-values-only.yamsql",
+   "line": 28,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "a17631c7d22cbcf1",
+   "body": "create table products_mat_view( id integer, name string, price double, category string, stock integer, supplier string, rating double, primary key(id) ) create index idx_mv_price as select price from products_mat_view order by price create index idx_mv_category as select category from products_mat_view order by category create index idx_mv_cat_price as select category, price from products_mat_view order by category, price create index idx_mv_name_rating as select name, rating from products_mat_view order by name, rating create index idx_mv_price_covering as select price, name, supplier from products_mat_view order by price create index idx_mv_cat_price_covering as select category, price, name, stock from products_mat_view order by category, price create index idx_mv_cat_desc_price_asc as select category, price from products_mat_view order by category desc, price asc create index idx_mv_price_desc as select price from products_mat_view order by price desc create index idx_mv_rating_nulls_first as select rating from products_mat_view order by rating asc nulls first create index idx_mv_rating_nulls_last as select rating from products_mat_view order by rating asc nulls last create index idx_mv_supplier_desc_nulls_first as select supplier from products_mat_view order by supplier desc nulls first create index idx_mv_filtered_expensive as select name, price from products_mat_view where price > 20 order by price create index idx_mv_filtered_electronics as select name, price, stock from products_mat_view where category = 'Electronics' order by name create index idx_mv_filtered_multi as select category, price, stock from products_mat_view where price > 15 and stock > 60 order by category create table products_index_on( id integer, name string, price double, category string, stock integer, supplier string, rating double, primary key(id) ) create index idx_iot_price on products_index_on(price) create index idx_iot_category on products_index_on(category) create index idx_iot_cat_price on products_index_on(category, price) create index idx_iot_name_rating on products_index_on(name, rating) create index idx_iot_price_covering on products_index_on(price) include(name, supplier) create index idx_iot_cat_price_covering on products_index_on(category, price) include(name, stock) create index idx_iot_cat_desc_price_asc on products_index_on(category desc, price asc) create index idx_iot_price_desc on products_index_on(price desc) create index idx_iot_rating_nulls_first on products_index_on(rating asc nulls first) create index idx_iot_rating_nulls_last on products_index_on(rating asc nulls last) create index idx_iot_supplier_desc_nulls_first on products_index_on(supplier desc nulls first) create view v_iot_expensive as select name, price from products_index_on where price > 20 create index idx_iot_filtered_expensive on v_iot_expensive(price) create view v_iot_electronics as select name, price, stock from products_index_on where category = 'Electronics' create index idx_iot_filtered_electronics on v_iot_electronics(name) include (price, stock) create view v_iot_multi_filter as select category, price, stock from products_index_on where price > 15 and stock > 60 create index idx_iot_filtered_multi on v_iot_multi_filter(category) include(price, stock)"
+  },
+  {
+   "file": "index-ddl.yamsql",
+   "line": 27,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "b927a267756bde98",
+   "body": "create table customers_materialized_view( id integer, name string, email string, age integer, city string, country string, profession string, primary key(id) ) create index idx_mv_name as select name from customers_materialized_view order by name create index idx_mv_email as select email from customers_materialized_view order by email desc create index idx_mv_multi as select age, city from customers_materialized_view order by age asc, city asc create index idx_mv_asc_desc as select age, city from customers_materialized_view order by age asc, city desc create index idx_mv_include as select name, email, country from customers_materialized_view order by name create index idx_mv_nulls_first as select country from customers_materialized_view order by country asc nulls first create index idx_mv_nulls_last as select country from customers_materialized_view order by country asc nulls last create index idx_mv_desc_nulls_first as select age from customers_materialized_view order by age desc nulls first create index idx_mv_desc_nulls_last as select age from customers_materialized_view order by age desc nulls last create table customers_index_on_table( id integer, name string, email string, age integer, city string, country string, profession string, primary key(id) ) create index idx_iot_name on customers_index_on_table(name) create index idx_iot_email on customers_index_on_table(email desc) create index idx_iot_multi on customers_index_on_table(age, city) create index idx_iot_asc_desc on customers_index_on_table(age, city desc) create index idx_iot_include on customers_index_on_table(name) include(email, country) create index idx_iot_nulls_first on customers_index_on_table(country asc nulls first) create index idx_iot_nulls_last on customers_index_on_table(country asc nulls last) create index idx_iot_desc_nulls_first on customers_index_on_table(age desc nulls first) create index idx_iot_desc_nulls_last on customers_index_on_table(age desc nulls last) create unique index idx_mv_unique_profession as select profession from customers_materialized_view order by profession create unique index idx_iot_unique_profession on customers_index_on_table(profession) create index idx_mv_age_min_no_legacy as select min_ever(age) from customers_materialized_view group by country create index idx_mv_age_max_no_legacy as select max_ever(age) from customers_materialized_view group by country create view view_iot_age_min_no_legacy as select country, min_ever(age) as min_age from customers_index_on_table group by country create view view_iot_age_max_no_legacy as select country, max_ever(age) as max_age from customers_index_on_table group by country create index idx_iot_age_min_no_legacy on view_iot_age_min_no_legacy(min_age, country) create index idx_iot_age_max_no_legacy on view_iot_age_max_no_legacy(max_age, country) create index idx_mv_age_min_extremum as select min_ever(age) from customers_materialized_view group by country with attributes legacy_extremum_ever create index idx_mv_age_max_extremum as select max_ever(age) from customers_materialized_view group by country with attributes legacy_extremum_ever create view view_iot_age_min as select country, min_ever(age) as min_age from customers_index_on_table group by country create view view_iot_age_max as select country, max_ever(age) as max_age from customers_index_on_table group by country create index idx_iot_age_min_extremum on view_iot_age_min(min_age, country) options (legacy_extremum_ever) create index idx_iot_age_max_extremum on view_iot_age_max(max_age, country) options (legacy_extremum_ever)"
+  },
+  {
+   "file": "indexed-functions.yamsql",
+   "line": 21,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "14cfb97fab7029b0",
+   "body": "create table t(a bigint, b bigint, c bigint, d bigint, e string, primary key(a)) create index bPlusC as select b + c from t order by b + c create index bPlusCByE as select e, b + c from t order by e, b + c create index dMask2 as select d & 2 from t create index dMask1 as select d & 1 from t"
+  },
+  {
+   "file": "inserts-updates-deletes.yamsql",
+   "line": 21,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "23aafca073da4ed6",
+   "body": "create type as struct S(S1 bigint, S2 bigint) create table A(A1 bigint, A2 bigint, A3 bigint, primary key(A1)) create table B(B1 bigint, B2 bigint, B3 S, primary key(B1)) create index A_idx as select A1, A2, A3 FROM A order by A1, A2, A3"
+  },
+  {
+   "file": "isolation-level-snapshot.yamsql",
+   "line": 30,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "19484f05b6c5a213",
+   "body": "CREATE TABLE t1(id BIGINT, col1 BIGINT, col2 BIGINT, PRIMARY KEY(id)) CREATE TABLE t2(id BIGINT, name STRING, PRIMARY KEY(id)) CREATE INDEX max_ever_col2 AS SELECT MAX_EVER(col2) FROM t1 CREATE INDEX max_ever_col2_by_col1 AS SELECT MAX_EVER(col2) FROM t1 GROUP BY col1 CREATE INDEX sum_col2_by_col1 AS SELECT SUM(col2) FROM t1 GROUP BY col1"
+  },
+  {
+   "file": "isolation-level-snapshot.yamsql",
+   "line": 79,
+   "form": "query",
+   "variant": "",
+   "sha256": "19484f05b6c5a213",
+   "body": "CREATE TABLE tt(id BIGINT, v BIGINT, PRIMARY KEY(id)) CREATE INDEX bad_idx AS SELECT v FROM tt OPTIONS (ISOLATION LEVEL SNAPSHOT)"
+  },
+  {
+   "file": "join-tests-outer.yamsql",
+   "line": 24,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "27daba3c9e4384ee",
+   "body": "CREATE TABLE \"emp\" (\"id\" BIGINT, \"fname\" STRING, \"lname\" STRING, \"dept_id\" BIGINT, PRIMARY KEY (\"id\")) CREATE INDEX \"emp$fname\" AS SELECT \"fname\" FROM \"emp\" ORDER BY \"fname\" CREATE TABLE \"dept\" (\"id\" BIGINT, \"name\" STRING, PRIMARY KEY (\"id\")) CREATE INDEX \"dept$name\" AS SELECT \"name\" FROM \"dept\" ORDER BY \"name\" CREATE TABLE \"project\" (\"id\" BIGINT, \"name\" STRING, \"emp_id\" BIGINT, PRIMARY KEY (\"id\")) CREATE TABLE \"award\" (\"id\" BIGINT, \"name\" STRING, \"emp_id\" BIGINT, PRIMARY KEY (\"id\"))"
+  },
+  {
+   "file": "join-tests.yamsql",
+   "line": 21,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "37e147efa01f66c4",
+   "body": "create table emp(id bigint, fname string, lname string, dept_id bigint, primary key(id)) create index empDept as select dept_id from emp create index empName as select lname, fname from emp order by lname, fname create table dept(id bigint, name string, primary key(id)) create index deptName as select name from dept create table project(id bigint, name string, dsc string, emp_id bigint, primary key(id)) create table a(ida bigint, a1 bigint, a2 bigint, a3 bigint, primary key(ida)) create table b(idb bigint, b1 bigint, b2 bigint, b3 bigint, primary key(idb)) create table ja(c1 bigint, c2 bigint, primary key(c1)) create table jb(c1 bigint, c3 bigint, primary key(c1)) create table jd(c1 bigint, c4 bigint, primary key(c1)) create table jua(c1 bigint, c2 bigint, c5 bigint, primary key(c1)) create table jub(c1 bigint, c3 bigint, c5 bigint, primary key(c1)) create table jud(c1 bigint, c4 bigint, c5 bigint, primary key(c1))"
+  },
+  {
+   "file": "join-with-order-by-tests.yamsql",
+   "line": 27,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "6babd04499e6d9ba",
+   "body": "create table t1(id bigint, a1 bigint, a2 bigint, a3 string, primary key(id)) create index \"t1$a1\" as select a1 from t1 create index \"t1$a1_a2\" as select a1, a2 from t1 order by a1, a2 create function t1_f(x bigint) as select \"__ROW_VERSION\", t1.* from t1 where a1 = x create function t1_g(x bigint) as select \"__ROW_VERSION\", t1.*, t1.a2 as \"the_a2\" from t1 where a1 = x create table t2(id bigint, b1 bigint, b2 bigint, b3 string, primary key(id)) create index \"t2$b1\" as select b1 from t2 create index \"t2$b1_b3\" as select b1, b3 from t2 order by b1, b3 create function t2_f(x bigint) as select \"__ROW_VERSION\", t2.* from t2 where b1 = x create function t2_g(x bigint) as select \"__ROW_VERSION\", t2.*, t2.b2 as \"the_b2\" from t2 where b1 = x create table t3(id bigint, c1 bigint, c2 bigint, c3 string, aRef bigint, primary key(id)) create index \"t3$c1\" as select c1 from t3 create index \"t3$c1_c2_c3\" as select c1, c2, c3 from t3 order by c1, c2, c3 create index \"t3$aRef\" as select aRef from t3 create unique index \"t3$c1_c2\" as select c1, c2 from t3 order by c1, c2 create function t3_f(x bigint) as select \"__ROW_VERSION\", t3.* from t3 where c1 = x with options(store_row_versions=true, intermingle_tables=true)"
+  },
+  {
+   "file": "like.yamsql",
+   "line": 23,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "bf24ff879488f235",
+   "body": "create table A(a1 string, primary key(a1)) create table B(b1 integer, b2 string, primary key(b1)) create table C(c1 integer, c2 string, primary key(c1)) create index c2 as select c2 from c order by c2"
+  },
+  {
+   "file": "nested-with-nulls.yamsql",
+   "line": 21,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "2b4709e77ee0d470",
+   "body": "create type as struct s1( a string, b bigint ) create type as struct s2( a s1, b s1 NULL ) create table t1(id bigint, a s2, b s2 NULL, primary key(id)) create index i1 as select a.b.a from t1 create index i2 as select a.a.b from t1 where a.a.b is not null"
+  },
+  {
+   "file": "null-extraction-tests.yamsql",
+   "line": 27,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "661a2e735961fa8d",
+   "body": "create table B(b1 integer, b2 string, b3 bigint, primary key(b1)) create index i1 as select b3, b2 from B order by b3, b2"
+  },
+  {
+   "file": "null-operator-tests.yamsql",
+   "line": 21,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "cb54e82608519c04",
+   "body": "create table t1(id bigint, col1 bigint, col2 bigint, primary key(id)) create index i1 as select col1 from t1"
+  },
+  {
+   "file": "orderby.yamsql",
+   "line": 21,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "20061b83323a7535",
+   "body": "create table t1(a bigint, b bigint, c bigint, primary key(a)) create index i1 as select b, c from t1 order by b create index i2 as select b, c from t1 order by c create index i3 as select b, c from t1 order by c, b CREATE TYPE AS STRUCT st_1(a bigint, b bigint) create table t2(p bigint, q st_1, primary key(p)) create function t2_func() as select q as \"nesting\", q.a as \"ordered\" from t2 create function t2_func_2() as select q as \"nesting\", q.a as \"ordered\", q.b as \"ordered\" from t2 create function t2_func_3() as select q as \"nesting\", q.a as \"ordered1\", q.b as \"ordered2\" from t2 create index i4 as select q.b, q.a from t2 order by q.a create index i5 as select q.b, q.a from t2 order by q.b, q.a create table t3(a bigint, b bigint, c bigint, d bigint, p bigint, primary key(p)) create index i6 as select d, c, b, a from t3 order by a, b, c, d CREATE TYPE AS STRUCT st_2(ast st_1) CREATE TYPE AS STRUCT st_3(bst st_2) CREATE TYPE AS STRUCT st_4(cst st_3) CREATE TYPE AS STRUCT st_5(dst st_4) CREATE TYPE AS STRUCT st_6(est st_5) create table t4(p bigint, q st_6, primary key(p)) create index i7 as select q.est.dst.cst.bst.ast.a, q.est.dst.cst.bst.ast.b from t4 order by q.est.dst.cst.bst.ast.a create table t5(a bigint, b bigint, c bigint, primary key(a)) create index i8 as select b, c from t5 order by c, b DESC"
+  },
+  {
+   "file": "pseudo-field-clash.yamsql",
+   "line": 21,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "ffca48a67e218714",
+   "body": "create table t1(id bigint, col1 string, \"__ROW_VERSION\" bytes, primary key (id)) create table t2(id bigint, col1 bigint, \"__ROW_VERSION\" string, primary key (id)) create index t2_version as select \"__ROW_VERSION\" from t2 create index t2_col1_version as select col1, \"__ROW_VERSION\" from t2 order by col1, \"__ROW_VERSION\" create table t3(id bigint, col1 bigint, col2 string, primary key (id)) create index t3_version as select \"__ROW_VERSION\" from t3 create index t3_col1_version as select col1, \"__ROW_VERSION\" from t3 order by col1, \"__ROW_VERSION\" with options (store_row_versions=true)"
+  },
+  {
+   "file": "record-type-key-tests.yamsql",
+   "line": 20,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "d26ed38890c25660",
+   "body": "CREATE TABLE t1 (a bigint, b bigint, PRIMARY KEY(a)) CREATE TABLE t2 (c bigint, d bigint, primary key(c)) CREATE INDEX i1 on t1(b) CREATE INDEX i2 on t2(d) WITH OPTIONS(INTERMINGLE_TABLES=false)"
+  },
+  {
+   "file": "recursive-cte.yamsql",
+   "line": 2,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "7b1b541bade7fc3f",
+   "body": "create table t1(id bigint, parent bigint, primary key(id)) create index parentIdx as select parent, id from t1 order by parent, id create index childIdx as select id, parent from t1 order by id, parent create index childIdxNoNulls as select id, parent from t1 where parent is not null order by id, parent"
+  },
+  {
+   "file": "schema-template-stored-queries.yamsql",
+   "line": 32,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "468ceb1209bad804",
+   "body": "create table t1(id bigint, col1 bigint, col2 bigint, primary key(id)) create index i1 as select col1 from t1 create table tree(id bigint, parent bigint, primary key(id)) create index parentIdx as select parent, id from tree order by parent, id create table dept(id bigint, name string, primary key(id)) create index deptName as select name from dept create stored query by_col1 as select * from t1 where col1 = 1 create stored query by_id as select * from t1 where id = 1 create stored query syntax_with_temp_funcs declare function helper1() as (select id from t1 where id = 1); function helper2(in x bigint) as (select id from t1 where id = x) as select id from t1 where id = 999 create stored query by_cte as with c1 as (select col1, col2 from t1) select col1, col2 from c1 create stored query tree_traversal as with recursive c1 as ( select id, parent from tree where parent = -1 union all select b.id, b.parent from c1 as a, tree as b where a.id = b.parent) select id from c1 create stored query by_dept_join as select t1.id, dept.name from t1 inner join dept on t1.col1 = dept.id"
+  },
+  {
+   "file": "scoped-keyset-pagination.yamsql",
+   "line": 26,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "f93fd262072e45bd",
+   "body": "create type as struct scope(scope_id bigint, deleted boolean) create table scoped_item(id string, scope scope, ts bigint, payload string, primary key(id)) create index scoped_item_scope_ts_idx as select scope.scope_id, ts, id from scoped_item order by scope.scope_id, ts, id create function scoped_item_view(scope_id bigint default null, scope_wide boolean default false, include_deleted boolean default false) as select id, ts, payload from scoped_item where (scope_wide is true or scope_id is not distinct from scope.scope_id) and (scope.deleted is not true or include_deleted is true)"
+  },
+  {
+   "file": "select-a-star.yamsql",
+   "line": 21,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "326aef18433b761f",
+   "body": "CREATE TYPE AS STRUCT S(S1 bigint, S2 bigint) create table A(A1 bigint, A2 bigint, A3 bigint, primary key(A1)) create table B(B1 bigint, B2 bigint, B3 S, primary key(B1)) create index A_idx as select A1, A2, A3 FROM A order by A1, A2, A3 create table t1(pk bigint, a bigint, b bigint, primary key(pk)) create table colname(colname bigint, other bigint, primary key(colname))"
+  },
+  {
+   "file": "semantic-search-advanced-metrics.yamsql",
+   "line": 23,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "c695542d06ca93bb",
+   "body": "create table documents(zone string, docId string, bookshelf string, title string, embedding vector(3, half), primary key (zone, docId)) create view documentsView as select embedding, zone, bookshelf, docId, title from documents create vector index documentsEuclideanSquareIndex using hnsw on documentsView(embedding) partition by(zone, bookshelf) options (metric = euclidean_square_metric, rabitq_num_ex_bits = 3, use_rabitq = true) create vector index documentsDotProductIndex using hnsw on documentsView(embedding) partition by(zone, bookshelf) options (metric = dot_product_metric, rabitq_num_ex_bits = 3, use_rabitq = true) create table multiTypePartitionDocs(zoneId bigint, docId string, bookshelf string, title string, embedding vector(3, half), primary key (zoneId, docId)) create view multiTypePartitionView as select embedding, zoneId, bookshelf, docId, title from multiTypePartitionDocs create vector index multiTypeEuclideanSquareIndex using hnsw on multiTypePartitionView(embedding) partition by(zoneId, bookshelf) options (metric = euclidean_square_metric) create vector index multiTypeDotProductIndex using hnsw on multiTypePartitionView(embedding) partition by(zoneId, bookshelf) options (metric = dot_product_metric)"
+  },
+  {
+   "file": "semantic-search.yamsql",
+   "line": 23,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "dd7cabf78627945c",
+   "body": "create table documents(zone string, docId string, bookshelf string, title string, embedding vector(3, half), primary key (zone, docId)) create view documentsView as select embedding, zone, bookshelf, docId, title from documents create vector index documentsEuclideanIndex using hnsw on documentsView(embedding) partition by(zone, bookshelf) options (metric = euclidean_metric, rabitq_num_ex_bits = 3, use_rabitq = true) create vector index documentsCosineIndex using hnsw on documentsView(embedding) partition by(zone, bookshelf) options (metric = cosine_metric, rabitq_num_ex_bits = 3, use_rabitq = true) create table reviews(reviewId string, zone string, docId string, rating bigint, reviewText string, primary key (reviewId)) create table multiTypePartitionDocs(zoneId bigint, docId string, bookshelf string, title string, embedding vector(3, half), primary key (zoneId, docId)) create view multiTypePartitionView as select embedding, zoneId, bookshelf, docId, title from multiTypePartitionDocs create vector index multiTypeEuclideanIndex using hnsw on multiTypePartitionView(embedding) partition by(zoneId, bookshelf) options (metric = euclidean_metric) create vector index multiTypeCosineIndex using hnsw on multiTypePartitionView(embedding) partition by(zoneId, bookshelf) options (metric = cosine_metric)"
+  },
+  {
+   "file": "serialization-options.yamsql",
+   "line": 28,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "8d128f7348ed32c0",
+   "body": "create table t(id bigint, s string, pad string, primary key(id) ) create index t_id as select id from t"
+  },
+  {
+   "file": "showcasing-tests.yamsql",
+   "line": 400,
+   "form": "schema_template",
+   "variant": "initialVersionAtLeast:4.12.15.0",
+   "sha256": "fb2fba983ff91ce3",
+   "body": "create table variant_demo(id bigint, val bigint, primary key(id)) create index variant_demo_val as select val from variant_demo"
+  },
+  {
+   "file": "sliding-window-semantic-search.yamsql",
+   "line": 23,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "475e72d6beaf0125",
+   "body": "create table documents(zone string, docId string, bookshelf string, title string, orderTime bigint, embedding vector(3, half), primary key (zone, docId)) create view documentsView as select embedding, zone, bookshelf, docId, title from documents qualify row_number() over (partition by zone, bookshelf order by orderTime) <= 8 create vector index documentsEuclideanIndex using hnsw on documentsView(embedding) partition by(zone, bookshelf) options (metric = euclidean_metric, rabitq_num_ex_bits = 3, use_rabitq = true) create vector index documentsCosineIndex using hnsw on documentsView(embedding) partition by(zone, bookshelf) options (metric = cosine_metric, rabitq_num_ex_bits = 3, use_rabitq = true) create table multiTypePartitionDocs(zoneId bigint, docId string, bookshelf string, title string, orderTime bigint, embedding vector(3, half), primary key (zoneId, docId)) create view multiTypePartitionView as select embedding, zoneId, bookshelf, docId, title from multiTypePartitionDocs qualify row_number() over (partition by zoneId, bookshelf order by orderTime) <= 2 create vector index multiTypeEuclideanIndex using hnsw on multiTypePartitionView(embedding) partition by(zoneId, bookshelf) options (metric = euclidean_metric) create vector index multiTypeCosineIndex using hnsw on multiTypePartitionView(embedding) partition by(zoneId, bookshelf) options (metric = cosine_metric)"
+  },
+  {
+   "file": "sparse-index-tests.yamsql",
+   "line": 21,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "4ed84dadb1b58717",
+   "body": "create table t1(id integer, col1 integer, col2 integer, primary key(id)) create index i1 as select col1 from t1 where col1 < 200 create index i2 as select col1 from t1 where col1 < 500 create table t2(id integer, tombstone boolean, primary key(id)) create index i3 as select tombstone from t2 where tombstone = true or tombstone is not null create table t3(id integer, tombstone boolean, primary key(id)) create index i4 as select id from t3 where tombstone = true or tombstone is not null create table t5(id integer, col1 integer, primary key(id)) create index i6 as select id from t5 where col1 < 40 or col1 > 90"
+  },
+  {
+   "file": "sql-functions.yamsql",
+   "line": 23,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "c9ae64d090416024",
+   "body": "create table t1(col1 bigint, col2 string, col3 integer, primary key(col1)) create table t2(x bigint, y bigint, z bigint, primary key(x)) create index t1_idx1 as select col2, col1, col3 FROM t1 order by col2, col1, col3 create index t1_idx2 as select col3, col2, col1 FROM t1 order by col3, col2, col1 create index t1_idx3 as select count(col1) from t1 group by col2, col3 create index t1_idx4 as select max(col3) from t1 group by col1, col2 create index t2_idx1 as select y, x, z FROM t2 order by y, x, z create index t2_idx2 as select z, y, x FROM t2 order by z, y, x create function f1 ( in a bigint, in b string ) as select col1, col2 from t1 where col1 < a and col2 = b create function f2 ( k bigint ) as select col1, col2, col3 from t1 where col3 = k create function f3 ( in a bigint, in b string, in c bigint) as select A.col1, A.col2, B.col3 from f1(a, b) A, f2(c) B create function f4 ( in a bigint, in b string, in c bigint, in d bigint) as select * from f3(a, b, c + d) create function f5 ( in a bigint default 103, in b string default 'b' ) as select col1, col2 from t1 where col1 < a and col2 = b"
+  },
+  {
+   "file": "standard-tests.yamsql",
+   "line": 21,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "31d3826c871e4383",
+   "body": "create table t1(id bigint, col1 bigint, col2 bigint, primary key(id)) create index i1 as select col1 from t1"
+  },
+  {
+   "file": "subquery-tests.yamsql",
+   "line": 21,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "bc29ab00e87e847e",
+   "body": "create table a(ida integer, x integer, primary key(ida)) create table x(idx integer, y integer, primary key(idx)) CREATE TYPE AS STRUCT s(f integer) create table r(idr integer, z integer, nr s array, primary key(idr)) create table b(idb integer, q integer, r integer, primary key(idb)) create index ib as select q from b create index ir as select idr, z from r order by idr, z create index ir_f as select sq.f from r, (select f from r.nr) sq;"
+  },
+  {
+   "file": "union-empty-tables.yamsql",
+   "line": 21,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "f8f143f0e51121ca",
+   "body": "create table t1(id bigint, col1 bigint, col2 bigint, primary key(id)) create table t2(id bigint, col1 bigint, col2 bigint, col3 bigint, primary key(id)) create table t3(id bigint, a double, b bigint, primary key(id)) create index mv10 as select count(*) from t3 group by a create table t4(id bigint, a bigint, b double, primary key(id)) create table t5(id bigint, a string, b string, primary key(id))"
+  },
+  {
+   "file": "union.yamsql",
+   "line": 21,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "d97a1e6ccbb213a2",
+   "body": "create table t1(id bigint, col1 bigint, col2 bigint, primary key(id)) create table t2(id bigint, col1 bigint, col2 bigint, col3 bigint, primary key(id)) create index vi1 as select col1 from t1 create table t3(id bigint, a double, b bigint, primary key(id)) create index mv10 as select count(*) from t3 group by a create table t4(id bigint, a bigint, b double, primary key(id)) create table t5(id bigint, a string, b string, primary key(id)) create table t6(id bigint, col1 bigint, col2 bigint, primary key(id)) create table t7(id bigint, col1 bigint, col2 bigint, primary key(id)) create index mv11 as select count(*) from t6 create index mv12 as select count(*) from t7"
+  },
+  {
+   "file": "user-defined-macro-function-tests.yamsql",
+   "line": 23,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "40c8e8687d4cea95",
+   "body": "create type as struct st1(y bigint, z bigint) create type as struct st2(w bigint, x bigint) create type as struct st3(u st2, v st1) create type as struct st4(s bigint, t bigint) create table nested(id bigint, q st4, r st3, primary key(q.s, r.u.w)) create index i2 as select r.v.z from nested order by r.v.z create table simple_table(a bigint, b string, c integer, primary key(a)) CREATE FUNCTION st2_func(IN x TYPE ST3) RETURNS ST2 AS x.u CREATE FUNCTION z(IN x TYPE ST3) RETURNS bigint AS x.v.z CREATE FUNCTION self(IN x bigint) RETURNS bigint AS x CREATE FUNCTION table_func1(IN limit_val bigint) AS SELECT id, self(id) as id_copy, z(r) as z_val FROM nested WHERE id <= limit_val CREATE FUNCTION table_func2(IN threshold bigint) AS SELECT self(id) as processed_id, z(r) as z_val FROM nested WHERE z(r) >= threshold CREATE FUNCTION table_func3(IN x bigint, IN y bigint) AS SELECT self(a) as a_val, self(a) as a_copy FROM simple_table WHERE a BETWEEN x AND y create type as struct line_item(price bigint, description string) create table order_t(id bigint, items line_item array, primary key(id)) create table price_list(id bigint, list_price bigint, primary key(id)) CREATE FUNCTION get_price(IN item TYPE line_item) RETURNS bigint AS item.price create type as struct level3(d bigint, extra bigint) create type as struct level2(c level3, extra bigint) create type as struct level1(b level2, extra bigint) create table deep_nested_t(id bigint, a level1, primary key(id)) create index deep_idx as select a.b.c.d from deep_nested_t order by a.b.c.d CREATE FUNCTION abcd(IN a TYPE level1) RETURNS bigint AS a.b.c.d"
+  },
+  {
+   "file": "uuid-non-prepared.yamsql",
+   "line": 23,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "880addb0189e7c74",
+   "body": "create table ta(a bigint, b uuid, primary key(a)) create table tb(a uuid, b bigint, primary key(a)) create table tc(a bigint, b uuid, c bigint, primary key(a, b)) create index tc1 as select b, c from tc order by b create index tc2 as select b, c from tc order by b, c create type as struct s1(a bigint, b uuid) create table td(a bigint, b s1, primary key(a)) create table te(a bigint, b uuid, primary key(a))"
+  },
+  {
+   "file": "uuid-prepared.yamsql",
+   "line": 23,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "bc95afd7d776ec87",
+   "body": "create table ta(a bigint, b uuid, primary key(a)) create table tb(a uuid, b bigint, primary key(a)) create table tc(a bigint, b uuid, c bigint, primary key(a, b)) create index tc1 as select b, c from tc order by b create index tc2 as select b, c from tc order by b, c create type as struct s1(a bigint, b uuid) create table td(a bigint, b s1, primary key(a)) create table te(a bigint, b uuid, primary key(a))"
+  },
+  {
+   "file": "valid-identifiers.yamsql",
+   "line": 23,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "e60ce833a3f16266",
+   "body": "create type as struct \"nested.type$level2\" (\"level2$field.1\" bigint, \"level2$field.2\" bigint) create type as struct \"nested.type$level1\" (\"level1$field.1\" \"nested.type$level2\", \"level1$field.2\" \"nested.type$level2\") create table \"foo.table$nested\" (id bigint, \"level0.field1\" \"nested.type$level1\", primary key(id)) create index \"foo.table$nested.idx\" as select \"level0.field1\".\"level1$field.1\".\"level2$field.1\" from \"foo.table$nested\" order by \"level0.field1\".\"level1$field.1\".\"level2$field.1\" create type as struct \"nested.repeated.type$level2\" (\"level2$array.field.1\" bigint, \"level2$field.2\" bigint) create type as struct \"nested.repeated.type$level1\" (\"level1$field.1\" \"nested.repeated.type$level2\" array, \"level1$field.2\" \"nested.type$level2\", \"level1$field.3\" bigint) create table \"foo.table$nested.repeated\" (id bigint, \"level0.field1\" \"nested.repeated.type$level1\" array, primary key(id)) create index \"foo.table$nested.repeated.idx.field.1.3\" as select \"nested$level1\".\"level1$field.3\" from \"foo.table$nested.repeated\" as \"level0$t\", \"level0$t\".\"level0.field1\" AS \"nested$level1\" create index \"foo.table$nested.repeated.idx.field.1.2.1\" as select \"nested$level1\".\"level1$field.2\".\"level2$field.1\" from \"foo.table$nested.repeated\" as \"level0$t\", \"level0$t\".\"level0.field1\" AS \"nested$level1\" create index \"foo.table$nested.repeated.idx.field.1.1.1\" as select \"nested$level2\".\"level2$array.field.1\" from \"foo.table$nested.repeated\" as \"level0$t\", \"level0$t\".\"level0.field1\" AS \"nested$level1\", \"nested$level1\".\"level1$field.1\" AS \"nested$level2\" create table \"foo.table$repeated\" (id bigint, \"field.0$array\" bigint array, \"field.1$array\" string array, primary key (id)) create index \"foo.table$repeated.1\" as select \"e\" from \"foo.table$repeated\" AS t, t.\"field.0$array\" as \"e\" create index \"foo.table$repeated.2\" as select \"e\" from \"foo.table$repeated\" AS t, t.\"field.1$array\" as \"e\" create type as struct \"foo.struct\"(S1 bigint, S2 bigint) create table \"foo.tableA\"(\"foo.tableA.A1\" bigint, \"foo.tableA.A2\" bigint, \"foo.tableA.A3\" bigint, primary key(\"foo.tableA.A1\")) create index \"foo.tableA.idx\" as select \"foo.tableA.A1\", \"foo.tableA.A2\", \"foo.tableA.A3\" FROM \"foo.tableA\" order by \"foo.tableA.A1\", \"foo.tableA.A2\", \"foo.tableA.A3\" create index \"foo.tableA.idx2\" as select sum(\"foo.tableA.A1\") FROM \"foo.tableA\" group by \"foo.tableA.A2\" create index \"foo.tableA.idx3\" as select \"foo.tableA.A2\" FROM \"foo.tableA\" order by \"foo.tableA.A2\" create table \"foo.tableB\"(\"foo.tableB.B1\" bigint, \"foo.tableB.B2\" bigint, \"foo.tableB.B3\" \"foo.struct\", primary key(\"foo.tableB.B1\")) create table \"foo$tableC\"(\"foo$tableC$C1\" bigint, \"foo$tableC$C2\" bigint, \"foo$tableC$C3\" bigint, primary key(\"foo$tableC$C1\")) create index \"foo$tableC$idx\" as select \"foo$tableC$C1\", \"foo$tableC$C2\", \"foo$tableC$C3\" FROM \"foo$tableC\" order by \"foo$tableC$C1\", \"foo$tableC$C2\", \"foo$tableC$C3\" create index \"foo$tableC$idx2\" as select sum(\"foo$tableC$C1\") FROM \"foo$tableC\" group by \"foo$tableC$C2\" create table \"__foo__tableD\"(\"__foo__tableD$D1\" bigint, \"__foo__tableD$D2\" bigint, \"__foo__tableD$D3\" bigint, primary key(\"__foo__tableD$D1\")) create index \"__foo__tableD$idx\" as select \"__foo__tableD$D1\", \"__foo__tableD$D2\", \"__foo__tableD$D3\" FROM \"__foo__tableD\" order by \"__foo__tableD$D1\", \"__foo__tableD$D2\", \"__foo__tableD$D3\" create index \"__foo__tableD$idx2\" as select sum(\"__foo__tableD$D1\") FROM \"__foo__tableD\" group by \"__foo__tableD$D2\" create table \"foo.tableE\"(\"foo.tableE.E1\" bigint, \"foo.tableE.E2\" bigint array, \"foo.tableE.E3\" \"foo.struct\", primary key(\"foo.tableE.E1\")) create function \"$yay\" (in \"_1$blah\" bigint) as select \"foo.tableE\".\"foo.tableE.E1\" as \"_$x.id\" from \"foo.tableE\" where \"foo.tableE\".\"foo.tableE.E3\".S1 = \"_1$blah\" create function \"__2yay\" (in \"_2$blah\" bigint) as select \"foo.tableE\".\"foo.tableE.E1\" as \"_$y.id\" from \"foo.tableE\" where \"foo.tableE\".\"foo.tableE.E3\".S1 = \"_2$blah\" create function \"\u0928\u092e\u0938\u094d\u0924\" (in \"x.y\" bigint) as select \"foo.tableE\".\"foo.tableE.E1\" as \"_$z.id\" from \"foo.tableE\" where \"foo.tableE\".\"foo.tableE.E3\".S1 = \"x.y\" create function \"alpha__f\" (in \"__in__foo.struct\" TYPE \"foo.struct\") RETURNS bigint AS \"__in__foo.struct\".S1 create function \"\u03b2\u03ae\u03c4\u03b1__f\" (in \"__in__foo.struct\" TYPE \"foo.struct\") RETURNS bigint AS \"__in__foo.struct\".S2 create view \"$yay__view\" as select \"foo.tableE\".\"foo.tableE.E1\" as \"_$x.id\" from \"foo.tableE\" where \"foo.tableE\".\"foo.tableE.E3\".S1 = 4 create view \"__2yay__view\" as select \"foo.tableE\".\"foo.tableE.E1\" as \"_$y.id\" from \"foo.tableE\" where \"foo.tableE\".\"foo.tableE.E3\".S1 = 5 create view \"\u0bb5\u0ba3\u0b95\u0bcd\u0b95\u0bae\u0bcd\" as select \"foo.tableE\".\"foo.tableE.E1\" as \"_$z.id\" from \"foo.tableE\" where \"foo.tableE\".\"foo.tableE.E3\".S1 = 6 create table \"my$adjacency$list\"(\"me\" bigint, \"my__parent\" bigint, primary key(\"me\")) create function \"__$func1\" ( in \"__$func1$A\" bigint, in \"__$func1$B\" bigint ) as select \"me\" as \"__A\", \"my__parent\" as \"__B\" from \"my$adjacency$list\" where \"me\" < \"__$func1$A\" and \"my$adjacency$list\".\"my__parent\" = \"__$func1$B\" create function \"__$func2\" ( \"__$func2$A\" bigint ) as select \"me\" as \"__A\", \"my__parent\" as \"__B\" from \"my$adjacency$list\" where \"me\" = \"__$func2$A\" create function \"__$func3\" ( in \"__$func3$A\" bigint, in \"__$func3$B\" bigint, in \"__$func3$C\" bigint) as select \"__..f1\".\"__A\", \"__..f1\".\"__B\", \"__..f2\".\"__A\", \"__..f2\".\"__B\" from \"__$func1\"(\"__$func3$A\", \"__$func3$B\") \"__..f1\", \"__$func2\"(\"__$func3$C\") \"__..f2\" create type as enum \"foo.enum\"('A', 'B$C', 'C.D', 'E__F', '__G$H') create table \"foo.enum.type\"(\"enum_type.id\" bigint, \"enum_type.enum__1\" \"foo.enum\", \"enum_type.enum__2\" \"foo.enum\", primary key (\"enum_type.id\")) create index \"foo.enum.type$enum__1\" as select \"enum_type.enum__1\" from \"foo.enum.type\""
+  },
+  {
+   "file": "vector-engine-preference.yamsql",
+   "line": 40,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "f36556bc9170b42d",
+   "body": "create table documents(zone string, docId string, bookshelf string, title string, embedding vector(3, half), primary key (zone, docId)) create view documentsView as select embedding, zone, bookshelf, docId, title from documents create vector index documentsHnswIndex using hnsw on documentsView(embedding) partition by(zone, bookshelf) options (metric = euclidean_metric) create vector index documentsGuardiannIndex using guardiann on documentsView(embedding) partition by(zone, bookshelf) options (metric = euclidean_metric, primary_cluster_min = 1, primary_cluster_max = 100, collapse_min_duplicates = 50) create index documentsByTitle as select title from documents order by title create table articles(zone string, articleId string, section string, headline string, embedding vector(3, half), primary key (zone, articleId)) create view articlesView as select embedding, zone, section, articleId, headline from articles create vector index articlesHnswIndex using hnsw on articlesView(embedding) partition by(zone, section) options (metric = euclidean_metric) create vector index articlesGuardiannIndex using guardiann on articlesView(embedding) partition by(zone, section) options (metric = euclidean_metric, primary_cluster_min = 1, primary_cluster_max = 100, collapse_min_duplicates = 50) create table hnswOnly(zone string, docId string, bookshelf string, embedding vector(3, half), primary key (zone, docId)) create view hnswOnlyView as select embedding, zone, bookshelf, docId from hnswOnly create vector index hnswOnlyIndex using hnsw on hnswOnlyView(embedding) partition by(zone, bookshelf) options (metric = euclidean_metric) create table guardiannOnly(zone string, docId string, bookshelf string, embedding vector(3, half), primary key (zone, docId)) create view guardiannOnlyView as select embedding, zone, bookshelf, docId from guardiannOnly create vector index guardiannOnlyIndex using guardiann on guardiannOnlyView(embedding) partition by(zone, bookshelf) options (metric = euclidean_metric, primary_cluster_min = 1, primary_cluster_max = 100, collapse_min_duplicates = 50) create table mixedMetrics(zone string, docId string, bookshelf string, embedding vector(3, half), primary key (zone, docId)) create view mixedMetricsView as select embedding, zone, bookshelf, docId from mixedMetrics create vector index mixedMetricsHnswEuclideanIndex using hnsw on mixedMetricsView(embedding) partition by(zone, bookshelf) options (metric = euclidean_metric) create vector index mixedMetricsGuardiannCosineIndex using guardiann on mixedMetricsView(embedding) partition by(zone, bookshelf) options (metric = cosine_metric, primary_cluster_min = 1, primary_cluster_max = 100, collapse_min_duplicates = 50)"
+  },
+  {
+   "file": "vector-mixed-version-metadata.yamsql",
+   "line": 39,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "a0b1a18c4027e54b",
+   "body": "create table documents(zone string, docId string, bookshelf string, title string, embedding vector(3, half), primary key (zone, docId)) create view documentsView as select embedding, zone, bookshelf, docId, title from documents create vector index documentsEuclideanIndex using hnsw on documentsView(embedding) partition by(zone, bookshelf) options (metric = euclidean_metric)"
+  },
+  {
+   "file": "versions-tests.yamsql",
+   "line": 21,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "5d8a59c2e747a89c",
+   "body": "create table t1(id bigint, col1 bigint, col2 bigint, primary key(id)) create index i1 as select col1 from t1 create index t1_version_index as select \"__ROW_VERSION\" from t1 create index grouped_version_index as select col1, \"__ROW_VERSION\" from t1 order by col1, \"__ROW_VERSION\" create table t2(id bigint, col1 bigint, col2 string, primary key (id)) create index t2_col2 as select col2 from t2 create table t3(id bigint, col1 string, col2 bigint, primary key (id)) create index t3_version_with_col1 as select \"__ROW_VERSION\", col1 from t3 order by \"__ROW_VERSION\" create table unindexed_t(id bigint, col1 bigint, col2 string, primary key(id)) create table t4(id bigint, col1 string, col2 bigint, col3 bigint, col4 bigint array, primary key (id)) create index t4_col2 as select col2 from t4 create index t4_col2_col4 as select t.col2, \"e\" from t4 as t, t.col4 as \"e\" order by t.col2, \"e\" create index t4_col3_version as select col3, \"__ROW_VERSION\" from t4 order by col3, \"__ROW_VERSION\" create index t4_col4_version as select \"e\", \"__ROW_VERSION\" from t4 as t, t.col4 as \"e\" order by \"e\", \"__ROW_VERSION\" create function t1_v(in x bigint) as select \"__ROW_VERSION\", id, col1, col2 from t1 where col1 = x create function t2_v(in x bigint) as select \"__ROW_VERSION\", id, col1, col2 from t2 where col1 = x create function t3_v(in x bigint) as select \"__ROW_VERSION\", id, col1, col2 from t3 where col2 = x create function t4_v(in x bigint) as select \"__ROW_VERSION\", id, col1, col2 from t3 where col2 = x create function unindexed_t_v(in x bigint) as select \"__ROW_VERSION\", id, col1, col2 from unindexed_t where col1 = x create function t3_by_col1(in x string) as select \"__ROW_VERSION\" AS version, (t3.*) as r from t3 where t3.col1 = x create function t4_by_col1(in x string) as select \"__ROW_VERSION\" AS version, (t4.*) as r from t4 where t4.col1 = x with options (store_row_versions=true)"
+  },
+  {
+   "file": "views.yamsql",
+   "line": 24,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "8085b13671a6cbe4",
+   "body": "create table employees(id bigint, name string, department string, salary bigint, hire_year bigint, primary key(id)) create index i1 as select department, salary from employees order by department, salary create function high_earners(in min_salary bigint) as select id, name, department, salary from employees where salary > min_salary create view simple_view as select * from employees where salary > 50000 create view nested_view as select * from simple_view where department = 'Engineering' create view cte_view as with high_sal as (select name, salary from employees where salary > 60000) select * from high_sal create view function_view as select * from high_earners(70000) create view complex_view as with dept_max as (select department, max(salary) as max_salary from employees group by department) select department, max_salary from dept_max create view nested_cte_view as with c1 as (with c2 as (select name, salary from employees where salary > 50000) select * from c2 where salary < 80000) select * from c1"
+  },
+  {
+   "file": "documentation-queries/aggregate-functions-documentation-queries.yamsql",
+   "line": 5,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "d164d21b182106fc",
+   "body": "create table sales(id bigint, product string, region string, amount bigint, primary key(id)) create index product_idx as select product from sales order by product create index region_idx as select region from sales order by region"
+  },
+  {
+   "file": "documentation-queries/array-agg-documentation-queries.yamsql",
+   "line": 28,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "97cc099566889d47",
+   "body": "CREATE TABLE sales (id BIGINT, product STRING, region STRING, amount BIGINT, PRIMARY KEY (id)) CREATE INDEX product_idx ON sales(product) CREATE TABLE parent (pid BIGINT, name STRING, PRIMARY KEY (pid)) CREATE TABLE child (cid BIGINT, pid BIGINT, val BIGINT, PRIMARY KEY (cid)) CREATE INDEX child_by_pid ON child(pid) CREATE TABLE doc_rev (rid BIGINT, title STRING, tags STRING ARRAY, PRIMARY KEY (rid))"
+  },
+  {
+   "file": "documentation-queries/array-agg-documentation-queries.yamsql",
+   "line": 106,
+   "form": "query",
+   "variant": "",
+   "sha256": "97cc099566889d47",
+   "body": "CREATE TABLE tab(id BIGINT, grp BIGINT, val BIGINT, PRIMARY KEY(id)) CREATE INDEX idx AS SELECT ARRAY_AGG(val) FROM tab GROUP BY grp"
+  },
+  {
+   "file": "documentation-queries/between-operator-queries.yamsql",
+   "line": 2,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "e0c70a94342975ef",
+   "body": "create table products(id bigint, name string, category string, price bigint, stock integer, primary key(id)) create index price_idx as select price from products order by price create index category_idx as select category from products order by category create index name_idx as select name from products order by name"
+  },
+  {
+   "file": "documentation-queries/case-documentation-queries.yamsql",
+   "line": 2,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "dfca36eb2a0a74f5",
+   "body": "create table products(id bigint, name string, category string, price bigint, stock integer, primary key(id)) create index name_idx as select name from products order by name create index price_idx as select price from products order by price create index name_price_idx as select name, price from products order by name"
+  },
+  {
+   "file": "documentation-queries/comments-documentation-queries.yamsql",
+   "line": 14,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "9d3165a1e53a4e12",
+   "body": "create table products(id bigint, name string, price bigint, primary key(id)) create index name_idx as select name from products order by name"
+  },
+  {
+   "file": "documentation-queries/group-by-documentation-queries.yamsql",
+   "line": 5,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "c7bd9c172a11c0ca",
+   "body": "create table employees(id bigint, department string, role string, salary bigint, primary key(id)) create index dept_idx as select department from employees order by department create index role_idx as select role from employees order by role create index dept_role_idx as select department, role from employees order by department, role"
+  },
+  {
+   "file": "documentation-queries/in-operator-queries.yamsql",
+   "line": 2,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "65a7425cd2e14908",
+   "body": "create table products(id bigint, name string, category string, price bigint, stock integer, primary key(id)) create index price_idx as select price from products order by price create index category_idx as select category from products order by category create index name_idx as select name from products order by name"
+  },
+  {
+   "file": "documentation-queries/index-documentation-queries.yamsql",
+   "line": 5,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "248a8e0a61270a3f",
+   "body": "create table products(id bigint, name string, category string, price bigint, rating bigint, supplier string, stock bigint, primary key(id)) create table sales(id bigint, category string, region string, amount bigint, quantity bigint, primary key(id)) create index idx_price as select price from products order by price create index idx_category_price as select category, price, name from products order by category, price create index idx_sales_by_category as select category, sum(amount) from sales group by category create index idx_count_by_region as select region, count(*) from sales group by region create index idx_max_by_category as select category, max(amount) from sales group by category order by category, max(amount) create index idx_price_desc as select price from products order by price desc create index idx_category_desc_price_asc as select category, price from products order by category desc, price asc create index idx_rating_nulls_last as select rating from products order by rating asc nulls last create index idx_on_price on products(price) create index idx_on_category_price on products(category, price) create index idx_on_category_price_covering on products(category, price) include(name, stock) create index idx_on_category_desc on products(category desc, price asc) create index idx_on_rating_nulls_last on products(rating asc nulls last) create index idx_on_supplier_desc_nulls_first on products(supplier desc nulls first) create index idx_on_stock_nulls_last on products(stock nulls last) create index idx_on_complex on products(category asc nulls first, price desc nulls last, name asc)"
+  },
+  {
+   "file": "documentation-queries/is-distinct-from-operator-queries.yamsql",
+   "line": 2,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "c9f0b203678398ef",
+   "body": "create table products(id bigint, name string, category string, price bigint, stock integer, primary key(id)) create index price_idx as select price from products order by price create index category_idx as select category from products order by category create index name_idx as select name from products order by name"
+  },
+  {
+   "file": "documentation-queries/isolation-level-snapshot-documentation-queries.yamsql",
+   "line": 30,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "419ef2fe1781d98f",
+   "body": "create table document(id bigint, data string, primary key(id)) create index document_count as select count(*) from document create table folder(folder_id bigint, name string, primary key(folder_id)) create index max_folder_id as select max_ever(folder_id) from folder"
+  },
+  {
+   "file": "documentation-queries/like-operator-queries.yamsql",
+   "line": 2,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "09e6a8f385f1f303",
+   "body": "create table products(id bigint, name string, category string, price bigint, stock integer, primary key(id)) create index price_idx as select price from products order by price create index category_idx as select category from products order by category create index name_idx as select name from products order by name create table files(id bigint, filename string, primary key(id))"
+  },
+  {
+   "file": "documentation-queries/order-by-documentation-queries.yamsql",
+   "line": 5,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "e72b854f209144dd",
+   "body": "create table products(id bigint, name string, category string, price bigint, primary key(id)) create index price_idx as select price, category from products order by price create index category_idx as select category, price from products order by category create index category_price_idx as select category, price from products order by category, price"
+  },
+  {
+   "file": "documentation-queries/subqueries-documentation-queries.yamsql",
+   "line": 2,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "1b4799cd64e3de79",
+   "body": "create table a(ida integer, x integer, primary key(ida)) create index a_ida_idx as select ida from a order by ida create index a_x_idx as select x from a order by x create table x(idx integer, y integer, primary key(idx)) create table b(idb integer, q integer, r integer, primary key(idb)) create index ib as select q from b CREATE TYPE AS STRUCT s(f integer) create table r(idr integer, nr s array, primary key(idr)) create index ir as select sq.f from r, (select f from r.nr) sq"
+  },
+  {
+   "file": "documentation-queries/udf-documentation-queries.yamsql",
+   "line": 23,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "ac71295b191dfb1e",
+   "body": "create table employees( id bigint, name string, department string, salary bigint, primary key(id)) create index dept_idx as select department, salary from employees order by department, salary create function employees_in_dept(in dept string) as select id, name, salary from employees where department = dept create function employees_by_dept_and_salary(in dept string, in min_salary bigint) as select id, name, salary from employees where department = dept and salary >= min_salary create function search_employees(in dept string default 'Engineering', in min_salary bigint default 0) as select id, name, department, salary from employees where department = dept and salary >= min_salary create function same_dept_employees(in emp_dept string) as select id, name from employees where department = emp_dept create function high_earners(in dept string) as select * from employees_in_dept(dept) where salary > 100000"
+  },
+  {
+   "file": "documentation-queries/window-function-documentation-queries.yamsql",
+   "line": 23,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "1d5822719e3cac03",
+   "body": "create table documents(zone string, docId string, bookshelf string, title string, embedding vector(3, half), primary key (zone, docId)) create view documentsView as select embedding, zone, bookshelf, docId, title from documents create vector index documentsEuclideanIndex using hnsw on documentsView(embedding) partition by(zone, bookshelf) options (metric = euclidean_metric) create vector index documentsCosineIndex using hnsw on documentsView(embedding) partition by(zone, bookshelf) options (metric = cosine_metric)"
+  },
+  {
+   "file": "include-block/shouldPass/simple-include-different-env.yamsql",
+   "line": 24,
+   "form": "schema_template",
+   "variant": "",
+   "sha256": "9efb5d3744581e31",
+   "body": "create table t1(id bigint, col1 bigint, primary key(id)) create index i1 as select * from t1 where col1 > 1000 order by id create index i2 as select * from t1 where id = 0 order by col1 create index i3 as select * from t1 where col1 > 50 and id < 53434 order by col1"
+  }
+ ]
+}

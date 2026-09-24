@@ -1,0 +1,303 @@
+# RFC-257 WS-F (cascades W6) design research: conditional rule chains and planner scheduling
+
+This is research only, not an ACK. I made no edits and ran no tests, probes or builds.
+
+## 0. Evidence and limits
+
+- **Upstream diffs were not read.** Bash was denied for every `git` invocation in this session (`git -C fdb-record-layer rev-parse …` and `diff`). I read the target Java files directly. I also could not confirm that the checkout HEAD is `fdacd162`. The pre-upgrade Java behaviour below comes from three places: the audit (`rfcs/257-java-upgrade-audit/cascades.md:150-170`), comments in Go code that name the old Java, and DIVERGENCES.md.
+- **Base tag mismatch.** Your brief says the previous pin was 4.11.1.0. The RFC says the base is 4.12.11.0 (`rfcs/257-java-4.14.2.0-upgrade.md:22`), and Go's ConstraintsMap port also cites 4.12.11.0 (`expressions/constraints_map.go:3-4`). The diff base needs to be fixed before anyone relies on it.
+- **Read in full (Java):**
+  - Core classes: `AbstractCascadesRule`, `CascadesRule`, `PlannerRule`, `ConditionalCascadesRule`, `ExplorationCascadesRule`, `ImplementationCascadesRule`, `CascadesRuleSet`, `RewritingRuleSet`.
+  - `CascadesPlanner` from 1 to 1403.
+  - Supporting classes: `ExpressionPropertiesMap`, `ExpressionPartitions`, `ExpressionsPartitionMatchers`, `ReferenceMatchers`, `SelectMergeableProperty`, `FinalizeExpressionsRule`, `SelectMergeRule`, `PredicatePushDownRule`, `RewritingCostModel`.
+  - Tests: `ConditionalCascadesRuleTest`, `CascadesPlannerTest`, `SelectMergeablePropertyTest`, `FinalizeExpressionsRuleTest`.
+  - Partial reads: `CascadesRuleCall`, `Reference`, `MultiMatcher`, `RelationalExpressionMatchers`, and parts of `SelectMergeRuleTest`, `PredicatePushDownRuleTest` and `RuleTestHelper`.
+- **Unread:**
+  - `MemoExpressionTest` and `PlannerEventSerializationTests` (a grep found no W6 terms in either).
+  - The 60 rule-declaration adapter files.
+  - Java yamsql metrics changes caused by W6.
+  - The pre-upgrade bodies of `SelectMergeRule`, `PredicatePushDownRule` and `FinalizeExpressionsRule`.
+
+## 1. Headline findings
+
+1. **The W6 core is a REWRITING restructure, not a new rule class.** In the target, `FinalizeExpressionsRule` builds new, disentangled final expressions over fresh partition references. `SelectMergeRule` and `PredicatePushDownRule` then run as implementation rules on those finals, only after the children have been pruned to one member. Go has none of this:
+   - Go's finalize step promotes the same pointer (`rule_finalize_expressions.go:40-45`).
+   - Merge and pushdown are ordinary exploration rules (`default_rules.go:146`, `:399`).
+2. **Porting disentangled finalization is the REWRITING physical prune.** It is the same mechanism Go already tried and reverted as a "universal prune" (`unified_tasks.go:76-98`, `DIVERGENCES.md:1582-1604`, `rfcs/186-rewriting-cost-derivation.md:213-223`). W6 therefore cannot close without PLANNING being able to re-derive the plan shapes that prune used to lose. That is the critical-path risk.
+3. **The staleness gate is required, not an optimisation.** Go re-fires every rule on every re-exploration round (`unified_tasks.go:219-223`). With a conditional chain, a re-fired `SelectMergeRule` dedups (no progress), so the chain falls through to `PredicatePushDownRule`, which Java would never run there. With disentangled finalization, a re-fired `FinalizeExpressionsRule` also mints new fresh references every round, so termination would depend entirely on `InsertFinal` dedup. Both are real divergences.
+4. **A progress concept is missing from Go entirely.** Go's `Task.Run` returns nothing (`planner.go:1592-1594`). Two other pieces of Java's requirement-driven scheduling are also missing: non-preorder rules that push constraints are not re-queued, and the "has this group ever been explored" check is absent (`unified_tasks.go:659-667`).
+5. **Four Go comments and one DIVERGENCES.md entry describe the pre-upgrade Java.** Each must be corrected when the port lands:
+   - `rule_predicate_push_down.go:37`, `:63-65`
+   - `rule_select_merge.go:48-51`
+   - `default_rules.go:386-395`
+   - `rule_predicate_push_down_test.go:1616-1618`
+   - `DIVERGENCES.md:2614-2617` ("Java's per-quantifier rule")
+
+## 2. The Java target spec
+
+### 2.1 Rule taxonomy
+- **`AbstractCascadesRule`** (`:63-108`) holds the matcher and its constraint dependencies. The root operator is the matcher's root class.
+- **`CascadesRule.onlyOnPrunedInputs()`** defaults to false. The `OnPrunedInputsRule` marker sets it true (`CascadesRule.java:41-54`). Java calls this a "temporary workaround" used only for REWRITING rules, so it should not be extended to PLANNING rules.
+- **The six REWRITING rules** encode root membership in their matchers:
+  - Exploration rules use `.where(isExploratoryExpression())`.
+  - Merge and pushdown use `.where(isFinalExpression())`.
+  - These are implemented via the current-reference binding (`RelationalExpressionMatchers.java:121-141`).
+  - In the target, exactly these 6 files under `rules/` use these predicates.
+- **`ConditionalCascadesRule`** (`:88-204`) validates at construction:
+  - the rule list is non-empty;
+  - every inner matcher has the same root class (`:150-158`);
+  - every inner rule has the same root operator (`:164-172`);
+  - the constraint dependencies are the union of the inner rules' (`:180-187`);
+  - every inner rule agrees on `onlyOnPrunedInputs` (`:196-204`).
+
+  Calling `onMatch` throws "cannot call this method directly" (`:128-133`). The enablement keys are the simple class names `ConditionalExplorationCascadesRule` and `ConditionalImplementationCascadesRule` (`:211`, `:240`; `RecordQueryPlannerConfiguration.java:288-290`).
+- **`RewritingRuleSet`** (`:50-107`):
+  - Exploration: {decorrelate→simplify chain, `RewriteOuterJoinRule`}.
+  - Implementation: {merge→pushdown chain, `FinalizeExpressionsRule`}.
+  - `OPTIONAL_RULES` expands the chains into their inner rules and excludes `FinalizeExpressionsRule`. `disableRewritingRules()` consumes that set (`RecordQueryPlannerConfiguration.java:700-705`).
+
+### 2.2 Exact progress definition
+`Task.execute()` returns whether the task changed planner state (`CascadesPlanner.java:551-562`).
+- **Structural tasks:**
+  - `InitiatePlannerPhase` → true.
+  - `OptimizeGroup` → true.
+  - `ExploreGroup` → false if the group is at a later stage, otherwise true.
+  - `Explore*Expression` and `AdjustMatch` → true.
+  - `OptimizeInputs` → false if the group no longer contains the expression, otherwise true (`:1371-1386`).
+- **Transform tasks:** false if the group no longer contains the expression (`:1067-1069`, `:1190-1193`). Otherwise the result is the OR, over every binding, of whether that rule call made progress (`:1072-1099`).
+- **A rule call made progress** if any of these holds (`:1102-1158`):
+  - at least one new partial match (each gets an `AdjustMatch`);
+  - at least one new final expression that the memo actually admitted (each gets explore + `OptimizeInputs`, with exploration forced);
+  - at least one new exploratory expression the memo admitted (each gets a forced explore);
+  - some constraint push changed a child and the rule is not a preorder rule (the same task is re-queued);
+  - some child whose constraints changed had already been explored before (an `ExploreGroup` is queued for it).
+- **What "admitted" and "changed" mean:**
+  - A yield only counts if `insert*Expression` returned true (`CascadesRuleCall.java:221-234`).
+  - A constraint push only counts if `pushProperty` actually changed the map (`:177-185`).
+- **What is not progress:** a match with no yield, a yield the memo deduplicated, and a preorder rule pushing a constraint onto a child that has never been explored.
+
+### 2.3 Staleness rule (two forms)
+- **(a) Expression staleness.** A conditional transform checks that the group still contains the expression before running any inner rule. If it does not, the task returns false and pushes no follow-up, so the whole rest of the chain dies (`:1233-1240`). `OptimizeInputs` has the same guard (`:1372-1374`).
+- **(b) Constraint staleness at push time.**
+  - A re-exploration only queues a rule if the group is on its first-ever exploration, or one of the rule's constraint dependencies was pushed after the group last committed exploration (`:956-970`).
+  - A forced exploration queues every rule.
+  - `OptimizeInputs` queues a rule if it was pushed as forced, or the rule passes the same staleness check (`:1388-1391`).
+  - For a conditional wrapper:
+    - the wrapper must be enabled and pass the check, using the union of its inner rules' dependencies;
+    - each inner rule is then filtered separately by enablement and staleness (`:839-862`);
+    - if no inner rule survives, no task is pushed.
+
+### 2.4 Ordering contract
+1. Exploring an expression queues `OptimizeInputs` first and the expression's exploration on top of it (`:528-534`). So everything the exploration spawns runs to completion before `OptimizeInputs` runs.
+2. That exploration queues match-partition rules, then non-preorder rules that do not require pruned inputs, then `ExploreGroup` for each child, then preorder rules (`:884-913`). Rules that require pruned inputs are never queued here.
+3. `OptimizeInputs` queues the pruned-input rules first and then one `OptimizeGroup` per child on top (`:1376-1385`). Because the stack is LIFO, every child is pruned before the chain runs.
+4. A chain member that makes no progress queues its successor on top, so chain members run back to back. When a member makes progress it has queued its own follow-up tasks and the chain stops (`:1241-1248`).
+5. A new final expression from any rule goes back through step 1 with exploration forced (`:1123-1128`). A final discovered by `ExploreGroup` goes through step 1 without forcing (`:763-765`).
+
+### 2.5 Partitions and the three rules
+- **Where partitions come from:**
+  - REWRITING-stage references track `SelectMergeableProperty` as their only partitioning property (`ExpressionPropertiesMap.java:285-298`, `PlannerStage.java:82,87`).
+  - The property is true for any `RelationalExpressionWithPredicates` and false otherwise (`SelectMergeableProperty.java:80-86`).
+  - Only final expressions enter the properties map (`Reference.java:181-182`).
+  - Roll-up computes any property the partition does not track on the fly (`ExpressionPartitions.java:104-114`).
+- **`FinalizeExpressionsRule`** (`:57-103`):
+  - The root must be exploratory. For each quantifier, `all(anyExpressionPartition())` binds the child's partitions.
+  - Over an empty collection, `all` binds the empty list (`MultiMatcher.java:60-86`). So a child with no finals contributes an empty dimension and the rule yields nothing. A leaf yields exactly one final.
+  - The cross product of the partitions yields one final per combination. Each fresh child reference comes from `memoizeFinalExpressionsFromOther`, which verifies the source is not waiting for exploration, verifies containment, and marks the new reference explored (`Reference.java:586-594`).
+- **`SelectMergeRule`** (`:78-188`):
+  - A quantifier is eligible if it is a plain ForEach (no null-on-empty) and its child's mergeable partitions roll up to exactly one partition holding exactly one `WithPredicates` expression. The rule collects these with `some(…)`.
+  - With zero eligible quantifiers it returns immediately: no progress, so the chain falls through to pushdown.
+  - Otherwise it merges in topological correlation order, renames duplicate child aliases, and rebases the child graphs.
+  - Non-mergeable children are re-memoized as disentangled copies and rebased if they depend on a merged alias. The result is yielded as a final.
+- **`PredicatePushDownRule`** (`:190-312`):
+  - The result type must be a record. Eligible quantifiers are ForEach without null-on-empty, over a child that rolls up to one partition with one expression (`atLeastOne`).
+  - It keeps a set of residual predicates. For each leg in quantifier order, it pushes the residual predicates that are local to that leg.
+  - A predicate is removed from the residual only after a successful push.
+  - Legs that were not pushed into are re-memoized as disentangled copies. One final expression is yielded.
+  - The per-shape push visitor is at `:314-480`.
+
+## 3. What Go has today
+
+| Java | Go location | State |
+|---|---|---|
+| `Task.execute()` returns progress | `planner.go:1592-1594`, loop `:468-499` | no return value; 7 implementations, all in `unified_tasks.go` |
+| ExploreExpression vs ReExploreExpression | `ExploreExprTask` `unified_tasks.go:274-347`; all members re-explored each round `:219-256` | no force flag, no staleness gate |
+| rule constraint dependencies | `ExpressionRule` (`expression_matcher.go:69-72`), `ImplementationRule` (`implementation_rule.go:17-20`) | missing; `IsExploredForAttributes` exists (`constraints_map.go:112-124`) but only a test calls it |
+| executeRuleCall | `TransformExprTask` `:359-526`, `TransformImplTask` `:538-782` | per-yield inserted flags only on the expression-rule path (`:433,477`); constraint pushes force an `ExploreGroupTask` on every pushed child (`:659-667`); no re-queue of the rule, no "explored before" check |
+| new final → OptimizeInputs | gated to physical yields (`:506-508`, `:652-654`); one ungated site on the swapped-quantifier path (`:750-767`) | REWRITING finals created by rules never get `OptimizeInputs` at yield time |
+| OptimizeInputs | `:955-1008` | has the containment guard (`:966-968`); no pruned-input rules; no force flag |
+| Conditional / OnPrunedInputs | — | missing |
+| RewritingRuleSet | `default_rules.go`: `SelectMergeRule` in DefaultExpressionRules `:146`; `DecorrelateValuesRule` registered twice (`:159` and `:400`); QPS and PPD standalone `:398-399`; composed at `planner_options.go:242-243` | wrong structure |
+| `OptionalRewritingRuleNames` | `default_rules.go:424-431` | same five names as Java's `OPTIONAL_RULES`; keep and pin |
+| FinalizeExpressionsRule | `rule_finalize_expressions.go:28-45`; skip for exprs already final `unified_tasks.go:305-309` | yields the same pointer; no partitions |
+| REWRITING expression partitions | only physical `PlanPartition` exists (`expression_partition.go:15-288`) | missing |
+| SelectMergeRule | `rule_select_merge.go:55-506`, exploration rule | scans every member of each child; declared-order merge; no duplicate-alias renaming; retained quantifiers rebased only for positional seeds (`:410-425`) |
+| PredicatePushDownRule | `rule_predicate_push_down.go:50-173`, exploration rule | one leg per firing (`:171`); re-evaluates all predicates per leg; multi-member child reference built with raw `InitialOf`+`Insert`, bypassing the memo (`:134-142`); no record-type check |
+| memoize-from-other | `ImplementationRuleCall.MemoizeFinalExpressionsFromOther` (`implementation_rule.go:187-223`) → `newRestrictedFinalReference` (`expression_rule_call.go:337-399`) | never marks the new reference explored |
+| `quantifier.overNewReference` | `RebuildQuantifier` (`quantifier.go:189-197`) | reusable |
+| topological order | `combinatorics.AnyTopologicalOrderPermutation`, `computeTransitiveCorrelationOrder` (`rule_partition_select.go:906`) | reusable |
+
+## 4. The coupling: disentangled finalization is the REWRITING physical prune
+
+- **Today in Go:**
+  - The REWRITING `OptimizeGroup` keeps only the winner (`unified_tasks.go:843`), so the root ends up with one final.
+  - That final is the same pointer as an exploratory member, and it ranges over shared child groups that still hold every canonical alternative.
+  - At the stage boundary those finals are promoted without pruning (`unified_tasks.go:98`).
+  - PLANNING depends on those surviving alternatives. The two shapes named where it lost them are the RFC-153 buried-leg shape and the cross-join-EXISTS shape.
+- **After a 1:1 port:**
+  - Every final ranges over fresh copies, and `OptimizeInputs` prunes each copy to one member.
+  - The reachable tree at the boundary is therefore a single tree, exactly Java's `Verify(finalMembers.size()==1)` world (`Reference.java:208-212`).
+- **Decision: port Java's mechanism in full, and make the PLANNING re-derivation parity it exposes part of this workstream's DFS path.**
+- **Rejected alternatives:**
+  - Keeping same-pointer finals and adding partition cross products on top. Partitions of a shared child group mean nothing to a parent that ranges over that whole group.
+  - Skipping the prune of the fresh copies. The Java matchers require exactly one expression per child; without the prune the rules would have to scan members, which is Go's current non-Java behaviour.
+
+Both alternatives keep the architecture incoherent. The end state already recorded in DIVERGENCES.md:1602-1604 is exactly what W6 forces.
+
+## 5. Design decisions
+
+- **D1 — progress.**
+  - Change `Task.Run(ctx, p)` to return `bool` on all 7 implementations, using the per-task values in §2.2. Existing callers compile unchanged because a statement-context call may ignore the result.
+  - A shared function `executeRuleCall` computes progress strictly after Go's commit point (below). For each rule call it ORs together:
+    - `batch.inserted[i]` for each yield;
+    - growth of the partial-match set on the PLANNING path;
+    - "non-preorder rule pushed a constraint that changed a child", which also re-queues the rule task;
+    - "a child whose constraints changed had been explored before", which also queues its `ExploreGroupTask`.
+  - Go-only addition: a committed `InsertReExploring` that actually inserted also counts. That requires `CommitStagedInserts` to return the number of real inserts (`memo.go:441-448`).
+- **D2 — rule metadata.**
+  - Add optional interfaces `ConstraintDependencies() []any` and `OnlyOnPrunedInputs() bool`. The dependency keys are the existing `*PlannerConstraint` pointers (`planner_constraint.go:19,26`); `Set` already ticks the reference's ConstraintsMap (`planner_constraint.go:84-102`).
+  - Port the dependencies declared by the Java rule files that mention them. The population is 24 files under `rules/` matching `pushConstraint\(|getConstraintDependencies|super\(…, ImmutableSet`; that regex over-matches, so read each file.
+  - Also declare the Go-only `OrdinalLayoutConstraintKey` and `ReferencedFieldsConstraintKey` dependencies on every rule that reads them. As a starting list, 25 non-test files in `cascades/` match a `Get(…,<key>)` / `GetRequestedOrderings()` regex. This is a lower bound: reads through helper functions are missed.
+- **D3 — conditional rule types.**
+  - Name them `ConditionalExplorationCascadesRule` and `ConditionalImplementationCascadesRule`, so a `DISABLED_PLANNER_RULES` value works the same in both engines.
+  - The constructor returns `(*…, error)` with a typed `InvalidConditionalRuleError`. It validates: non-empty; equal matcher `RootOperator()` (nil equal to nil); equal `OnlyOnPrunedInputs`; dependencies as an order-preserving union.
+  - The wrapper's matcher is a root-type matcher implementing `RootOperatorMatcher`, so the rule index buckets it.
+  - `OnMatch` calls `call.Fail` with an unsupported-invocation error.
+  - The production rule sets are built without panicking. If validation fails, the error is recorded and surfaced as `capErr` on the first plan call, and a unit test pins that the production chains build cleanly.
+- **D4 — `ConditionalTransformTask`.**
+  - It carries (phase, reference, expression, filtered inner rules, index).
+  - `Run`: if the reference no longer contains the expression, return false and push nothing. Otherwise run the inner rule through `executeRuleCall`. On progress return true; otherwise push the task for index+1 (if there is one) and return false.
+  - Filtering at push time mirrors `pushTransformExpressionIfNeeded`: wrapper enabled, wrapper not stale, then each inner rule enabled and not stale; if none survive, push nothing. The wrapper-name check stays in `rulesForPhase` (`planner.go:833-847`); the inner checks happen at push time.
+- **D5 — staleness gate.**
+  - Add `Force` to `ExploreExprTask` and `OptimizeInputsTask`.
+    - Unforced sites: the `ExploreGroupTask` loops (`:205,216,253,255`).
+    - Forced sites: every rule-yield site (`:509,655,766-767`).
+    - When a forced request coalesces with an existing pending task in `push` (`planner.go:691-703`), upgrade the pending task to forced.
+  - A task should push a rule if it is forced, or the group is on its first-ever exploration, or the rule's dependencies were pushed after the group last committed exploration.
+  - Convert Go's out-of-band re-arm to Java's per-expression model. Under the gate a bare tick bump re-fires nothing.
+    - Absorb, and `InsertReExploring` via `scheduleReExplore`, should push forced `ExploreExprTask`s for the folded or inserted expressions (plus `OptimizeInputs` for finals) instead of a group-wide `ReArm` round (`memo.go:421-434`).
+    - `ScheduleFreshReference` stays a first exploration.
+- **D6 — REWRITING partitions.**
+  - Add `ExpressionPartition`, `ToExpressionPartitions(ref)` over `FinalMembers()` in insertion order, `RollUpExpressionPartitions` and `FilterExpressionPartitions`.
+  - The only partitioning property is `SelectMergeable`, computed as `expr.(expressions.RelationalExpressionWithPredicates)`; that interface is implemented by Select and LogicalFilter only (`with_predicates.go:35-36`).
+  - Computing it when read is equivalent to Java's lazy map, because the property is a pure function of the top node. Do not reuse `PlanPartition`, which is keyed by physical plan properties.
+- **D7 — FinalizeExpressionsRule.**
+  - It becomes a REWRITING implementation rule over exploratory roots only.
+  - For each quantifier, take the child's partitions. If any are empty, yield nothing. For a leaf, yield the expression itself; this keeps the existing leaf identity pin and is structurally Java's `withQuantifiers(∅)`.
+  - For each element of the cross product: `RebuildQuantifier(q, call.MemoizeFinalExpressionsFromOther(q.GetRangesOver(), part.Expressions()))`, then `WithQuantifiers` (propagate its error), then `YieldFinalExpression`.
+  - `newRestrictedFinalReference` must mark its result explored, as Java's `newReferenceFromFinalMembers` does. Without that, Go would re-explore every fresh copy and re-run the chains that already ran in the source group.
+- **D8 — root membership.** In REWRITING, `ExploreExprTask` on a final queues no rules; it still queues child exploration. That is the net effect of Java's six REWRITING matcher predicates, and it stops Go's REWRITING-placed normalization rules (`default_rules.go:40-170`) from firing on the new disentangled finals. Merge and pushdown additionally check that the reference holds the root as a final.
+- **D9 — pruned-input scheduling.**
+  - `OptimizeInputsTask.Run` queues pruned-input rules (conditional or plain) before it captures `dependentFloor` (`:985`). The resulting stack, bottom to top, is: [chain][OptimizeGroup per child][ExploreGroup batch].
+  - REWRITING yields of new finals queue `OptimizeInputs{Force}` and `ExploreExprTask{Force}`. PLANNING keeps its physical-only B1 gate.
+- **D10 — PredicatePushDownRule** as an implementation rule that requires pruned inputs and a final root.
+  - Port the Java matcher, the record-result check, the residual set, and quantifier-order iteration.
+  - Memoize the pushed leg with `MemoizeFinalExpression`. That reference is not marked explored, so the chain recurses into it.
+  - Carry over untouched legs with `RebuildQuantifier(q, MemoizeFinalExpressionsFromOther(ref, ref.FinalMembers()))`.
+  - Delete the raw `InitialOf`+`Insert` construction.
+- **D11 — SelectMergeRule** as an implementation rule that requires pruned inputs and a final root.
+  - A quantifier is eligible if it passes Java's partition matcher and every Go guard (§6).
+  - Zero eligible quantifiers means return with no yield.
+  - Merge in Java's topological order (declaration order when there are no dependencies, per `TopologicalSort.java:731-734`). Rename duplicate aliases, and rebase retained quantifiers that depend on a merged alias through the composed translation map.
+  - Keep Go's positional-seed `rcByAlias` regime, the source-alias rebuild, and `JoinType`.
+- **D12 — rule-set recomposition.**
+  - REWRITING exploration rules: {decorrelate→simplify chain, `RewriteOuterJoinRule`} plus the Go-placed normalization rules.
+  - REWRITING implementation rules (`planner.go:245`): {merge→pushdown chain, `FinalizeExpressionsRule`}.
+  - Remove `SelectMergeRule` and the duplicate `DecorrelateValuesRule` from `DefaultExpressionRules`.
+  - `OptionalRewritingRuleNames` expands the chains and excludes Finalize; the name set is unchanged.
+
+## 6. How the staged publication and extension guards survive
+
+- **Staged publication.** Progress is read only after the full commit sequence, in this order:
+  1. `Err()` is clear;
+  2. `verifyChildrenMemoized` (PLANNING);
+  3. `prepareReferenceMemberBatch`;
+  4. `CommitStagedInserts`;
+  5. `batch.commit`.
+
+  The sequence is at `unified_tasks.go:428-483` and `:583-620`. A failed call sets `capErr`; the run loop stops there, so a chain can never advance past a failed call. `Yield`, `InsertReExploring`, `PushConstraint` and `applyPendingConstraints` keep their staged semantics unchanged. Only `executeRuleCall` is shared.
+
+- **Guards and where they move:**
+
+| Guard | Today | After the port |
+|---|---|---|
+| outer-join parent/child opaque | SM `:81-83`, `:148-150`; PPD `pushIntoSelect :330-332` | merge eligibility; pushdown visitor |
+| strict-single (parent, nested, push edge) | SM `:89-91`, `:134-136`; PPD `:75-77`, `:339-341` | PPD quantifier eligibility adds `!IsStrictSingle`; visitor keeps the nested check |
+| null-on-empty | PPD `:75-77`; SM `:123` | Java's matcher excludes it already; keep |
+| dissolved LEFT box | SM `:179-190` | merge eligibility |
+| chained lateral unnest | SM `:218-221` | merge eligibility; the merge `break` becomes "not eligible" |
+| existential wrap / positional windows | SM `:102-111`, `:240-251` | merge eligibility |
+| row-shape rebase proofs | PPD `:258-260`, `:355-357`, `:410-412` | visitor, unchanged |
+| union all-legs-or-nothing, translation failure declines | PPD `:467-471`, `:373-376` | visitor, unchanged |
+| un-rewritten outer join survives REWRITING | `planning_cost_model.go:83-105` | unchanged; pinned by `TestRewritingBoundary_KeepsUnrewrittenOuterJoin` |
+
+## 7. Tests to port and e2e proofs
+
+- **Java tests to port:**
+  - `ConditionalCascadesRuleTest`, all tests. `constructorWithMismatchedRootOperatorThrows` needs an optional root-operator override to be expressible; if Go does not add one, say so in the port.
+  - `CascadesPlannerTest` 1–6, driven directly against tasks.
+  - `SelectMergeablePropertyTest`.
+  - `FinalizeExpressionsRuleTest`: 2×2 gives 4 finals, single quantifier gives 2, leaf gives 1.
+  - All of `PredicatePushDownRuleTest`, notably `testPartitionPredicatesByJoinSource` (one firing, only the join predicate left) and the `assertYieldsNothing(…, false)` "never matched" cases.
+  - All of `SelectMergeRuleTest`, notably `retainNonMergeableChildren`, `doNotMergeDefaultOnEmpty`, `combineTwoJoins`, `mergeUpAvoidingDuplicates` and `cannotMergeDueToCorrelationsBetweenSiblings`.
+  - This needs a Go port of `RuleTestHelper.run`/`preExploreForRule` (`RuleTestHelper.java:165-231`): finalize and prune the children, then root the rule as final (pruned-input rules) or exploratory (everything else).
+- **New Go pins:**
+  - A chain whose first member matched but made no progress, one that matched and made progress, one whose yield dedups (no progress), a stale expression, and inner-rule disablement versus wrapper-name disablement.
+  - A Go memo re-arm (Absorb / `InsertReExploring`) that re-explores only the new expressions.
+  - A non-preorder constraint push that re-queues the rule task.
+  - Re-running `FinalizeExpressionsRule` yields no progress.
+  - Each §6 guard driven through the new harness, keeping every existing assertion.
+- **End-to-end proof.** The chain's decisions are mostly invisible in the final EXPLAIN, so add a test-only rule-call observer (rule, expression, progress) to the Planner, next to the `ReachabilityCollector`. That is the Go analogue of Java's `TransformRuleCallPlannerEvent`. Then:
+  - With `PlanQueryForTest`, show that for a 2-leg join with per-leg predicates, SelectMerge made progress on the root final and PPD never ran on it; and that for Select-over-UNION ALL, SelectMerge made no progress and PPD pushed in a single firing.
+  - With `PlanQueryForTestWithDisabledRules([SelectMergeRule])`, show PPD still fires. With the wrapper name disabled, show neither fires.
+  - Add yamsql `plan_contains` scenarios with indexed columns for predicates pushed through UNION ALL, sort, DISTINCT, and a multi-leg derived-table join. The index-scan tokens must be captured from a real run, which I did not do. The existing `multi_predicate_push.yaml` has no `plan_contains` at all.
+
+## 8. Plan-shape risks: what is likely to change
+
+- **Highest risk:**
+  - The RFC-153 buried-leg and cross-join-EXISTS shapes (§4).
+  - `TestFDB_ArrayUnnestOrdinality`, which depends on the ungated swapped-quantifier REWRITING finals (`unified_tasks.go:750-758`). Java has no swapped finals, so this belongs in PLANNING.
+- **Unit tests that will change:**
+  - All of `rule_predicate_push_down_test.go` (API change plus one firing at `:1616`) and `rule_select_merge_test.go` (new harness).
+  - `rule_finalize_expressions_test.go` (add the product cases; keep leaf identity).
+  - `rewriting_final_invariant_test.go` and the RFC-186 coherence instrument, because the designated finals become trivial on the fresh copies.
+  - `transform_expr_task_admission_test.go`.
+  - The rule tests that drive planning with `p.pop().Run` loops.
+  - `bug_hunt_cascades_test.go` (DistinctOverUnionAll).
+  - `plan_shape_conformance_test.go`, the plan-diff conformance goldens, and the stress EXPLAIN set.
+- **Task budgets:** chains reduce rule tasks, while fresh copies add `OptimizeInputs`/`OptimizeGroup` tasks. Re-measure against the 150k and 250k budgets (`planner_options.go:231-234`).
+- **PLANNING:** the gate (D5) plus the constraint re-queue (D1) change how often rules re-fire there.
+- **Required measurement:** the 1M stress comparison at the merge-base, before and after.
+
+## 9. DFS implementation order
+
+This is a query-engine change, so RFC-257's WS-F section needs a Graefe and Torvalds ACK before implementation starts.
+
+1. Rule-call observer plus a merge-base EXPLAIN and task-count baseline. No behaviour change.
+2. D1 progress as a pure refactor, plus the Java planner-test ports using plain rules.
+3. D2 and D3 types and validation, plus the `ConditionalCascadesRuleTest` port.
+4. D4 conditional task and push filtering, plus `CascadesPlannerTest` 1–6.
+5. D5 gate, dependency declarations, re-arm conversion and constraint re-queue. Triage the full suite and goldens; stress run.
+6. D6 partitions, plus the `SelectMergeablePropertyTest` port.
+7. D7 and D8 disentangled finalization, REWRITING final scheduling, and marking fresh copies explored. At this point the old merge/pushdown still run as exploration rules and remain valid. **Measure plannability here**, and fix every shape PLANNING cannot re-derive before moving on (§4).
+8. D9 pruned-input scheduling.
+9. D10 PredicatePushDownRule.
+10. D11 SelectMergeRule.
+11. D12 recomposition plus the options pin. Then e2e yamsql/harness proofs, golden and stress re-verification, one Graefe/Torvalds/codex review lap, and correction of the stale comments listed in §1.5 (grep until zero hits).
+
+## 10. Open verification items
+
+- Whether `InsertFinal` dedups disentangled copies through `SemanticEquals` (`reference.go:886-909`) must be pinned by a test (step 7).
+- Whether Go's Kahn tie-breaking matches Java's needs a test that fixes quantifier order.
+- The effect of marking restricted references explored on the PLANNING callers of `MemoizeFinalExpressionsFromOther` has not been measured.
+- `RewriteOuterJoinRule`'s Java root is `OuterJoinExpression` (`RewriteOuterJoinRule.java:69-73`). That is outside W6 and belongs to its owning workstream.

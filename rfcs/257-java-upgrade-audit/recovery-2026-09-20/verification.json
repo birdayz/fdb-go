@@ -1,0 +1,77 @@
+{
+  "scope": "Fresh-machine WS-E1 static/planner verification; FDB/Java/full-suite/stress and implementation ACKs remain outstanding.",
+  "frozen_source_files": 6276,
+  "golden_stanzas_changed": 9,
+  "golden_stanzas_unchanged": 2986,
+  "unit_targets": 9,
+  "unit_test_subtest_passes": 10461,
+  "race_targets": 8,
+  "race_test_subtest_passes": 9544,
+  "determinism": "5 selected tests each executed/passed 10 times across 2 uncached Bazel targets",
+  "fuzz": {
+    "target": "FuzzOrdinalJoinSeedDeclaredLegs",
+    "seconds": 20,
+    "executions": 10207807,
+    "seeds": 4,
+    "result": "PASS"
+  },
+  "retry": "TestRetryContainerStart parent and six subtests pass",
+  "build": "just build: 258 targets; final build successful after fresh native-client setup",
+  "build_setup_failures": "Initially missing fdb_c.h; action_env did not reach rules_go cgo actions; native header archive also lacked fdb_c_types.h. Resolved with official clients package headers and Bazel copt/linkopt. No test failure or source workaround.",
+  "native_client": {
+    "version": "7.3.77 unchanged",
+    "source": "https://github.com/apple/foundationdb/releases/tag/7.3.77",
+    "deb_sha256": "b6c263723009bddbc30b6ae8cf9854340bd35cef14152abb0da8fb5af2b91254",
+    "library_sha256": "617572467897d0360f76ffc33f24b58090ee691e3273750d2ff334cc71aae3fa",
+    "installation": "/home/birdy/.local/share/foundationdb/7.3.77",
+    "bazel_configuration": "/home/birdy/.bazelrc",
+    "configuration_contents": "# Fresh official FoundationDB 7.3.77 client, installed without root for fdb-go.\nbuild --copt=-I/home/birdy/.local/share/foundationdb/7.3.77/include\nbuild --linkopt=-L/home/birdy/.local/share/foundationdb/7.3.77/lib\nbuild --linkopt=-Wl,-rpath,/home/birdy/.local/share/foundationdb/7.3.77/lib\ntest --test_env=LD_LIBRARY_PATH=/home/birdy/.local/share/foundationdb/7.3.77/lib\n",
+    "verification": "Fresh download SHA256s checked against official release asset digests; official package headers and header-archive common files byte-compared."
+  },
+  "external_prerequisites": {
+    "docker": "Resolved after this static verification: sudo-tool startup succeeded, Docker 29.8.1 active and current user has socket access. Focused Java oracle subsequently executed.",
+    "github": "gh auth status reports not logged into any GitHub hosts. No old credentials imported."
+  },
+  "logs": {
+    "first-focused.log": {
+      "path": "/var/tmp/fdb-upgrade-recovery/first-focused.log",
+      "sha256": "46d3b7e2678c2a23e69967f3e765e6db9266ee15786449f8db522e45aadcca9a"
+    },
+    "mandatory-from-mutant.log": {
+      "path": "/var/tmp/fdb-upgrade-recovery/mandatory-from-mutant.log",
+      "sha256": "d9e09b99d05e5b22c67670e4348ed9caffba4ad289d0d866d45caed4b3c87991"
+    },
+    "mandatory-from-restored.log": {
+      "path": "/var/tmp/fdb-upgrade-recovery/mandatory-from-restored.log",
+      "sha256": "52bbc5f6699ac4866ad3a796db69705778840d5ee952565acf11eacc695bc559"
+    },
+    "ordinal-fuzz.log": {
+      "path": "/var/tmp/fdb-upgrade-recovery/ordinal-fuzz.log",
+      "sha256": "2c5687076e2daec3315575584aceb35153e3ecdceed0f618684cf0dcca4df8c9"
+    },
+    "determinism.log": {
+      "path": "/var/tmp/fdb-upgrade-recovery/determinism.log",
+      "sha256": "f1abee5e2a6b18babf30a744cefb422cdad4701ce313e715a55be8c14c0fc4e1"
+    },
+    "retry.log": {
+      "path": "/var/tmp/fdb-upgrade-recovery/retry.log",
+      "sha256": "d8216546740abad2b2b6fad10d1e5af408a790fd5e948db3689d6327291279a6"
+    },
+    "full-build.log": {
+      "path": "/var/tmp/fdb-upgrade-recovery/full-build.log",
+      "sha256": "e53949212a6794cc0a04d34eaba4a045ccc783b3b131f11d8829e5b6f946828d"
+    },
+    "full-build-native.log": {
+      "path": "/var/tmp/fdb-upgrade-recovery/full-build-native.log",
+      "sha256": "f209fe0d6ed94ea82bbcd4cf5eb395391e34004c1b08990c5705d6c3f369d984"
+    },
+    "full-build-native-flags.log": {
+      "path": "/var/tmp/fdb-upgrade-recovery/full-build-native-flags.log",
+      "sha256": "2e37965f49ee50b08777a8753763f299b2ce2ee904f2f6c650483ed335312147"
+    },
+    "full-build-client-package.log": {
+      "path": "/var/tmp/fdb-upgrade-recovery/full-build-client-package.log",
+      "sha256": "d52c89b3daa7c2442e3f38cf9767c9662109c4a4abef35f0950966944664c519"
+    }
+  }
+}

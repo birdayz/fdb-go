@@ -5112,14 +5112,9 @@ func TestFDB_CTE(t *testing.T) {
 	g.Expect(names2).To(gomega.Equal([]string{"Cheap"}))
 }
 
-// TestFDB_SelectWithoutFromRejected pins that FROM-less SELECT is
-// rejected at parse time. fdb-relational 4.11.1.0's QueryVisitor.
-// visitSimpleTable (line 225) asserts `simpleTableContext.fromClause()
-// != null` with `ErrorCode.UNSUPPORTED_QUERY` and the byte-equal
-// message "query is not supported". Go's `extractFromSimpleTable`
-// mirrors the rejection. Per the project conformance principle:
-// doesn't work in Java → doesn't work in Go.
-func TestFDB_SelectWithoutFromRejected(t *testing.T) {
+// A singleton source does not bypass the connection's schema requirement.
+// The same SELECT with an attached schema is pinned in TestFDB_NoFromSelectProbe.
+func TestFDB_SelectWithoutFromRequiresSchema(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
@@ -5134,7 +5129,8 @@ func TestFDB_SelectWithoutFromRejected(t *testing.T) {
 		t.Skip("FDB not available (no Docker)")
 	}
 
-	// FROM-less SELECT doesn't need a real schema — just a valid DSN with a path.
+	// Deliberately omit schema attachment: this pins connection admission,
+	// not a grammar refusal.
 	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///select_no_from?cluster_file=%s", clusterFilePath))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -5142,10 +5138,10 @@ func TestFDB_SelectWithoutFromRejected(t *testing.T) {
 	defer db.Close()
 
 	_, err = db.QueryContext(ctx, `SELECT 1 + 2, 'hello', 42`)
-	if err == nil {
-		t.Fatal("expected error for FROM-less SELECT; got success")
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeUnsupportedQuery || apiErr.Message != "no schema metadata available" {
+		t.Fatalf("expected the schema-admission error, got %v", err)
 	}
-	expectRejectionOrCascadesError(t, err, "query is not supported", "no schema metadata available")
 }
 
 // TestFDB_ConstantProjectionFolding exercises the embedded layer's
@@ -6897,13 +6893,8 @@ func TestFDB_ParameterizedSubquery(t *testing.T) {
 	g.Expect(rows.Scan(&cnt)).To(gomega.Succeed())
 }
 
-// TestFDB_PiFunctionRejected pins that bare `SELECT PI()` is rejected
-// at parse time, not because of the function but because it's a
-// FROM-less SELECT. fdb-relational 4.11.1.0's QueryVisitor.
-// visitSimpleTable rejects every FROM-less SimpleTable with
-// UNSUPPORTED_QUERY ("query is not supported") before any function-
-// dispatch step runs. Per project conformance principle, Go aligns.
-func TestFDB_PiFunctionRejected(t *testing.T) {
+// The existing Go PI scalar extension also consumes the singleton source.
+func TestFDB_PiFunctionWithoutFrom(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
@@ -6927,10 +6918,9 @@ func TestFDB_PiFunctionRejected(t *testing.T) {
 
 	var pi float64
 	err = db.QueryRowContext(ctx, `SELECT PI()`).Scan(&pi)
-	if err == nil {
-		t.Fatal("expected error for PI(); got success")
+	if err != nil || pi != math.Pi {
+		t.Fatalf("PI()=%v error=%v, want %v", pi, err, math.Pi)
 	}
-	expectRejectionOrCascadesError(t, err, "query is not supported")
 }
 
 func TestFDB_CaseInWhereOnCTE(t *testing.T) {
@@ -7146,6 +7136,11 @@ func TestFDB_ErrorPathSQLSTATE(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO T (id, n) VALUES (1, 100)`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
+	// The former missing-FROM refusal is now a positive admission control.
+	var two int64
+	g.Expect(db.QueryRowContext(ctx, "SELECT 1 + 1").Scan(&two)).To(gomega.Succeed())
+	g.Expect(two).To(gomega.Equal(int64(2)))
+
 	// Helper: exec the query and surface the first error from prepare,
 	// iteration, or scan. Returns nil on success.
 	queryErr := func(sql string) error {
@@ -7189,9 +7184,7 @@ func TestFDB_ErrorPathSQLSTATE(t *testing.T) {
 			// Division / modulo by zero returns SQLSTATE
 			// 22012 (division_by_zero) — the SQL-standard class-22 code.
 			// Previously 22023 (INVALID_PARAMETER); more precise now.
-			// Wrapped with `FROM T WHERE id = 1` so the FROM-less
-			// rejection (0AF00) doesn't fire first; the seed row at
-			// id=1 anchors a single-row evaluation.
+			// The seed row at id=1 anchors a single-row evaluation.
 			name:     "div by zero (SQL standard error)",
 			sql:      "SELECT 1 / 0 FROM T WHERE id = 1",
 			wantCode: api.ErrCodeDivisionByZero,
@@ -7218,16 +7211,7 @@ func TestFDB_ErrorPathSQLSTATE(t *testing.T) {
 			sql:      "SELECT SQRT(-1) FROM T WHERE id = 1",
 			wantCode: api.ErrCodeInvalidParameter,
 		},
-		{
-			// FROM-less SELECT — fdb-relational 4.11.1.0 rejects at
-			// parse time via QueryVisitor.visitSimpleTable's
-			// `Assert.notNullUnchecked(fromClause(), UNSUPPORTED_QUERY,
-			// "query is not supported")`. Go aligns through
-			// extractFromSimpleTable.
-			name:     "FROM-less SELECT (parse-time rejection)",
-			sql:      "SELECT 1 + 1",
-			wantCode: api.ErrCodeUnsupportedQuery,
-		},
+
 		{
 			name:     "duplicate database",
 			sql:      "CREATE DATABASE /testdb_error_paths",

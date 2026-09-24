@@ -1,0 +1,95 @@
+**NAK** on tree `9b7856e7c5d5563eb53c8b03b92a5953dac823a1`. I recomputed the design hash: `226f24320b6c5d92f75b2de01d3fe2a6989e910655479d02db4adcbdfbc7b0a9`, 2152 lines.
+
+The review was read-only. `git diff` and `git grep` were refused under the tool policy, so I checked the delta with `git show` and `git ls-tree` at both trees, plus Grep. Findings come from reading source unless marked **measured**.
+
+Almost every revision-10 finding is resolved. One is only half resolved (finding 1), and revision 11 adds new claims that are wider than the code.
+
+## Findings, most severe first
+
+**1. Low: the withdrawal under the owner's ruling is incomplete, and the CHANGELOG contradicts itself.** Design :1926 says the "scattered rebuild instructions are withdrawn". At the gate:
+- `CHANGELOG.md:298-301` still says an out-of-range `rankNLevels` index "refuses every write until its option is corrected".
+  - Revision 10's storage review showed that correction is refused by both engines' evolution checks (`RankIndexMaintainerFactory.java:78` parses the old config first).
+  - That half of its finding 2 is still open.
+- `:413-416` still says "Rebuild every index stored with a `value_expression` that a pre-upgrade Go build maintained".
+- Item 9 forbids "legacy framing routes", a "store-open probe" and a "`PreUpgradeGo` writer" (umbrella RFC :762-770). Two passages still describe them:
+  - `:86-99`: the remedies and the PENDING `MigrateLegacyRecordsFile` migration;
+  - `DIVERGENCES.md:3111-3129`: `PreUpgradeGo` and `LegacyRecordTypeKeyError`.
+- Both contradict the new bullet at `:28-32` ("nothing migrates, detects or repairs them"). The WS-J text belongs to WS-J, but it ships in files this revision edits.
+
+**2. Low: `firstFault` loses the fault of a key that was handed to the builder and then replaced.** 7.11 (:1949) says it walks "every key expression handed to the builder (… each primary key, the record count key)". It walks only the current ones:
+- `metadata.go:2256-2263` reads the current keys, and `SetPrimaryKey` (:1339-1342) and `SetRecordCountKey` (:463-468) overwrite them.
+- So `SetPrimaryKey(Concat(Field("order_id")))` followed by `SetPrimaryKey(Field("order_id"))` builds. The Java program throws at the `concat`.
+- The same happens to a refused Then built earlier and handed to the builder that `GetRecordType("Nope")` returns (:750-755).
+- **Fix:** record the fault when the setter receives it, as `addedIndexes` does for indexes, and pin it with a test.
+
+**3. Low: the design's sentence on `GetSnapshotRecordCountForRecordType` (:1939-1940) is wrong on both halves.**
+- Java's method (`FDBRecordStore.java:2431-2453`) never reads the record count key. It answers from a COUNT index, otherwise it throws "Require a COUNT index on X".
+- Go's method (`record_count.go:335-352`, unchanged in this revision) reads only the count key, yet its comment says "Matches Java's".
+- At `9aee2d3d` the nested key's column size was 1+n (`key_expression.go:642-646`). With readable counters that returned `RecordCountKeySizeMismatchError`, not a read at the type key.
+- The divergence is undeclared. **Measured:** 0 hits in the gate's DIVERGENCES; the control `validateSlidingWindowIndex` gets 1 hit.
+
+**4. Low (evidence): two mutation rows don't match their logs.**
+- r22's inserted check refuses every non-unique MAX_EVER_VERSION index whatever `storeRecordVersions` is (`mut-r22` log :6-8).
+  - So all 16 MaxEverVersion specs redden, including those that store versions.
+  - The re-added requirement itself was never mutated. The spec that pins it ("builds without SetStoreRecordVersions, as Java does") exists, but r22 doesn't isolate it.
+- r17's row says "the two … specs"; its log shows three, one of them `[PANICKED!]`.
+
+**Nits**
+- a. `index_validator.go:31` cites a DIVERGENCES heading, "A vector index's root is not checked at build", that doesn't exist. **Measured:** 0 hits; the control "VECTOR index metadata validation" gets 1.
+- b. `DIVERGENCES.md:2108-2111` still says `validateVectorIndexOptionsAtBuild` is called from `validateSlidingWindowIndex`; it is now called from `validateIndex`. And design :2015 understates the gap: a plain VECTOR index gets neither half, since `validateIndexType` has no VECTOR arm.
+- c. `sliding_window_index_validation.go:49` and `:62` append "(index %s)" to Java's texts. `LoggableException` has no `getMessage` override, so Java's text is the bare message. This predates revision 11 but falls inside the "Java's texts" claim.
+- d. Proto2 groups: `key_expression_validate.go:96` and `:151` test for `MessageKind`, but protobuf-java counts a group as a message. So Go refuses a nesting into a group that Java builds. This is my hypothesis from source, not measured, and it predates revision 11.
+- e. Design :1929 says "a `rankNLevels` that no longer loads". Such meta-data loads; its writes are refused.
+- f. Design :2116 says the gate differs from `98dd04f5` "by this document only". **Measured** with `ls-tree`: it also adds `ws-c-addendum-review-v10/`.
+- g. Evidence populations: `ev2/` has no after-tree record and no spec counts. `groupalias10.log` shows 10 passing runs but no "Ran" line, so it doesn't show that the focus matched a spec.
+- h. The new R-tree shape check runs only in the two node-slot-index arms; it sits after `if !c.slotIndex { return }`.
+
+## Revision-10 findings, checked
+
+Resolved:
+- `Nest` is now `Concat` (`key_expression.go:516-522`), and no `.go` file still reads the removed `nested` field.
+- A one-child Then is a builder fault in program order.
+- Key equality for record type keys now matches Java.
+- A map field is repeated. **Measured:** all five map shapes agree on both loaders, and the Go-only fan-out refusal is declared.
+- A nesting into a scalar returns `UnsupportedOperationError` with the text measured on the JVM.
+- Indexes are validated index by index in Java's order. **Measured** by r8–r10 and 30 shapes.
+- Each class is asserted by value in all three tests revision 10 named.
+- The loader texts no longer carry Go suffixes.
+- `bitmapValueEntrySize` is read as Java reads it at both call sites (the maintainer and the chaos model).
+- `AddMultiTypeIndex` resolves its record types first, and `GetRecordType` of an unknown name no longer panics.
+- The rest:
+  - the `errors.go` comment;
+  - the third evolution message;
+  - the `union` probe, now named with its reason;
+  - the ⊎ sweep;
+  - the oracle's wording;
+  - the n3, n7 and n17 corrections;
+  - the stale comment;
+  - the kept 10-run log.
+
+The PERMUTED upgrade entry is withdrawn under the ruling. Storage finding 2's `rankNLevels` half is **not** resolved (finding 1).
+
+Per-index order, each ported validator and the atomic mutation table match `MetaDataValidator.java:103-165`, `IndexValidator.java` and the factories. Undeclared exceptions are listed in nit c. The Then arity fault's program order matches `ThenKeyExpression.java:54-66` and `GroupingKeyExpression.of`.
+
+## Measured
+
+- **Source bytes:** the six changed source and test blobs at the gate hash equal to their `ev/src.sha` entries.
+- **Tree steps (`ls-tree`):** `d3615120`→`98dd04f5` changes only the two test files. `98dd04f5`→gate changes `ws-c-design.md` and adds the v10 review directory; the other paths I compared are identical.
+- **`ev`:**
+  - 1868 files OK, 0 failed; tree unchanged;
+  - conformance 1559/1559;
+  - oracle 63/64, the failure being the COUNT case;
+  - 10 runs of the GroupAlias probe passed;
+  - `just test` executed 45 of 94 targets, and the list file has 45 lines.
+- **`ev2`:** 2 of 2 targets pass.
+- **Mutations:**
+  - All 22 show marker count 1, bazel exit 3 and "restored"; `run.out` reads ALL-DONE and the tree is unchanged.
+  - Baselines: 3712/3713 and 36/1678.
+  - The line numbers in the diffs match the gate blobs.
+- **JVM (`wsc-r11-keyval-4.log`):** all 30 index shapes and 6 key shapes agree on class and whole text; 42 specs ran.
+
+**Not verified:**
+- the bytes of the `good/` copies (hashing files in that directory was refused);
+- the counts of rewritten tests, such as "38 roots", since `git diff` was refused.
+
+The preserved boundaries are unaffected.

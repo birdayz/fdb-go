@@ -83,6 +83,9 @@ class SqlPlanSteps {
     private static final Object SETUP_LOCK = new Object();
     private static final AtomicBoolean SETUP_DONE = new AtomicBoolean(false);
     private static String setupClusterContent = null;
+    /** The database and relational keyspace the registered engine uses (set once with it). */
+    private static FDBDatabase sharedDatabase = null;
+    private static KeySpace sharedKeySpace = null;
 
     private static void ensureDriverRegistered(String clusterFileContent) throws Exception {
         synchronized (SETUP_LOCK) {
@@ -165,6 +168,8 @@ class SqlPlanSteps {
                 /* planCache = */ null);
 
             DriverManager.registerDriver(new EmbeddedRelationalDriver(engine));
+            sharedDatabase = database;
+            sharedKeySpace = keySpace;
             setupClusterContent = clusterFileContent;
             SETUP_DONE.set(true);
         }
@@ -254,6 +259,181 @@ class SqlPlanSteps {
             }
             return runQuery(conn, querySql);
         });
+    }
+
+    /**
+     * Like {@link #runWithSetup}, but the statement is a prepared statement whose parameters are
+     * bound through the JDBC setters rather than written into the SQL text (see
+     * {@link #bindExtended} for the parameter kinds, positional or named), with CONNECTION options
+     * set on the connection before the statement is prepared ({@code connectionOptions}:
+     * {@link Options.Name} to its value), and a DML mode: when {@code update} is true the statement
+     * runs through executeUpdate and {@code followUpSql} then runs as a plain query in the same
+     * connection; its RowSet is returned with the statement's update count in the
+     * {@code updateCount} field (not a column).
+     */
+    @ConformanceStep("runPreparedExtended")
+    public JsonObject runPreparedExtended(String clusterFile, String schemaTemplate,
+                                          java.util.List<String> setupSqls, String querySql,
+                                          java.util.List<java.util.Map<String, Object>> params,
+                                          java.util.Map<String, Object> connectionOptions,
+                                          boolean update, String followUpSql) throws Exception {
+        return runWithEphemeralSchema(clusterFile, schemaTemplate, conn -> {
+            try (Statement st = conn.createStatement()) {
+                for (String setup : setupSqls) {
+                    withFdbRetry(() -> st.executeUpdate(setup));
+                }
+            }
+            RelationalConnection rconn = conn.unwrap(RelationalConnection.class);
+            for (java.util.Map.Entry<String, Object> e : connectionOptions.entrySet()) {
+                rconn.setOption(Options.Name.valueOf(e.getKey()), e.getValue());
+            }
+            return withFdbRetry(() -> {
+                try (RelationalPreparedStatement ps = rconn.prepareStatement(querySql)) {
+                    int position = 1;
+                    for (java.util.Map<String, Object> p : params) {
+                        String name = String.valueOf(p.getOrDefault("name", ""));
+                        if (bindExtended(rconn, ps, name, position, p)) {
+                            position++;
+                        }
+                    }
+                    if (!update) {
+                        try (RelationalResultSet rs = ps.executeQuery()) {
+                            return resultSetToJson(rs);
+                        }
+                    }
+                    int count = ps.executeUpdate();
+                    try (Statement follow = conn.createStatement();
+                         RelationalResultSet rs = follow.executeQuery(followUpSql).unwrap(RelationalResultSet.class)) {
+                        JsonObject out = resultSetToJson(rs);
+                        out.addProperty("updateCount", count);
+                        return out;
+                    }
+                } catch (ReflectiveOperationException e) {
+                    throw new IllegalArgumentException(e);
+                }
+            });
+        });
+    }
+
+    /**
+     * Executes one statement text once per parameter set, in order, on ONE connection of one
+     * ephemeral schema. With {@code reuseStatement} the statement is prepared once and
+     * re-bound; without it each execution prepares the text afresh. Each execution's answer
+     * is its own element of {@code results}: a result set, or
+     * {@code {sqlState, message, exceptionClass}}. This engine has NO plan cache (it is built
+     * with {@code planCache = null}, see the engine's construction), so every execution is
+     * planned fresh for its binding: the step measures the plan each binding gets, never a
+     * cached plan's reuse, and the target's plan-constraint safety for a cached plan stays a
+     * source claim.
+     */
+    @ConformanceStep("runPreparedSequence")
+    public JsonObject runPreparedSequence(String clusterFile, String schemaTemplate, java.util.List<String> setupSqls,
+                                         String querySql,
+                                         java.util.List<java.util.List<java.util.Map<String, Object>>> paramSets,
+                                         boolean reuseStatement) throws Exception {
+        return runWithEphemeralSchema(clusterFile, schemaTemplate, conn -> {
+            try (Statement st = conn.createStatement()) {
+                for (String setup : setupSqls) {
+                    withFdbRetry(() -> st.executeUpdate(setup));
+                }
+            }
+            RelationalConnection rconn = conn.unwrap(RelationalConnection.class);
+            JsonArray results = new JsonArray();
+            RelationalPreparedStatement shared = reuseStatement ? rconn.prepareStatement(querySql) : null;
+            try {
+                for (java.util.List<java.util.Map<String, Object>> params : paramSets) {
+                    RelationalPreparedStatement ps = shared != null ? shared : rconn.prepareStatement(querySql);
+                    try {
+                        int position = 1;
+                        for (java.util.Map<String, Object> p : params) {
+                            String name = String.valueOf(p.getOrDefault("name", ""));
+                            if (bindExtended(rconn, ps, name, position, p)) {
+                                position++;
+                            }
+                        }
+                        try (RelationalResultSet rs = ps.executeQuery()) {
+                            results.add(resultSetToJson(rs));
+                        }
+                    } catch (SQLException | RuntimeException | ReflectiveOperationException e) {
+                        Throwable root = e;
+                        while (root.getCause() != null) {
+                            root = root.getCause();
+                        }
+                        JsonObject err = new JsonObject();
+                        err.addProperty("sqlState", e instanceof SQLException ? ((SQLException) e).getSQLState() : "");
+                        err.addProperty("message", root.getMessage() != null ? root.getMessage() : root.getClass().getName());
+                        err.addProperty("exceptionClass", root.getClass().getSimpleName());
+                        results.add(err);
+                    } finally {
+                        if (shared == null) {
+                            ps.close();
+                        }
+                    }
+                }
+            } finally {
+                if (shared != null) {
+                    shared.close();
+                }
+            }
+            JsonObject out = new JsonObject();
+            out.add("results", results);
+            return out;
+        });
+    }
+
+    /** Binds one parameter; returns true when it consumed a positional ordinal. */
+    private static boolean bindExtended(RelationalConnection conn, RelationalPreparedStatement ps, String name,
+                                        int position, java.util.Map<String, Object> p)
+            throws SQLException, ReflectiveOperationException {
+        String kind = String.valueOf(p.get("kind"));
+        Object value = p.get("value");
+        boolean positional = name.isEmpty();
+        switch (kind) {
+            case "null": {
+                int sqlType = java.sql.Types.class.getField(String.valueOf(p.get("sqlType"))).getInt(null);
+                if (positional) { ps.setNull(position, sqlType); } else { ps.setNull(name, sqlType); }
+                break;
+            }
+            case "long":
+                if (positional) { ps.setLong(position, ((Number) value).longValue()); } else { ps.setLong(name, ((Number) value).longValue()); }
+                break;
+            case "int":
+                if (positional) { ps.setInt(position, ((Number) value).intValue()); } else { ps.setInt(name, ((Number) value).intValue()); }
+                break;
+            case "string":
+                if (positional) { ps.setString(position, String.valueOf(value)); } else { ps.setString(name, String.valueOf(value)); }
+                break;
+            case "double":
+                if (positional) { ps.setDouble(position, ((Number) value).doubleValue()); } else { ps.setDouble(name, ((Number) value).doubleValue()); }
+                break;
+            case "float":
+                if (positional) { ps.setFloat(position, ((Number) value).floatValue()); } else { ps.setFloat(name, ((Number) value).floatValue()); }
+                break;
+            case "boolean":
+                if (positional) { ps.setBoolean(position, (Boolean) value); } else { ps.setBoolean(name, (Boolean) value); }
+                break;
+            case "objectNull":
+                if (positional) { ps.setObject(position, null); } else { ps.setObject(name, null); }
+                break;
+            case "uuid": {
+                java.util.UUID u = java.util.UUID.fromString(String.valueOf(value));
+                if (positional) { ps.setUUID(position, u); } else { ps.setUUID(name, u); }
+                break;
+            }
+            case "longArray": {
+                java.util.List<?> items = (java.util.List<?>) value;
+                Object[] elements = new Object[items.size()];
+                for (int i = 0; i < elements.length; i++) {
+                    elements[i] = ((Number) items.get(i)).longValue();
+                }
+                java.sql.Array array = conn.createArrayOf("BIGINT", elements);
+                if (positional) { ps.setArray(position, array); } else { ps.setArray(name, array); }
+                break;
+            }
+            default:
+                throw new IllegalArgumentException("unknown parameter kind " + kind);
+        }
+        return positional;
     }
 
     /**
@@ -642,13 +822,206 @@ class SqlPlanSteps {
      * Caller is responsible for cleanup via
      * {@link #dropSchemaTemplatePersistentJava}.
      */
+    /**
+     * Runs {@code setupSqls} and then {@code querySql} (EXPLAIN included) in a schema created over an
+     * EXISTING schema template {@code templateName}, one another engine stored in the shared catalog.
+     * The database is dropped afterwards; the template is left to its creator. This is the
+     * "Go stores, Java plans" direction: the target plans over the stored key expressions exactly as
+     * they were written, not over the ones it would generate itself.
+     */
+    @ConformanceStep("runOnExistingTemplateJava")
+    public JsonObject runOnExistingTemplateJava(String clusterFile, String templateName,
+                                                java.util.List<String> setupSqls, String querySql) throws Exception {
+        ensureDriverRegistered(clusterFile);
+        String suffix = UUID.randomUUID().toString().replace("-", "");
+        String dbPath = "/TEST/EXISTING_T_" + suffix;
+        String schemaName = "S_" + suffix;
+        boolean dbCreated = false;
+        boolean opFailed = false;
+        try {
+            try (java.sql.Connection sysConn = DriverManager.getConnection(SYS_CATALOG_URL);
+                 Statement st = sysConn.createStatement()) {
+                withFdbRetry(() -> st.executeUpdate("CREATE DATABASE \"" + dbPath + "\""));
+                dbCreated = true;
+                withFdbRetry(() -> st.executeUpdate("CREATE SCHEMA \"" + dbPath + "/" + schemaName + "\" WITH TEMPLATE \"" + templateName + "\""));
+            }
+            try (java.sql.Connection conn = DriverManager.getConnection("jdbc:embed:" + dbPath + "?schema=" + schemaName)) {
+                try (Statement st = conn.createStatement()) {
+                    for (String setup : setupSqls) {
+                        withFdbRetry(() -> st.executeUpdate(setup));
+                    }
+                }
+                return withFdbRetry(() -> runQuery(conn, querySql));
+            }
+        } catch (Exception | Error primary) {
+            opFailed = true;
+            teardown(dbCreated, dbPath, false, null, primary);
+            throw primary;
+        } finally {
+            if (!opFailed) {
+                teardown(dbCreated, dbPath, false, null, null);
+            }
+        }
+    }
+
+    /**
+     * TEST-ONLY (RFC-257 WS-J F2b): creates a database and a schema bound to the existing
+     * template {@code templateName} and KEEPS them, returning where the schema's record store
+     * lives ({@code dbPath}, {@code schemaName}, and {@code storePrefix}, the resolved subspace
+     * bytes), so a Go record layer can write into the same store. The caller drops the
+     * database with {@link #wsjDropDatabaseJava}.
+     */
+    @ConformanceStep("wsjOpenStoreJava")
+    public JsonObject wsjOpenStoreJava(String clusterFile, String templateName) throws Exception {
+        ensureDriverRegistered(clusterFile);
+        String suffix = UUID.randomUUID().toString().replace("-", "");
+        String dbPath = "/TEST/WSJ_STORE_" + suffix;
+        String schemaName = "S_" + suffix;
+        try (java.sql.Connection sysConn = DriverManager.getConnection(SYS_CATALOG_URL);
+             Statement st = sysConn.createStatement()) {
+            withFdbRetry(() -> st.executeUpdate("CREATE DATABASE \"" + dbPath + "\""));
+            withFdbRetry(() -> st.executeUpdate("CREATE SCHEMA \"" + dbPath + "/" + schemaName + "\" WITH TEMPLATE \"" + templateName + "\""));
+        }
+        // Open the store once through SQL so its header exists before a Go writer opens it.
+        try (java.sql.Connection conn = DriverManager.getConnection("jdbc:embed:" + dbPath + "?schema=" + schemaName);
+             Statement st = conn.createStatement()) {
+            st.executeQuery("SELECT * FROM T").close();
+        }
+        byte[] prefix;
+        try (com.apple.foundationdb.record.provider.foundationdb.FDBRecordContext ctx = sharedDatabase.openContext()) {
+            prefix = RelationalKeyspaceProvider.toDatabasePath(java.net.URI.create(dbPath), sharedKeySpace)
+                    .schemaPath(schemaName).toSubspace(ctx).getKey();
+        }
+        JsonObject out = new JsonObject();
+        out.addProperty("dbPath", dbPath);
+        out.addProperty("schemaName", schemaName);
+        JsonArray bytes = new JsonArray();
+        for (byte b : prefix) {
+            bytes.add(b & 0xff);
+        }
+        out.add("storePrefix", bytes);
+        return out;
+    }
+
+    /** TEST-ONLY: drops a database {@link #wsjOpenStoreJava} kept. */
+    @ConformanceStep("wsjDropDatabaseJava")
+    public JsonObject wsjDropDatabaseJava(String clusterFile, String dbPath) throws Exception {
+        ensureDriverRegistered(clusterFile);
+        try (java.sql.Connection sysConn = DriverManager.getConnection(SYS_CATALOG_URL);
+             Statement st = sysConn.createStatement()) {
+            withFdbRetry(() -> st.executeUpdate("DROP DATABASE IF EXISTS \"" + dbPath + "\""));
+        }
+        JsonObject out = new JsonObject();
+        out.addProperty("dropped", true);
+        return out;
+    }
+
+    /**
+     * TEST-ONLY (RFC-257 WS-J F2b): inserts rows {@code (id, d, n)} into table T of a kept
+     * store through a prepared INSERT with setLong/setDouble, so NaN, the infinities and
+     * 2^63 reach the record as doubles ({@code rows}: [id, d, n], d as a JSON number or one
+     * of the strings "NaN", "Infinity", "-Infinity").
+     */
+    @ConformanceStep("wsjInsertDoublesJava")
+    public JsonObject wsjInsertDoublesJava(String clusterFile, String dbPath, String schemaName,
+                                           java.util.List<java.util.List<Object>> rows) throws Exception {
+        ensureDriverRegistered(clusterFile);
+        try (java.sql.Connection conn = DriverManager.getConnection("jdbc:embed:" + dbPath + "?schema=" + schemaName);
+             RelationalPreparedStatement ps = conn.unwrap(RelationalConnection.class)
+                     .prepareStatement("INSERT INTO T VALUES (?, ?, ?, ?)")) {
+            JsonArray outcomes = new JsonArray();
+            for (java.util.List<Object> row : rows) {
+                ps.setLong(1, ((Number) row.get(0)).longValue());
+                Object d = row.get(1);
+                ps.setDouble(2, d instanceof String ? Double.parseDouble((String) d) : ((Number) d).doubleValue());
+                ps.setLong(3, ((Number) row.get(2)).longValue());
+                // The FLOAT column takes the same value narrowed to float, as Go's writer does.
+                Object f = row.get(3);
+                ps.setFloat(4, f instanceof String ? Float.parseFloat((String) f) : ((Number) f).floatValue());
+                try {
+                    withFdbRetry(ps::executeUpdate);
+                    outcomes.add("OK");
+                } catch (SQLException e) {
+                    Throwable root = e;
+                    while (root.getCause() != null) {
+                        root = root.getCause();
+                    }
+                    outcomes.add("ERROR " + e.getSQLState() + " " + root.getClass().getSimpleName() + " " + root.getMessage());
+                }
+            }
+            JsonObject out = new JsonObject();
+            out.add("outcomes", outcomes);
+            return out;
+        }
+    }
+
+    /**
+     * TEST-ONLY (RFC-257 WS-E): runs one DML statement on a store {@link #wsjOpenStoreJava}
+     * kept, returning "OK" and the update count, or "ERROR", the SQLSTATE, the root cause's
+     * class and its message.
+     */
+    @ConformanceStep("wsjExecuteJava")
+    public JsonObject wsjExecuteJava(String clusterFile, String dbPath, String schemaName, String sql) throws Exception {
+        ensureDriverRegistered(clusterFile);
+        JsonObject out = new JsonObject();
+        try (java.sql.Connection conn = DriverManager.getConnection("jdbc:embed:" + dbPath + "?schema=" + schemaName);
+             Statement st = conn.createStatement()) {
+            int count = withFdbRetry(() -> st.executeUpdate(sql));
+            out.addProperty("outcome", "OK " + count);
+        } catch (SQLException e) {
+            Throwable root = e;
+            while (root.getCause() != null) {
+                root = root.getCause();
+            }
+            out.addProperty("outcome", "ERROR " + e.getSQLState() + " " + root.getClass().getSimpleName() + " " + root.getMessage());
+        }
+        return out;
+    }
+
+    /** TEST-ONLY: runs one query on a store {@link #wsjOpenStoreJava} kept. */
+    @ConformanceStep("wsjQueryJava")
+    public JsonObject wsjQueryJava(String clusterFile, String dbPath, String schemaName, String querySql) throws Exception {
+        ensureDriverRegistered(clusterFile);
+        try (java.sql.Connection conn = DriverManager.getConnection("jdbc:embed:" + dbPath + "?schema=" + schemaName)) {
+            return withFdbRetry(() -> runQuery(conn, querySql));
+        }
+    }
+
+    /**
+     * TEST-ONLY (RFC-257 WS-J F2b): every raw entry of index {@code indexName} in a kept store,
+     * as the entry's key tuple (relative to the index subspace) rendered by Tuple.toString and
+     * as lowercase hex (every byte, java.util.HexFormat), in key order.
+     */
+    @ConformanceStep("wsjIndexEntriesJava")
+    public JsonObject wsjIndexEntriesJava(String clusterFile, String dbPath, String schemaName,
+                                          String indexName) throws Exception {
+        ensureDriverRegistered(clusterFile);
+        JsonArray entries = new JsonArray();
+        try (com.apple.foundationdb.record.provider.foundationdb.FDBRecordContext ctx = sharedDatabase.openContext()) {
+            com.apple.foundationdb.subspace.Subspace store = RelationalKeyspaceProvider
+                    .toDatabasePath(java.net.URI.create(dbPath), sharedKeySpace).schemaPath(schemaName).toSubspace(ctx);
+            com.apple.foundationdb.subspace.Subspace index = store.subspace(
+                    com.apple.foundationdb.tuple.Tuple.from(2L, indexName));
+            for (com.apple.foundationdb.KeyValue kv : ctx.ensureActive().getRange(index.range()).asList().join()) {
+                byte[] key = kv.getKey();
+                byte[] rel = java.util.Arrays.copyOfRange(key, index.getKey().length, key.length);
+                JsonObject e = new JsonObject();
+                e.addProperty("tuple", com.apple.foundationdb.tuple.Tuple.fromBytes(rel).toString());
+                e.addProperty("hex", java.util.HexFormat.of().formatHex(rel));
+                entries.add(e);
+            }
+        }
+        JsonObject out = new JsonObject();
+        out.add("entries", entries);
+        return out;
+    }
+
     @ConformanceStep("createSchemaTemplatePersistentJava")
     public JsonObject createSchemaTemplatePersistentJava(String clusterFile,
                                                          String templateName,
                                                          String schemaTemplateBody) throws Exception {
         ensureDriverRegistered(clusterFile);
-        try (java.sql.Connection sysConn = DriverManager.getConnection(
-                "jdbc:embed:/__SYS?schema=CATALOG");
+        try (java.sql.Connection sysConn = DriverManager.getConnection(SYS_CATALOG_URL);
              Statement st = sysConn.createStatement()) {
             st.executeUpdate("CREATE SCHEMA TEMPLATE \"" + templateName + "\" " + schemaTemplateBody);
         }
@@ -667,8 +1040,7 @@ class SqlPlanSteps {
                                                        String templateName) throws Exception {
         ensureDriverRegistered(clusterFile);
         boolean dropped = false;
-        try (java.sql.Connection sysConn = DriverManager.getConnection(
-                "jdbc:embed:/__SYS?schema=CATALOG");
+        try (java.sql.Connection sysConn = DriverManager.getConnection(SYS_CATALOG_URL);
              Statement st = sysConn.createStatement()) {
             st.executeUpdate("DROP SCHEMA TEMPLATE IF EXISTS \"" + templateName + "\"");
             dropped = true;
@@ -698,7 +1070,30 @@ class SqlPlanSteps {
         T run(java.sql.Connection conn) throws SQLException;
     }
 
+    /** A {@link ConnectionOp} that is also told the JDBC URL of its schema, to open more connections. */
+    @FunctionalInterface
+    private interface UrlConnectionOp<T> {
+        T run(java.sql.Connection conn, String url) throws SQLException;
+    }
+
     private <T> T runWithEphemeralSchema(String clusterFile, String schemaTemplate, ConnectionOp<T> op) throws Exception {
+        return runWithEphemeralSchemaUrl(clusterFile, schemaTemplate, (conn, url) -> op.run(conn));
+    }
+
+    /** The URL every catalog DDL of the harness uses: the /__SYS database with its CATALOG schema. */
+    private static final String SYS_CATALOG_URL = "jdbc:embed:/__SYS?schema=CATALOG";
+
+    private <T> T runWithEphemeralSchemaUrl(String clusterFile, String schemaTemplate, UrlConnectionOp<T> op) throws Exception {
+        return runWithEphemeralSchemaNamed(clusterFile, schemaTemplate, (conn, url, template) -> op.run(conn, url));
+    }
+
+    /** A {@link UrlConnectionOp} that is also told the name of the ephemeral schema template. */
+    @FunctionalInterface
+    private interface NamedConnectionOp<T> {
+        T run(java.sql.Connection conn, String url, String templateName) throws SQLException;
+    }
+
+    private <T> T runWithEphemeralSchemaNamed(String clusterFile, String schemaTemplate, NamedConnectionOp<T> op) throws Exception {
         ensureDriverRegistered(clusterFile);
 
         String suffix = UUID.randomUUID().toString().replace("-", "");
@@ -707,6 +1102,7 @@ class SqlPlanSteps {
         String schemaName = "S_" + suffix;
         boolean templateCreated = false;
         boolean dbCreated = false;
+        boolean opFailed = false;
 
         try {
             if (schemaTemplate != null && !schemaTemplate.isEmpty()) {
@@ -716,7 +1112,7 @@ class SqlPlanSteps {
                 // requires conn.getSchema() to be non-null, so we MUST set
                 // the schema before executing DDL — fdb-relational tests
                 // do the same (SchemaTemplateRule#beforeEach).
-                try (java.sql.Connection sysConn = DriverManager.getConnection("jdbc:embed:/__SYS?schema=CATALOG");
+                try (java.sql.Connection sysConn = DriverManager.getConnection(SYS_CATALOG_URL);
                      Statement st = sysConn.createStatement()) {
                     withFdbRetry(() -> st.executeUpdate("CREATE SCHEMA TEMPLATE \"" + templateName + "\" " + schemaTemplate));
                     templateCreated = true;
@@ -732,37 +1128,281 @@ class SqlPlanSteps {
                 // does NOT propagate to EmbeddedRelationalConnection's
                 // currentSchemaLabel — every executeQuery / executeUpdate
                 // would fail with "No Schema specified".
-                try (java.sql.Connection conn = DriverManager.getConnection(
-                        "jdbc:embed:" + dbPath + "?schema=" + schemaName)) {
-                    return op.run(conn);
+                String url = "jdbc:embed:" + dbPath + "?schema=" + schemaName;
+                try (java.sql.Connection conn = DriverManager.getConnection(url)) {
+                    return op.run(conn, url, templateName);
                 }
             }
             // No schema — fall back to __SYS. SELECT-without-FROM works here.
             try (java.sql.Connection conn = DriverManager.getConnection("jdbc:embed:/__SYS")) {
-                return op.run(conn);
+                return op.run(conn, "jdbc:embed:/__SYS", null);
             }
+        } catch (Exception | Error primary) {
+            // The operation's own failure is the one the caller sees; a teardown failure
+            // rides along as suppressed instead of replacing it.
+            opFailed = true;
+            teardown(dbCreated, dbPath, templateCreated, templateName, primary);
+            throw primary;
         } finally {
-            if (dbCreated) {
-                try (java.sql.Connection sysConn = DriverManager.getConnection("jdbc:embed:/__SYS");
-                     Statement st = sysConn.createStatement()) {
-                    // Teardown is best-effort and the path is a unique UUID, so a
-                    // transient 1007 here just leaks one ephemeral DB — not worth a
-                    // retry loop holding the cleanup path. catch+ignore as before.
-                    st.executeUpdate("DROP DATABASE IF EXISTS \"" + dbPath + "\"");
-                } catch (SQLException ignored) {
-                    // teardown best-effort — a stuck DB is preferable to swallowing the
-                    // primary exception from the caller's try block.
-                }
+            if (!opFailed) {
+                teardown(dbCreated, dbPath, templateCreated, templateName, null);
             }
-            if (templateCreated) {
-                try (java.sql.Connection sysConn = DriverManager.getConnection("jdbc:embed:/__SYS");
-                     Statement st = sysConn.createStatement()) {
-                    st.executeUpdate("DROP SCHEMA TEMPLATE IF EXISTS \"" + templateName + "\"");
-                } catch (SQLException ignored) {
-                    // ditto
+        }
+    }
+
+    /**
+     * Drops the ephemeral database and template through the SAME /__SYS CATALOG connection that
+     * created them: a connection without the schema cannot run DDL (AbstractEmbeddedStatement
+     * requires one), which is why the old teardown, on a schema-less connection with its exception
+     * swallowed, left every ephemeral database and template behind. A failed drop is reported: as
+     * a suppressed exception when the operation itself failed, and as the step's error when the
+     * operation succeeded, so a leak can no longer pass silently.
+     */
+    private static void teardown(boolean dbCreated, String dbPath, boolean templateCreated, String templateName,
+                                 Throwable primary) throws Exception {
+        Exception failure = null;
+        if (dbCreated) {
+            try (java.sql.Connection sysConn = DriverManager.getConnection(SYS_CATALOG_URL);
+                 Statement st = sysConn.createStatement()) {
+                withFdbRetry(() -> st.executeUpdate("DROP DATABASE IF EXISTS \"" + dbPath + "\""));
+            } catch (Exception e) {
+                // withFdbRetry rethrows a RuntimeException as it is: every failure counts, so a
+                // failed database drop never skips the template drop below.
+                failure = e;
+            }
+        }
+        if (templateCreated) {
+            try (java.sql.Connection sysConn = DriverManager.getConnection(SYS_CATALOG_URL);
+                 Statement st = sysConn.createStatement()) {
+                withFdbRetry(() -> st.executeUpdate("DROP SCHEMA TEMPLATE IF EXISTS \"" + templateName + "\""));
+            } catch (Exception e) {
+                if (failure == null) {
+                    failure = e;
+                } else {
+                    failure.addSuppressed(e);
                 }
             }
         }
+        if (failure == null) {
+            return;
+        }
+        if (primary != null) {
+            primary.addSuppressed(failure);
+            return;
+        }
+        throw new IllegalStateException("ephemeral schema teardown failed for " + dbPath, failure);
+    }
+
+    /**
+     * TEST-ONLY (RFC-257 WS-E section 6.4): measures what a read leaves in its transaction's
+     * read-conflict set. Connection A (autocommit off) runs {@code readSql} (a SELECT, with or
+     * without the statement option ISOLATION LEVEL SNAPSHOT, as written) and consumes every row;
+     * connection B, on the same schema, then commits {@code concurrentSql}; A runs
+     * {@code ownWriteSql}, so its commit is conflict-checked, and commits. Returns the read's
+     * RowSet ({@code read}) and A's commit outcome ({@code commit}: "OK" or the SQLSTATE, class
+     * and message of the failure).
+     */
+    @ConformanceStep("snapshotReadScopeProbe")
+    public JsonObject snapshotReadScopeProbe(String clusterFile, String schemaTemplate,
+                                             java.util.List<String> setupSqls, String readSql,
+                                             String concurrentSql, String ownWriteSql) throws Exception {
+        return runWithEphemeralSchemaUrl(clusterFile, schemaTemplate, (conn, url) -> {
+            try (Statement st = conn.createStatement()) {
+                for (String setup : setupSqls) {
+                    withFdbRetry(() -> st.executeUpdate(setup));
+                }
+            }
+            JsonObject out = new JsonObject();
+            try (java.sql.Connection a = DriverManager.getConnection(url);
+                 java.sql.Connection b = DriverManager.getConnection(url)) {
+                a.setAutoCommit(false);
+                try (Statement sa = a.createStatement();
+                     RelationalResultSet rs = sa.executeQuery(readSql).unwrap(RelationalResultSet.class)) {
+                    out.add("read", resultSetToJson(rs));
+                }
+                try (Statement sb = b.createStatement()) {
+                    sb.executeUpdate(concurrentSql);
+                }
+                try (Statement sa = a.createStatement()) {
+                    sa.executeUpdate(ownWriteSql);
+                }
+                try {
+                    a.commit();
+                    out.addProperty("commit", "OK");
+                } catch (SQLException e) {
+                    out.addProperty("commit", "ERROR " + e.getSQLState() + " " + e.getClass().getSimpleName()
+                            + " " + e.getMessage());
+                }
+            }
+            return out;
+        });
+    }
+
+    /**
+     * TEST-ONLY (RFC-257 WS-E): which index-state keys a SQL read adds read conflicts on. A reader
+     * on connection A in an explicit transaction runs {@code readSql} (which may carry OPTIONS
+     * (ISOLATION LEVEL SNAPSHOT)); then a separate FDB transaction sets the
+     * index-state key of {@code indexName} in the schema's store to {@code state} (an IndexState
+     * name) and commits; then A runs {@code ownWriteSql} (a write to a table the read does not
+     * touch, so every conflict comes from the read) and commits. The line is the read's rows and
+     * the commit outcome. The state key is written directly, (INDEX_STATE_SPACE, indexName) under
+     * the store subspace, exactly the key FDBRecordStore reads and conflicts on.
+     */
+    @ConformanceStep("indexStateReadScopeProbe")
+    public JsonObject indexStateReadScopeProbe(String clusterFile, String schemaTemplate,
+                                               java.util.List<String> setupSqls, String readSql,
+                                               String indexName, String state, String ownWriteSql) throws Exception {
+        return runWithEphemeralSchemaUrl(clusterFile, schemaTemplate, (conn, url) -> {
+            try (Statement st = conn.createStatement()) {
+                for (String setup : setupSqls) {
+                    withFdbRetry(() -> st.executeUpdate(setup));
+                }
+            }
+            String path = url.substring("jdbc:embed:".length(), url.indexOf('?'));
+            String schemaName = url.substring(url.indexOf("schema=") + "schema=".length());
+            byte[] prefix;
+            try (com.apple.foundationdb.record.provider.foundationdb.FDBRecordContext ctx = sharedDatabase.openContext()) {
+                prefix = RelationalKeyspaceProvider.toDatabasePath(java.net.URI.create(path), sharedKeySpace)
+                        .schemaPath(schemaName).toSubspace(ctx).getKey();
+            } catch (com.apple.foundationdb.relational.api.exceptions.RelationalException e) {
+                throw e.toSqlException();
+            }
+            byte[] stateKey = new com.apple.foundationdb.subspace.Subspace(prefix).pack(
+                    com.apple.foundationdb.tuple.Tuple.from(
+                            com.apple.foundationdb.record.provider.foundationdb.FDBRecordStoreKeyspace.INDEX_STATE_SPACE.key(),
+                            indexName));
+            byte[] stateValue = com.apple.foundationdb.tuple.Tuple.from(
+                    com.apple.foundationdb.record.IndexState.valueOf(state).code()).pack();
+            JsonObject out = new JsonObject();
+            try (java.sql.Connection a = DriverManager.getConnection(url)) {
+                a.setAutoCommit(false);
+                try (Statement sa = a.createStatement();
+                     RelationalResultSet rs = sa.executeQuery(readSql).unwrap(RelationalResultSet.class)) {
+                    out.add("read", resultSetToJson(rs));
+                }
+                try (com.apple.foundationdb.record.provider.foundationdb.FDBRecordContext ctx = sharedDatabase.openContext()) {
+                    ctx.ensureActive().set(stateKey, stateValue);
+                    ctx.commit();
+                }
+                try (Statement sa = a.createStatement()) {
+                    sa.executeUpdate(ownWriteSql);
+                }
+                try {
+                    a.commit();
+                    out.addProperty("commit", "OK");
+                } catch (SQLException e) {
+                    out.addProperty("commit", "ERROR " + e.getSQLState() + " " + e.getClass().getSimpleName()
+                            + " " + e.getMessage());
+                }
+            }
+            return out;
+        });
+    }
+
+    /**
+     * TEST-ONLY: what the target does with a stored index whose option list names one key
+     * twice: builds the Index proto with {@code options} in the given order and reads it with
+     * {@code new Index(proto)}, the constructor every stored index goes through, reporting the
+     * exception class and message, or the options the Index kept.
+     */
+    @ConformanceStep("wsjDuplicateIndexOptionJava")
+    public JsonObject wsjDuplicateIndexOptionJava(java.util.List<java.util.List<String>> options) {
+        var builder = com.apple.foundationdb.record.RecordMetaDataProto.Index.newBuilder()
+                .setName("IX")
+                .setType("value")
+                .addRecordType("T")
+                .setRootExpression(com.apple.foundationdb.record.metadata.Key.Expressions.field("A").toKeyExpression());
+        for (java.util.List<String> kv : options) {
+            builder.addOptions(com.apple.foundationdb.record.RecordMetaDataProto.Index.Option.newBuilder()
+                    .setKey(kv.get(0)).setValue(kv.get(1)));
+        }
+        JsonObject out = new JsonObject();
+        try {
+            var index = new com.apple.foundationdb.record.metadata.Index(builder.build());
+            out.addProperty("outcome", "OK " + index.getOptions());
+        } catch (RuntimeException e) {
+            out.addProperty("outcome", "ERROR " + e.getClass().getName() + " " + e.getMessage());
+        }
+        return out;
+    }
+
+    /**
+     * TEST-ONLY: what {@code new Index(proto)} makes of a stored Index proto: its root expression
+     * (as serialized KeyExpression bytes), added and last-modified versions, type and options, or
+     * the exception it raises. {@code indexProto} is the serialized RecordMetaDataProto.Index.
+     */
+    @ConformanceStep("wsjIndexFromProtoJava")
+    public JsonObject wsjIndexFromProtoJava(java.util.List<Number> indexProto) throws Exception {
+        byte[] bytes = new byte[indexProto.size()];
+        for (int i = 0; i < bytes.length; i++) {
+            bytes[i] = indexProto.get(i).byteValue();
+        }
+        JsonObject out = new JsonObject();
+        try {
+            var index = new com.apple.foundationdb.record.metadata.Index(
+                    com.apple.foundationdb.record.RecordMetaDataProto.Index.parseFrom(bytes));
+            JsonArray root = new JsonArray();
+            for (byte b : index.getRootExpression().toKeyExpression().toByteArray()) {
+                root.add(b & 0xff);
+            }
+            out.add("root", root);
+            out.addProperty("addedVersion", index.getAddedVersion());
+            out.addProperty("lastModifiedVersion", index.getLastModifiedVersion());
+            out.addProperty("type", index.getType());
+            out.addProperty("options", String.valueOf(index.getOptions()));
+            out.addProperty("outcome", "OK");
+        } catch (RuntimeException e) {
+            out.addProperty("outcome", "ERROR " + e.getClass().getName() + " " + e.getMessage());
+        }
+        return out;
+    }
+
+    /**
+     * TEST-ONLY: runs one ephemeral statement and then reports whether the harness's teardown
+     * removed the ephemeral database and the schema template it created ({@code path},
+     * {@code stillListed}; {@code template}, {@code templateStillListed}), read from SHOW
+     * DATABASES and SHOW SCHEMA TEMPLATES through the catalog connection, with how many rows
+     * each listing returned so an empty listing cannot pass for a removal. Pins that the
+     * teardown drops what it creates.
+     */
+    @ConformanceStep("ephemeralTeardownProbe")
+    public JsonObject ephemeralTeardownProbe(String clusterFile, String schemaTemplate) throws Exception {
+        String[] names = runWithEphemeralSchemaNamed(clusterFile, schemaTemplate, (conn, u, t) -> new String[] {u, t});
+        String path = names[0].substring("jdbc:embed:".length(), names[0].indexOf('?'));
+        // The template name as the harness created it, not re-derived from the path.
+        String template = names[1];
+        boolean listed = false;
+        int databases = 0;
+        try (java.sql.Connection sysConn = DriverManager.getConnection(SYS_CATALOG_URL);
+             Statement st = sysConn.createStatement();
+             java.sql.ResultSet rs = st.executeQuery("SHOW DATABASES")) {
+            while (rs.next()) {
+                databases++;
+                if (path.equals(rs.getString(1))) {
+                    listed = true;
+                }
+            }
+        }
+        boolean templateListed = false;
+        int templates = 0;
+        try (java.sql.Connection sysConn = DriverManager.getConnection(SYS_CATALOG_URL);
+             Statement st = sysConn.createStatement();
+             java.sql.ResultSet rs = st.executeQuery("SHOW SCHEMA TEMPLATES")) {
+            while (rs.next()) {
+                templates++;
+                if (template.equals(rs.getString(1))) {
+                    templateListed = true;
+                }
+            }
+        }
+        JsonObject out = new JsonObject();
+        out.addProperty("path", path);
+        out.addProperty("stillListed", listed);
+        out.addProperty("databasesListed", databases);
+        out.addProperty("template", template);
+        out.addProperty("templateStillListed", templateListed);
+        out.addProperty("templatesListed", templates);
+        return out;
     }
 
     /** Max attempts for a single auto-commit statement that hits a
@@ -852,6 +1492,460 @@ class SqlPlanSteps {
         throw new AssertionError("positive retry budget exhausted without returning or throwing");
     }
 
+    /**
+     * A Cascades planner listener that tallies, per rule simple class name, the rule calls that
+     * ENDED and what they yielded (final and exploratory expressions, and the simple class names of
+     * the final ones). Registered only for the duration of one EXPLAIN on this thread
+     * ({@code PlannerEventListeners} is thread-local).
+     */
+    private static final class RuleTraceListener implements
+            com.apple.foundationdb.record.query.plan.cascades.events.PlannerEventListeners.EventListener {
+        final java.util.Set<String> rules;
+        final java.util.Map<String, int[]> counts = new java.util.TreeMap<>();
+        final java.util.Map<String, java.util.TreeSet<String>> finalKinds = new java.util.TreeMap<>();
+        // For the IN-union question: every final an ImplementInUnionRule call yielded, the
+        // reference it went into and the planner configuration, so onDone can rank it against the
+        // reference's other final members with the target's own PlanningCostModel.
+        final java.util.List<Object[]> inUnionYields = new java.util.ArrayList<>();
+        final java.util.List<String> comparisons = new java.util.ArrayList<>();
+
+        // Two opt-in modes named by pseudo-rules in the rule list (no caller that names only
+        // real rules sees either):
+        //  - IN-UNION-PARTITIONS: at the end of each ImplementInUnionRule call, the inner
+        //    reference the rule read, rolled up into the ordering partitions the rule iterates,
+        //    and per partition and requested ordering the in-union ordering the rule builds and
+        //    the comparison keys it enumerates. That is what the rule saw, not the survivor.
+        //  - ROOT-PAIRS: the root reference's final members at its last PLANNING OptimizeGroup
+        //    (before that group is pruned), each with its continuation plan hash, and the
+        //    target's PlanningCostModel verdict on every pair beside the plan-hash order, so a
+        //    verdict that only the hash decides shows as one that moves when names move.
+        //  - REWRITING-RESULT: the query graph REWRITING handed to PLANNING, rendered at the
+        //    first PLANNING event (every reference's members, which REWRITING's prune left at
+        //    one), so a REWRITING survivor is measured rather than inferred from the winner.
+        final boolean inUnionPartitions;
+        final boolean rootPairs;
+        final boolean rewritingResult;
+        //  - TASK-COUNT: the number of tasks the planner executes, per phase, counted from the
+        //    ExecutingTaskPlannerEvent each task begins with (CascadesPlanner counts the same
+        //    tasks into QueryPlanInfoKeys.TOTAL_TASK_COUNT, per phase).
+        final boolean taskCount;
+        final java.util.Map<String, Integer> tasksPerPhase = new java.util.TreeMap<>();
+        final java.util.Map<String, Integer> tasksPerKind = new java.util.TreeMap<>();
+        String rewritingShape;
+        final java.util.List<String> partitionLines = new java.util.ArrayList<>();
+        com.apple.foundationdb.record.query.plan.cascades.Reference root;
+        com.apple.foundationdb.record.query.plan.RecordQueryPlannerConfiguration rootConfig;
+        java.util.List<com.apple.foundationdb.record.query.plan.cascades.expressions.RelationalExpression> rootMembers;
+
+        RuleTraceListener(java.util.Collection<String> rules) {
+            this.rules = new java.util.HashSet<>(rules);
+            this.inUnionPartitions = this.rules.contains("IN-UNION-PARTITIONS");
+            this.rootPairs = this.rules.contains("ROOT-PAIRS");
+            this.rewritingResult = this.rules.contains("REWRITING-RESULT");
+            this.taskCount = this.rules.contains("TASK-COUNT");
+        }
+
+        private static String shape(com.apple.foundationdb.record.query.plan.cascades.Reference ref, int depth) {
+            if (depth > 40) {
+                return "...";
+            }
+            var members = new java.util.ArrayList<>(ref.getFinalExpressions());
+            if (members.isEmpty()) {
+                members.addAll(ref.getExploratoryExpressions());
+            }
+            var rendered = new java.util.ArrayList<String>();
+            for (var e : members) {
+                StringBuilder sb = new StringBuilder(e.getClass().getSimpleName());
+                if (e instanceof com.apple.foundationdb.record.query.plan.cascades.expressions.RelationalExpressionWithPredicates) {
+                    // The predicates themselves, sorted, not only their count: two survivors
+                    // that place different predicates must render differently.
+                    var preds = new java.util.ArrayList<String>();
+                    for (var p : ((com.apple.foundationdb.record.query.plan.cascades.expressions.RelationalExpressionWithPredicates) e).getPredicates()) {
+                        preds.add(p.toString());
+                    }
+                    java.util.Collections.sort(preds);
+                    sb.append("[preds=").append(preds.size()).append(": ").append(String.join(" AND ", preds)).append("]");
+                }
+                sb.append("(");
+                boolean first = true;
+                for (var q : e.getQuantifiers()) {
+                    if (!first) {
+                        sb.append(", ");
+                    }
+                    first = false;
+                    String kind = q instanceof com.apple.foundationdb.record.query.plan.cascades.Quantifier.ForEach
+                            ? (((com.apple.foundationdb.record.query.plan.cascades.Quantifier.ForEach) q).isNullOnEmpty() ? "forEachNullOnEmpty" : "forEach")
+                            : q instanceof com.apple.foundationdb.record.query.plan.cascades.Quantifier.Existential ? "exists" : "physical";
+                    sb.append(kind).append(":").append(shape(q.getRangesOver(), depth + 1));
+                }
+                sb.append(")");
+                rendered.add(sb.toString());
+            }
+            java.util.Collections.sort(rendered);
+            return rendered.size() == 1 ? rendered.get(0) : "{" + String.join(" | ", rendered) + "}";
+        }
+
+        @Override
+        public void onQuery(String queryAsString, com.apple.foundationdb.record.query.plan.cascades.PlanContext planContext) {
+        }
+
+        @Override
+        public void onEvent(com.apple.foundationdb.record.query.plan.cascades.events.PlannerEvent event) {
+            if (taskCount && event instanceof com.apple.foundationdb.record.query.plan.cascades.events.ExecutingTaskPlannerEvent
+                    && event.getLocation() == com.apple.foundationdb.record.query.plan.cascades.events.PlannerEvent.Location.BEGIN) {
+                tasksPerPhase.merge(((com.apple.foundationdb.record.query.plan.cascades.events.ExecutingTaskPlannerEvent) event)
+                        .getPlannerPhase().name(), 1, Integer::sum);
+                tasksPerKind.merge("task " + ((com.apple.foundationdb.record.query.plan.cascades.events.ExecutingTaskPlannerEvent) event)
+                        .getTask().getClass().getSimpleName(), 1, Integer::sum);
+            }
+            if (taskCount && event instanceof com.apple.foundationdb.record.query.plan.cascades.events.PlannerEventWithRule
+                    && event.getLocation() == com.apple.foundationdb.record.query.plan.cascades.events.PlannerEvent.Location.BEGIN) {
+                tasksPerKind.merge(event.getClass().getSimpleName() + " "
+                        + ((com.apple.foundationdb.record.query.plan.cascades.events.PlannerEventWithRule) event).getRule().getClass().getSimpleName(),
+                        1, Integer::sum);
+            }
+            if (rewritingResult && rewritingShape == null
+                    && event instanceof com.apple.foundationdb.record.query.plan.cascades.events.PlannerEventWithState
+                    && ((com.apple.foundationdb.record.query.plan.cascades.events.PlannerEventWithState) event).getPlannerPhase()
+                        == com.apple.foundationdb.record.query.plan.cascades.PlannerPhase.PLANNING) {
+                rewritingShape = shape(((com.apple.foundationdb.record.query.plan.cascades.events.PlannerEventWithState) event).getRootReference(), 0);
+                comparisons.add("REWRITING-RESULT " + rewritingShape);
+            }
+            // A REWRITING prune after a simplification yielded: OptimizeGroup ranks the group's
+            // final members with RewritingCostModel at exactly this point, with every child
+            // reference still holding only logical members, so the criteria and the model's
+            // verdict recorded here are the ones the prune uses. The group is not the reference
+            // the simplification was called on (the select is re-memoized into a new reference
+            // once its exploratory members are finalized), so every REWRITING group with more
+            // than one final member is recorded.
+            if (event instanceof com.apple.foundationdb.record.query.plan.cascades.events.OptimizeGroupPlannerEvent
+                    && event.getLocation() == com.apple.foundationdb.record.query.plan.cascades.events.PlannerEvent.Location.BEGIN) {
+                var og = (com.apple.foundationdb.record.query.plan.cascades.events.OptimizeGroupPlannerEvent) event;
+                if (rootPairs && og.getPlannerPhase() == com.apple.foundationdb.record.query.plan.cascades.PlannerPhase.PLANNING
+                        && root != null && og.getCurrentReference() == root) {
+                    rootMembers = new java.util.ArrayList<>(root.getFinalExpressions());
+                }
+                if (og.getPlannerPhase() == com.apple.foundationdb.record.query.plan.cascades.PlannerPhase.REWRITING
+                        && !simplifiedRefs.isEmpty() && og.getCurrentReference().getFinalExpressions().size() > 1) {
+                    recordRewritingPrune(og.getCurrentReference(),
+                            (com.apple.foundationdb.record.query.plan.RecordQueryPlannerConfiguration) simplifiedRefs.get(0)[1]);
+                }
+                return;
+            }
+            if (!(event instanceof com.apple.foundationdb.record.query.plan.cascades.events.TransformRuleCallPlannerEvent)
+                    || event.getLocation() != com.apple.foundationdb.record.query.plan.cascades.events.PlannerEvent.Location.END) {
+                return;
+            }
+            var call = (com.apple.foundationdb.record.query.plan.cascades.events.TransformRuleCallPlannerEvent) event;
+            if (rootPairs && call.getRuleCall().getPlannerPhase() == com.apple.foundationdb.record.query.plan.cascades.PlannerPhase.PLANNING) {
+                root = call.getRuleCall().getRoot();
+                rootConfig = call.getRuleCall().getContext().getPlannerConfiguration();
+            }
+            String name = call.getRule().getClass().getSimpleName();
+            if (!rules.contains(name)) {
+                return;
+            }
+            int[] c = counts.computeIfAbsent(name, k -> new int[3]);
+            c[0]++;
+            if (inUnionPartitions && name.equals("ImplementInUnionRule")) {
+                recordInUnionPartitions(call);
+            }
+            c[1] += call.getRuleCall().getNewFinalExpressions().size();
+            c[2] += call.getRuleCall().getNewExploratoryExpressions().size();
+            for (var e : call.getRuleCall().getNewFinalExpressions()) {
+                finalKinds.computeIfAbsent(name, k -> new java.util.TreeSet<>()).add(e.getClass().getSimpleName());
+                if (name.equals("ImplementInUnionRule")) {
+                    inUnionYields.add(new Object[] {e, call.getCurrentReference(),
+                            call.getRuleCall().getContext().getPlannerConfiguration()});
+                }
+            }
+            // For the predicate-folding question: that a simplification yielded an exploratory
+            // alternative (and the planner configuration), which arms the REWRITING-prune record
+            // made at OptimizeGroup BEGIN above.
+            if (name.equals("QueryPredicateSimplificationRule") && !call.getRuleCall().getNewExploratoryExpressions().isEmpty()) {
+                simplifiedRefs.add(new Object[] {call.getCurrentReference(),
+                        call.getRuleCall().getContext().getPlannerConfiguration()});
+            }
+        }
+        final java.util.List<Object[]> simplifiedRefs = new java.util.ArrayList<>();
+
+        private void recordRewritingPrune(com.apple.foundationdb.record.query.plan.cascades.Reference ref,
+                                          com.apple.foundationdb.record.query.plan.RecordQueryPlannerConfiguration config) {
+            var model = com.apple.foundationdb.record.query.plan.cascades.PlannerPhase.REWRITING.createCostModel(config);
+            var members = new java.util.ArrayList<>(ref.getFinalExpressions());
+            java.util.function.Function<com.apple.foundationdb.record.query.plan.cascades.expressions.RelationalExpression, String> criteria = e ->
+                    e.getClass().getSimpleName()
+                    + " selects=" + com.apple.foundationdb.record.query.plan.cascades.properties.ExpressionCountProperty.selectCount().evaluate(e)
+                    + " conjuncts=" + com.apple.foundationdb.record.query.plan.cascades.properties.NormalizedResidualPredicateProperty.countNormalizedConjuncts(e)
+                    + " predicates=" + (e instanceof com.apple.foundationdb.record.query.plan.cascades.expressions.SelectExpression
+                        ? ((com.apple.foundationdb.record.query.plan.cascades.expressions.SelectExpression) e).getPredicates() : "-");
+            // Order the members by their deterministic criteria so the pairwise lines are
+            // stable; the semantic hash (the model's last tie-break) is reported, not ordered on.
+            members.sort(java.util.Comparator.comparing(criteria::apply));
+            comparisons.add("REWRITING-PRUNE members: " + members.size());
+            for (var m : members) {
+                comparisons.add("REWRITING-MEMBER " + criteria.apply(m) + " semanticHash=" + m.semanticHashCode());
+            }
+            for (int i = 0; i < members.size(); i++) {
+                for (int j = i + 1; j < members.size(); j++) {
+                    comparisons.add("REWRITING-COMPARE " + i + " vs " + j + " = "
+                            + Integer.signum(model.compare(members.get(i), members.get(j))));
+                }
+            }
+        }
+
+        // Replays ImplementInUnionRule.onMatch's reading of its inner reference (4.14.2.0,
+        // ImplementInUnionRule.java, from findInnerQuantifier to the enumeration of satisfying
+        // comparison keys) and records it; adjustBindings is private there and is copied below.
+        private void recordInUnionPartitions(com.apple.foundationdb.record.query.plan.cascades.events.TransformRuleCallPlannerEvent call) {
+            Object bindable = call.getBindable();
+            int callNo = counts.get("ImplementInUnionRule")[0];
+            String head = "IUP call " + callNo + " phase=" + call.getRuleCall().getPlannerPhase();
+            if (!(bindable instanceof com.apple.foundationdb.record.query.plan.cascades.expressions.SelectExpression)) {
+                partitionLines.add(head + " bindable=" + bindable.getClass().getSimpleName());
+                return;
+            }
+            var select = (com.apple.foundationdb.record.query.plan.cascades.expressions.SelectExpression) bindable;
+            var requested = call.getRuleCall().getPlannerConstraintMaybe(
+                    com.apple.foundationdb.record.query.plan.cascades.RequestedOrderingConstraint.REQUESTED_ORDERING);
+            var explodeQs = new java.util.ArrayList<com.apple.foundationdb.record.query.plan.cascades.Quantifier.ForEach>();
+            for (var q : select.getQuantifiers()) {
+                if (q instanceof com.apple.foundationdb.record.query.plan.cascades.Quantifier.ForEach
+                        && q.getRangesOver().getAllMemberExpressions().stream().anyMatch(e ->
+                            e instanceof com.apple.foundationdb.record.query.plan.cascades.expressions.ExplodeExpression)) {
+                    explodeQs.add((com.apple.foundationdb.record.query.plan.cascades.Quantifier.ForEach) q);
+                }
+            }
+            var explodeAliases = com.apple.foundationdb.record.query.plan.cascades.Quantifiers.aliases(explodeQs);
+            var innerOpt = com.apple.foundationdb.record.query.plan.cascades.rules.PushRequestedOrderingThroughInLikeSelectRule
+                    .findInnerQuantifier(select, explodeQs, explodeAliases);
+            head += " predicates=" + select.getPredicates().size() + " explodes=" + explodeQs.size()
+                    + " requested=" + requested.map(Object::toString).orElse("absent");
+            if (innerOpt.isEmpty()) {
+                partitionLines.add(head + " inner=absent");
+                return;
+            }
+            var innerRef = innerOpt.get().getRangesOver();
+            var partitions = com.apple.foundationdb.record.query.plan.cascades.PlanPartitions.rollUpTo(
+                    innerRef.toPlanPartitions(),
+                    com.apple.foundationdb.record.query.plan.cascades.properties.OrderingProperty.ordering());
+            partitionLines.add(head + " innerFinals=" + innerRef.getFinalExpressions().size()
+                    + " innerExploratory=" + innerRef.getExploratoryExpressions().size() + " partitions=" + partitions.size());
+            int pi = 0;
+            for (var partition : partitions) {
+                var provided = partition.getPartitionPropertyValue(
+                        com.apple.foundationdb.record.query.plan.cascades.properties.OrderingProperty.ordering());
+                var planNames = new java.util.TreeSet<String>();
+                for (var plan : partition.getPlans()) {
+                    planNames.add(com.apple.foundationdb.record.query.plan.cascades.explain.ExplainPlanVisitor.toStringForDebugging(plan));
+                }
+                partitionLines.add("IUP call " + callNo + " partition " + pi + " provided=" + provided + " plans=" + planNames);
+                if (requested.isPresent()) {
+                    for (var req : requested.get()) {
+                        if (req.isPreserve()) {
+                            partitionLines.add("IUP call " + callNo + " partition " + pi + " request=" + req + " PRESERVE-skipped");
+                            continue;
+                        }
+                        var sortMap = req.getValueRequestedSortOrderMap();
+                        var adjusted = com.google.common.collect.ImmutableSetMultimap.<com.apple.foundationdb.record.query.plan.cascades.values.Value,
+                                com.apple.foundationdb.record.query.plan.cascades.Ordering.Binding>builder();
+                        for (var e : provided.getBindingMap().asMap().entrySet()) {
+                            adjusted.putAll(e.getKey(), adjustInUnionBindings(e.getValue(), explodeAliases, sortMap.get(e.getKey())));
+                        }
+                        var unionOrdering = com.apple.foundationdb.record.query.plan.cascades.Ordering.UNION.createOrdering(
+                                adjusted.build(), provided.getOrderingSet(), provided.isDistinct());
+                        var keys = new java.util.ArrayList<String>();
+                        for (var k : unionOrdering.enumerateSatisfyingComparisonKeyValues(req)) {
+                            keys.add(k.toString());
+                        }
+                        partitionLines.add("IUP call " + callNo + " partition " + pi + " request=" + req
+                                + " unionOrdering=" + unionOrdering + " satisfyingKeys=" + keys);
+                    }
+                }
+                pi++;
+            }
+        }
+
+        private static Iterable<com.apple.foundationdb.record.query.plan.cascades.Ordering.Binding> adjustInUnionBindings(
+                java.util.Collection<com.apple.foundationdb.record.query.plan.cascades.Ordering.Binding> bindings,
+                java.util.Set<com.apple.foundationdb.record.query.plan.cascades.CorrelationIdentifier> explodeAliases,
+                com.apple.foundationdb.record.query.plan.cascades.OrderingPart.RequestedSortOrder requestedSortOrder) {
+            var sortOrder = com.apple.foundationdb.record.query.plan.cascades.Ordering.sortOrder(bindings);
+            if (sortOrder.isDirectional()) {
+                return com.google.common.collect.ImmutableList.of(com.apple.foundationdb.record.query.plan.cascades.Ordering.Binding.sorted(sortOrder));
+            }
+            if (com.apple.foundationdb.record.query.plan.cascades.Ordering.hasMultipleFixedBindings(bindings)) {
+                return bindings;
+            }
+            var binding = com.apple.foundationdb.record.query.plan.cascades.Ordering.fixedBinding(bindings);
+            var comparison = binding.getComparison();
+            if (comparison.getType() != com.apple.foundationdb.record.query.expressions.Comparisons.Type.EQUALS) {
+                return bindings;
+            }
+            if (comparison instanceof com.apple.foundationdb.record.query.expressions.Comparisons.ParameterComparison) {
+                var pc = (com.apple.foundationdb.record.query.expressions.Comparisons.ParameterComparison) comparison;
+                if (!pc.isCorrelation() || !explodeAliases.containsAll(pc.getCorrelatedTo())) {
+                    return bindings;
+                }
+            } else if (comparison instanceof com.apple.foundationdb.record.query.expressions.Comparisons.ValueComparison) {
+                var vc = (com.apple.foundationdb.record.query.expressions.Comparisons.ValueComparison) comparison;
+                if (!explodeAliases.containsAll(vc.getCorrelatedTo())) {
+                    return bindings;
+                }
+            } else {
+                return bindings;
+            }
+            if (requestedSortOrder == null
+                    || requestedSortOrder == com.apple.foundationdb.record.query.plan.cascades.OrderingPart.RequestedSortOrder.ANY) {
+                return com.google.common.collect.ImmutableList.of(com.apple.foundationdb.record.query.plan.cascades.Ordering.Binding.choose());
+            }
+            if (!requestedSortOrder.isDirectional()) {
+                return bindings;
+            }
+            return com.google.common.collect.ImmutableList.of(
+                    com.apple.foundationdb.record.query.plan.cascades.Ordering.Binding.sorted(requestedSortOrder.toProvidedSortOrder()));
+        }
+
+        @Override
+        public void onDone() {
+            if (rootPairs && rootMembers != null) {
+                var model = new com.apple.foundationdb.record.query.plan.cascades.PlanningCostModel(rootConfig);
+                var members = new java.util.ArrayList<>(rootMembers);
+                java.util.function.Function<com.apple.foundationdb.record.query.plan.cascades.expressions.RelationalExpression, String> name = e ->
+                        e instanceof com.apple.foundationdb.record.query.plan.plans.RecordQueryPlan
+                        ? com.apple.foundationdb.record.query.plan.cascades.explain.ExplainPlanVisitor.toStringForDebugging(
+                                (com.apple.foundationdb.record.query.plan.plans.RecordQueryPlan) e)
+                        : e.getClass().getSimpleName();
+                members.sort(java.util.Comparator.comparing(name::apply));
+                comparisons.add("ROOT members: " + members.size() + " preference=" + rootConfig.getIndexScanPreference());
+                // The memo order OptimizeGroup iterates, as indices into the sorted list above,
+                // and the winner its sequential pass picks over that order
+                // (CascadesPlanner.java:650-658): under a cyclic relation the final plan
+                // depends on the order, so the order is measured, not assumed.
+                var memoOrder = new java.util.ArrayList<String>();
+                com.apple.foundationdb.record.query.plan.cascades.expressions.RelationalExpression best = null;
+                for (var m : rootMembers) {
+                    memoOrder.add(Integer.toString(members.indexOf(m)));
+                    if (best == null || model.compare(m, best) < 0) {
+                        best = m;
+                    }
+                }
+                comparisons.add("ROOT memo order: " + String.join(" ", memoOrder)
+                        + " sequential winner: " + (best == null ? "-" : Integer.toString(members.indexOf(best))));
+                for (int i = 0; i < members.size(); i++) {
+                    var m = members.get(i);
+                    String hash = m instanceof PlanHashable
+                            ? Integer.toString(((PlanHashable) m).planHash(PlanHashable.CURRENT_FOR_CONTINUATION)) : "-";
+                    String rungs = " conjuncts=" + com.apple.foundationdb.record.query.plan.cascades.properties.NormalizedResidualPredicateProperty.countNormalizedConjuncts(m)
+                            + " typeFilters=" + com.apple.foundationdb.record.query.plan.cascades.properties.TypeFilterCountProperty.typeFilterCount().evaluate(m)
+                            + " unmatchedFields=" + com.apple.foundationdb.record.query.plan.cascades.properties.UnmatchedFieldsCountProperty.unmatchedFieldsCount().evaluate(m);
+                    comparisons.add("ROOT-MEMBER " + i + " " + name.apply(m) + rungs + " hash=" + hash);
+                }
+                for (int i = 0; i < members.size(); i++) {
+                    for (int j = i + 1; j < members.size(); j++) {
+                        var a = members.get(i);
+                        var b = members.get(j);
+                        String hashOrder = "-";
+                        if (a instanceof PlanHashable && b instanceof PlanHashable) {
+                            hashOrder = Integer.toString(Integer.signum(Integer.compare(
+                                    ((PlanHashable) a).planHash(PlanHashable.CURRENT_FOR_CONTINUATION),
+                                    ((PlanHashable) b).planHash(PlanHashable.CURRENT_FOR_CONTINUATION))));
+                        }
+                        comparisons.add("ROOT-COMPARE " + i + " vs " + j + " = " + Integer.signum(model.compare(a, b))
+                                + " hashOrder=" + hashOrder);
+                    }
+                }
+            }
+            for (Object[] y : inUnionYields) {
+                var inUnion = (com.apple.foundationdb.record.query.plan.cascades.expressions.RelationalExpression) y[0];
+                var ref = (com.apple.foundationdb.record.query.plan.cascades.Reference) y[1];
+                var config = (com.apple.foundationdb.record.query.plan.RecordQueryPlannerConfiguration) y[2];
+                var model = new com.apple.foundationdb.record.query.plan.cascades.PlanningCostModel(config);
+                boolean stillMember = false;
+                for (var member : ref.getFinalExpressions()) {
+                    if (member == inUnion) {
+                        stillMember = true;
+                        continue;
+                    }
+                    comparisons.add(describe(member) + " vs InUnion(" + describe(inUnion) + "): compare(InUnion, member) = "
+                            + Integer.signum(model.compare(inUnion, member)));
+                }
+                comparisons.add("InUnion still a final member of its reference at the end: " + stillMember
+                        + "; reference final members: " + ref.getFinalExpressions().size());
+            }
+        }
+
+        private static String describe(com.apple.foundationdb.record.query.plan.cascades.expressions.RelationalExpression e) {
+            String plan = e instanceof com.apple.foundationdb.record.query.plan.plans.RecordQueryPlan
+                    ? " plan=" + com.apple.foundationdb.record.query.plan.cascades.explain.ExplainPlanVisitor.toStringForDebugging(
+                            (com.apple.foundationdb.record.query.plan.plans.RecordQueryPlan) e)
+                    : "";
+            return e.getClass().getSimpleName() + plan
+                    + " residuals=" + com.apple.foundationdb.record.query.plan.cascades.properties.NormalizedResidualPredicateProperty.countNormalizedConjuncts(e)
+                    + " maxCardUnknown=" + com.apple.foundationdb.record.query.plan.cascades.properties.CardinalitiesProperty.cardinalities().evaluate(e).getMaxCardinality().isUnknown();
+        }
+    }
+
+    /**
+     * EXPLAIN {@code querySql} over the schema after the setup statements, with a planner listener
+     * attached that reports, for each rule named in {@code rules}, how many of its calls ended, how
+     * many final and exploratory expressions they yielded, and the classes of the final ones. It
+     * answers "did the target's planner ever produce plan X" where EXPLAIN shows only the winner.
+     */
+    @ConformanceStep("planRuleTrace")
+    public JsonObject planRuleTrace(String clusterFile, String schemaTemplate, java.util.List<String> setupSqls,
+                                    String querySql, java.util.List<String> rules) throws Exception {
+        return runWithEphemeralSchema(clusterFile, schemaTemplate, conn -> {
+            try (Statement st = conn.createStatement()) {
+                for (String setup : setupSqls) {
+                    withFdbRetry(() -> st.executeUpdate(setup));
+                }
+            }
+            RuleTraceListener listener = new RuleTraceListener(rules);
+            com.apple.foundationdb.record.query.plan.cascades.events.PlannerEventListeners.addListener(RuleTraceListener.class, listener);
+            String plan;
+            try {
+                plan = runExplain(conn, querySql);
+            } finally {
+                com.apple.foundationdb.record.query.plan.cascades.events.PlannerEventListeners.removeListener(RuleTraceListener.class);
+            }
+            JsonObject out = new JsonObject();
+            out.addProperty("explain", plan);
+            JsonObject perRule = new JsonObject();
+            for (String rule : rules) {
+                int[] c = listener.counts.getOrDefault(rule, new int[3]);
+                JsonObject r = new JsonObject();
+                r.addProperty("calls", c[0]);
+                r.addProperty("finals", c[1]);
+                r.addProperty("exploratory", c[2]);
+                JsonArray kinds = new JsonArray();
+                for (String k : listener.finalKinds.getOrDefault(rule, new java.util.TreeSet<>())) {
+                    kinds.add(k);
+                }
+                r.add("finalKinds", kinds);
+                perRule.add(rule, r);
+            }
+            out.add("rules", perRule);
+            JsonArray cmp = new JsonArray();
+            for (String c : listener.comparisons) {
+                cmp.add(c);
+            }
+            out.add("inUnionComparisons", cmp);
+            JsonArray iup = new JsonArray();
+            for (String l : listener.partitionLines) {
+                iup.add(l);
+            }
+            out.add("inUnionPartitions", iup);
+            JsonObject tasks = new JsonObject();
+            listener.tasksPerPhase.forEach(tasks::addProperty);
+            out.add("tasksPerPhase", tasks);
+            JsonObject kinds = new JsonObject();
+            listener.tasksPerKind.forEach(kinds::addProperty);
+            out.add("tasksPerKind", kinds);
+            return out;
+        });
+    }
+
     private String runExplain(java.sql.Connection conn, String sql) throws SQLException {
         // fdb-relational accepts EXPLAIN as a SQL prefix; the result set has
         // a PLAN column (VARCHAR) carrying the rendered tree. Other columns
@@ -894,11 +1988,15 @@ class SqlPlanSteps {
         int n = md.getColumnCount();
 
         JsonArray cols = new JsonArray(n);
+        JsonArray nullability = new JsonArray(n);
         for (int i = 1; i <= n; i++) {
             JsonObject c = new JsonObject();
             c.addProperty("name", md.getColumnName(i));
             c.addProperty("type", md.getColumnTypeName(i));
             cols.add(c);
+            int nullable = md.isNullable(i);
+            nullability.add(nullable == ResultSetMetaData.columnNoNulls ? "NOT NULL"
+                    : nullable == ResultSetMetaData.columnNullable ? "NULL" : "UNKNOWN");
         }
 
         JsonArray rows = new JsonArray();
@@ -913,6 +2011,7 @@ class SqlPlanSteps {
         JsonObject out = new JsonObject();
         out.add("columns", cols);
         out.add("rows", rows);
+        out.add("nullability", nullability);
         return out;
     }
 

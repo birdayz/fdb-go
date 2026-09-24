@@ -108,7 +108,7 @@ Go status:
 - **Required:** distinguish array-of-record from scalar-array behavior. The IN path at `walk.go:1983` also contains one-field record flattening that must be checked against the target shape contract.
 - **Required:** target error classification. `R/core/functions/proto_value.go:196` currently reports the older collection-NULL failure at serialization.
 - **Already present in part:** inline NULL predicate handling and rejection of literal NULL IN items; see `walk_test.go:366` and `R/core/embedded/logical_predicate.go:1004`.
-- **Pre-existing parameter-model gap exposed by these contracts:** `R/core/embedded/utilities.go:94,164` substitutes bound nil as SQL NULL. That loses the distinction between a bare NULL token and a typed bound NULL. Inline rejection alone does not prove the target’s prepared-parameter behavior.
+- **Pre-existing parameter-model gap exposed by these contracts:** `R/core/embedded/utilities.go:94,164` substitutes bound nil as SQL NULL. That loses the distinction between a bare NULL token and a bound NULL (untyped in the target: setNull's SQL type is discarded, measured by the WS-E oracle). Inline rejection alone does not prove the target’s prepared-parameter behavior.
 
 The normalizer change is defensive validation placement. Its target source explicitly notes that current NULL-containing canonical keys still differ; this audit does not claim a demonstrated cache-poisoning exploit in either engine.
 
@@ -117,7 +117,7 @@ The controller-owned mixed-array and **pre-existing structured `PromoteValue` de
 Regression contracts must distinguish:
 
 - Bare NULL IN item → `42809`.
-- Typed bound NULL IN item → `0A000`.
+- Bound NULL IN item (untyped in the target) → `0A000`.
 - Non-NULL bound value → successful membership.
 - NULL predicate → unknown/filtered, matching inline NULL.
 - Outer nullable array versus forbidden NULL element.
@@ -126,7 +126,7 @@ Regression contracts must distinguish:
 
 Existing SQL array rejection pins requiring revision include `R/conformance/yamsql/cast_boundary_fdb_test.go:110` and `R/sqldriver/in_list_array_column_fdb_test.go:193`. Preserve their negative assertions while adopting the target failure contract.
 
-Go-only query extensions may remain; Java’s new IN-subquery rejection is not authorization to remove an existing Go extension.
+Go-only query extensions may remain; Java’s new IN-subquery rejection is not authorization to remove an existing Go extension. [Checked later: at the base `71ccd8cf8` Go already refuses every IN-subquery shape with 0AF00, so there is no such extension to keep; the umbrella RFC's WS-E section records it.]
 
 **W3 — LIKE semantics and SQLSTATEs**
 
@@ -166,7 +166,7 @@ Go already has a polynomial matcher, but preserves the **old semantics**:
 - `R/core/query/expr/expr.go:1560` restricts pattern forms and uses different error classification.
 - `R/core/query/expr/walk.go:2027` measures ESCAPE as Go runes, permitting supplementary characters that Java rejects.
 
-**Required port:** semantic alignment across both scalar-value and predicate/comparison paths, including system-table filtering. Dynamic pattern restrictions are a pre-existing Go gap, not a newly introduced Java feature.
+**Required port:** semantic alignment across both scalar-value and predicate/comparison paths, including system-table filtering. Dynamic pattern restrictions are a pre-existing Go gap, not a newly introduced Java feature. (Corrected by the WS-E oracle: the target itself rejects a bound pattern, `LIKE ?` is 42601 because the grammar's pattern is `constant` [prepared_like_param_pattern]; Go accepting it today is the divergence, and WS-E removes it.)
 
 Confirmed obsolete tests include:
 

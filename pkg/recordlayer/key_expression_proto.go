@@ -42,17 +42,35 @@ func (f *FieldKeyExpression) ToKeyExpression() *gen.KeyExpression {
 		Field: &gen.Field{
 			FieldName:          &f.fieldName,
 			FanType:            &ft,
-			NullInterpretation: nullInterpretationEnum(f.nullInterpretationUnique),
+			NullInterpretation: nullInterpretationEnum(f.nullStandin),
 		},
 	}
 }
 
-// nullInterpretationEnum maps the preserved bit back to the proto enum.
-func nullInterpretationEnum(unique bool) *gen.Field_NullInterpretation {
-	if unique {
+// nullInterpretationEnum is Java's NullStandin.toProto (Key.java:395-407).
+func nullInterpretationEnum(standin NullStandin) *gen.Field_NullInterpretation {
+	switch standin {
+	case NullStandinNullUnique:
 		return gen.Field_UNIQUE.Enum()
+	case NullStandinNotNull:
+		return gen.Field_NOT_NULL.Enum()
+	default:
+		return gen.Field_NOT_UNIQUE.Enum()
 	}
-	return gen.Field_NOT_UNIQUE.Enum()
+}
+
+// nullStandinFromProto is Java's NullStandin.valueOf (Key.java:409-420). The
+// proto2 enum is closed: an unknown value is kept as an unknown field and the
+// field reads as its default, NOT_UNIQUE, in both engines.
+func nullStandinFromProto(ni gen.Field_NullInterpretation) NullStandin {
+	switch ni {
+	case gen.Field_UNIQUE:
+		return NullStandinNullUnique
+	case gen.Field_NOT_NULL:
+		return NullStandinNotNull
+	default:
+		return NullStandinNull
+	}
 }
 
 // ToKeyExpression serializes a CompositeKeyExpression (ThenKeyExpression) to proto.
@@ -78,7 +96,7 @@ func (n *NestingKeyExpression) ToKeyExpression() *gen.KeyExpression {
 			Parent: &gen.Field{
 				FieldName:          &n.parentField,
 				FanType:            &ft,
-				NullInterpretation: nullInterpretationEnum(n.nullInterpretationUnique),
+				NullInterpretation: nullInterpretationEnum(n.parentNullStandin),
 			},
 			Child: n.child.ToKeyExpression(),
 		},
@@ -94,23 +112,9 @@ func (e *EmptyKeyExpression) ToKeyExpression() *gen.KeyExpression {
 }
 
 // ToKeyExpression serializes a RecordTypeKeyExpression to proto.
-// A bare RecordTypeKeyExpression serializes as RecordTypeKey{}.
-// With a nested expression, serializes as Then{RecordTypeKey{}, nested} matching
-// Java's concat(recordTypeKey(), nested).
 func (r *RecordTypeKeyExpression) ToKeyExpression() *gen.KeyExpression {
-	if r.nested == nil {
-		return &gen.KeyExpression{
-			RecordTypeKey: &gen.RecordTypeKey{},
-		}
-	}
-	// With nested → Then(RecordTypeKey, nested)
 	return &gen.KeyExpression{
-		Then: &gen.Then{
-			Child: []*gen.KeyExpression{
-				{RecordTypeKey: &gen.RecordTypeKey{}},
-				r.nested.ToKeyExpression(),
-			},
-		},
+		RecordTypeKey: &gen.RecordTypeKey{},
 	}
 }
 
@@ -135,7 +139,11 @@ func keyExpressionFromProtoDepth(expr *gen.KeyExpression, depth int) (KeyExpress
 		return nil, fmt.Errorf("key expression nested deeper than %d levels", maxKeyExpressionDepth)
 	}
 	if expr == nil {
-		return nil, fmt.Errorf("nil key expression proto")
+		// An absent message field reads as its default instance in Java
+		// (protobuf-java's getters never return null), so an absent child is
+		// an expression with no root: a Nesting's child from stored bytes, and
+		// in memory any child proto2 marks required.
+		return nil, &KeyExpressionDeserializationError{Message: "Exactly one root must be specified for an index"}
 	}
 
 	var root KeyExpression
@@ -228,16 +236,15 @@ func keyExpressionFromProtoDepth(expr *gen.KeyExpression, depth int) (KeyExpress
 	}
 
 	if root == nil || found > 1 {
-		return nil, fmt.Errorf("exactly one key expression type must be set, found %d", found)
+		// Java's text (KeyExpression.java:404-405), for every level of the
+		// expression as Java's fromProto is recursive.
+		return nil, &KeyExpressionDeserializationError{Message: "Exactly one root must be specified for an index"}
 	}
 	return root, nil
 }
 
 // dimensionsFromProto reconstructs a DimensionsKeyExpression from a proto Dimensions.
 func dimensionsFromProto(d *gen.Dimensions, depth int) (*DimensionsKeyExpression, error) {
-	if d.WholeKey == nil {
-		return nil, fmt.Errorf("dimensions expression missing whole_key")
-	}
 	wholeKey, err := keyExpressionFromProtoDepth(d.WholeKey, depth)
 	if err != nil {
 		return nil, fmt.Errorf("dimensions whole_key: %w", err)
@@ -248,43 +255,37 @@ func dimensionsFromProto(d *gen.Dimensions, depth int) (*DimensionsKeyExpression
 // fieldFromProto reconstructs a FieldKeyExpression from a proto Field.
 func fieldFromProto(f *gen.Field) *FieldKeyExpression {
 	return &FieldKeyExpression{
-		fieldName:                f.GetFieldName(),
-		fanType:                  fanTypeFromProto(f.GetFanType()),
-		nullInterpretationUnique: f.GetNullInterpretation() == gen.Field_UNIQUE,
+		fieldName:   f.GetFieldName(),
+		fanType:     fanTypeFromProto(f.GetFanType()),
+		nullStandin: nullStandinFromProto(f.GetNullInterpretation()),
 	}
 }
 
 // nestingFromProto reconstructs a NestingKeyExpression from a proto Nesting.
 func nestingFromProto(n *gen.Nesting, depth int) (KeyExpression, error) {
 	if n.Parent == nil {
-		return nil, fmt.Errorf("nesting expression missing parent field")
+		return nil, &KeyExpressionDeserializationError{Message: "Serialized Nesting is missing parent"}
 	}
 	child, err := keyExpressionFromProtoDepth(n.Child, depth)
 	if err != nil {
 		return nil, fmt.Errorf("nesting child: %w", err)
 	}
 	return &NestingKeyExpression{
-		parentField:              n.Parent.GetFieldName(),
-		fanType:                  fanTypeFromProto(n.Parent.GetFanType()),
-		child:                    child,
-		nullInterpretationUnique: n.Parent.GetNullInterpretation() == gen.Field_UNIQUE,
+		parentField:       n.Parent.GetFieldName(),
+		fanType:           fanTypeFromProto(n.Parent.GetFanType()),
+		child:             child,
+		parentNullStandin: nullStandinFromProto(n.Parent.GetNullInterpretation()),
 	}, nil
 }
 
-// thenFromProto reconstructs a CompositeKeyExpression from a proto Then.
-//
-// NOTE a Java-parity asymmetry: Java's ThenKeyExpression CONSTRUCTOR flattens
-// nested thens (ThenKeyExpression.java:264-270), so Java can neither build
-// nor — after a round-trip — retain a nested Then. Go's Concat stores its
-// children VERBATIM: a caller that passes a Then child produces a nested
-// proto Java would never emit. Producers of wire-visible expressions must
-// therefore pass flat child lists (the RFC-202 index generator does this via
-// its concatFlat helper). Java-authored protos are always flat, so this
-// reader preserves shape for everything Java writes.
+// thenFromProto reconstructs a CompositeKeyExpression from a proto Then, as
+// Java's ThenKeyExpression(Then) does (ThenKeyExpression.java:77-86): every
+// child decoded, a nested Then contributing its children (Concat flattens as
+// Java's add does), and only then the count refused below two. So a Then
+// holding one Then of two children is accepted with those two, as Java
+// accepts it, and a nested Then an earlier Go wrote loads flat, as Java loads
+// it.
 func thenFromProto(t *gen.Then, depth int) (KeyExpression, error) {
-	if len(t.Child) < 2 {
-		return nil, fmt.Errorf("then expression requires at least 2 children, got %d", len(t.Child))
-	}
 	exprs := make([]KeyExpression, len(t.Child))
 	for i, child := range t.Child {
 		expr, err := keyExpressionFromProtoDepth(child, depth)
@@ -293,7 +294,11 @@ func thenFromProto(t *gen.Then, depth int) (KeyExpression, error) {
 		}
 		exprs[i] = expr
 	}
-	return Concat(exprs...), nil
+	then := Concat(exprs...).(*CompositeKeyExpression)
+	if len(then.expressions) < 2 {
+		return nil, &KeyExpressionDeserializationError{Message: "Then must have at least 2 children"}
+	}
+	return then, nil
 }
 
 // groupingFromProto reconstructs a GroupingKeyExpression from a proto Grouping.
@@ -393,10 +398,22 @@ func functionFromProto(fn *gen.Function, depth int) (KeyExpression, error) {
 	if err != nil {
 		return nil, fmt.Errorf("function arguments: %w", err)
 	}
-	if fn.GetName() == FunctionNameCardinality {
-		return CardinalityExpr(args), nil
+	// Java's fromProto is create, and rethrows its refusal as a
+	// DeserializationException of the same text (FunctionKeyExpression.java:
+	// 235-241). A name Go does not register is loaded, where Java refuses it
+	// ("Function not defined"; DIVERGENCES.md), so Go can open a store whose
+	// index uses a function only a Java module registers.
+	name := fn.GetName()
+	if _, registered := LookupFunction(name); registered {
+		if fault := functionConstructionFault(name, args); fault != nil {
+			return nil, &KeyExpressionDeserializationError{Message: fault.Error()}
+		}
 	}
-	return FunctionExpr(fn.GetName(), args), nil
+	f := FunctionKeyExpression{name: name, arguments: args}
+	if name == FunctionNameCardinality {
+		return &CardinalityFunctionKeyExpression{FunctionKeyExpression: f}, nil
+	}
+	return &f, nil
 }
 
 // splitFromProto reconstructs a SplitKeyExpression from a proto Split.

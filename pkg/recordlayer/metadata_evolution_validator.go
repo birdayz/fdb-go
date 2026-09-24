@@ -2,7 +2,8 @@ package recordlayer
 
 import (
 	"fmt"
-	"strconv"
+	"maps"
+	"slices"
 	"strings"
 
 	"google.golang.org/protobuf/proto"
@@ -24,12 +25,18 @@ type MetaDataEvolutionValidator struct {
 	allowMissingFormerIndexNames      bool
 	disallowTypeRenames               bool
 	allowNoSinceVersion               bool
+	ignoredIndexOptions               map[string]bool
 
 	// Field-rename options, added in Java 4.12 (#4034 / #4119). All default false,
 	// so an unconfigured validator rejects every field-name change (legacy behaviour).
 	allowFieldRenames           bool
 	allowDeprecatedFieldRenames bool
 	allowUndeprecatingFields    bool
+
+	// allowLiteralCarrierWidening is Go-only (Java's validator compares literals by
+	// proto equality, LiteralKeyExpression.java:213-214, and has no such option); see
+	// SetAllowLiteralCarrierWidening.
+	allowLiteralCarrierWidening bool
 }
 
 // allowsAnyFieldRenames reports whether any field-rename option is enabled, gating the
@@ -66,6 +73,27 @@ func DefaultMetaDataEvolutionValidator() *MetaDataEvolutionValidator {
 
 func (b *MetaDataEvolutionValidatorBuilder) SetAllowNoVersionChange(v bool) *MetaDataEvolutionValidatorBuilder {
 	b.v.allowNoVersionChange = v
+	return b
+}
+
+// SetAllowLiteralCarrierWidening admits an index whose root differs from the old one
+// only in literal CARRIERS that moved ONE way, from the width a Go build before the
+// literal-carrier fix stored to the width the target stores, and that store the same
+// bytes: an old long_value where the new root has an int_value of equal value, at any
+// position (the tuple encodes an integer by value, not by width); and an old
+// double_value where the new root has a float_value of the same value
+// (float64(f) == d), only as an argument of a long-arithmetic key function, which
+// reads it through nullableLong and so stores a long either way. The reverse moves
+// (int_value to long_value, float_value to double_value) and a float/double change at
+// any other position (the tuple type code differs, 0x20 versus 0x21) stay index
+// changes; literalValuesEquivalent is the one place that decides.
+//
+// Go-only and deliberately narrow: it exists for the relational rebind path, where a
+// template Go stored before RFC-257 WS-J F2 carries INT literals as long_value and the
+// same DDL now builds int_value (Java's width); the core validator's default stays
+// Java's proto equality.
+func (b *MetaDataEvolutionValidatorBuilder) SetAllowLiteralCarrierWidening(v bool) *MetaDataEvolutionValidatorBuilder {
+	b.v.allowLiteralCarrierWidening = v
 	return b
 }
 
@@ -121,8 +149,36 @@ func (b *MetaDataEvolutionValidatorBuilder) SetAllowUndeprecatingFields(v bool) 
 	return b
 }
 
+// SetIgnoredIndexOptions copies the exact, case-sensitive option names excluded
+// from evolution validation. A nil slice clears the set.
+func (b *MetaDataEvolutionValidatorBuilder) SetIgnoredIndexOptions(options []string) *MetaDataEvolutionValidatorBuilder {
+	b.v.ignoredIndexOptions = make(map[string]bool, len(options))
+	for _, option := range options {
+		b.v.ignoredIndexOptions[option] = true
+	}
+	return b
+}
+
+// GetIgnoredIndexOptions returns a sorted, independent copy of the ignored names.
+func (v *MetaDataEvolutionValidator) GetIgnoredIndexOptions() []string {
+	return slices.Sorted(maps.Keys(v.ignoredIndexOptions))
+}
+
+// GetIgnoredIndexOptions returns a sorted, independent copy of the ignored names.
+func (b *MetaDataEvolutionValidatorBuilder) GetIgnoredIndexOptions() []string {
+	return b.v.GetIgnoredIndexOptions()
+}
+
+// AsBuilder copies all configuration without sharing mutable option storage.
+func (v *MetaDataEvolutionValidator) AsBuilder() *MetaDataEvolutionValidatorBuilder {
+	copy := *v
+	copy.ignoredIndexOptions = maps.Clone(v.ignoredIndexOptions)
+	return &MetaDataEvolutionValidatorBuilder{v: copy}
+}
+
 func (b *MetaDataEvolutionValidatorBuilder) Build() *MetaDataEvolutionValidator {
 	v := b.v
+	v.ignoredIndexOptions = maps.Clone(b.v.ignoredIndexOptions)
 	return &v
 }
 
@@ -149,11 +205,6 @@ func (v *MetaDataEvolutionValidator) Validate(oldMetaData, newMetaData *RecordMe
 		return err
 	}
 
-	// 2b. Union descriptor validation (splits, merges, removals)
-	if err := v.validateUnion(oldMetaData, newMetaData); err != nil {
-		return err
-	}
-
 	// Build type rename map before record type and index validation.
 	// Matches Java's MetaDataEvolutionValidator.getTypeRenames().
 	typeRenames, err := v.getTypeRenames(oldMetaData, newMetaData)
@@ -166,68 +217,45 @@ func (v *MetaDataEvolutionValidator) Validate(oldMetaData, newMetaData *RecordMe
 		return err
 	}
 
-	// 4. Index validation
-	if err := v.validateIndexes(oldMetaData, newMetaData, typeRenames); err != nil {
-		return err
-	}
-
-	// 5. Former index validation
-	if err := v.validateFormerIndexes(oldMetaData, newMetaData); err != nil {
-		return err
-	}
-
-	// 6. Message descriptor validation
-	if err := v.validateMessages(oldMetaData, newMetaData); err != nil {
+	// 4. Indexes and former indexes, paired by subspace key.
+	if err := v.validateCurrentAndFormerIndexes(oldMetaData, newMetaData, typeRenames); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-// getTypeRenames builds a map from old record type names to new record type names
-// by matching on GetRecordTypeKey(). If the old type name still exists in the new
-// metadata, it maps to itself. Otherwise, it finds the new type with the same type key.
-// Matches Java's MetaDataEvolutionValidator.getTypeRenames() lines 319-344.
+// getTypeRenames pairs each old record type with the new one of the union
+// field of the same number, as Java's getTypeRenames does
+// (MetaDataEvolutionValidator.java:354-377), walking the old union's fields
+// in order, so the first renamed type in union order is the one
+// disallowTypeRenames names. unionCorrespondence paired every field's message.
 func (v *MetaDataEvolutionValidator) getTypeRenames(old, new *RecordMetaData) (map[string]string, error) {
+	pairs, err := v.unionCorrespondence(old, new)
+	if err != nil {
+		return nil, err
+	}
 	renames := make(map[string]string, len(old.RecordTypes()))
-	for oldName, oldRT := range old.RecordTypes() {
-		if new.GetRecordType(oldName) != nil {
-			// Same name exists in new — identity mapping.
-			renames[oldName] = oldName
-			continue
+	oldUnion := old.GetUnionDescriptor()
+	for i := 0; i < oldUnion.Fields().Len(); i++ {
+		oldDesc := oldUnion.Fields().Get(i).Message()
+		newDesc := pairs[oldDesc]
+		oldName, newName := string(oldDesc.Name()), string(newDesc.Name())
+		if v.disallowTypeRenames && oldName != newName {
+			return nil, &MetaDataEvolutionError{Message: fmt.Sprintf("record type name changed (old=%q, new=%q)", oldName, newName)}
 		}
-		// Find new type with same type key. Identity, not the general
-		// subspace-key normalizer: a rename is inferred purely from the keys
-		// matching, so folding a []byte key into the string of the same bytes
-		// would pair an old type with a NEW type that occupies a different key
-		// space, and carry every index and record of the old type over to it.
-		oldKey, oldOK := recordTypeKeyIdentity(oldRT.GetRecordTypeKey())
-		found := false
-		for newName, newRT := range new.RecordTypes() {
-			newKey, newOK := recordTypeKeyIdentity(newRT.GetRecordTypeKey())
-			if oldOK && newOK && newKey == oldKey {
-				// A type with a different name but the same key exists — this is a rename.
-				if v.disallowTypeRenames {
-					return nil, &MetaDataEvolutionError{
-						Message: fmt.Sprintf("record type %q renamed in new meta-data", oldName),
-					}
-				}
-				renames[oldName] = newName
-				found = true
-				break
-			}
-		}
-		if !found {
-			// Type key not found in new metadata — this is a removal, not a rename.
-			// validateRecordTypes will report the appropriate error.
-			renames[oldName] = oldName
-		}
+		renames[oldName] = newName
 	}
 	return renames, nil
 }
 
+// validateVersion is the version check of Java's validate (MetaDataEvolutionValidator
+// .java:154): an OLDER new version is refused whatever the options say, and an equal
+// one unless allowNoVersionChange. A store opened with metadata older than its header
+// fails with StaleMetaDataVersionError, so admitting a downgrade here would leave every
+// store of the evolved metadata unopenable.
 func (v *MetaDataEvolutionValidator) validateVersion(old, new *RecordMetaData) error {
-	if !v.allowNoVersionChange && new.Version() <= old.Version() {
+	if new.Version() < old.Version() || (!v.allowNoVersionChange && new.Version() == old.Version()) {
 		return &MetaDataEvolutionError{
 			Message: fmt.Sprintf("new meta-data does not have newer version than old meta-data (old=%d, new=%d)",
 				old.Version(), new.Version()),
@@ -254,91 +282,76 @@ func (v *MetaDataEvolutionValidator) validateSplitLongRecords(old, new *RecordMe
 // Ensures a one-to-one mapping between old and new record types in the union.
 // Matches Java's MetaDataEvolutionValidator.validateUnion().
 func (v *MetaDataEvolutionValidator) validateUnion(old, new *RecordMetaData) error {
-	oldUnion := getUnionDescriptor(old)
-	newUnion := getUnionDescriptor(new)
+	_, err := v.unionCorrespondence(old, new)
+	return err
+}
+
+func (v *MetaDataEvolutionValidator) unionCorrespondence(old, new *RecordMetaData) (map[protoreflect.MessageDescriptor]protoreflect.MessageDescriptor, error) {
+	oldUnion, newUnion := old.GetUnionDescriptor(), new.GetUnionDescriptor()
 	if oldUnion == nil || newUnion == nil {
-		return nil // No union descriptor — skip validation
+		// Every built RecordMetaData has a union (the builder refuses a records
+		// file without one, "Union descriptor is required"), as every Java one
+		// has; only a zero-value RecordMetaData, never built, lacks it.
+		return nil, &MetaDataEvolutionError{Message: "meta-data has no union descriptor (it was not built by RecordMetaDataBuilder)"}
 	}
-	if oldUnion.FullName() == newUnion.FullName() && oldUnion == newUnion {
-		return nil // Same descriptor — no changes
-	}
-
-	// Track bidirectional mapping: oldMsgFullName ↔ newMsgFullName
-	// Forward: old message → new message
-	// Reverse: new message → old message
-	oldToNew := make(map[protoreflect.FullName]protoreflect.FullName)
-	newToOld := make(map[protoreflect.FullName]protoreflect.FullName)
-
-	oldFields := oldUnion.Fields()
-	newFields := newUnion.Fields()
-
-	for i := 0; i < oldFields.Len(); i++ {
-		oldField := oldFields.Get(i)
+	oldToNew := make(map[protoreflect.MessageDescriptor]protoreflect.MessageDescriptor)
+	newToOld := make(map[protoreflect.MessageDescriptor]protoreflect.MessageDescriptor)
+	seen := make(map[descriptorPair]bool)
+	for i := 0; i < oldUnion.Fields().Len(); i++ {
+		oldField := oldUnion.Fields().Get(i)
 		if oldField.Kind() != protoreflect.MessageKind {
-			return &MetaDataEvolutionError{
-				Message: fmt.Sprintf("field in union is not a message type: %s", oldField.Name()),
-			}
+			return nil, &MetaDataEvolutionError{Message: "field in union is not a message type"}
 		}
-
-		// Find corresponding field in new union by field number
-		newField := newFields.ByNumber(oldField.Number())
+		newField := newUnion.Fields().ByNumber(oldField.Number())
 		if newField == nil {
-			return &MetaDataEvolutionError{
-				Message: fmt.Sprintf("record type removed from union: %s", oldField.Message().Name()),
-			}
+			return nil, &MetaDataEvolutionError{Message: "record type removed from union: " + string(oldField.Message().Name())}
 		}
 		if newField.Kind() != protoreflect.MessageKind {
-			return &MetaDataEvolutionError{
-				Message: fmt.Sprintf("field in new union is not a message type: %s", newField.Name()),
-			}
+			return nil, &MetaDataEvolutionError{Message: "field in new union is not a message type"}
 		}
-
-		oldMsgName := oldField.Message().FullName()
-		newMsgName := newField.Message().FullName()
-
-		// Check for split: old message already mapped to a different new message
-		if prev, ok := oldToNew[oldMsgName]; ok && prev != newMsgName {
-			return &MetaDataEvolutionError{
-				Message: fmt.Sprintf("record type corresponds to multiple types in new meta-data: %s",
-					oldField.Message().Name()),
-			}
+		oldDesc, newDesc := oldField.Message(), newField.Message()
+		if prior := oldToNew[oldDesc]; prior != nil && prior != newDesc {
+			return nil, &MetaDataEvolutionError{Message: "record type corresponds to multiple types in new meta-data"}
 		}
-
-		// Check for merge: new message already mapped from a different old message
-		if prev, ok := newToOld[newMsgName]; ok && prev != oldMsgName {
-			return &MetaDataEvolutionError{
-				Message: fmt.Sprintf("record type corresponds to multiple types in old meta-data: %s",
-					newField.Message().Name()),
-			}
+		if prior := newToOld[newDesc]; prior != nil && prior != oldDesc {
+			return nil, &MetaDataEvolutionError{Message: "record type corresponds to multiple types in old meta-data"}
 		}
-
-		oldToNew[oldMsgName] = newMsgName
-		newToOld[newMsgName] = oldMsgName
+		oldToNew[oldDesc], newToOld[newDesc] = newDesc, oldDesc
+		if err := v.validateMessageDescriptor(oldDesc, newDesc, seen); err != nil {
+			return nil, err
+		}
 	}
-
-	return nil
+	return oldToNew, nil
 }
 
-// getUnionDescriptor returns the UnionDescriptor message from the metadata's file descriptor.
-func getUnionDescriptor(m *RecordMetaData) protoreflect.MessageDescriptor {
-	if m.fileDescriptor == nil {
-		return nil
-	}
-	return m.fileDescriptor.Messages().ByName("UnionDescriptor")
-}
-
+// validateRecordTypes is Java's method of the same name
+// (MetaDataEvolutionValidator.java:376-438), in its order: a removed type, then
+// the since version, the primary key and the record type key of each old type,
+// then the since version of each new one. Java walks its HashMaps; Go walks the
+// names sorted, so which of several violations is named does not depend on map
+// order.
 func (v *MetaDataEvolutionValidator) validateRecordTypes(old, new *RecordMetaData, typeRenames map[string]string) error {
-	for name, oldRT := range old.RecordTypes() {
+	oldTypes := old.RecordTypes()
+	for _, name := range slices.Sorted(maps.Keys(oldTypes)) {
+		oldRT := oldTypes[name]
 		newName := typeRenames[name]
 		newRT := new.GetRecordType(newName)
 		if newRT == nil {
 			return &MetaDataEvolutionError{
-				Message: fmt.Sprintf("record type %q removed from meta-data", name),
+				Message: fmt.Sprintf("record type removed from meta-data (old=%q, new=%q)", name, newName),
+			}
+		}
+
+		// SinceVersion must not change on existing record types.
+		if oldRT.SinceVersion != newRT.SinceVersion {
+			return &MetaDataEvolutionError{
+				Message: fmt.Sprintf("record type since version changed (record type=%q, old=%d, new=%d)",
+					newName, oldRT.SinceVersion, newRT.SinceVersion),
 			}
 		}
 
 		// Primary key must not change
-		if err := v.comparePrimaryKeys(name, oldRT, newRT); err != nil {
+		if err := v.comparePrimaryKeys(newName, oldRT, newRT); err != nil {
 			return err
 		}
 
@@ -350,42 +363,34 @@ func (v *MetaDataEvolutionValidator) validateRecordTypes(old, new *RecordMetaDat
 		newKeyID, newKeyOK := recordTypeKeyIdentity(newRT.GetRecordTypeKey())
 		if !oldKeyOK || !newKeyOK || oldKeyID != newKeyID {
 			return &MetaDataEvolutionError{
-				Message: fmt.Sprintf("record type key changed for %q (old=%v, new=%v)",
-					name, oldRT.GetRecordTypeKey(), newRT.GetRecordTypeKey()),
-			}
-		}
-
-		// SinceVersion must not change on existing record types.
-		// Matches Java's MetaDataEvolutionValidator line 361.
-		if oldRT.SinceVersion != newRT.SinceVersion {
-			return &MetaDataEvolutionError{
-				Message: fmt.Sprintf("record type %q since version changed (old=%d, new=%d)",
-					name, oldRT.SinceVersion, newRT.SinceVersion),
+				Message: fmt.Sprintf("record type key changed (record type=%q, old=%v, new=%v)",
+					newName, oldRT.GetRecordTypeKey(), newRT.GetRecordTypeKey()),
 			}
 		}
 	}
 
 	// Build set of new names that correspond to old types (via rename map).
-	olderNames := make(map[string]bool, len(old.RecordTypes()))
+	olderNames := make(map[string]bool, len(oldTypes))
 	for _, newName := range typeRenames {
 		olderNames[newName] = true
 	}
 
 	// Validate new record types have SinceVersion set.
-	// Matches Java's MetaDataEvolutionValidator lines 365-380.
-	for name, newRT := range new.RecordTypes() {
+	newTypes := new.RecordTypes()
+	for _, name := range slices.Sorted(maps.Keys(newTypes)) {
+		newRT := newTypes[name]
 		if olderNames[name] {
 			continue // Existing type, already validated above
 		}
 		if newRT.SinceVersion == 0 {
 			if !v.allowNoSinceVersion {
 				return &MetaDataEvolutionError{
-					Message: fmt.Sprintf("new record type %q is missing since version", name),
+					Message: fmt.Sprintf("new record type is missing since version (record type=%q)", name),
 				}
 			}
 		} else if newRT.SinceVersion <= old.Version() {
 			return &MetaDataEvolutionError{
-				Message: fmt.Sprintf("new record type %q has since version older than old meta-data (since=%d, old=%d)",
+				Message: fmt.Sprintf("new record type has since version older than old meta-data (record type=%q, since=%d, old=%d)",
 					name, newRT.SinceVersion, old.Version()),
 			}
 		}
@@ -403,7 +408,7 @@ func (v *MetaDataEvolutionValidator) comparePrimaryKeys(name string, oldRT, newR
 	}
 	if oldPK == nil || newPK == nil {
 		return &MetaDataEvolutionError{
-			Message: fmt.Sprintf("record type %q primary key changed", name),
+			Message: fmt.Sprintf("record type primary key changed (record type=%q)", name),
 		}
 	}
 
@@ -419,17 +424,18 @@ func (v *MetaDataEvolutionValidator) comparePrimaryKeys(name string, oldRT, newR
 		expectedPK = renamed
 	}
 
-	expectedProto := expectedPK.ToKeyExpression()
-	if !proto.Equal(expectedProto, newPK.ToKeyExpression()) {
+	// Compared by keyExpressionEquals, Java's KeyExpression.equals, as the
+	// index roots are (validateIndex).
+	if !keyExpressionEquals(expectedPK, newPK) {
 		// Distinguish "the key genuinely changed" from "a rename was required but the new
 		// key doesn't match the rewritten one" — matching Java's two-message split.
-		if proto.Equal(expectedProto, oldPK.ToKeyExpression()) {
+		if keyExpressionEquals(expectedPK, oldPK) {
 			return &MetaDataEvolutionError{
-				Message: fmt.Sprintf("record type %q primary key changed", name),
+				Message: fmt.Sprintf("record type primary key changed (record type=%q)", name),
 			}
 		}
 		return &MetaDataEvolutionError{
-			Message: fmt.Sprintf("record type %q primary key does not match required (after field rename)", name),
+			Message: fmt.Sprintf("record type primary key does not match required (record type=%q, after field renames)", name),
 		}
 	}
 	return nil
@@ -458,153 +464,304 @@ func (v *MetaDataEvolutionValidator) expectedRenamedIndexExpression(old, new *Re
 		}
 		if expected == nil {
 			expected = renamed
-		} else if !proto.Equal(expected.ToKeyExpression(), renamed.ToKeyExpression()) {
+		} else if !keyExpressionEquals(renamed, expected) {
 			return nil, &MetaDataEvolutionError{
-				Message: fmt.Sprintf("index %q field renames result in inconsistent definition across record types", oldIdx.Name),
+				Message: fmt.Sprintf("field renames result in inconsistent index definition for multi-type index (index=%q)", oldIdx.Name),
 			}
 		}
 	}
 	return expected, nil
 }
 
-func (v *MetaDataEvolutionValidator) validateIndexes(old, new *RecordMetaData, typeRenames map[string]string) error {
-	newFormerIndexMap := buildFormerIndexMap(new.GetFormerIndexes())
+// validateCurrentAndFormerIndexes is Java's method of the same name
+// (MetaDataEvolutionValidator.java:479-555). Indexes and former indexes are
+// paired across the two meta-data by SUBSPACE KEY, never by name: the key is
+// where an index's entries live, so an index that keeps its name and changes
+// its key is a new index beside a missing one, and one that keeps its key and
+// changes its name is the same index renamed, which validateIndex refuses. The
+// four maps are keyed by subspaceKeyIdentity, the normalization and equality
+// Java's HashMaps get from TupleTypeUtil and Object.equals. Java walks its
+// HashMaps in hash order; Go walks indexes in name order and former indexes in
+// the order the meta-data lists them, so a meta-data pair with more than one
+// violation may be refused for a different one of them than Java names.
+func (v *MetaDataEvolutionValidator) validateCurrentAndFormerIndexes(old, new *RecordMetaData, typeRenames map[string]string) error {
+	oldFormerMap, oldFormers := formerIndexesBySubspaceKey(old)
+	oldIndexMap, oldIndexes := indexesBySubspaceKey(old)
+	newFormerMap, newFormers := formerIndexesBySubspaceKey(new)
+	newIndexMap, newIndexes := indexesBySubspaceKey(new)
 
-	for name, oldIdx := range old.GetAllIndexes() {
-		newIdx := new.GetIndex(name)
-		if newIdx == nil {
-			// Must have become a FormerIndex
-			subKey := subspaceKeyString(oldIdx.SubspaceTupleKey())
-			if _, ok := newFormerIndexMap[subKey]; !ok {
-				return &MetaDataEvolutionError{
-					Message: fmt.Sprintf("index %q missing in new meta-data (not replaced by former index)", name),
-				}
-			}
-			continue
-		}
-
-		// Validate unchanged properties
-		if oldIdx.Name != newIdx.Name {
+	// Every former index stays a former index.
+	for _, oldFormer := range oldFormers {
+		key := subspaceKeyIdentity(oldFormer.SubspaceKey)
+		if newIdx, ok := newIndexMap[key]; ok {
 			return &MetaDataEvolutionError{
-				Message: fmt.Sprintf("index name changed (old=%q, new=%q)", oldIdx.Name, newIdx.Name),
+				Message: fmt.Sprintf("former index key used for new index in meta-data (subspace key=%v, index=%q)",
+					oldFormer.SubspaceKey, newIdx.Name),
 			}
 		}
-		if oldIdx.AddedVersion != newIdx.AddedVersion {
+		if _, ok := newFormerMap[key]; !ok {
 			return &MetaDataEvolutionError{
-				Message: fmt.Sprintf("new index %q added version does not match old index added version (old=%d, new=%d)",
-					name, oldIdx.AddedVersion, newIdx.AddedVersion),
+				Message: fmt.Sprintf("former index removed from meta-data (subspace key=%v)", oldFormer.SubspaceKey),
 			}
 		}
-		if !v.allowIndexRebuilds && oldIdx.LastModifiedVersion != newIdx.LastModifiedVersion {
+	}
+	// Every old index is still an index, or is now a former index.
+	for _, oldIdx := range oldIndexes {
+		key := subspaceKeyIdentity(oldIdx.SubspaceTupleKey())
+		_, isIndex := newIndexMap[key]
+		_, isFormer := newFormerMap[key]
+		if !isIndex && !isFormer {
 			return &MetaDataEvolutionError{
-				Message: fmt.Sprintf("last modified version of index %q changed (old=%d, new=%d)",
-					name, oldIdx.LastModifiedVersion, newIdx.LastModifiedVersion),
+				Message: fmt.Sprintf("index missing in new meta-data (subspace key=%v, index=%q)",
+					oldIdx.SubspaceTupleKey(), oldIdx.Name),
 			}
 		}
-		if oldIdx.LastModifiedVersion > newIdx.LastModifiedVersion {
-			return &MetaDataEvolutionError{
-				Message: fmt.Sprintf("old index %q has last-modified version newer than new index (old=%d, new=%d)",
-					name, oldIdx.LastModifiedVersion, newIdx.LastModifiedVersion),
-			}
-		}
-
-		// When allowIndexRebuilds is true and lastModifiedVersion changed,
-		// skip type/expression checks — the index will be rebuilt.
-		// Matches Java's MetaDataEvolutionValidator.validateIndex() lines 606-610.
-		if v.allowIndexRebuilds && oldIdx.LastModifiedVersion < newIdx.LastModifiedVersion {
-			continue
-		}
-
-		if oldIdx.Type != newIdx.Type {
-			return &MetaDataEvolutionError{
-				Message: fmt.Sprintf("index %q type changed (old=%q, new=%q)", name, oldIdx.Type, newIdx.Type),
-			}
-		}
-
-		// Compare root expressions, modulo allowed field renames. When renames are
-		// allowed, rewrite the old expression onto each covered record type's new
-		// descriptor; all rewrites must agree. Matches Java's
-		// MetaDataEvolutionValidator.validateIndex lines 689-720.
-		expectedExpr := oldIdx.RootExpression
-		if v.allowsAnyFieldRenames() {
-			renamed, err := v.expectedRenamedIndexExpression(old, new, oldIdx, typeRenames)
-			if err != nil {
+	}
+	// A new former index either continues an old one unchanged, or replaces an
+	// old index (or one added and dropped since the old meta-data) with versions
+	// that make every store drop it on its next upgrade.
+	for _, newFormer := range newFormers {
+		key := subspaceKeyIdentity(newFormer.SubspaceKey)
+		if oldFormer, ok := oldFormerMap[key]; ok {
+			if err := v.validateFormerIndex(oldFormer, newFormer); err != nil {
 				return err
 			}
-			if renamed != nil {
-				expectedExpr = renamed
+			continue
+		}
+		if newFormer.RemovedVersion <= old.Version() {
+			return &MetaDataEvolutionError{
+				Message: fmt.Sprintf("new former index has removed version that is not newer than the old meta-data version (subspace key=%v, removed=%d, old=%d)",
+					newFormer.SubspaceKey, newFormer.RemovedVersion, old.Version()),
 			}
 		}
-		expectedProto := expectedExpr.ToKeyExpression()
-		if !proto.Equal(expectedProto, newIdx.RootExpression.ToKeyExpression()) {
-			if proto.Equal(expectedProto, oldIdx.RootExpression.ToKeyExpression()) {
+		oldIdx, ok := oldIndexMap[key]
+		if !ok {
+			if !v.allowOlderFormerIndexAddedVersion && newFormer.AddedVersion <= old.Version() {
 				return &MetaDataEvolutionError{
-					Message: fmt.Sprintf("index %q key expression changed", name),
+					Message: fmt.Sprintf("former index without existing index has added version prior to old meta-data version (subspace key=%v, added=%d, old=%d)",
+						newFormer.SubspaceKey, newFormer.AddedVersion, old.Version()),
 				}
 			}
-			return &MetaDataEvolutionError{
-				Message: fmt.Sprintf("index %q key expression does not match required (after field rename)", name),
-			}
+			continue
 		}
-
-		// Validate index record type scope.
-		// Old types (renamed) must still be covered; new types must have SinceVersion > old version.
-		// Matches Java's MetaDataEvolutionValidator lines 623-648.
-		if err := v.validateIndexRecordTypes(old, new, oldIdx, newIdx, typeRenames); err != nil {
-			return err
-		}
-
-		// primaryKeyComponentPositions must not change.
-		// Matches Java's MetaDataEvolutionValidator lines 649-667.
-		oldHasPositions := oldIdx.HasPrimaryKeyComponentPositions()
-		newHasPositions := newIdx.HasPrimaryKeyComponentPositions()
-		if oldHasPositions && !newHasPositions {
-			return &MetaDataEvolutionError{
-				Message: fmt.Sprintf("new index %q drops primary key component positions", name),
-			}
-		}
-		if !oldHasPositions && newHasPositions {
-			return &MetaDataEvolutionError{
-				Message: fmt.Sprintf("new index %q adds primary key component positions", name),
-			}
-		}
-		if oldHasPositions && newHasPositions {
-			oldPos := oldIdx.PrimaryKeyComponentPositions()
-			newPos := newIdx.PrimaryKeyComponentPositions()
-			if len(oldPos) != len(newPos) {
-				return &MetaDataEvolutionError{
-					Message: fmt.Sprintf("new index %q changes primary key component positions", name),
-				}
-			}
-			for i := range oldPos {
-				if oldPos[i] != newPos[i] {
-					return &MetaDataEvolutionError{
-						Message: fmt.Sprintf("new index %q changes primary key component positions", name),
-					}
-				}
-			}
-		}
-
-		// Validate index options changes.
-		// Dispatches to per-index-type validators matching Java's
-		// IndexValidatorRegistry.getIndexValidator(newIndex).validateChangedOptions(oldIndex).
-		if err := validateIndexOptions(oldIdx, newIdx); err != nil {
+		if err := v.validateFormerIndexFromIndex(oldIdx, newFormer); err != nil {
 			return err
 		}
 	}
-
-	// New indexes must have version > old metadata version
-	for name, newIdx := range new.GetAllIndexes() {
-		if old.GetIndex(name) == nil {
-			if newIdx.LastModifiedVersion <= old.Version() {
-				return &MetaDataEvolutionError{
-					Message: fmt.Sprintf("new index %q has version that is not newer than the old meta-data version (index=%d, old=%d)",
-						name, newIdx.LastModifiedVersion, old.Version()),
-				}
+	// A new index either continues an old one, or is new since the old
+	// meta-data's version.
+	for _, newIdx := range newIndexes {
+		if oldIdx, ok := oldIndexMap[subspaceKeyIdentity(newIdx.SubspaceTupleKey())]; ok {
+			if err := v.validateIndex(old, oldIdx, new, newIdx, typeRenames); err != nil {
+				return err
+			}
+			continue
+		}
+		if newIdx.LastModifiedVersion <= old.Version() {
+			return &MetaDataEvolutionError{
+				Message: fmt.Sprintf("new index has version that is not newer than the old meta-data version (index=%q, version=%d, old=%d)",
+					newIdx.Name, newIdx.LastModifiedVersion, old.Version()),
 			}
 		}
 	}
+	return nil
+}
 
+// indexesBySubspaceKey is Java's getIndexMap (MetaDataEvolutionValidator.java:
+// 463-476) with the indexes also returned in name order. As in Java's HashMap,
+// a later index with an equal key replaces an earlier one; a built meta-data
+// has none, since its validator refuses them.
+func indexesBySubspaceKey(md *RecordMetaData) (map[any]*Index, []*Index) {
+	all := md.GetAllIndexes()
+	byKey := make(map[any]*Index, len(all))
+	ordered := make([]*Index, 0, len(all))
+	for _, name := range slices.Sorted(maps.Keys(all)) {
+		idx := all[name]
+		byKey[subspaceKeyIdentity(idx.SubspaceTupleKey())] = idx
+		ordered = append(ordered, idx)
+	}
+	return byKey, ordered
+}
+
+// formerIndexesBySubspaceKey is Java's getFormerIndexMap
+// (MetaDataEvolutionValidator.java:449-461), with the former indexes also
+// returned in the meta-data's order.
+func formerIndexesBySubspaceKey(md *RecordMetaData) (map[any]*FormerIndex, []*FormerIndex) {
+	formers := md.GetFormerIndexes()
+	byKey := make(map[any]*FormerIndex, len(formers))
+	for _, fi := range formers {
+		byKey[subspaceKeyIdentity(fi.SubspaceKey)] = fi
+	}
+	return byKey, formers
+}
+
+// validateFormerIndex is Java's validateFormerIndex
+// (MetaDataEvolutionValidator.java:590-623): a former index kept from the old
+// meta-data must keep both versions and its name. The name check does not
+// depend on allowMissingFormerIndexNames, which governs only a former index
+// that replaces an index.
+func (v *MetaDataEvolutionValidator) validateFormerIndex(oldFormer, newFormer *FormerIndex) error {
+	if oldFormer.RemovedVersion != newFormer.RemovedVersion {
+		return &MetaDataEvolutionError{
+			Message: fmt.Sprintf("removed version of former index differs from prior version (subspace key=%v, old=%d, new=%d)",
+				newFormer.SubspaceKey, oldFormer.RemovedVersion, newFormer.RemovedVersion),
+		}
+	}
+	if oldFormer.AddedVersion != newFormer.AddedVersion {
+		return &MetaDataEvolutionError{
+			Message: fmt.Sprintf("added version of former index differs from prior version (subspace key=%v, old=%d, new=%d)",
+				newFormer.SubspaceKey, oldFormer.AddedVersion, newFormer.AddedVersion),
+		}
+	}
+	if oldFormer.FormerName != newFormer.FormerName {
+		return &MetaDataEvolutionError{
+			Message: fmt.Sprintf("name of former index differs from prior version (subspace key=%v, old=%q, new=%q)",
+				newFormer.SubspaceKey, oldFormer.FormerName, newFormer.FormerName),
+		}
+	}
+	return nil
+}
+
+// validateFormerIndexFromIndex is Java's validateFormerIndexFromIndex
+// (MetaDataEvolutionValidator.java:557-588). allowMissingFormerIndexNames
+// admits a former index with NO name; one that has a name must name the index
+// it replaces either way. Go spells Java's null name as "".
+func (v *MetaDataEvolutionValidator) validateFormerIndexFromIndex(oldIdx *Index, newFormer *FormerIndex) error {
+	if (!v.allowMissingFormerIndexNames || newFormer.FormerName != "") && newFormer.FormerName != oldIdx.Name {
+		return &MetaDataEvolutionError{
+			Message: fmt.Sprintf("former index has different name than old index (subspace key=%v, old=%q, new=%q)",
+				newFormer.SubspaceKey, oldIdx.Name, newFormer.FormerName),
+		}
+	}
+	if newFormer.AddedVersion > oldIdx.AddedVersion {
+		return &MetaDataEvolutionError{
+			Message: fmt.Sprintf("former index added after old index (subspace key=%v, index=%q, old=%d, new=%d)",
+				newFormer.SubspaceKey, oldIdx.Name, oldIdx.AddedVersion, newFormer.AddedVersion),
+		}
+	}
+	if !v.allowOlderFormerIndexAddedVersion && newFormer.AddedVersion != oldIdx.AddedVersion {
+		return &MetaDataEvolutionError{
+			Message: fmt.Sprintf("former index reports added version older than replacing index (subspace key=%v, index=%q, old=%d, new=%d)",
+				newFormer.SubspaceKey, oldIdx.Name, oldIdx.AddedVersion, newFormer.AddedVersion),
+		}
+	}
+	if newFormer.RemovedVersion <= oldIdx.LastModifiedVersion {
+		return &MetaDataEvolutionError{
+			Message: fmt.Sprintf("former index removed before old index's last modification (subspace key=%v, index=%q, old=%d, new=%d)",
+				newFormer.SubspaceKey, oldIdx.Name, oldIdx.LastModifiedVersion, newFormer.RemovedVersion),
+		}
+	}
+	return nil
+}
+
+// validateIndex is Java's validateIndex (MetaDataEvolutionValidator.java:
+// 625-737), over an old and a new index with the same subspace key.
+func (v *MetaDataEvolutionValidator) validateIndex(old *RecordMetaData, oldIdx *Index, new *RecordMetaData, newIdx *Index, typeRenames map[string]string) error {
+	name := newIdx.Name
+	if oldIdx.Name != newIdx.Name {
+		return &MetaDataEvolutionError{
+			Message: fmt.Sprintf("index name changed (old=%q, new=%q)", oldIdx.Name, newIdx.Name),
+		}
+	}
+	if oldIdx.AddedVersion != newIdx.AddedVersion {
+		return &MetaDataEvolutionError{
+			Message: fmt.Sprintf("new index added version does not match old index added version (index=%q, old=%d, new=%d)",
+				name, oldIdx.AddedVersion, newIdx.AddedVersion),
+		}
+	}
+	if oldIdx.LastModifiedVersion > newIdx.LastModifiedVersion {
+		return &MetaDataEvolutionError{
+			Message: fmt.Sprintf("old index has last-modified version newer than new index (index=%q, old=%d, new=%d)",
+				name, oldIdx.LastModifiedVersion, newIdx.LastModifiedVersion),
+		}
+	}
+	if !v.allowIndexRebuilds && oldIdx.LastModifiedVersion != newIdx.LastModifiedVersion {
+		return &MetaDataEvolutionError{
+			Message: fmt.Sprintf("last modified version of index changed (index=%q, old=%d, new=%d)",
+				name, oldIdx.LastModifiedVersion, newIdx.LastModifiedVersion),
+		}
+	}
+
+	// When allowIndexRebuilds is true and lastModifiedVersion changed,
+	// skip type/expression checks — the index will be rebuilt.
+	// Matches Java's MetaDataEvolutionValidator.validateIndex() lines 606-610.
+	if v.allowIndexRebuilds && oldIdx.LastModifiedVersion < newIdx.LastModifiedVersion {
+		return nil
+	}
+
+	if oldIdx.Type != newIdx.Type {
+		return &MetaDataEvolutionError{
+			Message: fmt.Sprintf("index type changed (index=%q, old=%q, new=%q)", name, oldIdx.Type, newIdx.Type),
+		}
+	}
+
+	// Validate index record type scope.
+	// Old types (renamed) must still be covered; new types must have SinceVersion > old version.
+	// Matches Java's MetaDataEvolutionValidator lines 623-648.
+	if err := v.validateIndexRecordTypes(old, new, oldIdx, newIdx, typeRenames); err != nil {
+		return err
+	}
+
+	// Compare root expressions, modulo allowed field renames. When renames are
+	// allowed, rewrite the old expression onto each covered record type's new
+	// descriptor; all rewrites must agree. Matches Java's
+	// MetaDataEvolutionValidator.validateIndex lines 689-720. The roots are
+	// compared by keyExpressionEquals, Java's KeyExpression.equals, not by
+	// proto: a field's null interpretation is in its proto and not in
+	// FieldKeyExpression.equals, so a root that changes only that is the same
+	// root to Java and must be to Go. The literal-carrier arm is the Go
+	// extension the rebind option enables (section 3.2 of the WS-J design).
+	expectedExpr := oldIdx.RootExpression
+	if v.allowsAnyFieldRenames() {
+		renamed, err := v.expectedRenamedIndexExpression(old, new, oldIdx, typeRenames)
+		if err != nil {
+			return err
+		}
+		if renamed != nil {
+			expectedExpr = renamed
+		}
+	}
+	if !keyExpressionEquals(newIdx.RootExpression, expectedExpr) &&
+		!(v.allowLiteralCarrierWidening && literalCarriersEquivalent(expectedExpr.ToKeyExpression().ProtoReflect(), newIdx.RootExpression.ToKeyExpression().ProtoReflect(), false)) {
+		if keyExpressionEquals(oldIdx.RootExpression, expectedExpr) {
+			return &MetaDataEvolutionError{
+				Message: fmt.Sprintf("index key expression changed (index=%q)", name),
+			}
+		}
+		return &MetaDataEvolutionError{
+			Message: fmt.Sprintf("index key expression does not match required (index=%q, after field renames)", name),
+		}
+	}
+
+	// primaryKeyComponentPositions must not change.
+	// Matches Java's MetaDataEvolutionValidator lines 717-737.
+	oldHasPositions := oldIdx.HasPrimaryKeyComponentPositions()
+	newHasPositions := newIdx.HasPrimaryKeyComponentPositions()
+	if oldHasPositions && newHasPositions {
+		if !slices.Equal(oldIdx.PrimaryKeyComponentPositions(), newIdx.PrimaryKeyComponentPositions()) {
+			return &MetaDataEvolutionError{
+				Message: fmt.Sprintf("new index changes primary key component positions (index=%q)", name),
+			}
+		}
+	} else if oldHasPositions {
+		return &MetaDataEvolutionError{
+			Message: fmt.Sprintf("new index drops primary key component positions (index=%q)", name),
+		}
+	} else if newHasPositions {
+		return &MetaDataEvolutionError{
+			Message: fmt.Sprintf("new index adds primary key component positions (index=%q)", name),
+		}
+	}
+
+	// Compute the mutable remainder once; type-specific validators must not
+	// reintroduce options explicitly excluded by the evolution policy.
+	changed := computeChangedOptions(oldIdx.Options, newIdx.Options)
+	for option := range v.ignoredIndexOptions {
+		delete(changed, option)
+	}
+	if err := ValidateChangedIndexOptions(oldIdx, newIdx, changed); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -631,27 +788,27 @@ func (v *MetaDataEvolutionValidator) validateIndexRecordTypes(
 		newTypeNames[rt.Name] = true
 	}
 
-	// Every old type (renamed) must still be present in new index.
-	for renamedName := range oldRenamedNames {
+	// Every old type (renamed) must still be present in new index. Java walks
+	// a HashSet; Go walks the names sorted, so which of several removed types
+	// the message names does not depend on map order.
+	for _, renamedName := range slices.Sorted(maps.Keys(oldRenamedNames)) {
 		if !newTypeNames[renamedName] {
 			return &MetaDataEvolutionError{
-				Message: fmt.Sprintf("index %q no longer covers record type %q", newIdx.Name, renamedName),
+				Message: fmt.Sprintf("new index removes record type (index=%q, record type=%q)", newIdx.Name, renamedName),
 			}
 		}
 	}
 
 	// New types not in old must have SinceVersion > old metadata version.
-	// Matches allowNoSinceVersion check in validateRecordTypes.
+	// Unlike new-type admission, expanding an existing index always requires
+	// a newer since-version: older records are absent from its persisted entries.
 	for _, rt := range newTypes {
 		if oldRenamedNames[rt.Name] {
 			continue
 		}
-		if rt.SinceVersion == 0 && v.allowNoSinceVersion {
-			continue // allowNoSinceVersion permits types without version tracking
-		}
 		if rt.SinceVersion <= old.Version() {
 			return &MetaDataEvolutionError{
-				Message: fmt.Sprintf("index %q covers new record type %q without newer since version (since=%d, old=%d)",
+				Message: fmt.Sprintf("new index adds record type that is not newer than old meta-data (index=%q, record type=%q, since=%d, old=%d)",
 					newIdx.Name, rt.Name, rt.SinceVersion, old.Version()),
 			}
 		}
@@ -685,11 +842,11 @@ func optionValueOrDefault(opts map[string]string, key, defaultValue string) stri
 	return defaultValue
 }
 
-// validateIndexOptions validates that index option changes are allowed for the
-// given index type. Dispatches to per-type validators matching Java's
-// IndexValidatorRegistry pattern, then runs the base validator on remaining options.
-func validateIndexOptions(oldIdx, newIdx *Index) error {
-	changed := computeChangedOptions(oldIdx.Options, newIdx.Options)
+// ValidateChangedIndexOptions validates only the supplied option names, without
+// recomputing differences. Type-specific validators may remove handled names from
+// the caller's mutable set before base validation. A nil or empty set is valid.
+// Matches Java's IndexValidator.validateChangedOptions(Index, Set).
+func ValidateChangedIndexOptions(oldIdx, newIdx *Index, changed map[string]bool) error {
 	if len(changed) == 0 {
 		return nil
 	}
@@ -720,23 +877,43 @@ func validateIndexOptions(oldIdx, newIdx *Index) error {
 
 // validateTextIndexOptions validates TEXT index option changes.
 // Matches Java's TextIndexValidator.validateChangedOptions().
+//
+// Java walks a HashSet; Go walks the names sorted, so which of a changed
+// tokenizer name and version is reported does not depend on map order.
 func validateTextIndexOptions(oldIdx, newIdx *Index, changed map[string]bool) error {
-	for opt := range changed {
+	for _, opt := range slices.Sorted(maps.Keys(changed)) {
 		switch opt {
 		case IndexOptionTextAddAggressiveConflictRanges, IndexOptionTextOmitPositions:
 			// Always safe to change.
 		case IndexOptionTextTokenizerName:
-			// computeChangedOptions guarantees the raw values differ when the key
-			// is in `changed`, and textTokenizerName has no non-empty default.
-			return &MetaDataEvolutionError{
-				Message: fmt.Sprintf("text tokenizer changed for index %q", newIdx.Name),
+			// Compare resolved names: an explicit default and an omitted option
+			// select the same tokenizer, and supplied sets may include unchanged names.
+			oldTokenizer, err := getTextTokenizer(oldIdx)
+			if err != nil {
+				return err
+			}
+			newTokenizer, err := getTextTokenizer(newIdx)
+			if err != nil {
+				return err
+			}
+			if oldTokenizer.Name() != newTokenizer.Name() {
+				return &MetaDataEvolutionError{
+					Message: fmt.Sprintf("text tokenizer changed (index=%q)", newIdx.Name),
+				}
 			}
 		case IndexOptionTextTokenizerVersion:
-			oldVer, _ := strconv.Atoi(optionValueOrDefault(oldIdx.Options, opt, "0"))
-			newVer, _ := strconv.Atoi(optionValueOrDefault(newIdx.Options, opt, "0"))
+			// The tokenizer version should always go up.
+			oldVer, err := getTextTokenizerVersion(oldIdx)
+			if err != nil {
+				return err
+			}
+			newVer, err := getTextTokenizerVersion(newIdx)
+			if err != nil {
+				return err
+			}
 			if oldVer > newVer {
 				return &MetaDataEvolutionError{
-					Message: fmt.Sprintf("text tokenizer version downgraded for index %q (old=%d, new=%d)",
+					Message: fmt.Sprintf("text tokenizer version downgraded (index=%q, old=%d, new=%d)",
 						newIdx.Name, oldVer, newVer),
 				}
 			}
@@ -752,29 +929,38 @@ func validateTextIndexOptions(oldIdx, newIdx *Index, changed map[string]bool) er
 
 // validateRankIndexOptions validates RANK index option changes.
 // Structural options (nLevels, hashFunction, countDuplicates) cannot change
-// effective value without a rebuild.
-// Matches Java's RankIndexValidator.validateChangedOptions().
+// effective value without a rebuild. Matches Java's
+// RankIndexValidator.validateChangedOptions (RankIndexMaintainerFactory.java:
+// 75-100): it compares the EFFECTIVE configuration, so a change from an
+// unspecified option to its default (or back) is admitted, and its messages
+// are Java's ("rank count duplicate changed" is Java's spelling).
+//
+// Both configurations are read first, the old one first, as Java's are, so an
+// option neither parser accepts (an unknown hash function name, a level count
+// that is not an int or out of range) refuses the change with the parser's
+// error whichever option changed.
 func validateRankIndexOptions(oldIdx, newIdx *Index, changed map[string]bool) error {
-	type rankOpt struct {
-		key        string
-		defaultVal string
-		label      string
+	oldConfig, err := parseRankedSetConfig(oldIdx)
+	if err != nil {
+		return err
 	}
-	opts := []rankOpt{
-		{IndexOptionRankNLevels, "6", "rank levels"},
-		{IndexOptionRankHashFunction, "", "rank hash function"},
-		{IndexOptionRankCountDuplicates, "", "rank count duplicates"},
+	newConfig, err := parseRankedSetConfig(newIdx)
+	if err != nil {
+		return err
 	}
-	for _, o := range opts {
+	for _, o := range []struct {
+		key, message string
+		same         bool
+	}{
+		{IndexOptionRankNLevels, "rank levels changed", oldConfig.NLevels == newConfig.NLevels},
+		{IndexOptionRankHashFunction, "rank hash function changed", oldConfig.HashFunctionName == newConfig.HashFunctionName},
+		{IndexOptionRankCountDuplicates, "rank count duplicate changed", oldConfig.CountDuplicates == newConfig.CountDuplicates},
+	} {
 		if !changed[o.key] {
 			continue
 		}
-		oldVal := optionValueOrDefault(oldIdx.Options, o.key, o.defaultVal)
-		newVal := optionValueOrDefault(newIdx.Options, o.key, o.defaultVal)
-		if oldVal != newVal {
-			return &MetaDataEvolutionError{
-				Message: fmt.Sprintf("%s changed for index %q", o.label, newIdx.Name),
-			}
+		if !o.same {
+			return &MetaDataEvolutionError{Message: fmt.Sprintf("%s (index=%q)", o.message, newIdx.Name)}
 		}
 		delete(changed, o.key)
 	}
@@ -787,16 +973,12 @@ func validateRankIndexOptions(oldIdx, newIdx *Index, changed map[string]bool) er
 func validatePermutedIndexOptions(oldIdx, newIdx *Index, changed map[string]bool) error {
 	if changed[IndexOptionPermutedSize] {
 		return &MetaDataEvolutionError{
-			Message: fmt.Sprintf("permuted size changed for index %q", newIdx.Name),
+			Message: fmt.Sprintf("permuted size changed (index=%q)", newIdx.Name),
 		}
 	}
 	return nil
 }
 
-// validateVectorIndexOptions validates VECTOR (HNSW) index option changes.
-// Structural options (metric, dimensions, graph parameters) cannot change.
-// Runtime-only options (concurrency limits, stats) are safe to change.
-// Matches Java's VectorIndexValidator.validateChangedOptions().
 // validateSPFreshIndexOptions enforces RFC-094 §10: every structural SPFresh
 // option is immutable for an existing index — the lifecycle invariants
 // (topology, posting sizes, closure replication, single-tx split budget) are
@@ -835,34 +1017,42 @@ func validateSPFreshIndexOptions(oldIdx, newIdx *Index, changed map[string]bool)
 	return nil
 }
 
+// validateVectorIndexOptions validates VECTOR (HNSW) index option changes.
+// Structural options (metric, dimensions, graph parameters) cannot change.
+// Runtime-only options (concurrency limits, stats) are safe to change.
+// Matches Java's VectorIndexValidator.validateChangedOptions().
 func validateVectorIndexOptions(oldIdx, newIdx *Index, changed map[string]bool) error {
-	// Structural options: disallow effective value changes.
-	structural := []string{
-		IndexOptionVectorMetric,
-		IndexOptionVectorNumDimensions,
-		IndexOptionHNSWUseInlining,
-		IndexOptionHNSWM,
-		IndexOptionHNSWMMax,
-		IndexOptionHNSWMMax0,
-		IndexOptionHNSWEfConstruction,
-		IndexOptionHNSWEfRepair,
-		IndexOptionVectorExtendCandidates,
-		IndexOptionVectorKeepPrunedConnections,
-		IndexOptionHNSWUseRaBitQ,
-		IndexOptionHNSWRaBitQNumExBits,
-	}
-	for _, key := range structural {
-		if !changed[key] {
+	// Structural options: disallow EFFECTIVE value changes, as Java's
+	// VectorIndexOptionsHelper.disallowChange compares the parsed and defaulted
+	// values (VectorIndexOptionsHelper.java:120-147), so an option set to its
+	// default beside one left unset is no change; with Java's message.
+	oldConfig, newConfig := parseHNSWConfig(oldIdx), parseHNSWConfig(newIdx)
+	for _, o := range []struct {
+		key  string
+		same bool
+	}{
+		{IndexOptionVectorMetric, hnswMetricName(oldIdx) == hnswMetricName(newIdx)},
+		{IndexOptionVectorNumDimensions, oldConfig.NumDimensions == newConfig.NumDimensions},
+		{IndexOptionHNSWUseInlining, oldConfig.UseInlining == newConfig.UseInlining},
+		{IndexOptionHNSWM, oldConfig.M == newConfig.M},
+		{IndexOptionHNSWMMax, oldConfig.MMax == newConfig.MMax},
+		{IndexOptionHNSWMMax0, oldConfig.MMax0 == newConfig.MMax0},
+		{IndexOptionHNSWEfConstruction, oldConfig.EfConstruction == newConfig.EfConstruction},
+		{IndexOptionHNSWEfRepair, oldConfig.EfRepair == newConfig.EfRepair},
+		{IndexOptionVectorExtendCandidates, oldConfig.ExtendCandidates == newConfig.ExtendCandidates},
+		{IndexOptionVectorKeepPrunedConnections, oldConfig.KeepPrunedConnections == newConfig.KeepPrunedConnections},
+		{IndexOptionHNSWUseRaBitQ, (oldConfig.Quantizer != nil) == (newConfig.Quantizer != nil)},
+		{IndexOptionHNSWRaBitQNumExBits, hnswRaBitQNumExBits(oldIdx) == hnswRaBitQNumExBits(newIdx)},
+	} {
+		if !changed[o.key] {
 			continue
 		}
-		oldVal := optionValueOrDefault(oldIdx.Options, key, "")
-		newVal := optionValueOrDefault(newIdx.Options, key, "")
-		if oldVal != newVal {
+		if !o.same {
 			return &MetaDataEvolutionError{
-				Message: fmt.Sprintf("HNSW option %q changed for index %q", key, newIdx.Name),
+				Message: fmt.Sprintf("attempted to change immutable vector index option (index=%q, option=%q)", newIdx.Name, o.key),
 			}
 		}
-		delete(changed, key)
+		delete(changed, o.key)
 	}
 
 	// Runtime-only options: always safe to change, just remove from changed.
@@ -881,30 +1071,75 @@ func validateVectorIndexOptions(oldIdx, newIdx *Index, changed map[string]bool) 
 	return nil
 }
 
+// hnswMetricName is the metric parseHNSWConfig selects, by name, for a metric
+// option it recognizes, and the option's own text for one it does not: the
+// parser reads an unrecognized name as Euclidean, which is not a statement that
+// the two names are the same metric, so two unrecognized or differing names stay
+// different.
+func hnswMetricName(idx *Index) string {
+	v, ok := idx.Options[IndexOptionVectorMetric]
+	if !ok {
+		return "EUCLIDEAN_METRIC"
+	}
+	switch v {
+	case "COSINE_METRIC", "cosine":
+		return "COSINE_METRIC"
+	case "DOT_PRODUCT_METRIC", "inner_product":
+		return "DOT_PRODUCT_METRIC"
+	case "EUCLIDEAN_SQUARE_METRIC":
+		return "EUCLIDEAN_SQUARE_METRIC"
+	case "EUCLIDEAN_METRIC":
+		return "EUCLIDEAN_METRIC"
+	}
+	return "unrecognized:" + v
+}
+
+// hnswRaBitQNumExBits is the RaBitQ extra-bit count parseHNSWConfig gives the
+// quantizer: the option when it reads as 1 to 8, else 4.
+func hnswRaBitQNumExBits(idx *Index) int {
+	if v, ok := idx.Options[IndexOptionHNSWRaBitQNumExBits]; ok {
+		var n int
+		if cnt, _ := fmt.Sscanf(v, "%d", &n); cnt == 1 && n >= 1 && n <= 8 {
+			return n
+		}
+	}
+	return 4
+}
+
 // validateMultidimensionalIndexOptions validates MULTIDIMENSIONAL (R-tree) option changes.
 // Structural options cannot change effective value without a rebuild.
 // Matches Java's MultidimensionalIndexValidator.validateChangedOptions().
 func validateMultidimensionalIndexOptions(oldIdx, newIdx *Index, changed map[string]bool) error {
-	structural := []string{
-		IndexOptionRTreeMinM,
-		IndexOptionRTreeMaxM,
-		IndexOptionRTreeSplitS,
-		IndexOptionRTreeStorage,
-		IndexOptionRTreeStoreHilbertValues,
-		IndexOptionRTreeUseNodeSlotIndex,
+	// The EFFECTIVE configuration, as Java compares it
+	// (MultidimensionalIndexMaintainerFactory.java:143-193), so an unspecified
+	// option and its default are the same; with Java's messages, including its
+	// "rtree minM changed" for a changed maxM.
+	oldConfig, err := parseRTreeConfig(oldIdx, 0)
+	if err != nil {
+		return err
 	}
-	for _, key := range structural {
-		if !changed[key] {
+	newConfig, err := parseRTreeConfig(newIdx, 0)
+	if err != nil {
+		return err
+	}
+	for _, o := range []struct {
+		key, message string
+		same         bool
+	}{
+		{IndexOptionRTreeMinM, "rtree minM changed", oldConfig.MinM == newConfig.MinM},
+		{IndexOptionRTreeMaxM, "rtree minM changed", oldConfig.MaxM == newConfig.MaxM},
+		{IndexOptionRTreeSplitS, "rtree splitS changed", oldConfig.SplitS == newConfig.SplitS},
+		{IndexOptionRTreeStorage, "rtree storage changed", oldConfig.Storage == newConfig.Storage},
+		{IndexOptionRTreeStoreHilbertValues, "rtree store Hilbert values changed", oldConfig.StoreHilbertValues == newConfig.StoreHilbertValues},
+		{IndexOptionRTreeUseNodeSlotIndex, "rtree use node slot index changed", oldConfig.UseNodeSlotIndex == newConfig.UseNodeSlotIndex},
+	} {
+		if !changed[o.key] {
 			continue
 		}
-		oldVal := optionValueOrDefault(oldIdx.Options, key, "")
-		newVal := optionValueOrDefault(newIdx.Options, key, "")
-		if oldVal != newVal {
-			return &MetaDataEvolutionError{
-				Message: fmt.Sprintf("R-tree option %q changed for index %q", key, newIdx.Name),
-			}
+		if !o.same {
+			return &MetaDataEvolutionError{Message: fmt.Sprintf("%s (index=%q)", o.message, newIdx.Name)}
 		}
-		delete(changed, key)
+		delete(changed, o.key)
 	}
 	return nil
 }
@@ -913,7 +1148,9 @@ func validateMultidimensionalIndexOptions(oldIdx, newIdx *Index, changed map[str
 // validation. Handles options common to all index types.
 // Matches Java's IndexValidator.validateChangedOptions().
 func validateBaseIndexOptions(oldIdx, newIdx *Index, changed map[string]bool) error {
-	for opt := range changed {
+	// Java walks a HashSet; Go walks the names sorted, so which of several
+	// changed options is named does not depend on map order.
+	for _, opt := range slices.Sorted(maps.Keys(changed)) {
 		// "replacedBy*" options are always safe to change.
 		if strings.HasPrefix(opt, IndexOptionReplacedByPrefix) {
 			continue
@@ -924,11 +1161,10 @@ func validateBaseIndexOptions(oldIdx, newIdx *Index, changed map[string]bool) er
 		}
 		// "unique": dropping uniqueness is allowed, adding is not.
 		if opt == IndexOptionUnique {
-			oldUnique := oldIdx.Options[opt] == "true"
-			newUnique := newIdx.Options[opt] == "true"
+			oldUnique, newUnique := oldIdx.IsUnique(), newIdx.IsUnique()
 			if !oldUnique && newUnique {
 				return &MetaDataEvolutionError{
-					Message: fmt.Sprintf("index %q made unique", newIdx.Name),
+					Message: fmt.Sprintf("index adds uniqueness constraint (index=%q)", newIdx.Name),
 				}
 			}
 			// Dropping unique (was true, now false or absent) is allowed.
@@ -936,132 +1172,31 @@ func validateBaseIndexOptions(oldIdx, newIdx *Index, changed map[string]bool) er
 		}
 		// Any other option: reject.
 		return &MetaDataEvolutionError{
-			Message: fmt.Sprintf("index %q option %q changed", newIdx.Name, opt),
+			Message: fmt.Sprintf("index option changed (index=%q, option=%q, old=%q, new=%q)", newIdx.Name, opt, oldIdx.Options[opt], newIdx.Options[opt]),
 		}
 	}
 	return nil
 }
 
-func (v *MetaDataEvolutionValidator) validateFormerIndexes(old, new *RecordMetaData) error {
-	oldFormerMap := buildFormerIndexMap(old.GetFormerIndexes())
-
-	// Old FormerIndexes must remain
-	for key, oldFormer := range oldFormerMap {
-		newFormerMap := buildFormerIndexMap(new.GetFormerIndexes())
-		newFormer, ok := newFormerMap[key]
-		if !ok {
-			return &MetaDataEvolutionError{
-				Message: fmt.Sprintf("former index (subspace key=%s) removed from meta-data", key),
-			}
-		}
-
-		// Versions must not change
-		if oldFormer.RemovedVersion != newFormer.RemovedVersion {
-			return &MetaDataEvolutionError{
-				Message: fmt.Sprintf("removed version of former index (subspace key=%s) differs from prior version (old=%d, new=%d)",
-					key, oldFormer.RemovedVersion, newFormer.RemovedVersion),
-			}
-		}
-		if oldFormer.AddedVersion != newFormer.AddedVersion {
-			return &MetaDataEvolutionError{
-				Message: fmt.Sprintf("added version of former index (subspace key=%s) differs from prior version (old=%d, new=%d)",
-					key, oldFormer.AddedVersion, newFormer.AddedVersion),
-			}
-		}
-		if !v.allowMissingFormerIndexNames && oldFormer.FormerName != newFormer.FormerName {
-			return &MetaDataEvolutionError{
-				Message: fmt.Sprintf("name of former index (subspace key=%s) differs from prior version (old=%q, new=%q)",
-					key, oldFormer.FormerName, newFormer.FormerName),
-			}
-		}
-	}
-
-	// New FormerIndexes created from dropped indexes
-	newFormerMap := buildFormerIndexMap(new.GetFormerIndexes())
-	for key, newFormer := range newFormerMap {
-		if _, ok := oldFormerMap[key]; ok {
-			continue // Already validated above
-		}
-
-		// Check that the removed version is > old metadata version
-		if newFormer.RemovedVersion <= old.Version() {
-			return &MetaDataEvolutionError{
-				Message: fmt.Sprintf("new former index (subspace key=%s) has removed version that is not newer than the old meta-data version (removed=%d, old=%d)",
-					key, newFormer.RemovedVersion, old.Version()),
-			}
-		}
-
-		// Check against the old index if it existed
-		oldIdx := old.GetIndex(newFormer.FormerName)
-		if oldIdx == nil {
-			// No corresponding old index — the index was added and dropped
-			// between metadata versions. Validate addedVersion is reasonable.
-			// Matches Java line 480.
-			if !v.allowOlderFormerIndexAddedVersion && newFormer.AddedVersion <= old.Version() {
-				return &MetaDataEvolutionError{
-					Message: fmt.Sprintf("former index (subspace key=%s) without existing index has added version prior to old meta-data version (added=%d, old=%d)",
-						key, newFormer.AddedVersion, old.Version()),
-				}
-			}
-		} else {
-			if !v.allowMissingFormerIndexNames && newFormer.FormerName != oldIdx.Name {
-				return &MetaDataEvolutionError{
-					Message: fmt.Sprintf("former index has different name than old index (former=%q, old=%q)",
-						newFormer.FormerName, oldIdx.Name),
-				}
-			}
-			// Unconditional check: former's addedVersion must NOT be > old index's addedVersion.
-			// Matches Java line 522: unconditional check before the conditional one.
-			if newFormer.AddedVersion > oldIdx.AddedVersion {
-				return &MetaDataEvolutionError{
-					Message: fmt.Sprintf("former index reports added version newer than old index (former=%d, old=%d)",
-						newFormer.AddedVersion, oldIdx.AddedVersion),
-				}
-			}
-			// Conditional check: when !allowOlder, former's addedVersion must equal old index's.
-			// Matches Java line 528: if (!allowOlder && newFormer.addedVersion != oldIndex.addedVersion)
-			if !v.allowOlderFormerIndexAddedVersion && newFormer.AddedVersion != oldIdx.AddedVersion {
-				return &MetaDataEvolutionError{
-					Message: fmt.Sprintf("former index reports added version different from old index (former=%d, old=%d)",
-						newFormer.AddedVersion, oldIdx.AddedVersion),
-				}
-			}
-			if newFormer.RemovedVersion <= oldIdx.LastModifiedVersion {
-				return &MetaDataEvolutionError{
-					Message: fmt.Sprintf("former index removed before old index's last modification (removed=%d, lastModified=%d)",
-						newFormer.RemovedVersion, oldIdx.LastModifiedVersion),
-				}
-			}
-		}
-	}
-
-	return nil
-}
-
-func (v *MetaDataEvolutionValidator) validateMessages(old, new *RecordMetaData) error {
-	seen := make(map[string]bool)
-	for name, oldRT := range old.RecordTypes() {
-		newRT := new.GetRecordType(name)
-		if newRT == nil {
-			// Already validated in validateRecordTypes
-			continue
-		}
-		if err := v.validateMessageDescriptor(oldRT.Descriptor, newRT.Descriptor, seen); err != nil {
-			return err
-		}
-	}
-	return nil
+type descriptorPair struct {
+	old, new protoreflect.MessageDescriptor
 }
 
 func (v *MetaDataEvolutionValidator) validateMessageDescriptor(
 	oldDesc, newDesc protoreflect.MessageDescriptor,
-	seen map[string]bool,
+	seen map[descriptorPair]bool,
 ) error {
-	fullName := string(oldDesc.FullName())
-	if seen[fullName] {
-		return nil // Break cycles
+	if oldDesc == newDesc {
+		return nil
 	}
-	seen[fullName] = true
+	if oldDesc == nil || newDesc == nil {
+		return &MetaDataEvolutionError{Message: "message descriptor presence changed"}
+	}
+	pair := descriptorPair{old: oldDesc, new: newDesc}
+	if seen[pair] {
+		return nil
+	}
+	seen[pair] = true
 
 	// Check proto syntax/edition hasn't changed.
 	// Matches Java's MetaDataEvolutionValidator.validateProtoSyntax() (lines 255-260).
@@ -1077,7 +1212,7 @@ func (v *MetaDataEvolutionValidator) validateMessageDescriptor(
 		newField := newFields.ByNumber(oldField.Number())
 		if newField == nil {
 			return &MetaDataEvolutionError{
-				Message: fmt.Sprintf("field %q (number %d) removed from message %q",
+				Message: fmt.Sprintf("field removed from message descriptor (field=%q, number=%d, message=%q)",
 					oldField.Name(), oldField.Number(), oldDesc.FullName()),
 			}
 		}
@@ -1095,7 +1230,7 @@ func (v *MetaDataEvolutionValidator) validateMessageDescriptor(
 		}
 		if newField.Cardinality() == protoreflect.Required {
 			return &MetaDataEvolutionError{
-				Message: fmt.Sprintf("required field %q added to message %q",
+				Message: fmt.Sprintf("required field added to record type (field=%q, message=%q)",
 					newField.Name(), newDesc.FullName()),
 			}
 		}
@@ -1107,7 +1242,7 @@ func (v *MetaDataEvolutionValidator) validateMessageDescriptor(
 func (v *MetaDataEvolutionValidator) validateField(
 	oldField, newField protoreflect.FieldDescriptor,
 	msgName protoreflect.FullName,
-	seen map[string]bool,
+	seen map[descriptorPair]bool,
 ) error {
 	oldDeprecated := fieldDeprecated(oldField)
 	newDeprecated := fieldDeprecated(newField)
@@ -1119,7 +1254,7 @@ func (v *MetaDataEvolutionValidator) validateField(
 	if string(oldField.Name()) != string(newField.Name()) {
 		if !(v.allowFieldRenames || (v.allowDeprecatedFieldRenames && (oldDeprecated || newDeprecated))) {
 			return &MetaDataEvolutionError{
-				Message: fmt.Sprintf("field %q renamed to %q in message %q",
+				Message: fmt.Sprintf("field renamed (old=%q, new=%q, message=%q)",
 					oldField.Name(), newField.Name(), msgName),
 			}
 		}
@@ -1129,47 +1264,52 @@ func (v *MetaDataEvolutionValidator) validateField(
 	// Matches Java's MetaDataEvolutionValidator.validateField line 296.
 	if !v.allowUndeprecatingFields && oldDeprecated && !newDeprecated {
 		return &MetaDataEvolutionError{
-			Message: fmt.Sprintf("field %q is no longer deprecated in message %q", oldField.Name(), msgName),
+			Message: fmt.Sprintf("field is no longer deprecated (field=%q, message=%q)", oldField.Name(), msgName),
 		}
 	}
 
-	// Label/cardinality check
-	if oldField.Cardinality() != newField.Cardinality() {
-		oldLabel := cardinalityString(oldField.Cardinality())
-		newLabel := cardinalityString(newField.Cardinality())
+	// Then Java's order (MetaDataEvolutionValidator.java:300-328): the type,
+	// then the label, then the enum values and the message. The type check
+	// allows only int32 to int64 and sint32 to sint64 (validateTypeChange).
+	if oldField.Kind() != newField.Kind() && !isSafeTypePromotion(oldField.Kind(), newField.Kind()) {
 		return &MetaDataEvolutionError{
-			Message: fmt.Sprintf("%s field %q is no longer %s in message %q (now %s)",
-				oldLabel, oldField.Name(), oldLabel, msgName, newLabel),
+			Message: fmt.Sprintf("field type changed (field=%q, message=%q, old=%s, new=%s)",
+				oldField.Name(), msgName, oldField.Kind(), newField.Kind()),
 		}
 	}
 
-	// Presence tracking check — field must not change whether it tracks explicit set vs default.
-	// Matches Java's MetaDataEvolutionValidator line 280-283.
-	if oldField.HasPresence() != newField.HasPresence() {
+	// The label, as Java checks it: a required field must stay required and a
+	// repeated one repeated, and a field must keep whether it tracks presence.
+	// An optional field made required keeps its presence and is admitted, as
+	// Java admits it; Go refused every change of cardinality.
+	switch {
+	case oldField.Cardinality() == protoreflect.Required && newField.Cardinality() != protoreflect.Required:
 		return &MetaDataEvolutionError{
-			Message: fmt.Sprintf("field %q changed whether default values are stored if set explicitly in message %q",
+			Message: fmt.Sprintf("required field is no longer required (field=%q, message=%q, now %s)",
+				oldField.Name(), msgName, cardinalityString(newField.Cardinality())),
+		}
+	case oldField.Cardinality() == protoreflect.Repeated && newField.Cardinality() != protoreflect.Repeated:
+		return &MetaDataEvolutionError{
+			Message: fmt.Sprintf("repeated field is no longer repeated (field=%q, message=%q, now %s)",
+				oldField.Name(), msgName, cardinalityString(newField.Cardinality())),
+		}
+	case oldField.HasPresence() != newField.HasPresence():
+		return &MetaDataEvolutionError{
+			Message: fmt.Sprintf("field changed whether default values are stored if set explicitly (field=%q, message=%q)",
 				oldField.Name(), msgName),
 		}
 	}
 
-	// Type check (allow safe promotions: int32→int64, sint32→sint64)
-	if oldField.Kind() != newField.Kind() {
-		if !isSafeTypePromotion(oldField.Kind(), newField.Kind()) {
-			return &MetaDataEvolutionError{
-				Message: fmt.Sprintf("field %q type changed in message %q (old=%s, new=%s)",
-					oldField.Name(), msgName, oldField.Kind(), newField.Kind()),
-			}
+	// Enum validation
+	if oldField.Kind() == protoreflect.EnumKind && newField.Kind() == protoreflect.EnumKind {
+		if err := v.validateEnum(oldField.Enum(), newField.Enum()); err != nil {
+			return err
 		}
 	}
 
 	// Recurse into nested messages
-	if oldField.Kind() == protoreflect.MessageKind && newField.Kind() == protoreflect.MessageKind {
+	if (oldField.Kind() == protoreflect.MessageKind || oldField.Kind() == protoreflect.GroupKind) && newField.Message() != nil {
 		return v.validateMessageDescriptor(oldField.Message(), newField.Message(), seen)
-	}
-
-	// Enum validation
-	if oldField.Kind() == protoreflect.EnumKind && newField.Kind() == protoreflect.EnumKind {
-		return v.validateEnum(oldField.Enum(), newField.Enum())
 	}
 
 	return nil
@@ -1186,7 +1326,7 @@ func (v *MetaDataEvolutionValidator) validateEnum(
 		newVal := newValues.ByNumber(oldVal.Number())
 		if newVal == nil {
 			return &MetaDataEvolutionError{
-				Message: fmt.Sprintf("enum %q removes value %q (number %d)",
+				Message: fmt.Sprintf("enum removes value (enum=%q, value=%q, number=%d)",
 					oldEnum.FullName(), oldVal.Name(), oldVal.Number()),
 			}
 		}
@@ -1228,30 +1368,116 @@ func validateProtoSyntax(oldDesc, newDesc protoreflect.MessageDescriptor) error 
 	newFile := protodesc.ToFileDescriptorProto(newDesc.ParentFile())
 	if oldFile.GetSyntax() != newFile.GetSyntax() || oldFile.GetEdition() != newFile.GetEdition() {
 		return &MetaDataEvolutionError{
-			Message: fmt.Sprintf("message descriptor %q proto syntax changed", oldDesc.Name()),
+			Message: fmt.Sprintf("message descriptor proto syntax changed (record type=%q)", oldDesc.Name()),
 		}
 	}
 	return nil
 }
 
-// subspaceKeyString returns a type-safe string representation of a subspace key
-// for use as a map key. Normalizes integer types to int64 first so that
-// int(42), int32(42), and int64(42) all produce the same string.
-// Uses %T:%v format so that string("5") != int64(5). Fixes bug 19.
-func subspaceKeyString(key any) string {
-	normalized := normalizeSubspaceKey(key)
-	return fmt.Sprintf("%T:%v", normalized, normalized)
-}
-
-func buildFormerIndexMap(indexes []*FormerIndex) map[string]*FormerIndex {
-	m := make(map[string]*FormerIndex, len(indexes))
-	for _, fi := range indexes {
-		m[subspaceKeyString(fi.SubspaceKey)] = fi
-	}
-	return m
-}
-
 // ValidateEvolution is a convenience function using the default (strictest) validator.
 func ValidateEvolution(oldMetaData, newMetaData *RecordMetaData) error {
 	return DefaultMetaDataEvolutionValidator().Validate(oldMetaData, newMetaData)
+}
+
+// literalCarriersEquivalent reports whether a stored (a) and a rebuilt (b) key-expression
+// proto are equal except for literal carriers that moved from the width a Go build
+// before the literal-carrier fix stored to the width the target stores
+// (SetAllowLiteralCarrierWidening; literalValuesEquivalent says which moves count).
+// inLongArith is true below the arguments of a long-arithmetic function.
+func literalCarriersEquivalent(a, b protoreflect.Message, inLongArith bool) bool {
+	if a.Descriptor().FullName() != b.Descriptor().FullName() {
+		return false
+	}
+	if a.Descriptor().Name() == "Value" && a.Descriptor().ParentFile().Package() == keyExpressionProtoPackage {
+		return literalValuesEquivalent(a, b, inLongArith)
+	}
+	fields := a.Descriptor().Fields()
+	for i := 0; i < fields.Len(); i++ {
+		fd := fields.Get(i)
+		if a.Has(fd) != b.Has(fd) {
+			return false
+		}
+		if !a.Has(fd) {
+			continue
+		}
+		childArith := inLongArith
+		if a.Descriptor().Name() == "Function" && fd.Name() == "arguments" {
+			childArith = longArithmeticFunctions[a.Get(a.Descriptor().Fields().ByName("name")).String()]
+		}
+		switch {
+		case fd.IsList():
+			la, lb := a.Get(fd).List(), b.Get(fd).List()
+			if la.Len() != lb.Len() {
+				return false
+			}
+			for j := 0; j < la.Len(); j++ {
+				if fd.Message() != nil {
+					if !literalCarriersEquivalent(la.Get(j).Message(), lb.Get(j).Message(), childArith) {
+						return false
+					}
+				} else if !la.Get(j).Equal(lb.Get(j)) {
+					return false
+				}
+			}
+		case fd.Message() != nil:
+			if !literalCarriersEquivalent(a.Get(fd).Message(), b.Get(fd).Message(), childArith) {
+				return false
+			}
+		default:
+			if !a.Get(fd).Equal(b.Get(fd)) {
+				return false
+			}
+		}
+	}
+	return proto.Equal(unknownFieldsOnly(a), unknownFieldsOnly(b))
+}
+
+// keyExpressionProtoPackage is the package of record_key_expression.proto's Value.
+const keyExpressionProtoPackage = "com.apple.foundationdb.record.expressions"
+
+func unknownFieldsOnly(m protoreflect.Message) proto.Message {
+	out := m.New()
+	out.SetUnknown(m.GetUnknown())
+	return out.Interface()
+}
+
+// literalValuesEquivalent compares a stored (old) literal Value with a rebuilt (new)
+// one under the carrier rule. The rule runs ONE way, from the width a Go build
+// before the literal-carrier fix stored to the width the target stores:
+// long_value -> int_value for the same number (the tuple encodes an integer by
+// value, so the entries are the same bytes), and double_value -> float_value for
+// the same value inside a long-arithmetic function only (the operand is read
+// through nullableLong either way; as a key column a FLOAT and a DOUBLE encode with
+// different type codes). The reverse moves are index changes: a rebuild that turns
+// an int_value into a long_value would store a key the target cannot plan (the
+// bitmap functions have no lane for a LONG entry size).
+func literalValuesEquivalent(old, new protoreflect.Message, inLongArith bool) bool {
+	if proto.Equal(old.Interface(), new.Interface()) {
+		return true
+	}
+	oldField, oldValue, oldOK := literalOnlyField(old)
+	newField, newValue, newOK := literalOnlyField(new)
+	if !oldOK || !newOK {
+		return false
+	}
+	switch {
+	case oldField == "long_value" && newField == "int_value":
+		return oldValue.Int() == newValue.Int()
+	case inLongArith && oldField == "double_value" && newField == "float_value":
+		return oldValue.Float() == newValue.Float()
+	}
+	return false
+}
+
+// literalOnlyField returns the name and value of a Value's only set field.
+func literalOnlyField(m protoreflect.Message) (protoreflect.Name, protoreflect.Value, bool) {
+	var name protoreflect.Name
+	var value protoreflect.Value
+	n := 0
+	m.Range(func(fd protoreflect.FieldDescriptor, val protoreflect.Value) bool {
+		n++
+		name, value = fd.Name(), val
+		return true
+	})
+	return name, value, n == 1
 }

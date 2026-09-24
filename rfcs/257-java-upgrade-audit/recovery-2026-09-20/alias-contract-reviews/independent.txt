@@ -1,0 +1,29 @@
+**NAK — IMPLEMENTATION CODE** at tree `c48ee4de085fbc77ebe98b857c002b6d00a6300d`.
+
+**P2 — UNION output-name resolution discards ambiguity before assigning an ordinal.**
+
+For the existing ordinary `t(id, v)` schema:
+
+```sql
+SELECT * FROM t p, t q
+UNION ALL SELECT * FROM t p, t q
+ORDER BY id, id
+```
+
+The left branch publishes `ID,V,ID,V`. [ExactLogicalOutputLabels:371](/home/birdy/projects/fdb-go/pkg/relational/core/query/logical_result_type.go:371) preserves both occurrences; its [documented contract:252](/home/birdy/projects/fdb-go/pkg/relational/core/query/logical_result_type.go:252) explicitly requires `42702` when referencing a repeated label.
+
+However, [logical_predicate.go:7338](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:7338) silently keeps the first ordinal. Both keys consequently bind to slot 1, and [line 7373](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:7373) returns `42701` for repeated authored spelling. With just `ORDER BY id`, validation instead accepts an arbitrary output owner.
+
+This affects the newly covered projectionless join path: bare-star elision remains allowed by [line 7064](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:7064). Pinned Java rejects the ambiguous reference during [SemanticAnalyzer resolution:550](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/SemanticAnalyzer.java:550), before duplicate ORDER BY validation.
+
+**Required fix:** retain output-label cardinality and bind an ordinal only for a unique match. Referencing an ambiguous label must produce `42702` before authored duplicate checking; merely publishing duplicate labels must remain legal. Add both-constructor regressions for the joined-star query with single and repeated ambiguous keys, plus unique-name and explicit-position controls. Preserve missing-name precedence and quoted-versus-qualified segment handling.
+
+This finding is source-derived; I executed no reproducer.
+
+I reviewed the complete tree delta, frozen additions, actual prior reviews/prompts, and pinned Java source. All **6,440 frozen hashes** match the candidate and workspace. The retained evidence reconciles **47 Java probe records**, **9,352 RUN/PASS entries across four uncached affected targets**, and three compiled mutation kills with matching reconstructed source/log hashes. The initial compilation failure receives zero mutation credit.
+
+**Execution/publication gates remain separate:** the single inspected verification snapshot credits fuzz **30 seconds, four workers, 4,033,280 executions**, without coverage guidance. Full93, race15, `just test`, and nominal1M ABBA lack completed evidence at that snapshot and remain uncredited. Repairs require refreezing and verification; the interrupted prior suite is not green.
+
+Launch metadata confirms **gpt-6-astra / xhigh / read-only**. HEAD remains unchanged. No edits, builds/tests, agents/worktrees, Git mutations, or GitHub contact occurred.
+
+PR786 remains draft; commit/push/merge remain unauthorized. WS-B–K remain open. Storage scope ACK, FDB C++ **7.3.77**, approved extensions, and the legacyRaBitQ disable/rebuild prerequisite stand. Bounded latency attribution remains bounded; historical startup-timeout causation remains unestablished.

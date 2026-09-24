@@ -411,11 +411,15 @@ func (m *spfreshIndexMaintainer) spfreshInsertRouted(storage *spfreshStorage, ro
 		if sawInFlight {
 			// Every reachable centroid is mid-lifecycle (SEALED) — the §6
 			// cold-start corner where ONE hot posting is being split and no
-			// ACTIVE sibling exists yet. The split commits within its two-tx
-			// window; surface the same retryable conflict a resolver abort
-			// would (RFC-094 §6 "whichever loses retries"), so the enclosing
-			// transaction re-runs with a fresh read version and sees the
-			// children ACTIVE.
+			// ACTIVE sibling exists yet. The window is not bounded by the
+			// split's two transactions: a chunked drain keeps the parent
+			// SEALED across every chunk and publishes only in the last one,
+			// concurrent deletes can abort and stretch the split's read, and
+			// a seal whose rebalancer died holds until a lease takeover
+			// finishes the split. Surface the same retryable conflict a
+			// resolver abort would (RFC-094 §6 "whichever loses retries"), so
+			// the enclosing transaction re-runs with a fresh read version and
+			// sees the children ACTIVE.
 			return fdb.Error{Code: 1020} // not_committed
 		}
 		// Keep this error CHEAP: it is a normal retryable outcome during

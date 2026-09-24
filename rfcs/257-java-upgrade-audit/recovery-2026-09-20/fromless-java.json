@@ -1,0 +1,19 @@
+{
+  "scope": "56 composition specimens plus two index specimens; one selected Ginkgo spec passed. Other Ginkgo specs unselected, not a full conformance run.",
+  "java_target": "fdacd162a9c8acfadc49082b89185c823ab8ae4a",
+  "first_run": "Failed an unmeasured positive Java expectation for wide_repeated_star. Exact original SQL retained with observed refusal and independent Go success. Composite-PK control confirms ordering-specific Java admission.",
+  "logs": {
+    "fromless-java.log": {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/fromless-java.log",
+      "sha256": "2111547c0eb002ce7db4110e206593e9e53f6ff1c875f5f5001368cf2b53eb90"
+    },
+    "fromless-java-ordered.log": {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/fromless-java-ordered.log",
+      "sha256": "cf17cf19dd20ff98b014ef24827696aa0bb95d1cfa7b69713a6d05996bffdef7"
+    },
+    "fromless-java-ordered-bep.jsonl": {
+      "path": "/var/tmp/fdb-upgrade-recovery/runtime/fromless-java-ordered-bep.jsonl",
+      "sha256": "30e9b4d5363ccb63938ea1cdd370a6e63c86f651555f09ea28be36b523c67c3c"
+    }
+  }
+}

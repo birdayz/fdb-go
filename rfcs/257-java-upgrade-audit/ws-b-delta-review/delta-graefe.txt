@@ -1,0 +1,51 @@
+**NAK — the shared index-state view has a lifecycle gap that can publish an unbuilt index as READABLE.**
+
+Reviewed tree: **`c59322c012c53500679e7f345360fac6706468b9`**.
+
+I read the complete code/build/test delta from NAK tree `bcf0946edd1f5d591542fee4f07481d7826c046d`, consulted integration against accepted base `0dedbe1b1083358fb9568a31178084c043fa31e0`, and reviewed the previous verdicts, approved design, parent WS-B requirements, relevant Go implementations, tagged Java `fdacd162a9c8acfadc49082b89185c823ab8ae4a`, and retained evidence. This is a completed review; the finding below is source-derived.
+
+**P1 — Former-index cleanup can update persisted state without updating an existing context-shared view.**
+
+At [index_state.go:472](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state.go:472), `setIndexState` updates shared state only when the calling handle already has `indexStateView` attached. However, [store_builder.go:386](/home/birdy/projects/fdb-go/pkg/recordlayer/store_builder.go:386) performs former-index cleanup during opening, before that attachment is required. Cleanup calls `setIndexState(formerName, READABLE)` at [index_state.go:724](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state.go:724).
+
+A valid sequential execution demonstrates the consequence:
+
+1. Start with records present and index `X` DISABLED under metadata v1.
+2. In one context, open handle A with v1 and read `X`’s state, establishing the shared view containing `X=DISABLED`.
+3. Open handle B with v2, which removes `X`. Former-index cleanup clears the persisted state key, but B’s unattached view means the shared map still contains `X=DISABLED`. Choose metadata with no other indexes or replacement relationships.
+4. Open handle C with v3, which reintroduces `X` using a **different subspace key**, with rebuild policy DISABLED. Attachment reuses the existing shared view and discards C’s freshly loaded state at [index_state.go:301](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state.go:301).
+5. `MarkIndexDisabled` sees the stale DISABLED value and returns without writing the state key at [index_state.go:254](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state.go:254). The v3 header is committed, although `X` was never built.
+6. A cold reopen interprets the absent state key as READABLE. Queries can use the empty index while matching records remain.
+
+No concurrent goroutines or raw transaction mutations are necessary. State-key read conflicts cannot repair this divergence within one transaction.
+
+**Required fix:** ensure every lifecycle state writer updates the context’s authoritative view, including former-index cleanup on newly opened handles. Attachment must not be an optional prerequisite for maintaining that invariant. Add a real-FDB v1→v2→v3 regression with separate handles in one context, asserting the raw state key, shared state, cold-reopened DISABLED state, and scan rejection. The existing former-index regression initializes the same handle first, so it misses this path.
+
+The specific previous NAK findings have these dispositions:
+
+- **Bulk-delete negative decisions:** addressed by error-returning shared-state reads and explicit per-index conflicts, with both commit orders and stale-handle coverage.
+- **Executor, vector and function selection:** addressed in the reviewed dispatch paths, including explicit/automatic function selection, online-indexer state decisions and SPFresh direct search. Strict query READABLE and filtered-index restrictions remain intact.
+- **Lazy initialization:** the reported `Build()` transition bypass is fixed through complete header/state initialization with propagated failures. Cancellation/timeout checking remains at operational boundaries, including the disabled-update no-op.
+- **Captured obsolete retirement metadata:** the previous reproduction is addressed by resolving deferred retirement through the context’s highest-version metadata registration rather than the first callback’s captured store.
+- **Multi-type TEXT validation:** covered associations now participate in descriptor validation; positive and negative Java comparisons are retained.
+- **Deletion acceptance gaps:** actual versioned saves, valid unknown fields, and creation/cacheability races in both commit orders are now represented.
+- **Inherited cache-entry race:** publication establishes `shared` before exposure; the repeated writes to published entries are removed.
+
+These dispositions close the reported reproductions. They do not close the new lifecycle composition above.
+
+All five WS-B sections remain accounted for. Sliding replay and delegate routing retain the approved size-one correction. Header-aware deletion, cache invalidation and deferred-version cleanup have no additional finding. Retirement/state lifecycle is blocked by the shared-view defect. Ignored-option handling, union-tag identity, descriptor-pair validation and current-descriptor factories remain coherent. Rank enrichment preserves scan identity and continuations; snapshot preloads and serializable actual rank reads remain appropriately separated.
+
+The retained evidence supports **93/93 uncached targets**, **14/14 race targets**, recordlayer **3399/3400** and conformance **1391/1510** with existing exclusions, plus four applied, compiled mutation kills. Frozen source/build content reconciles with the reviewed tree; changes after source tree `c7f9e5f9f14340d7452abc65ac8eb701493ca3ea` are documentation/evidence booking. These results do not exercise the drop-and-readd sequence.
+
+Performance is materially improved, but a measured residual remains:
+
+| Workload | Baseline mean | Reviewed-source mean | Ratio |
+|---|---:|---:|---:|
+| Orders | 144.242 s | 147.057 s | 1.0195× |
+| Customers | 6.470 s | 6.825 s | 1.0548× |
+
+Each run retains 24 RUN/PASS results, matching rows and zero retries. **I would not block this correctness milestone on these measurements alone.** The earlier large regression has been substantially reduced. Two sequential runs per tree, with differing host load and fixed execution order, establish neither parity nor a complete explanation of the residual.
+
+Approved raw, nullable-array, scalar and sorting extensions remain preserved. The intentional cancellation of Java’s retirement-after-delete resurrection should remain. Queue/state4/format15 remain disabled; WS-C–K are outside this verdict.
+
+No edits, tests/builds, Git mutations, GitHub requests, publication actions or delegation were performed. Published HEAD remains `71ccd8cf8b3fd0dbafe283e91171818e36af555e`.

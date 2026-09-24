@@ -11,8 +11,8 @@ import (
 // Its collection is the exact literal array Java lowers directly to an
 // ExplodeExpression: every array element is one named record row.
 //
-// This is deliberately distinct from both LogicalValues (the legacy
-// single-row, text-only SELECT-without-FROM seed) and LogicalUnnest (a lateral
+// This is deliberately distinct from both LogicalSingleton (the
+// single-row, zero-column SELECT-without-FROM source) and LogicalUnnest (a lateral
 // correlated array access). Conflating either shape with an inline table would
 // give it the wrong cardinality or make it participate in lateral-unnest
 // gather/collision rules.

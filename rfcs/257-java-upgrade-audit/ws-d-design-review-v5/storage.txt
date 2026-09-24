@@ -1,0 +1,76 @@
+**NAK.** Tree `d0ce9ed51b2ffce11e96ae5db2a98cda56882e07`; `ws-d-design.md` SHA256 `c3b80bc41e3d34e134410a089e420414bc793f5e7b8e7632e60038d2309379cb` (`git show TREE:path | sha256sum` matches).
+
+I read all four v4 verdicts, the full v5 design, its diff from v4, the oracle README, source and test, and the oracle logs. I checked the claims against Java and against Go at the tree.
+- **Production delta:** `git diff --stat f0cb2957 d0ce9ed5 -- pkg gen proto cmd` returns nothing.
+- **Oracle run:** `ws-d-oracle-6.log` shows "Ran 7 of 1530 Specs … 7 Passed", uncached.
+- **Java version:** the policy blocked `git -C fdb-record-layer rev-parse`, so I could not confirm commit `fdacd162`. `gradle.properties` says `version=4.14.2.0`.
+- **Nothing run or changed:** no tests, probes or edits.
+
+## P2
+
+**1. Inline maintenance mode is unmeasured, and the design claims more than it knows (design:192-194, 647-658).**
+- **What the oracle covers.** Every engine probe passes `maintainInTransaction=false` (`guardiann_probe_conformance.java:90,97`). The record-layer probes use the default, where `autoMergeDuringCommit` is off. So the "derived from MEASURED behaviour" basis covers deferred mode only.
+- **The cap claim is unproven and false in general.** Design:652-655 says applying the cap in inline mode "only changes behaviour in states where the target is already failing". But Java's inline insert runs one task, in key order, before inserting (`Insert.java:206-212`, `Primitives.java:980-994`), and skips the cap (`:334`).
+  - So a healthy cluster can pass `hardMax` while its split task waits behind other tasks. That is easy when `hardMax` is close to `max`, as in the oracle's 10/12 settings.
+  - Java then inserts; Go raises a capacity error.
+  - Inline mode sends no merge-required signal (`VectorIndexMaintainer.java:383-385`), and the hand-off exists only in the build and replay drivers.
+  - For a workload aimed at that cluster nothing relieves it: whether Go checks the cap before or after the inline task, the failed insert rolls that task back.
+  - A caller that catches the error and commits keeps the record unindexed for good, because re-saving is filtered (design:405-408). Java would have indexed it.
+- **Inserts under a mutable merge-blocking knob are underspecified.** The design says "inserts continue… as in the target", but not what happens to the inline task Java runs first.
+  - If Go runs it, that task is a refused merge, which poisons the context and fails the insert.
+  - If Go suppresses it, that is an undeclared divergence; (d) covers only deletes.
+  - This is the v4 SPFresh P2-1 request, still unanswered. Inline mode also has no backpressure in the target, so "as in the target" is wrong there too.
+- **Needed:**
+  - Oracle specs with `maintainInTransaction=true`: a healthy backlogged crossing, an unsplittable cluster, and each mutable knob.
+  - Either key the inline cap to the terminal-reconcile state, or prove it cannot fire on a healthy cluster.
+  - Specify what inline inserts do with the task and declare it.
+
+**2. The foreign-lease wait is longer than the session heartbeat lease (design:512-515).**
+- **How long the wait can be.** "Wait the remaining lease window" can mean up to 60 s. Java's window is 60 s (`VectorIndexMergeLock.java:63`), and its live band runs to `now + 60 s` (`:103`), so the wait can approach 120 s.
+- **How long the session lasts.** Go's session heartbeat lease defaults to 30 s (`online_indexer.go:643-644`) and is renewed only inside transactions. There is no background refresher; the only ticker in the indexer and merger files is the cleanup poll.
+- **Consequence.** An actively refreshing foreign holder (a mutual peer or a Java merger) always causes a near-full wait.
+  - The exclusive session's heartbeat and the WS-C follow-up heartbeats then go stale.
+  - Another builder can be admitted, because `checkAdmission` ignores stale heartbeats.
+  - This session then fails on its next transaction with `SynchronizedSessionLockedError`. That waives ownership on an ordinary path, which design:465-467 forbids.
+- **Needed:**
+  - Wait in slices shorter than the heartbeat lease, with a heartbeat-renewing transaction after each.
+  - Cap the future-dated case.
+  - Add a fixture with a 30 s session lease against a live foreign vector lease.
+
+## P3
+
+1. **The continuation-replay refusal contradicts both design:97 and Java (design:206-207).**
+   - Java's `scanSinglePartition` replays the materialized entries with no engine, access-info or quantizer read (`VectorIndexMaintainer.java:208-223`).
+   - Enforcing the rule would need a new access-info read, which adds a conflict range if serializable, and would refuse pages Java serves.
+   - Remove replay from that row.
+2. **Poison scope (design:151-153).**
+   - Read-only refusals also poison: search, replay, and the engine guard on a scan. Java's read failures leave the transaction committable, and there are no writes to protect, so this is needless divergence.
+   - Specify the commit-check key namespace. `DeleteStore` cancels checks under `pendingWriteCommitCheckPrefix` (`store_api.go:181-182`).
+3. **The deleteConcurrency row is data-dependent, not config-only (design:177).**
+   - Java throws only after it finds both access info and vector metadata (`Delete.java:110-128`; the parallelism check is `MoreAsyncUtil.java:1294`).
+   - So deleting a never-indexed vector (for example the leftover from a caught capacity error) succeeds in Java. Go would refuse it.
+4. **The "Parity" label on collapse/bounce concurrency is wrong (design:175).**
+   - Java fails only when it reaches that task kind. In the oracle, `CollapseConcurrency=0` drained fine except the duplicate structure, and other prefixes keep draining.
+   - Go refuses every merge for the whole index, and backpressure then refuses inserts Java would serve.
+5. **The progress rule and the reconcile.**
+   - The error's count is `numPrimary+1` (`Insert.java:336`); compared naively, an unchanged cluster reads as progress. Define the baseline as the stored count.
+   - The reconcile removes stale primaries but only lists recounts of the underreplicated and replicated counts (:628-630). `numPrimaryVectors` must be recomputed too.
+   - Design:662 says the reconcile "never lowers" the primary count. That is false for the stale-inflated case the design itself names (:618-619).
+6. **Unmeasured claims are missing from the remaining-hypotheses list (:587-590).** The oracle did not cover:
+   - GuardiANN delete refused at quantizer construction when it enqueues a task. The bits-9 run never enqueued one: every drain executed 0 tasks.
+   - Merge under trained bits 9.
+   - All of inline mode.
+7. **The join's error rule does not match Java (design:52-53).** Java's `forEach` fails on whichever child finishes first, via `whenAny` (`MoreAsyncUtil.java:1309-1329`), not the lowest index. Go's deterministic choice is fine but should be declared; no bytes are affected.
+
+## Confirmed
+- **Commit checks:** every `FDBRecordContext` commit path runs them (`database.go:305,411,459,1319`; `runner.go:329`), and the keyed `getOrCreateCommitCheck` exists (`:1063`).
+- **Retry iterator:** the schedule is `max(1, scanned*9/10)`, and scanned is counted before the entry is handled.
+- **Merge session:** the session id is `sessionHeartbeat.indexerID` (`indexing_merger.go:38`), which equals the admitted heartbeat's (`online_indexer.go:1167`).
+- **Snapshot reads:** lease and count reads are snapshot, and negative counts follow the keyed disable path (`VectorIndexMaintainer.java:553-554,605-616,654`; `VectorIndexMergeLock.java:94-96`).
+- **Mutable options:** the design's list matches `MUTABLE_OPTIONS` (`GuardiannVectorIndexEngine.java:84-97`).
+- **Merges:** Java's `mergeIndexes` uses `whenAll` (`IndexingBase.java:1093`).
+- **Common-entry filtering:** Go's vector `Update` skips it today (`vector_index_maintainer.go:314-334`), and `removeCommonEntries` exists to reuse (`index_maintainer.go:720`).
+- **Futures:** pure-Go `Future.Cancel` is a no-op (`future.go`).
+- **Preserved boundaries:** hold.
+
+**Outside this review, but red:** `/var/tmp/fdb-upgrade-recovery/ws-d-oracle-just-test.log` records `//pkg/docscheck:docscheck_test` FAILED (`TestRowdiffWatcherBehaviour`). `pkg/docscheck` is unchanged since `f0cb2957`, so this needs root-causing before any gate.

@@ -46,10 +46,11 @@ import (
 // never a dot scan of display); an expression key carries expr (evaluated per
 // row) with display as its canonical rendering and empty bare.
 type groupKeyRef struct {
-	display   string // canonical rendering — output naming / diagnostics only
-	bare      string // last segment of a bare column ref; "" for expressions
-	qualifier string // leading segment(s) of a qualified bare ref; "" otherwise
-	qualified bool   // parse-tree segment count > 1
+	bound     values.Value // exact source attribute selected by positional star expansion
+	display   string       // canonical rendering — output naming / diagnostics only
+	bare      string       // last segment of a bare column ref; "" for expressions
+	qualifier string       // leading segment(s) of a qualified bare ref; "" otherwise
+	qualified bool         // parse-tree segment count > 1
 	// segs is the FULL ordered segment list of the reference (`a.n.sk` ->
 	// [A N SK]). It is what RESOLUTION consumes; qualifier is a rendering and
 	// cannot express where one segment ends and the next begins.
@@ -80,6 +81,7 @@ func logicalGroupKeys(keys []groupKeyRef) []logical.GroupKey {
 	for i, k := range keys {
 		out[i] = logical.GroupKey{
 			Display:   k.display,
+			Value:     k.bound,
 			Bare:      k.bare,
 			Qualifier: k.qualifier,
 			Qualified: k.qualified,
@@ -110,6 +112,7 @@ func stripGroupKeyLeadingSegment(k logical.GroupKey, stripped string) logical.Gr
 		rest := k.Segs[1:]
 		out := logical.GroupKey{
 			Display:   stripped,
+			Value:     k.Value,
 			Bare:      rest[len(rest)-1],
 			Qualified: len(rest) > 1,
 			Segs:      rest,
@@ -122,7 +125,7 @@ func stripGroupKeyLeadingSegment(k logical.GroupKey, stripped string) logical.Gr
 	// The single-source prefix was baked away and the segments cannot account
 	// for it: the key is BARE from here on — stale qualification segments would
 	// chase a qualifier the runtime row no longer carries.
-	return logical.GroupKey{Display: stripped, Bare: stripped}
+	return logical.GroupKey{Display: stripped, Bare: stripped, Value: k.Value}
 }
 
 type selectQuery struct {
@@ -352,7 +355,8 @@ type aggSelectCol struct {
 	selectOrdinal int
 	// Exactly one of groupCol / aggFunc / outExpr is set (non-visible entries
 	// harvested from HAVING/ORDER BY always have aggFunc set).
-	groupCol string // plain group-by column reference
+	groupCol      string       // plain group-by column reference
+	groupColValue values.Value // bound source identity retained from star expansion
 	// outputAliased records authored SELECT AS provenance for every visible
 	// item, including aggregates and computed grouping keys. outName may be
 	// an internal accumulator key; its spelling cannot establish a SQL name.
@@ -761,6 +765,10 @@ func extractFromQueryTerm(body *antlrgen.QueryTermDefaultContext) (*selectQuery,
 // by any rebase that rewrites the name to internal text — the group-key
 // rule). RFC-180 F-3: consumers never re-parse the name.
 type projCol struct {
+	star bool // typed SELECT star slot; qualifier is carried separately
+	// sqlUnqualified preserves the source expression's SQL-name qualification
+	// independently of the bound value's runtime correlation.
+	sqlUnqualified bool
 	// bound is an attribute selected by star expansion, already tied to its
 	// exact source and slot. Re-resolving its display label would wrongly
 	// reject legal duplicate star outputs or bind a different source.
@@ -793,21 +801,11 @@ func projColRef(col projCol, rendered string) logical.ColumnRef {
 	return logical.ColumnRefFor(col.bare, col.qualifier, col.qualified, rendered)
 }
 
-// projColNames renders the name list for name-only consumers.
-func projColNames(cols []projCol) []string {
-	if cols == nil {
-		return nil
-	}
-	out := make([]string, len(cols))
-	for i, c := range cols {
-		out[i] = c.name
-	}
-	return out
-}
-
 type selectClassification struct {
-	projCols    []projCol // nil = SELECT * or SELECT <qualifier>.*; ignored when countStar or aggCols non-empty
-	projAliases []string  // parallel to projCols; empty string = no alias (use column name)
+	selectSlots               []selectOutputSlot // identity and typed syntax of every expanded visible position
+	selectCols, selectAliases []string           // expanded visible slots, retained across aggregate reclassification
+	projCols                  []projCol          // nil = SELECT * or SELECT <qualifier>.*; ignored when countStar or aggCols non-empty
+	projAliases               []string           // parallel to projCols; empty string = no alias (use column name)
 	// projExprs holds computed projection expressions parallel to projCols.
 	// Non-nil entry overrides the plain column lookup for that position.
 	projExprs          []antlrgen.IExpressionContext
@@ -896,7 +894,78 @@ func selectQueryFromClassification(cls *selectClassification, fs *fromSource) *s
 // and collapse onto the same value otherwise.
 type starExpander func(qualifier string) ([]projCol, bool)
 
+// hasMixedSelectStar asks the typed SELECT list whether classification may need
+// visible star attributes alongside aggregate expressions.
+func hasMixedSelectStar(simpleTable *antlrgen.SimpleTableContext) bool {
+	if simpleTable.SelectElements() == nil {
+		return false
+	}
+	elements := simpleTable.SelectElements().AllSelectElement()
+	if len(elements) < 2 {
+		return false
+	}
+	for _, element := range elements {
+		switch element.(type) {
+		case *antlrgen.SelectStarElementContext, *antlrgen.SelectQualifierStarElementContext:
+			return true
+		}
+	}
+	return false
+}
+
+// selectOutputSlot is a visible SELECT position before aggregate classification.
+// Expanded stars retain their bound source attribute; authored expressions retain
+// their typed syntax. Ordinals address this list, never the unexpanded syntax.
+type selectOutputSlot struct {
+	element     antlrgen.ISelectElementContext
+	column      *projCol
+	name, alias string
+}
+
+func selectOutputSlots(simpleTable *antlrgen.SimpleTableContext, expandStar starExpander) []selectOutputSlot {
+	var slots []selectOutputSlot
+	if simpleTable.SelectElements() == nil {
+		return slots
+	}
+	for _, element := range simpleTable.SelectElements().AllSelectElement() {
+		slot := selectOutputSlot{element: element}
+		qualifier, star := "", false
+		switch e := element.(type) {
+		case *antlrgen.SelectStarElementContext:
+			star = true
+		case *antlrgen.SelectQualifierStarElementContext:
+			if e.Uid() != nil {
+				qualifier, star = functions.NormalizeIdentifier(e.Uid().GetText()), true
+			}
+		case *antlrgen.SelectExpressionElementContext:
+			slot.alias = selectOutputAlias(e)
+			name, err := columnNameFromExpr(e.Expression(), "SELECT expression")
+			if err != nil {
+				name = canonicalTextOf(e.Expression())
+			}
+			slot.name = name
+		}
+		if star && expandStar != nil {
+			if columns, ok := expandStar(qualifier); ok {
+				for _, col := range columns {
+					slots = append(slots, selectOutputSlot{column: &col, name: col.name, alias: col.bare})
+				}
+				continue
+			}
+		}
+		// Parse-only callers without exact source attributes retain their star
+		// placeholder. They cannot validate its positional width.
+		slots = append(slots, slot)
+	}
+	return slots
+}
+
 func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar starExpander) (*selectClassification, error) {
+	if expandStar == nil && simpleTable.FromClause() == nil {
+		expandStar = func(qualifier string) ([]projCol, bool) {
+			return []projCol{}, qualifier == ""
+		}
+	}
 	// Parse SELECT list: either *, a list of column name expressions, COUNT(*), or
 	// a GROUP BY aggregate list (mix of group-by columns + aggregate functions).
 	selElems := simpleTable.SelectElements()
@@ -914,17 +983,41 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 	// references (e.g. `GROUP BY bucket` where bucket is `v/10 AS bucket`).
 	var selectAliasesSnapshot []string
 	var selectExprsSnapshot []antlrgen.IExpressionContext
+	slots := selectOutputSlots(simpleTable, expandStar)
+	selectCols, selectAliases := make([]string, len(slots)), make([]string, len(slots))
+	for i, slot := range slots {
+		if slot.column == nil {
+			switch slot.element.(type) {
+			case *antlrgen.SelectStarElementContext, *antlrgen.SelectQualifierStarElementContext:
+				selectCols, selectAliases = nil, nil
+			}
+		}
+		if selectCols == nil {
+			break
+		}
+		selectCols[i], selectAliases[i] = slot.name, slot.alias
+	}
 	if selElems != nil {
-		elems := selElems.AllSelectElement()
-		for selectIdx, elem := range elems {
+		for selectIdx, slot := range slots {
 			selectOrdinal := selectIdx + 1
-			switch e := elem.(type) {
+			if slot.column != nil {
+				col := *slot.column
+				col.selectOrdinal = selectOrdinal
+				projCols = append(projCols, col)
+				projAliases = append(projAliases, slot.alias)
+				projExprs = append(projExprs, nil)
+				projStarQualifiers = append(projStarQualifiers, "")
+				continue
+			}
+			switch e := slot.element.(type) {
 			case *antlrgen.SelectStarElementContext:
-				if len(elems) > 1 {
-					return nil, api.NewError(api.ErrCodeUnsupportedOperation,
-						"cannot mix * with named columns in SELECT list")
+				if len(slots) > 1 {
+					projCols = append(projCols, projCol{star: true, selectOrdinal: selectOrdinal})
+					projAliases = append(projAliases, "")
+					projExprs = append(projExprs, nil)
+					projStarQualifiers = append(projStarQualifiers, "")
 				}
-				// SELECT * — projCols stays nil
+				// A sole SELECT * preserves the complete visible source row.
 			case *antlrgen.SelectQualifierStarElementContext:
 				// SELECT <qualifier>.* either alone or mixed with named
 				// columns. Alone: use the legacy projQualifier / nil-projCols
@@ -935,16 +1028,16 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 						"SELECT <qualifier>.* missing qualifier")
 				}
 				qual := functions.NormalizeIdentifier(e.Uid().GetText())
-				if len(elems) == 1 {
+				if len(slots) == 1 {
 					projQualifier = qual
 				} else {
-					projCols = append(projCols, projCol{selectOrdinal: selectOrdinal}) // sentinel; actual names resolved at execution
+					projCols = append(projCols, projCol{star: true, selectOrdinal: selectOrdinal}) // sentinel; actual names resolved at execution
 					projAliases = append(projAliases, "")
 					projExprs = append(projExprs, nil)
 					projStarQualifiers = append(projStarQualifiers, qual)
 				}
 			case *antlrgen.SelectExpressionElementContext:
-				if checkCountStar(e) && len(elems) == 1 {
+				if checkCountStar(e) && len(slots) == 1 {
 					countStar = true
 					countStarAlias = selectOutputAlias(e)
 				} else if fn, argCol, argExpr, alias, isDistinct, argQual, argBare, argQualifier, argSegs, isAgg := extractAggFunc(e); isAgg {
@@ -1050,7 +1143,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 				}
 			default:
 				return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
-					"unsupported SELECT element type %T", elem)
+					"unsupported SELECT element type %T", slot.element)
 			}
 		}
 		// SELECT-list expressions that wrap aggregate function calls (e.g.
@@ -1140,8 +1233,8 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 		// BY expression here — that lookup happens in the HAVING-harvest
 		// reclassification later when sq.groupBy is populated.
 		if len(aggCols) > 0 && len(projCols) > 0 {
-			for _, q := range projStarQualifiers {
-				if q != "" {
+			for _, col := range projCols {
+				if col.star {
 					return nil, api.NewError(api.ErrCodeUnsupportedOperation,
 						"cannot mix qualifier.* with aggregate functions in SELECT list")
 				}
@@ -1168,7 +1261,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 					// mixed-agg classification site above.
 					extra[i] = aggSelectCol{outName: out, selectOrdinal: c.selectOrdinal, outExpr: slotExpr, outputAliased: projAliases[i] != "", visible: true}
 				default:
-					extra[i] = aggSelectCol{outName: out, selectOrdinal: c.selectOrdinal, groupCol: c.name, outputInheritedName: colBareOrName(c), groupColBare: colBareOrName(c), groupColQualifier: c.qualifier, groupColQualified: c.qualified, groupColSegs: c.segs, outputAliased: projAliases[i] != "", visible: true}
+					extra[i] = aggSelectCol{outName: out, selectOrdinal: c.selectOrdinal, groupCol: c.name, groupColValue: c.bound, outputInheritedName: colBareOrName(c), groupColBare: colBareOrName(c), groupColQualifier: c.qualifier, groupColQualified: c.qualified, groupColSegs: c.segs, outputAliased: projAliases[i] != "", visible: true}
 				}
 			}
 			aggCols = append(extra, aggCols...)
@@ -1180,6 +1273,9 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 	}
 
 	cls := &selectClassification{
+		selectSlots:        slots,
+		selectCols:         selectCols,
+		selectAliases:      selectAliases,
 		projCols:           projCols,
 		projAliases:        projAliases,
 		projExprs:          projExprs,
@@ -1200,13 +1296,9 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 	// Parse ORDER BY clause.
 	orderByClauseCtx := simpleTable.OrderByClause()
 	if orderByClauseCtx != nil {
-		// Java errors 42701 (COLUMN_ALREADY_EXISTS) on `ORDER BY b, b`
-		// with the same column repeated. Stricter than Postgres, but
-		// per the 100% Java-alignment principle we match.
-		// Expression entries (without a resolved colName) are not
-		// deduped because two identical expressions are syntactically
-		// distinct sort keys (e.g. `ORDER BY a+b, a+b` — Java accepts).
-		seenOrderCols := make(map[string]bool)
+		// Capture all named keys. Duplicate-name validation follows semantic
+		// resolution so an ambiguous alias wins over a repeated spelling,
+		// matching Java's lookupAlias -> validateOrderByColumns sequence.
 		for _, obExpr := range orderByClauseCtx.AllOrderByExpression() {
 			ascending := true
 			var nullsFirst *bool
@@ -1225,20 +1317,20 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 			// 1-indexed position into the SELECT list. Resolve to the
 			// matching output column's name so the downstream colIdx
 			// lookup in the sort path works uniformly.
-			posName, pos, isPos, posErr := resolveSelectListPosition("ORDER BY", obExpr.Expression(), projColNames(projCols), projAliases, aggCols, countStar)
+			posName, pos, isPos, posErr := resolveSelectListPosition("ORDER BY", obExpr.Expression(), selectCols, selectAliases, nil, false)
 			if posErr != nil {
 				return nil, posErr
 			}
 			if isPos {
-				// Dedup key is case-folded (SQL identifiers are
-				// case-insensitive): `ORDER BY 1, 1` is a dup regardless of
-				// case in any resolved column name.
-				key := strings.ToUpper(posName)
-				if seenOrderCols[key] {
-					return nil, api.NewErrorf(api.ErrCodeColumnAlreadyExists,
-						"duplicate column %q in ORDER BY", posName)
+				// Repeated positions are duplicates independently of their
+				// labels. Distinct positions are compared after binding, when
+				// source identity is available (not by their output labels).
+				for _, previous := range cls.orderBy {
+					if previous.pos == pos {
+						return nil, api.NewErrorf(api.ErrCodeColumnAlreadyExists,
+							"duplicate column %q in ORDER BY", posName)
+					}
 				}
-				seenOrderCols[key] = true
 				cls.orderBy = append(cls.orderBy, orderByClause{colName: posName, pos: pos, ascending: ascending, nullsFirst: nullsFirst, rawExpr: obExpr.Expression()})
 				continue
 			}
@@ -1247,18 +1339,6 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 			// expression for CTE / JOIN sort keys like `ORDER BY a + b`.
 			colName, nameErr := columnNameFromExpr(obExpr.Expression(), "ORDER BY expression")
 			if nameErr == nil {
-				// SQL identifiers are case-insensitive, so `ORDER BY b, B`
-				// is a dup. Dot-qualified names fold each segment the same
-				// way — `ORDER BY t.x, T.X` dups as well. Unqualified-vs-
-				// qualified (`ORDER BY t.x, x`) stay distinct because the
-				// strings differ — that matches Java's behavior (requires
-				// alias resolution for true dedup, which happens later).
-				key := strings.ToUpper(colName)
-				if seenOrderCols[key] {
-					return nil, api.NewErrorf(api.ErrCodeColumnAlreadyExists,
-						"duplicate column %q in ORDER BY", colName)
-				}
-				seenOrderCols[key] = true
 				kb, kq, kqf, ksegs := splitColumnRef(obExpr.Expression())
 				cls.orderBy = append(cls.orderBy, orderByClause{colName: colName, ascending: ascending, nullsFirst: nullsFirst, rawExpr: obExpr.Expression(), bareRef: exprIsBareColumnRef(obExpr.Expression()), bare: kb, qualifier: kq, qualified: kqf, segs: ksegs})
 			} else {
@@ -1304,12 +1384,32 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 				}
 				seenAliases[aliasKey] = true
 			}
-			posName, _, isPos, posErr := resolveSelectListPosition("GROUP BY", item.Expression(), projColNames(projCols), projAliases, cls.aggCols, cls.countStar)
+			posName, position, isPos, posErr := resolveSelectListPosition("GROUP BY", item.Expression(), selectCols, selectAliases, nil, false)
 			if posErr != nil {
 				return nil, posErr
 			}
 			if isPos {
-				cls.groupBy = append(cls.groupBy, groupKeyRef{display: posName, bare: posName})
+				key := groupKeyRef{display: posName, bare: posName}
+				// Bind the selected source expression, not its output alias or the
+				// syntax item that happened to occupy this index before expansion.
+				slot := slots[position-1]
+				if col := slot.column; col != nil {
+					key = groupKeyRef{display: col.name, bare: col.bare, qualifier: col.qualifier, qualified: col.qualified, segs: col.segs, bound: col.bound}
+				} else if selected, ok := slot.element.(*antlrgen.SelectExpressionElementContext); ok {
+					selectedExpr := selected.Expression()
+					if len(harvestAggregates(selectedExpr)) == 0 {
+						if bare, qualifier, qualified, segs := splitColumnRef(selectedExpr); bare != "" {
+							name, err := columnNameFromExpr(selectedExpr, "GROUP BY expression")
+							if err != nil {
+								return nil, err
+							}
+							key = groupKeyRef{display: name, bare: bare, qualifier: qualifier, qualified: qualified, segs: segs}
+						} else {
+							key = groupKeyRef{display: canonicalTextOf(selectedExpr), expr: selectedExpr}
+						}
+					}
+				}
+				cls.groupBy = append(cls.groupBy, key)
 				if aliasName != "" {
 					if cls.groupByAliases == nil {
 						cls.groupByAliases = make(map[string]int)
@@ -1440,8 +1540,8 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 	// columns, outExpr for expressions) so the aggregate pipeline
 	// activates and emits one row per distinct group.
 	if len(cls.groupBy) > 0 && len(cls.aggCols) == 0 && len(projCols) > 0 {
-		for _, q := range projStarQualifiers {
-			if q != "" {
+		for _, col := range projCols {
+			if col.star {
 				// Java errors 42803 (grouping error) for `SELECT a.* ...
 				// GROUP BY a1` because the star expands to cols not in
 				// GROUP BY; Go matches (42803, not 0A000).
@@ -1470,7 +1570,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 				// the rowMap (which carries group-by column values).
 				extra[i] = aggSelectCol{outName: out, selectOrdinal: c.selectOrdinal, outExpr: slotExpr, outputAliased: projAliases[i] != "", visible: true}
 			default:
-				extra[i] = aggSelectCol{outName: out, selectOrdinal: c.selectOrdinal, groupCol: c.name, outputInheritedName: colBareOrName(c), groupColBare: colBareOrName(c), groupColQualifier: c.qualifier, groupColQualified: c.qualified, groupColSegs: c.segs, outputAliased: projAliases[i] != "", visible: true}
+				extra[i] = aggSelectCol{outName: out, selectOrdinal: c.selectOrdinal, groupCol: c.name, groupColValue: c.bound, outputInheritedName: colBareOrName(c), groupColBare: colBareOrName(c), groupColQualifier: c.qualifier, groupColQualified: c.qualified, groupColSegs: c.segs, outputAliased: projAliases[i] != "", visible: true}
 			}
 		}
 		cls.aggCols = extra
@@ -1517,9 +1617,12 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 			if ac.outExpr != nil {
 				continue
 			}
-			if ac.groupCol != "" {
-				if key, outName, ok := aliasResolves(ac.groupCol); ok {
+			// Ephemeral GROUP aliases resolve authored bare references, never
+			// attributes already owned by a star or qualified source path.
+			if ac.groupColValue == nil && ac.groupColBare != "" && !ac.groupColQualified {
+				if key, outName, ok := aliasResolves(ac.groupColBare); ok {
 					ac.groupCol = key.display
+					ac.groupColValue = key.bound
 					ac.groupColBare = key.bare
 					ac.groupColQualifier = key.qualifier
 					ac.groupColQualified = key.qualified
@@ -1529,7 +1632,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 					}
 				}
 			}
-			if ac.aggFunc != "" && ac.aggArg != "" && ac.aggExpr == nil {
+			if ac.aggFunc != "" && ac.aggArgBare != "" && !ac.aggArgQualified && ac.aggExpr == nil {
 				// Rewrite arg only; aggregate's outName (e.g. `MAX(z)`)
 				// is already set at parse time and shouldn't be
 				// collapsed to the alias string.
@@ -1548,10 +1651,10 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 		// name that doesn't exist in the aggregate output schema.
 		for i := range cls.orderBy {
 			ob := &cls.orderBy[i]
-			if ob.expr != nil || ob.colName == "" {
+			if ob.expr != nil || ob.pos != 0 || ob.bare == "" || ob.qualified {
 				continue
 			}
-			if key, _, ok := aliasResolves(ob.colName); ok {
+			if key, _, ok := aliasResolves(ob.bare); ok {
 				ob.colName = key.display
 				// The structural segments must follow the rewrite — a
 				// stale pre-rewrite bare would re-validate the ALIAS
@@ -1809,7 +1912,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 							}
 						}
 					}
-					prepended = append(prepended, aggSelectCol{outName: out, selectOrdinal: c.selectOrdinal, groupCol: gc, outputInheritedName: inheritedName, groupColBare: gcBare, groupColQualifier: gcQual, groupColQualified: gcQualified, groupColSegs: gcSegs, outputAliased: projAliases[i] != "", visible: true})
+					prepended = append(prepended, aggSelectCol{outName: out, selectOrdinal: c.selectOrdinal, groupCol: gc, groupColValue: c.bound, outputInheritedName: inheritedName, groupColBare: gcBare, groupColQualifier: gcQual, groupColQualified: gcQualified, groupColSegs: gcSegs, outputAliased: projAliases[i] != "", visible: true})
 				}
 				cls.aggCols = append(prepended, cls.aggCols...)
 				cls.projCols = nil
@@ -2463,23 +2566,14 @@ func assignFromLegBindingIDs(fs *fromSource) {
 
 // parseFromSource walks the FROM clause of a SimpleTableContext and
 // returns the parsed source metadata. Returns an error for unsupported
-// shapes (missing FROM, CROSS JOIN on extras, etc.). This is the
+// shapes (CROSS JOIN on extras, etc.). An absent FROM has an empty
+// source, which the logical builder lowers as a singleton. This is the
 // single source of truth for FROM parsing — both extractFromSimpleTable
 // and PlanVisitor.visitFrom delegate here.
 func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, error) {
 	fromClause := simpleTable.FromClause()
 	if fromClause == nil {
-		// FROM-less SELECT: fdb-relational 4.11.1.0's QueryVisitor's
-		// visitSimpleTable asserts simpleTableContext.fromClause() is
-		// non-null with `Assert.notNullUnchecked(... ErrorCode.
-		// UNSUPPORTED_QUERY, "query is not supported")`. The check
-		// fires universally — including FROM-less SELECTs inside CTE
-		// base cases (every SimpleTable visit hits the gate, no CTE-
-		// context bypass). Match byte-equal. Standalone constant
-		// projection like `SELECT 1+1` and CTE bases like
-		// `WITH base AS (SELECT 1 AS n) ...` both reject.
-		return nil, api.NewError(api.ErrCodeUnsupportedQuery,
-			"query is not supported")
+		return &fromSource{}, nil
 	}
 
 	sources := fromClause.TableSources()

@@ -1,0 +1,26 @@
+**ACK — WS-A/WS-E1 IMPLEMENTATION CODE** at frozen tree `36a716b31e3f6e0596377fd76167da46e143a549`.
+
+I read all four reports, the complete 15-file tree delta, frozen test content, necessary surrounding interactions, and corresponding Java source at `fdacd162a9c8acfadc49082b89185c823ab8ae4a`. All **6,391 file hashes** match the freeze and candidate tree. Published HEAD remains `71ccd8cf8b3fd0dbafe283e91171818e36af555e`. **No remaining implementation defect identified; no further code fix required.**
+
+The prior rejection is closed:
+
+- **Ownership survives construction.** [plan_visitor.go:1669](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/plan_visitor.go:1669) carries the selected output position and native aggregate ordinal. [logical_builder.go:697](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_builder.go:697) does likewise using a local clause copy, preserving parsed ORDER metadata.
+- **Catalog binding preserves expression identity.** [logical_predicate.go:6156](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:6156) copies the exact projected `Value` instance; the guard at line 6176 protects that binding and surviving slot references. Unresolved alias lookup uses authored segments at line 6189. Ambiguity validation similarly uses the authored identifier at line 3154. These close the SELECT/GROUP precedence, rebased GROUP-source collision, and erroneous `42702` paths.
+- **Syntax remains separate from semantic addressing.** [logical_predicate.go:6148](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:6148) derives numeric classification from `sq.orderBy[i].pos`. Resolving a named alias to `SortKey.Pos` therefore does not impose numeric duplicate semantics.
+- **The Cascades boundary remains sound.** [cascades_translator.go:6502](/home/birdy/projects/fdb-go/pkg/relational/core/query/cascades_translator.go:6502) binds native ordinals to the actual sort-input owner; line 6520 binds structural drafts through `bindPostAggregateValue`. The corrected comment accurately distinguishes draft source/group expressions from the eventual aggregate-row owner.
+
+Java’s [QueryVisitor.java:955](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/visitors/QueryVisitor.java:955) resolves the original identifier and retains the matched `Expression`, supporting this ownership model. Its restoration of the pre-ephemeral scope at line 298 supports the measured GROUP-only alias refusal, `42703`.
+
+Regression discrimination is adequate. [order_by_exact_metadata_test.go:713](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/order_by_exact_metadata_test.go:713) checks exact projection pointers and source ownership; line 736 explicitly reaches `VisitQueryBody`. The GROUP-source test checks actual Q/P owners. [no_from_select_probe_test.go:72](/home/birdy/projects/fdb-go/pkg/relational/sqldriver/no_from_select_probe_test.go:72) pins the original reproducer’s labels `Z,P.ID` and rows `(1,2),(1,1),(2,2),(2,1)`.
+
+The completed Java log contains all **22 asserted records**, with Go extensions distinguished from Java refusals. All **seven mutation records** reconcile with their changed-source hashes, log hashes, successful compilation, and recorded test failures. No assertions or expectations were weakened.
+
+Separate unmet verification/publication gates:
+
+- At final inspection, the final verification directory contained **no completed results/population JSONs**. Final-tree full 93-target, race 14-target, 30-second/four-worker fuzz, `just test`, and nominal 1M ABBA verification remain uncredited. In-flight/absent results imply neither success nor failure. Earlier-tree greens and the failed fuzz setup provide no final-tree credit.
+- The **<5ms aspiration** remains unmet; universal performance parity remains unestablished. Previously accepted latency investigation stands.
+- Historical executor startup-timeout causation still requires unavailable original artifacts.
+- Legacy RaBitQ deployment requires disable/rebuild. WS-B–K and whole-upgrade completion remain open.
+- Commit/push/merge remain forbidden; PR786 stays draft/unchanged.
+
+Accepted storage/RaBitQ/array/descriptor/fixture scope and approved extensions remain accepted; FDB C++ remains **7.3.77**. No edits, builds/tests, agents/worktrees, Git-state changes, or GitHub contact occurred.

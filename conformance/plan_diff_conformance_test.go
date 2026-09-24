@@ -149,11 +149,3 @@ var _ = Describe("Plan Equivalence Harness", func() {
 		}
 	})
 })
-
-// javaBaseURL extracts the conformance server URL from a JavaInvoker
-// for plandiff's HTTP engine. JavaInvoker.baseURL is package-private;
-// since this test file is in the same conformance_test package, the
-// access is direct.
-func javaBaseURL(j *JavaInvoker) string {
-	return j.baseURL
-}

@@ -1,0 +1,17 @@
+**ACK — IMPLEMENTATION CODE** at tree `0dedbe1b1083358fb9568a31178084c043fa31e0`. No required implementation fix found in this delta.
+
+Reviewed the complete 26-file diff from `15c853e0f15c1daed5214da4998308e30c577ed7`, frozen additions through `git show`, actual prior reports/prompts, and pinned Java 4.14.2.0 at `fdacd162a9c8acfadc49082b89185c823ab8ae4a`. Session metadata confirms **gpt-6-astra / xhigh / read-only**.
+
+- **UNION identity:** [logical_predicate.go:7358](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:7358) counts exact labels and resolves the structured bare identifier without refolding. Relaxed matching runs only after an exact miss. Cardinality is checked before ordinal assignment and duplicate validation; map iteration cannot choose an executable owner when multiple fallback matches exist.
+- **Shared SELECT conversion:** [logical_builder.go:1021](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_builder.go:1021) preserves normalized alias identity, and [logical_predicate.go:6360](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:6360) compares exact names and identifier segments. This closes the adjacent case-folding defects consistently with Java’s normalization, `lookupAlias`, and duplicate validation.
+- **Regression integrity:** [order_by_exact_metadata_test.go:1101](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/order_by_exact_metadata_test.go:1101) covers both constructors, both case owners, mixed/reversed ordering, unquoted normalization, duplicate keys, and missing-name precedence. UNION retains `Pos`; ordinary SELECT consumes it into the exact projected Value. That assertion correction follows the existing contract. True ambiguity, structured qualification, raw-metadata compatibility, star elision, and normalization controls remain intact.
+
+All **6,478 frozen hashes** match the candidate and workspace. Completed evidence reconciles **9,906 RUN/PASS entries** across five uncached affected targets, with zero failures/skips; **56 Java probe records**; and nine reconstructed mutation hashes with matching assertion failures and restored sources. The Java probe was focused, not a full conformance run. FDB assertions preserve complete ordered rows and case-sensitive column labels.
+
+The differing Java/Go UNION results retain the documented combined-ordering and in-memory-sort extensions. No golden, allowlist, corpus, or existing assertion relaxation appears in the delta.
+
+**Execution gates remain open:** full, fuzz, race15, `just test`, and ABBA two-each receive no completion credit here. No waiting or polling occurred. The interrupted prior full run is not green.
+
+**Publication remains gated:** HEAD is unchanged at `71ccd8cf8b3fd0dbafe283e91171818e36af555e`. No edits, builds/tests, agents, worktrees, Git mutations, or GitHub contact occurred. PR786 remains draft; commit/push/merge remain unauthorized.
+
+WS-B–K and the whole upgrade remain open. Storage unchanged-scope ACK, FDB C++7.3.77, approved extensions, and legacyRaBitQ disable/rebuild stand. GRV/RPC attribution remains bounded; historical timeout causation remains unexplained.

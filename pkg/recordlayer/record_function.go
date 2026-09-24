@@ -68,8 +68,12 @@ func (store *FDBRecordStore) findIndexForRecordFunction(
 		if idx == nil {
 			return nil, fmt.Errorf("record function %q: %w", fn.Name, &IndexNotFoundError{IndexName: fn.Index})
 		}
-		if !store.IsIndexReadable(idx.Name) {
-			return nil, fmt.Errorf("record function %q: %w", fn.Name, &IndexNotReadableError{IndexName: idx.Name, CurrentState: store.GetIndexState(idx.Name)})
+		state, err := store.readIndexState(idx.Name)
+		if err != nil {
+			return nil, err
+		}
+		if state != IndexStateReadable {
+			return nil, fmt.Errorf("record function %q: %w", fn.Name, &IndexNotReadableError{IndexName: idx.Name, CurrentState: state})
 		}
 		return idx, nil
 	}
@@ -81,7 +85,11 @@ func (store *FDBRecordStore) findIndexForRecordFunction(
 	bestColSize := int(^uint(0) >> 1) // MaxInt
 
 	for _, idx := range candidates {
-		if !store.IsIndexReadable(idx.Name) {
+		state, err := store.readIndexState(idx.Name)
+		if err != nil {
+			return nil, err
+		}
+		if state != IndexStateReadable {
 			continue
 		}
 		if canEvaluateRecordFunction(fn, idx) {

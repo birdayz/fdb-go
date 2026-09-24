@@ -1,0 +1,92 @@
+**NAK.**
+
+- **Tree:** `256afd191053c0f4f5e47b88bdeddbe19597f8fc`
+- **Design:** `rfcs/257-java-upgrade-audit/ws-j-design.md`, SHA256 `cef3fdcccc59af0eed7d40447b2ff88e974b95cff431b4c738f757af057cd707`, 974 lines (re-hashed).
+- **Java:** `fdacd162a`.
+
+This was a read-only review; I ran nothing. MEASURED means the fact is in a committed evidence file or a `/var/tmp` log. SOURCE means I read it in code.
+
+**Checked and correct**
+- **Evidence:**
+  - All 10 hashes in `evidence-v3.txt` match the tree.
+  - The tally reconciles: 161+4+180+4+20+101 = 470, and each population row sums.
+  - All 54 shape lines are there, including the ten literal spellings and the three cross-type shapes, byte-equal.
+- **Landed code:**
+  - `literalKeyCarrier` refuses INT constants outside 32 bits.
+  - `validateVersion` matches `MetaDataEvolutionValidator.java:154`.
+  - F12 matches `Index.java:131, 253-266, 356-364`, including the legacy-type branch.
+  - `literalCarriersEquivalent` is wired only through `validateSchemaRebind`.
+- **§4:** the carry-rule host is right: both CREATE SCHEMA TEMPLATE and `fleet.SaveTemplate` go through `SaveSchemaTemplateConstantAction`. The Java validator rules it cites (`:436-444, 546-552, 651-655`) match.
+- **Mutations:** the companion-removal and class-ratchet mutations are MEASURED. `__pycache__` is gone.
+
+## HIGH
+
+**1. §3.3: the translated graph does not have Java's shape.**
+- SOURCE, Go:
+  - WHERE lowers to `LogicalFilterExpression` (`cascades_translator.go:283-293`, reached from `:2440` at `:3007`). HAVING does too (`:7985`).
+  - SELECT lists lower to `LogicalProjectionExpression` (`:296`, `:348`).
+  - The builder emits Project(Sort(Filter)), per the comment in `translateProject` (`:6712` on).
+- SOURCE, Java:
+  - IndexSpec has no filter or projection arm. Only `SelectExpression` owns a predicate (`IndexSpec.java:387-401`).
+  - `DdlVisitor.java:274` asserts the top node is a `LogicalSortExpression`.
+- Consequences under the §3.3 table:
+  - A Go filter falls into the "every other class" arm, so a WHERE predicate is silently dropped and the index is stored unfiltered.
+  - The select-having precedence can never fire. `shape:having` is a both-reject pin today, so this is a measured regression.
+  - The top-level sort assertion misfires.
+- The planned tests on "a hand-built graph" cannot catch any of this.
+- Needed: arms for LogicalFilter (as predicate owner, with both precedence messages), LogicalProjection and Project-over-Sort, or a normalization into Java's shape. Test every arm on the output of `TranslateToCascadesWithError`.
+
+**2. §3.5 × §6: what happens when a stored key has no lane is undecided.**
+- SOURCE: Java catches only `UnsupportedOperationException` during candidate expansion (`MatchCandidateExpansion.java:101-131`). So a `VerifyException` from `toValue`/`encapsulate` (`LongArithmethicFunctionKeyExpression.java:121-124`, `KeyExpressionExpansionVisitor.java:223`) fails the whole query. That matches the MEASURED XX000 over the `long_value` variant.
+- A pre-F2 Go-stored bitmap key is (LONG, LONG). It passes §3.5's "INT or LONG" rule, but §6's construction-time table has no lane for it.
+- The design must decide between:
+  - propagating the error, which makes queries on un-rebound tenants fail where Go answers them today;
+  - declining the candidate, which is a declared divergence.
+- §6's "no other lane is reachable" holds for SQL only, not for stored metadata.
+- Add a non-bitmap read on T1 to the `long_value` variant to measure whether Java's failure covers the whole table. Decide, declare and pin.
+
+## MEDIUM
+
+**3. The §8 order breaks the §3.3 port.**
+- The ported result check admits ArithmeticValue and LiteralValue (`IndexSpec.java:435-442`).
+- In Go the bit and bitmap operators stay `ScalarFunctionValue` until step 6 (`scalar_function_catalog.go:397-409`), and Go literals are `ConstantValue`.
+- At step 5, `bitmap-aggregate-index.yamsql:21` and the bitmap/bitand shapes, all equal today, would be rejected.
+- Land §6 first, or give a Go Value-class table.
+
+**4. §3.5 matching is sound only because of the plan-cache key.**
+- MEASURED: Java matches the query's `_.D & @c7` against the stored literal through `ConstantValueEquivalence` plus a `QueryPlanConstraint` (`ValueEquivalence.java:351-395`).
+- SOURCE: Go has no equivalent in `value_equivalence.go`. It is sound only because the plan cache keys on literal text (`query_hash.go` NOTE, which calls literal parameterization "a separate reach item").
+- Record that coupling at both sites, or port the constraint.
+
+**5. F13's scope and upgrade path are unstated.**
+- What landed goes well beyond "read signed":
+  - `SetRecords` no longer defaults to `UnionDescriptor`;
+  - the union-less mode is deleted;
+  - `RecordMetaDataFromProto` now validates (`metadata_proto.go:250-254`, `metadata.go:285, 343, 356`).
+- Go-stored metadata that loaded yesterday becomes unopenable if it has an unsigned field, a union recognised only by the name `UnionDescriptor`, or no union.
+- There is no design section, no upgrade note (F2b has one), and no test that loads previously stored metadata.
+- The query-side readers still read unsigned (`values.go:1165`, `proto_field_type.go:124`). That contradicts CHANGELOG's claim that signed reads also cover "descriptors that reach the evaluator otherwise".
+- The JVM evidence (`vr-jvm.log`, 13/13) is not tied to a tree hash.
+
+**6. §2's guard is keyed on the template name only.**
+- `DeleteTemplateVersion` (`api/catalog.go:45`, `fdb_template_catalog.go:232`) can drop the latest version.
+- The next save may reuse that number, because it only has to exceed the remaining latest (`save_schema_template.go:36`).
+- Schemas bound to the dropped (t, v) then silently rebind to a version carried from v−1.
+- Key the guard on (name, version) against bound schemas, with an FDB test.
+
+**7. The interim state of the landed fixes is not stated.**
+- F1 is landed, but `allowIndexRebuilds` and the carry rule are step 2.
+- Until then, `RepairSchema` or `fleet.Migrate` onto a DDL rebuild refuses:
+  - every tenant with an F1-affected root;
+  - every tenant with a FLOAT-literal key column, whose 0x20/0x21 change the widening arm correctly refuses.
+- This fails closed, but the design should state the window in §3.1/§4 and CHANGELOG, or land `allowIndexRebuilds` together with 3.1.
+
+## LOW
+- **Widening arm is symmetric.** It also admits int→long, after which Java loses bitmap planning. Make it one-directional.
+- **The widening FDB test builds both versions by hand.** Build v1 with `wsjWidenIntLiterals` over a DDL-built template, and v2 from the same DDL.
+- **F2b spec compares decoded text, not raw bytes.** It compares Java's decoded tuple text of the value; `Hex` is fetched but unused. Reword "raw entries compared", or compare the hex.
+- **The non-integer rule is typing-only.** Its rationale ("entries hold the query value") also fails at INT-lane overflow, where the entries use long arithmetic and the INT query expression errors. Say so and pin the INT_MAX case.
+- **Mutation evidence is incomplete.** The validator and rebind mutations (`wsj3-val-mut1/2`, `wsj3-rebind-mut`) are only in `/var/tmp`. Record them in `evidence-mutations.txt` v3, and hash the validator and catalog test in `evidence-v3.txt`.
+- **The TODO F11 block contradicts itself.** It says "never rebuild" and then "rebuilt on the new version"; the second should say "a carried version (§4)".
+- **The class ratchet pins only the class.** Go's rejection code and text, and any further divergence inside a non-equal class, are not pinned.
+- **Union-validation error precedence differs.** Java checks a non-message union field before a repeated one (`RecordMetaDataBuilder.java:688-697`). Go appends `validateRecordUnion` errors (`metadata.go:356`) before the non-message error (`:365`).

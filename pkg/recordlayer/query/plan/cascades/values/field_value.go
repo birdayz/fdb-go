@@ -936,10 +936,7 @@ func readProtoOrdinal(message protoreflect.Message, expected *exactType, ordinal
 		return nil, resolutionError(LayoutRuntimeShape, fmt.Sprintf("field.path[%d]", depth), "protobuf descriptor is shorter than the resolved path")
 	}
 	field := fields.Get(ordinal)
-	if field.HasPresence() && !message.Has(field) {
-		if field.HasDefault() {
-			return ProtoFieldToRowValue(field, field.Default()), nil
-		}
+	if !ProtoFieldReadsValue(message, field) {
 		return nil, nil
 	}
 	return ProtoFieldToRowValue(field, message.Get(field)), nil

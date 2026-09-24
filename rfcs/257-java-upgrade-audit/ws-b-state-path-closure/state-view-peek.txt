@@ -1,0 +1,45 @@
+File: stress_test
+Build ID: 498919aff001d8366249403a2544fba2d833084f
+Type: cpu
+Time: 2026-09-22 01:13:11 CEST
+Duration: 184.29s, Total samples = 294.71s (159.91%)
+Showing nodes accounting for 294.51s, 99.93% of 294.71s total
+----------------------------------------------------------+-------------
+      flat  flat%   sum%        cum   cum%   calls calls% + context 	 	 
+----------------------------------------------------------+-------------
+                                             7.07s 60.32% |   fdb.dev/pkg/recordlayer.(*FDBRecordStore).shouldMaintainIndex
+                                             4.65s 39.68% |   fdb.dev/pkg/recordlayer.(*FDBRecordStore).updateOneIndex
+     0.36s  0.12%  0.12%     11.72s  3.98%                | fdb.dev/pkg/recordlayer.(*FDBRecordStore).readIndexState
+                                             8.45s 72.10% |   fdb.dev/pkg/fdbgo/fdb.Transaction.GetReadVersion
+                                             1.90s 16.21% |   fdb.dev/pkg/fdbgo/fdb.(*futureInt64).Get
+                                             0.84s  7.17% |   fdb.dev/pkg/recordlayer.(*transactionIndexStateView).read
+                                             0.11s  0.94% |   fdb.dev/pkg/recordlayer.(*FDBRecordContext).Transaction (inline)
+                                             0.06s  0.51% |   fdb.dev/pkg/recordlayer.(*FDBRecordStore).ensureStoreStateLoadedErr (inline)
+----------------------------------------------------------+-------------
+                                            18.36s   100% |   fdb.dev/pkg/recordlayer.(*FDBRecordStore).updateSecondaryIndexesLocked
+     0.22s 0.075%   0.2%     18.36s  6.23%                | fdb.dev/pkg/recordlayer.(*FDBRecordStore).updateOneIndex
+                                             8.24s 44.88% |   fdb.dev/pkg/recordlayer.(*atomicMutationIndexMaintainer).Update
+                                             4.67s 25.44% |   fdb.dev/pkg/recordlayer.(*standardIndexMaintainer).Update
+                                             4.65s 25.33% |   fdb.dev/pkg/recordlayer.(*FDBRecordStore).readIndexState
+                                             0.58s  3.16% |   fdb.dev/pkg/recordlayer.(*FDBRecordStore).getIndexMaintainer
+----------------------------------------------------------+-------------
+                                            16.69s   100% |   fdb.dev/pkg/fdbgo/fdb.Transaction.GetReadVersion.func1
+     0.20s 0.068%  0.26%     16.69s  5.66%                | fdb.dev/pkg/fdbgo/client.(*Transaction).GetReadVersion
+                                             9.47s 56.74% |   fdb.dev/pkg/fdbgo/client.(*Transaction).opContext
+                                             4.44s 26.60% |   fdb.dev/pkg/fdbgo/client.(*Transaction).opContext.func4
+                                             2.58s 15.46% |   fdb.dev/pkg/fdbgo/client.(*Transaction).readVersionForOperation
+----------------------------------------------------------+-------------
+                                             8.45s   100% |   fdb.dev/pkg/recordlayer.(*FDBRecordStore).readIndexState
+     0.16s 0.054%  0.32%      8.45s  2.87%                | fdb.dev/pkg/fdbgo/fdb.Transaction.GetReadVersion
+                                             7.55s 89.35% |   fdb.dev/pkg/fdbgo/fdb.newFutureInt64
+                                             0.74s  8.76% |   runtime.newobject
+----------------------------------------------------------+-------------
+                                            16.83s   100% |   fdb.dev/pkg/fdbgo/fdb.newFutureInt64.func1
+     0.05s 0.017%  0.34%     16.83s  5.71%                | fdb.dev/pkg/fdbgo/fdb.Transaction.GetReadVersion.func1
+                                            16.69s 99.17% |   fdb.dev/pkg/fdbgo/client.(*Transaction).GetReadVersion
+                                             0.09s  0.53% |   fdb.dev/pkg/fdbgo/fdb.convertError
+----------------------------------------------------------+-------------
+                                             7.09s   100% |   fdb.dev/pkg/recordlayer.(*FDBRecordStore).updateSecondaryIndexesLocked (inline)
+     0.02s 0.0068%  0.34%      7.09s  2.41%                | fdb.dev/pkg/recordlayer.(*FDBRecordStore).shouldMaintainIndex
+                                             7.07s 99.72% |   fdb.dev/pkg/recordlayer.(*FDBRecordStore).readIndexState
+----------------------------------------------------------+-------------

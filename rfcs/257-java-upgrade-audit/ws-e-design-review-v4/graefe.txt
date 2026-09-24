@@ -1,0 +1,80 @@
+**NAK** on the RFC-257 WS-E design v4.
+
+- **Tree:** `0253cfe9f8e88ce044374b20e6d7ee3fba036cb7`
+- **Design:** `rfcs/257-java-upgrade-audit/ws-e-design.md`, SHA-256 `22c3582f858fa323d83b3dbf4b9fae5cf049bc764d6cc4728836eb0ba9403337`, 1384 lines. I recomputed the hash and it matches.
+- **Java:** `fdacd162a9`, read from `.git/HEAD`.
+
+The review was read-only. **SOURCE** marks a consequence I derived from reading code; I did not measure it.
+
+**What holds.**
+- **Evidence:** the six source hashes in `evidence-run.txt` match this tree. Runs d and e each show "Ran 5 of 27" and "5 Passed". M1 and M2 each fail all 5 Describes.
+- **Answered from v3, with measured rows:** DESCRIBE/DESC/HELP admission, DRY_RUN over DELETE and DDL, update counts, `handleArray` promotion with the existing check kept, SetOption and the pool reset, the corrected UTF-8 premise, typing by `reflect.Kind`, batch-first binding errors, the fetch staying serializable, and the §8 ARRAY and WS-J F4 dependencies.
+- **Checked against the code:** the `SimplifyValue` caller census in §5.4(a) is complete for direct callers.
+
+## HIGH
+
+**1. The predicate folding regime is still not Java's (§5.4 b/e, lines 936-966; line 9 says "exactly").**
+- **Java's predicate set has three more rules.** Java runs `ConstantFoldingRuleSet` (`ConstantFoldingRuleSet.java:38-50`). Besides the value rules, it has three predicate-level folds: ConstantFoldingValuePredicateRule, ConstantFoldingPredicateWithRangesRule and ConstantFoldingMultiConstraintPredicateRule. §5.4 never mentions them.
+  - Their `EffectiveConstant` recognises only a BOOLEAN `LiteralValue`, a `NullValue`, or a NOT NULL result *type* (`ConstantPredicateFoldingUtil.java:282-301`).
+- **Go's port recognises different things.** `effectiveConstant` (`predicates/simplifier_predicate_values.go`) treats any `BooleanValue` and any non-nil `ConstantValue` as known, and ignores NOT NULL types.
+  - §5.4(b) keeps the generic fold in the predicate path. That fold turns NOT/AND/OR over literals into `BooleanValue`s (`simplifier_value.go:50-72`, whitelist `:80-104`).
+  - Confining only COALESCE arguments therefore does not make the fold "unobservable": the manufactured literals still reach the AND/OR/comparison folds.
+- **SOURCE consequences:**
+  - `WHERE (1/0 = 1) OR ((NOT FALSE) = TRUE)` can drop the erroring disjunct in Go but not in the target.
+  - §5.3 makes `COALESCE(1/0, 5)` NOT NULL. The target's `EffectiveConstant` then makes `WHERE COALESCE(1/0, 5) IS NULL` a constant FALSE. Go evaluates it and raises the error.
+- **Both engines choose the fold by cost.** Predicate simplification is an *exploration* alternative in both (`QueryPredicateSimplificationRule.java:105-131`; Go `rule_query_predicate_simplification.go`).
+  - The measured non-collapse in WHERE is most simply a lost alternative, not rule membership. Yet §5.4(e) removes the collapse from Go's predicate set, which Java's set includes (`DereferenceConstantObjectValueRuleSet.java:50-56`).
+  - A shape where the collapsed alternative removes the filter would then differ. Example: `WHERE (1/0) + CAST(NULL AS INTEGER) IS NULL`.
+- **Fix:**
+  - Stop the predicate-path fold from producing BOOLEAN literals.
+  - Port `EffectiveConstant` exactly and document the three predicate-level rules.
+  - Keep the collapse in both sets unless a measurement forces otherwise.
+  - Probe the OR shape, the `IS NULL` over the collapse, `COALESCE(1/0,5) IS NULL`, and a fold that leaves a filter behind: `WHERE COALESCE(TRUE, 1/0 = 1) AND n > 0`.
+
+**2. The IN-list NULL timing is right only for the measured population (§4.1, lines 450-462).**
+- Go's constant fork evaluates the list in `ResolveIn` whatever the context (`expr.go:1734-1795`).
+- The target evaluates at plan open only where `InComparisonToExplodeRule` fires, which is on IN predicates at the top level of a SelectExpression's predicate list (`InComparisonToExplodeRule.java:126-131`). Everywhere else the comparand is evaluated per row.
+- SOURCE: over the empty table E, these return no rows in the target and fail at planning in Go:
+  - `WHERE x IN (CAST(NULL AS BIGINT)) OR id > 0`
+  - `NOT (x IN (…))`
+  - `SELECT x IN (CAST(NULL AS BIGINT)) FROM E`
+- So "every EXECUTION … at every table size" (lines 457-459) over-claims.
+- **The Java-aligned fix exists and also removes the declared EXPLAIN divergence:**
+  - Send a list containing `CAST(NULL AS T)` through the runtime `__internal_array` fork, as the design itself says Java does (lines 446-449; `ParseHelpers.java:129-144`).
+  - Let Go's explode rule accept a comparand that does not depend on the row, as Java's does (`ArrayDistinctValue(comparand)`, `InComparisonToExplodeRule.java:164-176`).
+  - Probe the OR, NOT and projection forms.
+
+## MEDIUM
+
+**3. The index-state conflict "shape" is attributed to the wrong Java path (§6.4, lines 1241-1249).**
+- Java's SQL path never calls `getAllIndexStates`.
+  - Planning reads the cached `RecordStoreState` and adds no conflicts (`PlanContext.java:237-260`). The index states are loaded at SNAPSHOT (`FDBRecordStore.java:450-455`).
+  - A conflict key is added only for each index actually scanned (`scanIndex` → `getIndexState` → `addIndexStateReadConflict`, `:1500, 4242, 4187-4198`).
+- The whole-subspace range (`:4205-4213`) is added only by the record-layer API `getAllIndexStates`.
+- So "ANY index key … conflicts, as in the target" is unsupported, and porting the range widens Go's divergence.
+- **Fix:** measure with `snapshotReadScopeProbe` (a state change on an unused index, on the scanned index, and under a record scan), then port the per-scanned-index key.
+
+**4. The time.Time cache key is coarser than the constant it caches (lines 594-598, 697-699).**
+- The constant is the full `time.Time` and is compared by instant, at nanosecond precision (`comparisons.go:644-707`).
+- The key is "the text it binds as", and `TimestampLayout` is `"2006-01-02 15:04:05"`, whole seconds (`functions/time.go:7,13-14`).
+- So two instants within the same second share a plan with the first call's constant inlined; a warm call can then answer differently from a cold one.
+- **Fix:** key by exact instant, or normalise the bound constant to its stored precision at bind time. Add a warm-versus-cold test with sub-second instants.
+
+**5. The assignment lattice is stated for scalars only (lines 701-756).**
+- Java's lattice is recursive (`PromoteValue.java:364-429, 462-505`):
+  - element-wise for arrays (the setup's `[5]` into `BIGINT ARRAY` stores through INT_TO_LONG);
+  - field-wise for records, with a field-count check;
+  - NONE_TO_ARRAY for `[]`;
+  - STRING_TO_ENUM and STRING_TO_UUID;
+  - a VerifyException when the type codes differ in a nested type.
+- With the converters no longer narrowing, `[1.5]` into a FLOAT ARRAY and a narrowed struct field are unspecified.
+- **Fix:** specify the recursion and measure one array source and one struct source.
+
+## LOW
+
+- **6. Binding order.** Dereferencing pointers (step 2) before checking for a Valuer (step 4) loses Valuers with pointer receivers. database/sql calls `Value()` before dereferencing. Check the Valuer on the original value first.
+- **7. §5.3 versus §5.6.** The §5.3 census still lists MOD and the bit operators as catalog entries, while §5.6 and WS-J F4 move them to ArithmeticValue.
+  - The STRING lanes with a FLOAT or DOUBLE operand need Java's `Double.toString` (`values.JavaDoubleToString` exists). Those lanes are unmeasured: only STRING+INT and STRING+STRING are pinned.
+- **8. Line 9 contradicts §5.4(e).** Line 9 claims "Java's two rule sets exactly", but §5.4(e) departs from them.
+
+Finding 1 is the v3 regime gap in a new form, in the lens's core area. Finding 2 moves an error from execution into planning in shapes nobody measured, and Java has a portable mechanism that avoids both that and the declared EXPLAIN divergence.

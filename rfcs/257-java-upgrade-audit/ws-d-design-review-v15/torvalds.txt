@@ -1,0 +1,95 @@
+**NAK** on design v15.
+
+- **Tree:** `9aee2d3d3c3347375454d8cc44f91af4e486f291`.
+- **Design:** `rfcs/257-java-upgrade-audit/ws-d-design.md`, SHA256 `f4298f2fa5719546a0dc16e1a2ea42bf1c5b2d342897193ea624828c349c19fe`, 2226 lines. I recomputed the hash from the tree blob.
+- **Java:** `fdacd162`.
+- **What I read:** all four v14 verdicts, the whole v15 design and its diff from v14, RFC-094 §2, README items 26–32, the rates script and its output, the SimFDB change and its pin record, and `gate10/`.
+- Nothing was run, edited or staged.
+- **v14 findings:** every one is answered in the text, and the v14 P1's diagnosis is correct. Two of the answers are incomplete or wrong in ways that block.
+
+## P2
+
+**1. The new chain recorder has no test that can fail, and its rule is underspecified (design 1033-1039, 1053-1058, 1133-1135).**
+- **Nothing tests the recorder.** Both client prerequisites land before D-0. After that, the pure-Go client, SimFDB and libfdb_c all keep the body's error chain. So the `Run`/`RunRead` chain pins stay green if the recorder is deleted. The client-suite pin tests the wrapper, and nothing tests the recorder.
+- **Its stated reason is also unpinned.** The design justifies the recorder as holding "for any transactor, including chaos, tracing and custom". No fixture uses a transactor that strips the chain.
+- **Line 1133 will be false when it ships.** It says the loop sees the signal "only because of the recorded body error". Once the wrapper prerequisite has landed, that is no longer true.
+- **The rule needs a per-execution scope.** The recorded error must be the last closure execution's: reset when the closure starts, and nil when the body returns nil.
+  - Otherwise a transactor that loops internally can pair a stale typed error with a later commit failure that has the same code.
+  - If that stale error is `SPFreshSplitWindowError`, a real 1020 becomes an uncounted, unbounded retry.
+  - The wrapper prerequisite has the same hole once the retry limit is above 0. The Apple binding avoids it only because it compares on every iteration (bindings/go/src/fdb/database.go:163-191).
+- **Needed:**
+  - `Run` and `RunRead` pins through a test transactor that returns a bare `fdb.Error{code}`, which go red when the recorder is removed;
+  - a stale-error pin: a typed error on execution 1, a commit 1020 on the last execution, and the result must be a bare, counted 1020;
+  - the per-execution rule stated for both mechanisms.
+
+**2. The liveness claim for uncounted retries is false, and a stall under DST now hangs (1136-1147, 1165-1172; RFC-094 §2).**
+- **The spacing claim is wrong.** `ExponentialDelay` draws uniformly from [0, current) (ExponentialDelay.java:62-72). Two re-runs can therefore be about 0 ms apart; the mean gap is about current/2. "At most once per maximum delay … never in a hot loop" is false. The same sentence is in RFC-094 §2.
+- **Under simulation it is an actual hot loop.** The delay is drawn but never waited (1167), and SimFDB's 100-retry cap no longer applies (1141). The hunts pass `context.Background()` (hunt.go:158).
+- **The only protection is a rule for authors.** "No DST hunt stalls a seal without scheduling the takeover" (1145) is not a mechanism.
+- **So an accidental stall hangs instead of failing.** For example, a non-retryable error between SEAL and publish on the single goroutine used to fail loudly at the 100-retry cap. Under v15 it spins forever.
+- **Needed:**
+  - Correct both texts, and grep for the phrase: 0 hits outside review directories and the paragraph that records the withdrawal.
+  - Add a simulated-environment bound: a typed stalled-seal failure after K uncounted retries against an unchanged SEALED posting, with K stated, or a required deadline on SimFDB drivers.
+  - Add a fixture that stalls a seal with no takeover scheduled and asserts a loud failure, not a hang.
+
+## P3
+
+1. **The predicate pin cannot be built as written (1097-1101).**
+   - `fdb.Error` is just `{Code int}` with no `Unwrap` (fdb/error.go:10-12). A single-cause chain can therefore hold at most one `fdb.Error`, and on such a chain the two predicates always agree.
+   - Restate the pin over trees:
+     - `errors.Join(fdb.Error{non-retryable}, fdb.Error{1020})`: first-cause false, any-cause true;
+     - multi-`%w`;
+     - a `RecordCoreRetriableTransactionError` on a later branch.
+   - State that capability errors, `ClusterUnsplittableError` and `RecordContextNotActiveError` never unwrap to a retryable code. Otherwise `Run`'s any-cause walk retries errors that (e) and section 6 call terminal ("db.Run returns it without a retry").
+2. **`AttemptTransactor` covers writes only (1185).** It has one method, for writable bodies. `RunRead`'s read arm (1409; the 1007 fixture) needs the call's identity too. Add a read method, or say how reads get it.
+3. **The setup-DDL evidence depends on something the default client cannot produce (1311-1316).**
+   - The design relies on "the conflicting-keys report the client returns".
+   - The pure-Go client rejects `report_conflicting_keys` (fdb/options.go:261-269; API_PARITY.md:57), and SimFDB ignores it (options.go:74).
+   - `GetConflictingKeys` returns only the context's own read ranges (database.go:1188-1197).
+   - Either name libfdb_c as the backend for that evidence, or build the read-back into the pure-Go client.
+4. **The reconcile's classes do not cover every outcome (1278-1283).** Define UNKNOWN by the MAYBE_COMMITTED set (1021 and 1039; runner.go:417-421), not the literal 1021. Otherwise a real cluster whose last attempt ends in 1039, 1042 or 1213 falls into neither class.
+5. **`AttemptCall.Attempt` and the observer's index are undefined for uncounted retries (1190).** The stalled-seal fixture and "faults the call's first attempt" both depend on that definition.
+6. **The performance criterion has no load condition (1814-1822, 2055-2061).**
+   - The acceptance fixtures run in the Bazel suite beside other FDB containers (`--local_test_jobs=4`). A maximum measured on a quiet machine does not show the one-attempt assertion is "stable rather than lucky". Measure under the suite's concurrency, or state the load bound.
+   - "Go at its best" is not a stopping condition for lowering B.
+   - The 2.5 s / 5 s split assumes one peel per transaction. Inline multi-row transactions run one task per insert. Price that shape, or declare it parity.
+7. **The `ensureActive` port needs one more sentence (959).** Say whether a *failed* commit also deactivates the context. Java's `closeTransaction(false)` runs on both outcomes (FDBRecordContext.java:515-531).
+8. **Where the resolver's loop lives is unspecified.** `keyspace` imports only fdbgo, and `attemptLoop` is unexported in `recordlayer`. Say where the loop lives for the resolver, and that D-0 threads the context the resolver ignores today (fdb_resolver.go:48-50).
+9. **Evidence binding and stale references:**
+   - The pin record says only "restored": it has no comparison output and no hash tying `simfdb.go.good` to blob `a129771b`, although line 1064 says "compared".
+   - Line 977 cites ddl.go:857 and :884, which are the `Run` lines. The `Commit` grep finds :862 and :890.
+   - Line 1341 cites `:2646`; the actual line is `:2645`. That `RunRead` route also sits under a heading that says those routes are "not a ReadTransactCtx".
+
+## Verified
+- **Java:**
+  - `RunRetriable.handle` walks the whole chain with the OR rule (FDBDatabaseRunnerImpl.java:191-207).
+  - `RecordContextNotActiveException` extends `RecordCoreStorageException`, and its message is "Transaction is no longer active." (:548-551).
+  - The merger's halving and abort rules match the 1007 pricing (IndexingMerger.java:189-203, 246-258).
+  - `autoMergeDuringCommit` defaults to false (:40).
+  - The resolver runs through the runner (LocatableResolver.java:124-148).
+- **Go:**
+  - `unconvertError` and `convertError` strip the chain as described (transaction.go:537-561).
+  - libfdb_c's `runLoop` follows the Apple binding's rule.
+  - `TransactCtx` is the route today (`Run` commits through the transactor).
+  - The catalog's step 3 always calls `SaveRecord`, and the row has four deterministic fields.
+  - The self-committing DDL bodies go through `FDBRecordContext.Commit`.
+- **C++:** the proxy race is at NativeAPI.actor.cpp:6646-6649, and `grvTime` is at :6645.
+- **Censuses:**
+  - 26 direct-`Transact` lines;
+  - 57 chaos lines in 15 files;
+  - 0 raw `.Transaction().Commit(` sites, against a positive control of 154.
+- **Rates:** all 13 logs under the recovery directory that carry timing lines are in the extraction (the other two hits are the old output and a script), and the per-log counts sum to 200. I could not recompute the input sha256s under this policy.
+- **Runs:**
+  - The mutant is at line 221 of the v15 file, fails on exactly the chain test (Bazel exit 3), and the baseline passes 4 of 4.
+  - `gate10`: tree 9aee2d3 recorded before and after, build exit 0, 2 of 2 tests pass.
+  - The oracle ran 61 of 61 specs.
+- **Superseded wording:** "worst OBSERVED" appears only inside README item 29, which is marked superseded, and `BodyCommittedError` has 0 hits.
+
+## Measured vs hypothesis
+- **Measured:** the SimFDB chain pin, with its mutant recorded; the JVM corner pins and timings, which are estimates only; the gate build.
+- **Checked against source only:** the wrapper strip; libfdb_c and the Apple binding keeping the chain; the Java predicates, merger and `ensureActive`; the C++ proxy wait.
+- **Still hypothesis:**
+  - every D-0 mechanism, including the recorder, the refusal, `AttemptTransactor`, the reconcile, the observer and the uncounted retries;
+  - both client prerequisites;
+  - Go's peel time and whether it meets the 2.5 s margin;
+  - whether an n = 2000 single-precision peel fits in 10 MB.

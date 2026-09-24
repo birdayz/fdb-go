@@ -1,0 +1,69 @@
+**Verdict: NAK.** Tree `cc94face9f554e277346f6061becf84c658abc3b`, design `rfcs/257-java-upgrade-audit/ws-e-design.md`, SHA256 `8647e12bbf6082d75b6341baf04166b7b8310564e90675fd57b6eb0ef2b0569e` (hash re-verified).
+
+I read the full design, the umbrella WS-E section, the three audits, the oracle spec, both logs, and the Java and Go sources. The logs are sound: 74 JAVA lines in both runs, run 7 passed 14/14. What checks out: the LIKE value, matcher and SQLSTATE citations; per-token literal decoding; the lexer rules; the IN bare-NULL rule; the grammar placements. Go writes no LIKE or variadic PValue protos (none outside `gen/`, while `gen/` has 36+30 matching lines). The Go lexer hook works: `BaseLexer` calls `EmitEOF` without virtual dispatch, so overriding `NextToken` is right, and lexer errors reach the listener (`parser.go:225-226`).
+
+Findings follow, most severe first. The count needed more than 900 words.
+
+### High
+
+1. **Bound NULL is untyped in Java; `api.NullOf(sqlType)` breaks alignment.**
+   - `EmbeddedRelationalPreparedStatement.java:207-216`: `setNull` stores a plain `null` and throws away `sqlType`.
+   - `MutablePlanGenerationContext.java:473-495`: the parameter is then typed with `Type.fromObject(null)`.
+   - The oracle agrees: `prepared_in_typed_null` is identical to `prepared_in_object_null`. `prepared_array_typed_null_element` gets the RelationalException (NullType) message, not the SemanticException message that `array_typed_null_element` gets.
+   - A BIGINT-typed Go NULL would give the other message for `[?]`, and `COALESCE(?,?)` would succeed where Java raises 22F00.
+   - Java's array rule is type-based, not "bare": any element of NullType fails at planning (`ExpressionVisitor.java:1186-1203`).
+   - Fix: drop `NullOf` or declare it as a tested Go extension. Correct "typed bound NULL" in the umbrella and audits too; they repeat it.
+
+2. **The cache key isn't injective once tokens are uppercased.**
+   - `BASE64_LITERAL` (`RelationalLexer.g4:1306`, decoded at `walk.go:2554`) is not in the design's list of quoted kinds.
+   - So `B64'YQ=='` and `B64'yq=='` get the same key. Go inlines constants into plans, so the second query returns the first one's bytes.
+   - Today's `upperOutsideStrings` preserves quoted spans, so this would be a regression. National literals have the same problem.
+   - Fix: keep every token that contains a quoted span byte for byte, or uppercase only keyword tokens as Java does (`AstNormalizer.java:190-206`). Add a B64 pin.
+
+3. **The variadic port silently changes which argument types are admitted.**
+   - Java's COALESCE operators cover only INT, LONG, BOOLEAN, STRING, FLOAT, DOUBLE, RECORD and ARRAY (`VariadicFunctionValue.java:483-490`).
+   - Go's COALESCE has no operator-type restriction (`scalar_function_catalog.go:380`).
+   - Porting `encapsulate` would make shared BYTES, UUID and ENUM COALESCE fail with 22F00. That needs declaring, tests and a causal reference.
+   - It would also break the Go-only DATE and TIMESTAMP types (approved extension) unless they are carved out.
+
+4. **Eager evaluation alone won't reproduce `COALESCE(1, 1/0)`.**
+   - Go's `simplifyCoalesce` folds any non-nil `ConstantValue` (`simplifier_value.go:333-360,493-503`).
+   - Go SQL literals are ConstantValues, and so are the design's bound parameters. Java literals and parameters are ConstantObjectValues (`MutablePlanGenerationContext.java:229-247`), which Java's rule refuses to fold (`EvaluateConstantCoalesceRule.java:105-108`).
+   - Also missing: the second blanket nullability override, `ScalarFunctionValue.Type()` in `values.go` ("forced to nullable regardless"). Both the umbrella and cascades W2 require removing it.
+   - The simplifier code that depends on that override (`coalesceReplacementFor`, `sameDeclaredType`) isn't listed.
+
+5. **The nullable-array extension boundary has no structural rule.**
+   - The approved pins keep `[1,NULL]=[1,NULL]` and `[NULL]=[NULL]` answering TRUE (`array_comparison_java_probe_test.go:53-55`).
+   - Section 4.2 rejects `[1,NULL]` where the array is constructed, and Java's check doesn't know its context.
+   - The design needs to state the admission rule and list the covered and not-covered spellings: column vs literal, under CASE or AND, bound NULL elements, INSERT.
+
+6. **Snapshot option: scope, propagation and conflict ownership.**
+   - **(a) Connection scope.** Java declares the option "Scope: Connection, Query" (`Options.java:224-232`) and validates the merged options (`PlanGenerator.java:170-171`). The connection path, and with it the umbrella's DDL 0A000, is missing.
+   - **(b) Unimplemented statements.** Go has EXECUTE CONTINUATION and COPY only in the grammar; no code outside the parser handles them. The EXECUTE CONTINUATION admission, the COPY 0A000, "resume only when passed again", and binding the continuation atom and COPY parameter all describe code that doesn't exist.
+   - **(c) The existing plumbing doesn't reach every read.** Non-test executor code has no `IsolationLevel` reference (the control grep found 3 lines, all `props.DryRun`). Record fetch is `LoadRecord(pk)` with no isolation (`executor.go:1417,2143`; `executor_new_plans.go:921`). Needs a census of read sites and a pin per arm.
+   - **(d) Conflict ownership.** "Every read the execution issues" is broader than Java, which applies snapshot only to the query's scans (`Options.java:226-229`). Store-open and index-state reads that feed `validatePlanIndexDependencies` (`index_state_planning.go:246`) must stay serializable. Add a test where a concurrent index disable hits a snapshot reader that also writes.
+   - **(e) PLAN RIGHT DEEP.** The grammar sync admits it, but nothing feeds it into planner options or the cache-key part, so it would do nothing.
+   - **(f) Key scope.** Java leaves option tokens out of the key (`AstNormalizer.java:282-312`); the design's statement-token key includes them. Then SNAPSHOT and non-SNAPSHOT statements never share a cache entry, and the "no leak through a cached plan" test can't hit a shared entry.
+   - **(g) Test wording.** "One read version across pages" is false for Go auto-commit paging (`cascades_generator.go:350-358`); limit it to explicit transactions. The design's conflict test says the unoptimized statement "conflicts" but never names the umbrella's required reader-side write, and without one it can't conflict.
+
+### Medium
+
+7. **Phase claims are hypotheses presented as measurements.** Java validates the LIKE pattern and escape only per row in `PatternForLikeValue.eval` (`:115-131`); the pattern goes through literal processing and the escape is a `LiteralValue`. I found no planning-time evaluation. "Raises at planning, exactly as the target" and IN's "at planning for constants" are unmeasured. Go would diverge on empty input and on EXPLAIN. Add probes for an empty table, a filtered-out row, and EXPLAIN.
+8. **Parameter ordering is unmeasured.** Java binds positional values from a counter in visitor order (`PreparedParams.java:66-76`), and the visitor goes FROM, then WHERE, then SELECT (`QueryVisitor.java:258-296`). AstNormalizer, which the design cites, is only the hasher.
+   - Every prepared probe has one positional parameter. There are no probes for named parameters, multiple parameters, float/double/bool/bytes, or Java's `IN ?` array parameter (`RelationalParser.g4:1272-1276`), which the design doesn't port.
+   - Ordinal scope across multi-statement `ExecContext` batches is unspecified.
+   - Keeping `time.Time` "as today" contradicts deleting the midnight-date rendering.
+9. **Section 0 overstates what the oracle measures.**
+   - `render` prints rows only, and the runner never emits nullability (`sql_plan_steps.java:991`). So the variadic nullability rules and "setLong is LONG" are not measured; the Java row `2.147483648e+09` is a JSON float artifact.
+   - The acceptance rule "Go line equals Java line" is undefined: the formats differ, and the Go harness passes int64 for the `int` kind.
+10. **`LIKE ?` currently works in Go and the design removes it.** Say so explicitly. Also retire the audits' "dynamic pattern restriction is a Go gap" claim (cascades W1, relational W3); `prepared_like_param_pattern` refutes it.
+
+### Low
+
+11. **Stale or incomplete citations and small gaps.**
+    - Executor DML entries are at `executor.go:3865/3934/4181`, not 3859/3928/4175. Java's guard is at `QueryPlanUtils.java:52`, with call sites at DataModification `:195` and Delete `:99`.
+    - The `Comparison.Escape` consumer list misses `planning_cost_model.go:1401`, `comparison_identity.go:58,104`, `predicates.go:174`, `semantic_equals.go:41`, `semantic_hash.go:42` and `plans/semantic_identity.go:167,216`.
+    - Today's IN check is value-based (`walk.go:1991-1996`), not syntactic as the design says.
+    - The umbrella lists build-docs W4–W7; state that W7 belongs to WS-G.
+    - The Go error type for the executor snapshot guard isn't named (Java throws `RecordCoreArgumentException`).
+    - "Invalid UTF-8 has no Java counterpart" is false for records Go writes, which Java can read.

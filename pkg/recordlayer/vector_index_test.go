@@ -3,10 +3,15 @@ package recordlayer
 import (
 	"context"
 	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"math/rand"
+	"os"
 	"sort"
+	"time"
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -1646,6 +1651,71 @@ var _ = Describe("HNSW with RaBitQ", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	It("keeps deletion replacements in transformed coordinates after centroid bootstrap", func() {
+		ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		defer cancel()
+		config := DefaultHNSWConfig(4)
+		config.M, config.MMax, config.MMax0 = 4, 4, 8
+		config.Quantizer = rabitq.NewQuantizer(rabitq.MetricEuclidean, 4)
+		config.SampleVectorStatsProbability = 1
+		config.MaintainStatsProbability = 1
+		config.StatsThreshold = 1
+		ss := specSubspace().Sub("entry-replacement-coordinates")
+		vectors := map[int64][]float64{1: {1, 2, 3, 4}, 2: {-3, 8, 2, 6}}
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			for _, pk := range []int64{1, 2} {
+				graph := NewHNSWGraph(newHNSWStorage(ss, config), config)
+				Expect(graph.Insert(tx, tuple.Tuple{pk}, vectors[pk])).To(Succeed())
+			}
+			storage := newHNSWStorage(ss, config)
+			before, err := storage.loadAccessInfo(tx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(before.hasTransform()).To(BeTrue(), "the replacement must cross the centroid transition")
+			for _, pk := range []int64{1, 2} {
+				raw, _, err := storage.loadNodeLayer(tx, 0, tuple.Tuple{pk})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(raw).To(Equal(serializeVector(vectors[pk])), "both data nodes must have been inserted pre-centroid")
+			}
+			graph := NewHNSWGraph(storage, config)
+			Expect(graph.Delete(tx, before.pk)).To(Succeed())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Reopen in a separate transaction with no node or transform cache.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			storage := newHNSWStorage(ss, config)
+			after, err := storage.loadAccessInfo(tx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(after.hasTransform()).To(BeTrue())
+			Expect(after.pk).To(Equal(tuple.Tuple{int64(2)}))
+			raw := serializeVector(vectors[2])
+			graph := NewHNSWGraph(storage, config)
+			want := serializeVector(graph.buildTransform(after).apply(vectors[2]))
+			Expect(want).NotTo(Equal(raw), "a fixed-point vector would make this coordinate regression vacuous")
+
+			// The prefix-independent image also serves as a replay fixture when this
+			// regression is run against a pre-fix writer. Keep the full operation
+			// sequence above: a hand-written raw tuple cannot prove an old writer
+			// actually produced the ambiguous access-info representation.
+			kvs, err := tx.GetRange(ss, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}).GetSliceWithError()
+			Expect(err).NotTo(HaveOccurred())
+			for _, kv := range kvs {
+				fmt.Fprintf(GinkgoWriter, "HNSW_ENTRY_FIXTURE key=%x value=%x\n", []byte(kv.Key[len(ss.Bytes()):]), kv.Value)
+			}
+			Expect(after.vectorBytes).To(Equal(want), "access-info must store the transformed replacement, not the original raw node bytes")
+			results, err := graph.Search(tx, vectors[2], 1, 10)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(1))
+			Expect(results[0].PrimaryKey).To(Equal(tuple.Tuple{int64(2)}))
+			Expect(results[0].Distance).To(Equal(float64(0)))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("delete works with RaBitQ", func() {
 		graph := makeRaBitQGraph(4, 4)
 
@@ -1865,15 +1935,99 @@ var _ = Describe("HNSW with RaBitQ", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	It("persists Java RaBitQ bytes at compact and inline write boundaries across coordinate representations", func() {
+		ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		defer cancel()
+		// Literal from Java 4.14.2.0 encodeRaBitQVector([-3,8,2,6],4),
+		// also retained in TestRaBitQJavaEncodingGoldens. Do not derive this
+		// storage oracle by calling the Go encoder.
+		want, err := hex.DecodeString("03405c400000000000bff0b3bb6b02f4c43fe0710ee86e1c9957e7b0")
+		Expect(err).NotTo(HaveOccurred())
+		current := []float64{-3, 8, 2, 6}
+		for _, representation := range []string{"raw", "transformed", "encoded", "cached-raw"} {
+			ss := specSubspace().Sub("write-boundary", representation)
+			config := makeRaBitQGraph(4, 4).config
+			config.UseInlining = true
+			pk, neighbor := tuple.Tuple{int64(1)}, tuple.Tuple{int64(2)}
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				tx := rtx.Transaction()
+				storage := newHNSWStorage(ss, config)
+				graph := NewHNSWGraph(storage, config)
+				// Rotation of zero is zero, so the translation independently
+				// determines the expected transformed vector exactly.
+				graph.opXform = newHNSWTransform(42, current, 4, false)
+				vector := hnswVector{data: serializeVector(make([]float64, 4))}
+				switch representation {
+				case "transformed":
+					vector = hnswVector{data: serializeVector(current), transformed: true}
+				case "encoded":
+					vector = hnswVector{data: want}
+				}
+				Expect(graph.saveNodeLayer(tx, 0, neighbor, vector, nil, nil)).To(Succeed())
+				inlineVector := vector
+				if representation == "cached-raw" {
+					storage.cacheNeighborVector(1, neighbor, vector.data)
+					inlineVector = hnswVector{}
+				}
+				Expect(graph.saveNodeLayer(tx, 1, pk, hnswVector{}, []tuple.Tuple{neighbor}, []hnswVector{inlineVector})).To(Succeed())
+				Expect(storage.getVectorBytesFromCache(0, neighbor)).To(Equal(want), representation)
+				Expect(storage.getVectorBytesFromCache(1, neighbor)).To(Equal(want), representation)
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				tx := rtx.Transaction()
+				storage := newHNSWStorage(ss, config)
+				compact, err := tx.Get(fdb.Key(storage.dataSubspace.Pack(tuple.Tuple{int64(0), neighbor}))).Get()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(compact).To(Equal(tuple.Tuple{int64(0), tuple.Tuple{want}, tuple.Tuple{}}.Pack()), representation)
+				edge, err := tx.Get(fdb.Key(storage.dataSubspace.Pack(tuple.Tuple{int64(1), pk, neighbor}))).Get()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(edge).To(Equal(tuple.Tuple{want}.Pack()), representation)
+				decoded, _, err := storage.loadNodeLayer(tx, 0, neighbor)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(decoded).To(Equal(want), representation)
+				_, neighbors, err := storage.loadNodeLayerDispatch(tx, 1, pk)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(neighbors).To(HaveLen(1))
+				Expect(storage.getVectorBytesFromCache(1, neighbor)).To(Equal(want), representation)
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		}
+	})
+
+	It("validates the Java RaBitQ statistics threshold boundary", func() {
+		config := DefaultHNSWConfig(4)
+		for _, threshold := range []int{-1, 0, 1, 10, 11, 1000} {
+			config.StatsThreshold = threshold
+			config.Quantizer = nil
+			Expect(ValidateHNSWConfig(config)).To(Succeed())
+			config.Quantizer = rabitq.NewQuantizer(rabitq.MetricEuclidean, 4)
+			index := NewVectorIndex("threshold", Field("vector_data"), 4)
+			index.Options["hnswUseRaBitQ"] = "true"
+			index.Options[IndexOptionHNSWStatsThreshold] = fmt.Sprint(threshold)
+			parsed := parseHNSWConfig(index)
+			Expect(parsed.StatsThreshold).To(Equal(threshold))
+			if threshold <= 10 {
+				Expect(ValidateHNSWConfig(parsed)).To(MatchError("hnsw: statThreshold out of range"))
+				Expect(ValidateHNSWConfig(config)).To(MatchError("hnsw: statThreshold out of range"))
+			} else {
+				Expect(ValidateHNSWConfig(config)).To(Succeed())
+			}
+		}
+	})
+
 	It("decodeStoredVector reconstructs approximate vector from RaBitQ bytes", func() {
 		dims := 8
 		numExBits := 7
 		graph := makeRaBitQGraph(dims, numExBits)
 
 		original := []float64{1.0, -2.0, 3.0, -4.0, 5.0, -6.0, 7.0, -8.0}
-		// transformActive=true forces the RaBitQ encoding (the post-centroid regime);
-		// this exercises the quantizer round-trip directly.
-		encoded := graph.encodeVectorBytes(original, true)
+		graph.opXform = newHNSWTransform(42, make([]float64, dims), dims, false)
+		encoded, err := graph.nodeVectorBytes(hnswVector{data: serializeVector(original), transformed: true})
+		Expect(err).NotTo(HaveOccurred())
 		Expect(encoded[0]).To(Equal(byte(3))) // RABITQ
 
 		decoded, err := graph.decodeStoredVector(encoded)
@@ -2603,6 +2757,145 @@ var _ = Describe("VectorIndex Store Integration", func() {
 				Expect(results[i].Distance).To(BeNumerically(">=", results[i-1].Distance))
 			}
 
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("disables and rebuilds the retained legacy Go RaBitQ graph from authoritative records", func() {
+		ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		defer cancel()
+		data, err := os.ReadFile("testdata/hnsw_legacy_go_entry.json")
+		Expect(err).NotTo(HaveOccurred())
+		var fixture struct {
+			Writer string `json:"writer"`
+			Record struct {
+				PK     int64     `json:"pk"`
+				Vector []float64 `json:"vector"`
+			} `json:"remaining_record"`
+			KVs []struct {
+				Key   string `json:"key_hex"`
+				Value string `json:"value_hex"`
+			} `json:"kvs_relative_to_graph_prefix"`
+		}
+		Expect(json.Unmarshal(data, &fixture)).To(Succeed())
+		Expect(fixture.Writer).To(Equal("e48f5b4965543cd4d99b5578356059e12d969c7c"))
+		Expect(fixture.KVs).To(HaveLen(2))
+		Expect(fixture.Record.PK).To(Equal(int64(2)))
+		Expect(fixture.Record.Vector).To(Equal([]float64{-3, 8, 2, 6}))
+		ks := specSubspace()
+		index := NewVectorIndex("legacy_rabitq", KeyWithValue(Field("vector_data"), 0), 4)
+		index.Options[IndexOptionVectorMetric] = "EUCLIDEAN_METRIC"
+		index.Options[IndexOptionHNSWM] = "4"
+		index.Options[IndexOptionHNSWMMax] = "4"
+		index.Options[IndexOptionHNSWMMax0] = "8"
+		index.Options["hnswUseRaBitQ"] = "true"
+		index.Options["hnswRaBitQNumExBits"] = "4"
+		index.Options[IndexOptionHNSWSampleVectorStatsProbability] = "1.0"
+		index.Options[IndexOptionHNSWMaintainStatsProbability] = "1.0"
+		index.Options[IndexOptionHNSWStatsThreshold] = "11"
+		builder := baseMetaData()
+		builder.AddIndex("Order", index)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+		open := func(rtx *FDBRecordContext) *FDBRecordStore {
+			store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+			return store
+		}
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store := open(rtx)
+			_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(fixture.Record.PK), VectorData: serializeVector(fixture.Record.Vector)})
+			Expect(err).NotTo(HaveOccurred())
+			ss := store.indexSubspace(index)
+			rtx.Transaction().ClearRange(ss)
+			for _, kv := range fixture.KVs {
+				key, err := hex.DecodeString(kv.Key)
+				Expect(err).NotTo(HaveOccurred())
+				value, err := hex.DecodeString(kv.Value)
+				Expect(err).NotTo(HaveOccurred())
+				rtx.Transaction().Set(fdb.Key(append(ss.Bytes(), key...)), value)
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store := open(rtx)
+			storage := newHNSWStorage(store.indexSubspace(index), parseHNSWConfig(index))
+			info, err := storage.loadAccessInfo(rtx.Transaction())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(info.hasTransform()).To(BeTrue())
+			Expect(info.vectorBytes).To(Equal(serializeVector(fixture.Record.Vector)), "replay must retain the old writer's ambiguous entry")
+			changed, err := store.MarkIndexDisabled(index.Name)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(changed).To(BeTrue())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store := open(rtx)
+			Expect(store.GetIndexState(index.Name)).To(Equal(IndexStateDisabled))
+			_, err := store.SearchVectorIndex(index, fixture.Record.Vector, 1, 10)
+			var unreadable *IndexNotReadableError
+			Expect(errors.As(err, &unreadable)).To(BeTrue())
+			kvs, err := rtx.Transaction().GetRange(store.indexSubspace(index), fdb.RangeOptions{}).GetSliceWithError()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(kvs).To(BeEmpty(), "disable must clear every legacy graph key")
+			record, err := store.LoadRecord(tuple.Tuple{fixture.Record.PK})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(record.Record.(*gen.Order).GetVectorData()).To(Equal(serializeVector(fixture.Record.Vector)))
+			// The old fixture used threshold 1, which Java rejects. Keep its
+			// graph bytes intact but rebuild with Java-valid threshold 11 and
+			// enough authoritative records to exercise centroid establishment.
+			for id := int64(100); id < 111; id++ {
+				_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(id), VectorData: serializeVector([]float64{float64(id), 2, 3, 4})})
+				Expect(err).NotTo(HaveOccurred())
+			}
+			Expect(store.RebuildIndex(index)).To(Succeed())
+			Expect(store.GetIndexState(index.Name)).To(Equal(IndexStateReadable))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store := open(rtx)
+			results, err := store.SearchVectorIndex(index, fixture.Record.Vector, 1, 10)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(1))
+			Expect(results[0].PrimaryKey).To(Equal(tuple.Tuple{fixture.Record.PK}))
+			Expect(results[0].Distance).To(Equal(float64(0)))
+			// The rebuild established a centroid from authoritative records.
+			// Exercise its active encoder, then delete the rebuilt entry.
+			for i, vector := range [][]float64{{1, 2, 3, 4}, {4, -1, 7, 9}} {
+				_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i + 3)), VectorData: serializeVector(vector)})
+				Expect(err).NotTo(HaveOccurred())
+			}
+			deleted, err := store.DeleteRecord(tuple.Tuple{fixture.Record.PK})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(deleted).To(BeTrue())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store := open(rtx)
+			storage := newHNSWStorage(store.indexSubspace(index), parseHNSWConfig(index))
+			info, err := storage.loadAccessInfo(rtx.Transaction())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(info.hasTransform()).To(BeTrue())
+			encoded, _, err := storage.loadNodeLayer(rtx.Transaction(), 0, tuple.Tuple{int64(4)})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(encoded).NotTo(BeEmpty())
+			Expect(encoded[0]).To(Equal(byte(3)), "post-rebuild writes must reach the active RaBitQ encoder")
+			results, err := store.SearchVectorIndex(index, []float64{4, -1, 7, 9}, 100, 100)
+			Expect(err).NotTo(HaveOccurred())
+			var ids []int64
+			for _, result := range results {
+				ids = append(ids, result.PrimaryKey[0].(int64))
+			}
+			wantIDs := []int64{3, 4}
+			for id := int64(100); id < 111; id++ {
+				wantIDs = append(wantIDs, id)
+			}
+			Expect(ids).To(ConsistOf(wantIDs))
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())

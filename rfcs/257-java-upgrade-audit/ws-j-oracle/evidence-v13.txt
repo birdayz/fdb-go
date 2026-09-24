@@ -1,0 +1,49 @@
+# RFC-257 WS-J design v13, WS-C section 7 revision 9 and the WS-E design v11 oracle: the combined evidence run (2026-09-24)
+# Driver: /var/tmp/fdb-upgrade-recovery/ev13.sh; records in /var/tmp/fdb-upgrade-recovery/ev13/ (run.out is the driver's output).
+# Every step ran in /home/birdy/projects/fdb-wsc9, a frozen copy of candidate tree 3b1587fafbd31525e918fbb44e71e394bf97c44c
+# (the copy's tree, written with a temporary index after the run: 3b1587fafbd31525e918fbb44e71e394bf97c44c).
+#
+# Bytes bound: every file the change set modifies, adds or deletes (/var/tmp/fdb-upgrade-recovery/wsc-v9/files.txt, 1041 paths;
+# the gate-review directories excluded), sha256 recorded before the first step (ev13/src.sha, "hashed 1039 of 1041": the other two,
+# pkg/docscheck/rowdiff_watcher_gate_test.go and pkg/docscheck/rowdiff_watcher_suite.sh, are deletions, absent from the candidate
+# tree and present at HEAD) and verified after the last (ev13/check.txt: 1039 lines ending ": OK", 0 other lines,
+# "ok 1039 notok 0"). The design documents and this file were edited afterwards in the main tree only; the gate trees add those
+# document edits to the candidate tree and nothing else.
+#
+# 1. M11, the WS-E v11 oracle's mutation (ev13/M11.log): the target pin "java_t_d_id1" changed from 7ff8000000000000 to
+#    7ff8000000000001 in conformance/ws_e_probe_conformance_test.go (marker count 1, the applied diff in the log), focus
+#    "WS-E target oracle": "Ran 11 of 60 Specs", 10 passed, 1 failed, and the failure is exactly
+#    "[FAIL] WS-E target oracle v11 [It] records the bits of a NaN made by CAST and by division, stored by the target and
+#    evaluated by Go" with "[FAILED] java_t_d_id1"; the file restored and compared ("restored").
+# 2. //conformance:rfc257_oracle_test, uncached, the whole target, twice:
+#    ev13/oracle-1.log: Ran 60 of 60 Specs in 317.299 seconds / SUCCESS! -- 60 Passed | 0 Failed | 0 Pending | 0 Skipped
+#    ev13/oracle-2.log: Ran 60 of 60 Specs in 322.313 seconds / SUCCESS! -- 60 Passed | 0 Failed | 0 Pending | 0 Skipped
+#    (16 GuardiANN, 11 WS-E, 1 WS-F, 32 WS-J, counted from the spec lines of oracle-1.log.) The WS-J tally line is the same in
+#    both runs:
+#    WSJ-TALLY map[both-accept-companion:4 both-accept-equal:166 both-accept-index-diverge:4 both-accept-metadata-diverge:180 both-reject:24 java-accept-go-reject:101]
+#    and the 5076 probe lines of each run (every WS-E block, JAVA/GO/SQL line, GUARDIANN, WSF and WSJ line; timing lines
+#    excluded), with the two run-random names masked (the generated __type__<uuid> message names and the WSJ_DRV_<hex>
+#    template name), sorted, are identical (the specs run in parallel, so their unsorted order is not). The WS-E part is
+#    ws-e-oracle/evidence-run.txt, regenerated for WS-E design v11 from these two runs: 468 blocks, equal as sorted sets.
+# 3. JVM specs of WS-C (//conformance:conformance_test, uncached, focus "Java refuses the same records descriptors|Subspace-key|
+#    Former-index subspace keys|Field and record-type changes|Index option changes in meta-data evolution|Text tokenizer version
+#    parsed at build|RANK|MULTIDIMENSIONAL|TIME_WINDOW|Leaderboard|leaderboard|TEXT|Text Index"), ev13/jvm-wsc.log:
+#    Ran 185 of 1642 Specs in 20.348 seconds / SUCCESS! -- 185 Passed | 0 Failed | 0 Pending | 1457 Skipped
+#    (among them: 35 "Java refuses the same records descriptors", 30 "Index option changes in meta-data evolution",
+#    16 "Subspace-key pairing", 9 "Field and record-type changes", 6 "RANK ranked set per hash function",
+#    6 "MULTIDIMENSIONAL index R-tree options", 5 "Former-index subspace keys", 4 "Text tokenizer version parsed at build",
+#    and the existing RANK, MULTIDIMENSIONAL, TEXT and TIME_WINDOW_LEADERBOARD conformance specs).
+# 4. //pkg/recordlayer:recordlayer_test, uncached, with --ginkgo.v and -test.v, ev13/recordlayer-v.log:
+#    Ran 3715 of 3716 Specs in 54.479 seconds / SUCCESS! -- 3715 Passed | 0 Failed | 0 Pending | 1 Skipped
+#    (the one skip is the environment-gated million-record spec); 2288 "--- PASS" lines, 0 "--- FAIL".
+# 5. just test (bazelisk test //... --test_tag_filters=-stress), started 2026-09-24T14:56:34+02:00, ev13/justtest.log:
+#    "Executed 94 out of 94 tests: 94 tests pass." Every target ran (94 test logs written by the run,
+#    ev13/justtest-executed.txt); none came from the cache.
+# 6. Final: //pkg/relational/core/metadata:metadata_test, //pkg/docscheck:docscheck_test and
+#    //pkg/relational/core/catalog:catalog_test, uncached, with -test.v, ev13/final-targets.log:
+#    "Executed 3 out of 3 tests: 3 tests pass."; 0 "--- FAIL" lines.
+#
+# Separately, before this run, on the same frozen copy (/var/tmp/fdb-upgrade-recovery/wsc-v9/final/): the WS-C revision-9
+# mutations m81-m104 against //pkg/recordlayer:recordlayer_test and c1-c5 against the four JVM Describes of revision 9, each
+# marker present once, each exiting 3 with the red set its log records, each restored (run.out: "ALL-DONE", no "NOT RESTORED"),
+# over green baselines (baseline.log "Ran 3715 of 3716", 3715 passed; baseline-conf.log "Ran 46 of 1642", 46 passed).

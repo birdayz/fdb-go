@@ -1,0 +1,40 @@
+# Output of corner-refit-rates.py over every log under /var/tmp/fdb-upgrade-recovery/ carrying GUARDIANN-PEEL-CORNER-TIMING lines,
+# as found by: grep -rl --include='*.log' GUARDIANN-PEEL-CORNER-TIMING /var/tmp/fdb-upgrade-recovery (13 logs on 2026-09-24, design v15).
+# Timings are wall clock, printed by the corner spec and never pinned. Load average recorded before and after the run for
+# wsdf14/oracle.log, wsc-v10/ev/oracle.log and wsc-v10/ev2/oracle.log (their *.uptime files); the others have no load record.
+# Inputs, sha256:
+#   c9637ede5d5f5e3aecfd78c9766c109331ede46a61f6e32a6c3aa36e61933898  wsd-corner-1.log
+#   0abdfe84698ee5db53552bcd5e21aeb2c346e7bc4aed67c59c2d5b809d348279  wsd-corner-v13-1.log
+#   06ab85765b8fdb5f15251183bc120ffadaa503bd94e0deffec62bfb938d7f47f  wsd-corner-v13-2.log
+#   6314e93825921b9e5918b7ce1700db145cd1ac53cb292f80f6368f9e3698de3f  rfc257-v12-1.log
+#   7ef0b7366a6d7b37bb072a8b9cd157563ce1af64a963df8dc2c3c206da11cef4  rfc257-v12-2.log
+#   390736048c4ca5b35e7593bb5417987d933a6420587e94cd8f9007090cff064e  rfc257-v13-1.log
+#   a85424dc2ea903e9098dd4e6e4720cafb83fe60db1dd2ec773d71ec4930603a8  rfc257-v13-2.log
+#   2261bc6fa796bdfd759ec7dbce1aa889451e632ff5d42edd6b0a5f822b829e7e  ev13/oracle-1.log
+#   5990811782b181fb463a8c2656ad8fe0f51443764ff3a1073fd3de40e9b90aa3  ev13/oracle-2.log
+#   cec826b60894c866c579c3fcd5115aa8858063bb9436f636adfa46e039811b99  wsdf14/oracle.log
+#   28076ce576d99eec80eb64d9d35974d4e76215098dee8e899365af40841c5041  wsc10-pre/oracle.log
+#   61ca1343338ed52d1370a899ff18f9453b9205c53ab644de49661b9bcec53f43  wsc-v10/ev/oracle.log
+#   04c3a10dfaafc226fc1f04f2ad2c454b8561d0c0026ab93d711401b916598e6a  wsc-v10/ev2/oracle.log
+236 (shape, seed) timings over 13 logs
+refit-max rates (s per n*d) over 200 nonzero: min 4.13e-08 median 7.44e-08 max 1.75e-07
+  top: 1.07e-07 rfc257-v13-1.log genSpread50R3N2000D980 n=2000 d=980 seed=1 refitMax=210.4ms
+  top: 1.27e-07 rfc257-v13-1.log genTight50N2000D1250 n=2000 d=1250 seed=1 refitMax=318.4ms
+  top: 1.28e-07 rfc257-v13-1.log genTight50N2000D980 n=2000 d=980 seed=42 refitMax=250.6ms
+  top: 1.35e-07 rfc257-v13-1.log genTight50N2000D980 n=2000 d=980 seed=1 refitMax=265.0ms
+  top: 1.75e-07 rfc257-v13-1.log genTight50N2000D1250 n=2000 d=1250 seed=42 refitMax=437.6ms
+refit totals: max 1115.6ms (rfc257-v13-1.log genTight50N2000D1250 seed 1)
+target fit: min 48.6ms max 307.6ms
+  ev13/oracle-1.log: 17 rates, max 9.49e-08, median 7.54e-08
+  ev13/oracle-2.log: 17 rates, max 9.85e-08, median 8.06e-08
+  rfc257-v12-1.log: 10 rates, max 9.28e-08, median 7.75e-08
+  rfc257-v12-2.log: 10 rates, max 1.02e-07, median 7.55e-08
+  rfc257-v13-1.log: 17 rates, max 1.75e-07, median 9.54e-08
+  rfc257-v13-2.log: 17 rates, max 9.42e-08, median 8.1e-08
+  wsc-v10/ev/oracle.log: 17 rates, max 9.01e-08, median 7.45e-08
+  wsc-v10/ev2/oracle.log: 17 rates, max 9.18e-08, median 7.18e-08
+  wsc10-pre/oracle.log: 17 rates, max 9.06e-08, median 7.44e-08
+  wsd-corner-1.log: 10 rates, max 8.04e-08, median 6.87e-08
+  wsd-corner-v13-1.log: 17 rates, max 8.27e-08, median 6.92e-08
+  wsd-corner-v13-2.log: 17 rates, max 8.19e-08, median 6.77e-08
+  wsdf14/oracle.log: 17 rates, max 9.82e-08, median 7.54e-08

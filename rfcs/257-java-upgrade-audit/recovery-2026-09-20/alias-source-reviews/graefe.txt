@@ -1,0 +1,32 @@
+**NAK — IMPLEMENTATION CODE** at tree `8d3544bffc4d5b322626616a3051b39fb8b2584a`.
+
+**P2 — The UNION duplicate-check repair still depends on an optional projection operator.**
+
+For an ordinary table `t(id, v)` without stored row versions:
+
+```sql
+SELECT * FROM t
+UNION ALL SELECT * FROM t
+ORDER BY id, id
+```
+
+Both catalog constructors can produce a left branch without `LogicalProject`: [visitFinalProjection:2070](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/plan_visitor.go:2070) elides it, and [expandBareStarFromScope:7063](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:7063) leaves an identity-layout star unexpanded.
+
+Consequently, [validateUnionOrderByColumns:7326](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:7326) returns before reaching the new duplicate validation at line 7395. Lifting already cleared the branch’s `orderBy`, so neither constructor produces the required **42701**. Java’s [validateOrderByColumns:347](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/SemanticAnalyzer.java:347) rejects repeated resolved names. This is a source-derived finding; I did not execute the query.
+
+**Required fix:** resolve UNION ordering against its published output contract independently of projection presence, then validate duplicates. Preserve missing-name precedence; do not restore early parser rejection. Add both-constructor regressions for bare-star UNIONs with repeated valid names, missing names, and distinct keys. The new [UNION tests:1017](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/order_by_exact_metadata_test.go:1017) all use explicit projections and miss this path.
+
+The other reported repairs hold: unnamed-source qualification is separated from runtime correlation, expanded slots track mixed stars, and [unique-owner binding:6138](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:6138) precedes fallback expression matching. The competing alias maps are gone.
+
+I reviewed the frozen delta, prior NAKs/prompts and pinned Java source. All **6,426 frozen hashes** match the tree and workspace. Session metadata confirms **gpt-6-astra / xhigh / read-only**.
+
+Completed evidence reconciles: four uncached affected targets with **9,342 RUN/PASS entries**, four compiled mutation kills with matching source/log hashes, and **43 Java probe records**. The exact Java/Go diagnostic supports the single golden-line correction. Java’s two inline-shape refusals remain separate from Go’s approved extensions; invalid historical mutations and build-only failures receive no credit.
+
+Separate verification/publication gates:
+
+- At the single inspected snapshot, fuzz completed **30 seconds, four workers, 3,573,069 executions**, without coverage guidance. Current-tree full93, race15, `just test`, and nominal1M ABBA lacked completed evidence. Earlier full runs do not verify this tree; repairs require refreezing.
+- Bounded GRV/RPC attribution stands; universal parity remains unestablished. Original startup-timeout artifacts remain unavailable. LegacyRaBitQ disable/rebuild remains prerequisite.
+- HEAD remains `71ccd8cf8b3fd0dbafe283e91171818e36af555e`; commit/push/merge remain unauthorized and PR786 remains draft/unchanged.
+- WS-B–K remain open. Storage scope ACK, FDB C++ **7.3.77**, and approved nullable-array/raw/scalar/sorting extensions stand.
+
+No edits, builds/tests, agents/worktrees, Git mutations, or GitHub contact occurred.

@@ -1,0 +1,44 @@
+[
+  {
+    "name": "plain-commit",
+    "compiled": true,
+    "killed": true,
+    "exit": 3,
+    "log": "retirement-mutant-plain-commit.log"
+  },
+  {
+    "name": "named-dedup",
+    "compiled": true,
+    "killed": true,
+    "exit": 3,
+    "log": "retirement-mutant-named-dedup.log"
+  },
+  {
+    "name": "named-cancel",
+    "compiled": true,
+    "killed": true,
+    "exit": 3,
+    "log": "retirement-mutant-named-cancel.log"
+  },
+  {
+    "name": "readiness",
+    "compiled": true,
+    "killed": true,
+    "exit": 3,
+    "log": "retirement-mutant-readiness.log"
+  },
+  {
+    "name": "delete-cancel",
+    "compiled": true,
+    "killed": true,
+    "exit": 3,
+    "log": "retirement-mutant-delete-cancel.log"
+  },
+  {
+    "name": "state-read",
+    "compiled": true,
+    "killed": true,
+    "exit": 3,
+    "log": "retirement-mutant-state-read.log"
+  }
+]

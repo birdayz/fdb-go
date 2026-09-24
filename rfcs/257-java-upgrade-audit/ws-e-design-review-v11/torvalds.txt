@@ -1,0 +1,98 @@
+**NAK: RFC-257 WS-E design v11 (Torvalds lens)**
+
+- **Tree:** `d6ad3e9c2c5bc3a32c42cf0399c97afade52e098`
+- **Design:** `rfcs/257-java-upgrade-audit/ws-e-design.md`, SHA-256 `2f0cb50a0eb84022aecf712bd3200c15886c56264b45cbfdac2715fc6a621170`, 3516 lines. I recomputed both from `git show`.
+- **Method:** read-only; I ran nothing. I read the three v10 verdicts, the full v11 design and its v10 diff, the oracle and evidence, the wse12 records, and the Java and Go sources cited below.
+
+## HIGH
+
+**H1. The guard narrowing admits a hazard the tree pins and documents (design:872-879, :907-908).**
+- The design says "The guard exists for one hazard". The tree says otherwise: PIN 1 (`zz_graefe_required_pins_test.go:40-52`) calls the per-alias exception load-bearing. It names the exact danger: "allowing the bb.v residual onto the t-leg merely because the leg has SOME probe-fed correlation (o) … 0 rows". RFC-150 §8 (`rfcs/150-…:204-213`) says the same.
+- The prototype's GUARD is `len(probeCorr) > 0` (`fdb-explode-probe/…/planner.go:1482`). The design's own unit case "probe correlated to another alias: admitted" is that case.
+- **Measured:** PIN 1 passes under GUARD (`wse12-suites-GUARD.log:19241`).
+- **Not measured:** whether PIN 1 reaches the widened branch at all. The `PROBE_CORRLOG` output was not captured.
+- **Fix, either:**
+  - Name what now carries the per-alias property (RFC-150's task-graph invariant). Prove PIN 1 is not vacuous: capture `CORRSAFE-ADMIT` on its leg, or run a mutation that reddens it. Then rewrite the PIN 1 comment, RFC-150 §8 and the DIVERGENCES entry (`DIVERGENCES.md:3131-3143`).
+  - Or narrow the guard only as far as #7 needs: every outer alias of the residual is either fed by the probe or an explode alias of the same select.
+
+**H2. GUARD causes a new 54F02 that the design does not report (design:10-12, :890).**
+- Under GUARD, `and-idempotent` reports `compared=59 both-error=1` (`wse12-suites-GUARD.log:23293`); ARM reports `60/0` (`wse12-suites-ARM.log:23325`).
+- The failing query is `((id IN (0,1,-2) AND (NOT f AND a IN (-2,0,3)))) AND (same) ORDER BY id`, with `max_task_count=150000, task_count=150000` (`GUARD.log:23226-23228`).
+- It stays green only because the sweep's `equiv` error branch logs and returns (`metamorphic_sweep_rewrites_fdb_test.go:85-91`).
+- This contradicts "no test" and "no plan regression". The design keeps the guard because it bounds the search budget, and that reason indicts GUARD too.
+- **Fix:** root-cause the blow-up (IN explodes × partition arm × admitted compensations). Measure task counts under GUARD against 2, 3, 4 and duplicated IN conjuncts, and pin them. Make the sweep fail on 54F02, or pin its `both-error` counts.
+
+## MEDIUM
+
+**M1. Section 8's NaN declaration is stale (design:3484, :3486).**
+- "every later comparison residual" was superseded by 4.1(b)'s binder key filter (:1166).
+- "rows are equal for every NaN a statement can write" is false by v11's own round. The division stores `fff8…`/`ffc00000` (`java_t_d_id3`, `java_t_f_id3`), where the CAST stores `7ff8…`. After step (6), the target's probe misses the division row and Go returns it.
+- 4.1(b) itself says the rows differ. The grep for the superseded claim was not done: `every NaN a statement` still has one live hit, :3486.
+
+**M2. The census of Go NaN producers is incomplete.**
+- `javaMinF64` and `javaMaxF64` (`streaming_cursors.go:2159, 2166`) return `math.NaN()` (`0x7ff8000000000001`). Java's `Math.min`/`Math.max` (`NumericAggregationValue.java:687-693`) return the operand's NaN.
+- So `INSERT … SELECT MAX(d)` still writes Go's bits after step (6). That falsifies :1129 ("carries whatever bits its producer gave it in both engines").
+- `executor.go:3831` is a third `math.NaN()` site.
+
+**M3. The WS-F dependencies cite a document that is not in the tree.**
+- :2601 and :2832 rest on "ws-f-design.md v3".
+- The tree's WS-F design is v2. It has 0 lines matching `RFC-182|AdvanceStagePreservingMembers|no finals|union leg`, and 0 matching `Finding 6-followup`. The positive control `census` gives 9.
+- :2603 says the dependency "is explicit in section 8". Section 8 names neither the second crossing nor the dense map.
+
+**M4. v10 M3's rule-side overlap is still open.**
+- The covering fix still defines the in-union's inner as the members that "satisfy the leg's ordering", spine-pinned (:951). That is exactly the admission F-7 replaces (ws-f-design.md:717-731).
+- Step (5) lands after F-7, yet #7, the 14 covering changes and `a_in_b_in` were all measured on the pre-F-7 admission (`PROBE_INUNION_ALL`).
+- **Fix:** restate the change in F-7's terms (`planPartition.getPlans()`, `ImplementInUnionRule.java:205`) and re-measure after F-7.
+
+**M5. The product check is unmeasured and undeclared.**
+- "24 run, 25 refused" for a product of several sources is SOURCE. WS-F measured only one source (`ws_f_probe_conformance_test.go:482,485`).
+- The prototype executor has no size check at all, so no suite or corpus run shows which queries Go answers today will now fail with XXXXX (two lists, ORDER BY, product above 24).
+- **Fix:** measure those queries and declare them.
+
+**M6. The "four-arm test" (:998) deletes a guard.**
+- It replaces `rule_implement_in_join.go:611-635`, which includes Go's ARRAY<RECORD> refusal. That refusal's comment records a silent 0-row defect.
+- Keep the refusal, and say so.
+
+**M7. "holds of the code" (:1614) overclaims.** These `time.Time` sites remain:
+- `proto_value.go:321`;
+- `continuation.go:153` and `:327` (tag 12);
+- `streaming_cursors.go:1775-1781`, whose comment cites the deleted `ParseTimestamp`.
+
+## LOW
+
+1. **Stale text:** :920 still says #7's "derivation is open".
+2. **Traceability:**
+   - The claim "Every prototype number is from … `wse12-proto.sh`" (:12) is false for the 158-test count and for `wse11-explode-F.diff`.
+   - `wse12-7all-in2.log` (cited at :871) records no configuration. Its winning plan (:143) matches none of the plans in `wse12-7-design-config.log`, and it is not marked SUPERSEDED, contrary to the README (:5).
+   - The prototype's base commit is recorded nowhere.
+   - `wse12-notes.txt` still leaves the `cat = 20` path "to find".
+3. **Unpaired checksum zero:** the md5 check prints only non-OK lines (`wse12-proto.sh:42`). This is the same unpaired zero that section 0 rejects for the oracle.
+4. **Hardware-specific pins:** the division-NaN pins hold only on x86. On arm64, both engines give `7ff8…`. Pin the relation between the engines, or key the pin on `GOARCH`.
+5. **DIVERGENCES.md:3108** says the FLOAT cast has Go's bits. The round measured Go's FLOAT cast as canonical (widened, `7ff8000000000000`).
+6. **The repair truncates:** `SET d = CAST(d AS DATE)` (:1552) cuts the time of day from every non-midnight text the old channel stored. Scope the repair or declare the truncation.
+7. **`WHERE X AND X`:** "what Go must give" (:2906) contradicts the row's hash-tie classification, and no target probe is cited.
+8. **Unspecified filter:** the key filter is specified for the index cursor only (:1166). A float primary-key component takes the record-scan cursor.
+9. **Unstated dependency (v10 L4):** say whether steps (6) and (7) depend on step (5). The NaN write fix is currently queued behind F-7.
+
+## Verified
+- **Every v10 finding not listed above is resolved:**
+  - Torvalds v10: H1, H2(a) and H2(b), M1, M2 and L1–L5.
+  - Graefe v10: H1, M1, M3, M4 and the LOWs.
+  - Storage v10: H1, H2, M1, M2 and L1–L4.
+- **Seed 17:** the counts 23459 / 42723 / 382371 / 43919 / 44932 / 49528 match the log.
+- **Corpus diffs:** F against ARM is identical across 2995 entries; ARM against GUARD differs only in #7.
+- **#7 pin:** the yaml pin (`in_plan_winner_stability.yaml:113`) cannot tell bindings=1 from bindings=2; the golden at :9002 shows bindings=1. So "pin now holds" is not evidence. The corpus diff is.
+- **Oracle v11:**
+  - Both runs: 60 of 60, and the 10 `WS-E11-PIN` lines are identical.
+  - M11 reddens exactly `java_t_d_id1`.
+  - The only diff between tree 3b1587fa and the candidate is documents.
+- **Java:**
+  - The product is checked at execution (`RecordQueryInUnionPlan.java:151-162`).
+  - The partition arm is at `PartitionSelectRule.java:201-205`.
+- **DIVERGENCES entries:** appended at EOF.
+
+**Measured vs SOURCE:**
+- **Measured:** H2, PIN 1's pass, the oracle bits, and the task counts.
+- **SOURCE:** whether PIN 1 reaches the widened branch (H1), the MIN/MAX write path (M2), the product-check population (M5), and the ARRAY<RECORD> reach (M6).
+
+This review is complete; the verdict is NAK.

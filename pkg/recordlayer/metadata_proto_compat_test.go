@@ -1,6 +1,7 @@
 package recordlayer
 
 import (
+	"errors"
 	"testing"
 
 	"fdb.dev/gen"
@@ -71,7 +72,11 @@ func TestIndexFromProto_GroupingFixupForOldMetaData(t *testing.T) {
 		{IndexTypeMinEver, true, "bare min_ever is in Java's list at Index.java:209"},
 		{IndexTypeMaxEver, true, "bare max_ever is in Java's list at Index.java:208"},
 		{IndexTypeSum, true, "sum is in Java's list"},
-		{IndexTypeCount, true, "count is in Java's list, with getColumnSize() as the grouped count"},
+		// count is in Java's list too, with getColumnSize() as the grouped
+		// count, which its 4.14.2.0 validator then refuses: a COUNT has no
+		// grouped column (TestBareCountIsWrappedThenRefusedAsJavaRefusesIt; the
+		// conformance spec "Index validation at build, as Java builds", "a count
+		// over a bare field").
 		{IndexTypeRank, true, "rank is in Java's list"},
 
 		// The negatives carry the whole design. Java compares the raw string, so
@@ -206,8 +211,9 @@ func TestIndexFromProto_DeprecatedIndexTypeEnum(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			idx, err := indexFromProto(&gen.Index{
-				Name:      proto.String("Order$legacy"),
-				IndexType: tc.enum.Enum(),
+				Name:           proto.String("Order$legacy"),
+				IndexType:      tc.enum.Enum(),
+				RootExpression: Field("price").ToKeyExpression(), // Java requires a root
 			})
 			if err != nil {
 				t.Fatalf("indexFromProto: %v", err)
@@ -265,9 +271,10 @@ func TestIndexFromProto_DeprecatedIndexTypeWinsOverTypeAndOptions(t *testing.T) 
 	t.Parallel()
 
 	idx, err := indexFromProto(&gen.Index{
-		Name:      proto.String("Order$both"),
-		IndexType: gen.Index_UNIQUE.Enum(),
-		Type:      proto.String(IndexTypeSum), // must be IGNORED
+		Name:           proto.String("Order$both"),
+		RootExpression: Field("price").ToKeyExpression(), // Java requires a root
+		IndexType:      gen.Index_UNIQUE.Enum(),
+		Type:           proto.String(IndexTypeSum), // must be IGNORED
 		Options: []*gen.Index_Option{{
 			Key:   proto.String("some_option"),
 			Value: proto.String("from_the_list"),
@@ -286,5 +293,20 @@ func TestIndexFromProto_DeprecatedIndexTypeWinsOverTypeAndOptions(t *testing.T) 
 	if v, ok := idx.Options["some_option"]; ok {
 		t.Fatalf("options list was read on the legacy branch (some_option=%q). Java uses "+
 			"indexTypeToOptions ALONE there and never calls buildOptions(getOptionsList())", v)
+	}
+}
+
+// TestBareCountIsWrappedThenRefusedAsJavaRefusesIt pins the COUNT arm of Java's
+// Index(proto) wrap (Index.java:206-213), which groups every column, followed
+// by its validator's refusal of a COUNT with a grouped column, as measured on
+// the JVM: the load fails with Java's KeyExpression.InvalidExpressionException.
+func TestBareCountIsWrappedThenRefusedAsJavaRefusesIt(t *testing.T) {
+	t.Parallel()
+	_, err := bareTypeRoundTrip(t, func(ip *gen.Index) {
+		ip.Type = proto.String(IndexTypeCount)
+	})
+	var keyErr *KeyExpressionError
+	if !errors.As(err, &keyErr) || keyErr.Message != "index type does not support non-group fields; use COUNT_NOT_NULL" {
+		t.Fatalf("load of a bare COUNT = %v (%T), want Java's refusal after the wrap", err, err)
 	}
 }

@@ -1,0 +1,39 @@
+**NAK.** Tree `236888f5b174f2e5d8894be7845992a8650bd8d9`; design SHA256 `91f08f59ce2325b10c8ec73b3f48180af7d8df23fda6cd018112611b1defd4c8` (verified with `git show … | sha256sum`).
+
+The review is complete and read-only. I read all four v1 verdicts, the full revised design, the diff from `607dbcf3`, `ws-d-research/README.md` and the three research reports, then checked the claims against pinned Java and current Go. The only changes since WS-C are `TODO.md` and files under `rfcs/`. I ran no tests, probes or edits.
+
+**Checked and correct**
+- **Signature table:** matches Java: `StorageAdapter.java:388-408,540-596`, `StorageTransform.java:61-74`, `Delete.java:226`, `CollapseTask.java:481-493`. A collapsed representative is keyed by `Tuple(signature)` (`PrimaryCopy.java:74-75`).
+- **Capability matrix:** matches the four-value `Metric` enum, HNSW `Config.java:111`, `RaBitQuantizer.java:76`, GuardiANN `Config.java:197-212` (no extra-bit check), and `KMeans.java:135-139,652-657`. KMeans lambda is fixed at `0.00` (`SplitMergeTask.java:1111`).
+- **Continuation fingerprint:** the scope is right against `scan_range_execution_identity.go:492-523`.
+- **HashMap boundary:** correct (`Primitives.java:1541-1552` → `SplitMergeTask.java:1097-1111`). The other UUID-keyed HashMaps only set the order of writes to independent keys (`SplitMergeTask.java:630,682-684`), and `clusterIdMetadataMap` is an `ImmutableMap` (`:582-604`).
+- **Preserved as required:** merger-supplied transactions, SPFresh/LIRE, the approved extensions, C++ 7.3.77, format 15/default 14, and Lucene as separate work.
+
+**P1: a new cluster with no final primaries has no terminal transition**
+- **The failure:** `assignPrimaryVectorReferences` creates new clusters with zero primaries (`SplitMergeTask.java:585-597`). It then recomputes ownership against new plus neighbouring centroids, and vectors that move away go to neighbours as underreplicated (`:621-651`). `writeClusterMetadataAndEnqueueTasks` then requires `getNumPrimaryVectors() + numPrimaryVectorsAdded > 0` for every cluster, new ones included (`:909`). Nothing between `:686` and `:820` guards this.
+- **Why it can happen:** the evaluator scores the KMeans assignment, not final ownership (`:1107-1111`; design:202-203). A KMeans child whose members all prefer an outside neighbour throws `VerifyException`.
+- **The consequence:** under design:228 the task rolls back. The same deterministic inputs fail again, so the key-ordered drain (design:225-229) stalls the whole prefix.
+- **The gap:** design:335-348 covers only empty cores and n<k before KMeans. `git grep` finds no coverage of this path in the design or the research reports (positive control: `KMeans` matches 10 lines in the design and 16 in the engine report).
+- **Needed:** a conditional contract (infeasible candidate and fallback, or drop the empty new cluster including its centroid insert at `:781-797`), with its count/peak/state rules and JVM and Go fixtures for both split and merge.
+
+**P2: queued replay contract**
+- **Undeclared Java divergence:** Java explicitly drains first, then merges (`IndexingBase.java:1069-1071`), and drains the full queue with `iterateAll` (`IndexingPendingWriteQueue.java:91`). Design:268-284 changes that ordering unconditionally. It does not call this a Java divergence, add a `DIVERGENCES.md` entry, or require the retained JVM stranding fixture that §6 (308-318) demands for every other source hypothesis.
+- **Common case with no committed task:** Java's drain starts unlimited (`ThrottledRetryingIterator.java:119`) and shrinks to 0.9×scanned after any failure (`:293-295,343-345`). The split task is enqueued in the same insert transaction (`Insert.java:334-337,366-373`). So a first attempt usually crosses both `primaryClusterMax` and `primaryClusterHardMax` (1000/2000, `Config.java:144-146`) and aborts its own split task. Maintenance from committed state then finds nothing, and progress relies entirely on the limit reduction committing the prefix. Specify that the reduction still applies, and test this case, not only a pre-committed backlog (design:282-284).
+- **Build ranges:** Java's `IndexingThrottle` retries only FDB lessen-work codes (`IndexingThrottle.java:65-71,150`), so a capacity exception fails a Java build range outright. The design says nothing about the by-records, by-index or mutual ranges (`online_indexer.go:898-908`). State parity or the same recovery, so one session handles capacity the same way in every phase.
+
+**P2: lock scope and hold spans**
+- Design:44-50 says "maintainer-wide", but Go caches maintainers per `FDBRecordStore` (`store.go:160,1240-1249`). Java's locks live on the record context's `LockRegistry` (`VectorIndexMaintainer.java:227,390`), which Go already mirrors (`database.go:1367-1410`, `store.go:1379-1383`). Two stores on one context would not exclude clear against operations. Key both the lifecycle and prefix locks in the context registry.
+- Define how long a scan holds its read lock (Java's `AsyncLockCursor` holds it until close), and what that means for a scan followed by a same-prefix write in one context, since Go's locks are not reentrant.
+- Pin the current mismatch: `SearchKNN` read-locks the whole index subspace (`vector_index_maintainer.go:1139-1141`) while writes lock the prefix subspace (`:338-343`).
+
+**P2: capability gate needs an operation-by-operation table**
+- Design:78-101 gates "record/index writes" without listing which operations those are.
+- Every GuardiANN merge fails on an unsupported metric, even k=1, because `fromEstimator` runs before the k==1 shortcut (`KMeans.java:141,151`).
+- Java's delete and `deleteWhere` run without KMeans (`VectorIndexMaintainer.java:496-507`). If Go refuses record delete, `deleteWhere` or index clear/drop, it can never remove data from a Java-created dot-product GuardiANN index.
+- Give admit/refuse rows for insert/update, delete, `deleteWhere`, clear/drop/rebuild, search/continuation and merge.
+
+**P3**
+- Excluding an infeasible candidate must still consume one RNG split per classification, as `RandomHelpers.forEach` does (`RandomHelpers.java:213-218`; `SplitMergeTask.java:508-530`), or the exact-RNG claim at design:356-357 breaks.
+- Specify Go's deterministic tie rule for the `IdentityHashMap` candidate selection (`:532-550`, which falls back to 2→1). Invariant-based acceptance still needs a rule that is not map order.
+- `VectorId` is a record (`VectorId.java:64`), and a record's `hashCode` is left unspecified by the language spec. The oracle must pin the JDK and fdb-java versions whose `Tuple` hash it reproduces.
+- "Reconcile its actual counts" (design:338) should name the counters, stats, peak and read isolation involved.

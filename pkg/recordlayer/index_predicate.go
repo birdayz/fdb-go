@@ -343,7 +343,8 @@ func protoFieldToGoValue(m protoreflect.Message, fd protoreflect.FieldDescriptor
 	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
 		return v.Int()
 	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
-		return int64(v.Uint())
+		// Signed, as Java's protobuf-java reads a 32-bit unsigned field.
+		return int64(int32(uint32(v.Uint())))
 	case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
 		return int64(v.Uint())
 	case protoreflect.FloatKind:

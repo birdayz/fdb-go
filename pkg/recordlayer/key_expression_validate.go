@@ -10,97 +10,108 @@ import (
 // Checks that referenced fields exist, have correct types, and fan types match repeatedness.
 // Matches Java's KeyExpression.validate(Descriptor).
 func validateKeyExpression(expr KeyExpression, desc protoreflect.MessageDescriptor) error {
-	return validateKeyExpressionImpl(expr, desc, false)
+	_, err := validateKeyExpressionFields(expr, desc)
+	return err
 }
 
-// validateKeyExpressionImpl is the internal recursive implementation.
-// allowMessageType is true when called from NestingKeyExpression for the parent field.
-func validateKeyExpressionImpl(expr KeyExpression, desc protoreflect.MessageDescriptor, allowMessageType bool) error {
+// validateKeyExpressionFields returns the validated leaf descriptors in expression
+// order, matching Java's KeyExpression.validate. Constants contribute no fields;
+// nesting returns child fields, and composite/list expressions concatenate them.
+func validateKeyExpressionFields(expr KeyExpression, desc protoreflect.MessageDescriptor) ([]protoreflect.FieldDescriptor, error) {
 	if expr == nil {
-		return nil
+		return nil, nil
 	}
+	var children []KeyExpression
 	switch e := expr.(type) {
 	case *FieldKeyExpression:
-		return validateFieldKeyExpression(e, desc, allowMessageType)
-	case *CompositeKeyExpression:
-		for _, child := range e.expressions {
-			if err := validateKeyExpression(child, desc); err != nil {
-				return err
-			}
+		if err := validateFieldKeyExpression(e, desc, false); err != nil {
+			return nil, err
 		}
-		return nil
+		return []protoreflect.FieldDescriptor{desc.Fields().ByName(protoreflect.Name(e.fieldName))}, nil
+	case *CompositeKeyExpression:
+		children = e.expressions
 	case *NestingKeyExpression:
 		return validateNestingKeyExpression(e, desc)
 	case *GroupingKeyExpression:
-		return validateKeyExpression(e.wholeKey, desc)
-	case *EmptyKeyExpression:
-		return nil
-	case *RecordTypeKeyExpression:
-		return nil
-	case *LiteralKeyExpression:
-		return nil
-	case *VersionKeyExpression:
-		return nil
+		return validateKeyExpressionFields(e.wholeKey, desc)
+	case *EmptyKeyExpression, *RecordTypeKeyExpression, *LiteralKeyExpression, *VersionKeyExpression:
+		return nil, nil
 	case *FunctionKeyExpression:
-		return validateKeyExpression(e.arguments, desc)
+		return validateKeyExpressionFields(e.arguments, desc)
 	case *DimensionsKeyExpression:
-		return validateKeyExpression(e.WholeKey, desc)
+		return validateKeyExpressionFields(e.WholeKey, desc)
 	case *KeyWithValueExpression:
 		return validateKeyWithValueExpression(e, desc)
 	case *SplitKeyExpression:
 		return validateSplitKeyExpression(e, desc)
 	case *ListKeyExpression:
-		for _, child := range e.children {
-			if err := validateKeyExpression(child, desc); err != nil {
-				return err
-			}
-		}
-		return nil
+		children = e.children
 	default:
 		// Unknown expression type — skip validation (forward-compatible).
-		return nil
+		return nil, nil
 	}
+	var fields []protoreflect.FieldDescriptor
+	for _, child := range children {
+		childFields, err := validateKeyExpressionFields(child, desc)
+		if err != nil {
+			return nil, err
+		}
+		fields = append(fields, childFields...)
+	}
+	return fields, nil
 }
 
 // validateFieldKeyExpression validates a field exists in the descriptor and
 // checks FanType consistency with field repeatedness.
-// Matches Java's FieldKeyExpression.validate(Descriptor, boolean).
+// Matches Java's FieldKeyExpression.validate(Descriptor, FieldDescriptor,
+// boolean) (FieldKeyExpression.java:145-172), its texts and its classes: the
+// KeyExpression.InvalidExpressionException of the first three checks is
+// KeyExpressionError, and the scalar check's Query.InvalidExpressionException
+// is QueryInvalidExpressionError. A map field is repeated, as protobuf-java's
+// isRepeated() says.
 func validateFieldKeyExpression(f *FieldKeyExpression, desc protoreflect.MessageDescriptor, allowMessageType bool) error {
 	fd := desc.Fields().ByName(protoreflect.Name(f.fieldName))
 	if fd == nil {
 		return &KeyExpressionError{Message: fmt.Sprintf(
-			"field %q not found in message %q", f.fieldName, desc.FullName())}
+			"Descriptor %s does not have field: %s", desc.Name(), f.fieldName)}
 	}
 
-	// Check FanType vs repeatedness.
-	// Matches Java's FieldKeyExpression.validate() which checks:
-	//   FanOut/Concatenate → field must be repeated
-	//   None → field must NOT be repeated
-	isRepeated := fd.IsList()
+	// protobuf-java's isRepeated(): true for a map field too, whose entries are
+	// a repeated message on the wire (FieldKeyExpression.java:152, :158).
+	isRepeated := fd.Cardinality() == protoreflect.Repeated
 	switch f.fanType {
 	case FanTypeFanOut, FanTypeConcatenate:
 		if !isRepeated {
 			return &KeyExpressionError{Message: fmt.Sprintf(
-				"field %q in %q is not repeated, but fan type requires a repeated field",
-				f.fieldName, desc.FullName())}
+				"%s is not repeated with FanType.%s", f.fieldName, javaFanTypeName(f.fanType))}
 		}
 	case FanTypeNone:
 		if isRepeated {
 			return &KeyExpressionError{Message: fmt.Sprintf(
-				"field %q in %q is repeated; use FanOut() or Concatenate() for repeated fields",
-				f.fieldName, desc.FullName())}
+				"%s is repeated with FanType.None", f.fieldName)}
 		}
 	}
 
-	// Check field type — message fields are only allowed via NestingKeyExpression.
-	// Matches Java's FieldKeyExpression.validate() which checks !allowMessageType → must be scalar.
+	// Message fields are only allowed where the caller admits them (a
+	// nesting's parent).
 	if !allowMessageType && fd.Kind() == protoreflect.MessageKind && !isTupleField(fd) {
-		return &KeyExpressionError{Message: fmt.Sprintf(
-			"field %q in %q is a message type; use Nest() to navigate into nested messages",
-			f.fieldName, desc.FullName())}
+		return &QueryInvalidExpressionError{Message: fmt.Sprintf(
+			"%s is a nested message, but accessed as a scalar", f.fieldName)}
 	}
 
 	return nil
+}
+
+// javaFanTypeName is the name of Java's KeyExpression.FanType constant.
+func javaFanTypeName(t FanType) string {
+	switch t {
+	case FanTypeFanOut:
+		return "FanOut"
+	case FanTypeConcatenate:
+		return "Concatenate"
+	default:
+		return "None"
+	}
 }
 
 // uuidProtoFullName is the fully-qualified name of TupleFieldsProto.UUID — the
@@ -123,49 +134,72 @@ func isTupleField(fd protoreflect.FieldDescriptor) bool {
 // validateNestingKeyExpression validates the parent field is a message type
 // and recursively validates the child expression against the nested descriptor.
 // Matches Java's NestingKeyExpression.validate().
-func validateNestingKeyExpression(n *NestingKeyExpression, desc protoreflect.MessageDescriptor) error {
+func validateNestingKeyExpression(n *NestingKeyExpression, desc protoreflect.MessageDescriptor) ([]protoreflect.FieldDescriptor, error) {
 	// Validate parent field with allowMessageType=true.
 	parentFKE := &FieldKeyExpression{fieldName: n.parentField, fanType: n.fanType}
 	if err := validateFieldKeyExpression(parentFKE, desc, true); err != nil {
-		return err
+		return nil, err
 	}
 
 	// Get the nested message descriptor.
 	fd := desc.Fields().ByName(protoreflect.Name(n.parentField))
 	if fd == nil {
 		// Already checked above, but be safe.
-		return &KeyExpressionError{Message: fmt.Sprintf(
-			"field %q not found in message %q", n.parentField, desc.FullName())}
+		return nil, &KeyExpressionError{Message: fmt.Sprintf(
+			"Descriptor %s does not have field: %s", desc.Name(), n.parentField)}
 	}
 	if fd.Kind() != protoreflect.MessageKind {
-		return &KeyExpressionError{Message: fmt.Sprintf(
-			"field %q in %q is not a message type; cannot nest into non-message fields",
-			n.parentField, desc.FullName())}
+		// Java's parent.getDescriptor calls protobuf-java's getMessageType, which
+		// throws UnsupportedOperationException; the text is protobuf-java's,
+		// measured on the conformance JVM ("Key validation at build, as Java
+		// builds").
+		return nil, &UnsupportedOperationError{Message: notMessageTypeText(fd)}
 	}
 
 	// Recursively validate child against the nested descriptor.
-	return validateKeyExpression(n.child, fd.Message())
+	fields, err := validateKeyExpressionFields(n.child, fd.Message())
+	if err != nil {
+		return nil, err
+	}
+	if fd.IsMap() {
+		// Go-only, after every check Java makes, so a key Java refuses is
+		// refused with Java's fault. Java fans out a map's entries as the
+		// repeated messages they are; Go's evaluator reads a field as repeated
+		// only when it is a list, so a map would be read as one message.
+		// DIVERGENCES.md, "A proto map field is not fanned out in a key
+		// expression".
+		return nil, &UnsupportedOperationError{Message: fmt.Sprintf(
+			"%s is a map field; Go does not fan out a map in a key expression", n.parentField)}
+	}
+	return fields, nil
 }
 
 // validateKeyWithValueExpression validates column size and inner key.
 // Matches Java's KeyWithValueExpression.validate().
-func validateKeyWithValueExpression(k *KeyWithValueExpression, desc protoreflect.MessageDescriptor) error {
+func validateKeyWithValueExpression(k *KeyWithValueExpression, desc protoreflect.MessageDescriptor) ([]protoreflect.FieldDescriptor, error) {
 	if k.innerKey.ColumnSize() < k.splitPoint {
-		return &KeyExpressionError{Message: fmt.Sprintf(
-			"child expression of covering expression returns too few columns: split_point=%d, child_columns=%d",
-			k.splitPoint, k.innerKey.ColumnSize())}
+		// Java's getMessage; its split_point and child_columns are log info,
+		// not part of the text (LoggableException does not render them).
+		return nil, &KeyExpressionError{Message: "Child expression of covering expression returns too few columns"}
 	}
-	return validateKeyExpression(k.innerKey, desc)
+	return validateKeyExpressionFields(k.innerKey, desc)
 }
 
 // validateSplitKeyExpression validates that the joined expression produces exactly 1 column
 // and creates duplicates. Matches Java's SplitKeyExpression.validate().
-func validateSplitKeyExpression(s *SplitKeyExpression, desc protoreflect.MessageDescriptor) error {
+func validateSplitKeyExpression(s *SplitKeyExpression, desc protoreflect.MessageDescriptor) ([]protoreflect.FieldDescriptor, error) {
 	if s.joined.ColumnSize() != 1 {
-		return &KeyExpressionError{Message: "must have a single key before splitting"}
+		return nil, &KeyExpressionError{Message: "Must have a single key before splitting"}
 	}
 	if !createsDuplicates(s.joined) {
-		return &KeyExpressionError{Message: "must produce multiple values for splitting"}
+		return nil, &KeyExpressionError{Message: "Must produce multiple values for splitting"}
 	}
-	return validateKeyExpression(s.joined, desc)
+	return validateKeyExpressionFields(s.joined, desc)
+}
+
+// notMessageTypeText is protobuf-java's UnsupportedOperationException text for
+// getMessageType on a field that is not a message: the field's full name
+// follows the sentence (protobuf-java 4.29.3, measured).
+func notMessageTypeText(fd protoreflect.FieldDescriptor) string {
+	return fmt.Sprintf("This field is not of message type. (%s)", fd.FullName())
 }

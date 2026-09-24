@@ -1,0 +1,82 @@
+**NAK.** I reviewed tree `0a7977fc48e0e10f8ee52f4c04deabf4d94ac73c` and design `rfcs/257-java-upgrade-audit/ws-d-design.md`, whose SHA256 `1f0fd83139e31f2efb4943711398f7ca9046fd695bd626424e6d247f30fff1f2` matches when recomputed with `git show TREE:path | sha256sum`.
+
+**What I read and checked:**
+- All four v5 verdicts, the full v6 design (868 lines), the diffs v5→v6 and WS-C→v6, the oracle README and both evidence files, and the oracle Java and Go sources.
+- **Java version:** the checkout is at `fdacd162`, read from `fdb-record-layer/.git/HEAD`.
+- **Oracle hashes:** all four source SHA256s match `evidence-run.txt`, and the Go test declares 9 `It` specs, matching "Ran 9 of 1532".
+- **Production code:** `git diff --stat f0cb2957 0a7977fc -- pkg gen proto cmd .github` shows only the docscheck and workflow deletions. There is no WS-D code.
+- I ran no tests, probes or edits.
+
+## P2
+
+**1. A session that loses the claim race fails its build.**
+- **What Java does:**
+  - A claim is a blind write where the last writer wins, and "the loser simply discovers on its next invocation" that it lost (`VectorIndexMergeLock.java:111-115`).
+  - A drain runs only when the stored owner equals the caller's id (`VectorIndexMaintainer.java:573-576`).
+  - A Java background merger claims a free prefix at random (`VectorIndexMaintainer.java:591-598`).
+- **What the design says:** design:500 agrees that "claims may both commit".
+- **The gap:**
+  - The hand-off's drain loop stops on "a drain that executes no task" (design:577-580).
+  - The progress rule then returns the typed capacity error when nothing changed (design:603-605).
+  - A mutual peer, or a Java merger that claimed the same prefix at the same moment, makes the loser re-verify, see a foreign owner, execute nothing, stop, see no progress and fail its session. This is an ordinary concurrent path.
+- **Needed:**
+  - A re-verify that finds a live foreign owner should enter the same bounded, heartbeat-renewing foreign-lease wait, stopping on progress. It should not count as "no task".
+  - A fixture where two concurrent hand-offs on one prefix both commit their claims and both sessions complete.
+
+**2. The wait slices are sized from Go's own lease, but staleness is judged by the peer's lease.**
+- **Who decides staleness:** both engines judge a heartbeat by the checker's own lease: Go at `indexing_heartbeat.go:140` and Java at `IndexingHeartbeat.java:106-107`.
+- **Java's default lease is 10 s** (`OnlineIndexOperationConfig.java:61`), and `checkAnyOngoingOnlineIndexBuilds` also uses it (`OnlineIndexer.java:448`).
+- **What goes wrong:**
+  - Go's 30 s default gives 10 s slices (design:556-557). At each slice boundary, Go's heartbeat is older than 10 s: one slice plus the renewal latency.
+  - A Java exclusive builder with default settings is therefore admitted in the middle of the wait.
+  - Go's next exclusive `CheckAndUpdate` then fails with `SynchronizedSessionLockedError`. This contradicts "never lets the build's own session lapse" (design:555-556) and design:507-509.
+- **Needed:**
+  - Bound each slice by min(own lease, Java's 10 s default)/3, or reuse the existing per-transaction renewal cadence.
+  - Add a JVM fixture: a default-configured exclusive builder probes admission during the wait and is refused.
+
+## P3
+
+1. **KMeans rows: the check point contradicts a measured result.**
+   - design:185-190 checks capability "before a fetched task is removed", and row 200 calls that parity.
+   - But the target commits phase 1 first (the re-enqueue at `SplitMergeTask.java:232-236`) and throws at KMeans only on the second execution (golden `drain=1then…`). design:195-196 says the rules must reproduce exactly that.
+   - For a backlog written by Java, Go would refuse a phase 1 that Java commits. Check at the KMeans consumer, or declare the difference.
+2. **"A refused merge claims nothing" (design:253-254) holds only without a concurrent training commit.**
+   - If training commits between the snapshot access-info read and the claim, the claim commits anyway and leaves a live 60 s lease that blocks peers' hand-offs.
+   - Qualify the claim, or release the lease with an owner-verified release (`VectorIndexMergeLock.java:144-151`).
+3. **The isolation of the "blocked cluster relieved" read is unstated (design:577-578).**
+   - If it is read serializably inside a drain transaction, it conflicts with every concurrent insert's stats write to that same cluster.
+   - Specify a snapshot read, or a read after the drain commits, as the baseline read already is (design:595).
+4. **`mergeNumNearestClusters` cannot be repaired by evolution.**
+   - design:235-237 says its consequences are "repairable by evolving the mutable knobs". That knob is immutable (`GuardiannVectorIndexEngine.java:84-97`).
+   - In inline mode, once a merge-classified task reaches the head of the queue, every insert into that prefix fails and poisons its transaction, permanently.
+   - Correct the claim. Also, inline behaviour for `merge/splitNumNearestClusters` is unmeasured: the inline golden covers only 5 knobs.
+5. **Outside the design:** `TODO.md:8289` still says "IN FLIGHT: this change adds a Capture FDB container forensics step". The entry appended at the end marks it superseded, but under the superseded-claim rule every copy must be fixed.
+
+## Confirmed
+- **Commit checks:** they are keyed and run before commit and flush (`database.go:1063-1145`, `runner.go:322-339`). `DeleteStore` cancels only checks under `pendingWriteCommitCheckPrefix` (`store_api.go:181-182`), so the poison key sits outside what deletion cancels.
+- **Locks and futures:**
+  - The context-level lock registry exists (`database.go:669`, `store.go:1380-1383`).
+  - Pure-Go `Future.Cancel` is a no-op, and pending futures must be created and resolved on one goroutine (`future.go:39-43,102-141`).
+- **Operation order:** inline task, then routing, then cap and tag-5 matches `Insert.java:206-215,293,334-337`. The delete order and the `deleteConcurrency` consumer match `Delete.java:110-176`.
+- **Replay and leases:**
+  - Continuation replay touches neither the engine nor the lock (`VectorIndexMaintainer.java:208-223`).
+  - Lease and count reads are snapshot reads; release happens only when the prefix is empty, and the quota is 4 s (`VectorIndexMaintainer.java:110,554,634-661`).
+- **Proto:** the pending-write `Any` payload is unchanged (`VectorIndexMaintainer.java:432-468`). Scan-option wire names and duplicate-alias rejection match `VectorIndexScanOptions.java:50-51,191-203`.
+- **v5 findings addressed:** the replay refusal is gone, poison scope and key are defined, deleteConcurrency is checked at Java's consumer, the task-kind refusal replaced the index-wide parity label, the baseline is the stored count, the reconcile recomputes n, the empty-cluster claim is qualified, and the join error choice is declared.
+
+## Measured vs still hypothesis
+- **Measured** (9 specs, hashes verified):
+  - the hash formula;
+  - both split stalls;
+  - queue stranding (18 of 30 entries left);
+  - backpressure on ordinary saves;
+  - the deferred-mode knob map (values 0 and −1, extra bits 9);
+  - the 8 inline scenarios. These call `Guardiann.insert(…, true)` directly, not the record-layer auto-merge path.
+  - the refit and λ results. These are pure Java with a synthetic current partition and fixed seeds; the usability verdict depends only on child sizes, so it holds.
+- **Still hypothesis:**
+  - inline mode through the record layer;
+  - inline mode for the `NumNearestClusters` knobs;
+  - the stale-inflated cluster, empty core, vanished neighbour, n<k and rollback shapes;
+  - deletes that enqueue a task, and merges, under trained extra bits 9;
+  - build-range stranding;
+  - every Go-only mechanism: hand-off, poison, the lease wait, and heartbeat behaviour against Java peers.

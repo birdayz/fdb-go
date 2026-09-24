@@ -97,6 +97,11 @@ func TestFDB_ArrayComparison(t *testing.T) {
 			{`NULL = [1]`, "n"},
 			{`NULL = CAST(NULL AS INTEGER ARRAY)`, "n"},
 			{`NULL = []`, "n"},
+			{`NULL <> []`, "n"},
+			{`[] <> NULL`, "n"},
+			{`NULL IS DISTINCT FROM []`, "t"},
+			{`NULL IS NOT DISTINCT FROM []`, "f"},
+			{`[] IS NOT DISTINCT FROM NULL`, "f"},
 			{`[] = [1]`, "f"},
 			{`[] = NULL`, "n"},
 			{`[] = CAST([] AS INTEGER ARRAY)`, "t"},
@@ -127,11 +132,10 @@ func TestFDB_ArrayComparison(t *testing.T) {
 			// Element NULLs do NOT propagate: once both operands are
 			// non-NULL the result is two-valued (compareListEquals:
 			// both-null elements are EQUAL, one-null is UNEQUAL).
-			// MEASURED DIVERGENCE (live Java 4.12.11.0, pinned in
-			// conformance's ArrayComparisonJavaProbe): Java throws a raw
-			// NullPointerException on a NULL element inside a compared
-			// array literal — an upstream bug, not designed semantics.
-			// Go answers what Java's own compareListEquals specifies.
+			// The approved Go read extension remains supported. Target Java
+			// explicitly rejects NULL elements with 0A000 during construction;
+			// ArrayComparisonJavaProbe pins both contracts independently.
+			// This does not admit NULL elements in persisted protobuf arrays.
 			{`[NULL] = [NULL]`, "t"},
 			{`[1, NULL] = [1, NULL]`, "t"},
 			// Size mismatch is FALSE, not UNKNOWN.

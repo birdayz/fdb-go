@@ -120,7 +120,7 @@ func buildW5StructStarMetadata(t *testing.T) *recordlayer.RecordMetaData {
 		},
 	}
 	union := &descriptorpb.DescriptorProto{
-		Name: proto.String("UnionDescriptor"),
+		Name: proto.String("RecordTypeUnion"),
 		Field: []*descriptorpb.FieldDescriptorProto{
 			{
 				Name: proto.String("_WS"), Number: proto.Int32(1),
@@ -223,7 +223,7 @@ func buildTwinLayoutStarMetadata(t *testing.T) *recordlayer.RecordMetaData {
 		}
 	}
 	union := &descriptorpb.DescriptorProto{
-		Name: proto.String("UnionDescriptor"),
+		Name: proto.String("RecordTypeUnion"),
 		Field: []*descriptorpb.FieldDescriptorProto{
 			{
 				Name: proto.String("_WS"), Number: proto.Int32(1),

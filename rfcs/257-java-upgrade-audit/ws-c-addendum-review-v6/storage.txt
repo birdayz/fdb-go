@@ -1,0 +1,67 @@
+**NAK.** I reviewed tree `c789832131f2e6206ee2ebad9b92a3ae463d6f6d`, a tree object. The design file's SHA256 is `10d7b1cdd23f498b3d65bf3a6dd2eaa7cf17d22331400c423623ab0daba8bb79` with 1133 lines; I recomputed both. I ran no tests, probes or mutations. Anything not marked **measured** comes from reading source.
+
+Every v5 finding is addressed, and most are fully resolved. The build session, the heartbeat writes and clears, and the transaction behaviour are sound. The NAK is for two gaps of the same size v5 was NAK'd for: the new equality is not quite Java's `Index.equals`, and the new merge text claims more lock-out than the code gives.
+
+## Findings, most severe first
+
+**1. Low: `equalsJava` differs from `Index.equals` in three fields.**
+- **Type.** `index.go:668` compares `CanonicalType()`, which maps `min_ever`/`max_ever` to `*_long`. Java compares the raw strings (`Index.java:703`), and its `hashCode` hashes the raw type (`:716`).
+  - `[own(min_ever), copy(min_ever_long)]`: Go drops the copy and builds; Java keeps the copy and refuses it.
+- **Root.** `keyExpressionEquals` has no `DimensionsKeyExpression` case. It falls to `default: false` (`key_expression.go:1195`), even for the same pointer. Java's `DimensionsKeyExpression.equals` is structural (`:200-213`).
+  - So Go refuses `[own, equal copy]` of any MULTIDIMENSIONAL index, which Java accepts. This is the reverse of the gap v5 closed.
+- **Predicate.** `index.go:686-688` compares stored protos structurally, and the comment (`:657-659`) says "Java's IndexPredicate equality is structural".
+  - In 4.14.2.0, only `RowNumberWindowPredicate` overrides `equals` (`IndexPredicate.java:790-801`). And, Or, Not, Constant and Value predicates compare by identity.
+  - `Index(proto)` builds a fresh predicate (`Index.java:238`). So two separately decoded copies of a filtered index are unequal in Java; Go drops the one listed after the metadata's own and builds, and Java refuses it.
+- **Consequence.** No wrong bytes: Go either builds the metadata's own object or refuses. But `CHANGELOG.md:138-141`, §7.6 and the code comment all claim Java's equality.
+- **Test coverage.** The spec varies only a Field-rooted VALUE index with no predicate. Its impostor also differs in versions and component positions, so the subspace-key comparison alone is never pinned.
+- **Fix:**
+  - compare the raw `Type`;
+  - add a Dimensions case (whole key, prefix size, dimensions size). It is harmless to `buildPrimaryKeyComponentPositions`, which unwraps Dimensions at `:1094-1095`;
+  - compare predicates by identity, except `RowNumberWindowPredicate` structurally, or declare the difference;
+  - add a table spec for `equalsJava` that varies one field per row.
+
+**2. Low: the merge's lock-out holds only against exclusive builders.**
+- A Java mutual builder never checks peers: `checkAndUpdateHeartbeat` with `allowMutual` only writes its own key (`IndexingHeartbeat.java:88-93`). Go's continued mutual session skips every peer too (`indexing_heartbeat.go` `checkAdmission`, `if allowMutual || … continue`).
+- So a mutual builder that starts during the merge is not refused. It proceeds, and the merge then fails at its next commit with `SynchronizedSessionLockedError`.
+- These sentences overclaim:
+  - DIVERGENCES.md:2781-2784: "so that no build interleaves with it" and "a builder, a Java one included, that starts meanwhile is refused by it";
+  - DIVERGENCES.md:2803-2804: "which a Java builder honours as a live session";
+  - CHANGELOG.md:164-165;
+  - ws-c-design.md:1008.
+- **Fix:** say "an exclusive builder", and state what a mutual builder does. Also worth one clause: Java's heartbeat-based ongoing-build check will report the merge as a build in progress.
+
+**3. Nits.**
+- **The closing list at DIVERGENCES.md:2799-2801 is loose and incomplete.**
+  - "The clear or fresh WRITE_ONLY mark under a live peer" should say a live **mutual** peer: Java refuses an exclusive one too.
+  - The list omits the WRITE_ONLY ↔ WRITE_ONLY_WITH_QUEUE refusal. Java keeps building there, so that refusal also leaves state Java would have changed.
+- **The READABLE merge spec has never been shown red.** m43 and m44 correctly leave it green. From source, dropping the `IsScannable` skip (`online_indexer_queue.go:453-455`) would redden it, but that is not measured.
+- **The nil-target comment is imprecise.** `online_indexer.go:787` says "a null there fails with a NullPointerException". Java's `ArrayList` accepts the null; the exception is thrown later, inside `build()` (`OnlineIndexer.java:879-881`), after the source-index `ValidationException` checks. So with a source index, `[nil, x]` gets "multi targets…" in Java and "index must be set" in Go. This affects an error path only.
+- **m42's summary log names no spec.** Its grep matches `[FAIL]` and not `[PANICKED!]`. `mut-m42….full.log:3035` names the combined-builder spec, so the claim holds.
+
+## What holds
+
+**Source:**
+- **Dedup and sort.**
+  - `new HashSet<>(list)` keeps the first of equal objects, and `hashCode(name, type)` is consistent with `equals`, so Go's first-kept loop matches.
+  - Java's reordering through the HashSet only moves objects that share a name. Such a group always contains a foreign object and is refused with the same name, so Go's stable order cannot be observed.
+  - The sort now runs where Java's does (`:879`). With the nil guard in front, the identity check is equivalent to `:880-883`.
+- **Builder methods.** `SetIndex`, `AddTargetIndex` and `SetTargetIndexes` match Java in every order: set then set, add then set, set then add, `SetTargetIndexes([])` then set, and `SetIndex(nil)`. Go returns the refusal as a sticky error from `Build`, which is what a builder chain needs.
+- **No caller relied on the deleted single mode.**
+  - The only non-test builders are frl (`index_write.go:279-283`) and the fleet (`build.go:234-238`). Each calls `SetIndex` once on a fresh builder.
+  - Test callers are covered by the green `just test`.
+- **Merge specs.**
+  - `afterTransactHook` fires after `Transact` returns, i.e. after the commit, once per `Run`. It reads through `sharedDB`, not the hooked database.
+  - So `seen[0]` is the merge transaction's committed state, the last entry is the state after cleanup, and a non-empty guard is present.
+  - The live-peer spec pins that the peer's key is untouched. The DISABLED spec pins the error class, message and index name, and that no key is left.
+- **Storage.**
+  - A refused or failed merge transaction aborts entirely, because the pre-commit callback's error fails it. Cleanup clears only the merge's own key.
+  - v5 fixes are in place: citations, the reason, the CHANGELOG entry, the IndexerID wording, the `Built` doc, the retitled spec, the hook docs, and `found == nil` removed.
+
+**Measured:**
+- **Hashes.** Six candidate blobs match `evidence-v10.txt`'s spot checks: `online_indexer.go`, `index.go`, both spec files, CHANGELOG and DIVERGENCES. The evidence tree `6cef9824` differs from the candidate only in docs.
+- **Mutations m39–m44.** Each log shows marker count 1, a diff at the tree's own line (`:821`, `:841`, `:620`, `:786`, merger `:167`, queue `:458`), bazel exit 3, and "restored". The red sets match the table: m40 has 15 red, and m42's `[PANICKED!]` is in its full log. I spot-checked the `.good` baselines at two regions; they are not byte-verified.
+- **Focus runs.** `focus1` ran 378 of 378 and ev10's focus ran 391 of 391. Both list all four merge specs and the retitled spec.
+- **Loop.** 40 × "SUCCESS! -- 2 Passed | 0 Failed", with 0 failures.
+- **`just test`.** "Executed 41 out of 94 tests: 94 tests pass", with the tree equal before and after. recordlayer, chaos, fleet, conformance and sqldriver are among the 41 executed.
+
+The approved Go extensions, C++ 7.3.77, format max 15 / default 14, and the single query pipeline are all unaffected.

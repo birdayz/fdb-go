@@ -437,6 +437,11 @@ func TestMetadataIndexDefSharedRecordTypePrefixStopsVisibleOrdering(t *testing.T
 			{Name: proto.String("Second"), Field: []*descriptorpb.FieldDescriptorProto{{
 				Name: proto.String("id"), Number: proto.Int32(1), Label: &label, Type: &longKind,
 			}}},
+			// Java requires a union (RecordMetaDataBuilder.fetchUnionDescriptor).
+			{Name: proto.String("RecordTypeUnion"), Field: []*descriptorpb.FieldDescriptorProto{
+				{Name: proto.String("_First"), Number: proto.Int32(1), Label: &label, Type: descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(), TypeName: proto.String(".sharedpksuffixtest.First")},
+				{Name: proto.String("_Second"), Number: proto.Int32(2), Label: &label, Type: descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(), TypeName: proto.String(".sharedpksuffixtest.Second")},
+			}},
 		},
 	}, nil)
 	if err != nil {
@@ -482,10 +487,17 @@ func TestMetadataIndexDefSharedPrimaryKeyWidthDisagreementIsUnknown(t *testing.T
 		}
 	}
 	file, err := protodesc.NewFile(&descriptorpb.FileDescriptorProto{
-		Name:        proto.String("shared_pk_width_test.proto"),
-		Package:     proto.String("sharedpkwidthtest"),
-		Syntax:      proto.String("proto2"),
-		MessageType: []*descriptorpb.DescriptorProto{message("FloatRecord", &floatKind), message("DoubleRecord", &doubleKind)},
+		Name:    proto.String("shared_pk_width_test.proto"),
+		Package: proto.String("sharedpkwidthtest"),
+		Syntax:  proto.String("proto2"),
+		MessageType: []*descriptorpb.DescriptorProto{
+			message("FloatRecord", &floatKind), message("DoubleRecord", &doubleKind),
+			// Java requires a union (RecordMetaDataBuilder.fetchUnionDescriptor).
+			{Name: proto.String("RecordTypeUnion"), Field: []*descriptorpb.FieldDescriptorProto{
+				{Name: proto.String("_FloatRecord"), Number: proto.Int32(1), Label: &label, Type: descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(), TypeName: proto.String(".sharedpkwidthtest.FloatRecord")},
+				{Name: proto.String("_DoubleRecord"), Number: proto.Int32(2), Label: &label, Type: descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(), TypeName: proto.String(".sharedpkwidthtest.DoubleRecord")},
+			}},
+		},
 	}, nil)
 	if err != nil {
 		t.Fatalf("build shared-width descriptor: %v", err)

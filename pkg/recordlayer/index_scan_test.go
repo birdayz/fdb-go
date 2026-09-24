@@ -784,10 +784,9 @@ var _ = Describe("IndexScanning", func() {
 			badIndex := NewIndex("Order$tags_bad", Field("tags"))
 			builder.AddIndex("Order", badIndex)
 			_, err := builder.Build()
-			Expect(err).To(HaveOccurred())
-			var mdErr *MetaDataError
-			Expect(errors.As(err, &mdErr)).To(BeTrue())
-			Expect(mdErr.Message).To(ContainSubstring("repeated"))
+			var keyErr *KeyExpressionError
+			Expect(errors.As(err, &keyErr)).To(BeTrue())
+			Expect(keyErr.Message).To(Equal("tags is repeated with FanType.None"))
 		})
 	})
 

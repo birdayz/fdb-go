@@ -1,0 +1,78 @@
+**NAK.** Tree `f8abe2d742df8c35b44fb0c6f854f86c3cd3a016` is a tree object. The design's SHA256 is `46ba664d33a2ad07f2a089b41ea4c14fab834514a170b2283ab862f89355f47f` with 1051 lines; I checked both. The tree `just test` ran on, `f2f272dc`, has the same code as the candidate: they differ only in `ws-c-design.md`, the ws-j-oracle README and `evidence-v9.txt`. I ran nothing. Findings come from reading source unless marked measured.
+
+Every v4 finding from all three reviewers is resolved, and the build session itself (launcher, catcher, session start, per-transaction checks, publication) is unchanged from what v4 accepted. The NAK is for:
+- one false statement that revision 5 added;
+- a gap in revision 5's own refusal;
+- two undeclared builder differences from Java, next to that refusal.
+
+A narrow re-check will do.
+
+## Findings, most severe first
+
+**1. Low (docs, new in v5): the closing sentence of the DIVERGENCES section is false.**
+- `DIVERGENCES.md:2790-2791` says "The one difference another engine can observe is the standalone merge's heartbeat key". Bullets in the same section contradict it:
+  - **MARK_READABLE (`:2761`):** Java publishes the index and erases its queue; Go refuses, so the index stays unpublished with its queue.
+  - **Clear or fresh WRITE_ONLY mark (`:2731`):** Java resets under a live mutual peer; Go refuses.
+  - **Out-of-date metadata (`:2736`):** Java reconciles under a live peer; Go refuses.
+  - **Follow-up:** Java commits the drain; Go commits nothing.
+- Each of these leaves different stored state, just not a different format.
+- The merge bullet (`:2774`) also leaves one thing out. The merge itself fails with `SynchronizedSessionLockedError` under any live heartbeat, a running Java build included (mutual or not), and Java's standalone merge goes ahead. "Admitted exclusively" only implies that.
+- Fix: "No stored format differs. The refusals above leave state Java would have changed. The merge heartbeat is the one key Go writes that Java would not." Then state the merge's own refusal.
+
+**2. Low (revision 5's refusal has a gap).**
+- `online_indexer.go:789-795` removes duplicate targets by NAME before the identity check at `:807`.
+- So `SetTargetIndexes([own, impostor])` silently drops the impostor and the build goes ahead.
+- Java removes duplicates with a `HashSet`, i.e. by `Index.equals` (`OnlineIndexer.java:871-874`), and `Index.java:695-711` compares `subspaceKey`. Both objects stay in the list, and `:881` refuses the impostor.
+- There is no wire effect, because the object kept is the metadata's own. But the CHANGELOG (`:133-136`) and 7.5 claim `Build` refuses every target that is not the metadata's object.
+- Java also sorts before the check (`:879`), so it names the alphabetically first bad target.
+- Fix: remove duplicates by Java's equality, and pin that `[own, impostor]` is refused.
+
+**3. Low (pre-existing, undeclared): `SetIndex` and `AddTargetIndex` interact the opposite way from Java.**
+- In Java:
+  - `setIndex` throws a `ValidationException` ("setIndex may not be used when other target indexes are already set") only when targets are already set (`:668-671`);
+  - `addTargetIndex` never checks (`:719-722`).
+- In Go:
+  - `SetIndex(a).AddTargetIndex(b)` fails with a plain `fmt.Errorf` (`:841-842`); Java builds both.
+  - `AddTargetIndex(b).SetIndex(a)` silently replaces the list and builds only `a` (`:612-615`); Java throws.
+- The spec "rejects SetIndex combined with AddTargetIndex" (`online_indexer_test.go:2131`) pins the non-Java behaviour.
+- Fix: port Java's check at set time, returning it from `Build` as an `IndexingValidationError`. Delete `:841-842` and flip the spec.
+
+**4. Low (pre-existing): `SetIndex(nil)` panics.**
+- The nil dereference is at `idx.Name` (`:790`).
+- Java's `setIndex(@Nullable)` skips a null (`:672-674`), and `validateIndexSetting` then throws `MetaDataException("index must be set")` (`:862-864`). That is the error revision 5 just ported.
+- Fix: skip nil in `SetIndex`, and pin it.
+
+**5. Nits.**
+- CHANGELOG `:140-141` says the three errors "carry the refusing indexer's IndexerID". On `SynchronizedSessionLockedError` it is the *refused* indexer; the `errors.go` comment has this right.
+- `CHANGELOG.md` has zero `MergeIndexes` hits, and `origin/master` has zero in `*.go`/`*.md`. The API is new on this branch, so the session behaviour DIVERGENCES now declares is invisible to someone upgrading.
+- The `IndexBuildOutcomeBuilt` doc (`:490-494`) reads as a complete list. A failed attempt followed by a retry that builds, or that publishes, also reports `Built`.
+
+## What holds (source)
+
+- **Target refusal.**
+  - `Build` returns `MetaDataError` with Java's messages (`:766`, `:808-809`).
+  - The production callers pass the metadata's own objects: frl through `lookupIndex` (`openstore.go:294-296`), and the fleet through `PendingIndexes` → `GetAllIndexes`, the same map as `GetIndex` (`metadata.go:2025-2032`).
+  - Metadata `Build` shares the `*Index` pointers (`metadata.go:1148-1151`).
+  - The other test callers take the index from `md.GetIndex` (chaos, sqldriver) or pass the object they registered with `AddIndex` (conformance).
+  - None of them passes a copy.
+- **Error fields.**
+  - `IndexerID` on the lock error (`indexing_heartbeat.go:156`) matches `IndexingHeartbeat.java:111-115`.
+  - `IndexVersion = LastModifiedVersion` matches `IndexingBase.java:1291`.
+  - Each error is built at one site in non-test `pkg/` and `cmd/`.
+- **Divergence bullets.** The merge bullet is true for WRITE_ONLY (through `renewSessionHeartbeat` → `CheckAndUpdate`) and for DISABLED. A READABLE target is skipped, as in Java. The precedence scope and the `SetMarkReadable(false)` case are correct.
+- **Late-clear spec.** Accepting 1007 keeps m23 red, because the late clear then commits.
+- **Census.** The 17-line count reproduces at `936a4aba` and at the candidate (1+5+3+6+2 across five files).
+- **Superseded wording.** Only historical hits remain; the control, "explicit index merge", is found.
+
+## Measured
+
+- **Hashes.** Ten WS-C blobs from the candidate match `ev9/src.sha`: both indexer sources, `errors.go`, the heartbeat source and its test, three indexer spec files, the fleet `build_test.go`, DIVERGENCES and the CHANGELOG.
+- **m34 is not vacuous.** Marker 1, diff at `:1096`, "Ran 374 of 3700", and only the retry spec red. The spec expected `Built` (1) and got 2, `LeftAlone`.
+- **m35–m38.** Each diff sits at its tree line (`:808`, `heartbeat:156`, `:1714`, `:1247`). Each shows marker 1, bazel exit 3, one named spec red, and "restored". m38 fails the build at `:4184` with "source index is not a VALUE index".
+- **m30 under Bazel.** "Executed 1 out of 1 test: 1 fails locally", with `a_failure_part_way` red.
+- **Baselines.** I spot-checked the `.good` files at five lines; they are not byte-verified.
+- **Focus.** "Ran 387 of 3700", 387 passed, and all six new or changed specs are listed.
+- **Loop.** 40 × "2 Passed | 0 Failed".
+- **`just test`.** "Executed 43 out of 94 tests: 94 tests pass", with the tree the same before and after the run. The executed set includes chaos, sqldriver, conformance, fleet, cmd and recordlayer, so every test target that builds an indexer ran against the new refusal.
+
+The approved Go extensions, C++ 7.3.77, format max 15 / default 14, and the single query pipeline are all unaffected.

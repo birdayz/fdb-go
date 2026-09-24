@@ -1,0 +1,32 @@
+{
+  "scope": "Fixture repairs after frozen WS-A + WS-E1 review; not an upgrade completion or implementation ACK",
+  "review_tree": "a8940de29c3726e44d5e14779f321b732e11be88",
+  "runtime_race": {
+    "targets": 6,
+    "executed": 6,
+    "passed": 6,
+    "sqldriver_runs": 6790,
+    "sqldriver_passes": 6790,
+    "sqldriver_skips": 0,
+    "fixture_splits_observed": 5,
+    "frozen_files": 6280,
+    "changed_during_run": 0
+  },
+  "just_test": {
+    "targets": 92,
+    "executed": 3,
+    "cached": 89,
+    "passed": 92,
+    "frozen_files": 6280,
+    "changed_during_run": 0
+  },
+  "regression": "Classifier-disabled mutation compiled, killed TestDuecFixtureSplitPoint/raw_window, restored green. NoFrom setup context cancels before children start; each child owns its operation deadline.",
+  "artifacts": {
+    "fixture-full-race.log": "79f52e70f8d80893729e1bc70e7be8d5a1b711a1e96c9737452a5b54ca8841f6",
+    "fixture-full-race-bep.jsonl": "46c7a4616e373d13a4109935ebf7e28d1672d9e22eda46f20034fe0a5a817dac",
+    "fixture-full-race-freeze.json": "d36cea42b320d8a5cc72318a1ac14a90fee66c868fbfe45d311a223ed85e4e88",
+    "fixture-just-test.log": "111b51f014c9081c950b4cfa9f2871121df628805209bdb070fc3024b8989092",
+    "fixture-split-mutation.log": "d51071965d4b57c677cd343148d1a04b9301169bda9fe21e7722cd6e7b59215d",
+    "fixture-split-restored.log": "2ed358d9374cc1ab40c1a28e037bcf1c85d38532a9e2cbab2d6b2e55164cc86f"
+  }
+}

@@ -1,0 +1,3 @@
+# WS-D design gate v13
+
+TREE `3a934039479f337069d5b483269ecfaffc47817e`; design SHA256 `87bfa1569cf9f133d14f6578f11063ae7dc293a7143449f21a72d84416d8355b` (1791 lines). Answers the four v12 NAKs: D-0 corrected (SimFDB retry_limit landed, route-keyed chaos faults, SQL owners by route, SPFresh foreground under its caller bound with RFC-094 section 2 corrected, 1200, context handling, 53-line census with --untracked and DST hunts), admission knob floor and overflow-safe W, B=1.96e7 from the worst observed rate with the corner re-measured (item 29), heartbeat texts corrected and the live (U) + invalid (U,x) pair pinned in both engines. Lenses: Graefe, Torvalds, storage, spfresh.

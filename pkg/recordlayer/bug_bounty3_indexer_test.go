@@ -715,29 +715,16 @@ var _ = Describe("BugBounty3Indexer", func() {
 	})
 
 	// =========================================================================
-	// BUG #6: Multi-target OnlineIndexer markWriteOnly does not validate that
-	// all target indexes are in the same state before proceeding.
-	//
-	// Severity: incorrect behavior ($100)
-	// File: online_indexer.go:547-575 (markWriteOnly)
-	//
-	// Description: Java's IndexingBase.handleIndexingState() (lines 228-245)
-	// explicitly validates that all non-primary target indexes have the SAME
-	// state as the primary index. If they differ and the policy doesn't allow
-	// rebuild, it throws ValidationException.
-	//
-	// Go's markWriteOnly only checks the PRIMARY index to determine if it's
-	// a continued build. If the primary is WRITE_ONLY but a secondary target
-	// is still READABLE, Go silently skips the clear-and-mark for ALL
-	// indexes and proceeds with the build. The secondary index would then
-	// receive double entries (from normal maintenance AND the online build).
-	//
-	// Impact: For non-idempotent indexes, this can cause incorrect aggregate
-	// values (double-counting). For VALUE indexes, it's masked by the
-	// idempotent removeCommonEntries optimization.
+	// BUG #6 (fixed): multi-target session start did not check that every
+	// follower shares the primary's state. Java's
+	// IndexingBase.handleStateAndDoBuildIndexAsync refuses a follower whose
+	// state differs unless its own desired action is REBUILD on a fresh session;
+	// prepareIndexingState now does the same, and Describe "index state desired
+	// action" pins both follower rules. This spec keeps the plain multi-target
+	// build over indexes that are new to a store holding records.
 	// =========================================================================
 	Describe("BUG6: Multi-target markWriteOnly missing state consistency validation", func() {
-		It("builds multi-target where both indexes start as READABLE (fresh build)", func() {
+		It("builds multi-target where both indexes are new to a store holding records", func() {
 			ks := specSubspace()
 
 			// Insert records without any indexes.

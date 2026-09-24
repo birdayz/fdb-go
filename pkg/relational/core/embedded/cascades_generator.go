@@ -11,7 +11,6 @@ import (
 	"math"
 	"reflect"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -3761,8 +3760,10 @@ func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMe
 	}
 	permutedSize := 0
 	if idx.Type == recordlayer.IndexTypePermutedMax || idx.Type == recordlayer.IndexTypePermutedMin {
-		if raw, ok := idx.Options[recordlayer.IndexOptionPermutedSize]; ok {
-			parsed, err := strconv.Atoi(raw)
+		// Absent is 0 and present is Integer.parseInt, as Java's
+		// AggregateIndexMatchCandidate.getPermutedCount reads it.
+		if _, ok := idx.Options[recordlayer.IndexOptionPermutedSize]; ok {
+			parsed, err := recordlayer.PermutedSizeOption(idx)
 			if err != nil || parsed < 0 || parsed > groupingCount {
 				return nil
 			}

@@ -259,13 +259,10 @@ tests:
       - [10]
       - [1]
 
-  # Counter (1..5) via a depth predicate. The seed is a FROM-less
-  # SELECT literal (`SELECT 1 AS n`); fdb-relational 4.11.1.0 rejects
-  # at parse time via QueryVisitor.visitSimpleTable's
-  # `Assert.notNullUnchecked(fromClause(), UNSUPPORTED_QUERY,
-  # "query is not supported")` — the assertion fires on every
-  # SimpleTable visit, including ones inside a recursive CTE base.
-  # Per the project conformance principle, Go aligns. ErrCode 0AF00.
+  # Counter (1..5) from the singleton seed. The main-query sort consumes
+  # the completed recursive row, not the provisional NOT NULL seed type.
+  # ORDER BY over this recursive result uses Go's existing sort extension;
+  # Java 4.14.2.0's refusal is pinned in FromlessSelectJavaProbe.
   - query: |-
       WITH RECURSIVE counter(n) AS (
         SELECT 1 AS n
@@ -273,7 +270,12 @@ tests:
         SELECT n + 1 FROM counter WHERE n < 5
       )
       SELECT n FROM counter ORDER BY n
-    error_code: "0AF00"
+    rows:
+      - [1]
+      - [2]
+      - [3]
+      - [4]
+      - [5]
 
   # Cycle + UNION DISTINCT: reachable set on a 1→2→3→1 cycle must be
   # {1,2,3} and the recursion must terminate (via the seen-row filter,

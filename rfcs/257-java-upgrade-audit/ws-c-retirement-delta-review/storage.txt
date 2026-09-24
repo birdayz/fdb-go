@@ -1,0 +1,18 @@
+**ACK — exact reviewed TREE `f0cb29576cde624e0f1c6e22ca18a5180d1b298f`.**
+
+No actionable storage/wire correctness findings remain in this delta or its reviewed interactions.
+
+Read the complete four-file source delta (**+187/−6**) from `5dc2a9cf465ff439ac75d1e5eb5682eecd0ca38b`, the preceding five-fix delta, all four previous verdicts, relevant initial NAKs, scope, accepted design, and relevant Java at `fdacd162a9c8acfadc49082b89185c823ab8ae4a`. Checked interactions against accepted base `ba06f34ff8998f61040a491e4f3a3e8b8de7ccf9` and actual Go/C future contracts.
+
+- Own publication retires the target only after successful `Run`. Peer observation uses authoritative state reads with read conflicts and a synchronous post-commit hook; failed attempts cannot publish retirement. [online_indexer.go:1359](/home/birdy/projects/fdb-go/pkg/recordlayer/online_indexer.go:1359), [online_indexer_queue.go:334](/home/birdy/projects/fdb-go/pkg/recordlayer/online_indexer_queue.go:334), [database.go:319](/home/birdy/projects/fdb-go/pkg/recordlayer/database.go:319).
+- Retirement preserves the original target list and stamp identity. Follow-up validation, drains, requested merges and subsequent closeout skip released targets. Fresh preparation and standalone merging reset retirement. Disablement, rebuilding and replacement retirement therefore cannot pull completed targets back into the old session. [online_indexer_queue.go:313](/home/birdy/projects/fdb-go/pkg/recordlayer/online_indexer_queue.go:313), [online_indexer.go:1152](/home/birdy/projects/fdb-go/pkg/recordlayer/online_indexer.go:1152), [indexing_merger.go:145](/home/birdy/projects/fdb-go/pkg/recordlayer/indexing_merger.go:145).
+- The original five fixes remain sound in these interactions: admission precedes destructive preparation; admitted mutual renewal writes only its UUID; remaining targets retain transactional fencing; consumed nested Any boundaries retain Java-compatible validation; continuation and follow-up publication remain commit-bound.
+- Cleanup retains its independent deadline, remaining transaction timeout and `IsReady` polling. It calls `Get` only after readiness and abandons no blocking-`Get` goroutine. Late backend completion clears only the terminated session’s UUID keys. [online_indexer_queue.go:231](/home/birdy/projects/fdb-go/pkg/recordlayer/online_indexer_queue.go:231).
+
+Inspected all six regressions and retained red/mutation evidence: the three original reproductions failed before the fix; premature retirement and omitted reset also failed. All 12 follow-up specs passed.
+
+Latest retained **LOCAL** evidence matches **93/93, 6 executed/87 cached**; uncached race **189/3610** plus ordinary Go tests/seeds; JVM race **9/1523**. All 35 frozen hashes match the candidate, covering every changed source file. The predecessor’s 93/93 uncached execution remains historical.
+
+Format15/default14, approved extensions, C++7.3.77, SPFresh queue exclusion and unchanged algorithms/LIRE remain preserved. HNSW remains synchronous. No future child-backend proof is established; GuardiANN WS-D and absent Lucene remain upgrade-wide work.
+
+Read-only review: no tests, mutations, edits or operational changes. No CI or overall migration-completion claim.

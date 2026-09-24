@@ -1,0 +1,64 @@
+**NAK.** I reviewed tree `8d721bd13b28b59be91f59a35b71acbd15d7131c` and `ws-f-design.md` at sha256 `c54897e41bf8cee43fbeb32d7402452a25a0757361304d3c936c95e33c2608f9`, 1480 lines; I recomputed both from the tree. I ran nothing and edited nothing.
+
+**Verified**
+- **Oracle:**
+  - The seven evidence hashes equal this tree's blobs.
+  - `run1.lines` and `run2.lines` each have 130 probe lines.
+  - Each mutation shows marker count 1, was restored, and ran "Ran 2 of 61" with one spec failing on the expected message.
+  - m3 and m4 first failed to build; m3b and m4b are the real runs, and both reddened.
+- **4.2 cycle:** the measurement and Java's source agree. The fetch rung (`PlanningCostModel.java:220-249`) gives COVERING < ISCAN. PREFER_INDEX (`:465-501`) gives ISCAN < SCAN and abstains on a covering scan without a fetch (`:563-567`). Unmatched fields (`:257-261`, 1 vs 3) give SCAN < COVERING. On that pair the verdict stayed fixed while the hash order moved (evidence `:447`).
+- **4.3 record-type stop:** confirmed in source. `satisfiesRequestedOrdering` (`AbstractDataAccessRule.java:779-847`) stops at the record-type part, which carries no comparison (`ValueIndexLikeMatchCandidate.java:63-116`).
+- **W6:** D1 matches `CascadesPlanner.java:1102-1158`, D4 matches `:1233-1249`, D9 matches `:1371-1386`. D7's 12 call sites reproduce.
+- **2.3:** `outerJoinCount` is omitted in Go (`planning_cost_model.go:83-105`) and `RewriteOuterJoinRule` is registered in PLANNING (`default_rules.go:182-192`), as the design says.
+- **Also confirmed:** the W9 plan-cache premise (`query_hash.go:46-61`), the in-union check running before the fast paths (`RecordQueryInUnionPlan.java:151-162`), and the range-set fingerprint refusal (`scan_range_set_cursor.go:146-155`).
+
+**On the WS-E question: v3 does NOT state the RFC-182 second crossing.** It never mentions `AdvanceStagePreservingMembers`, the no-finals branch (`unified_tasks.go:99-109`) or the RFC-182 union leg. Its stale-text list names only "the stage-boundary comment". WS-E v11's sentence "ws-f-design.md v3 prunes that crossing" (`ws-e-design.md:2595-2600`) is therefore unsupported.
+
+## High
+
+1. **The second crossing has no owner.**
+   - D7's "any child with none → no yield" (design `:359`) creates exactly the group with no finals that `AdvanceStagePreservingMembers` carries into PLANNING with all its exploratory members, unpruned.
+   - Under the physical prune, the design must state one of two outcomes:
+     - the branch becomes a checked error beside `Verify(==1)`, with the census treating it as a lost plan; or
+     - it prunes to the REWRITING comparator's one member.
+   - Either way, add `[union_leg_type_annulling_fold_where]` to step 7's census, and cite this section from WS-E section 8.
+
+2. **4.3 item 3 ("partition memoized whole") names the wrong mechanism and ignores a measured failure.**
+   - `MemoizeMemberPlansFromOther` exists only on `ExpressionRuleCall` (`expression_rule_call.go:309-324`) and carries no requested-ordering constraint.
+   - The in-union rule is an `ImplementationRuleCall` (`rule_implement_in_union.go:157`). Its `MemoizeFinalExpressionsFromOther` does copy the constraint (`implementation_rule.go:211-221`).
+   - `expression_partition.go:207-217` records a MEASURED wrong-order result when the pin is dropped: "an InUnion claiming ASC over a filtered full scan".
+   - "The pin … moves to where the winner is extracted" is an unspecified Go-only stand-in for Java's ordering-homogeneous partition reference.
+   - **Required:** name the memoizer, state that it carries the constraint, and say how that interacts with D7's explored mark. Define the extraction check's invariant and what happens when it fails (error or decline). Pin the "ASC over a filtered scan" shape.
+
+## Medium
+
+3. **4.3 item 2's leg rule is a Go-only check in a different rule from Java's mechanism.**
+   - It is phrased as "the primary key begins with the record-type key", not in Java's terms (the leg's match stops at a record-type placeholder with no binding).
+   - It is unspecified for legs of other shapes: Fetch, Filter or Map over an index scan, and intersections.
+   - Java's intersection ordering does treat the record type as equality-bound (`AbstractDataAccessRule.java:1060-1093`). So Java may build an ID-ordered in-union over an intersection leg that Go's rule would refuse. This is a HYPOTHESIS; probe `col1 IN (10,20) AND col2 = 3 ORDER BY id` in IN-UNION-PARTITIONS mode.
+   - That same Java inconsistency is the strongest justification for the extension. Cite it in the DIVERGENCES entry, state the single-type precondition, and record the upstream report (or that publishing it is not authorized).
+
+4. **The acceptance-as-code has no teeth on plans.**
+   - Every EXPLAIN row is "DIFF explain syntax" (`ws_f_probe_conformance_test.go:888-1017`). `wsfVerdict` (`:769-781`) accepts any disagreement, so WS-F can close with zero plan parity.
+   - Nothing in code links a row to the yamsql pin that section 13 says carries plan acceptance.
+   - `w6_left_join_preserved_only_explain`'s reason says the target's plan is pinned, but 2.3 keeps the NLJ. Section 13's claim that the covering-class and preserved-outer-join probes carry the declared-divergence DIFF does not match the map.
+   - For `w8_no_predicate`, ISCAN(I1) against ISCAN(I2) ties on every rung down to planHash (`:147-339`, unmatchedFields 3 vs 3). The name sets never moved that hash (evidence `:431`). So "the index scan of the named index" cannot be met by construction, and 4.2's "on every measured class" is unproven there.
+   - **Required:** a coded map from each probe to Go's expected plan class (or to a yamsql file and query), checked by the spec, with hash-decided classes asserted at class level.
+
+5. **Section 12's transition table is incomplete.**
+   - **F-7a is missing.** It changes OptimizeGroup ranking for record-layer `NewPlanner` callers who do not call `WithStatistics` (design `:784-800`).
+   - **The F-7b in-union ↔ in-join row is asserted, not established.** The in-join's outer cursor first decodes its own flatMap triple (`executor_new_plans.go:1796-1813`). Mark that row "measured at the step".
+   - **"Composite" is false for a one-value in-union.** It hands the continuation straight to its child (Java `:159-161`; Go `:1866-1877`).
+
+6. **F-7a's framing is wrong.**
+   - Java has one PLANNING cost model, built from the configuration alone (`PlannerPhase.java:38`, `PlanningCostModel.java:94`). Its rules yield per partition and leave the choice to OptimizeGroup.
+   - Go's `getWinnerForOrdering` picks are Go-only pre-selections: 14 non-test call sites in 10 files. The in-union and sort rules, which the design lists, are not among them.
+   - Declare F-7a as feeding a Go substitute. Name the remaining pre-selections; 4.3 removes only the in-union's.
+
+## Low
+
+7. **The IN-subquery extension doesn't exist to preserve.** The preserved "Go-only IN-subquery read extension" (umbrella `:470-471`) contradicts Go refusing every shape (`subquery_in.yaml`, `FEATURE_MATRIX.md:19`). v3's SAME-STATE rows (`:941-942`) would redden if the extension landed. Reconcile the boundary everywhere it is copied, and name those rows as the tripwire for the in-union size question.
+
+8. **REWRITING-RESULT is too coarse for the census.** It renders operator names and `preds=N` only (evidence `:407`), so the comparator-caused arm cannot tell apart survivors that place different predicates. Render the predicates or a structural key.
+
+**Not verified:** W7 D1–D9 internals, the D12 rule-by-rule placement, and 2.4 D5's coalescing semantics.

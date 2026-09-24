@@ -76,7 +76,10 @@ func newFdbUpCmd() *cobra.Command {
 			}
 
 			fmt.Fprintf(progress, "Starting %s (container %q)...\n", image, name)
+			// Match the image's address selection to Docker's host network:
+			// container mode resolves hostname addresses, which can be IPv6.
 			if o, err := runDocker("run", "-d", "--name", name, "--network", "host",
+				"--env", "FDB_NETWORKING_MODE=host",
 				"--env", fmt.Sprintf("FDB_PORT=%d", port), image); err != nil {
 				return fmt.Errorf("docker run: %w\n%s", err, o)
 			}

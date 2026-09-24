@@ -1,0 +1,66 @@
+**NAK**
+
+- **Tree:** `8d721bd13b28b59be91f59a35b71acbd15d7131c`
+- **Design:** `ws-f-design.md` sha256 `c54897e41bf8cee43fbeb32d7402452a25a0757361304d3c936c95e33c2608f9`, 1480 lines. I recomputed both from the blob; they match.
+- **Scope:** read-only. Nothing was run, edited or staged.
+
+**Verified**
+- **Evidence:** all 7 oracle hashes match the tree. run1 and run2 each ran 2 of 61 specs and passed. m1, m2, m3b and m4b each reddened with the expected line, marker count 1, and were restored. m3 and m4 failed to build and were correctly discarded.
+- **Java (SOURCE):**
+  - The in-union check runs before the fast paths and counts the product over all sources (`RecordQueryInUnionPlan.java:151-162, 331-337`).
+  - Equality and plan hash exclude the size (`:278-312`), but the plan proto serializes it (`record_query_plan.proto:2162`).
+  - `advancePlannerStage` requires exactly one final (`Reference.java:208-211`).
+  - `ExceptionUtil` defaults to UNKNOWN, i.e. XXXXX (`:59-84`).
+- **Go:**
+  - `costModelDiagnosticsOnlyContext` has 3 callers.
+  - The restricted memoizers have 12 call sites.
+  - SQL refuses caller-supplied continuations (`cascades_generator.go:1351`).
+  - The leaf salts are as described, and the range-set parse is strict (`scan_range_set_cursor.go:140-194`).
+  - Plan `Explain()` feeds no identity (`ExplainPhysicalPlan` has no non-test caller).
+  - WS-E 6.6 names `RecordCoreArgumentError` (`:3311`).
+- **v2 storage findings closed:** M1(a–d), M2, M3 and the Lows.
+
+**WS-E's reliance on the RFC-182 second crossing: v3 does not state it.** Grepping `ws-f-design.md` for `PreservingMembers|crossing|union leg|RFC-182` finds 0 hits; the control term `FinalizeExpressionsRule` finds 5 lines.
+
+## High
+
+**H1. Section 12's transition table reasons about the leaf, but the outermost composite cursor decides the outcome (:1405-1419).**
+- **In-union to in-join (:1417) is not refused.** The in-join decodes a `FlatMapContinuation` (`cursor_combinators.go:636-658`). A two-leg `UnionContinuation` has `bytes` fields 1 and 2 (`record_cursor.proto:49-59`), and a `FlatMapContinuation` has the same (`:28-32`), so it parses cleanly. `FromListWithContinuation` then reads any first 4 bytes as a position and clamps it (`cursor.go:358-373`). No check value means the check is skipped. So this transition is at best undetected, and it may silently truncate. F-5's "refused when the new leaf is salted" (:1414) fails the same way under any composite.
+- **The F-2/F-3 6a prefix (:1412) cannot work.** Continuations minted before the step carry no prefix, so it cannot guard the step's own transition. If decoding requires the prefix, every in-flight DISTINCT continuation of an unchanged plan is refused at upgrade. If decoding accepts the legacy form, the prefix rejects nothing.
+- **Required:**
+  - Classify each row by the new plan's outermost decoder, and mark these rows undetected. Java's flatMap and union use the same protos, so this is parity.
+  - Pin the actual outcome in both directions, and correct the CHANGELOG text that tells callers what they will see.
+  - Delete the prefix plan.
+
+**H2. The F-7b size check fails record-layer callers where the target answers (:951, :985, :1007).**
+- Go SQL plans under the record-layer default configuration today, so its pins are Go's record-layer plans. For T5 `ORDER BY col1`, Go plans `InUnion(IndexScan(I5,[=]))` (spec :1289).
+- The target's record layer at size 0 plans `[10, 20 SORTED] | INJOIN` and answers (`w8_rl_default_in2_order_by_price`, :1122).
+- After F-7b, a Go record-layer caller with that shape fails "too many IN values". That is the "failure the target does not have" that item 2 forbids, and item 2 only covers the record-type position.
+- The oracle marks the Go column of the `w8_rl_*` rows "NO-GO-RECORD-QUERY-PLANNER". But section 12 (:1379-1384) says these callers plan with the exported `cascades.Planner`, which can be measured.
+- **Required:** add Go rows for the five `w8_rl_*` shapes via `NewPlanner` under `DefaultPlannerConfiguration`, with SAME on plan class and rows or failure, owned by F-7b and landed before the executor check.
+
+**H3. The RFC-182 crossing is undecided.**
+- Java drops exploratory members and then requires exactly one final (`CascadesPlanner.java:745-749`).
+- Go's `AdvanceStagePreservingMembers` (`unified_tasks.go:98-108`) carries a group with no finals into PLANNING with all its exploratory members. D7's "any child with none, no yield" (:357) produces exactly such groups.
+- 2.3's "checked invariant" (:247) doesn't say whether it covers that arm.
+- **Required:** the checked invariant covers every crossing. The RFC-182 union-leg shape goes into the census's lost-plan arm, pinned by WS-E's `union_leg_type_annulling_fold_where` row.
+
+## Medium
+
+- **M1. F-7a is missing from the exposure list (:1382-1384) and the table.** `NewPlanner` (`planner.go:253`) and the two rule-call comparators serve record-layer callers without statistics, and F-7a changes their plans. Add rows for it and a CHANGELOG entry.
+- **M2. XXXXX is unreachable.** `translateFDBError` (`connection.go:1010-1062`) has no arm for `RecordCoreError` or `RecordCoreArgumentError` and returns the error unmapped. The oracle renders such errors without a SQLSTATE. So `w8_in25_order_by_col1_rows` can never reach SAME, and section 7's XXXXX pin has nothing to pin. Name the arm in F-7b and section 7: an UNKNOWN default, as in `ExceptionUtil`.
+- **M3. `w8_tie_in_order_by_col1_desc_rows` (owned by F-7b) has no mechanism.** The target uses a sorted DESC in-join; Go uses `InMemorySort`. 4.3 names no change that yields the target's tie order.
+- **M4. The count and the codec are underspecified.**
+  - Item 5 (:985) must count the product over all sources, since WS-E adds two-source in-unions. Pin a 5×5 case.
+  - The WS-G list (:1361) omits in-union field 5, which now decides execution.
+- **M5. The acceptance ratchet is inert for 77 of 130 rows.** At this tree, 34 rows are "DIFF explain syntax" and 43 are "DIFF target-only". Nothing links an EXPLAIN row to the yamsql pin that section 13 relies on. Map each EXPLAIN row to its pin and phase.
+
+## Low
+
+- **Fetch method in the cache key (4.2 item 1, :772):** `cacheKeyPart` has no fetch-method arm. Say whether one is added, in both the early return and the rendered key, or why it isn't needed.
+- **The nil-options path at F-7b:** the early return in `planner_options.go:75-78` stays at size 0 until F-7c. Say that F-7b covers it.
+- **The "no SQL continuations" premise (9.3 and section 12) expires** when RFC-203's G12a/G12b land (`cascades_generator.go:2456`). Record that.
+- **"Non-null LITERAL" (5.3):** define it through promote and cast, and pin `CAST(NULL AS BIGINT)`.
+- **Covering-Value salt:** state that it includes the flowed type.
+
+Not covered: the internals of W7 D1–D6, and WS-D's engine parser.

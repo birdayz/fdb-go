@@ -1,0 +1,92 @@
+**NAK.** I reviewed tree `c789832131f2e6206ee2ebad9b92a3ae463d6f6d`. The design's SHA256 is `10d7b1cdd23f498b3d65bf3a6dd2eaa7cf17d22331400c423623ab0daba8bb79` and it has 1133 lines; I recomputed both. I ran nothing. Every finding comes from reading source unless it is marked **measured**.
+
+Every v5 finding is resolved except the central one. Revision 6 says `equalsJava` is "a port of" Java's `Index.equals`, and on three fields it isn't. The comment beside the code also states Java behaviour that is false. That is the same kind of problem as v5's "matches Java's HashSet dedup". A narrow re-check will do.
+
+## Findings, most severe first
+
+**1. Low: `equalsJava` differs from `Index.equals`, and its comment misstates Java.**
+- **Subspace key.** Java normalizes every key when it is constructed or set (`Index.java:89-97`, `:222`, `:415`, through `TupleTypeUtil.toTupleEquivalentValue`, `TupleTypeUtil.java:98-123`):
+  - Byte, Short and Integer become Long, so Integer 1 equals Long 1.
+  - A `byte[]` becomes a ByteString, so two byte arrays with the same content are equal.
+  - A Tuple or List becomes a normalized List.
+  - So `index.go:653`, "a Long never equals an Integer, and an array equals only itself", is false.
+  - Go's `javaObjectsEqual` (`index.go:699`) treats `int` and `int64` as unequal. It never finds two `[]byte` or `tuple.Tuple` keys equal, and those are the types `metadata_proto.go:844` stores (`t[0]`).
+- **Root.** `keyExpressionEquals` (`key_expression.go:1132-1195`) has no arm for `*DimensionsKeyExpression` or `*CardinalityFunctionKeyExpression`, and no identity check. So a root the two objects *share* compares unequal. Java's `DimensionsKeyExpression.equals` (`:200-213`) is structural.
+- **Type.** Java compares the raw string (`Index.java:130`, `:703`). Go compares `CanonicalType()`, so `min_ever` equals `min_ever_long` in Go only.
+- **Effect:**
+  - The first two gaps make Go refuse `[own, equal copy]`, which 7.6 says it accepts "as in Java".
+  - The third makes Go accept `[own, copy differing only in that alias]`, which Java refuses.
+  - No bytes are written wrongly either way.
+- **Fix:**
+  - Compare subspace keys as packed tuples. `TupleTypeUtil.java:79-83` documents that this matches normalized equality.
+  - Give `keyExpressionEquals` an identity check and the two missing arms, or compare the roots' protos.
+  - Compare the raw `Type`.
+  - Correct the comment and 7.6.
+
+**2. Low: no field of `equalsJava` has its own test.**
+- The only unequal fixture is `impostor` (`online_indexer_test.go:2290`). It differs from `priceIndex` in the subspace key *and* in both versions, because the metadata builder sets them (`metadata.go:616-624`) and the impostor keeps 0.
+- The only equal fixture is a shallow copy that shares every pointer.
+- So deleting any single comparison at `index.go:670-693`, the subspace key's included, leaves all four cases' outcomes unchanged. This is inferred from source, not run. m39 shows only that duplicates are no longer removed by name.
+- **Fix:** add a table that changes one field at a time:
+  - name and type, including the alias;
+  - a distinct but structurally equal root;
+  - `int` against `int64`, and `[]byte` keys;
+  - nil against empty positions;
+  - options;
+  - the predicate proto.
+
+  Then mutate each arm.
+
+**3. Nits.**
+- **Dead arm.** The predicate's last case (`index.go:692`) is dead. `Predicate` is `IndexPredicate`, a func type, which is never comparable, so it always returns false. The comment and 7.6 describe a case that cannot happen.
+- **"READABLE target is skipped" is misleading.** It appears in `CHANGELOG.md:167`, the DIVERGENCES bullet and the spec title. The merge *runs* on a READABLE target (`indexing_merger.go:45-49`); only the heartbeat step skips it (`online_indexer_queue.go:452-456`). As written, it reads as though `MergeIndexes` does nothing to a readable index, and merging readable indexes is its main use.
+- **CHANGELOG `:138-146`.** The equality list leaves out primary-key component positions, and `:145` was not reflowed.
+- **`SetTargetIndexes` keeps the caller's slice** (`online_indexer.go:~641`), where Java copies it (`OnlineIndexer.java:698`). Because `SetIndex` now appends, `SetTargetIndexes(make([]*Index,0,n)).SetIndex(x)` writes into the caller's array. Use `slices.Clone`.
+- **Nil-target comment (`:787-789`).** It places Java's NullPointerException at `addTargetIndex`, but `ArrayList.add(null)` succeeds there. The exception comes from the sort or the loop (`:879-880`).
+- **Unmutated spec.** No mutation reddens the READABLE merge spec.
+
+## What holds
+
+**From source:**
+- **Builder vs Java, every order and nil:**
+  - `SetIndex(a)` then `AddTargetIndex(b)` builds both targets.
+  - `AddTargetIndex(b)` then `SetIndex(a or nil)` is refused.
+  - `SetIndex` twice is refused.
+  - `SetIndex(nil)` is skipped.
+  - An empty `SetTargetIndexes` followed by `SetIndex` is accepted.
+
+  All five match `OnlineIndexer.java:668-676` and `:719-722`.
+- **Dedup and sort:**
+  - The HashSet keeps the first of two equal objects, because `HashMap.put` keeps the existing key. `[equal copy, own]` is refused, as in Java.
+  - The sort sits after the mutual/BY_INDEX check and before the identity check. `[zzz, aaa]` pins that placement: the old placement would have named zzz.
+  - Stability can't be observed: only objects with the same name are reordered, and the refusal carries only the name.
+- **The deleted single mode.**
+  - A grep for `singleMode|SetIndex may not|may not be used when other target` finds only the new message, on four lines.
+  - frl (`index_write.go:279-286`) and the fleet (`build.go:234-239`) each call `SetIndex` once on a fresh builder.
+  - The only named-builder reuse in `*.go` is `AddTargetIndex` in a loop (`online_indexer_test.go:3685`).
+- **Merge specs are not vacuous.**
+  - The hook reads through the unhooked `sharedDB` after `Transact` returns, so it sees committed state.
+  - The WRITE_ONLY spec requires `seen` to be non-empty and checks `seen[0]`'s info.
+  - The live-peer spec asserts the error type and `ExistingInfo`.
+  - The DISABLED spec asserts the error class, message and index.
+  - Cleanup is deferred, so a failed merge clears its heartbeat too.
+- **Docs.**
+  - The DIVERGENCES closing sentence and the merge bullet are corrected, and the 7.5 citation is fixed.
+  - The `IndexerID` wording is corrected. The remaining "refusing" at `errors.go:439` is `PartlyBuiltError`'s, where it is right.
+  - The `IndexBuildOutcomeBuilt` doc, the spec title and the hook docs are all fixed.
+
+**Measured:**
+- **Hashes.** Six WS-C blobs from the candidate match the spot checks in `evidence-v10`: `online_indexer.go`, `index.go`, both spec files, CHANGELOG and DIVERGENCES.
+- **`just test` tree.** `6cef9824` differs from the candidate only in docs and review artifacts.
+- **Mutations m39–m44:**
+  - Each log shows marker count 1, exit 3 and "restored".
+  - The diff lines (821, 841, 620, 786, 167, 458) match the candidate's.
+  - m40 reddened 15 specs. m42 panicked at `online_indexer.go:852`, called from test `:2176`. m43 reddened 3 specs. m44 reddened only the DISABLED spec.
+- **Runs:**
+  - `focus1`: 378/378.
+  - `ev10/wsc-focus`: 391/391, with all four merge specs listed.
+  - Loop: 40 × "2 Passed | 0 Failed".
+  - `just test`: "Executed 41 out of 94 tests: 94 tests pass". The recordlayer, chaos, sqldriver, conformance, fleet and cmd test targets are among the 41 executed.
+- **Not verified:** the `.good` baselines byte for byte, because `git hash-object` was denied. Only their line numbers match.
+
+The preserved boundaries are unaffected: the approved Go extensions, C++ 7.3.77, format max 15 / default 14, and the single query pipeline.

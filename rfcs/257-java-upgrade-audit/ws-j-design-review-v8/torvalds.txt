@@ -1,0 +1,71 @@
+**NAK** on tree `936a4aba27681bdd9a5e2938021f54d7b803e2a1`. The design `ws-j-design.md` has SHA256 `ff925afc915653a557fae1daef0be2419749e8d0d270eb776dcab14224f1d28c` and 2029 lines; I recomputed both from the tree and they match. Java is at `fdacd162a`. The review was read-only: I ran no tests, probes or mutations.
+
+## What holds
+- **Evidence matches the bytes.** 12 of the 66 hashes in `evidence-v8.txt` match the tree's blobs. The `just test` tree `9f1cd709` differs from the candidate only in `ws-c-design.md` and `evidence-v8.txt`.
+- **Logs.** The JVM log has 35 `VALIDATE_RECORDS` lines. Pass 2 ran 27 of 51 specs, all passing, and printed 20 WSJTT/WSJIX/WSJLANE lines. The tally is reproduced (`wsj-ev1.log:879`). The mutation logs I read (wm8-7, wm8-10, wm8-14, wm8-16) each show the marker applied and the named tests going red.
+- **The replay of the pre-upgrade loader is exact where it matters.** I checked it against `e48f5b496`: the union choice by name first (`findUnionDescriptorName`), the loop's `_X`-first switch, loader steps 4 and 5, and `Build`'s nil-primary-key refusal.
+  - The current loader refuses a stored RecordType naming no record type of the union, and `Build` refuses any record type without a primary key. So anything that loads stores exactly the RecordTypes of the found union, and `preUpgradeLoaderLoads` (`metadata_proto.go:501`) can only err toward refusing.
+- **The loader's two new readings match Java.** It groups first and then folds `value_expression`, and flattens Then as Java does (`Index.java:194-251`, `ThenKeyExpression.add`). An absent `added_version` becomes 1.
+- **The catalog refusals are complete.** `serializeTemplate` and `deserializeTemplate` are the relational layer's only template writer and loader.
+- **v7 findings.** All are resolved except the residuals in findings 3 and 6.
+
+## MEDIUM
+
+**1. The EQUIVALENT carrier has no route into storage.**
+- The design says the save path "stores that same `gen.MetaData`" (:1238).
+- Both `CreateTemplate` implementations take an `api.SchemaTemplate`:
+  - The FDB one re-serializes `rl.Underlying().ToProto()` (`fdb_template_catalog.go:153`, `:252-262`). `indexToProto` drops `index_type`, `value_expression`, extensions and unknown fields, so the spliced index cannot survive.
+  - The in-memory one stores the object itself.
+- Also, the (d) check in `serializeTemplate` runs on the in-memory metadata, not on the bytes that would be stored.
+- The write-path table (:767) has no row for saving carried bytes.
+- **Fix:** name the route. For example, a template loaded from the spliced proto whose serialization emits that proto verbatim, as `recordsSourceProto` already does for the records file. Give it a table row covering both catalogs, and pin that an index stored with `value_expression` survives a new version created through the SQL driver.
+
+**2. A restore can still put two histories under one name.**
+- The at-or-above guard (:391-406) closes create-then-restore. But `RestoreTemplateVersion` (:441) never refuses when no schema binds (t, v).
+- **Sequence:**
+  1. Drop template t and every schema bound to it.
+  2. CREATE SCHEMA TEMPLATE t again: a fresh v1, a new history.
+  3. `Restore(t, 3)` with the old history's bytes. Nothing binds (t, 3), so it is admitted.
+- The latest version is now foreign to v1, which falsifies section 4's premise (:1360-1371). A `RepairSchema` onto it that differs only in a predicate, with matching index versions, passes the validator, which compares no predicates. Reads through that index then return wrong rows.
+- **Fix:** refuse a restore when nothing binds (t, v); that is the restore's only purpose. Add this sequence to the FDB tests.
+
+## LOW
+
+**3. Go's DDL diverges from the target between the unit and section 6** (the residual of Graefe v7 #4).
+- Step 3 lands the build-path 42F59 check; section 6 lands later, as step 6 (:1943, :1953).
+- Between those merges, the eight primitive-operand DDL shapes get Go's 42F59 where the target returns XX000.
+- Section 9 (t) (:2018) and the DIVERGENCES (t) entry say "From DDL both engines refuse it … XX000". That is false for this interim.
+- **Fix:** move the DDL-origin refusal into step 3, or declare the interim.
+
+**4. The loader change is not declared anywhere.**
+- `git grep -n -i 'value_expression\|added_version\|added version'` over CHANGELOG.md, DIVERGENCES.md and TODO.md finds 0 lines. The positive control, `value`, finds 16 lines in CHANGELOG.md.
+- Stores where a pre-upgrade Go build maintained a `value_expression` index hold entries without the value columns. From now on Go writes entries with them, so the index mixes both kinds.
+- **Fix:** add a CHANGELOG line that tells those users to rebuild the index.
+
+**5. Two claims are broader than what the code does.**
+- ":1622 exactly when" is too strong. The old loader also checked primary keys and indexes against the message the loop chose: a nested `Outer.X`, an imported type, or `UUID` beside a table named UUID. The replay skips those checks, so it refuses more files than the old loader loaded. That is the safe direction, but it should be stated.
+- ":723 takes that column's type" is wrong for CARDINALITY. Java types it INT (`CardinalityValue.java:84-86`), so `x & cardinality(a)` has a lane in Java but would be refused here.
+
+**6. Some tests don't discriminate what they claim to.**
+- **Ordering test:** `want` stops at the first `t.Fatalf` (`metadata_validate_records_test.go:573`), and wm8-7 reddens only the first arm. So the loader-path arms are still not shown to discriminate (Torvalds v7 #8).
+- **WSJIX:** it never compares options, although the Java step returns them (`ws_j_index_fidelity_conformance_test.go:2669`). The `index_type UNIQUE` case is exactly the one where options differ.
+- **WSJLANE:** it prints Go's outcome (:2756) but does not pin it. The design's decision rests on "Go stores eight", which no test would catch changing.
+- **Mutation runs:** wm8-1 to wm8-12 ran under `go test`, not under Bazel as section 7 requires.
+
+**7. Text.**
+- :1650 and the `SetRecordsWithUnionName` doc say to "demote the other". For (d2) that other is RecordTypeUnion, which Java still takes by name: the NESTED usage is refused, and demoting it leaves "Only one union descriptor". It must be removed or renamed, as the migration arm already does.
+- :257 cites `evidence-v7` for the tally; v8 reproduces it.
+- The conflict range at :473 catches only writes after the final transaction's read version, not the window after the batch reads. Say so.
+
+## Measured vs source only
+- **Measured:**
+  - the 35 descriptor shapes on both engines;
+  - the five WSJTT shapes through Go's catalog and SQL driver;
+  - the five WSJIX protos against the JVM (roots, versions and type; not options);
+  - the target's ten no-lane DDL refusals;
+  - wm8-1 to wm8-16;
+  - the unchanged tally.
+- **Source only:**
+  - findings 1–5;
+  - the claim that the replay can only err toward refusing (my derivation above);
+  - all of steps 1–3: the carrier, the guard, the restore, the lane check, the migration and test 5.

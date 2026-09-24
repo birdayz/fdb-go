@@ -1,0 +1,26 @@
+[
+  {
+    "name": "reload-order",
+    "compiled": true,
+    "killed": true,
+    "log": "/var/tmp/fdb-upgrade-recovery/ws-b/clear-policy-mutant-reload-order.log"
+  },
+  {
+    "name": "unregistered-clear",
+    "compiled": true,
+    "killed": true,
+    "log": "/var/tmp/fdb-upgrade-recovery/ws-b/clear-policy-mutant-unregistered-clear.log"
+  },
+  {
+    "name": "snapshot-authority",
+    "compiled": true,
+    "killed": true,
+    "log": "/var/tmp/fdb-upgrade-recovery/ws-b/clear-policy-mutant-snapshot-authority.log"
+  },
+  {
+    "name": "deletion-policy",
+    "compiled": true,
+    "killed": true,
+    "log": "/var/tmp/fdb-upgrade-recovery/ws-b/clear-policy-mutant-deletion-policy.log"
+  }
+]

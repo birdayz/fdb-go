@@ -116,14 +116,14 @@ func (s *FDBMetaDataStore) SaveRecordMetaData(tx fdb.WritableTransaction, metaDa
 			return err
 		}
 		historyKey := tuple.Tuple{"H", int64(oldVersion)}
-		if err := saveWithSplit(tx, s.subspace, historyKey, existing, true, false, nil, &sizeInfo{}); err != nil {
+		if err := saveWithSplit(nil, tx, s.subspace, historyKey, existing, true, false, nil, &sizeInfo{}); err != nil {
 			return fmt.Errorf("archive metadata v%d: %w", oldVersion, err)
 		}
 	}
 
 	// Save current with split support (matching Java).
 	// Pass existingSize so clearPreviousRecord removes stale split chunks.
-	if err := saveWithSplit(tx, s.subspace, currentKey, serialized, true, false, &existingSize, &sizeInfo{}); err != nil {
+	if err := saveWithSplit(nil, tx, s.subspace, currentKey, serialized, true, false, &existingSize, &sizeInfo{}); err != nil {
 		return fmt.Errorf("save metadata: %w", err)
 	}
 	return nil

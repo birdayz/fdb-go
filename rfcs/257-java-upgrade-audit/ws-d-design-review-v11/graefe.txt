@@ -1,0 +1,73 @@
+**NAK.** v11 fixes the v10 retry-owner facts, but D-0 is the phase that changes every record-layer transaction, and it is underspecified in two ways that would weaken the test suite and misstate parity. I ran and changed nothing.
+
+- **Tree:** `01b0669d8d12e6eb84eebfa31f160cfed853e5d5`
+- **Design:** `ws-d-design.md` SHA256 `6a1dd51dc89cef8f155caf924982f17cc2ba0b5346367668f4e253cbb79205ec`, 1489 lines. I recomputed both from the tree blob and they match.
+- **Java:** `fdacd162` (from `.git/HEAD`).
+- **Read:** all four v10 NAKs, the full v11 design and its diff from v10, the oracle README and both evidence files, the item-23 rows, the heartbeat diffs and the JVM spec, and the item-25 logs. I checked the claims against the Java and Go sources cited below.
+
+## P2-1: D-0 does not say where each attempt enters the fault-injection seam (design 847-863, 868-875)
+- **Only the `Run*` functions go through the seam today.** `Run`, `RunRead`, `RunWithWeakReads` and `RunWithVersionstamp` open transactions through `d.transactor` (database.go:275, 379, 391, 436). The runner's `runOnce` uses `CreateWritableTransaction` instead (runner.go:283), and that function uses `d.db` directly whenever it exists, "chaos transactor" included (database.go:536-539).
+- **The design and the TODO both point at the bypass.** D-0 shares "one mechanism" with `RunWithRetry`, using "a fresh … transaction per attempt". TODO.md:6995 prescribes "create a transaction … INSTEAD OF delegating straight to `d.transactor.Transact`".
+- **The chaos suite would go quiet without failing.** Chaos scenarios build their database with `NewFDBDatabaseWithTransactor` and run every operation through `chaosDB.Run` (scenario.go:72). Faults are injected per `Transact` call (fault.go:143-214). With the bypass, the 40+ `FaultsRetryHeavy` scenarios would inject nothing and stay green; only chaos_vector_spfresh_test.go:232 checks that faults were injected at all. Routing the merger through the runner, as D-0 (2) requires, would do the same to online-indexer chaos (chaos_online_indexer_test.go:424).
+- **The chaos fault model assumes it wraps the whole retry loop.** `FaultTransactionTooOld` commits and then re-executes (fault.go:205-211); it never returns 1007.
+  - So the D-0 fixture where "a chaos-transactor fault on the drain's transaction returns 1007 after MaxAttempts" cannot be built with the existing faults.
+  - In inline mode there is no separate drain transaction; the task runs in the insert's own transaction.
+- **Needed:**
+  - Every attempt goes through `d.transactor`, and the design names how one attempt is obtained (for example a per-transaction retry limit of 0).
+  - `runOnce` moves onto the same seam.
+  - The chaos fault semantics are re-derived for per-attempt wrapping.
+  - A new fault arm fails every attempt without committing.
+  - A pin asserts a non-zero injected-fault count through `Run` and through the merger.
+
+## P2-2: D-0's blast radius counts the functions, not their callers, and one caller contradicts the parity claim (1309-1318)
+- **SQL autocommit is a caller the design does not classify.** Every autocommit statement goes through `Run` (connection.go:46, 416). Java's relational layer opens one context with no runner (RecordLayerTransactionManager.java:49), so Java makes one attempt; after D-0 Go makes up to 10.
+  - "Every owner … bound its attempts as the target's does" is therefore false for GuardiANN inserts made through SQL autocommit.
+  - The 1007/2101 classification omits that owner.
+- **Population:** `git grep -c -E '\.(Run|RunWithVersionstamp|RunWithWeakReads|RunRead)\(ctx'` over non-test `pkg/recordlayer`, `pkg/relational` and `cmd` finds 50 lines in 26 files (lines, not occurrences; positive control: indexing_merger.go 1). I did not verify every receiver.
+- **Item (3)'s method cannot find what it is looking for.** "Found by running the full suite" is one run. It cannot find tests that rely on unbounded retries only under contention or load, which is exactly the flake class the project forbids.
+- **Needed:**
+  - A census of callers, each classified by its Java owner: runner, single attempt, or none.
+  - What each caller that treats any error as terminal does with a 1020 or 1021 returned after the last attempt.
+  - Declare or align SQL autocommit.
+  - A structural test census instead of one suite run.
+
+## P3
+1. **The admission bound W leaves out the KMeans knobs.** The refit cost scales with iterations × restarts. The defaults are 8 and 3 (Config.java:182-183), and there is no upper bound (:196-209). "About 1.7 s" (1143-1145, 1320) holds only at the default knobs; say so, or fold the knob factor into W.
+2. **The balance claim is contradicted by a pinned row.** The design (1215-1217) says the smaller child is 0.33-0.49 of n "on every measured shape".
+   - Row :1199 (spread shape, d=4096, seed 1) selects [1726 274], which is 0.137. The sampled mode chose [1318 682] on that shape (:1207).
+   - The rationale for withdrawing sampling (1356-1359) cites d=4096, n=2000 rows, which admission now refuses. At the admitted d ≤ 1536 the sampled balance was 0.35-0.46.
+   - Withdrawing sampling is still right: the speed is no longer needed, and the unsampled fit is the target's own full fit. Restate the evidence.
+3. **"d ≤ 4444" is wrong (1136).** At n = 1001, 9·1001·d ≤ 4·10^7 gives d ≤ 4440. 4444 is the n = 1000 figure.
+4. **The delay is not Java's.** Java's `ExponentialDelay` draws uniformly from [0, current), with current doubling from 10 ms to 1000 ms (ExponentialDelay.java:62-72). The shared Go mechanism draws current × [0.5, 1.5) (runner.go:394-401), and its raw random call is on the DST allowlist (dst_seam_gate_test.go:87). State which delay D-0 uses.
+5. **Go's online indexer has no runner** (no match in online_indexer.go). D-0 (2) has to add one, with Java's `setMaxAttempts` (OnlineIndexOperationBaseBuilder.java:445-449). Java's runner covers every indexer transaction, not only merges; say which transactions Go's will cover.
+6. **Fixture volumes should give the replica bound as a number** instead of "at most the replication fan-out" (1340-1341).
+   - `replicatedClusterMaxWrites` defaults to 300 (Config.java:155). Totals: 3.5 MB at d=768 and 5.3 MB at d=2048.
+   - At d=4096 the rule admits n = 1001-1024, which is 8.2-8.4 MB of vectors in half precision plus replicas. Those admitted peels can fail with 2101 deterministically; say so.
+7. **"On every Go-rule path" (14-15) overstates.** The n<k selections beside a viable candidate, the empty merge core and the zero-primary drop are Go rules at target throw sites that draw no peel split. The Entry paragraph (1121-1127) is correct; align the summary with it.
+8. **Evidence.**
+   - Item 25 says "the other 92 served from run 1", but run 1 executed only 8 targets (just-test-v11.log:8530). The other 86 greens came from an earlier invocation the README does not record.
+   - The JVM versionstamp check asserts only the exception class. Pin the "Versionstamp cannot be cast" message (hb-v11-jvm.log:36) so the spec proves which key threw.
+
+## Closed from v10 (verified)
+- **Java retry facts:** FDBDatabase.java:856-860; FDBDatabaseRunnerImpl.java:195-207; FDBDatabaseFactory.java:90; IndexingMerger.java:82-86, 125-128, 189-203 and 246-258.
+- **The ~12-halving schedule holds for vector merges.** The vector maintainer sets `LastStep.MERGE` (VectorIndexMaintainer.java:536) and seeds a 4000 ms quota (:642-646).
+- **Go facts:** `Run` is unbounded, and the merger runs through `oi.db.Run` (indexing_merger.go:27).
+- **Admission and fixtures:** the rule is clock-free; the cause field and the Step 2 population are in. The W values (1.5e7, 1.8e7, 8.2e7) and vector bytes (3.1 MB, 4.1 MB) check out.
+- **Citations:** :223, :349 and :505-507 are correct. The item-15 label and the skip's merge-neighbour reads are fixed.
+- **Heartbeat fix:** `len(parts) >= 1` matches Java's `getUUID(0)`. The versionstamp and (UUID, x) keys are pinned in both engines, and both mutations redden both specs.
+- **Provenance:**
+  - The oracle source hashes match the tree.
+  - Tree `1cf1b5e4` differs from the candidate only in the README (+26 lines).
+  - The TODO block at EOF and the design point at each other.
+
+## Measured vs still hypothesis
+- **Measured:**
+  - item 23: 16 rows, two runs, and the mutation;
+  - item 24: both engines;
+  - item 25: 8 targets executed, the rest served from cache.
+- **Checked against source only:** the Java runner and merger semantics.
+- **Still hypothesis:**
+  - every D-0 mechanism, its blast radius and its test census;
+  - how W translates to time off the measurement machine and at non-default knobs;
+  - every Go GuardiANN mechanism;
+  - item 21.

@@ -1,0 +1,74 @@
+**NAK** — the design is not ready to implement from the storage/wire angle.
+
+- **Tree:** `cec59465947ae903c45373d8935f91aab96628e0`
+- **Design:** `rfcs/257-java-upgrade-audit/ws-e-design.md`, sha256 `a1649fa04ee44a68b45fc3133b7749fc9abb11ee18a519ea4acb97a62fb30baf` (I re-computed it; it matches).
+
+I read the three v1 verdicts, the full v2 design and its diff against v1, the umbrella and audit corrections, all three oracle Describes, the Java step, and the appended evidence. I checked each claim against Java 4.14.2.0 (`fdacd162a9`) and the Go code in this tree. Where a finding rests on reading Java source rather than a measurement, it is marked **SOURCE**.
+
+## High
+
+**1. DRY_RUN set on the connection writes rows in Go that Java does not write (§6.2).**
+- The design limits DRY_RUN to statement scope, citing the "Scope:" comments in `Options.java:212-222`. Java does not enforce those comments: the only checks are type checks (`Options.java:592-593`).
+- Java merges connection options into the statement's options (`PlanGenerator.java:170`), and `QueryPlan.applyOptions` (`:500-503`) turns them into DRY_RUN.
+- Java's own test `OptionScopeTest.optionTakenFromConnection` (`:63-75`): an INSERT on a DRY_RUN connection reports 1, and the table still holds 0 rows.
+- Go defines `OptDryRun` (`api/options.go:127`) but never reads it. So a Go INSERT on such a connection stores the row, and §6.2 ("keeps its existing Go meaning") keeps it that way.
+- The same reasoning would also remove Go's existing connection-level PLAN_RIGHT_DEEP (`planner_options.go:106`).
+- Fix: merge options exactly as Java does, with no scope enforcement. Add an oracle row (DRY_RUN connection + INSERT + follow-up count) and an FDB test.
+
+**2. A snapshot connection only rejects DML; other statement types are unspecified (§6.3).**
+- Java admits only SELECT and EXECUTE CONTINUATION (`PlanGenerator.java:507-517`). DDL, admin and utility statements are flagged separately (`AstNormalizer.java:316,340,346`), so they are rejected too.
+- Java's own comment says "every non-SELECT statement on that connection fail" (`OptionScopeTest.java:164-169`), and the umbrella requires "Reject snapshot mutation/DDL".
+- In Go, catalog-writing DDL on a snapshot connection would run.
+- Fix: specify every statement class, measure CREATE/DROP/SHOW/DESCRIBE/BEGIN on a snapshot connection, and add a Go test showing no catalog write.
+
+**3. The parameter-order divergence is declared only for a SELECT; for DML it changes stored data (§4.3).**
+- **SOURCE:** Java's UPDATE visits the WHERE clause (`QueryVisitor.java:833`) before the SET clause (`:838-843`). It takes positional values from a counter in visit order (`MutablePlanGenerationContext.java:473-482`, `PreparedParams.java:71-76`).
+- So for `UPDATE T SET a=? WHERE id=?`, Java would bind the first argument to the WHERE. The same arguments would update a different row, with a different value, than Go's textual binding. `INSERT … SELECT ? … WHERE ?` has the same problem.
+- Fix: measure both shapes through `runPreparedExtended`'s update mode, declare them in DIVERGENCES.md as write divergences, and pin Go's order with read-back tests.
+
+**4. The assignment rules for bound values rest on one measured pair (LONG→INT).**
+- `CheckNamedValue` returns `ErrSkip` for Go `int`, the small int kinds and every `driver.Valuer` (e.g. `sql.NullInt32`) (`connection.go:958-971`). `database/sql` then converts them to int64, which the design types as LONG (`convert.go:170-196`).
+- Java has no LONG→INT and no DOUBLE→FLOAT promotion (`PromoteValue.java:76-97`). So idiomatic Go ints into INTEGER columns, and float64 into FLOAT columns, become 22000 where they are stored today. This break is not declared.
+- Go's literal path still narrows a double into FLOAT (`proto_value.go` FloatKind arm; `float_integer_types_probe_test.go:34-52`). The same value would then be stored or refused depending only on syntax.
+- **SOURCE:** Java rejects both (decimal literals are DOUBLE, `ParseHelpers.java:84`; Java's own tests write `1.0f`, `union.yamsql:52`).
+- Other Go-only write conversions have no promotion rule stated: int64→BOOLEAN, string→BYTES, and time.Time/UUID→STRING (`proto_value.go` Bool/Bytes/String arms).
+- The check has to be type-based at planning time: at run time the converter sees int64 for both INT and LONG.
+- An obsolete pin is missing from the list: `float_integer_types_probe_test.go:67-76` expects 22003.
+
+## Medium
+
+**5. Binding time.Time changes a Go-extension contract.**
+- Today the text channel renders UTC with seconds precision (`functions/time.go:7`), and TIMESTAMP is stored as a string (`proto_value.go:318`).
+- A typed constant keeping nanoseconds would stop `WHERE ts = ?` from matching rows written with the same `time.Time` (the pattern in `embedded_fdb_test.go:9396-9416`).
+- STRING→TIMESTAMP (`:9467`) and TIMESTAMP→DATE conversions are unspecified.
+
+**6. Nil versus empty for `[]byte` and slices is undefined.**
+- `database/sql` hands the driver `[]byte(nil)` as a non-nil value; today it is stored as `X''`.
+- NULL and empty are different record bytes and different index keys. The key rendering (length-prefixed or element by element) cannot tell them apart.
+
+**7. Several snapshot tests cannot observe what they claim to test.**
+- **Auto-commit paging:** each page is a read-only `DB.Run` (`cascades_generator.go:2200-2206`) and cannot conflict. The observable case is an explicit transaction whose SELECT spans at least two pages, with a concurrent write into page 2's range and a serializable control.
+- **Index-state revalidation** (`index_state_planning.go:246`) stays serializable per §6.4, but nothing tests it. This was Graefe v1 finding 6(d).
+- **Read scope:** §6.4 (index fetch serializable, range scans snapshot) is **SOURCE** but not labelled as such, and there is no JVM probe for it. A two-connection probe in the style of `OptionScopeTest.java:113-162` would measure it.
+
+**8. The continuation hand-off points at the wrong owner.**
+- The umbrella's WS-G section (`:538-565`) is about ARRAY_AGG state. The actual owner is `TODO.md` CQ-78 / RFC-203 (`:7108-7121`).
+- CQ-78 does not record the snapshot contract: the option is never persisted in the continuation, it must be supplied again on resume, and a COPY continuation is rejected. Book it there with a pointer back.
+
+## Low
+
+- **Copying:** extend the deep copy to `IN ?` slices, not just `[]byte`, and test a reused slice.
+- **UTF-8 in batches:** validate every parameter of a multi-statement batch before anything runs. Declare 22021 as Go-only (Java has no such code).
+- **UTF-8 in SQL text:** it is still replaced silently (`case_insensitive.go:22`), which contradicts the design's own reasoning.
+- **Option capture:** state that the snapshot flag is captured when the statement executes. `executeProps` re-reads the connection options for every page (`cascades_generator.go:1970`).
+- **Evidence:** no mutation run is recorded for the "v2 extended" round.
+
+## Checked and correct
+
+- `LoadRecord` sites: `executor.go:1417` is the index fetch and `:2143` the partial-record fetch. `executor_new_plans.go:921` (LoadByKeys) has no non-test constructor caller under `pkg/`.
+- Default isolation is serializable (`scan_properties.go:247`), and there is a single construction site in the SQL path (`cascades_generator.go:1962`).
+- Only SELECT/EXPLAIN reach the plan cache (`:364-368`, `:539-541`).
+- Quoted identifiers cannot contain `"` (`RelationalLexer.g4:1332`), so rendering identifiers in the key is injective. The fold matches `AstNormalizer.java:190-219`.
+- The pure-Go client supports read-your-writes for snapshot reads.
+- The two NULL-element write guards (`proto_value.go:198-205`, `executor.go:4363`) keep the nullable-array extension away from storage.
+- Every pinned row matches the evidence lines.

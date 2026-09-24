@@ -19,18 +19,18 @@ var (
 	_ LogicalOperator = (*LogicalDelete)(nil)
 	_ LogicalOperator = (*LogicalDDL)(nil)
 	_ LogicalOperator = (*LogicalCTE)(nil)
-	_ LogicalOperator = (*LogicalValues)(nil)
+	_ LogicalOperator = (*LogicalSingleton)(nil)
 )
 
-func TestValues_Explain(t *testing.T) {
+func TestSingleton_Explain(t *testing.T) {
 	t.Parallel()
-	v := NewValues([]string{"1+2", "'hello'"}, []string{"", "greeting"})
-	want := "Values(1+2, 'hello' AS greeting)"
+	v := NewSingleton()
+	want := "Singleton()"
 	if got := v.Explain(""); got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 	if len(v.Children()) != 0 {
-		t.Fatalf("Values.Children: expected 0, got %d", len(v.Children()))
+		t.Fatalf("Singleton.Children: expected 0, got %d", len(v.Children()))
 	}
 }
 
@@ -273,7 +273,7 @@ func TestChildren_Arity(t *testing.T) {
 		wantKids []LogicalOperator // nil → skip identity check
 	}{
 		{"Scan", leafA, 0, nil},
-		{"Values", NewValues([]string{"1"}, nil), 0, nil},
+		{"Singleton", NewSingleton(), 0, nil},
 		{"Filter", NewFilter(leafA, "x"), 1, []LogicalOperator{leafA}},
 		{"Project", NewProject(leafA, []string{"id"}, []string{""}), 1, []LogicalOperator{leafA}},
 		{"Sort", NewSort(leafA, []SortKey{{Expr: "id", Dir: SortAsc}}), 1, []LogicalOperator{leafA}},

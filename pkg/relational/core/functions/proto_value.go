@@ -107,8 +107,11 @@ func ProtoValueToDriver(fd protoreflect.FieldDescriptor, v protoreflect.Value) d
 	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind,
 		protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
 		return v.Int()
-	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind,
-		protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
+		// Read as protobuf-java's signed Integer, as the row reader and the key
+		// evaluator read it (values.ProtoScalarKindToRowValue).
+		return int64(int32(uint32(v.Uint()))) //nolint:gosec
+	case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
 		return int64(v.Uint()) //nolint:gosec
 	case protoreflect.FloatKind:
 		return float64(v.Float())
@@ -245,19 +248,20 @@ func convertScalarProtoValue(fd protoreflect.FieldDescriptor, val any) (protoref
 		// accepted DOUBLE→BIGINT, a divergence; aggregate INSERT…SELECT now
 		// rejects at plan time — see checkInsertSelectPromotable.)
 	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
+		// The column is INT (Type.java:909-914) and its value a signed Integer in
+		// the target, whose setField stores the Integer's 32 bits: the INT range is
+		// accepted, a negative value stored as its two's-complement bits, so a value
+		// read back (signed) writes back to the same bytes.
 		if v, ok := val.(int64); ok {
-			if v < 0 || v > math.MaxUint32 {
+			if v < math.MinInt32 || v > math.MaxInt32 {
 				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeNumericValueOutOfRange,
 					"value %d out of range for %s column %q", v, fd.Kind(), fd.Name())
 			}
-			return protoreflect.ValueOfUint32(uint32(v)), nil
+			return protoreflect.ValueOfUint32(uint32(int32(v))), nil
 		}
 	case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+		// A signed Long in the target: every int64 is stored as its 64 bits.
 		if v, ok := val.(int64); ok {
-			if v < 0 {
-				return protoreflect.Value{}, api.NewErrorf(api.ErrCodeNumericValueOutOfRange,
-					"negative value %d cannot be stored in unsigned %s column %q", v, fd.Kind(), fd.Name())
-			}
 			return protoreflect.ValueOfUint64(uint64(v)), nil
 		}
 	case protoreflect.FloatKind:

@@ -1,0 +1,1190 @@
+{
+  "scope": "Fresh verification of the four WS-A/E1 implementation-review fixes. Not implementation approval or whole-upgrade completion.",
+  "rejected_tree": "a8940de29c3726e44d5e14779f321b732e11be88",
+  "verified_source_tree": "232ee085f61b4ad5b8568a87b74cd5e2db328b71",
+  "java_commit": "fdacd162a9c8acfadc49082b89185c823ab8ae4a",
+  "compiler": "Go 1.26.6",
+  "frozen_files": 6286,
+  "changed_during_full_race_stress_runs": 0,
+  "full": {
+    "targets": 93,
+    "executed": 93,
+    "passed": 93,
+    "go_test_events": {
+      "run": 40605,
+      "pass": 40600,
+      "skip": 5
+    },
+    "conformance": {
+      "passed": 1357,
+      "population": 1476,
+      "existing_filtered": 119
+    },
+    "results": [
+      {
+        "label": "//pkg/dst:dst_test",
+        "counts": {
+          "run": 21,
+          "pass": 21
+        },
+        "sha256": "f6afed591d4775a5e17fd37f74395107e9931b6d448376dc3760445c4862a534",
+        "skips": []
+      },
+      {
+        "label": "//pkg/fdbgo/fdbmetrics:fdbmetrics_test",
+        "counts": {
+          "run": 4,
+          "pass": 4
+        },
+        "sha256": "f769ece4fa2f92d37769f3ad126931ccce010990b902868feb21132348ff8c68",
+        "skips": []
+      },
+      {
+        "label": "//pkg/recordlayer/query/plan/cascades/combinatorics:combinatorics_test",
+        "counts": {
+          "run": 47,
+          "pass": 47
+        },
+        "sha256": "5aeebe1c0e12e8db7a39dd0a9018ca107c40c47ce3a17da9ffc8709a971c8906",
+        "skips": []
+      },
+      {
+        "label": "//pkg/recordlayer/query/plan/cascades/internal/fuzzfloor:fuzzfloor_test",
+        "counts": {
+          "run": 12,
+          "pass": 12
+        },
+        "sha256": "1bd383168e175c568cb347aa09dfc827a4bdac071a6b16e95d011f7c5369bdb7",
+        "skips": []
+      },
+      {
+        "label": "//conformance:rabitq_architecture_test",
+        "counts": {},
+        "sha256": "a0ac061f5aad0eeee0711ea97a0bb62191a5ea767aec01d0cc3b1b9f2b07221b",
+        "skips": []
+      },
+      {
+        "label": "//pkg/recordlayer/protoname:protoname_test",
+        "counts": {
+          "run": 8,
+          "pass": 8
+        },
+        "sha256": "ba3a92734711a6ef597cc46988a9b5c8f617f0ef8ccaa85575e13c885b1ea56e",
+        "skips": []
+      },
+      {
+        "label": "//cmd/vulnscan:vulnscan_test",
+        "counts": {
+          "run": 67,
+          "pass": 67
+        },
+        "sha256": "427d09a0fcf3ca2ac36587c67b723fbdcaa49e1e2a8b1af3344125717daffafa",
+        "skips": []
+      },
+      {
+        "label": "//pkg/fdbgo/wire:wire_test",
+        "counts": {
+          "run": 29,
+          "pass": 29
+        },
+        "sha256": "3b0c2ff019752ddf1bac0ea578f55eb6a379a4186f2944f1611248d34ad0560e",
+        "skips": []
+      },
+      {
+        "label": "//pkg/linters/gofmt:gofmt_test",
+        "counts": {
+          "run": 5,
+          "pass": 5
+        },
+        "sha256": "6d91fa3283c9fcd660cd17006e98f508f3d586b97c6cd59c75f6a6e039e49f5f",
+        "skips": []
+      },
+      {
+        "label": "//pkg/rabitq:rabitq_test",
+        "counts": {
+          "run": 273,
+          "pass": 273
+        },
+        "sha256": "e87ad984531ba95140f345c7be27670372c55272a55cfc3c0e03d9ac2378cde7",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/conformance/javayamsql:javayamsql_test",
+        "counts": {
+          "run": 23,
+          "pass": 23
+        },
+        "sha256": "6839b70b117d0c3c4bb1545a45ea2a63ad7671f9487d142815fdbc558675764d",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/api:api_test",
+        "counts": {
+          "run": 104,
+          "pass": 104
+        },
+        "sha256": "f8abe1ed41c036b494c30508241c75ff978a646ef34d6442e51d9ea8fd83e089",
+        "skips": []
+      },
+      {
+        "label": "//cmd/verify-pr-checks:verify-pr-checks_test",
+        "counts": {
+          "run": 17,
+          "pass": 17
+        },
+        "sha256": "b56805406815012f09aa1a3b598e2495bd8ce3447a119fb295fe57cc1c0a3c6c",
+        "skips": []
+      },
+      {
+        "label": "//pkg/fdbgo/transport:transport_test",
+        "counts": {
+          "run": 70,
+          "pass": 70
+        },
+        "sha256": "a4bbbeab0d875b492b968bea047528b23e4e28508eaa913f97aa11d1bd0f5d37",
+        "skips": []
+      },
+      {
+        "label": "//pkg/fdbgo/wire/types:types_test",
+        "counts": {
+          "run": 109,
+          "pass": 109
+        },
+        "sha256": "97951e026f1f4c4d0cd255077d9151881d516948f1ff654e8147398b086bb967",
+        "skips": []
+      },
+      {
+        "label": "//pkg/testutil/allocs:allocs_test",
+        "counts": {
+          "run": 29,
+          "pass": 29
+        },
+        "sha256": "a274f77a628a92fc4f3f995ace1508d90a62fffd4ddc3b1c587e364031986450",
+        "skips": []
+      },
+      {
+        "label": "//pkg/recordlayer/vectorcodec:vectorcodec_test",
+        "counts": {
+          "run": 12,
+          "pass": 12
+        },
+        "sha256": "8c854a1dc8f4eaf3e1ff2ae6021527baf8e0ad1f8e5296d0f30fcbaf2dd1b476",
+        "skips": []
+      },
+      {
+        "label": "//cmd/test-budget:test-budget_test",
+        "counts": {
+          "run": 6,
+          "pass": 6
+        },
+        "sha256": "7da546738de83b9c37d42fa429a4b0bac393f3169ffdb7a5f1116debe854fc9c",
+        "skips": []
+      },
+      {
+        "label": "//cmd/bench-report:bench-report_test",
+        "counts": {
+          "run": 13,
+          "pass": 13
+        },
+        "sha256": "b2041c813a0707c8d3112bf2052daf00d874ef4632d70f3e8578c7e98bf653a9",
+        "skips": []
+      },
+      {
+        "label": "//pkg/recordlayer/query/plan/cascades/properties:properties_test",
+        "counts": {
+          "run": 391,
+          "pass": 391
+        },
+        "sha256": "1ddc807060c23bb01370342ea6386ac9aca4b4cf7ebafb705e819f10b057e54c",
+        "skips": []
+      },
+      {
+        "label": "//infra:infra_test",
+        "counts": {
+          "run": 39,
+          "pass": 39
+        },
+        "sha256": "a2883b83994e3069fd90f7e5a2e9e2a2e7592a9522b4d4fefad3ecd0d8ea538a",
+        "skips": []
+      },
+      {
+        "label": "//pkg/internal/fdbclient:fdbclient_test",
+        "counts": {
+          "run": 1,
+          "pass": 1
+        },
+        "sha256": "2d47c5f895f79aeb409b104ce3ff37ec24355d462520f0d0f2993e46ecc74e09",
+        "skips": []
+      },
+      {
+        "label": "//cmd/fuzzrun:fuzzrun_test",
+        "counts": {
+          "run": 22,
+          "pass": 22
+        },
+        "sha256": "4604d015ade54ccb62e76f97809287f8935316b1f02ff3ea61509b2b0ab19ede",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/txbudgetcensus:txbudgetcensus_test",
+        "counts": {
+          "run": 14,
+          "pass": 14
+        },
+        "sha256": "43050dcbb688564f20deaff664291d9e5e8f7c70cd078256a916db9bcd1dde8b",
+        "skips": []
+      },
+      {
+        "label": "//pkg/fdbgo:fdbgo_test",
+        "counts": {
+          "run": 1,
+          "pass": 1
+        },
+        "sha256": "88ac6bf55bc0c58131b508f44009a9d7aba2ac5b50aeaab7d626b521645ce536",
+        "skips": []
+      },
+      {
+        "label": "//cmd/fdb-binding-stress:fdb-binding-stress_test",
+        "counts": {
+          "run": 7,
+          "pass": 7
+        },
+        "sha256": "31445d2e978432786b61e1444bd0fa85476031c556aff0148ceb8983d88a63a2",
+        "skips": []
+      },
+      {
+        "label": "//pkg/fdbgo/fdb/tuple:tuple_test",
+        "counts": {
+          "run": 73,
+          "pass": 73
+        },
+        "sha256": "babb2615d21a527e60a8666e45e2857e357d0d76941b3c322c38c81de9e1959d",
+        "skips": []
+      },
+      {
+        "label": "//pkg/linters/gofumpt:gofumpt_test",
+        "counts": {
+          "run": 6,
+          "pass": 6
+        },
+        "sha256": "ce8a99a9ec413dd8756f7f82a6897cf44cbe69be8bcfdd1fde552b0cce075a1f",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/core/parser:parser_test",
+        "counts": {
+          "run": 80,
+          "pass": 80
+        },
+        "sha256": "7435f71f1c43b5f3cd8ef00d1ddf9755b63290b46d796bbd3d35d67aefe97b39",
+        "skips": []
+      },
+      {
+        "label": "//pkg/fdbgo/fdb/subspace:subspace_test",
+        "counts": {
+          "run": 17,
+          "pass": 17
+        },
+        "sha256": "3f3904a24e063a821553eb25d55a9c1ff6810d43790f6fb09008e1e9a3d29bae",
+        "skips": []
+      },
+      {
+        "label": "//pkg/recordlayer/keyspace:keyspace_test",
+        "counts": {
+          "run": 39,
+          "pass": 39
+        },
+        "sha256": "00cd87ecccbc6d704142783c1ba70896d7b7fd5db464624efa3e673c968b9f1d",
+        "skips": []
+      },
+      {
+        "label": "//pkg/linters/typeimmutable:typeimmutable_test",
+        "counts": {
+          "run": 19,
+          "pass": 19
+        },
+        "sha256": "d7ea083995284702a4840a8b9eb72c7e1e0b2382734724f57305f45632530d07",
+        "skips": []
+      },
+      {
+        "label": "//pkg/linters/norecover:norecover_test",
+        "counts": {
+          "run": 5,
+          "pass": 5
+        },
+        "sha256": "282402d589269b99a92187934222b217299f06661635903b282d8743ba4441c3",
+        "skips": []
+      },
+      {
+        "label": "//cmd/verify-corpus-retirement-history:verify-corpus-retirement-history_test",
+        "counts": {
+          "run": 28,
+          "pass": 28
+        },
+        "sha256": "018d1699139d1986b153f442a71a4cb55acb785661b3d4799e0662a9371307f7",
+        "skips": []
+      },
+      {
+        "label": "//pkg/recordlayer/query/plan/cascades/expressions:expressions_test",
+        "counts": {
+          "run": 366,
+          "pass": 366
+        },
+        "sha256": "16c062d76f03d8f925cfdb690e05f3aa4e4aa121a4b720bb3d1ff66126bce03d",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/core/keyspace:keyspace_test",
+        "counts": {
+          "run": 6,
+          "pass": 6
+        },
+        "sha256": "7c7e1458cca6791cdd4bf19da2da7e105ce9e0a9e69ca60418e34600dd863d15",
+        "skips": []
+      },
+      {
+        "label": "//pkg/fdbgo/bench:bench_test",
+        "counts": {
+          "run": 775,
+          "pass": 775
+        },
+        "sha256": "40cc48dc29ea69571455fae9ea673988ef88d1e2986403887ea8dc7ea1b0ebd5",
+        "skips": []
+      },
+      {
+        "label": "//pkg/recordlayer/query/plan/cascades:cascades_test",
+        "counts": {
+          "run": 3682,
+          "pass": 3682
+        },
+        "sha256": "50fde682cb94fdfb96125159b042f2311a53527a1a2600643fd1bbf43df83ae3",
+        "skips": []
+      },
+      {
+        "label": "//pkg/recordlayer/query/plan/cascades/values:values_test",
+        "counts": {
+          "run": 2435,
+          "pass": 2435
+        },
+        "sha256": "ca3e678cbd14b626fe0e9de096a0577241b45a06623586d51e91d60795de1896",
+        "skips": []
+      },
+      {
+        "label": "//pkg/recordlayer/query/plan/plans:plans_test",
+        "counts": {
+          "run": 780,
+          "pass": 780
+        },
+        "sha256": "b52ad19f839daf40be0465473a071b7f97da60a870887fcd0fcc627cf2b5e2b1",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/core/query/logical:logical_test",
+        "counts": {
+          "run": 62,
+          "pass": 62
+        },
+        "sha256": "552bebb5e6ece700d350687037e251ce0acb3d5e86ba6b08ef4aa62d1880000d",
+        "skips": []
+      },
+      {
+        "label": "//pkg/recordlayer/query/plan/cascades/matching:matching_test",
+        "counts": {
+          "run": 97,
+          "pass": 97
+        },
+        "sha256": "966b2ef0612b75064ac4ecaf8df2bd30f15a97a1341e316d6696606bc0085b60",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/core/query/expr:expr_test",
+        "counts": {
+          "run": 322,
+          "pass": 322
+        },
+        "sha256": "c9638fef2e735cf504e3168e2ca51e69b06ea0952abc9b1fca2f1f7b5c45525a",
+        "skips": []
+      },
+      {
+        "label": "//pkg/recordlayer/query/plan/cascades/predicates:predicates_test",
+        "counts": {
+          "run": 570,
+          "pass": 570
+        },
+        "sha256": "145380d2addcc66b32b6748e43a7e50e8d742320357daab9601a6576521b4dc3",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/conformance/factorycorpus:factorycorpus_test",
+        "counts": {
+          "run": 74,
+          "pass": 74
+        },
+        "sha256": "1c63117af96ca6f93fbe6a2236b99009c42b107318b7408ffb756ed00b28e60f",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/core/functions:functions_test",
+        "counts": {
+          "run": 342,
+          "pass": 342
+        },
+        "sha256": "042c085c3485b90dd0bb9caca718d1f80b0c8b4efb8708f02b2f341315d84eff",
+        "skips": []
+      },
+      {
+        "label": "//cmd/frl/internal/config:config_test",
+        "counts": {
+          "run": 12,
+          "pass": 12
+        },
+        "sha256": "1e249cbfd682e2dc26485c0461b26a3f38fc691ad6f90cfe6f293f1e79aef7ca",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/core/query/semantic:semantic_test",
+        "counts": {
+          "run": 157,
+          "pass": 157
+        },
+        "sha256": "6fb77c865c5794653de4db1537bdde883b360ee41886664e1fa68314ef6d05c5",
+        "skips": []
+      },
+      {
+        "label": "//pkg/fdbgo/fdb:fdb_test",
+        "counts": {
+          "run": 243,
+          "pass": 243
+        },
+        "sha256": "0a15d8fa67ae3fb02baf853bcf34430c81e43be44e7c9d0e3b5d571e73f79362",
+        "skips": []
+      },
+      {
+        "label": "//cmd/frl/internal/meta:meta_test",
+        "counts": {
+          "run": 9,
+          "pass": 9
+        },
+        "sha256": "c5d6264232be480f2ee24f1c337aae2cf369c48cee6057844504aa87bf9faa7d",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/core/catalog:catalog_test",
+        "counts": {
+          "run": 93,
+          "pass": 93
+        },
+        "sha256": "2c1c37c04aca85ea25afa9daed93b2d96b8e1d813afd93db27a22f0d16e0c3e7",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/core/session:session_test",
+        "counts": {
+          "run": 12,
+          "pass": 12
+        },
+        "sha256": "60cc8a194f8577354cb04a91614bd4b9ebb5a198b7516bd1617ed8ac84429e74",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/core/metadata:metadata_test",
+        "counts": {
+          "run": 61,
+          "pass": 61
+        },
+        "sha256": "31c548b4acfbe0938476020c37559190226fa3f82ffb4300a24fddbc15d5556c",
+        "skips": []
+      },
+      {
+        "label": "//pkg/testcontainers/foundationdb:foundationdb_test",
+        "counts": {
+          "run": 56,
+          "pass": 56
+        },
+        "sha256": "b8ff484524229a4583ad5cbbbe7679ffe121cb10f6e093fde9cd88ca14644e4b",
+        "skips": []
+      },
+      {
+        "label": "//pkg/recordlayer/rlmetrics:rlmetrics_test",
+        "counts": {
+          "run": 15,
+          "pass": 15
+        },
+        "sha256": "60af0f92d7bdadc649a0d8fec83e798dabe2a4e5b830de829cd5197004b60f5e",
+        "skips": []
+      },
+      {
+        "label": "//pkg/fdbgo/conformance:conformance_test",
+        "counts": {
+          "run": 2,
+          "pass": 2
+        },
+        "sha256": "011e91ea09ebad4d9bf110a7d172f70c684b3b2cfa205e41638a2f5b274eab77",
+        "skips": []
+      },
+      {
+        "label": "//pkg/recordlayer/query/executor:executor_test",
+        "counts": {
+          "run": 1944,
+          "pass": 1944
+        },
+        "sha256": "1ebc87415e60649b1b959c7196a556fa248955c7ad9804b5b0fb628acc9783fa",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/core/query:query_test",
+        "counts": {
+          "run": 517,
+          "pass": 517
+        },
+        "sha256": "86c8d4d3d3fe98dc0523a606d53c36f38092c41b285281c051d371af21ea94ee",
+        "skips": []
+      },
+      {
+        "label": "//pkg/simfdb/hunt/atomicops:atomicops_test",
+        "counts": {
+          "run": 27,
+          "pass": 27
+        },
+        "sha256": "74feced54a03dd67a3b8a04751feed78c97a5b36514a6a85344b0a1fde0891db",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/conformance/explaindiff:explaindiff_test",
+        "counts": {
+          "run": 53,
+          "pass": 53
+        },
+        "sha256": "260734eadf22d3fc5142f873811ffb467b8339890f2a0a418800f55f82bde7a9",
+        "skips": []
+      },
+      {
+        "label": "//pkg/simfdb/hunt:hunt_test",
+        "counts": {
+          "run": 26,
+          "pass": 26
+        },
+        "sha256": "3965209e010c2978b373394ed2cd9ed26fae04337e5880da19e24fcaba69acf8",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/core/ddl:ddl_test",
+        "counts": {
+          "run": 26,
+          "pass": 26
+        },
+        "sha256": "05e488376932dad82b3cd37c0addfb5b882b2b3131c46f4be4514be3248824c2",
+        "skips": []
+      },
+      {
+        "label": "//pkg/simfdb/hunt/continuation:continuation_test",
+        "counts": {
+          "run": 7,
+          "pass": 7
+        },
+        "sha256": "56533d1011d95dfced4044c827fca3a70ee72716839b459049cafdf8f4eb9120",
+        "skips": []
+      },
+      {
+        "label": "//cmd/frl/internal/cmd:cmd_test",
+        "counts": {
+          "run": 373,
+          "pass": 373
+        },
+        "sha256": "b2b3512ca0b06b7b129de64761639852191ee964aaed0778be3fecb274c9e73e",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/core/embedded:embedded_test",
+        "counts": {
+          "run": 2215,
+          "pass": 2215
+        },
+        "sha256": "8365bb4e9f4d6592856a441a174862089c0f99ba826d87d87e39246d988db748",
+        "skips": []
+      },
+      {
+        "label": "//pkg/simfdb/hunt/sqlhunt:sqlhunt_test",
+        "counts": {
+          "run": 55,
+          "pass": 55
+        },
+        "sha256": "fa2b756fd935c7c30ebf72829ac63f5372d611528970fccbee928bb462fc24dc",
+        "skips": []
+      },
+      {
+        "label": "//pkg/simfdb:simfdb_test",
+        "counts": {
+          "run": 296,
+          "pass": 296
+        },
+        "sha256": "078dfa6225ac510297e8f12fc9b4091bd3e086dc30dbd3b8c7ea36ea10bbc988",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/core/query/semantic/rlcatalog:rlcatalog_test",
+        "counts": {
+          "run": 13,
+          "pass": 13
+        },
+        "sha256": "eaf37966687811d23f829a2f5fcd2e30e43023972c76ec91c3f5785bb794a93b",
+        "skips": []
+      },
+      {
+        "label": "//pkg/simfdb/hunt/interleave:interleave_test",
+        "counts": {
+          "run": 14,
+          "pass": 14
+        },
+        "sha256": "e6d02bec1c8a7753dcc771dc2111939425c8106a2f8e36b68ae7e687a613b59c",
+        "skips": []
+      },
+      {
+        "label": "//pkg/docscheck:docscheck_test",
+        "counts": {
+          "run": 917,
+          "pass": 917
+        },
+        "sha256": "edde8656def56d7d22cc92dc8a64910de0b5a47796c38a196f82cc2ec87a9403",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/core/query/ddl:ddl_test",
+        "counts": {
+          "run": 2,
+          "pass": 2
+        },
+        "sha256": "01a4af167287cb66865b659014402c69474236bf1ce831a0182059bf60cb67db",
+        "skips": []
+      },
+      {
+        "label": "//pkg/simfdb/hunt/rangeconflict:rangeconflict_test",
+        "counts": {
+          "run": 10,
+          "pass": 10
+        },
+        "sha256": "e7dbc6bf3b51bcf3c9d817ae953554d655289840a415b8426c69448a567b983e",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/core/fleet:fleet_test",
+        "counts": {
+          "run": 14,
+          "pass": 14
+        },
+        "sha256": "44dd3ffe45b4517b57bcd3074aace634d16d5eea7adc0fa3fd0eb7788d83fe39",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/conformance/memoinvariant:memoinvariant_test",
+        "counts": {
+          "run": 4,
+          "pass": 4
+        },
+        "sha256": "4a2ae8defd477e80e7cb031b2afef9107b72ac617e70148db3d34143ed5bdaa5",
+        "skips": []
+      },
+      {
+        "label": "//cmd/factory-rebless-plan-shapes:factory-rebless-plan-shapes_test",
+        "counts": {
+          "run": 3,
+          "pass": 3
+        },
+        "sha256": "38f42d8f68a57343fd4994c48a24c15dbb92b3fe8652f46054c0c0ed305eae98",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/conformance/javacorpus:javacorpus_test",
+        "counts": {
+          "run": 386,
+          "pass": 386
+        },
+        "sha256": "818243bb4b20d747fa5fdfa572c1ea7eefcff33ac39e66538f77db651edd079c",
+        "skips": []
+      },
+      {
+        "label": "//pkg/recordlayer/chaos:chaos_test",
+        "counts": {
+          "run": 230,
+          "pass": 230
+        },
+        "sha256": "bace2eedc7d784a5a2842048d7f2f41b0da5792929588b31f902f1edc98a94b6",
+        "skips": []
+      },
+      {
+        "label": "//cmd/factory-rebless:factory-rebless_test",
+        "counts": {
+          "run": 11,
+          "pass": 11
+        },
+        "sha256": "2de509c4a6ae5e95097b40e873f2bc5287bc998985b5d99bdcda832267546e62",
+        "skips": []
+      },
+      {
+        "label": "//cmd/factory-plan-census:factory-plan-census_test",
+        "counts": {
+          "run": 24,
+          "pass": 24
+        },
+        "sha256": "fc78edd0e1cc660cc1841ecb672b64b8563d9e6a7c571ba6953ef85dfc8f9f1b",
+        "skips": []
+      },
+      {
+        "label": "//pkg/simfdb/hunt/golden:golden_test",
+        "counts": {
+          "run": 18,
+          "pass": 18
+        },
+        "sha256": "cdcc12fcf6b3069f5eb822244c3b4532181b38e8a6baeb2c52ea55f21655bcfd",
+        "skips": []
+      },
+      {
+        "label": "//cmd/factory-run:factory-run_test",
+        "counts": {
+          "run": 23,
+          "pass": 23
+        },
+        "sha256": "7f23ff1b49ed1f427c93c6ccbc228030a39e38938b2fc2e908788599c5965333",
+        "skips": []
+      },
+      {
+        "label": "//cmd/dst-hunt:dst-hunt_test",
+        "counts": {
+          "run": 2,
+          "pass": 2
+        },
+        "sha256": "fdd0db83b199ec568d1cf1f9c2a101eab6027cabda9f33f90ebf5451967468df",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/conformance/yamsql:yamsql_test",
+        "counts": {
+          "run": 590,
+          "pass": 590
+        },
+        "sha256": "02d24b38119bccfda50baf8f19d13095d95408e90de19f2ec378506c2d8dd61a",
+        "skips": []
+      },
+      {
+        "label": "//pkg/simfdb/hunt/sqlpage:sqlpage_test",
+        "counts": {
+          "run": 12,
+          "pass": 12
+        },
+        "sha256": "96ccfaadf62f8e59ec7ca8bc2044a6382bbff89d400a98326297ffd80f330f29",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/sqldriver:sqldriver_test",
+        "counts": {
+          "run": 6801,
+          "pass": 6801
+        },
+        "sha256": "5c3dc440316638d5bd3150511f05f24eaf19987bae282fae74950dcd150f50df",
+        "skips": []
+      },
+      {
+        "label": "//pkg/simfdb/hunt/metamorphic:metamorphic_test",
+        "counts": {
+          "run": 12,
+          "pass": 12
+        },
+        "sha256": "c618b62891f0fcdd0a9db55d6b8c16d93fff5ea4a8706d73ad3a56f366a93fdb",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/conformance/rowdiff:rowdiff_test",
+        "counts": {
+          "run": 202,
+          "pass": 202
+        },
+        "sha256": "aaea45949d1d924681f4327fd8c5126a2c05e35d48e2f1f3703eb96532d60881",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/conformance/plandiff:plandiff_test",
+        "counts": {
+          "run": 1787,
+          "pass": 1787
+        },
+        "sha256": "ce23ea97390f07a5affdeb8b2faafca624ba89997204126260a04da4abfc27a8",
+        "skips": []
+      },
+      {
+        "label": "//pkg/recordlayer:recordlayer_test",
+        "counts": {
+          "run": 2082,
+          "pass": 2082
+        },
+        "sha256": "a5295d026605129f59cac69a82202f589584afd32c48cf3af91ff658e605465d",
+        "skips": []
+      },
+      {
+        "label": "//conformance:conformance_test",
+        "counts": {
+          "run": 70,
+          "pass": 70
+        },
+        "sha256": "b92a1577229664dea10f696de226125e507edc97f918ced7bf1192fc49de5cec",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/conformance/factorycorpus/full:full_test",
+        "counts": {
+          "run": 8151,
+          "pass": 8151
+        },
+        "sha256": "141fb8d2e53ff420b8186f0628d4f5ea169d77fd9ebe56f46c204a99b0643dab",
+        "skips": []
+      },
+      {
+        "label": "//pkg/fdbgo/client:client_test",
+        "counts": {
+          "run": 1824,
+          "pass": 1824
+        },
+        "sha256": "336a22cdf3ea8ed7ea84992c7daeec8d1707c2092353b1213511fd55b63685dd",
+        "skips": []
+      },
+      {
+        "label": "//pkg/relational/conformance/factory:factory_test",
+        "counts": {
+          "run": 102,
+          "pass": 97,
+          "skip": 5
+        },
+        "sha256": "93e85342dbbdbc112487aa6e770ab8cb155f8e5eb6929bb5a5cbbe18e11bf5aa",
+        "skips": [
+          "TestFDB_PlanDiversityHunt",
+          "TestFDB_NestedShapeHunt",
+          "TestFDB_FullShapeHunt",
+          "TestFDB_ExcludedShapeHunt",
+          "TestFDB_PredicateEquivalenceHunt"
+        ]
+      }
+    ]
+  },
+  "just_test": {
+    "targets": 93,
+    "executed": 93,
+    "passed": 93
+  },
+  "race": {
+    "targets": 14,
+    "executed": 14,
+    "passed": 14,
+    "go_test_events": {
+      "run": 21059,
+      "pass": 21059
+    },
+    "results": [
+      {
+        "label": "//pkg/rabitq:rabitq_test",
+        "counts": {
+          "run": 273,
+          "pass": 273
+        },
+        "sha256": "92a32134373939c09a0094a6522e150db6309952f15303ebed3de98d7b6a2901"
+      },
+      {
+        "label": "//pkg/relational/core/query/logical:logical_test",
+        "counts": {
+          "run": 62,
+          "pass": 62
+        },
+        "sha256": "011ea4a59a168beb399bdc57d64a82cfed95d78a1794df133c996b872935ab15"
+      },
+      {
+        "label": "//pkg/recordlayer/query/plan/cascades/values:values_test",
+        "counts": {
+          "run": 2435,
+          "pass": 2435
+        },
+        "sha256": "3a6ab88d82ff313216a1e900d8cacd532e2363304e81aa07c9f09087a9b03731"
+      },
+      {
+        "label": "//pkg/relational/core/query/expr:expr_test",
+        "counts": {
+          "run": 322,
+          "pass": 322
+        },
+        "sha256": "ea64aa7fedd62417a85dc3cde710b714bec86be17cce60b61b2cf8ebbf2898f0"
+      },
+      {
+        "label": "//pkg/relational/core/query:query_test",
+        "counts": {
+          "run": 517,
+          "pass": 517
+        },
+        "sha256": "ecbce3e79e127e2aa9aef88f17094b1df57fcc38508febbdef57434587f1a69e"
+      },
+      {
+        "label": "//cmd/frl/internal/cmd:cmd_test",
+        "counts": {
+          "run": 373,
+          "pass": 373
+        },
+        "sha256": "89e67b7e7050b1a736bf4c504274c76ac9c606b949a74b933c7c2f958cb1fac6"
+      },
+      {
+        "label": "//pkg/recordlayer/query/executor:executor_test",
+        "counts": {
+          "run": 1944,
+          "pass": 1944
+        },
+        "sha256": "ac10894c322c3951f3c63c38dab37dbce2893192f5fe4736c5aec3faba389e06"
+      },
+      {
+        "label": "//pkg/recordlayer/query/plan/cascades:cascades_test",
+        "counts": {
+          "run": 3682,
+          "pass": 3682
+        },
+        "sha256": "09f0c72eeae3ef41b5f8f3cd612ec33dfbc27ba70ef12823c9e46213ee971ce8"
+      },
+      {
+        "label": "//pkg/relational/conformance/explaindiff:explaindiff_test",
+        "counts": {
+          "run": 53,
+          "pass": 53
+        },
+        "sha256": "50950ce3e4ce431c0c520cff7624b8b7c23302c723f3163cfed872c49e8df877"
+      },
+      {
+        "label": "//pkg/relational/core/embedded:embedded_test",
+        "counts": {
+          "run": 2215,
+          "pass": 2215
+        },
+        "sha256": "9612d1734c79a7dd9c565db6ca4aeec3e5410f05002379ba3cb7ae293986accf"
+      },
+      {
+        "label": "//pkg/recordlayer/chaos:chaos_test",
+        "counts": {
+          "run": 230,
+          "pass": 230
+        },
+        "sha256": "80ba7512c4a526c5dd8c16c8c970af6e70b108b8b17264b9a7e0d90696602d43"
+      },
+      {
+        "label": "//pkg/recordlayer:recordlayer_test",
+        "counts": {
+          "run": 2082,
+          "pass": 2082
+        },
+        "sha256": "90f9e89554be6a7cbd931d3d5950e04b523c6607ade18a361dfe94287e796205"
+      },
+      {
+        "label": "//conformance:conformance_test",
+        "counts": {
+          "run": 70,
+          "pass": 70
+        },
+        "sha256": "fd443bbbb4956d94d65fbdec534271225319aab506fa61af0ca5eee988d0638b"
+      },
+      {
+        "label": "//pkg/relational/sqldriver:sqldriver_test",
+        "counts": {
+          "run": 6801,
+          "pass": 6801
+        },
+        "sha256": "9acca831dab966c47e28e1f52b914df0f1e9489be086f5a2616a291512392198"
+      }
+    ]
+  },
+  "arm64": {
+    "functions": [
+      "fdb.dev/pkg/rabitq.(*RaBitQuantizer).encodeInternal",
+      "fdb.dev/pkg/rabitq.(*RaBitQuantizer).quantizeEx",
+      "fdb.dev/pkg/rabitq.(*RaBitQuantizer).bestRescaleFactor",
+      "fdb.dev/pkg/rabitq.absOfNormalized"
+    ],
+    "FMULD_occurrences": 19,
+    "fused_add_sub_occurrences": 0,
+    "runs": 273,
+    "passes": 273,
+    "production_sha256": "46405771c82a9889fbfd90e4275855beff59f93b1d13ca92d6b3479a8106d121",
+    "tests_sha256": "2101c41d6c7b025e4e708598ab898b250ad17aa8b1454f3bd47013d4140a77a4"
+  },
+  "fuzz": {
+    "target": "FuzzRaBitQEncoding",
+    "seconds": 20,
+    "executions": 16839465
+  },
+  "findings": [
+    {
+      "name": "nil child result type",
+      "pin": "TestArrayConstructorValue_CheckedRebuildNilChildType",
+      "red": "Compiled test panics on nil result type; restored isNilBinding guard returns TypeNil before promotion.",
+      "green": "Full values target and race pass."
+    },
+    {
+      "name": "failed descriptor lookup mutation",
+      "pin": "TestProtoTypeFailedLookupPreservesGraph",
+      "red": "Both sealed and unsealed failed-lookup scenarios fail before transactional closure validation.",
+      "green": "Full values target and race pass; descriptor identity and repository graph pinned."
+    },
+    {
+      "name": "expanded SELECT output slots",
+      "pin": "TestFDB_NoFromSelectProbe",
+      "red": "Nine of eleven new positional/star cases fail before slot ownership repair.",
+      "green": "Eleven cases pass; full suite and race pass; four new Java comparison cases retained, for 60 composition plus two index cases."
+    },
+    {
+      "name": "RaBitQ FMA",
+      "pin": "TestDotRoundsProductsBeforeAccumulation and TestRaBitQJavaEncodingGoldens",
+      "red": "ARM64 finite boundary headers differ before product rounding; NaN-sign differences are separately classified by actual Java on AMD64/ARM64.",
+      "mutation": "Removing only the ipNorm product rounding survived the 24-golden population; the retained quantization_seven_1 case kills it in the expanded 27-golden population.",
+      "green": "273 ARM64 RUN/PASS including 27 byte-exact goldens. Final tmpError conversion also prevents compiler doubling-as-add fusion; tests already passed before that last conservative barrier.",
+      "nan_scope": "Java 4.14.2.0 native NaN signs differ across AMD64 and ARM64. Exact per-architecture literals are tested; no Go-only canonicalization or either-sign acceptance."
+    }
+  ],
+  "remaining": [
+    "Final Astra/xhigh read-only delta reconfirmation",
+    "Original historical executor startup-timeout cause unavailable from retained evidence",
+    "WS-B through WS-K design/implementation",
+    "Fresh owner GitHub authentication and authorized publication"
+  ],
+  "artifacts": {
+    "review-fixed-full.log": {
+      "sha256": "b4afabb7bb42ca535eeeb13d26b9e8c3a65128e1e92635d9704a8d5548a52551",
+      "bytes": 9931419
+    },
+    "review-fixed-full-bep.jsonl": {
+      "sha256": "37233f72ef8d3e7d27d5b7807fed7d73d7d91edfb0a640d50d0ea7087553db0a",
+      "bytes": 13029764
+    },
+    "review-fixed-full-freeze.json": {
+      "sha256": "c26d00f8382cc95984531edcd7103b7ec0b54db4cc6e5a64495b31b0ef91e296",
+      "bytes": 825440
+    },
+    "review-fixed-full-verification.json": {
+      "sha256": "5636aa7bdbba3186a782ec8403f83a07b2bcb31fa0771800db0eabf40721be97",
+      "bytes": 20966
+    },
+    "review-fixed-just-test.log": {
+      "sha256": "04f2fc7b6d7ef632810f50616b0290d084163dfd93dae2327e0abef58c214089",
+      "bytes": 9850
+    },
+    "review-fixed-race.log": {
+      "sha256": "27f9bff22379ea53e16e235ca7611e63f23febd311a072d6b8047731b677268a",
+      "bytes": 5071688
+    },
+    "review-fixed-race-bep.jsonl": {
+      "sha256": "7255cd0c9c0b0419ad4bd2028cd66fe27666b64aaba2c84fa4f0ed4a2f1852f4",
+      "bytes": 6107690
+    },
+    "review-fixed-race-command.json": {
+      "sha256": "54b7af2c02fcc7e521faa034ad353cc29eae7b9001ada8cde78baaaf4f601f77",
+      "bytes": 928
+    },
+    "review-fixed-race-verification.json": {
+      "sha256": "b42728c87937e18f6537b4fb720677396298fbf7a1f7659f370a75d373cce68f",
+      "bytes": 2909
+    },
+    "array-nil-red.log": {
+      "sha256": "06667bb51b6569f887cf424a9968d3424a95abfffb043c4623cd182ea54490a4",
+      "bytes": 4813
+    },
+    "array-nil-green.log": {
+      "sha256": "1d7e2c8d72be1e587d978ca61d3a34e60b98880c2ff9edaafc868ac381e4c1b0",
+      "bytes": 570756
+    },
+    "proto-seal-red.log": {
+      "sha256": "32058713e0e951517b20a5aaf15a67e6264bcadb417acd4c526a055892c60783",
+      "bytes": 3074
+    },
+    "proto-seal-green.log": {
+      "sha256": "46234de9a198ba2d93ed809d57e5289134ffc8dae900065c929418b8976c8fbe",
+      "bytes": 571450
+    },
+    "star-slots-red.log": {
+      "sha256": "7a1df314fbe426cd877804359255cfd4296aafb6721786410d6c00fc576e26db",
+      "bytes": 25254
+    },
+    "star-slots-green.log": {
+      "sha256": "195fd7faa6c7edf760e09becd31fd379f3ee99076cf0043d838a6e3fdcb83057",
+      "bytes": 22747
+    },
+    "star-java.log": {
+      "sha256": "6f0d9735c274a8d9c2605e0d7adbd7e90b418bb15178b86600b7c5125dacac1b",
+      "bytes": 42424
+    },
+    "slots-fixed-just-test.log": {
+      "sha256": "dd588dfeb9814ef0777a48b2e857d6e047a1a622368fcc7b988d59bf29057236",
+      "bytes": 7201
+    },
+    "rabitq-arm-red.log": {
+      "sha256": "02588a48d28cf7577b2c0fb8c1ed71032a761cd5b02260cd30176d050dfc7794",
+      "bytes": 9742
+    },
+    "rabitq-arm-final.log": {
+      "sha256": "bf834e28411aae30e46380ed7b06e402164f218630161e5db3c07a79f3695d73",
+      "bytes": 61537
+    },
+    "rabitq-arm-final.asm": {
+      "sha256": "ed069777e093d6668fc7e85f7cbe91db487dae277fc999558f0580d1ec3842ae",
+      "bytes": 38674
+    },
+    "rabitq-ipnorm-mutation.log": {
+      "sha256": "cf66f37a70f2b9385890f0642a292b5da4047e8f5879f709cc6f9654aa521d41",
+      "bytes": 6806
+    },
+    "rabitq-ipnorm-mutation-seven.log": {
+      "sha256": "f6b3154f1e9ba2ad5d65960820818076021982d02f7437d4e767394a5dde761b",
+      "bytes": 8479
+    },
+    "rabitq-java-fma.log": {
+      "sha256": "4dd73f973cf7f50746a50c4289356537cfba03e9c6b1319ab3255ae7f836cab5",
+      "bytes": 28605
+    },
+    "rabitq-java-quantization.log": {
+      "sha256": "1144bafd910bbbbd1fee303d27db65bf43080db207ccd102f8e4101c1b23c377",
+      "bytes": 29730
+    },
+    "rabitq-java-amd64.log": {
+      "sha256": "9af0049a3322e5582838ddc8267a1fe5f68efafe8bd4b6242a8ec367e8c16e86",
+      "bytes": 2692
+    },
+    "rabitq-java-arm64.log": {
+      "sha256": "06a90091740b8647b1594b61511aefd35f6abc6566831c9e2eed7436d4bf409b",
+      "bytes": 1232
+    },
+    "rabitq-final-fuzz.log": {
+      "sha256": "8ca9cb497dedabfb8551de859d626f182b34e8ce61dbf7737ca4ad21e78618ee",
+      "bytes": 1959
+    },
+    "plan-shape-baseline.cpu": {
+      "sha256": "5daf2473b81b17d6159e0a1d47fadec3bc1da8a7b0a8480316cff0d5eff54058",
+      "bytes": 115148
+    },
+    "plan-shape-current.cpu": {
+      "sha256": "626ff55d479c1a78366aa151f7f63ad7e487f4af21b0885626ff8e82718ed87e",
+      "bytes": 116792
+    },
+    "plan-shape-baseline.mem": {
+      "sha256": "0211f300fb139f21c1f8ed7f44bb552bc2caa207b947a4d72e3bd8a6d7bf9ead",
+      "bytes": 183447
+    },
+    "plan-shape-current.mem": {
+      "sha256": "ba06b6126de84e628697c7eca9a482c7eb2973262b9818e4682c43b346ea6380",
+      "bytes": 179396
+    },
+    "plan-shape-baseline-top.txt": {
+      "sha256": "dc921699ac0a8aea1e1399ed254f3c3ff41e4979f95e30e64e012d54be6dc3c4",
+      "bytes": 32912
+    },
+    "plan-shape-current-top.txt": {
+      "sha256": "fad73d957452148477c02a0d830d51413f3f74d7e4c4192006b5322b56063f48",
+      "bytes": 32549
+    },
+    "plan-shape-baseline.log": {
+      "sha256": "466c4d804be6cd3ff2c28d8ad61ce35e678c2e84073f23ca679e6eb484a8c639",
+      "bytes": 4968
+    },
+    "plan-shape-current.log": {
+      "sha256": "5f671f768c72c63ea605acc675a81ad792a02fdade0fba2cf098a9c39e124e96",
+      "bytes": 4638
+    }
+  }
+}

@@ -1,0 +1,75 @@
+**NAK.** I reviewed the v4 design itself; no implementation exists yet.
+
+- **Tree:** `4b8b8c15a3b65ce74c1856f8175ff2d3e7883c8d`
+- **Design SHA256:** `81fdd5f9c7a4d15222c0ad47c7056494f108e7e6bc3f689b788adbe2126809a8`, checked with `git show TREE:path | sha256sum`. The on-disk file matches.
+
+**What I covered.** I read all four v3 NAKs, the full v4 design and its v3→v4 diff, and the research README, then checked the claims against Java and Go. `git diff --stat f0cb2957 4b8b8c15`, excluding `rfcs/` and `TODO.md`, is empty.
+
+**What I could not cover** (the verdict does not depend on these gaps):
+- **Git access stopped partway through.** Git commands started being denied. So the `store.go`, `indexing_merger.go` and sliding-window line numbers below come from the working tree, which has uncommitted changes. I could not re-check those files against the tree object. Two of them agree with earlier checks made against the tree:
+  - `indexing_merger.go` matches the v3 Torvalds citation.
+  - The `store.go` save order matches the v3 SPFresh reading.
+- **Research reports were not all read in full.**
+  - `maintenance-integration.txt`: read in full.
+  - `guardiann-engine.txt`: lines 40–119 plus targeted searches.
+  - `hnsw-options.txt`: targeted searches only.
+
+## P1 — The admission table assumes delete and neighbour knobs can be changed later; in Java they cannot, so Go would permanently refuse deletes Java performs
+- **The claim.** design:156-158 says the "delete, merge and concurrency knobs are mutable", so a bad value is repaired by evolving it.
+- **What Java actually allows to change** (`MUTABLE_OPTIONS`, `GuardiannVectorIndexEngine.java:84-97`): only the stats knobs, `sampleBatchSize`, the five concurrency knobs and `primaryClusterHardMax`.
+- **These are fixed after creation** (`GuardiannVectorIndexEngine.java:398-450`):
+  - `deleteMaxCandidateClusters` (:429)
+  - `insertMaxCandidateClusters` (:427)
+  - the split, merge and reassign neighbour counts (:431-440)
+  - `replicatedClusterTarget` (:415)
+  - the KMeans settings (:435-438)
+  - the construction search widths (:444-450)
+- **The design's own research says the same:** `guardiann-engine.txt:50` and `maintenance-integration.txt:145`.
+- **Delete row (design:152).** It requires `deleteMaxCandidateClusters >= 1`, but Java's `Config` never checks that value (`Config.java:196-213`). With a value of 0 or less, Java's delete still succeeds:
+  - The bounded cluster iterator returns nothing (`MoreAsyncUtil.java:155-160`).
+  - The delete then removes the collapsed id and the tag-5 metadata row (`Delete.java:148-230`).
+  - The references it leaves behind are hidden by the existing stale-UUID filtering.
+  - Go would refuse every record delete and update on that index, permanently, with no way to fix it by evolution, while Java succeeds on the same cluster. This is not in the divergence list (a)–(e).
+- **Insert row (design:149).** It requires the fixed KMeans settings on the grounds that "an insert creates tasks only KMeans can execute". By that same reasoning it should also require the other fixed merge prerequisites the merge row lists (design:154): neighbour counts and `replicatedClusterTarget`. As written:
+  - Such an index accepts inserts but can never run a merge.
+  - It builds up a backlog no evolution can clear and eventually hits the hard cap.
+  - Capacity recovery then fails on the refused merge, so the refusal arrives as a capacity error rather than at admission.
+- **Needed:**
+  - Derive each row from Java's real mutable set and from how each Java consumer actually fails.
+  - Drop refusals where Java's behaviour is well-defined (`deleteMaxCandidateClusters` ≤ 0).
+  - Put every fixed merge prerequisite on the insert row, or justify leaving it off.
+  - Declare the insert refusals that are not about merge capability: `insertMaxCandidateClusters`, `sampleBatchSize`, construction widths. For reference, Java with `insertMaxCandidateClusters=0` writes the tag-5 row but no cluster reference, so the vector is never searchable (`Insert.java:262-293`).
+
+## P2 — Admission is placed before the record write, but the read it relies on happens after it in Go
+- **The claim.** design:120-122 and 135-139 say admission runs "before buffering record/index writes", and that the trained-state read "is the one the operation already needs and happens before buffering".
+- **Go's actual order.** The engine's reads run inside `updateSecondaryIndexes`. By then the record bytes, version and record-count ADD are already buffered (`store.go:719-761` for save, `:472-490` for delete). `store.go` has no hook that runs before the record write.
+- **The sliding-window gate (design:178-188) has the same problem.** It sits inside the window maintainer. Its reads and record loads, and even its boundary and count writes, all happen after the record write (`sliding_window_index_maintainer.go:563-570, 756-769`).
+- **Consequence.** The catch-and-commit fixtures (design:189-191, 203-206) cannot pass as written. An implementer following the text would place data-dependent admission after the record is buffered.
+- **Needed:** name a store-level admission phase that runs before any record, version or count change. It should cover:
+  - the config checks;
+  - the access-info read, where the predicate depends on data;
+  - the window's whole-effect derivation, including its record loads;
+  - which reads it adds to the conflict set.
+
+  Maintenance should then consume that phase's decision.
+
+## P3
+1. **Divergence (d) is not a divergence (design:201).** Java's `OnlineIndexer.mergeIndex` goes through `IndexingBase.mergeIndexes`, which is `whenAll` (`OnlineIndexer.java:409-420`, `IndexingBase.java:1085-1096`). Running every target is therefore alignment with Java. Go's per-range merge loop also stops at the first error (`indexing_merger.go:136-141`, vs Java :1071, :1093), and the design does not cover it.
+2. **The shared rewrite helper could change Java's collapse bytes.**
+   - `CollapseTask` rebuilds its statistics from scratch and passes them through `withNewVectors` (`CollapseTask.java:239-291, 412-424`; `ClusterMetadata.java:139-146`), so Java's collapse can lower `runningMaxEver`.
+   - The rule `max(stored, recomputed)` (design:519-521) must therefore stay in the reconcile caller, not in the shared helper, or collapse bytes diverge on an ordinary Java path. Pin this with a JVM fixture.
+   - With zero surviving references, that rule gives n=0 with a finite maximum. No Java writer produces that state: an empty accumulator's maximum is −∞ (`RunningStats.java:45-46, 79-81`). Specify the empty identity instead.
+3. **Two different stop rules for recovery.**
+   - design:437-439 allows another recovery whenever the targeted merge ran at least one task in the blocked prefix.
+   - design:528-529 separately says an unsplittable cluster is detected "without freeing capacity", but gives no mechanism for that.
+   - The reconcile pass itself, or unrelated tasks in a busy prefix, satisfies the first rule. Tie progress to the blocked cluster named in the typed error: its primary count went down, or it was dissolved.
+4. **Pass 2 of the zero-primary rule (design:540-542) can double-count statistics.** It must rebuild `standardDeviationsMap` from the original map before re-merging the updates (`SplitMergeTask.java:615-624`).
+
+## Verified correct
+- **Split throw site:** `SplitMergeTask.java:386-397`. Java's own non-split exits clear `SPLIT_MERGE` (:180-186, :483-492).
+- **Cause set for zero-primary splits:** Java passes `newClusterIds` as the cause set (:914), so "all minted ids" matches. Reassigns with no cause set are forced only past a threshold (`Primitives.java:1222-1226`). Cause ids that were never written do no harm, because they never appear as candidates (`ReassignTask.java:570-573`).
+- **Hard-cap reorder:** Java writes tag 5 at `Insert.java:293` and throws at :334-337, and the throw only applies when maintenance is not in-transaction. Moving the check earlier is safe, because nothing in between reads the tag-5 row.
+- **Search lock hold span:** the page is fully built before the lock cursor wraps it (`VectorIndexMaintainer.java:225-259`), so releasing after the search changes no result.
+- **`VectorId` hash:** `VectorId` is a two-field record with no `hashCode` override (`VectorId.java:64`), consistent with the stated formula.
+- **Drain order:** Java drains, then merges (`IndexingBase.java:1063-1072`).
+- **Preserved boundaries:** hold.

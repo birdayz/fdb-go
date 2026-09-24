@@ -9,6 +9,7 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/anypb"
 )
 
 // emptyTuplePacked is the pre-computed packed form of an empty tuple.
@@ -28,6 +29,9 @@ var emptyTuplePacked = tuple.Tuple{}.Pack()
 // IndexMaintainer handles index updates and scanning.
 // Matches Java's com.apple.foundationdb.record.provider.foundationdb.IndexMaintainer.
 type IndexMaintainer interface {
+	// MergeIndex performs the backend's deferred maintenance, if any.
+	MergeIndex() error
+
 	// Update updates the index for a record change.
 	// oldRecord is nil for inserts, newRecord is nil for deletes.
 	Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error
@@ -37,6 +41,12 @@ type IndexMaintainer interface {
 	// For non-idempotent indexes, checks if the record's PK is in the already-built range.
 	// Matches Java's standardIndexMaintainer.updateWhileWriteOnly().
 	UpdateWhileWriteOnly(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error
+
+	// Pending queue support is opt-in; serialization applies maintenance filters
+	// now, while replay applies the captured entries without reevaluating them.
+	IsPendingWriteQueueAllowed() bool
+	SerializePendingWriteQueue(oldRecord, newRecord *FDBStoredRecord[proto.Message]) (*anypb.Any, error)
+	UpdateFromQueue(data *anypb.Any) error
 
 	// Scan scans the index within the given tuple range.
 	// Matches Java's IndexMaintainer.scan().
@@ -150,8 +160,7 @@ func (m *standardIndexMaintainer) CanDeleteWhere(prefix tuple.Tuple) error {
 // indexStoreContext provides the store methods needed by index maintainers.
 // Avoids circular dependency by using an interface instead of *FDBRecordStore directly.
 type indexStoreContext interface {
-	isIndexWriteOnly(index *Index) bool
-	isIndexReadableUniquePending(index *Index) bool
+	readIndexState(indexName string) (IndexState, error)
 	addUniquenessViolation(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple, existingKey tuple.Tuple) error
 	removeUniquenessViolations(index *Index, indexKey tuple.Tuple, primaryKey tuple.Tuple) error
 	// isKeyInIndexBuildRange checks if a primary key is in the already-built range
@@ -313,7 +322,11 @@ func (m *standardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 	}
 
 	// Remove old entries first so uniqueness checks see clean state
-	isWriteOnlyOrUniquePending := m.store != nil && (m.store.isIndexWriteOnly(m.index) || m.store.isIndexReadableUniquePending(m.index))
+	state, err := m.currentIndexState()
+	if err != nil {
+		return err
+	}
+	isWriteOnlyOrUniquePending := state.IsWriteOnly() || state == IndexStateReadableUniquePending
 	for i := range oldEntries {
 		oldEntryKey, err := indexEntryKey(m.index, oldEntries[i].key, oldEntries[i].primaryKey)
 		if err != nil {
@@ -349,7 +362,7 @@ func (m *standardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 			return err
 		}
 
-		if m.index.IsUnique() && !indexKeyContainsNull(newEntries[i].key) {
+		if m.index.IsUnique() && !keyContainsNonUniqueNull(m.index.RootExpression, newEntries[i].key) {
 			if err := m.checkUniqueness(newEntries[i]); err != nil {
 				return err
 			}
@@ -442,7 +455,7 @@ func (m *standardIndexMaintainer) insertSingleEntry(entry indexEntry, record *FD
 		return err
 	}
 
-	if m.index.IsUnique() && !indexKeyContainsNull(entry.key) {
+	if m.index.IsUnique() && !keyContainsNonUniqueNull(m.index.RootExpression, entry.key) {
 		if err := m.checkUniqueness(entry); err != nil {
 			return err
 		}
@@ -599,7 +612,11 @@ func (m *standardIndexMaintainer) checkUniqueness(entry indexEntry) error {
 		// WRITE_ONLY indexes: write violation entries instead of throwing.
 		// Matches Java's standardIndexMaintainer.checkUniqueness() which
 		// calls addUniquenessViolation() for both conflicting PKs.
-		if m.store != nil && m.store.isIndexWriteOnly(m.index) {
+		state, err := m.currentIndexState()
+		if err != nil {
+			return err
+		}
+		if m.store != nil && state.IsWriteOnly() {
 			if err := m.store.addUniquenessViolation(m.index, entry.key, entry.primaryKey, existingPK); err != nil {
 				return err
 			}
@@ -617,6 +634,16 @@ func (m *standardIndexMaintainer) checkUniqueness(entry indexEntry) error {
 	}
 
 	return nil
+}
+
+// currentIndexState uses the context's shared state view, not a store object's
+// open-time snapshot. Explicit state-key conflicts cover negative decisions too,
+// without issuing a point read for each maintained record.
+func (m *standardIndexMaintainer) currentIndexState() (IndexState, error) {
+	if m.store == nil {
+		return IndexStateReadable, nil
+	}
+	return m.store.readIndexState(m.index.Name)
 }
 
 // checkKeyValueSizes validates that an index entry's key and value don't exceed
@@ -670,16 +697,83 @@ func (e *IndexValueSizeError) Error() string {
 		e.IndexName, e.PrimaryKey, e.ValueSize, e.Limit)
 }
 
-// indexKeyContainsNull returns true if any element of the index key is nil.
-// Matches Java's IndexEntry.keyContainsNonUniqueNull(): when an index key
-// component is null (from NullStandin.NULL), uniqueness checks are skipped.
-func indexKeyContainsNull(key tuple.Tuple) bool {
-	for _, v := range key {
-		if v == nil {
+// keyContainsNonUniqueNull is Java's IndexEntry.keyContainsNonUniqueNull
+// (IndexEntry.java:183-191): whether a column of key holds NullStandin.NULL,
+// the null a unique index ignores. Key is the leading columns of expr's
+// evaluation, as an IndexEntry's key is. A null that is not NullStandin.NULL
+// (a NULL_UNIQUE or NOT_NULL field, a function's plain null) does not count:
+// two records whose keys hold it collide under a unique index.
+func keyContainsNonUniqueNull(expr KeyExpression, key tuple.Tuple) bool {
+	var standins []bool
+	for i, v := range key {
+		if v != nil {
+			continue
+		}
+		if standins == nil {
+			standins = nonUniqueNullColumns(expr)
+		}
+		if i < len(standins) && standins[i] {
 			return true
 		}
 	}
 	return false
+}
+
+// nonUniqueNullColumns reports, per column of expr's evaluation, whether a
+// null there is NullStandin.NULL. Go evaluates every standin to a plain nil,
+// so where Java reads the standin off the evaluated value
+// (IndexEntry.java:64-79) Go reads it off the leaf that produced the column:
+// each leaf's nulls are all of one kind.
+//   - A field's null is only ever its getNullResult, so it is the field's
+//     standin: a nullable-tuple-field message converts to a primitive, never
+//     to null (TupleFieldsHelper.java:110-160). A nesting's null is its child's
+//     (an absent parent evaluates the child over a null message).
+//   - Literal(null), a record without a version and a null record are
+//     Key.Evaluated.NULL (LiteralKeyExpression.java:68,
+//     VersionKeyExpression.java:66, RecordTypeKeyExpression.java:74).
+//   - A function's null is NULL only for the functions that return
+//     Key.Evaluated.NULL (functionNullIsNonUnique).
+//   - A list column holds a nested list and a split column holds repeated
+//     values, never a standin (ListKeyExpression.java:113 converts each child
+//     to its tuple-appropriate list).
+func nonUniqueNullColumns(expr KeyExpression) []bool {
+	cols := make([]bool, 0, expr.ColumnSize())
+	return appendNonUniqueNullColumns(cols, expr)
+}
+
+func appendNonUniqueNullColumns(cols []bool, expr KeyExpression) []bool {
+	switch e := expr.(type) {
+	case *FieldKeyExpression:
+		return append(cols, e.nullStandin == NullStandinNull)
+	case *NestingKeyExpression:
+		return appendNonUniqueNullColumns(cols, e.child)
+	case *CompositeKeyExpression:
+		for _, child := range e.expressions {
+			cols = appendNonUniqueNullColumns(cols, child)
+		}
+		return cols
+	case *GroupingKeyExpression:
+		return appendNonUniqueNullColumns(cols, e.wholeKey)
+	case *KeyWithValueExpression:
+		return appendNonUniqueNullColumns(cols, e.innerKey)
+	case *DimensionsKeyExpression:
+		return appendNonUniqueNullColumns(cols, e.WholeKey)
+	case *LiteralKeyExpression, *VersionKeyExpression, *RecordTypeKeyExpression:
+		return append(cols, true)
+	case *CardinalityFunctionKeyExpression:
+		return appendRepeated(cols, e.ColumnSize(), functionNullIsNonUnique(e.name))
+	case *FunctionKeyExpression:
+		return appendRepeated(cols, e.ColumnSize(), functionNullIsNonUnique(e.name))
+	default:
+		return appendRepeated(cols, expr.ColumnSize(), false)
+	}
+}
+
+func appendRepeated(cols []bool, n int, v bool) []bool {
+	for range n {
+		cols = append(cols, v)
+	}
+	return cols
 }
 
 // tuplesEqual compares two tuples by their packed byte representation.

@@ -1,0 +1,85 @@
+**NAK.** RFC-257 WS-E design v6
+
+- **Tree:** `66663d5d8d1946a4891985e75c682cb98a18609f`
+- **Design:** `ws-e-design.md`, SHA-256 `a0703c84462f9a6dc3e47ceee69f64b2ea5c54a9c597b1b95c1fa54b1b79b853`, 2154 lines. I recomputed both and they match.
+- **Java:** `fdacd162a9`.
+- **Method:** read-only. I read the three v5 verdicts, the full v6 design, the v5→v6 tree diff, the oracle evidence and logs, and the Java, JDK and Go sources cited below.
+
+**What holds**
+- **Evidence binds the bytes:**
+  - All nine source hashes match the tree.
+  - Both oracle runs show "Ran 7 of 32 Specs", 7 passed.
+  - The `just test` run executed 8 of 94 targets, all 94 passing; both new tests ran (`--- PASS`).
+  - The measurement tree `3e7ea9aa` differs from this tree under `pkg/` and `cmd/` only by the added DATE test; `34c824e2` is identical there.
+- **Claims that check out against source:**
+  - 19 translator fold sites, 60 `Type()` definitions, three `serializeUnion` callers.
+  - `AndPredicate.and` drops tautologies (AndPredicate.java:188-205).
+  - `foldPredicateAtNull` runs ConstantFoldingRuleSet (ConstantPredicateFoldingUtil.java:177-197).
+  - `isConstant` (Value.java:165-168) and the four-arm IN-source admission (ImplementInJoinRule.java:385-433).
+  - CAST takes its operand's nullability (ExpressionVisitor.java:532).
+  - Porting only `fromString1` is safe: the JDK fast path gives the same result.
+- **Measurements that hold:** the tautology filter alone is corpus-neutral (0 diff lines, 92 of 92 targets pass).
+
+## HIGH
+
+**H1. Once the translator folds are deleted, nothing in Go simplifies a single-source WHERE (§5.4a/c, lines 1412, 1476). (SOURCE)**
+- **Why nothing reaches it:**
+  - Go's QueryPredicateSimplificationRule matches only a `SelectExpression` (rule_query_predicate_simplification.go:31). §5.4c keeps Java's select matcher.
+  - Go's translator emits a single-source WHERE as `LogicalFilterExpression([pred])` (cascades_translator.go:3005-3010), under a `LogicalProjectionExpression` (:347).
+  - No rule turns that filter into a select. The comment at rule_match_intermediate.go:219 says the filter survives into planning.
+  - Today those predicates fold in one place only: the 19 translator calls that 5.4a deletes.
+- **The oracle's own rows are this shape.** The target plans them as selects (trace_conj_true: `SelectExpression selects=1`). These rows all run over T alone and would keep today's Go outcomes:
+  - conj_true_where and conj_false_where, whose GO lines are 22012;
+  - null_strict_div0_cast_null_is_null_where;
+  - the COALESCE-head rows;
+  - is_not_null_coalesce_div0_where and is_null_cast_string_to_bigint_where.
+- **The tie pins fail too.** The tie rows are also over T alone, so no Go row reaches the hash rung. §5.4g's requirement that inverting the hash comparison reddens a pin cannot be met.
+- **The obvious fix is a trap.** Reading a filter as a select and yielding a `SelectExpression`, as 4.1(b) does, loses rung 1 ("fewer SelectExpressions", designated_final.go:145) to the filter every time. The unfolded member would win deterministically.
+- **Why the fold-free run missed it:** only the tests that pin the translator fold failed.
+- **Fix:**
+  - Choose one shape: the translator emits the target's select, or the rule matches a filter and yields a filter.
+  - State what happens to the Go-only REWRITING filter rules that already rewrite these predicates (default_rules.go:42-44, 63: DropTrue, Dedup, Merge, NoOp).
+  - On a prototype, measure a single-table conj_true row and one tie row in Go.
+
+## MEDIUM
+
+- **M1. The explode rule's phase and its IN-join route (4.1b, lines 525-567). (SOURCE)**
+  - **Phase.**
+    - Java runs InComparisonToExplodeRule in PLANNING only.
+    - Go registers it in DefaultExpressionRules (default_rules.go:118), which Go's REWRITING phase runs (:419).
+    - Today it matches filters, so its select yield loses rung 1 and does no harm.
+    - Once it also matches selects, an exploded multi-source select ties the original through the conjunct and level rungs, and the hash can prune the IN-predicate form before PLANNING.
+    - Specify PLANNING-only registration.
+  - **Route.**
+    - The IN-join now depends on Go's partition rules moving `value = QOV(explode)` into a correlated inner.
+    - The rule_partition*.go files never mention explodes, and nothing is measured.
+    - This path decides every IN-list index plan. Prototype it and dump the corpus, as was done for the tautology filter.
+- **M2. The UUID site census is wrong (line 1036, "exactly the five non-test calls").**
+  - The design's own `git grep` returns six calls. The one it misses is promote_prepared.go:388.
+  - That is PromoteValue's STRING_TO_UUID arm: the Go port of the Java lane this section specifies (PromoteValue.java:163-170). It fails with an untyped `fmt.Errorf`.
+  - Fix the count, and make the guard test's allowlist empty.
+
+## LOW
+
+- **L1. The fold census is incomplete (line 1376, "four places").** Three more sites evaluate a constant comparand at walk time and replace it with a literal (expr.go:1095, 1185, 1374). Errors fall through, so answers likely hold, but plan text and cache identity diverge. Name the sites and decide.
+- **L2. §4.3 accuracy.**
+  - **time.Time arms:** line 782 says they keep "serving CURRENT_TIMESTAMP-style runtime values". CURRENT_TIMESTAMP returns text (values.go:2743-2746), and so does CAST. Name a real producer or delete the arms.
+  - **UUID wording:** line 1029's "a sixth dash refused" should be a fifth (UUID.java:281). Long.parseLong refuses a component past 63 bits, not 64.
+- **L3. §6.4 names only some key sites.** rank_scan.go:51, aggregate_function.go:219/237, record_function.go:71/88, bitmap_value_index_maintainer.go:134 and vector_index_maintainer.go:1296/1343 also read the state key. None is under the "never reaches PeekIndexStates" test. List every `readIndexState` caller.
+- **L4. Harness wording and docs.**
+  - The Java step does not fail on an empty listing. It returns counts, and the Go spec fails (fault_inject_retry_conformance_test.go:220-221). Line 117 and evidence-mutations.txt both say otherwise.
+  - Only the databases counter was mutated. The templates guard has no mutation, so line 125 and the TODO still over-claim.
+  - The WS-J step was inserted between ephemeralTeardownProbe's Javadoc and its method (sql_plan_steps.java:1209-1245). That Javadoc is now orphaned.
+- **L5. The teardown-wiring test depends on a cleanup weakness.**
+  - It relies on the drops inheriting the canceled context.
+  - It leaks a database and a template into the shared container.
+  - It turns red if cleanup is correctly moved to `context.WithoutCancel`.
+  - It has a dead `fe` variable.
+- **L6. TestFDB_TemporalComparandDateColumn.** Line 796 says every row is checked "through the residual copy with its EXPLAIN". Only D's plan is asserted; R's plan is never checked to be a residual.
+- **L7. TODO EOF block.** It attributes the six flips to the dense map while citing the both-variants dump. The dense-only attribution comes from subtracting the tautology-only run; say so.
+
+**Measured vs SOURCE:**
+- **Read from code, no run:** H1, M1, L1, L2 and L3.
+- **Confirmed by `git grep` on the tree:** M2.
+- **Direct reads of the tree's files:** L4 to L7.
+- **Not disputed:** the target rows, which are measured.

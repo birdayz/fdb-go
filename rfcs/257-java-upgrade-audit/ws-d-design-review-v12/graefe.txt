@@ -1,0 +1,81 @@
+**NAK.** The review is complete. Nothing was run or edited.
+
+- **Tree:** `5a28ecbc718291b8bad5510867c375acfcdff246`
+- **Design:** SHA256 `1bd420cd5fedce7309fc766d40408a04f9ddcc7476d078d03b9ec6658993b018`, recomputed from the blob; 1644 lines.
+- **Java:** `fdacd162`.
+- **Test-run tree:** `65d3ffba` differs from the candidate only in the ws-d-oracle README (+12/−2).
+
+## P1: D-0's attempt cap does not hold on the tree's third backend
+- **What the design claims.** The cap is set by retry limit 0, and the design says "the route is the same on both client backends" (950-953).
+- **The third backend.** SimDB (`pkg/simfdb`) opens record-layer databases through `NewFDBDatabaseWithBackend` in 10 non-test places (for example `hunt.go:163`).
+  - Its `SetRetryLimit` is accepted and ignored (`options.go:42`).
+  - `Transact` retries internally up to 100 times (`simfdb.go:14`, `183-205`).
+- **Consequence.** Every DST hunt keeps the old contract: the attempt loop never sees a retryable error, and neither MaxAttempts nor SQL's single attempt applies. The hunts stay green on a contract production no longer has.
+- **Fixing the backend alone breaks the hunts.** Honouring the limit invalidates the hunts' assumption that "faults are retried transparently by db.Run, so any surfaced error is a … bug" (`hunt.go:210-212`).
+- **Needed:**
+  - SimDB honours the retry limit.
+  - Hunt error classification is re-derived for each owner's policy.
+  - The attempt-count fixture also runs on SimDB.
+  - Its 8 caller lines (`hunt.go:258-332`, `continuation.go:368-512`) are classified; no class in 908-942 covers them.
+
+## P2
+1. **The chaos arms still retry inside one attempt.** The design keeps them "valid per attempt" (954-958), but they re-execute inside a single `TransactCtx` call (`fault.go:199-211`).
+   - The 1021 fixture (973-975) passes on today's code and never reaches the attempt loop.
+   - The autocommit fixture ("returns the error without re-executing under FaultCommitUnknown", 980-983) cannot pass: the arm re-executes the statement and returns success.
+   - For single-attempt owners, the arms model a double apply that production no longer performs.
+   - **Needed:** a maybe-committed arm that commits and then returns 1021, so the owner's loop decides. `FaultRetryable` also needs to reach `ReadTransactCtx`, which injects nothing today (`fault.go:216-229`); the RunRead fixture at 972 depends on it.
+2. **Retry limit 0 also drops the client's own retry of 1200.**
+   - The limit is checked before classification (`transaction.go:2503-2507`, then `:2515`), so the client stops retrying the codes only its OnError retries.
+   - That set includes `all_proxies_unreachable` (1200). It is a Go-only error (`commitpath.go:291`) for a condition libfdb_c waits out inside the client, so Java never sees it.
+   - `fdb.IsRetryable` excludes 1200, so after D-0 every owner fails outright on a transient proxy loss during a recovery.
+   - Add it to "what the route drops" (870-876), and either retry it in the attempt loop (declared) or keep it inside the client.
+3. **The SQL owners are misidentified.**
+   - `cascades_generator.go:2646` is `fetchTableStatistics`, not the page transactions (930-932).
+   - Autocommit pages run through `runInCapturedTx` → `connection.go:416` (`cascades_generator.go:2200-2207`), so implemented literally, every page gets ONE attempt, which contradicts the page policy the design states.
+   - `ddl.go:857` is the catalog bootstrap reached from `Ping` on each session's first use (`ddl.go:849-876`). It is not a DDL statement, and it is the transaction most contended by the parallel suite. Check Java's counterpart and include it in the census in (5).
+   - Decide the policy at the real routes and pin both.
+4. **SPFresh writes are not `spfreshRun`.**
+   - RFC-094's new paragraph (lines 107-111) says the write path uses `spfreshRun` and that the loser "retries until it wins".
+   - In fact `Update`/`UpdateWhileWriteOnly` run in the caller's transaction (`spfresh_index_maintainer.go:212`, `:287`). The user side of rows 101, 102 and 104 is therefore bounded at 10 attempts under `Run` and 1 under autocommit.
+   - Restate this, and add the v11-requested fixtures: an insert racing a split under autocommit, plus SPFresh stress before and after D-0.
+5. **The admission bound is not a bound at small knobs.**
+   - The knob factor I·(R+1)/32 in W (1247-1254) scales the whole round. KMeans++ seeding (once per restart, `KMeans.java:181-182`), the final assignment and evaluation, and the floor's sort (1270-1272) do not scale with I.
+   - Config bounds d only from below (`Config.java:197`), and I≥1, R≥0 (`KMeans.java:137-138`).
+   - At I=1, R=0 the rule admits n=2000 at d≤40,000. That is 160 MB of half-precision vectors, so "under 10 MB within admission" (1470-1472) and "2.0 s at the bound" (1265) fail.
+   - The I=16 fixture (1503-1504) tests only the refusing direction.
+   - **Needed:** use max(I·(R+1), 32)/32 so knobs can only shrink admission; add an I=1, R=0 fixture; evaluate W without overflow (I and R have no upper bound).
+6. **The landed heartbeat collapse falsifies the contract text in three places and reverses one parity case.**
+   - `indexing_heartbeat.go:105-106` ("cannot drift from … refused"), `indexing_heartbeat_admin.go:113-118` and `:125-127`, and the Go spec title "exactly where admission would refuse" are now false. The new pin asserts "not ongoing" for a live (U) key, but admission, which reads every key (`IndexingHeartbeat.java:97-117`), refuses a new session because of it.
+   - A live (U) beside an unparseable (U,x):
+     - Java says ongoing: the placeholder has time 0 (`:152-158`), and `0 < now+lease` (`OnlineIndexer.java:461-462`).
+     - Go before v12 also said ongoing.
+     - v12 Go says not ongoing (`admin.go:151-154`). This case is not pinned.
+   - Declare and pin it, and correct the three texts.
+
+## P3
+- `TODO.md:6995` still prescribes the bypass ("INSTEAD OF delegating…"), and the block at 14681-14693 still describes the v11 plan.
+- 1266: the spread-shape target fits run from 0.097 to 0.656 s (README item 23; corner 0.105-0.215 s). The lower bound is 0.10, not 0.06.
+- 1271-1272 says "measured with the Go implementation", but no Go implementation or artifact exists. The only sort is the JVM probe's (`guardiann_probe_conformance.java:922`).
+- The indexer class omits `indexing_heartbeat_admin.go:174/192/211`, and the merger's call is in `indexing_merger.go:27`, not `online_indexer.go`. My count is 45 non-SimDB lines against the design's 46.
+- Explicit transactions (`CreateWritableTransaction`, `OpenContext`) stay outside the transactor, so scope out the claim that every wrapper "sees every attempt".
+
+## Verified closed
+- **Java:** ExponentialDelay (`:62-72`), RunRetriable (`FDBDatabaseRunnerImpl.java:195-207`), weak-read clearing (`TransactionalRunner.java:181-192`), the relational layer's single context (`RecordLayerTransactionManager.java:49`), and the throttle over the runner (`IndexingThrottle.java:349`).
+- **Go:** OnError's limit (`transaction.go:2503-2507`), libfdb_c `SetRetryLimit`, the 12-code predicate pin, and the chaos bypass (`database.go:536-541`).
+- **Arithmetic and volumes:** d≤1250 and d≤2775; W of 1.5, 1.8, 8.2 and 3.1e7; 5.0 and 5.6 MB half, 0.75 and 1.7 MB replicas, 10.0 and 11.1 MB single.
+- **Corner measurements:** 12 rows between 0.376 and 0.495; worst refit 200.9 ms (8.0e-8 s per n·d); refit totals 0.36-0.85 s.
+- **Evidence:** 27/27 specs in both uncached runs; `just test` executed 14 of 94 targets, 94 pass; the versionstamp message is pinned; README items 23 and 25 are corrected.
+
+## Measured vs still hypothesis
+- **Measured:**
+  - item 26: identical across three runs; timings printed, not pinned;
+  - item 27: both engines, plus the mutation;
+  - item 28.
+- **Checked against source only:** the Java runner, delay, throttle and relational facts.
+- **Still hypothesis:**
+  - every D-0 mechanism, and the per-line census (deferred to implementation);
+  - the Go peel's cost and B's calibration;
+  - peel cost at non-default knobs;
+  - the reconcile's cost;
+  - item 21;
+  - every GuardiANN Go mechanism.

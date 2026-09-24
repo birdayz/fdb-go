@@ -1,0 +1,64 @@
+**NAK.** I reviewed tree `f8abe2d742df8c35b44fb0c6f854f86c3cd3a016`, a tree object. The design file's SHA256 is `46ba664d33a2ad07f2a089b41ea4c14fab834514a170b2283ab862f89355f47f` and it has 1051 lines; I recomputed both. Findings come from reading source unless marked **measured**.
+
+Every v4 finding is resolved or answered, but three are only partly closed. Two new gaps are in the code revision 5 ported, and these are the same size as the ones v4 was NAK'd for. A narrow re-check of the changed lines is enough.
+
+## Findings, most severe first
+
+**1. Low-medium: a target that only shares a name is still accepted when it comes after the real one.**
+- `Build` removes duplicates by name (`online_indexer.go:786-793`) before the new identity check at `:808`. So if `SetTargetIndexes` or `AddTargetIndex` receives the metadata's own object first and then an object that only shares its name, the second one is silently dropped and the build is accepted.
+- Java refuses that list. Its `HashSet` removes duplicates with `Index.equals`, which compares name, type, root expression, subspace key, both versions, options and predicate (`Index.java:695-717`). So the second object survives, and `OnlineIndexer.java:880-883` throws `MetaDataException`.
+- Go's result also depends on order: with the two objects the other way round, Go refuses.
+- The comment at `:786`, "matches Java's HashSet dedup", is false.
+- Nothing is written under the wrong key, because the dropped object is never used. But the refusal this revision ports is incomplete.
+- Fix: remove duplicates by identity (or by Java's equality) before the check. Pin both orders.
+
+**2. Low: the standalone `MergeIndexes` divergence is incomplete and has no test.**
+- The code path is `indexing_merger.go:169` → `:40` → `refreshFollowupHeartbeats` (`online_indexer_queue.go:443-481`). On a WRITE_ONLY target it calls `CheckAndUpdate`, so a live builder, whether Java or Go, **refuses the merge** with `SynchronizedSessionLockedError`. Java's standalone merge checks no heartbeat and goes ahead. The bullet in DIVERGENCES.md (`:2774-2785`) declares only the reverse direction.
+- It says "disabled under it", but the code refuses a target that was DISABLED from the start as well.
+- The section says each difference is "pinned where named", but this bullet names no spec. The only standalone `MergeIndexes` test (`indexing_merger_test.go:211`) uses a READABLE vector index, which never reaches either branch.
+- The cross-engine claim that a Java builder honours the merge's heartbeat is a hypothesis from source; nothing has run it.
+- Fix: declare the refusal, add specs for WRITE_ONLY (key written, live peer refused) and for DISABLED, and mutate them.
+
+**3. Low: `SetIndex(nil)` panics (`online_indexer.go:612-613`, `:790`).**
+- Java's `setIndex` accepts null and leaves the list empty (`OnlineIndexer.java:668-675`), so it reaches the "index must be set" error this revision ports.
+- Go stores `[]*Index{nil}`, passes the length check, and dereferences nil at `idx.Name`. That is a panic in library code.
+- Fix: ignore nil the way Java does, and pin it.
+
+**4. Nits.**
+- The doc for `IndexBuildOutcomeBuilt` (`:489-495`) is now narrower than the code. `outcomeOfCall` returns `Built` whatever the last attempt found, including a retry that publishes under MARK_READABLE. v4's wording, "whatever the attempt that ended the call then found", was accurate.
+- The spec title at `online_indexer_test.go:4096` still says "earlier attempt". As storage v4 noted, that spec has a single attempt, which ends through the catcher's done arm. Retitle it.
+- `found == nil ||` at `:808` is redundant, since `found != idx` already covers it.
+- The doc comment for `nthTransactHook` (`online_indexer_test.go:5685-5687`) is now attached to `multiTransactHook` (`:5690`), and `nthTransactHook` (`:5704`) has no doc.
+- CHANGELOG says `SynchronizedSessionLockedError` carries "the refusing indexer's" ID. It is the refused indexer's, as `errors.go` says.
+- CHANGELOG never mentions `MergeIndexes`: zero hits for `MergeIndexes|explicit index merge|standalone merge`, against five in DIVERGENCES.md. The function does not exist on `master` (control: `BuildIndex` hits once there). Yet its heartbeat is the one difference another engine can observe.
+
+## What holds
+
+**From source:**
+- **Callers.** Every non-test builder of an indexer (frl `lookupIndex`, fleet `PendingIndexes`, both using `md.GetIndex` and `md.GetAllIndexes` on the same metadata) passes the metadata's own objects. So do the conformance tests (four sites), chaos (five) and sqldriver (four). The renamed-metadata spec was the only one passing a copy, and it is fixed.
+- **Old error messages.** Nothing still matches on them.
+- **Error fields.** `IndexerID` and `IndexVersion` match Java's `INDEXER_ID` (`IndexingHeartbeat.java:111-115`) and `INDEX_VERSION` (`IndexingBase.java:1291`). There is one construction site each (`indexing_heartbeat.go:155`, `online_indexer.go:1706`).
+- **Other v4 items:**
+  - The info wording is corrected.
+  - The precedence bullet's scope is correct: `checkAdmission` skips every peer when `allowMutual` is set.
+  - The follow-up's `SetMarkReadable(false)` case is declared.
+  - The outcome docs for None, LeftAlone and Published are corrected.
+  - The fleet arm now uses `n: 0`.
+
+**Measured:**
+- **Census.** The 17-line census reproduces: 17 lines in 5 files at both `936a4aba` and the candidate. The positive control is 90 hits of `NewOnlineIndexerBuilder(` in `online_indexer_test.go`.
+- **Mutation logs** (`/var/tmp/fdb-upgrade-recovery/wsc-v5/`):
+  - m34–m38 each show marker count 1, the perl expression, the applied diff, "bazel exit 3", "Ran 374 of 3700", exactly one red spec, and "restored".
+  - The diff line numbers match the candidate: `:808`, `:1096`, `:1247`, `:1714`, and heartbeat `:156`.
+  - **m34:** the retry spec fails at `:4156` with outcome 2 (LeftAlone) against an expected 1. So the retry spec reaches the success return and does not pass vacuously.
+  - **m38:** the build fails with "source index is not a VALUE index".
+  - **m30:** it ran under Bazel, `a_failure_part_way` is red, and "restored".
+- **Not verified:** I could not hash the `.good` baselines, because Bash access to `/var/tmp` was denied. The only check is that the diff line numbers above match.
+- **Evidence tree.** It is `f2f272dc` both before and after the run, and differs from the candidate only in `ws-c-design.md`, the ws-j-oracle `README.md` and `evidence-v9.txt`.
+- **Runs:**
+  - `ev9/wsc-focus.log`: "Ran 387 of 3700", SUCCESS, and all five changed specs present.
+  - `wsc-loop40.log`: 40 × "SUCCESS! -- 2 Passed | 0 Failed".
+  - `justtest.log`: "Executed 43 out of 94 tests: 94 tests pass". `recordlayer_test`, `chaos_test`, `sqldriver_test`, `conformance_test`, `fleet_test` and `cmd_test` are among the 43 that executed.
+- **`rl-full.log`** shows only "Executed 5 out of 5". It names no targets and gives no spec count, so it adds nothing beyond ev9.
+
+The preserved boundaries are all unaffected: the approved Go extensions, C++ 7.3.77, format max 15 / default 14, and the single query pipeline.

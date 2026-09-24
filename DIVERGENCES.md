@@ -1,13 +1,16 @@
-# Divergences from Java fdb-record-layer-core 4.12.11.0
+# Divergences from Java fdb-record-layer-core 4.14.2.0
 
-Comprehensive list of Go vs Java differences. All Cascades planner subsystems
-fully ported: ~65 PlanningRuleSet rule instances, 5/5 RewritingRuleSet rules,
-34/34 physical plan types, 48/48 value types, 19/19 properties, 12/12 match
-candidate types, 24/24 comparison operators, 9/9 predicates. Remaining items
-are execution-layer, wire-format, or intentional architectural choices.
+**Upgrade in progress; parity is not established and the suite is red.**
+[RFC-257](rfcs/257-java-4.14.2.0-upgrade.md) and its exhaustive audit own the new
+range's planner, SQL, storage, vector and API ports. The previous introductory
+claim that every Cascades subsystem was fully ported does not hold for this target.
 
-Validated against a live Java **4.12.11.0** conformance run (the cross-engine corpus runs against
-live 4.12 in `just test` with a stale-annotation guard, and the suite is green).
+Unless explicitly revalidated for this upgrade, the findings and measurements
+below describe the **pre-upgrade baseline**: the exact Java and Go revisions are
+recorded in RFC-257. They are retained historical evidence, not retagged target
+verification. The new audit supersedes conflicting old semantic claims, including
+LIKE, NULL-array diagnostics, FROM-less queries and format support. Closed baseline
+items do not close the upgrade's new work; see TODO's unchecked RFC-257 block.
 
 ## Intentional Architectural Decisions (no functional difference)
 
@@ -16,8 +19,11 @@ live 4.12 in `just test` with a stale-annotation guard, and the suite is green).
 Java's default is **`CACHEABLE_STATE` (7)** — `FormatVersion.getDefaultFormatVersion()`
 (`FormatVersion.java:215-217`), which `FDBRecordStore.Builder` seeds itself with
 (`FDBRecordStore.java:5437`). Go's default is `formatVersionDefault = 14`, which is
-`FULL_STORE_LOCK(14)` (`FormatVersion.java:173`) — the same value as Java's
-`MAX_SUPPORTED_VERSION` (`:182`). So a new store created by Go declares a **newer
+`FULL_STORE_LOCK(14)` (`FormatVersion.java:173` in the pre-upgrade baseline) —
+then the same value as Java's `MAX_SUPPORTED_VERSION` (`:182`). Target Java now
+supports **15** and queued-write state **4**; Go now implements queued writes and
+explicit format-15 opening. RFC-257 keeps the default at 14 independently of the
+supported ceiling. So a new store created by Go declares a **newer
 on-disk format than a new store created by Java**, and Go also upgrades any store it
 opens to that version.
 
@@ -27,7 +33,7 @@ question was carried to the Java source and the answer settles it.
 **What Java actually does, read rather than assumed.** `validateFormatVersion`
 (`FormatVersion.java:224-231`) throws `UnsupportedFormatVersionException` only when the
 candidate is `< getMinimumVersion()` **or** `> getMaximumSupportedVersion()`. At
-4.12.11.0 `MAX_SUPPORTED_VERSION` is computed as the maximum enum value (`:182`) and
+the pre-upgrade baseline, `MAX_SUPPORTED_VERSION` was computed as the maximum enum value (`:182`) and
 that value **is** `FULL_STORE_LOCK(14)`. So 14 ≤ 14 and the check passes. Then
 `checkPossiblyRebuild` (`FDBRecordStore.java:4627-4630`):
 
@@ -40,9 +46,9 @@ formatVersion = FormatVersion.getFormatVersion(newFormatVersion);
 
 A Java instance at its default 7 opening a Go store at 14 computes `max(14,7) = 14`,
 leaves `formatVersionChanged` false so **nothing is written**, and **adopts 14** for
-that store instance. It does not throw, and it does not downgrade. **There is no
-interop break at the pinned spec**, which is the premise the case for changing rested
-on.
+that store instance. It does not throw, and it does not downgrade. **This established no interop break for format 14 at the baseline spec**, which
+was the premise the case for changing rested on. It is not proof that Go supports
+new format-15 stores or queued-write lifecycles.
 
 **The cost of aligning, established from the write gates rather than from a suite run.**
 Format versions 8–14 gate store-header features — header user fields (8),
@@ -74,7 +80,7 @@ validation consults the ceiling and never the target.
 default 14 opening an existing **Java** store at 7 upgrades it to 14 and writes that,
 permanently narrowing the set of readers that store can be opened by. Java at its
 conservative default never does this to someone else's store. It is harmless at the
-pinned spec — Java 4.12.11.0 reads 14 — and it is the strongest argument that exists
+baseline spec — that Java release reads 14 — and it is the strongest argument that exists
 for lowering the default.
 
 It flips the decision if any of these becomes true:
@@ -268,7 +274,7 @@ was a bipartition wrongly admitted by a live-existential guard that now requires
 result-live existential to be ALONE in its lower.
 
 `conformance/projected_exists_left_join_java_probe_test.go` keeps the parity claim
-measured against the live 4.12.11.0 JVM rather than inherited from prose.
+measured against the live pre-upgrade baseline JVM rather than inherited from prose.
 ### Reference: finalMembers partially aligned
 
 **Java:** `Reference` has `exploratoryMembers` (logical EXPLORE-phase) and `finalMembers` (physical PLANNING-phase). `advancePlannerStage` clears exploratory, promotes REWRITING winner, clears finals. `OptimizeGroup` prunes `finalMembers` to 1 winner. `ToPlanPartitions` reads only `finalMembers` via `propertiesMap`.
@@ -458,7 +464,7 @@ arm to re-check if a production caller ever appears or if criterion 1 ever looks
 arrived in rather than on what they are. Go ranks both sides instead. Read-side plan choice only —
 nothing here touches the wire, so Java and Go still read and write byte-identical records.**
 
-Java (`PlanningCostModel.java`, tag 4.12.11.0):
+Java (`PlanningCostModel.java`, tag pre-upgrade baseline):
 
 - `compareInOperator(leftExpression, rightExpression)` (`:433`) declares its second parameter
   `@SuppressWarnings("unused")` (`:434`) and never reads it. It returns `OptionalInt.empty()` when the
@@ -558,7 +564,7 @@ verdicts on the pairs it DOES adjudicate already contain a cycle. Go ranks both 
 instead. Read-side plan choice only — nothing here touches the wire, so Java and Go still read and
 write byte-identical records.**
 
-Java (`PlanningCostModel.java`, tag 4.12.11.0):
+Java (`PlanningCostModel.java`, tag pre-upgrade baseline):
 
 - `comparePrimaryScanToIndexScan(primaryScan, indexScan, …)` (`:370`) is guarded by an applicability
   test (`:376-379`): the first side must be exactly one `RecordQueryScanPlan` with no
@@ -718,7 +724,7 @@ counts and a byte-identical EXPLAIN set (see TODO.md's stress table).
 
 ### Cost Model: RewritingCostModelLess
 
-Java 4.12.11.0's `RewritingCostModel.compare()` has **six** ordered criteria: (0) `outerJoinCount`, (1) `selectCount`, (2) `tableFunctionCount`, (3) normalized CNF conjuncts, (4) predicate-count-by-level, (5) `semanticHashCode` tie-break. Go ports criteria **1–5** (`selectCount`, `tableFunctionCount`, CNF conjuncts, predicate-count-by-level, deep hash tie-break). `Planner.WithCostModel()` wires the cost model per phase.
+Java pre-upgrade baseline's `RewritingCostModel.compare()` has **six** ordered criteria: (0) `outerJoinCount`, (1) `selectCount`, (2) `tableFunctionCount`, (3) normalized CNF conjuncts, (4) predicate-count-by-level, (5) `semanticHashCode` tie-break. Go ports criteria **1–5** (`selectCount`, `tableFunctionCount`, CNF conjuncts, predicate-count-by-level, deep hash tie-break). `Planner.WithCostModel()` wires the cost model per phase.
 
 **Criterion 0 — `outerJoinCount` — is DELIBERATELY NOT ported. This is an intentional, justified divergence, not a gap.**
 
@@ -865,7 +871,7 @@ A partition *inequality* is the one deliberate residual divergence: Go's executo
 | CollapseRecordConstructorOverFieldsToStar | Blocked: needs field-level type metadata (ordinal positions) |
 | ExtractFromIndexKeyValueRuleSet (3 rules) | Blocked: execution layer (partial record construction) |
 
-## Go-Only Extensions (features Java 4.12.11.0 rejects)
+## Go-Only Extensions (features Java pre-upgrade baseline rejects)
 
 Go supports these SQL features that Java rejects. Removing them would be a user-visible regression; they stay as Go extensions.
 
@@ -903,7 +909,7 @@ The first three predate this list; it was written when a claim that there was on
 
 #### `54F02` in detail
 
-Java's Cascades planner defines three complexity caps — `maxTotalTaskCount`, `maxTaskQueueSize`, `maxNumMatchesPerRuleCall` — and throws `RecordQueryPlanComplexityException` from `CascadesPlanner.java:448`, `:493`, and `:1026` when one trips. **Java's SQL layer never enables any of them.** `PlannerConfiguration.buildRecordQueryPlannerConfiguration` (`fdb-relational-core/.../query/PlannerConfiguration.java:150-161`) sets index scan preference, in-join union size, index fetch method, disabled rules and `setJoinRightDeep`, and none of the three cap setters. All three guards are gated on a positive bound (`CascadesPlanner.java:325-335`) and the default is `0`, documented as "unbound" (`RecordQueryPlannerConfiguration.java:236,244`). So no JDBC user of stock 4.12.11.0 can observe that exception.
+Java's Cascades planner defines three complexity caps — `maxTotalTaskCount`, `maxTaskQueueSize`, `maxNumMatchesPerRuleCall` — and throws `RecordQueryPlanComplexityException` from `CascadesPlanner.java:448`, `:493`, and `:1026` when one trips. **Java's SQL layer never enables any of them.** `PlannerConfiguration.buildRecordQueryPlannerConfiguration` (`fdb-relational-core/.../query/PlannerConfiguration.java:150-161`) sets index scan preference, in-join union size, index fetch method, disabled rules and `setJoinRightDeep`, and none of the three cap setters. All three guards are gated on a positive bound (`CascadesPlanner.java:325-335`) and the default is `0`, documented as "unbound" (`RecordQueryPlannerConfiguration.java:236,244`). So no JDBC user of stock pre-upgrade baseline can observe that exception.
 
 Go bounds planning at 100,000 tasks at every production callsite, because unbounded search on a pathological query is a liveness hazard. That makes budget exhaustion a **Go-only condition with no shared surface to conform to** — the cross-engine conformance principle governs inputs Java also attempts, and Java does not attempt this one.
 
@@ -928,7 +934,7 @@ Confirmed via cross-engine probes. Go's correct behavior is pinned in Go-only po
 | `WHERE pk_col = nonpk_col` | SQL-correct | `Missing binding` planner error |
 | PK-intersection whose legs fix DIFFERENT primary-key components (`PRIMARY KEY (pk1, pk2)`, indexes `(b, pk1)` and `(pk2)`, `WHERE b = 1 AND pk2 = 3`) | Intersects on `(pk1, pk2)`, the order both legs deliver; correct rows (RFC-245 declined the merge, RFC-247 widened the key) | Intersects on `COMPARE BY (_.PK1)` and returns every `pk2 = 3` record regardless of `b` (`COUNT(*)` 4 for a 1-row answer) — see below |
 
-4.12.11.0 fixed three former entries, now removed from this table — they run as plain cross-engine
+pre-upgrade baseline fixed three former entries, now removed from this table — they run as plain cross-engine
 equivalence in the corpus: PK literal-eq AND join predicate (`pk_literal_eq_in_join`) and 3-way join
 shared driver key (`three_way_join_shared_driver`), both fixed by 4.12's "planner no longer drops
 ANDed predicates" change; and `WHERE TRUE AND val > 5`, now planned by 4.12 (boolean literals in
@@ -938,7 +944,7 @@ WHERE, added in the 4.12 line — see `join-tests.yamsql` `WHERE TRUE`/`WHERE FA
 predicates), verified 2026-06-28 and pinned by `bare_bool_where_probe_test.go` (literal forms) plus the
 corpus `bare_bool_where` (`WHERE flag`). The remaining `WHERE pk_col = nonpk_col` "Missing binding" entry stays as not-yet-
 fixed in 4.12: the corpus keeps that probe deliberately omitted (column-self-equality), so the live
-4.12.11.0 run neither confirms a fix nor pins the divergence — it is retained on the not-yet-fixed
+pre-upgrade baseline run neither confirms a fix nor pins the divergence — it is retained on the not-yet-fixed
 side per the corpus's omit comment.
 
 ### PK-intersection comparison key: the soundness proof is per leg, not over the union of legs
@@ -951,7 +957,7 @@ from the requirement for ALL legs. Over `PRIMARY KEY (pk1, pk2)` with indexes `(
 `(pk2)`, `WHERE b = 1 AND pk2 = 3` merges the two covering scans on `(pk1)`: the `(pk2)` leg is a
 single record per pk1, but the `(b, pk1)` leg carries several records per pk1 differing only in
 pk2, so "equal comparison keys" no longer means "the same record" and the merge emits records the
-other leg never matched. Measured on 4.12.11.0
+other leg never matched. Measured on pre-upgrade baseline
 (`conformance/pk_intersection_leg_bound_key_java_probe_test.go`): plan
 `COVERING(TI_PK2 [EQUALS …]) ∩ COVERING(TI_B_PK1 [EQUALS …]) COMPARE BY (_.PK1)`, four rows and
 `COUNT(*) = 4` where the answer is the single record `(3, 3)`. With an `ORDER BY` Java picks the
@@ -1083,7 +1089,7 @@ the class un-shippable or file a tracked TODO — never leave it as a silent res
 ## RFC-183 P5 residue — tracked, out of scope for the fully-linked-plans branch
 
 Four pre-existing items surfaced by the P5 review. None is caused by P5; all are filed here
-rather than fixed in-branch. Verified against Java 4.12.11.0.
+rather than fixed in-branch. Verified against Java pre-upgrade baseline.
 
 ### `canCorrelate` — three divergences from Java, one of them in the UNSAFE direction
 
@@ -1202,7 +1208,7 @@ query ANSWERS with Java's live-verified semantics. Both variants are pinned by
 When a lateral unnest's element/AT alias DUPLICATES an outer column name (`SELECT SUB FROM t,
 t.scarr AS "SUB"`, or the CTE-boxed `WITH S AS (SELECT * FROM t, t.scarr AS "SUB") …`), Go's
 deployed RFC-142 semantics resolves the reference to the UNNEST ELEMENT (element-shadows-outer,
-last-write-wins). Java 4.12.11.0's `SemanticAnalyzer.resolveIdentifier` (SemanticAnalyzer.java
+last-write-wins). Java pre-upgrade baseline's `SemanticAnalyzer.resolveIdentifier` (SemanticAnalyzer.java
 ~:417/:422) resolves a duplicate column reference as `AMBIGUOUS_COLUMN` — an ERROR. So on this
 shared surface Go RETURNS ROWS (the element) where Java REJECTS.
 
@@ -1218,7 +1224,7 @@ resolution loud `AMBIGUOUS_COLUMN` UNIFORMLY (direct + CTE forms), never just th
 
 ## UNION ALL trailing ORDER BY: combined-result vs Java's right-leg-only (RFC-180, live-probed)
 
-Java 4.12.11.0 attaches a trailing `ORDER BY` after `… UNION ALL SELECT …` to
+Java pre-upgrade baseline attaches a trailing `ORDER BY` after `… UNION ALL SELECT …` to
 the RIGHT LEG ONLY (QueryVisitor.visitSetQuery visits legs independently; each
 leg keeps its own ORDER BY) — live-probed: `SELECT id FROM a UNION ALL SELECT
 id FROM b ORDER BY id DESC` returns the interleave of left-natural with
@@ -1541,7 +1547,7 @@ test file states rather than leaving as accidental green.
 
 **Evidence class — read this before acting on the comparison.** The Go
 half is MEASURED (live FDB, `--nocache_test_results`, red-green
-mutation both ways). The JAVA half is INFERRED from 4.12.11.0 sources
+mutation both ways). The JAVA half is INFERRED from pre-upgrade baseline sources
 plus the checked-in plan golden above. That golden is Java's own
 recorded planner output, which makes it strong, but **the Java planner
 was not run**. What would upgrade it: reproducing
@@ -2079,7 +2085,7 @@ byte-level assertions that every narrower integer width collapses to one key,
 that a string key reaches the bytes rather than the type name, and that a bytes
 key keeps tuple type code `0x01` rather than being folded into a string.
 
-### VECTOR index metadata validation: Go has none, Java has `VectorIndexValidator` (OPEN — owner decision)
+### VECTOR index metadata validation: Go has none, Java has `VectorIndexValidator` (OPEN — RFC-257 WS-D)
 
 **Java:** `VectorIndexMaintainerFactory.VectorIndexValidator.validate`
 (`indexes/VectorIndexMaintainerFactory.java:96-111`) runs at metadata-build time
@@ -2115,9 +2121,13 @@ indexes on roots that are not `KeyWithValueExpression`, which Java refuses
 outright.
 
 Both directions are real Java divergences and both change behaviour across the
-whole vector surface, so the choice — accept the break, migrate the call sites,
-or keep Go permissive and say so — belongs to the owner rather than to the
-sliding-window port that surfaced it.
+whole vector surface. The owner ruled on 2026-09-24 that data written by
+pre-release Go builds is not supported (umbrella RFC-257, "Verification and
+review gates" item 9), which removes the reason this stayed open: the port
+refuses what Java refuses and migrates the call sites. It is RFC-257 WS-D's,
+beside the rest of the vector index's Java alignment; `Build` runs the
+validator's option half for windowed indexes in its per-index sequence
+(`validateIndex`, `index_validator.go`).
 
 (A comment at `vector_index_maintainer.go` previously called the non-KeyWithValue
 root "a documented divergence" while nothing documented it. This entry is that
@@ -2140,7 +2150,7 @@ SECOND PASS at each scope level: exact first, then an unambiguous
 case-insensitive match, then the parent. It counts candidates, so a folded
 reference matching two case-variants is 42702.
 
-**Measured against a live fdb-relational 4.12.11.0**, over
+**Measured against a live fdb-relational pre-upgrade baseline**, over
 `CREATE TABLE QCASE (id BIGINT, "KeepCase" BIGINT, plain BIGINT, …)`:
 
 | query | Java | Go |
@@ -2648,3 +2658,540 @@ The retained `DerivedSourceReference` JVM test proves same-alias, star/empty-bod
 and both-live-outer-row EXISTS queries; direct rule tests drive both deferral
 settings and verify the exact canonical lower block. See RFC-256's final sections
 for the rejected broader exemptions, reference outcomes and verification scope.
+
+### DeleteStore cancels pending replacement retirement (RFC-257 WS-B)
+
+Java 4.14.2.0 can recreate an original index's DISABLED state key after same-context
+store deletion: its named precommit replacement-retirement closure survives the
+clear. The live Java reproducer `probeDeleteWithPendingReplacementRetirement`
+observed exactly one remaining row, no header, and original state 2. Go cancels
+that subspace's pending retirement registration before clearing; cancellation
+also applies to a not-yet-invoked entry in a precommit snapshot. This is a
+boundary correction, not exact behavioral parity for the defective sequence.
+It does not change record/index wire encodings. Retained Go tests delete before
+commit and from an earlier commit check, asserting the entire store range is
+empty. Evidence and unpublished upstream report:
+`rfcs/257-java-upgrade-audit/ws-b-retirement/`. Full WS-B acceptance remains open.
+
+### checkAnyOngoingOnlineIndexBuilds follows Java's documented contract, not its arithmetic
+
+Java documents `OnlineIndexer.checkAnyOngoingOnlineIndexBuildsAsync(store, index)`
+as true when a session heartbeat is "less than DEFAULT_LEASE_LENGTH_MILLIS old"
+(OnlineIndexer.java:442), but computes `heartbeatTime < now + lease` over
+`getIndexingHeartbeats` (OnlineIndexer.java:459-462), where an unparseable heartbeat
+carries time 0. Go's `CheckAnyOngoingOnlineIndexBuilds` (and the `OnlineIndexer`
+method and store helper around it, `indexing_heartbeat_admin.go`) answers with
+session admission's own predicate, `heartbeatBlocksSession`: a heartbeat that parses
+with `-1 day < now - heartbeatTime < lease` (IndexingHeartbeat.java:106-107), the
+function admission itself calls, over each indexer's surviving heartbeat (below). Over
+one key per indexer id, "ongoing" is therefore "a new exclusive session would be
+refused" (mutual admission refuses no live peer, IndexingHeartbeat.java:90-93); over two
+keys for one id the two part, because admission reads every key.
+Every heartbeat key is parsed first, as Java's `getIndexingHeartbeats` does
+(`getUUID(0)` outside its try, IndexingHeartbeat.java:148): a non-UUID key is an
+`IndexingHeartbeatKeyError` in Go and a throw in Java (measured: ClassCastException
+from a String key, which sorts before every UUID key, and from a Versionstamp key,
+which sorts after it), beside a live heartbeat too (Go spec "reports an ongoing build
+by admission's predicate over each indexer's surviving heartbeat"; JVM pins in the conformance spec
+below; a single-pass parse that stops at the first live heartbeat reddens both). As in
+Java only element 0 is read, so a (UUID, x) key is that UUID's heartbeat in both
+engines (measured). When a (U) key and a (U, x) key both exist they name ONE
+indexer, and Java's `getIndexingHeartbeats` keeps the later key's value (a
+`HashMap.put`, IndexingHeartbeat.java:151), which is the only value its ongoing
+check reads; Go's check reads the same collapsed population (`collectIndexingHeartbeats`),
+so a live (U) beside a (U, x) a day ahead is not ongoing in either engine and the
+reverse pair is ongoing in both (measured; keeping the first key's value instead
+reddens the Go line of the JVM spec and the Go spec), and a live (U) beside an
+unparseable (U, x) is the invalid-only population below (measured: Java ongoing, Go
+not). Admission, which checks each key on its own in both engines
+(IndexingHeartbeat.java:94-123), is unaffected, and refuses a new exclusive session over
+the live (U) in both pairs. Go
+admission fails closed on the same keys. Over
+the UUID-keyed heartbeats that survive the collapse the engines disagree on three
+populations, all pinned against the JVM by
+the spec "matches Java's heartbeat administration, and pins Java's ongoing answer on
+every declared population" (`conformance/index_state_conformance_test.go`):
+
+- a stale heartbeat left by a crashed session (one hour old): Java true forever, Go
+  false;
+- an invalid-only heartbeat: Java true (time 0), Go false (admission ignores it,
+  IndexingHeartbeat.java:118-123);
+- a heartbeat dated more than the lease but less than a day ahead (one hour): Java
+  false, Go true (admission refuses a session against it).
+
+They agree on live heartbeats (every case Java's own tests exercise,
+OnlineIndexerSimpleTest.java:1007/1020, OnlineIndexerBuildIndexTest.java:305) and on
+a heartbeat more than a day ahead (bad data to both). If Java changes its arithmetic,
+the spec reddens and this entry is revisited. Reads, the maxCount valve and
+`clearIndexingHeartbeats` agree exactly on the same state. No wire bytes are
+involved. The upstream report is unpublished (publication is not authorized).
+
+### OnlineIndexer session start and build catcher: where Go differs (RFC-257 WS-C)
+
+The session start and the build catcher are Java's (`IndexingBase.handleStateAndDoBuildIndexAsync`,
+`OnlineIndexer.indexingCatcher`; rfcs/257-java-upgrade-audit/ws-c-design.md section 7). These are the
+places Go deliberately differs, each pinned where named:
+
+- **A clear or a fresh WRITE_ONLY mark admits no live peer, mutual or not.** Java admits mutual
+  peers by the stamp's method, a REBUILD included; Go admits a live mutual peer only to a
+  CONTINUED mutual build, because it never resets state another session is building
+  (`prepareIndexingState`; "admits a live mutual peer to a continued mutual build but not to a
+  mutual REBUILD").
+- **An out-of-date stored metadata version requires quiescence at open.** Go's indexer opens the
+  store through the ordinary open, which reconciles the metadata (and may rebuild or disable
+  indexes); `checkOpenHeartbeats` then refuses any other live heartbeat. When the version is current
+  it refuses only legacy and malformed heartbeat keys. Java's indexer reconciles on open too
+  (`IndexingBase.java:129-130` opens through `openAsync`, which runs `checkVersion`,
+  `FDBRecordStore.java:6015`, and `checkPossiblyRebuild`, `:2689`, `:4841-4986`), without looking at
+  heartbeats: Java reconciles under a live peer, and Go refuses until the peer's lease expires (the
+  admission matrix's metadata cells).
+- **With a live peer, the lock error wins over a stamp conflict.** Go admits a session before any of
+  its writes, so a refused session buffers nothing; Java checks each target's stamp before its
+  heartbeat (`IndexingBase.java:459-460`). So with a live peer the admission check refuses (every
+  live peer of an exclusive session, and of a mutual one that is not continued) holding the index
+  and a stamp that does not match, Go reports `SynchronizedSessionLockedError` on the first attempt,
+  and Java reports it only where its catcher's path ends on a heartbeat check (a stamp it continues,
+  or a REBUILD retry, whose next session then meets the peer's heartbeat); everywhere else Java ends
+  as its catcher does, among
+  them the `PartlyBuiltException` of a blocked stamp or of a MULTI_TARGET stamp the takeover rules
+  refuse (each after six sessions), of a MUTUAL stamp under CONTINUE, and of any mismatch under
+  ERROR or MARK_READABLE, and the catcher's decode or metadata error for a saved BY_INDEX source
+  that does not resolve. A live mutual peer admitted to a continued mutual session is not refused,
+  so there Go raises the stamp error, as Java does. A follower whose state differs from the
+  primary's is refused before admission, as Java refuses it before its heartbeats.
+- **The catcher's retries keep the adapted throttle limit.** Java builds a new indexer per attempt,
+  whose throttle starts again from the configured limit; Go's next attempt continues from the limit
+  the previous one adapted to.
+- **MARK_READABLE over a queued index with a non-empty queue fails.** Java's store erases the pending
+  write queue as it marks the index readable, losing the queued writes; Go's `MarkIndexReadable`
+  refuses a non-empty queue (`IndexNotBuiltError{PendingWrites}`), and a session that did not drain
+  that queue returns the refusal at once ("fails a MARK_READABLE session over a non-empty queue at
+  once").
+- **A target disabled under the session fails its next drain or merge transaction.** Java's
+  follow-up heartbeat update skips a target that is not write-only (`IndexingBase.java:969-972`)
+  and commits; what fails is whatever runs next, a following build transaction's state check
+  (`RecordCoreStorageException` "Unexpected index state(s)") or, after the last range,
+  `markIndexReadable` (`IndexNotBuiltException`), and with `SetMarkReadable(false)` nothing: Java's
+  session then succeeds after the last range and leaves the target DISABLED. Go's follow-up
+  (`refreshFollowupHeartbeats`) refuses at the first transaction that sees the state, with the
+  state check's class and message, and commits nothing.
+- **A standalone `MergeIndexes` holds a session.** Java creates a heartbeat only in a build
+  session's stamp step (`IndexingBase.java:457`), so its standalone merge (`OnlineIndexer.java:409-419`,
+  `IndexingBase.java:1085-1096`) passes the follow-up with no heartbeat (`IndexingBase.java:969-972`):
+  it writes none, checks no index state and proceeds under a running build. Go's `MergeIndexes` runs
+  under the indexer's identity as a session (`indexing_merger.go`, heartbeat info "explicit index
+  merge"). That is Go's own choice, not something WS-C's section 4 requires: section 4 makes every
+  backend write transaction consume the heartbeat callback, and Java's callback over a null heartbeat
+  does nothing, which Go could have ported; Go instead has the merge hold an exclusive session. So
+  over a WRITE_ONLY target the merge writes a live heartbeat key and clears it afterwards ("writes its
+  heartbeat over a WRITE_ONLY target for the merge and clears it"). An EXCLUSIVE builder that starts
+  meanwhile is refused by that key, a Java one included, and so is a fresh Go mutual session; a
+  mutual builder is not: Java's heartbeat check under `allowMutual` (MUTUAL_BY_RECORDS, and
+  SCRUB_REPAIR) only writes its own key (`IndexingHeartbeat.java:88-93`, `IndexingBase.java:454-457`),
+  and Go's continued mutual session skips every peer (`indexing_heartbeat.go`, `checkAdmission`). Such
+  a builder runs beside the merge, and any merge transaction that runs while its heartbeat is live,
+  whose heartbeat check is exclusive, fails the MERGE with `SynchronizedSessionLockedError`
+  (`indexing_merger.go`, the pre-commit refresh through `online_indexer_queue.go`) while the mutual
+  builder carries on, its own check writing only its key; a VALUE target's merge is one transaction,
+  so a builder admitted after it lets that merge complete, and the next merge fails ("admits a mutual
+  builder beside the merge, and a merge transaction after it fails, not the builder"). Java's
+  `OnlineIndexer.getIndexingHeartbeats` lists the merge's key as a session. A live peer's heartbeat
+  refuses the merge itself with `SynchronizedSessionLockedError`, where Java's merge ignores it ("is
+  refused by a live peer over a WRITE_ONLY target, which Java's merge would ignore"); a DISABLED
+  target, whether disabled under the merge or before it, fails the merge with the follow-up's
+  `RecordCoreStorageError` where Java's merge proceeds ("fails over a DISABLED target, where Java's
+  merge proceeds"); and over a READABLE target the merge runs and writes no heartbeat, since the
+  heartbeat step skips it, as Java's does ("merges a READABLE target without a heartbeat"). All four
+  are in `indexing_merger_test.go`, Describe "a standalone MergeIndexes session". What Java's and
+  Go's builders do on meeting the merge's key is read from their source, not run.
+- **A target that moved between WRITE_ONLY and WRITE_ONLY_WITH_QUEUE mid-session is refused.** Java
+  does not look at the queue flag in its per-transaction state check; Go's queued targets are session
+  state, so the move is a `RecordCoreStorageError`, as Java's check reports any other unexpected
+  state (never a validation error the catcher would answer with a records-scan fallback).
+- **`OnlineIndexer.LastBuildOutcome` is Go-only.** Java's `buildIndex` returns nothing.
+
+No stored format differs. Several refusals above leave state Java would have changed: the clear or
+fresh WRITE_ONLY mark under a live mutual peer (Java refuses an exclusive peer too), the reconcile
+under a live peer, MARK_READABLE over a non-empty queue, the follow-up over a disabled target, the
+move between WRITE_ONLY and WRITE_ONLY_WITH_QUEUE (Java keeps building), and the standalone merge
+under a live peer or over a DISABLED target. The standalone merge's heartbeat is the one key Go
+writes that Java would not: a key in Java's own heartbeat layout, under Go's indexer identity, which
+a Java exclusive builder honours as a live session and a Java mutual builder does not.
+
+### A long-arithmetic index over a non-integer operand is not a valid match (RFC-257 WS-J, Java is wrong here)
+
+Java's long-arithmetic key functions (the `LongArithmethicFunctionKeyExpression`
+family: `add`, `sub`/`subtract`, `mul`/`multiply`, `div`/`divide`, `mod`, `bitand`,
+`bitor`, `bitxor`, `bitnot`, `bitmap_bucket_offset`, `bitmap_bit_position`; Go's
+`longArithmeticFunctions`) read each operand with
+`Key.Evaluated.getNullableLong`, which takes any `Number` through `longValue()`
+(Key.java:579-582). Over a DOUBLE or FLOAT operand the stored entry is therefore the
+arithmetic of the TRUNCATED operands (`d = 1.5` stores `d + d` as `2`; NaN as 0; an
+infinity or 2^63 saturates and `addExact` fails the insert). Go writes the same
+entries, byte for byte (spec "WS-J F2b index entries written by both engines"), so
+Go and Java read and maintain each other's indexes.
+
+The two engines differ on the READ side, over the shared query surface. The target
+serves `WHERE d + d = 3`, `WHERE c * 1.5 = 3` and `ORDER BY d + d` from the index,
+comparing a DOUBLE comparand against the truncated LONG entries, and returns NO row
+for `d + d = 3` over `d = 1.5` and for `c * 1.5 = 3` over `c = 2.0`. Go does not
+match the index (its candidate bridge declines arithmetic function keys,
+`keyExpressionFlatColumnDescriptors`), evaluates the expression on the record, and
+returns the row. Both engines' answers, and both plans, are pinned by the spec
+"WS-J long arithmetic key functions over non-integer operands"
+(`wsjNonIntGoPins` for Go).
+
+When Go ports function-key matching (ws-j-design.md section 3.5) it matches such an
+index only where every operand is integral; over a non-integer operand the entries
+do not hold the value of the query expression, so no match is valid, and those reads
+stay scans. No wire bytes differ. The upstream report is unpublished (publication is
+not authorized).
+
+The rule is by operand TYPING, and an INT operand at the edge of its lane shows the
+same gap inside the target itself: the key computes `i + 1` in long arithmetic, while
+the query's `i + 1` is an INT-lane value that overflows at 2147483647. The target
+serves `WHERE i + 1 = 6` from the index (`COVERING(IX [EQUALS ...])`, [[2]]) without
+evaluating the overflowing row, and fails `WHERE i + 1 = 2147483648` and any read that
+evaluates the expression per row with the overflow; Go today answers every one of
+them from the record and fails with 22003 (spec "WS-J long arithmetic key functions
+over non-integer operands", probe `int_max_plus_one`, both engines pinned). Section
+3.5 keeps such an index a match (its operands are INT), so Go then serves `= 6` from
+the index as the target does: in both engines an index-served read can answer where
+the same read over the record fails.
+
+### A stored function key with no lane: Go answers the table's queries, the target fails them all (RFC-257 WS-J)
+
+Metadata a Go build before the literal-carrier fix stored holds
+`bitmap_bucket_offset(id)` with its entry size as `long_value`, a (LONG, LONG) pair
+the bitmap functions have no lane for (ArithmeticValue.java:515-522). The target
+expands every index of a queried record type into a match candidate, the lane
+refusal (a VerifyException) escapes candidate expansion, which catches only
+UnsupportedOperationException (MatchCandidateExpansion.java:101-131), and EVERY query
+of the table fails with XX000 "unable to encapsulate arithmetic operation due to type
+mismatch(es)", a primary-key equality and a count included (spec "WS-J Go-stored
+template planned by the target", the `long_value` variant's four T1 reads). Go
+answers them: today because its candidate bridge declines every arithmetic function
+key, and after ws-j-design.md section 3.5 because expansion declines exactly a key
+the lane table refuses and plans the query without that index (any other expansion
+error still fails the query). Failing every read of an upgraded tenant's table for an
+index the planner could not use would be a regression for Go users; declining loses
+only that index. The tenant's key moves to `int_value` through the template-version
+carry rule and the rebind's literal-carrier arm (ws-j-design.md sections 3.2 and 4),
+after which the index is a candidate again. No wire bytes differ.
+
+### An index over a synthetic record type is refused on load; the target loads it (RFC-257 WS-J)
+
+Java resolves an index's record types among the joined and unnested (synthetic) record
+types as well as the stored ones (RecordMetaDataBuilder.java:187-219). Go carries synthetic
+types verbatim and does not model them, so an index whose record type is synthetic is
+refused on load as an unknown record type ("Unknown record type <name>"), and a store whose
+metadata carries one does not open in Go. This predates RFC-257 (the pre-upgrade loader
+refused the same index, `e48f5b496:pkg/recordlayer/metadata_proto.go:285-296`); synthetic
+record types are outside the port's scope (CLAUDE.md), and the SQL layer creates none. No
+wire bytes differ.
+
+### DeleteTemplateVersion refuses a version schemas still bind; DROP SCHEMA TEMPLATE does not (RFC-257 WS-J)
+
+PENDING, not in this build yet: it lands with RFC-257 WS-J section 8 step 1 (the version
+guard and the gone-version refusal), in the same merge; today `DeleteTemplateVersion`
+refuses nothing and `fleet.RestoreTemplateVersion` does not exist.
+
+`DeleteTemplateVersion(t, v)` is Go-only (the target's catalog drops whole templates).
+With the (name, version) guard it is refused while any schema binds (t, v), because a
+schema bound to a version that is gone has no exit that keeps its data (RepairSchema is
+refused by the gone-version check, and re-issuing (t, v) is the silent rebind the guard
+refuses). DROP SCHEMA TEMPLATE keeps the target's behaviour and drops regardless; the
+only way back for a schema it strands is `fleet.RestoreTemplateVersion` with the dropped
+version's exact metadata bytes, refused when any bound store's header records a metadata
+version above theirs (a header below is the normal state of a schema rebound and not
+opened since; ws-j-design.md section 2), and refused when no schema binds that version at
+all (a restore exists to re-create a bound version, and one nothing binds could put a dropped
+history's bytes beside a new one).
+
+### The function value of a long-arithmetic index is never read from its entry (RFC-257 WS-J)
+
+Not a divergence in the answer, recorded because it constrains the port of Java's
+value-index expansion (ws-j-design.md section 3.5): the target never serves a
+function-key VALUE, or an operand of it, from the index entry. MEASURED: an index-served
+equality fetches the record and recomputes (`SELECT i + 1 FROM T WHERE i + 1 = 6` plans
+`ISCAN(IX [EQUALS ...]) | MAP (_.I + @c9 AS _0)`, `SELECT d FROM T WHERE d + d = 2` plans
+`ISCAN(ARITH_D [EQUALS ...]) | MAP (_.D AS D)`), `COVERING` appears only when the query
+reads nothing but the primary key, `SELECT i + 1 FROM T ORDER BY i + 1` over an index on
+`i + 1` with `i = 2147483647` is 0AF00, and where it serves a function key's order,
+`ORDER BY d + d`, its plan recomputes the value from the record. So Go's expansion
+covers only the primary-key columns of such an index. Go answers the ordered
+projection through its in-memory sort and fails on the overflowing row with 22003, where
+the target cannot plan it (spec "WS-J long arithmetic key functions over non-integer
+operands").
+
+### Saving a template version is refused while a schema still binds a dropped version above the latest stored (RFC-257 WS-J)
+
+PENDING, not in this build yet: it lands with RFC-257 WS-J section 8 step 1 (the version
+guard), in the same merge as the `DeleteTemplateVersion` refusal above.
+
+Go saves new versions of a stored template (CREATE SCHEMA TEMPLATE over a stored name,
+`fleet.SaveTemplate`); the target's DDL has no such path, and its catalog does not look
+at bound schemas when a template is dropped. A save of (t, v′) is refused, 42F59
+INVALID_SCHEMA_TEMPLATE naming the first bound schema, while some schema binds t at a
+version above the latest one stored, whatever v′ the save names: a fresh CREATE SCHEMA
+TEMPLATE t is refused while any dropped version of t is still bound, and a new version
+while a binding of a dropped version above the latest dangles. The target accepts the same DDL and binds
+those schemas to whatever the new build holds, re-reading their rows and index entries
+under different metadata. The guard applies to both Go catalogs (the in-memory catalog
+applies it over its schema rows, since its `RepairSchema` rebinds by name). The only way
+back for such a schema is `fleet.RestoreTemplateVersion(ks, t, v, md)` with the dropped
+version's bytes (ws-j-design.md section 2, which pins the Restore(1) / create v2 /
+Restore(3) sequences and the drop-then-fresh-create race): it decides that some schema
+still binds (t, v) inside its restoring transaction, and it reads bound stores' headers
+through the Go keyspace the caller names, so over schemas Java created (Java's keyspace)
+every header reads as missing and the restore refuses, failing closed until the F11
+keyspace question is decided.
+
+### A new template version may not re-add, under its old name, an index a carried FormerIndex holds (RFC-257 WS-J)
+
+PENDING, not in this build yet: it lands with RFC-257 WS-J section 8 step 3 (the carry
+rule).
+
+A new template version carries the stored version's record-type and index numbering
+(ws-j-design.md section 4), and an index the stored version had and the new one lacks
+becomes a FormerIndex keyed by its name. A NEW index whose name is the subspace key of a
+carried FormerIndex is refused at template save, 42F59 INVALID_SCHEMA_TEMPLATE ("index <ix>
+cannot be added: its name is the subspace key of index <ix> dropped at version <v>; add it
+under another name"): a store opening under the new metadata clears the former index's
+subspace while the new index would be built into it, metadata both engines' validators
+refuse ("former index subspace key reused"). The target's DDL creates no second version of
+a template, so it never meets this case; the refusal is Go's, on a Go-only path, and it
+asks for a new name rather than a Go-only subspace key.
+
+### An arithmetic function key with no lane is refused when hand-built metadata is saved as a template (RFC-257 WS-J)
+
+PENDING, not in this build yet: it lands with RFC-257 WS-J section 8 step 3, both halves:
+the build-path refusal and the DDL-origin refusal at the clause (the key generator
+consults the same lane table), so no build gives a DDL shape Go's 42F59.
+
+An index key of the ArithmeticValue family (the arithmetic, bit and bitmap functions) whose
+operands' types name no row of Java's operator table cannot be planned by the target:
+every query of its record type fails. Each operand is typed by the RESULT type of the
+Value the target builds for it, so an order-wrapped or collated operand is BYTES and a
+CARDINALITY is INT (`bitand(order_desc(a), 1)` is refused, `x & cardinality(a)` has a lane).
+From DDL both engines refuse a lane-less key at the clause, with the target's XX000 and
+message (measured on ten single-fault shapes and on a two-fault shape whose later table
+fault the target reports first, spec "WS-J bit and bitmap index keys over an operand with
+no lane"); until section 6 moves the lane resolution into Value construction, a no-lane
+operator in an index's WHERE and the precedence against a fault raised while translating
+the index query keep Go's outcome. Metadata built by hand and saved through
+`CreateTemplate` (either catalog; the one build-path write entry, which carries a new
+version of a stored name itself) is refused by Go with 42F59
+INVALID_SCHEMA_TEMPLATE naming the index and the operand types; Java's programmatic API
+stores it, and its queries fail later. An operand with no Java Value (a Go-only function
+key) fails closed, refused. The check runs over the indexes a save defines, never over an
+index carried unchanged from the stored version: a template Go stored before this with one
+of the eight lane-less DDL shapes keeps the index through a hand-built new version, a new
+version made by DDL re-states it and is refused at the clause, and the index goes when a
+version omits it. The raw-write routes (`fleet.RestoreTemplateVersion`, the F11 copy) store
+such bytes unchanged (ws-j-design.md section 3.2).
+
+### BY_INDEX resume over a nested-tuple source key (RFC-257 WS-C)
+
+An index build stamped BY_INDEX records its source index's subspace key; a later build resolves
+it with `Index.decodeSubspaceKey` and `RecordMetaData.getIndexFromSubspaceKey`
+(OnlineIndexer.java:205-208). When that key is a nested tuple, Java's decoded item is a `Tuple`,
+which never equals the source index's normalized `List` key, so Java fails the resume with an
+unknown key (read from Java's source, not measured: the failure is a `MetaDataException`, not a
+`ValidationException`, so the catcher at `OnlineIndexer.java:228` does not fall back to a
+rebuild). Go normalizes the decoded item as it normalizes the index's key
+(`subspaceKeyIdentity`), so `savedSourceIndex` resolves the index the stamp names and resumes. A
+Java defect is not ported here: the stamp was written by the same build for that very index. Every
+other key form (strings, integers, bytes) resolves in both engines alike. The call site is
+`OnlineIndexer.savedSourceIndex`, and `RecordMetaData.GetIndexFromSubspaceKey` states the
+difference.
+
+### CreateTemplate refuses more than an exact duplicate (RFC-257 WS-J)
+
+PENDING, not in this build yet: it lands with RFC-257 WS-J section 8 step 3. Java's
+`createTemplate` refuses only an exact duplicate of a stored (t, v), with
+DUPLICATE_SCHEMA_TEMPLATE (`RecordLayerStoreSchemaTemplateCatalog.java:229-245`). Go's
+`CreateTemplate`, in both catalogs, refuses that duplicate first with the same code. It then
+refuses:
+- a version at or below the latest stored, with INVALID_SCHEMA_TEMPLATE;
+- a version the relational evolution validator refuses against the stored latest;
+- a version the version guard refuses;
+- a version the ambiguous-legacy-union refusal refuses.
+
+The first two checks moved into it from the save action. So a Java library caller can store a
+version below the latest, and a Go one cannot (ws-j-design.md section 9 (w)).
+
+### The template restore's refusals, and the inverted history with no exit (RFC-257 WS-J)
+
+PENDING, not in this build yet: it lands with RFC-257 WS-J section 8 steps 1 and 3. Java has
+no restore. Go's `fleet.RestoreTemplateVersion` admits a dropped (t, v) only when it is one
+history with every stored version of t, and it refuses the rest, each with no Java
+counterpart. A template history whose versions invert (a lower template version with a
+higher metadata version) is refused, and it has no exit in Go:
+- its bound schemas bind a version that is not stored, so `RepairSchema` fails the
+  gone-version refusal;
+- the version guard refuses a new version of t while that binding dangles.
+
+Java admits both. The edited-file route's relaxation R2 admits rebuilds only for the indexes
+over the retyped field, so a store configured with `allowIndexRebuilds` for every index needs
+a later ordinary save for the rest (ws-j-design.md section 9 (x)).
+
+### Function names in stored key expressions are loaded whether or not Go registers them (RFC-257 WS-J)
+
+The target creates a `FunctionKeyExpression` at load through its classpath's registry and
+refuses a name no module registers ("Function not defined"); its Lucene and Geophile spatial
+modules, and applications, add names. Go's registry is its own, so Go loads any function
+name and fails when it maintains or evaluates an index whose function it does not know.
+Refusing at load would lock Go out of every Java store with such an index. Such a name's column
+size is 1 in Go, where the target's is its function's. A function Go registers is checked at load
+against the target's bounds with the target's refusal, and an in-code `FunctionExpr` of a name Go
+does not register is refused by `Build` as the target's `create` refuses it (conformance "RFC-257
+key functions"; ws-j-design.md 4d).
+
+### A refused SetSubspaceKey on an index of built meta-data (RFC-257 WS-C)
+
+Java's `Index.setSubspaceKey(null)` throws. Go's `Index.SetSubspaceKey` returns the index for
+chaining, so it records the refusal on the index and every `RecordMetaDataBuilder.Build` the
+index was handed to returns it, first in program order among the builder's faults. An index
+that already belongs to a built `RecordMetaData` has no `Build` left: there the refused set
+changes nothing (key and explicit mark kept) and `Index.SubspaceKeyError` reports it, where Java
+would have thrown. The call site is `Index.SetSubspaceKey`.
+
+### An index with no root is refused by Build and never written (RFC-257 WS-C)
+
+Java's `Index` constructors take a `@Nonnull` root, and an index built with a null one fails
+Java's meta-data validation with a `NullPointerException`. A Go struct-literal `Index` can have
+no root: `Build` refuses it ("Index X has no root expression") and `indexToProto` refuses to
+serialize it, so Go never stores an index every reader refuses ("Exactly one root must be
+specified for an index"). The refusal's class and text are Go's, where Java's is an NPE.
+
+### R-tree configurations Go refuses to maintain (RFC-257 WS-C)
+
+Java's `MultiDimensionalIndexHelper.getConfig` takes any int for `rtreeMinimumM`,
+`rtreeMaximumM` and `rtreeSplitS`, and Go parses them the same way (the option checks of the
+evolution validator compare the parsed values). Go's `NewRTree` then refuses to maintain an
+R-tree whose configuration cannot keep its node invariants: `MinM < 1`, `MaxM` outside
+[2, 1000], `SplitS < 1`, or `SplitS * MaxM < (SplitS + 1) * MinM`. Java maintains such a tree and
+fails later, reading a node whose size is out of range ("packing of non-root is out of valid
+range"). The call site is `ValidateRTreeConfig`.
+
+### How Go maintains an R-tree's node slot index (RFC-257 WS-C, same bytes)
+
+Not a divergence in what is stored. Java's change sets write and clear node slot index entries
+slot by slot, and Java finds the leaf to modify, and its parents, through the index. Go keeps
+the index as the difference an insert or delete made to the child slots of the intermediate
+nodes it touched (`rtreeStorage.flushNodeSlotIndex`), and finds the leaf by walking down from
+the root, which reaches the same leaf the index names (the first whose largest Hilbert value
+and key are at or above the target, else the last). The entries stored are the ones Java
+stores: the conformance spec "MULTIDIMENSIONAL index R-tree options" decodes every intermediate
+node's child slots from the raw bytes after each step, whichever engine wrote them, builds each
+expected entry (the child's level, its largest Hilbert value, its largest key's items, its id)
+without Go's encoder, and requires the whole stored index to equal that set; Java then deletes
+through the entries Go wrote. The unit spec "RTree storage layouts and the node slot index"
+builds its expected entries the same way.
+
+A BY_SLOT node is written whole: Go clears the node's key range and writes every slot, where
+Java's change sets write and clear only the slots that changed. The bytes left are the same,
+and so are the conflicts in effect, since every writer of a node has first read its whole
+range. The call site is `rtreeStorage.writeSlots`.
+
+### Build's record-type checks: the order, and two Go-only refusals (RFC-257 WS-C)
+
+`Build` runs Java's record-type checks in Java's order with Java's texts and classes, but it
+walks the record types by NAME where Java walks its builder's HashMap, so where several record
+types are at fault the one a message names can differ; each run of Go names the same one. The
+same holds for a record-type key collision's pair. One refusal is Go-only: a primary key with
+no columns (`EmptyKey()`) is refused ("... produces no columns"). Java builds it, and its split
+record's clear range is then the whole records subspace, every other record type's records
+included. (An empty `Concat()` is Java's refusal, "Then must have at least 2 children", which
+Java throws where the Then is built.) The call site is the record-type loop of `Build`.
+
+### Build does not refuse an index type Go does not maintain (RFC-257 WS-C)
+
+Java's `MetaDataValidator` asks its classpath's registry for each index's validator and refuses a
+type no factory registers ("Unknown index type for ..."). Go runs Java's validator for every type
+Go maintains (`validateIndexType`, `index_validator.go`) and builds an index of any other type
+without one, because Go must load meta-data a Java program wrote with a module Go does not
+implement (Lucene, for one): refusing it would make the whole store unopenable. Such an index fails
+where Go would maintain or scan it. The Go-only `vector_spfresh` type is Go's extension and has no
+Java validator to port.
+
+### A bitmap index's entry size is read as Java reads it, and a size of zero or below is refused where it is used (RFC-257 WS-C)
+
+`BitmapValueEntrySizeOption` is Java's `BitmapValueIndexMaintainer` constructor: `Integer.parseInt`,
+10000 when absent, "entry size option is too large" above 250000. Java accepts a size of zero or
+below and fails at the index's first write (a division by zero, or a negative array size); Go
+refuses it with `RecordCoreArgumentError` when it builds the maintainer, since the same arithmetic
+would panic. The call sites are the maintainer and the chaos model.
+
+### A proto map field is not fanned out in a key expression (RFC-257 WS-C)
+
+Key validation reads a map field as repeated, as protobuf-java's `isRepeated()` does, so every
+refusal Java makes over a map is Go's with Java's text and class (the conformance spec "Key
+validation at build, as Java builds"). One key Java builds is refused: a nesting that fans out
+a map's entries, `NestFanOut("m", Field("value"))`, is an `UnsupportedOperationError` ("m is a
+map field; Go does not fan out a map in a key expression"), after every check Java makes. Java
+evaluates a map's entries as the repeated messages they are on the wire; Go's key evaluator
+reads a field as repeated only when it is a list, and would read the map as one message. The
+call site is `validateNestingKeyExpression`.
+
+
+### A NaN made by CAST from a string, or by MIN or MAX, has Go's bits, not Java's, and the CAST's grammar is Go's (RFC-257 WS-E)
+
+PENDING, the fix lands with RFC-257 WS-E section 8 step (6), with parameter binding.
+- Go's `CAST('NaN' AS DOUBLE)` parses with `strconv.ParseFloat`, whose NaN is `math.NaN()`,
+  `0x7ff8000000000001`. The target parses with `Double.parseDouble`, whose NaN is
+  `0x7ff8000000000000`. Go's `FLOAT` cast already stores the canonical `0x7fc00000`
+  (measured: it reads back widened as `0x7ff8000000000000`), so only the DOUBLE cast's
+  bits differ.
+- Go's MIN and MAX over DOUBLE return `math.NaN()` for a NaN operand, where the target's
+  `Math.min` and `Math.max` return the operand itself: over a column holding a division's
+  NaN, the target stores `0xfff8000000000000` and Go `0x7ff8000000000001`.
+- The CAST's grammar is `strconv.ParseFloat`'s: Go refuses `-NaN`, `+NaN`, `+Infinity`, the
+  `d`, `D`, `f` and `F` suffixes and `1e400` (the target's +Infinity), and accepts `nan`,
+  `inf`, `infinity` and `1_000`, which the target refuses.
+
+Neither engine's write path canonicalizes a NaN, so the same statement writes different
+record bytes and index keys: the target's index probe misses a NaN row Go wrote, and a
+UNIQUE index admits one NaN from each engine. It is a WRITE divergence and is fixed, not
+kept. The step ports `Double.parseDouble`'s grammar and bits as the CAST's one parser, and
+`Math.min`/`Math.max` as MIN and MAX. It lands with the parameter binding that retires the
+text transport rendering a bound NaN through that cast (ws-e-design.md 4.1(b)). The
+conformance rounds "WS-E target oracle v11" and "v12" (and "v12 cross-engine NaN", a
+Go-written NaN in a target store) measure each case on both engines.
+
+### A spanning predicate goes to the lower only in an explode partition (RFC-257 WS-E)
+
+PENDING, lands with RFC-257 WS-E section 8 step (5). Java's `PartitionSelectRule` puts a
+predicate correlated to both the lower and an upper that does not depend on the lower in
+the LOWER ("we can do it in lower", PartitionSelectRule.java:201-205), for every
+partition. Go keeps RFC-043's placement in the upper for every partition except one whose
+upper quantifiers are all explodes (the IN-join and IN-union shape), where it follows
+Java. Measured: Java's arm for every partition broke 158 tests of the three SQL suites
+(EXISTS over joins, positional merges and the ordinal join build rely on the upper
+placement), and for predicates whose correlated uppers are explodes it took a rowdiff
+seed from 42,723 planner tasks to 382,371 for the same plan (ws-e-design.md 4.1(b)). The
+call site is the arm in `rule_partition_select.go`.
+
+### The compensation correlation guard admits a residual on an IN list's explode alias (RFC-257 WS-E)
+
+PENDING, lands with RFC-257 WS-E section 8 step (5). Java has no such guard: a compensation
+filter over a data-access match is explored and implemented whatever its residual
+references. Go's `compensationResidualCorrelationSafe` (RFC-150 section 8) refuses a
+compensation whose residual is correlated to an outer alias the compensation's own probe
+does not feed. It guards the case where the bound-prefix signal classifies a leg as
+uncorrelated while its residual carries the join key.
+
+The step adds one arm. A residual on the alias of an EXPLODE quantifier (the iteration
+variable of an IN list or an array, which the planner binds through the IN-join or
+FlatMap over its explode) is admitted when the compensation's probe is correlated. So the
+two-source IN-union the target plans for two IN lists under an ordering is built
+(`in_plan_winner_stability.yaml#7`).
+
+A residual on a TABLE alias the probe does not feed stays refused, which is RFC-150's
+per-alias property. An earlier revision of the design admitted any residual once the probe
+was correlated at all, which admitted `O JOIN T ON t.fk = o.id WHERE t.k IN (1, 2)`'s join
+key onto the explode-probed leg.
+
+The guard is not removed: it also bounds the search, and without it a nine-conjunct OR
+exhausts the planner's task budget (ws-e-design.md 4.1(b)).

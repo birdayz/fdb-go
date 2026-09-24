@@ -121,7 +121,9 @@ func retryContainerStart(ctx context.Context, maxAttempts int, backoff func(atte
 		}
 		lastErr = err
 		if ctx.Err() != nil {
-			return nil, ctx.Err() // cancelled/expired — surface cancellation, don't keep recreating
+			// Keep the failed startup stage as well as cancellation: replacing
+			// the attempt with ctx.Err() erases the cause of a fixture timeout.
+			return nil, fmt.Errorf("container startup stopped: %w (last attempt: %w)", ctx.Err(), lastErr)
 		}
 		if !isTransientContainerErr(err) {
 			return nil, err // deterministic failure — recreating won't help
@@ -129,7 +131,7 @@ func retryContainerStart(ctx context.Context, maxAttempts int, backoff func(atte
 		if i < maxAttempts {
 			select {
 			case <-ctx.Done():
-				return nil, ctx.Err()
+				return nil, fmt.Errorf("container startup backoff stopped: %w (last attempt: %w)", ctx.Err(), lastErr)
 			case <-time.After(backoff(i)):
 			}
 		}

@@ -11,6 +11,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
 // The STRUCT-LEVEL round trip: proto → RecordMetaData → proto, asserted field by
@@ -92,6 +93,11 @@ func TestMetaDataProtoRoundTripIsFieldComplete(t *testing.T) {
 			"views", len(original.GetViews()), len(got.GetViews()),
 			"out of scope for the port, which is not the same as safe to discard",
 		},
+		{
+			"stored_queries", len(original.GetStoredQueries()), len(got.GetStoredQueries()),
+			"a field recognized by regenerated protobuf code no longer survives as unknown bytes; " +
+				"the metadata model must preserve query text and temporary functions explicitly",
+		},
 	} {
 		if f.got != f.want {
 			t.Errorf("field %s did NOT survive the round trip: got %v, want %v\n%s",
@@ -143,21 +149,102 @@ func TestMetaDataProtoRoundTripPreservesUnmodelledContents(t *testing.T) {
 		t.Errorf("view definition did not survive: %v", got.GetViews())
 	}
 
+	if n := len(got.GetStoredQueries()); n != 2 {
+		t.Fatalf("stored queries: got %d, want 2 — known metadata field 16 must not be dropped", n)
+	}
+	for i, want := range original.GetStoredQueries() {
+		if !proto.Equal(want, got.GetStoredQueries()[i]) {
+			t.Errorf("stored query %d lost content: got %v, want %v", i, got.GetStoredQueries()[i], want)
+		}
+	}
+	storedQuery := proto.Clone(original.StoredQueries[0]).(*gen.PStoredQuery)
+
 	// The carried protos must be COPIES. Mutating the caller's original after
 	// the load, or the emitted result afterwards, must not reach the metadata's
 	// own state — otherwise "preserved" means "aliased", and the second ToProto
 	// returns something the first caller edited.
 	original.JoinedRecordTypes[0].Name = proto.String("MUTATED")
 	got.JoinedRecordTypes[0].Name = proto.String("ALSO_MUTATED")
+	original.StoredQueries[0].Name = proto.String("MUTATED")
+	original.StoredQueries[0].TempFunctions[0] = "MUTATED INPUT FUNCTION"
+	got.StoredQueries[0].Query = proto.String("MUTATED OUTPUT QUERY")
+	got.StoredQueries[0].TempFunctions[1] = "MUTATED OUTPUT FUNCTION"
 	again, err := md.ToProto()
 	if err != nil {
 		t.Fatalf("second ToProto: %v", err)
+	}
+	if n := len(again.GetStoredQueries()); n != 2 {
+		t.Fatalf("second ToProto lost stored queries: got %d, want 2", n)
+	}
+	if !proto.Equal(storedQuery, again.GetStoredQueries()[0]) {
+		t.Errorf("stored query aliases the input or output proto: got %v, want %v", again.GetStoredQueries()[0], storedQuery)
 	}
 	if again.GetJoinedRecordTypes()[0].GetName() != "OrderWithCustomer" {
 		t.Errorf("the carried protos are ALIASED, not copied: a mutation through the "+
 			"caller's proto reached the metadata's own state (name is now %q). "+
 			"ToProto's result is the caller's to modify",
 			again.GetJoinedRecordTypes()[0].GetName())
+	}
+}
+
+func TestStoredQueryPreservationPresenceAndUnknownFields(t *testing.T) {
+	t.Parallel()
+	unknown := protowire.AppendTag(nil, 101, protowire.BytesType)
+	unknown = protowire.AppendString(unknown, "future stored-query field")
+	for _, tc := range []struct {
+		name    string
+		queries []*gen.PStoredQuery
+	}{
+		{name: "absent"},
+		{name: "unset_fields", queries: []*gen.PStoredQuery{{}}},
+		{name: "explicit_empty_fields", queries: []*gen.PStoredQuery{{Name: proto.String(""), Query: proto.String("")}}},
+		{name: "ordered_functions", queries: []*gen.PStoredQuery{{
+			Name: proto.String("q"), Query: proto.String("SELECT helper()"),
+			TempFunctions: []string{"", "CREATE TEMPORARY FUNCTION helper() AS 1", ""},
+		}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			input := fidelityMetaDataProto(t)
+			input.StoredQueries = tc.queries
+			for _, query := range input.StoredQueries {
+				query.ProtoReflect().SetUnknown(bytes.Clone(unknown))
+			}
+			want := proto.Clone(input).(*gen.MetaData)
+			first, err := RecordMetaDataFromProto(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			second, err := RecordMetaDataFromProto(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Input mutation must not leak through either load/build boundary.
+			for _, query := range input.StoredQueries {
+				query.Name = proto.String("mutated input")
+				query.ProtoReflect().SetUnknown(nil)
+			}
+			for _, model := range []*RecordMetaData{first, second} {
+				output, err := model.ToProto()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !proto.Equal(want, output) {
+					t.Fatalf("stored-query presence/content/unknown fields changed: want %s, got %s", prototext.Format(want), prototext.Format(output))
+				}
+				for _, query := range output.StoredQueries {
+					query.Query = proto.String("mutated output")
+					query.ProtoReflect().SetUnknown(nil)
+				}
+				again, err := model.ToProto()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !proto.Equal(want, again) {
+					t.Fatal("stored-query output aliases its model")
+				}
+			}
+		})
 	}
 }
 
@@ -445,9 +532,9 @@ func fidelityBuilderFrom(t *testing.T, p *gen.MetaData) *RecordMetaDataBuilder {
 }
 
 // fidelityMetaDataProto builds a MetaData proto with EVERY field populated,
-// including the four the Go port does not model. It is written in proto form
-// rather than through the builder precisely because the builder cannot express
-// fields 12-15 — a fixture built through the Go API could never have caught
+// including unmodelled synthetic types, functions, views and stored queries.
+// It is written in proto form rather than through the builder because the
+// builder cannot express fields 12-16 — a fixture built through the Go API could never have caught
 // them being dropped, which is how they stayed dropped.
 func fidelityMetaDataProto(t *testing.T) *gen.MetaData {
 	t.Helper()
@@ -482,15 +569,18 @@ func fidelityMetaDataProto(t *testing.T) *gen.MetaData {
 	p.UsesSubspaceKeyCounter = proto.Bool(true)
 
 	// A former index, so field 6 is non-empty.
+	// Its subspace key is required: Java's FormerIndex(proto) refuses an absent
+	// key, and so does Go's reader.
 	p.FormerIndexes = append(p.FormerIndexes, &gen.FormerIndex{
 		FormerName:     proto.String("gone_idx"),
+		SubspaceKey:    tuple.Tuple{"gone_idx"}.Pack(),
 		RemovedVersion: proto.Int32(3),
 		AddedVersion:   proto.Int32(1),
 	})
 	// Field 7 (deprecated but still a field).
 	p.RecordCountKey = Field("order_id").ToKeyExpression()
 
-	// Fields 12-15: what a Java application writes and the Go port does not model.
+	// Fields 12-16: what a Java application writes and the Go port does not model.
 	p.JoinedRecordTypes = append(p.JoinedRecordTypes, &gen.JoinedRecordType{
 		Name: proto.String("OrderWithCustomer"),
 		JoinConstituents: []*gen.JoinedRecordType_JoinConstituent{
@@ -522,6 +612,20 @@ func fidelityMetaDataProto(t *testing.T) *gen.MetaData {
 		Name:       proto.String("big_orders"),
 		Definition: proto.String("SELECT * FROM Order WHERE price > 100"),
 	})
+	p.StoredQueries = []*gen.PStoredQuery{
+		{
+			Name:  proto.String("warm_orders"),
+			Query: proto.String("SELECT * FROM Order WHERE price > minimum_price()"),
+			TempFunctions: []string{
+				"CREATE TEMPORARY FUNCTION minimum_price() AS 100",
+				"CREATE TEMPORARY FUNCTION maximum_price() AS 1000",
+			},
+		},
+		{
+			Name:  proto.String("warm_customers"),
+			Query: proto.String("SELECT * FROM Customer"),
+		},
+	}
 
 	return p
 }

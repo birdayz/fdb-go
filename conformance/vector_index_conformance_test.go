@@ -4,20 +4,238 @@ package conformance_test
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math"
+	"os"
+	"time"
 
+	"github.com/bazelbuild/rules_go/go/runfiles"
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/anypb"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/rabitq"
 	"fdb.dev/pkg/recordlayer"
 )
+
+var _ = Describe("RaBitQ encoder byte conformance", func() {
+	for _, tc := range []struct {
+		name string
+		vec  []float64
+	}{
+		{"asymmetric_four", []float64{-3, 8, 2, 6}},
+		{"quantization_seven", []float64{1, -2, 3, -4, 5, -6, 7}},
+		{"fma_rounding_boundary", []float64{math.Ldexp(9, -29), 1 + math.Ldexp(1, -27)}},
+		{"fractional_five", []float64{0.1, -1.7, 0.003, 11.5, -0.25}},
+		{"equal_three", []float64{1, 1, 1}},
+		{"axis_four", []float64{0, -7, 0, 0}},
+		{"scalar", []float64{3}},
+		{"zero_four", []float64{0, 0, 0, 0}},
+		{"signed_zero", []float64{math.Copysign(0, -1), 0, math.Copysign(0, -1)}},
+	} {
+		for _, bits := range []int{1, 4, 8} {
+			It(fmt.Sprintf("matches Java persisted bytes for %s at %d extra bits", tc.name, bits), func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				defer cancel()
+				vectorJSON, err := json.Marshal(tc.vec)
+				Expect(err).NotTo(HaveOccurred())
+				var javaHex string
+				err = NewJavaInvoker().InvokeAs(ctx, "encodeRaBitQVector", map[string]any{
+					"vectorJson": string(vectorJSON), "numExBits": bits,
+				}, &javaHex)
+				Expect(err).NotTo(HaveOccurred())
+				javaBytes, err := hex.DecodeString(javaHex)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(javaBytes).To(HaveLen(25 + (len(tc.vec)*(bits+1)+7)/8))
+				goBytes := rabitq.NewRaBitQuantizer(rabitq.MetricEuclidean, bits).Encode(tc.vec).ToBytes()
+				fmt.Fprintf(GinkgoWriter, "RABITQ-ENCODER name=%s bits=%d vector=%s java=%s go=%x\n", tc.name, bits, vectorJSON, javaHex, goBytes)
+				Expect(goBytes).To(Equal(javaBytes))
+				var javaDecodedHex string
+				err = NewJavaInvoker().InvokeAs(ctx, "decodeRaBitQVector", map[string]any{
+					"encodedHex": javaHex, "numDimensions": len(tc.vec), "numExBits": bits,
+				}, &javaDecodedHex)
+				Expect(err).NotTo(HaveOccurred())
+				javaDecoded, err := hex.DecodeString(javaDecodedHex)
+				Expect(err).NotTo(HaveOccurred())
+				goDecoded, err := rabitq.NewQuantizer(rabitq.MetricEuclidean, bits).Decode(javaBytes, len(tc.vec))
+				Expect(err).NotTo(HaveOccurred())
+				fmt.Fprintf(GinkgoWriter, "RABITQ-DECODE name=%s bits=%d java=%s go=%x\n", tc.name, bits, javaDecodedHex, conformanceSerializeVector(goDecoded))
+				Expect(conformanceSerializeVector(goDecoded)).To(Equal(javaDecoded))
+			})
+		}
+	}
+})
+
+var _ = Describe("RaBitQ degenerate norm reconstruction", func() {
+	for _, tc := range []struct {
+		name string
+		norm float64
+	}{
+		{"negative", -1},
+		{"nan", math.NaN()},
+	} {
+		It("returns zero components for a "+tc.name+" stored norm", func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			encoded := &rabitq.EncodedVector{Encoded: []int{1, 8, 15, 20}, NumExBits: 4, FAddEx: tc.norm}
+			data := encoded.ToBytes()
+			var javaHex string
+			err := NewJavaInvoker().InvokeAs(ctx, "decodeRaBitQVector", map[string]any{
+				"encodedHex": hex.EncodeToString(data), "numDimensions": 4, "numExBits": 4,
+			}, &javaHex)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(javaHex).To(Equal(hex.EncodeToString(conformanceSerializeVector([]float64{0, 0, 0, 0}))))
+			got, err := rabitq.NewQuantizer(rabitq.MetricEuclidean, 4).Decode(data, 4)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(got).To(Equal([]float64{0, 0, 0, 0}))
+		})
+	}
+})
+
+var _ = Describe("Legacy Go RaBitQ migration conformance", func() {
+	It("rebuilds the retained legacy graph and permits cold reads and writes from both engines", func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		env, err := SetupTenantEnvironment(ctx, sharedContainer, "legacy_vec_"+uuid.New().String())
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { Expect(env.Cleanup(ctx)).To(Succeed()) }()
+		r, err := runfiles.New()
+		Expect(err).NotTo(HaveOccurred())
+		path, err := r.Rlocation("_main/pkg/recordlayer/testdata/hnsw_legacy_go_entry.json")
+		Expect(err).NotTo(HaveOccurred())
+		data, err := os.ReadFile(path)
+		Expect(err).NotTo(HaveOccurred())
+		var fixture struct {
+			Writer string `json:"writer"`
+			KVs    []struct {
+				Key   string `json:"key_hex"`
+				Value string `json:"value_hex"`
+			} `json:"kvs_relative_to_graph_prefix"`
+		}
+		Expect(json.Unmarshal(data, &fixture)).To(Succeed())
+		Expect(fixture.Writer).To(Equal("e48f5b4965543cd4d99b5578356059e12d969c7c"))
+		Expect(fixture.KVs).To(HaveLen(2))
+		index := recordlayer.NewVectorIndex("legacy_rabitq", recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 4)
+		index.Options = map[string]string{
+			"hnswNumDimensions": "4", "hnswMetric": "EUCLIDEAN_METRIC",
+			"hnswM": "4", "hnswMMax": "4", "hnswMMax0": "8",
+			"hnswUseRaBitQ": "true", "hnswRaBitQNumExBits": "4",
+			"hnswSampleVectorStatsProbability": "1.0", "hnswMaintainStatsProbability": "1.0", "hnswStatsThreshold": "11",
+		}
+		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+		builder.AddIndex("Order", index)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+		metadata, err := md.ToProto()
+		Expect(err).NotTo(HaveOccurred())
+		metadataBytes, err := proto.Marshal(metadata)
+		Expect(err).NotTo(HaveOccurred())
+		ks := subspace.Sub(tuple.Tuple{})
+		runGo := func(action func(*recordlayer.FDBRecordStore, fdb.WritableTransaction)) {
+			_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+				action(store, rtx.Transaction())
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		}
+		withBootstrap := func(ids ...int64) []int64 {
+			for id := int64(100); id < 111; id++ {
+				ids = append(ids, id)
+			}
+			return ids
+		}
+		java := func(action string, id int64, wantIDs []int64, disabled bool) {
+			var result struct {
+				State   string  `json:"state"`
+				Refused bool    `json:"refused"`
+				IDs     []int64 `json:"ids"`
+			}
+			err := NewJavaInvoker().InvokeAs(ctx, "exerciseRebuiltRaBitQIndex", map[string]any{
+				"clusterFile": env.ClusterFile, "subspace": BytesToIntArray(ks.Bytes()), "tenantName": env.TenantName,
+				"metadataBytes": BytesToIntArray(metadataBytes), "indexName": index.Name,
+				"action": action, "orderId": id, "vectorJson": "[4,-1,7,9]",
+			}, &result)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Refused).To(Equal(disabled))
+			if disabled {
+				Expect(result.State).To(Equal("DISABLED"))
+			} else {
+				Expect(result.State).To(Equal("READABLE"))
+				Expect(result.IDs).To(ConsistOf(wantIDs))
+			}
+		}
+		runGo(func(store *recordlayer.FDBRecordStore, tx fdb.WritableTransaction) {
+			_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(2), VectorData: conformanceSerializeVector([]float64{-3, 8, 2, 6})})
+			Expect(err).NotTo(HaveOccurred())
+			ss := store.IndexSubspace(index)
+			tx.ClearRange(ss)
+			for _, kv := range fixture.KVs {
+				key, err := hex.DecodeString(kv.Key)
+				Expect(err).NotTo(HaveOccurred())
+				value, err := hex.DecodeString(kv.Value)
+				Expect(err).NotTo(HaveOccurred())
+				tx.Set(fdb.Key(append(ss.Bytes(), key...)), value)
+			}
+		})
+		runGo(func(store *recordlayer.FDBRecordStore, tx fdb.WritableTransaction) {
+			changed, err := store.MarkIndexDisabled(index.Name)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(changed).To(BeTrue())
+		})
+		java("search", 0, nil, true)
+		runGo(func(store *recordlayer.FDBRecordStore, tx fdb.WritableTransaction) {
+			// The historical producer used a threshold forbidden by Java.
+			// Rebuild its unchanged bytes under valid settings from records.
+			for id := int64(100); id < 111; id++ {
+				_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(id), VectorData: conformanceSerializeVector([]float64{float64(id), 2, 3, 4})})
+				Expect(err).NotTo(HaveOccurred())
+			}
+			Expect(store.RebuildIndex(index)).To(Succeed())
+		})
+		java("search", 0, withBootstrap(2), false)
+		runGo(func(store *recordlayer.FDBRecordStore, tx fdb.WritableTransaction) {
+			_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), VectorData: conformanceSerializeVector([]float64{1, 2, 3, 4})})
+			Expect(err).NotTo(HaveOccurred())
+		})
+		java("save", 4, withBootstrap(2, 3, 4), false)
+		runGo(func(store *recordlayer.FDBRecordStore, tx fdb.WritableTransaction) {
+			results, err := store.SearchVectorIndex(index, []float64{4, -1, 7, 9}, 100, 100)
+			Expect(err).NotTo(HaveOccurred())
+			var ids []int64
+			for _, result := range results {
+				ids = append(ids, result.PrimaryKey[0].(int64))
+			}
+			Expect(ids).To(ConsistOf(withBootstrap(2, 3, 4)))
+			deleted, err := store.DeleteRecord(tuple.Tuple{int64(2)})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(deleted).To(BeTrue())
+		})
+		java("search", 0, withBootstrap(3, 4), false)
+		java("delete", 3, withBootstrap(4), false)
+		runGo(func(store *recordlayer.FDBRecordStore, tx fdb.WritableTransaction) {
+			results, err := store.SearchVectorIndex(index, []float64{4, -1, 7, 9}, 100, 100)
+			Expect(err).NotTo(HaveOccurred())
+			var ids []int64
+			for _, result := range results {
+				ids = append(ids, result.PrimaryKey[0].(int64))
+			}
+			Expect(ids).To(ConsistOf(withBootstrap(4)))
+		})
+	})
+})
 
 var _ = Describe("VECTOR Index Conformance", func() {
 	var (
@@ -884,9 +1102,46 @@ var _ = Describe("RaBitQ VECTOR Index Conformance", func() {
 				Expect(err).NotTo(HaveOccurred())
 			}
 
-			// Go searches for 2 nearest neighbors to [1,0,0,...].
+			// Java's access-info entry vector is already in storage coordinates,
+			// even when its encoding is DOUBLE rather than RaBitQ. Unlike a plain
+			// pre-centroid node vector, it must not be transformed again on read.
+			var entry tuple.Tuple
+			_, err := store.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				key := store.Keyspace.Sub(recordlayer.IndexKey, store.VecIndex.SubspaceTupleKey(), int64(1)).Pack(tuple.Tuple{})
+				data, readErr := rtx.Transaction().Get(fdb.Key(key)).Get()
+				if readErr != nil {
+					return nil, readErr
+				}
+				entry, readErr = tuple.Unpack(data)
+				return nil, readErr
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entry).To(HaveLen(5))
+			Expect(entry[1]).To(Equal(tuple.Tuple{int64(10)}))
+			entryVector := entry[2].(tuple.Tuple)[0].([]byte)
+			Expect(entryVector).To(HaveLen(1 + 8*8))
+			Expect(entryVector[0]).To(Equal(byte(2))) // DOUBLE, not RaBitQ
+			fmt.Fprintf(GinkgoWriter, "RABITQ-ENTRY pk=%v seed=%v vector=%x\n", entry[1], entry[3], entryVector)
+
+			query := []float64{1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}
+			javaIDs, err := store.SearchJava(ctx, query, 2)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(javaIDs).To(Equal([]int64{10, 20}))
+			allResults, err := store.SearchGo(ctx, query, len(points))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(allResults).To(HaveLen(len(points)))
+			fmt.Fprintf(GinkgoWriter, "RABITQ-ENTRY java top2=%v go all=%v\n", javaIDs, allResults)
+			selfFound := false
+			for _, r := range allResults {
+				if r.PrimaryKey[0].(int64) == 10 {
+					selfFound = true
+					Expect(r.Distance).To(BeNumerically("~", 0, 1e-12), "the already-transformed entry vector must have zero self-distance")
+				}
+			}
+			Expect(selfFound).To(BeTrue())
+
 			// With cosine metric, ids 10 and 20 are closest.
-			results, err := store.SearchGo(ctx, []float64{1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}, 2)
+			results, err := store.SearchGo(ctx, query, 2)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(results).To(HaveLen(2))
 			gotIDs := make(map[int64]bool)
@@ -1121,3 +1376,116 @@ func (s *RaBitQConformanceStore) SearchJava(ctx context.Context, query []float64
 	}
 	return ids, nil
 }
+
+var _ = Describe("Vector pending entry conformance", func() {
+	It("opens and writes an explicit format-15 vector store from both engines", func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		env, err := SetupTenantEnvironment(ctx, sharedContainer, "format15_vec_"+uuid.New().String())
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { Expect(env.Cleanup(ctx)).To(Succeed()) }()
+		fixture, err := NewVectorIndexConformanceStore(env.RecordDB, env.Keyspace, env.ClusterFile, env.TenantName)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = env.RecordDB.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().SetContext(rc).SetMetaDataProvider(fixture.MetaData).SetSubspace(fixture.Keyspace).SetFormatVersion(15).Create()
+			if err != nil {
+				return nil, err
+			}
+			Expect(store.GetFormatVersion()).To(Equal(int32(15)))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(fixture.SaveOrderGo(ctx, 1, []float64{1, 2, 3})).To(Succeed())
+		Expect(fixture.SaveOrderJava(ctx, 2, []float64{4, 5, 6})).To(Succeed())
+		fromJava, err := fixture.LoadOrderJava(ctx, 1)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(fromJava.Vector).To(Equal([]float64{1, 2, 3}))
+		fromGo, err := fixture.LoadOrderGo(ctx, 2)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(fromGo.Vector).To(Equal([]float64{4, 5, 6}))
+		var header struct {
+			FormatVersion int32 `json:"formatVersion"`
+		}
+		Expect(NewJavaInvoker().InvokeAs(ctx, "getStoreHeaderRaw", map[string]any{"clusterFile": env.ClusterFile, "tenantName": env.TenantName, "subspace": BytesToIntArray(fixture.Keyspace.Bytes())}, &header)).To(Succeed())
+		Expect(header.FormatVersion).To(Equal(int32(15)))
+		fmt.Fprintln(GinkgoWriter, "FORMAT15 both engines opened and wrote; persisted header=15")
+	})
+
+	It("exchanges computed insert update and delete entries without source records", func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		env, err := SetupTenantEnvironment(ctx, sharedContainer, "pending_vec_"+uuid.New().String())
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { Expect(env.Cleanup(ctx)).To(Succeed()) }()
+		fixture, err := NewVectorIndexConformanceStore(env.RecordDB, env.Keyspace, env.ClusterFile, env.TenantName)
+		Expect(err).NotTo(HaveOccurred())
+		makeRecord := func(vector []float64) *recordlayer.FDBStoredRecord[proto.Message] {
+			return &recordlayer.FDBStoredRecord[proto.Message]{Record: &gen.Order{OrderId: proto.Int64(42), VectorData: conformanceSerializeVector(vector)}, PrimaryKey: tuple.Tuple{int64(42)}, RecordType: fixture.MetaData.GetRecordType("Order")}
+		}
+		oldRecord, newRecord := makeRecord([]float64{1, 2, 3}), makeRecord([]float64{4, 5, 6})
+		for _, operation := range []string{"insert", "update", "delete"} {
+			var payload []byte
+			_, err = env.RecordDB.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
+				store, err := recordlayer.NewStoreBuilder().SetContext(rc).SetMetaDataProvider(fixture.MetaData).SetSubspace(subspace.Sub(tuple.Tuple{"go"})).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+				maintainer, err := store.GetIndexMaintainer(fixture.VecIndex)
+				Expect(err).NotTo(HaveOccurred())
+				var data *anypb.Any
+				switch operation {
+				case "insert":
+					data, err = maintainer.SerializePendingWriteQueue(nil, oldRecord)
+				case "update":
+					data, err = maintainer.SerializePendingWriteQueue(oldRecord, newRecord)
+				case "delete":
+					data, err = maintainer.SerializePendingWriteQueue(newRecord, nil)
+				}
+				Expect(err).NotTo(HaveOccurred())
+				payload, err = proto.Marshal(data)
+				return nil, err
+			})
+			Expect(err).NotTo(HaveOccurred())
+			var result struct {
+				Payload     string  `json:"payload"`
+				IDs         []int64 `json:"ids"`
+				RecordCount int     `json:"recordCount"`
+			}
+			err = NewJavaInvoker().InvokeAs(ctx, "replayVectorPendingEntry", map[string]any{
+				"clusterFile": env.ClusterFile, "tenantName": env.TenantName, "subspace": BytesToIntArray(subspace.Sub(tuple.Tuple{"java"}).Bytes()),
+				"operation": operation, "payloadHex": hex.EncodeToString(payload),
+			}, &result)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Payload).To(Equal(hex.EncodeToString(payload)), operation)
+			Expect(result.RecordCount).To(BeZero())
+			if operation == "delete" {
+				Expect(result.IDs).To(BeEmpty())
+			} else {
+				Expect(result.IDs).To(Equal([]int64{42}))
+			}
+			javaBytes, err := hex.DecodeString(result.Payload)
+			Expect(err).NotTo(HaveOccurred())
+			_, err = env.RecordDB.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
+				store, err := recordlayer.NewStoreBuilder().SetContext(rc).SetMetaDataProvider(fixture.MetaData).SetSubspace(subspace.Sub(tuple.Tuple{"go"})).Open()
+				Expect(err).NotTo(HaveOccurred())
+				maintainer, err := store.GetIndexMaintainer(fixture.VecIndex)
+				Expect(err).NotTo(HaveOccurred())
+				var data anypb.Any
+				Expect(proto.Unmarshal(javaBytes, &data)).To(Succeed())
+				Expect(maintainer.UpdateFromQueue(&data)).To(Succeed())
+				found, err := store.SearchVectorIndex(fixture.VecIndex, []float64{4, 5, 6}, 100, 100)
+				Expect(err).NotTo(HaveOccurred())
+				if operation == "delete" {
+					Expect(found).To(BeEmpty())
+				} else {
+					Expect(found).To(HaveLen(1))
+					Expect(found[0].PrimaryKey).To(Equal(tuple.Tuple{int64(42)}))
+					if operation == "update" {
+						Expect(found[0].Distance).To(BeZero())
+					}
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			fmt.Fprintf(GinkgoWriter, "VECTOR-QUEUE operation=%s payload=%s source-records=%d\n", operation, result.Payload, result.RecordCount)
+		}
+	})
+})

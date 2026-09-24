@@ -1,0 +1,29 @@
+**NAK — scoped WS-B/SPFresh lifecycle confirmation.**
+
+Reviewed Git **tree `6ffe8d3b5b541bdd1c668c6e13e45ebe475292a3`**, including the complete production/test delta from `c59322c012c53500679e7f345360fac6706468b9`, prior verdicts, approved design, relevant papers and tagged Java.
+
+**P2 — First attachment after a range clear can publish stale state.**
+
+[clearRangeWithIndexStateViews:316](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state.go:316) protects only registered views. An ordinary unchanged-metadata `Open()` loads `indexStates` without attaching a view. Its first subsequent state operation can therefore initialize the shared authority from that old map at [store.go:178](/home/birdy/projects/fdb-go/pkg/recordlayer/store.go:178).
+
+A source-derived sequential reproducer:
+
+1. Open a persisted store containing a DISABLED SPFresh index, without calling a state accessor.
+2. Call `ctx.ClearRange(store.IndexStateSubspace())`. The registry is empty, so the persisted state disappears without invalidating the handle’s loaded map.
+3. Call `store.MarkIndexDisabled(name)`. First attachment publishes the old DISABLED value; the [unchanged-state return:254](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state.go:254) skips writing it.
+
+The raw state remains absent—READABLE on cold reopen—while the shared view says DISABLED. Subsequent record writes can skip SPFresh maintenance despite committing READABLE state.
+
+**Required:** make initial loading/publication coherent with range clearing, including snapshots loaded before registration. Serialize these operations or invalidate and reload stale snapshots. Add real-FDB coverage for an opened-but-unattached handle and an in-flight initial load. The new barrier tests explicitly attach both handles before clearing, so they miss this case.
+
+This is category **(b), a failure of the transactional adaptation’s coherence guarantee**, affecting the update visibility and concurrency intent of [SPFresh §§3.2 and 4.2.2](/home/birdy/projects/fdb-go/.claude/skills/spfresh-reviewer/spfresh-paper.pdf).
+
+The **previous P1/P2 reproductions are resolved**: reconciliation attaches before point mutation; the common mutex spans mutation and publication; registry serialization prevents competing multi-view clear lock orders. Public transition paths propagate initialization errors before mutation. I found no additional lock-order cycle.
+
+SPFresh algorithms, snapshot data reads, encoding and budgets remain unchanged, preserving the prior assessment against [SPANN §§3.2.1–3.2.3](/home/birdy/projects/fdb-go/.claude/skills/spfresh-reviewer/spann-paper.pdf) and SPFresh §§3.1–3.4. Approved extensions and the intentional Java deletion-callback correction remain intact.
+
+All **6,781 frozen file hashes** and **16 evidence hashes** reconcile. Retained logs substantiate 93/93 uncached targets, 14/14 race targets, the reported test populations, both original failures and the compiled range-clear mutation kill.
+
+The **new** stress residual is **1.0355× orders / 1.0629× customers**, with n=2 per tree, matching rows and zero retries. These measurements do not independently block this milestone; they establish neither parity nor causation.
+
+The launch log records `gpt-6-astra/xhigh`. No edits, tests/builds, Git mutations, GitHub requests, publication or delegation occurred. HEAD remains `71ccd8cf8b3fd0dbafe283e91171818e36af555e`. WS-C–K remain excluded; queue/state4/format15 remain disabled.

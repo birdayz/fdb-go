@@ -1,0 +1,3 @@
+# WS-C addendum (section 7) gate v6
+
+TREE `c789832131f2e6206ee2ebad9b92a3ae463d6f6d`; ws-c-design.md SHA256 `10d7b1cdd23f498b3d65bf3a6dd2eaa7cf17d22331400c423623ab0daba8bb79` (1133 lines). Revision 6 (section 7.6): duplicate targets removed by Java's Index.equals (the first kept) and sorted before the metadata check; SetIndex as Java's setIndex (refusal when targets are set, nil skipped, the single mode deleted); the standalone MergeIndexes session pinned by four specs and declared completely (DIVERGENCES, CHANGELOG); nits. Mutations m39-m44; combined evidence with WS-J v10 (ev10). The v5 gate reviewed f8abe2d742df8c35b44fb0c6f854f86c3cd3a016. Lenses: Graefe, Torvalds, storage.

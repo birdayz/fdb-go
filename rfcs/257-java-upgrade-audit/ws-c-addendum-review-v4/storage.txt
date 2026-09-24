@@ -1,0 +1,78 @@
+**NAK.** Tree `936a4aba27681bdd9a5e2938021f54d7b803e2a1`; I confirmed it is a tree object. Design SHA256 `4249af27134885d20973c635fb920084f25000211419c08fcb04410d46c00786`, 943 lines, both checked. I ran nothing: no tests, probes or mutations. Findings come from reading source unless marked "measured".
+
+The late-clear fix is correct and its spec cannot pass vacuously. The NAK is for two gaps; neither needs a design change, so a narrow re-check is enough:
+- the exact scenario behind v3 Torvalds #1 is still not pinned;
+- the target side of storage v3 #5 (the wire issue revision 4 fixed for the source index) is still open.
+
+## Findings, most severe first
+
+**1. Low: v3 Torvalds #1's exact scenario is unpinned, and the spec that claims to pin it tests a different path.**
+- The reported bug was: attempt 1 indexes records, fails into a retry, a peer publishes, and attempt 2 is left alone, so the call reported `LeftAlone` although records were built.
+- The spec "reports a call whose earlier attempt built…" (`online_indexer_test.go:4072`) never retries.
+  - It is a single-target mutual build. Its one attempt fails with `UnexpectedReadableError{AllReadable}` and ends through the catcher's done path (`online_indexer.go:1097`).
+  - There is no "earlier attempt" in it.
+- So m24 goes red only through the done path. Replacing `outcomeOfCall(outcome)` with `outcome` on the success return (`:1088`) would stay green. That return is exactly the path frl and the fleet read after a retry.
+- The docs are also incomplete:
+  - `IndexBuildOutcomeBuilt` (`:489-492`) does not cover an ending attempt that indexed records and then finished through the done path, which is what the spec pins.
+  - `CompletedByPeers` (`:501-502`) should say "and this call indexed nothing".
+- Fix:
+  - Pin retry-then-skip. Two chained `nthTransactHook`s would do it: a peer changes the stamp between build transactions (partly-built error, records fallback), then publishes before attempt 2's state transaction.
+  - Mutate the success return and show the new spec goes red.
+  - Correct the two docs and 7.4 line 857.
+
+**2. Low (wire, already on master; the target side of storage v3 #5): target `*Index` objects are accepted by name only.**
+- Java refuses a target object that is not the metadata's own object (`OnlineIndexer.java:881-882`, an identity check, `MetaDataException` "Index X not contained within specified metadata").
+- Go checks only the name (`online_indexer.go:797-802`), then keys everything off the caller's object:
+  - the range set (`indexing_range_set.go:18`, via `primaryIndex()` at `:2039`);
+  - the heartbeat subspace (`indexing_heartbeat.go` `heartbeatSubspace`);
+  - the stamp and the clears.
+- A foreign subspace key therefore builds and records progress where Java never looks. Java peers cannot see Go's heartbeat, so a Java exclusive REBUILD would be admitted under a running Go build.
+- The comment at `:797` says "matches Java's OnlineIndexer.Builder", which is false. The error is a `fmt.Errorf`, not a `MetaDataError`.
+- Fix: resolve targets by name, as revision 4 now does for the source, or refuse a non-identical object with Java's class and message. Pin it with a target object that has a foreign subspace key.
+
+**3. Nits.**
+- `PartlyBuiltError` still lacks Java's `INDEX_VERSION` key (`IndexingBase.java:1291`). Revision 4 closed the context-field gap for `INDEXER_ID` only (`errors.go:430-442`).
+- The precedence bullet in DIVERGENCES.md (`:2745-2756`) overstates its scope:
+  - "Go reports `SynchronizedSessionLockedError` on the first attempt" is false for a live mutual peer admitted to a continued mutual session. There Go raises the stamp error, as Java does. Scope it to a peer the admission check refuses.
+  - The parenthetical leaves out the REBUILD retry, which in Java also ends on a heartbeat check.
+- `ws-c-design.md:909`'s "17 lines … in five test files" does not reproduce (measured with `git grep -c` on the candidate tree):
+  - `\.(markWriteOnly|prepareIndexingState|newMutualIndexBuilder)\(` gives 13 lines in 4 files;
+  - the same names followed by `(` give 24 lines in 5 files (this includes a test-local `markWriteOnly` closure);
+  - the bare names give 34 lines in 6 files.
+
+  State the pattern used.
+
+## What holds (source)
+
+**Late-clear fix.**
+- `cleanupHeartbeatAttempt` reads each key before clearing it (`online_indexer_queue.go:365-370`), with a plain read, not a snapshot read. `update` writes with a plain `Set`, which keeps its write-conflict range.
+- Every read version comes before the cleanup returns, and so before the next attempt's write. A late commit, including an unknown-outcome retry that lands late, therefore either conflicts (1020) or is too old (1007).
+- Both production callers of the cleanup share this path: the attempt defer (`online_indexer.go:1248`) and `MergeIndexes` (`indexing_merger.go:170`). No other code clears an own heartbeat key.
+- The `holdDispatch` mode holds the real transaction, skips its timeout, ignores cancellation, and commits it later.
+- The spec asserts that the clear was dispatched, that code 1020 comes back, and that the key survives. Two things rule out a vacuous pass:
+  - a cancelled transaction would give 1025, not 1020;
+  - under m23 the late clear commits.
+- The README is corrected.
+
+**Every other v3 finding is resolved:**
+- The Java open-time reconciliation claim is fixed in all three copies (I checked `IndexingBase.java:129-130` and `FDBRecordStore.java:6015`, `:2689`). A grep of `*.go` finds no stale copy; the positive control, `checkOpenHeartbeats`, hits 3 files.
+- The follow-up divergence is declared and true (`IndexingBase.java:968-972`, `FDBRecordStore.java:3982`).
+- The retry cost is correct (`OnlineIndexer.java:212-213`, `:1175-1176`; the takeover set is null by default), and the attempt limit is pinned end to end (sessions 1–5 caught, the sixth returned).
+- `INDEXER_ID` is carried at every `newPartlyBuiltError` and `sourceValidationError` site, per-range checks included; the state checks leave it nil (`:203-207`, `:237-241`).
+- The source index is resolved by name as `IndexingByIndex.java:68-71`, `:95-101` do, with the undefined-source refusal kept.
+- The heartbeat `info` is the stamp method (`IndexingBase.java:457`), and the identity is passed to the constructor.
+- The builder's order matches `OnlineIndexer.java:865-884`.
+- The outcome reset is pinned.
+- Fleet: `buildPending`'s arms, `total` after the error check, and the advice text.
+- The unscannable-source spec now asserts state, using an orphan key planted after `arrange`, so the check is not vacuous.
+- The unknown-action row is in the arm table.
+- The CHANGELOG entries are accurate.
+
+## Measured
+- The sha256 of 12 WS-C files in the candidate tree matches `evidence-v8.txt`. `git diff --stat 9f1cd709 936a4aba` shows only `ws-c-design.md` and `evidence-v8.txt`.
+- Mutation logs m23–m29, m31–m33: each shows marker count 1, the perl expression, the applied diff, "bazel exit 3", "Ran 372 of 3698" and "restored". Their red specs match the table (m33: 3 specs). m30, run with `go test`, has marker 1 and `a_failure_part_way` red.
+- `m-late.log`: "the late clear committed: <nil>". `late1.log`: 7 of 7 passed. `focus1.log`: 372 of 372 passed.
+- `ev8/wsc-focus.log`: "Ran 385 of 3698", 385 passed.
+- `ev8/wsc-loop40.log`: 40 × "SUCCESS! -- 2 Passed | 0 Failed", 0 "FAIL!", "Executed 1 out of 1 test".
+- `ev8/justtest.log`: "Executed 43 out of 94 tests: 94 tests pass". Both `fleet_test` and `cmd_test` are in `justtest-executed.txt`, and `build_test.go` is in `fleet_test`'s srcs.
+- Not verified byte for byte: the `.good` mutation baselines. Bash hashing under `/var/tmp` was denied; a grep spot-check found the revision 4 lines at the same line numbers as in the tree.

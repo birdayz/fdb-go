@@ -1,0 +1,82 @@
+**NAK**
+
+- **Tree:** `65d33289a2d6a410884ef98945557d3ff6a6ff21`.
+- **Design:** `ws-d-design.md`, SHA256 `21279344492055e04a6c81caef2c6ed3c7c0692df635050b98999420bf253a48`. I recomputed it with `git show TREE:path | sha256sum` and it matches.
+- **Java:** `fdb-record-layer/.git/HEAD` is `fdacd162…`.
+
+**What I checked:**
+- **Read:** all four v6 verdicts, the full v7 design (1033 lines) and its diff from v6, the oracle README, both evidence files, and the peel and obsolete-task probe source. I checked the claims against the Java source and the Go code in this tree.
+- **Oracle hashes:** all four source hashes match `evidence-run.txt:4-7`. The test file has 13 `It` specs, which matches "Ran 13 of 1536".
+- **Delta outside `rfcs/` and `TODO.md`:** only the three conformance files and the three lease files.
+- **Nothing run or changed:** no tests, probes or edits.
+
+### P1 — The inline cap fires on an index Java handles fine, and it blocks the write Java uses to schedule the split (design 883-918)
+- **Where the cap sits.** It fires at the deferred cap's position, which comes before the only split re-arm an insert can do (`Insert.java:334-338` runs before `:366` → `Primitives.java:1161-1174`).
+- **So in Go, no insert can ever schedule a split for a cluster the cap refuses.** "count+1 > hardMax, with neither SPLIT_MERGE nor COLLAPSE set" is not a state only Go's reconcile can produce. Java reaches it by a second path the design does not list (894-903 claims "one exception"):
+  1. A cluster C has COLLAPSE pending. A neighbour's split raises REASSIGN on C. That code checks only for REASSIGN (`Primitives.java:1222-1249`) and adds the flag rather than replacing the state set (`ClusterMetadata.java:185-190`).
+  2. CollapseTask removes only COLLAPSE, so REASSIGN stays (`CollapseTask.java:415-416`).
+  3. The bounce skips its SPLIT_MERGE follow-up because REASSIGN is set (`BounceTask.java:294-300`).
+  4. ReassignTask then writes C's states as empty (`ReassignTask.java:730-735`).
+- **Result.** C is above the max with no flags and no pending task.
+  - Java's next insert into C schedules the split, and C splits.
+  - Go refuses every insert into C until deletes bring it below hardMax, or a neighbour's split or reassign moves primaries into it.
+  - This is an undeclared refusal on an index that Java keeps healthy. It is not "the target throws forever" (h).
+- **"Succeeds on retry once the bounce has run" (902-903) is also false in the window the design does list.**
+  - Collapse and bounce both get random high-priority ids (`AbstractDeferredTask.java:275-288`), so the collapse is at the head of the queue about half the time.
+  - An insert into C whose own inline task is that collapse is refused. The refusal rolls the collapse back, which the design already admits for the reconcile (910-912), so the retry is refused again.
+- **Why the zero-refusal replays can't catch this.** The healthy-inline replays (904-907) contain no collapse above hardMax. They also omit the identical-mass inline row (evidence-run:192), which is the only measured inline collapse.
+- **Needed:**
+  - Either use a condition Java cannot produce, or keep Java's re-arm write and bound the leftover cluster's cost some other way.
+  - Fixtures: collapse, then REASSIGN, then the reassign clear, above hardMax in inline mode; and a refused insert whose own inline task is the collapse.
+  - Include item 12's inline row in the replays.
+
+### P2 — The delete skip (d) misses tasks that a bounce executes (design 271-275, 363-365)
+- **How a bounce reaches a refused task.** A bounce executes one of the tasks it is waiting on (`BounceTask.java:161-169`). Oracle item 13 shows exactly this: a bounce/collapse pair, and a live collapse failing at `fetchCoreClusters` after the bounce re-arms (evidence-run:193).
+- **The gap.** (d) checks only the head task's own kind. A bounce at the head passes whenever bounceConcurrency ≥ 1, so a Go inline delete still fails in these cases:
+  - **collapseConcurrency 0 (mutable):** the bounce runs a live collapse, which throws.
+  - **splitMergeConcurrency or reassignConcurrency 0:** the bounce runs a split or reassign that would livelock, where Go raises its typed error. Java's delete succeeds here.
+  - Either case breaks "removal always remains possible".
+- **Needed:**
+  - The bounce's check must cover every kind it can execute.
+  - Fixture: an inline delete with a bounce at the head, over a live collapse, under collapseConcurrency 0.
+  - Narrow the removal claim to exclude deleteConcurrency < 1 (a throw Java also has) and trained extra bits 9 (a delete that enqueues a task; still a hypothesis at 762-763).
+
+### P3
+1. **The peel bound was measured only up to n = 100.**
+   - In the 60/40@0.45 trace the mass roughly halves each round (100→60→30→15→9→5, evidence-run:182). At the default primaryClusterMax of 1000 that predicts about 8 rounds, right at the bound. "None measured" beyond 8 (854) needs an n≈1001 run, or a restatement.
+   - The probe draws each refit from `SplittableRandom(seed+1+r)` (probe:761-763), not from Go's scheme of splitting the task RNG. So the round counts are a sample, not a pinned value.
+2. **Part of the knob table is labelled measured but is not.** The rows at 226-227 claim a measured throw with precomputed neighbours, but the golden shows only the livelock (evidence-run:83-90). The throw is inferred from source; label it so.
+3. **The livelock condition is not stated.** Say whether Go keys the refusal on the knob value or on an empty fetch. `findNearestClustersMetadata` always includes the target (`Primitives.java:1481`), so under healthy knobs the fetch is never empty. Pin that.
+4. **Two claims need a qualifier:**
+   - "Never lets the build's own session lapse" (630-631) holds only against peers whose lease is at least 10 s. A Java peer configured with a shorter lease judges staleness by its own lease and can admit mid-wait.
+   - "Every insert" constructs the quantizer (303), but an insert of an existing PK returns first (`Insert.java:226-228`).
+
+### Confirmed closed from v6
+- **Capability checks:** raised at the consumer after the no-op exits (198-219), with no pre-removal or pre-claim copy. The RaBitQ construction sites match Java (`SplitMergeTask:227/430`, `CollapseTask:171`, `ReassignTask:241`).
+- **Goldens:** the KMeans shrink row (evidence-run:78) and the obsolete-task rows (193-195) are pinned.
+- **Insert refusal:** only (b) remains config-only, and enqueue is now in the poison list.
+- **mergeNumNearestClusters:** immutable (engine :84-97) and declared permanent.
+- **Operation order:** tag-5 move and UUID source (`RandomHelpers.java:174-176`) are correct.
+- **Line refs:** `refreshFollowupHeartbeats` (queue.go:321/337/362/385/297) is correct.
+- **Lease default:** 10_000 matches `OnlineIndexOperationConfig.java:61`; the merger and mutual paths use the resolved field.
+- **Lease-wait rules:** the claim-race loser now waits, the relieved read is a snapshot after commit, the merge lease is carved out of the byte-for-byte check, and the replay wording is reconciled.
+- **Watcher claims:** the TODO in-flight phrasing is gone, and rfcs/242:3096 is dated in place.
+- **Preserved boundaries:** hold.
+
+### Measured vs hypothesis
+- **Measured by the oracle:**
+  - items 1-14;
+  - the consumer-point goldens, including consumption of obsolete tasks;
+  - inline inserts and deletes;
+  - record-layer inline mode through `autoMergeDuringCommit`;
+  - the target failing on the seven counterexample shapes;
+  - the peel's round counts (pure algorithm, n ≤ 100).
+- **Still hypothesis:**
+  - the inline cap's firing window (P1 is derived from source, not measured);
+  - bounce-executed dependencies under (d);
+  - the peel at default sizes;
+  - the throw with precomputed neighbours;
+  - the stale-inflated cluster, empty merge core, vanished neighbours, n<k, and rollback shapes;
+  - deletes and merges under trained extra bits 9;
+  - build-range stranding;
+  - every Go-only mechanism against Java peers.

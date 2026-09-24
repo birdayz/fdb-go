@@ -178,6 +178,8 @@ func buildAggregateOutputSlots(keys []logical.GroupKey, aggCols []aggSelectCol, 
 			for i, key := range keys {
 				same := false
 				switch {
+				case ac.groupColValue != nil && key.Value != nil:
+					same = groupKeysPullUpEqual(ac.groupColValue, key.Value)
 				case qualifierStripped:
 					// The builder deliberately collapsed a same-source
 					// qualifier on both the GroupKey and aggregate output, so
@@ -435,25 +437,6 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 	if sq == nil {
 		return nil
 	}
-	if sq.tableName == "" && sq.derivedQuery == nil && sq.inlineValues == nil {
-		// SELECT without FROM — emit LogicalValues (single-row
-		// constant projection). Carries the projection expression
-		// text per column (future: real Value nodes per RFC-021
-		// Phase 2).
-		rows := make([]string, len(sq.projCols))
-		aliases := make([]string, len(sq.projCols))
-		for i, col := range sq.projCols {
-			expr := col.name
-			if sq.projExprs != nil && i < len(sq.projExprs) && sq.projExprs[i] != nil {
-				expr = strings.TrimSpace(canonicalTextOf(sq.projExprs[i]))
-			}
-			rows[i] = expr
-			if sq.projAliases != nil && i < len(sq.projAliases) {
-				aliases[i] = sq.projAliases[i]
-			}
-		}
-		return logical.NewValues(rows, aliases)
-	}
 
 	// Build the FROM-source subtree. Either a plain table scan or a
 	// derived table (subquery in FROM). For derived tables we
@@ -466,7 +449,9 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 	// mergeRows uses the wrong qualifier and projections like
 	// "sq1.x" resolve to NULL.
 	var op logical.LogicalOperator
-	if sq.inlineValues != nil {
+	if sq.tableName == "" && sq.derivedQuery == nil && sq.inlineValues == nil {
+		op = logical.NewSingleton()
+	} else if sq.inlineValues != nil {
 		var err error
 		op, err = buildInlineValuesLogical(sq.inlineValues, sq.tableAlias, sq.bindingID, nil)
 		if err != nil {
@@ -707,46 +692,21 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 		}
 	}
 
-	if len(sq.orderBy) > 0 && len(sq.postSortStripProj) > 0 {
-		// The sort sits BELOW the deferred reshaping projection, over the
-		// aggregate's internal layout: rebase keys naming SELECT aliases
-		// (alias first — SQL resolves output names before source columns)
-		// and positional keys (visible slots differ from internal ones) to
-		// the underlying expressions.
-		for i := range sq.orderBy {
-			ob := &sq.orderBy[i]
-			if ob.pos >= 1 && ob.pos <= len(sq.postSortStripProj) {
-				ob.colName = sq.postSortStripProj[ob.pos-1]
-				// The rebased name is internal projection text — the
-				// original reference's segments no longer describe it
-				// (stale segments silently mis-resolve against a
-				// same-spelled source column).
-				ob.bare, ob.qualifier, ob.qualified, ob.segs = ob.colName, "", false, nil
-				continue
-			}
-			// Output aliases bind BARE one-segment identifiers only: a
-			// qualified key (`d.x`) or an aggregate/computed key
-			// (`SUM(s.score)`) names source data, never the SELECT alias —
-			// text matching rebased both onto same-spelled aliases and
-			// silently mis-sorted. The parse tree decides (bareRef), not
-			// the name text.
-			if !ob.bareRef {
-				continue
-			}
-			for j, al := range sq.postSortSQLNames {
-				if al != "" && strings.EqualFold(al, ob.colName) && j < len(sq.postSortStripProj) {
-					ob.colName = sq.postSortStripProj[j]
-					// Same rule as the positional rebase above: internal
-					// text, segments cleared to the rebased bare.
-					ob.bare, ob.qualifier, ob.qualified, ob.segs = ob.colName, "", false, nil
-					break
-				}
-			}
-		}
-	}
 	if len(sq.orderBy) > 0 {
 		keys := make([]logical.SortKey, 0, len(sq.orderBy))
 		for _, ob := range sq.orderBy {
+			outputPos := ob.pos
+			if len(sq.postSortStripProj) > 0 {
+				if outputPos == 0 {
+					outputPos, _ = selectOutputAliasPosition(ob.rawExpr, sq.postSortSQLNames)
+				}
+				if outputPos >= 1 && outputPos <= len(sq.postSortStripProj) {
+					ob.colName = sq.postSortStripProj[outputPos-1]
+					ob.bare, ob.qualifier, ob.qualified, ob.segs = ob.colName, "", false, nil
+				}
+			}
+			// Keep selected-output ownership in the key, not in the parser's
+			// numeric-syntax position. Rebased text must never bind another alias.
 			dir := logical.SortAsc
 			if !ob.ascending {
 				dir = logical.SortDesc
@@ -782,16 +742,16 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 				Expr:       expr,
 				Dir:        dir,
 				NullsFirst: nullsFirst,
-				Pos:        ob.pos,
+				Pos:        outputPos,
 				BareRef:    ob.bareRef,
 				Bare:       ob.bare,
 				Qualifier:  ob.qualifier,
 				Qualified:  ob.qualified,
 				Segs:       append([]string(nil), ob.segs...),
 			}
-			if ob.pos >= 1 && ob.pos <= len(sq.postSortAggregateOutputOrdinals) &&
-				sq.postSortAggregateOutputOrdinals[ob.pos-1] >= 0 {
-				sk.AggregateOutputOrdinal = sq.postSortAggregateOutputOrdinals[ob.pos-1]
+			if outputPos >= 1 && outputPos <= len(sq.postSortAggregateOutputOrdinals) &&
+				sq.postSortAggregateOutputOrdinals[outputPos-1] >= 0 {
+				sk.AggregateOutputOrdinal = sq.postSortAggregateOutputOrdinals[outputPos-1]
 				sk.HasAggregateOutputOrdinal = true
 			}
 			if ob.bare != "" && expr != ob.colName {
@@ -816,7 +776,7 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 
 	// Projection: skip when the projection is SELECT * (projCols is
 	// nil per the selectQuery doc).
-	if len(sq.projCols) > 0 {
+	if sq.projCols != nil {
 		projs := make([]string, len(sq.projCols))
 		aliases := make([]string, len(sq.projCols))
 		computed := make([]bool, len(sq.projCols))
@@ -1046,4 +1006,26 @@ func buildLogicalPlanForUpdate(upd antlrgen.IUpdateStatementContext) logical.Log
 		})
 	}
 	return logical.NewUpdate(tableName, sets, scan)
+}
+
+// selectOutputAliasPosition resolves a bare ORDER BY name to its visible SELECT
+// slot, before any GROUP alias or projection-name rewriting. Qualified references
+// and computed expressions do not name output aliases.
+// The caller carries this position through rebasing instead of resolving the
+// selected expression's rendering as another name. Ambiguous names select no
+// owner; semantic validation reports their match count before source resolution.
+func selectOutputAliasPosition(authored antlrgen.IExpressionContext, outputNames []string) (position, matches int) {
+	name, _, _, segments := splitColumnRef(authored)
+	if len(segments) == 1 {
+		for i, alias := range outputNames {
+			if alias != "" && alias == name {
+				position = i + 1
+				matches++
+			}
+		}
+	}
+	if matches != 1 {
+		position = 0
+	}
+	return position, matches
 }

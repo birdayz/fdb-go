@@ -28,6 +28,7 @@ package gen
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	anypb "google.golang.org/protobuf/types/known/anypb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
@@ -109,6 +110,64 @@ func (x *IndexBuildIndexingStamp_Method) UnmarshalJSON(b []byte) error {
 // Deprecated: Use IndexBuildIndexingStamp_Method.Descriptor instead.
 func (IndexBuildIndexingStamp_Method) EnumDescriptor() ([]byte, []int) {
 	return file_index_build_proto_rawDescGZIP(), []int{0, 0}
+}
+
+// The kind of deferred index operation carried by this entry. New operations (e.g. DELETE_WHERE) may be added over
+// time; a drainer that does not recognize an operation should fail rather than silently skip it.
+type PendingWritesQueueEntry_Operation int32
+
+const (
+	PendingWritesQueueEntry_UPDATE       PendingWritesQueueEntry_Operation = 1 // apply an old/new record change; `data` holds a serialized information needed for an index update
+	PendingWritesQueueEntry_DELETE_WHERE PendingWritesQueueEntry_Operation = 2 // clear an index key prefix; `data` holds a serialized DeleteWhere
+)
+
+// Enum value maps for PendingWritesQueueEntry_Operation.
+var (
+	PendingWritesQueueEntry_Operation_name = map[int32]string{
+		1: "UPDATE",
+		2: "DELETE_WHERE",
+	}
+	PendingWritesQueueEntry_Operation_value = map[string]int32{
+		"UPDATE":       1,
+		"DELETE_WHERE": 2,
+	}
+)
+
+func (x PendingWritesQueueEntry_Operation) Enum() *PendingWritesQueueEntry_Operation {
+	p := new(PendingWritesQueueEntry_Operation)
+	*p = x
+	return p
+}
+
+func (x PendingWritesQueueEntry_Operation) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (PendingWritesQueueEntry_Operation) Descriptor() protoreflect.EnumDescriptor {
+	return file_index_build_proto_enumTypes[1].Descriptor()
+}
+
+func (PendingWritesQueueEntry_Operation) Type() protoreflect.EnumType {
+	return &file_index_build_proto_enumTypes[1]
+}
+
+func (x PendingWritesQueueEntry_Operation) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Do not use.
+func (x *PendingWritesQueueEntry_Operation) UnmarshalJSON(b []byte) error {
+	num, err := protoimpl.X.UnmarshalJSONEnum(x.Descriptor(), b)
+	if err != nil {
+		return err
+	}
+	*x = PendingWritesQueueEntry_Operation(num)
+	return nil
+}
+
+// Deprecated: Use PendingWritesQueueEntry_Operation.Descriptor instead.
+func (PendingWritesQueueEntry_Operation) EnumDescriptor() ([]byte, []int) {
+	return file_index_build_proto_rawDescGZIP(), []int{2, 0}
 }
 
 type IndexBuildIndexingStamp struct {
@@ -266,11 +325,352 @@ func (x *IndexBuildHeartbeat) GetHeartbeatTimeMilliseconds() int64 {
 	return 0
 }
 
+// The message that gets saved into the pending writes queue.
+// This message gets stored in an google.protobuf.Any field in the queue. This means that this message type SHOULD NOT be moved
+// or renamed to preserve wire-format compatibility with existing data.
+type PendingWritesQueueEntry struct {
+	state         protoimpl.MessageState             `protogen:"open.v1"`
+	Operation     *PendingWritesQueueEntry_Operation `protobuf:"varint,1,req,name=operation,enum=com.apple.foundationdb.record.PendingWritesQueueEntry_Operation" json:"operation,omitempty"`
+	Data          *anypb.Any                         `protobuf:"bytes,2,opt,name=data" json:"data,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PendingWritesQueueEntry) Reset() {
+	*x = PendingWritesQueueEntry{}
+	mi := &file_index_build_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PendingWritesQueueEntry) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PendingWritesQueueEntry) ProtoMessage() {}
+
+func (x *PendingWritesQueueEntry) ProtoReflect() protoreflect.Message {
+	mi := &file_index_build_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PendingWritesQueueEntry.ProtoReflect.Descriptor instead.
+func (*PendingWritesQueueEntry) Descriptor() ([]byte, []int) {
+	return file_index_build_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *PendingWritesQueueEntry) GetOperation() PendingWritesQueueEntry_Operation {
+	if x != nil && x.Operation != nil {
+		return *x.Operation
+	}
+	return PendingWritesQueueEntry_UPDATE
+}
+
+func (x *PendingWritesQueueEntry) GetData() *anypb.Any {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
+// Data for PendingWritesQueueEntry DELETE_WHERE operation. This defers a `deleteRecordsWhere`
+type DeleteWhere struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Prefix        []byte                 `protobuf:"bytes,1,opt,name=prefix" json:"prefix,omitempty"` // the packed key prefix to clear from the index
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteWhere) Reset() {
+	*x = DeleteWhere{}
+	mi := &file_index_build_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteWhere) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteWhere) ProtoMessage() {}
+
+func (x *DeleteWhere) ProtoReflect() protoreflect.Message {
+	mi := &file_index_build_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteWhere.ProtoReflect.Descriptor instead.
+func (*DeleteWhere) Descriptor() ([]byte, []int) {
+	return file_index_build_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *DeleteWhere) GetPrefix() []byte {
+	if x != nil {
+		return x.Prefix
+	}
+	return nil
+}
+
+// The `data` payload for a PendingWritesQueueEntry UPDATE operation. This represents a record change that needs to be
+// indexed: Either of the records (but not both) can be null, where null "old_records" means we are inserting a new
+// record and null "new_record" means we are deleting an existing one.
+type OldAndNewRecords struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Simple cases where store serializer can handle the records (typically this is not the case for synthetic records)
+	OldRecords    []byte `protobuf:"bytes,1,opt,name=old_records,json=oldRecords" json:"old_records,omitempty"`
+	NewRecord     []byte `protobuf:"bytes,2,opt,name=new_record,json=newRecord" json:"new_record,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *OldAndNewRecords) Reset() {
+	*x = OldAndNewRecords{}
+	mi := &file_index_build_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OldAndNewRecords) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OldAndNewRecords) ProtoMessage() {}
+
+func (x *OldAndNewRecords) ProtoReflect() protoreflect.Message {
+	mi := &file_index_build_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OldAndNewRecords.ProtoReflect.Descriptor instead.
+func (*OldAndNewRecords) Descriptor() ([]byte, []int) {
+	return file_index_build_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *OldAndNewRecords) GetOldRecords() []byte {
+	if x != nil {
+		return x.OldRecords
+	}
+	return nil
+}
+
+func (x *OldAndNewRecords) GetNewRecord() []byte {
+	if x != nil {
+		return x.NewRecord
+	}
+	return nil
+}
+
+// A single index entry
+type IndexEntry struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           []byte                 `protobuf:"bytes,1,opt,name=key" json:"key,omitempty"`
+	Value         []byte                 `protobuf:"bytes,2,opt,name=value" json:"value,omitempty"`
+	PrimaryKey    []byte                 `protobuf:"bytes,3,opt,name=primary_key,json=primaryKey" json:"primary_key,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *IndexEntry) Reset() {
+	*x = IndexEntry{}
+	mi := &file_index_build_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IndexEntry) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IndexEntry) ProtoMessage() {}
+
+func (x *IndexEntry) ProtoReflect() protoreflect.Message {
+	mi := &file_index_build_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IndexEntry.ProtoReflect.Descriptor instead.
+func (*IndexEntry) Descriptor() ([]byte, []int) {
+	return file_index_build_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *IndexEntry) GetKey() []byte {
+	if x != nil {
+		return x.Key
+	}
+	return nil
+}
+
+func (x *IndexEntry) GetValue() []byte {
+	if x != nil {
+		return x.Value
+	}
+	return nil
+}
+
+func (x *IndexEntry) GetPrimaryKey() []byte {
+	if x != nil {
+		return x.PrimaryKey
+	}
+	return nil
+}
+
+// Lists of old and new index entries. This can be used as data for PendingWritesQueueEntry if that is the only data
+// required for deferred indexing.
+type OldAndNewIndexEntries struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	OldEntries    []*IndexEntry          `protobuf:"bytes,1,rep,name=old_entries,json=oldEntries" json:"old_entries,omitempty"`
+	NewEntries    []*IndexEntry          `protobuf:"bytes,2,rep,name=new_entries,json=newEntries" json:"new_entries,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *OldAndNewIndexEntries) Reset() {
+	*x = OldAndNewIndexEntries{}
+	mi := &file_index_build_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OldAndNewIndexEntries) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OldAndNewIndexEntries) ProtoMessage() {}
+
+func (x *OldAndNewIndexEntries) ProtoReflect() protoreflect.Message {
+	mi := &file_index_build_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OldAndNewIndexEntries.ProtoReflect.Descriptor instead.
+func (*OldAndNewIndexEntries) Descriptor() ([]byte, []int) {
+	return file_index_build_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *OldAndNewIndexEntries) GetOldEntries() []*IndexEntry {
+	if x != nil {
+		return x.OldEntries
+	}
+	return nil
+}
+
+func (x *OldAndNewIndexEntries) GetNewEntries() []*IndexEntry {
+	if x != nil {
+		return x.NewEntries
+	}
+	return nil
+}
+
+type SlidingWindowQueueEntry struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The sliding-window entry keys (partition + window value + primary key, packed) drive the window's own
+	// bookkeeping on drain; the dedicated Any messages carry the delegate index's serialized single-sided updates.
+	OldEntryKey     []byte     `protobuf:"bytes,1,opt,name=old_entry_key,json=oldEntryKey" json:"old_entry_key,omitempty"`
+	NewEntryKey     []byte     `protobuf:"bytes,2,opt,name=new_entry_key,json=newEntryKey" json:"new_entry_key,omitempty"`
+	DelegatedDelete *anypb.Any `protobuf:"bytes,3,opt,name=delegated_delete,json=delegatedDelete" json:"delegated_delete,omitempty"`
+	DelegatedInsert *anypb.Any `protobuf:"bytes,4,opt,name=delegated_insert,json=delegatedInsert" json:"delegated_insert,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *SlidingWindowQueueEntry) Reset() {
+	*x = SlidingWindowQueueEntry{}
+	mi := &file_index_build_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SlidingWindowQueueEntry) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SlidingWindowQueueEntry) ProtoMessage() {}
+
+func (x *SlidingWindowQueueEntry) ProtoReflect() protoreflect.Message {
+	mi := &file_index_build_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SlidingWindowQueueEntry.ProtoReflect.Descriptor instead.
+func (*SlidingWindowQueueEntry) Descriptor() ([]byte, []int) {
+	return file_index_build_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *SlidingWindowQueueEntry) GetOldEntryKey() []byte {
+	if x != nil {
+		return x.OldEntryKey
+	}
+	return nil
+}
+
+func (x *SlidingWindowQueueEntry) GetNewEntryKey() []byte {
+	if x != nil {
+		return x.NewEntryKey
+	}
+	return nil
+}
+
+func (x *SlidingWindowQueueEntry) GetDelegatedDelete() *anypb.Any {
+	if x != nil {
+		return x.DelegatedDelete
+	}
+	return nil
+}
+
+func (x *SlidingWindowQueueEntry) GetDelegatedInsert() *anypb.Any {
+	if x != nil {
+		return x.DelegatedInsert
+	}
+	return nil
+}
+
 var File_index_build_proto protoreflect.FileDescriptor
 
 const file_index_build_proto_rawDesc = "" +
 	"\n" +
-	"\x11index_build.proto\x12\x1dcom.apple.foundationdb.record\"\x93\x04\n" +
+	"\x11index_build.proto\x12\x1dcom.apple.foundationdb.record\x1a\x19google/protobuf/any.proto\"\x93\x04\n" +
 	"\x17IndexBuildIndexingStamp\x12U\n" +
 	"\x06method\x18\x01 \x01(\x0e2=.com.apple.foundationdb.record.IndexBuildIndexingStamp.MethodR\x06method\x129\n" +
 	"\x19source_index_subspace_key\x18\x02 \x01(\fR\x16sourceIndexSubspaceKey\x12J\n" +
@@ -291,7 +691,37 @@ const file_index_build_proto_rawDesc = "" +
 	"\x13IndexBuildHeartbeat\x12\x12\n" +
 	"\x04info\x18\x01 \x01(\tR\x04info\x126\n" +
 	"\x16createTimeMilliseconds\x18\x02 \x01(\x03R\x16createTimeMilliseconds\x12<\n" +
-	"\x19heartbeatTimeMilliseconds\x18\x03 \x01(\x03R\x19heartbeatTimeMillisecondsB\xd9\x01\n" +
+	"\x19heartbeatTimeMilliseconds\x18\x03 \x01(\x03R\x19heartbeatTimeMilliseconds\"\xce\x01\n" +
+	"\x17PendingWritesQueueEntry\x12^\n" +
+	"\toperation\x18\x01 \x02(\x0e2@.com.apple.foundationdb.record.PendingWritesQueueEntry.OperationR\toperation\x12(\n" +
+	"\x04data\x18\x02 \x01(\v2\x14.google.protobuf.AnyR\x04data\")\n" +
+	"\tOperation\x12\n" +
+	"\n" +
+	"\x06UPDATE\x10\x01\x12\x10\n" +
+	"\fDELETE_WHERE\x10\x02\"%\n" +
+	"\vDeleteWhere\x12\x16\n" +
+	"\x06prefix\x18\x01 \x01(\fR\x06prefix\"R\n" +
+	"\x10OldAndNewRecords\x12\x1f\n" +
+	"\vold_records\x18\x01 \x01(\fR\n" +
+	"oldRecords\x12\x1d\n" +
+	"\n" +
+	"new_record\x18\x02 \x01(\fR\tnewRecord\"U\n" +
+	"\n" +
+	"IndexEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\fR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\fR\x05value\x12\x1f\n" +
+	"\vprimary_key\x18\x03 \x01(\fR\n" +
+	"primaryKey\"\xaf\x01\n" +
+	"\x15OldAndNewIndexEntries\x12J\n" +
+	"\vold_entries\x18\x01 \x03(\v2).com.apple.foundationdb.record.IndexEntryR\n" +
+	"oldEntries\x12J\n" +
+	"\vnew_entries\x18\x02 \x03(\v2).com.apple.foundationdb.record.IndexEntryR\n" +
+	"newEntries\"\xe3\x01\n" +
+	"\x17SlidingWindowQueueEntry\x12\"\n" +
+	"\rold_entry_key\x18\x01 \x01(\fR\voldEntryKey\x12\"\n" +
+	"\rnew_entry_key\x18\x02 \x01(\fR\vnewEntryKey\x12?\n" +
+	"\x10delegated_delete\x18\x03 \x01(\v2\x14.google.protobuf.AnyR\x0fdelegatedDelete\x12?\n" +
+	"\x10delegated_insert\x18\x04 \x01(\v2\x14.google.protobuf.AnyR\x0fdelegatedInsertB\xd9\x01\n" +
 	"!com.com.apple.foundationdb.recordB\x0fIndexBuildProtoP\x01Z\vfdb.dev/gen\xa2\x02\x04CAFR\xaa\x02\x1dCom.Apple.Foundationdb.Record\xca\x02\x1dCom\\Apple\\Foundationdb\\Record\xe2\x02)Com\\Apple\\Foundationdb\\Record\\GPBMetadata\xea\x02 Com::Apple::Foundationdb::Record"
 
 var (
@@ -306,20 +736,34 @@ func file_index_build_proto_rawDescGZIP() []byte {
 	return file_index_build_proto_rawDescData
 }
 
-var file_index_build_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_index_build_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_index_build_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_index_build_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_index_build_proto_goTypes = []any{
-	(IndexBuildIndexingStamp_Method)(0), // 0: com.apple.foundationdb.record.IndexBuildIndexingStamp.Method
-	(*IndexBuildIndexingStamp)(nil),     // 1: com.apple.foundationdb.record.IndexBuildIndexingStamp
-	(*IndexBuildHeartbeat)(nil),         // 2: com.apple.foundationdb.record.IndexBuildHeartbeat
+	(IndexBuildIndexingStamp_Method)(0),    // 0: com.apple.foundationdb.record.IndexBuildIndexingStamp.Method
+	(PendingWritesQueueEntry_Operation)(0), // 1: com.apple.foundationdb.record.PendingWritesQueueEntry.Operation
+	(*IndexBuildIndexingStamp)(nil),        // 2: com.apple.foundationdb.record.IndexBuildIndexingStamp
+	(*IndexBuildHeartbeat)(nil),            // 3: com.apple.foundationdb.record.IndexBuildHeartbeat
+	(*PendingWritesQueueEntry)(nil),        // 4: com.apple.foundationdb.record.PendingWritesQueueEntry
+	(*DeleteWhere)(nil),                    // 5: com.apple.foundationdb.record.DeleteWhere
+	(*OldAndNewRecords)(nil),               // 6: com.apple.foundationdb.record.OldAndNewRecords
+	(*IndexEntry)(nil),                     // 7: com.apple.foundationdb.record.IndexEntry
+	(*OldAndNewIndexEntries)(nil),          // 8: com.apple.foundationdb.record.OldAndNewIndexEntries
+	(*SlidingWindowQueueEntry)(nil),        // 9: com.apple.foundationdb.record.SlidingWindowQueueEntry
+	(*anypb.Any)(nil),                      // 10: google.protobuf.Any
 }
 var file_index_build_proto_depIdxs = []int32{
-	0, // 0: com.apple.foundationdb.record.IndexBuildIndexingStamp.method:type_name -> com.apple.foundationdb.record.IndexBuildIndexingStamp.Method
-	1, // [1:1] is the sub-list for method output_type
-	1, // [1:1] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	0,  // 0: com.apple.foundationdb.record.IndexBuildIndexingStamp.method:type_name -> com.apple.foundationdb.record.IndexBuildIndexingStamp.Method
+	1,  // 1: com.apple.foundationdb.record.PendingWritesQueueEntry.operation:type_name -> com.apple.foundationdb.record.PendingWritesQueueEntry.Operation
+	10, // 2: com.apple.foundationdb.record.PendingWritesQueueEntry.data:type_name -> google.protobuf.Any
+	7,  // 3: com.apple.foundationdb.record.OldAndNewIndexEntries.old_entries:type_name -> com.apple.foundationdb.record.IndexEntry
+	7,  // 4: com.apple.foundationdb.record.OldAndNewIndexEntries.new_entries:type_name -> com.apple.foundationdb.record.IndexEntry
+	10, // 5: com.apple.foundationdb.record.SlidingWindowQueueEntry.delegated_delete:type_name -> google.protobuf.Any
+	10, // 6: com.apple.foundationdb.record.SlidingWindowQueueEntry.delegated_insert:type_name -> google.protobuf.Any
+	7,  // [7:7] is the sub-list for method output_type
+	7,  // [7:7] is the sub-list for method input_type
+	7,  // [7:7] is the sub-list for extension type_name
+	7,  // [7:7] is the sub-list for extension extendee
+	0,  // [0:7] is the sub-list for field type_name
 }
 
 func init() { file_index_build_proto_init() }
@@ -332,8 +776,8 @@ func file_index_build_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_index_build_proto_rawDesc), len(file_index_build_proto_rawDesc)),
-			NumEnums:      1,
-			NumMessages:   2,
+			NumEnums:      2,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

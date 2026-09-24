@@ -1,0 +1,32 @@
+**ACK — WS-A + WS-E1 implementation code** at candidate tree `664b241c57b71829cb40687a1e26cc3dc3e145e6`.
+
+I read all four prior reports, the complete delta from rejected tree `9f8d0f63cc15aa364dd237a62650a4bf73e5babe`, necessary surrounding frozen source, and relevant Java source at `fdacd162a9c8acfadc49082b89185c823ab8ae4a`. Milestone base remains `71ccd8cf8b3fd0dbafe283e91171818e36af555e`. **No remaining implementation defect found in this delta; no further code fix required.**
+
+The previous identity defects are closed:
+
+- **ORDER:** repeated ordinals reject in [select_parser.go:1325](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/select_parser.go:1325); visitor construction preserves every key at [plan_visitor.go:1600](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/plan_visitor.go:1600). [logical_predicate.go:6349](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:6349) compares resolved direct-column values when either key is positional, leaving named-only checking parser-owned and computed slots permitted.
+- **GROUP:** bound identity takes precedence at [plan_visitor.go:1496](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/plan_visitor.go:1496). Both stripping branches preserve `Value`; all three aggregate reclassification sites carry it. Native output matching uses that identity at [logical_builder.go:181](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_builder.go:181). Both source-validation paths preserve already-bound references, and [logical_predicate.go:4341](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:4341) rejects ungrouped bound outputs with **42803** before invalid native ordinals escape.
+
+The repair reuses the expanded slots and existing semantic comparator without introducing another competing identity mechanism.
+
+Regression strength is adequate for these findings. The [real-FDB cases](/home/birdy/projects/fdb-go/pkg/relational/sqldriver/no_from_select_probe_test.go:66) assert complete rows and output labels across ten positives, with eight negative controls. Units cover eight positional decisions and both strip branches. Raw logs confirm the three compiled mutations failed their intended controls and restored sources passed. The later comment/fuzz additions are not credited as mutation-tested; the fuzz log records **9,387,604 executions**.
+
+I independently reconciled:
+
+- All **6,296 verified-tree** and **6,297 candidate-tree** regular-file hashes, plus recorded artifact hashes. Only the stated three documentation/evidence files separate the trees.
+- **93 uncached passing targets:** 40,650 RUN = 40,645 PASS + five existing skips; per-target name multisets reconcile, including indented subprocess output.
+- **14 uncached race targets:** 21,103 RUN = PASS. Both Java conformance runs report 1,357/1,476.
+- Live Java’s 64 composition cases and two index controls. All four added cross-source ORDER cases—including named equivalents—produce Java **0AF00**; independent Go expectations retain the sorting extension.
+- Eight sequential 1M runs, all 176 recorded timings, result counts and 11 matching EXPLAIN lines. The post-documentation run’s **2 executed/91 cached** is separate evidence.
+
+The previously accepted RaBitQ rounding/architecture contract, array guards, transactional descriptor closure and fixture repairs remain accepted.
+
+Separate outstanding gates:
+
+- **Performance:** early point-read medians worsened; the 52ms index and 41ms PK outliers remain unexplained. Controlled, balanced repetitions with client/planning/FDB timing attribution are needed to establish cause. Planner benchmarks and later needle timings do not settle this; the aspirational <5ms target remains unmet.
+- Historical executor startup-timeout causation still requires unavailable original evidence; the CLI networking fix is separate.
+- Publication remains unauthorized despite restored `birdayz` authentication. No-commit/no-push remains; PR786 stays draft and unchanged. Legacy RaBitQ disable/rebuild remains a deployment prerequisite.
+
+Approved nullable-array/raw/scalar/sorting extensions remain intact; FDB C++ stays **7.3.77**. This ACK excludes WS-B–K, whole-upgrade completion, publication and merge. Historical design/security ACKs retain their original scope.
+
+No edits, agents, worktrees, tests/builds, Git-state changes or GitHub contact occurred.

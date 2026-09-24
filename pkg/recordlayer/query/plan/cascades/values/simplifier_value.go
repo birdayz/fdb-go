@@ -78,8 +78,24 @@ func SimplifyValue(v Value) Value {
 // Evaluate produces a Go-native scalar that LiteralValue can faithfully
 // rewrap.
 func isFoldableComposite(v Value) bool {
-	switch v.(type) {
-	case *ArithmeticValue, *CastValue, *PromoteValue, *ScalarFunctionValue, *NotValue,
+	switch v := v.(type) {
+	case *PromoteValue:
+		if v.prepared == nil {
+			return false
+		}
+		// A structured promotion must survive until the plan binds its
+		// descriptor graph. Folding its standalone raw result into a constant
+		// would erase the coercion boundary under a stamped parent.
+		target := v.prepared.root.target
+		for {
+			array, ok := target.(*ArrayType)
+			if !ok {
+				break
+			}
+			target = array.ElementType
+		}
+		return !IsRecord(target)
+	case *ArithmeticValue, *CastValue, *ScalarFunctionValue, *NotValue,
 		*AndOrValue, *ConditionSelectorValue, *PickValue, *EvaluatesToValue:
 		return true
 	}
@@ -111,13 +127,13 @@ func simplifyChildren(v Value) Value {
 		return NewCastValue(c, x.Target)
 	case *PromoteValue:
 		c := SimplifyValue(x.Child)
-		if cv, ok := c.(*ConstantValue); ok {
+		if cv, ok := c.(*ConstantValue); ok && isFoldableComposite(x) {
 			// Apply the promotion through Evaluate before re-tagging. Numeric
 			// promotions align the carrier width (including direct LONG→FLOAT
 			// rounding), while STRING→UUID reshapes the canonical string into a
 			// neutral [16]byte. On an error, keep the Promote node so it surfaces
 			// at execution, exactly as Java's PromoteValue does.
-			if folded, err := (&PromoteValue{Child: cv, Target: x.Target}).Evaluate(nil); err == nil {
+			if folded, err := NewPromoteValue(cv, x.Target).Evaluate(nil); err == nil {
 				return &ConstantValue{Value: folded, Typ: x.Target}
 			}
 			return NewPromoteValue(cv, x.Target)

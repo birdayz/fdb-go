@@ -90,9 +90,64 @@ func TestValidateField_FanTypeNoneOnRepeatedField(t *testing.T) {
 
 func TestValidateField_MessageTypeFieldWithoutNest(t *testing.T) {
 	t.Parallel()
-	// "flower" is a message field in Order — Field() without Nest() should fail
+	// "flower" is a message field in Order — Field() without Nest() should
+	// fail, with Java's Query.InvalidExpressionException.
 	err := validateKeyExpression(Field("flower"), orderDescriptor())
-	requireKeyExpressionError(t, err)
+	var qe *QueryInvalidExpressionError
+	if !errors.As(err, &qe) {
+		t.Fatalf("expected *QueryInvalidExpressionError, got %T: %v", err, err)
+	}
+}
+
+// TestKeyValidationTextsAreJavas pins every refusal of key validation to the
+// text of Java's validate (FieldKeyExpression.java:145-172,
+// KeyWithValueExpression.validate, SplitKeyExpression.validate; a nesting into
+// a scalar is protobuf-java's getMessageType refusal, measured on the JVM by
+// the conformance spec "Key validation at build, as Java builds") and to its
+// class, named per case: KeyExpression.InvalidExpressionException is
+// KeyExpressionError, Query.InvalidExpressionException is
+// QueryInvalidExpressionError, UnsupportedOperationException is
+// UnsupportedOperationError.
+func TestKeyValidationTextsAreJavas(t *testing.T) {
+	t.Parallel()
+	const (
+		keyClass = iota
+		queryClass
+		unsupportedClass
+	)
+	for _, c := range []struct {
+		name  string
+		expr  KeyExpression
+		want  string
+		class int
+	}{
+		{"a missing field", Field("nope"), "Descriptor Order does not have field: nope", keyClass},
+		{"fan-out over a scalar", FanOut("price"), "price is not repeated with FanType.FanOut", keyClass},
+		{"concatenate over a scalar", &FieldKeyExpression{fieldName: "price", fanType: FanTypeConcatenate}, "price is not repeated with FanType.Concatenate", keyClass},
+		{"a repeated field as a scalar", Field("tags"), "tags is repeated with FanType.None", keyClass},
+		{"a message as a scalar", Field("flower"), "flower is a nested message, but accessed as a scalar", queryClass},
+		{"a nesting's missing parent", Nest("nope", Field("type")), "Descriptor Order does not have field: nope", keyClass},
+		{"a nesting into a scalar", Nest("price", Field("type")), "This field is not of message type. (com.apple.foundationdb.record.Order.price)", unsupportedClass},
+		{"a nested missing field", Nest("flower", Field("nope")), "Descriptor Flower does not have field: nope", keyClass},
+		{"a covering key too short", KeyWithValue(Field("price"), 2), "Child expression of covering expression returns too few columns", keyClass},
+		{"a split of two columns", Split(Concat(Field("price"), Field("quantity")), 1), "Must have a single key before splitting", keyClass},
+		{"a split of one value", Split(Field("price"), 1), "Must produce multiple values for splitting", keyClass},
+	} {
+		err := validateKeyExpression(c.expr, orderDescriptor())
+		if err == nil || err.Error() != c.want {
+			t.Errorf("%s: %v (%T), want %q", c.name, err, err, c.want)
+			continue
+		}
+		var ke *KeyExpressionError
+		var qe *QueryInvalidExpressionError
+		var ue *UnsupportedOperationError
+		got := []bool{errors.As(err, &ke), errors.As(err, &qe), errors.As(err, &ue)}
+		for class, is := range got {
+			if is != (class == c.class) {
+				t.Errorf("%s: %T is not the class the case names (%d)", c.name, err, c.class)
+			}
+		}
+	}
 }
 
 func TestValidateField_FanTypeConcatenateOnRepeatedField(t *testing.T) {
@@ -133,9 +188,13 @@ func TestValidateNesting_NonExistentParentField(t *testing.T) {
 
 func TestValidateNesting_ParentFieldNotAMessage(t *testing.T) {
 	t.Parallel()
-	// "price" is an int32, not a message — cannot nest into it
+	// "price" is an int32, not a message — cannot nest into it. Java's
+	// getMessageType throws UnsupportedOperationException.
 	err := validateKeyExpression(Nest("price", Field("type")), orderDescriptor())
-	requireKeyExpressionError(t, err)
+	var ue *UnsupportedOperationError
+	if !errors.As(err, &ue) {
+		t.Fatalf("expected *UnsupportedOperationError, got %T: %v", err, err)
+	}
 }
 
 func TestValidateNesting_ValidChildFieldInNestedMessage(t *testing.T) {
@@ -382,9 +441,9 @@ func TestValidateSplit_ValidSplitButInvalidInner(t *testing.T) {
 
 func TestValidateFunction_ValidatesArgumentsRecursively(t *testing.T) {
 	t.Parallel()
-	// get_versionstamp_incarnation is a registered function
+	// bitnot is a registered function of one argument.
 	// Arguments are a Field("price") which is valid on Order
-	expr := FunctionExpr("get_versionstamp_incarnation", Field("price"))
+	expr := FunctionExpr("bitnot", Field("price"))
 	err := validateKeyExpression(expr, orderDescriptor())
 	requireNoError(t, err)
 }
@@ -392,21 +451,21 @@ func TestValidateFunction_ValidatesArgumentsRecursively(t *testing.T) {
 func TestValidateFunction_InvalidArguments(t *testing.T) {
 	t.Parallel()
 	// Arguments reference a nonexistent field → error
-	expr := FunctionExpr("get_versionstamp_incarnation", Field("nonexistent"))
+	expr := FunctionExpr("bitnot", Field("nonexistent"))
 	err := validateKeyExpression(expr, orderDescriptor())
 	requireKeyExpressionError(t, err)
 }
 
 func TestValidateFunction_CompositeArguments(t *testing.T) {
 	t.Parallel()
-	expr := FunctionExpr("get_versionstamp_incarnation", Concat(Field("order_id"), Field("price")))
+	expr := FunctionExpr("add", Concat(Field("order_id"), Field("price")))
 	err := validateKeyExpression(expr, orderDescriptor())
 	requireNoError(t, err)
 }
 
 func TestValidateFunction_CompositeArgumentsWithInvalid(t *testing.T) {
 	t.Parallel()
-	expr := FunctionExpr("get_versionstamp_incarnation", Concat(Field("order_id"), Field("nope")))
+	expr := FunctionExpr("add", Concat(Field("order_id"), Field("nope")))
 	err := validateKeyExpression(expr, orderDescriptor())
 	requireKeyExpressionError(t, err)
 }
@@ -425,7 +484,7 @@ func TestBuild_NoRecordTypes(t *testing.T) {
 	if !errors.As(err, &me) {
 		t.Fatalf("expected MetaDataError")
 	}
-	if me.Message != "no record types defined in meta-data" {
+	if me.Message != "No record types defined in meta-data" {
 		t.Fatalf("unexpected message: %s", me.Message)
 	}
 }
@@ -437,8 +496,12 @@ func TestBuild_PrimaryKeyReferencingNonExistentField(t *testing.T) {
 	b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 	b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 
+	// Java's InvalidExpressionException from primaryKey.validate, unwrapped.
 	_, err := b.Build()
-	requireMetaDataError(t, err)
+	requireKeyExpressionError(t, err)
+	if err.Error() != "Descriptor Order does not have field: nonexistent_field" {
+		t.Fatalf("Build = %v", err)
+	}
 }
 
 func TestBuild_IndexReferencingNonExistentField(t *testing.T) {
@@ -447,7 +510,10 @@ func TestBuild_IndexReferencingNonExistentField(t *testing.T) {
 	b.AddIndex("Order", NewIndex("bad_idx", Field("nonexistent_field")))
 
 	_, err := b.Build()
-	requireMetaDataError(t, err)
+	requireKeyExpressionError(t, err)
+	if err.Error() != "Descriptor Order does not have field: nonexistent_field" {
+		t.Fatalf("Build = %v", err)
+	}
 }
 
 func TestBuild_UniversalIndexMissingFromOneType(t *testing.T) {
@@ -457,7 +523,10 @@ func TestBuild_UniversalIndexMissingFromOneType(t *testing.T) {
 	b.AddUniversalIndex(NewIndex("universal_name", Field("name")))
 
 	_, err := b.Build()
-	requireMetaDataError(t, err)
+	requireKeyExpressionError(t, err)
+	if err.Error() != "Descriptor Order does not have field: name" {
+		t.Fatalf("Build = %v", err)
+	}
 }
 
 func TestBuild_ValidMetadataBuildsSuccessfully(t *testing.T) {
@@ -517,8 +586,12 @@ func TestBuild_IndexOnMessageFieldWithoutNest(t *testing.T) {
 	// "flower" is a message field — Field() without Nest should fail validation
 	b.AddIndex("Order", NewIndex("bad_flower_idx", Field("flower")))
 
+	// Java's Query.InvalidExpressionException.
 	_, err := b.Build()
-	requireMetaDataError(t, err)
+	var qe *QueryInvalidExpressionError
+	if !errors.As(err, &qe) || qe.Message != "flower is a nested message, but accessed as a scalar" {
+		t.Fatalf("Build = %v (%T)", err, err)
+	}
 }
 
 func TestBuild_IndexWithNestIsValid(t *testing.T) {
@@ -564,11 +637,15 @@ func TestBuild_RecordTypeKeyInPrimaryKey(t *testing.T) {
 func TestBuild_CountIndexWithoutGrouping(t *testing.T) {
 	t.Parallel()
 	b := baseBuilder()
-	// COUNT index without GroupingKeyExpression → should fail
+	// COUNT index without GroupingKeyExpression → Java's validateGrouping(0)
+	// refuses it in code (IndexValidator.java:58-77).
 	b.AddIndex("Order", NewCountIndex("bad_count", Field("price")))
 
 	_, err := b.Build()
-	requireMetaDataError(t, err)
+	var keyErr *KeyExpressionError
+	if !errors.As(err, &keyErr) || keyErr.Message != "index type requires grouping" {
+		t.Fatalf("Build = %v (%T), want Java's KeyExpression.InvalidExpressionException", err, err)
+	}
 }
 
 func TestBuild_CountIndexWithGrouping(t *testing.T) {
@@ -662,7 +739,48 @@ func TestValidate_LiteralInComposite(t *testing.T) {
 
 func TestValidate_FunctionInComposite(t *testing.T) {
 	t.Parallel()
-	expr := Concat(Field("order_id"), FunctionExpr("get_versionstamp_incarnation", EmptyKey()))
+	expr := Concat(Field("order_id"), FunctionExpr("bitnot", Field("price")))
 	err := validateKeyExpression(expr, orderDescriptor())
 	requireNoError(t, err)
+}
+
+func TestValidatedKeyExpressionFields(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		expr KeyExpression
+		want []protoreflect.Name
+	}{
+		{"nil", nil, nil},
+		{"empty", EmptyKey(), nil},
+		{"literal", Literal("constant"), nil},
+		{"record type", RecordTypeKey(), nil},
+		{"version", VersionKey(), nil},
+		{"field", Field("price"), []protoreflect.Name{"price"}},
+		{"nested", Nest("flower", Field("type")), []protoreflect.Name{"type"}},
+		{"composite", Concat(Field("price"), Nest("flower", Field("type"))), []protoreflect.Name{"price", "type"}},
+		{"grouped", GroupBy(Nest("flower", Field("type")), Field("order_id")), []protoreflect.Name{"order_id", "type"}},
+		{"function", FunctionExpr("identity", Field("price")), []protoreflect.Name{"price"}},
+		{"dimensions", Dimensions(Concat(Field("coord_x"), Field("coord_y")), 0, 2), []protoreflect.Name{"coord_x", "coord_y"}},
+		{"covering", KeyWithValue(Concat(Field("price"), Field("quantity")), 1), []protoreflect.Name{"price", "quantity"}},
+		{"split", Split(FanOut("tags"), 2), []protoreflect.Name{"tags"}},
+		{"list", ListExpr(Concat(Field("price"), Field("quantity")), Literal(1)), []protoreflect.Name{"price", "quantity"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fields, err := validateKeyExpressionFields(tc.expr, orderDescriptor())
+			requireNoError(t, err)
+			if len(fields) != len(tc.want) {
+				t.Fatalf("got %d fields, want %v", len(fields), tc.want)
+			}
+			for i, field := range fields {
+				if field.Name() != tc.want[i] {
+					t.Fatalf("field %d = %s, want %s", i, field.FullName(), tc.want[i])
+				}
+				if field.Name() == "type" && field.ContainingMessage().Name() != "Flower" {
+					t.Fatalf("nested leaf must retain its actual descriptor: %s", field.FullName())
+				}
+			}
+		})
+	}
 }

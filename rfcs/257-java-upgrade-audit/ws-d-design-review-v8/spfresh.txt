@@ -1,0 +1,84 @@
+**NAK** — incomplete review is not the reason: I read everything requested, but two P2 findings remain open.
+
+- **Tree:** `cc94face9f554e277346f6061becf84c658abc3b`.
+- **Design:** `ws-d-design.md` SHA256 `e8a870a4739015a2c9d3e5e83831c08424ac64e1a64e2443e014ae6c6f889814`, recomputed with `git show TREE:path | sha256sum`; it matches.
+- **Java:** `fdacd162` (read from `.git/HEAD`).
+
+**What I checked** (read-only; nothing run or edited):
+- **Reviews and design:** all four v7 verdicts, the full v8 design (1111 lines) and the v7→v8 diff.
+- **Oracle:** the README and both evidence files. All four source hashes match `evidence-run.txt:4-7`. The Go file has 13 `It` specs, and the target ran 14/14 (13 GuardiANN specs plus 1 WS-E spec).
+- **Java:** SplitMergeTask, BounceTask, CollapseTask, ReassignTask, Primitives, Insert, Delete, KMeans, RandomHelpers, Config, GuardiannVectorIndexEngine and OnlineIndexer.
+- **Go:** the retry-context loop, build/merge ordering, BUILD files and CI.
+- **Limitation:** poppler is absent, so I could not read the PDFs. Paper sections are cited through the RFC-094 and skill mapping.
+
+## P2-1 — `consumerOutcome`, the core of v8's delete skip (d), is under-specified and has no fixture (design:286-319, 411)
+
+- **Two branches missing from its prologue list (292-297):**
+  - **Phase 1:** a split or merge without precomputed neighbours re-enqueues before KMeans runs (SplitMergeTask.java:232-236, 435-437). Under the KMeans knob rows it must return "runs", not "refused".
+  - **The survivor count:** see P2-2.
+- **The population sentence (309) leaves out the quantizer arm.** It says the skip covers "exactly the throwing consumers of the table plus livelock refusals". But a live task under a trained bits-9 index is refused at SplitMergeTask.java:227/430 (measured, evidence-run.txt:204). Go's delete skips that task while the target's delete fails. Declare it.
+- **No Go fixture is named for any arm.** v7 explicitly requested one: a bounce at the head over a live collapse, under collapseConcurrency 0. The arms that need pins:
+  - an obsolete or false-alarm head task is consumed;
+  - a phase-1 head task runs under a KMeans knob;
+  - a live split runs under mergeNumNearestClusters 0;
+  - a merge with no mergeable neighbour is consumed;
+  - the bounce's own refusal;
+  - a bounce whose dependency is refused is skipped, and one whose dependency is healthy runs (the pick comes from the task id, BounceTask.java:123,161);
+  - a live bits-9 head task is skipped;
+  - a skip adds no read conflict against a concurrent drain.
+
+## P2-2 — "An n<k candidate is simply INVALID" is false for the target, and v8 now depends on it (design:863, 870-872, 969-970)
+
+- **What Java does:** SplitMergeTask.kMeans (:1107-1111) passes every candidate to KMeans.fit. KMeans.fit checks `vectors.size() >= k` (KMeans.java:136) before `maxIterations` (:137). RandomHelpers.forEach (:213-218) has no size check. So the target throws IllegalArgumentException at kMeans:1108 on every run, not at :397.
+- **Reachability:** a stale-inflated split whose cleanup leaves fewer than 2 live primaries (Primitives.java:1552-1560). For example, under deleteMaxCandidateClusters 0 references and counts stay after a delete (evidence-run.txt:51-54).
+- **Consequences for v8:**
+  - Go's INVALID-then-reconcile path is an undeclared Go-only recovery at a second throw site; (h) names only :397.
+  - "The reconcile runs only where the target throws at :397" (969-970) is false under the design's own n<k rule.
+  - Under the KMeans knobs, `consumerOutcome` would have to run the full reference cleanup before predicting a refusal, because Java's n<k throw comes before the knob check.
+- **Needed:** state the Java fact, then either keep parity (throw) or declare the recovery under (h), and add n<k to `consumerOutcome`.
+
+## P3
+
+1. **The reconcile failure is reachable in more places than stated (971-973).** The hard cap is checked only at Insert.java:334-338. Tasks move primaries into a cluster without it (ReassignTask.java:736-740 → Primitives.java:1146-1179), so deferred mode can also reach a count above hardMax. This is harmless, because the target throws there too, but the sentence is wrong.
+2. **The poison rule contradicts itself.** Lines 197-204 poison the reconcile's capacity failure, while lines 205-206 and 575 say capacity errors never poison.
+   - Scope the rule by where the error comes from.
+   - Give the reconcile failure a distinct cause, so a MergeIndexes caller does not read it as insert backpressure.
+3. **The peel-bound rationale is partly false.** "At least halves M per round" (893-894) is false for the first round: 100→60 (evidence-run.txt:186) and 1000→600 (:192). The bound holds only because of the +2. The same claim appears in guardiann_probe_conformance_test.go:697-698; correct both copies.
+4. **No absolute cost bound.** The worst case is 13 KMeans fits at hardMax 2000 (Config.java:146, 182-183), plus the reconcile's serializable reads, all inside one inline-insert transaction. The design states only a cost relative to the target. Past FDB's 5 s limit the insert gets error 1007 and retries forever, where the target throws. Measure it, or fail with a typed error.
+5. **The `just test` claim (702-703) is not supported as written.** TODO.md:14564-14575 records a red full run (the docscheck failure, and conformance_test timing out at 900 s), then only per-target reruns. There is no green full run, no tree SHA, and no explicit recordlayer result.
+6. **Stray fragment** at line 913: "child holds no member of M."
+
+## Verified closed
+
+- **v7 inline cap:** the withdrawal reasoning checks out against Primitives.java:1161-1163 and 1222-1249, ClusterMetadata.java:189-190, CollapseTask.java:415-416, BounceTask.java:294-300 and ReassignTask.java:730-735.
+- **Bounce dependencies:** a bounce only ever waits on SPLIT_MERGE, REASSIGN or COLLAPSE tasks (AbstractDeferredTask.java:275-286; SplitMergeTask.java:939-946), so the prediction cannot recurse.
+- **Poison and retries:** Go's `Run` creates a fresh record context for each attempt (database.go:275-285), so poisoning cannot strand a retry.
+- **Post-range merges:** they run outside `buildRangeWithRetries` (online_indexer.go:912-920, 1334-1371), so the reconcile error cannot be misread as range-size pressure.
+- **Also fixed:**
+  - the knob-table labels;
+  - the livelock refusal keyed on fetch width;
+  - the reassignNumNeighboringClusters −1 row (evidence:71-74);
+  - the obsolete bits-9 split (:204-205);
+  - the n=1000 peel (:189-192);
+  - the existing-PK insert exit (Insert.java:226-235);
+  - the lease qualifier (684);
+  - the claim-race split into two fixtures (738-748);
+  - the tag-5 order in (j);
+  - the forced split/merge metric scope (427-431).
+- **Oracle target:** it runs under CI's `//...` (ci.yml:128). The DIVERGENCES heartbeat entry matches OnlineIndexer.java:461-462.
+
+## Paper lens
+
+- **No SPFresh change since the accepted WS-C tree.** 11 files changed under `pkg/` since then (the positive control), and none of them is an SPFresh, vector or executor file.
+- **Inherited behaviour does not touch LIRE.** SPFresh's maintainer embeds `standardIndexMaintainer` (spfresh_index_maintainer.go:31). It therefore inherits the queue refusal (index_maintainer_queue.go:12, 18-19) and the no-op MergeIndex (index_deferred_maintenance.go:248). There are zero queue, merge, lease or salt hits in `spfresh_*.go`, while the `standardIndexMaintainer` control does hit.
+- **The maintenance gate is WS-C's store-level gate**, unchanged and algorithm-neutral.
+- **LIRE (SPFresh §3) is untouched.** The in-reconcile bound keeps GuardiANN postings at hardMax plus queue lag, which fits SPANN §3.2.1's bounded posting length. The peel keeps each vector with its nearest centroid.
+
+## Measured vs hypothesis
+
+- **Measured:** oracle items 1-17.
+- **Still hypothesis:**
+  - every `consumerOutcome` arm;
+  - n<k, which the source already settles against the design;
+  - the REMAINING list (825-833);
+  - every Go-only mechanism, none of which is implemented yet.

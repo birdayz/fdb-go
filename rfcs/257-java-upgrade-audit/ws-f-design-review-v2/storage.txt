@@ -1,0 +1,62 @@
+**NAK.** I reviewed tree `d40cc865737fe57df9f3a0880684608f1a793de0`. The design `ws-f-design.md` hashes to sha256 `afbbf93dd308db399f98723e2523b12c1a314171167424aa14941484dce92c5e` and has 1,084 lines, both recomputed from the tree blob. This was read-only: nothing was run, edited or staged. I read all Go code from the tree, because the working tree differs from it in 236 files.
+
+**Verified**
+- **Oracle:**
+  - The blob hashes of the spec, `sql_plan_steps.java` and `ws_j_index_fidelity_conformance_test.go` match the evidence file.
+  - Runs `wsf2-9` and `wsf2-10` each show "Ran 1 of 25 Specs … 1 Passed" and "Executed 1 out of 1 test".
+  - Both mutation logs fail with the claimed "moved" line.
+  - `planRuleTrace` ranks each in-union with `new PlanningCostModel(config)`, using the configuration captured from the rule call. So "loses by its own cost model" is MEASURED.
+- **Java (SOURCE):**
+  - The in-union rule passes the size unconditionally (`ImplementInUnionRule.java:171,211`), and the cost model never reads it (`PlanningCostModel.java:522-557`).
+  - `enforceSerializable` checks `!= SERIALIZABLE` before the child opens (`QueryPlanUtils.java:52-58`, `RecordQueryAbstractDataModificationPlan.java:195`).
+  - The covering-Value plan's FOR_CONTINUATION hash covers the index plan only (`RecordQueryCoveringIndexValuePlan.java:313-318`).
+- **Go:**
+  - 7 `RecordCoreArgumentError{` construction sites.
+  - `FullIdToName`: 26 lines in 7 files.
+  - 9 `MemoizeFinalExpressionsFromOther(` callers.
+  - The plan-cache key carries the disabled rules, with DISABLE_PLANNER_REWRITING folded in (`planner_options.go` `cacheKeyPart`).
+  - The umbrella's WS-G list now names the `TupleSource` mapping (`upgrade.md:564-567`).
+- **v1 storage findings closed:** M1, M2, M4, nil options, the covering salt and tie-break, the cross-engine pin and the WS-G pointer.
+
+### High
+
+**H1. Section 12's continuation-safety claim is false in one direction, and its own example is the failing case (:134, :1048-1058).**
+- **Where rejection happens:** only when the new leaf goes through the range-set cursor. A primary scan gets a salt only if it has scan comparisons (`executor.go:315`). An unfiltered scan passes the caller's bytes straight to `ScanRecordsByType`/`ScanRecords` (`:399-405`), which use them as a key suffix with no check (`store.go:1394-1436`).
+- **"In-union to scan" resumes, it is not refused.** Go plans the target's `SCAN | FILTER` shape as `PredicatesFilter(Scan(T1))` with no scan comparisons (MEASURED). An old in-union continuation fed to that plan resumes silently at an arbitrary key.
+- **DISTINCT removal has no rule.** F-2 and F-3 6a strip a DISTINCT, so the Go-only `DedupContinuation`/`DistinctHashContinuation` wrapper (`executor.go:2187, 2317`) reaches a bare child. Section 12 only covers steps that swap a leaf.
+- **The scope is misdirected.** Go SQL refuses caller-supplied continuations outright (`cascades_generator.go:1343-1354`), so there is no SQL "in-flight paged query". The exposure is the exported `executor.ExecutePlan` (`:118`) under the record-layer configuration. F-1, F-2, F-3 6a, F-5, F-6 and 4.3 (which is not configuration-gated) reach it; F-7's SQL-only configuration does not.
+- **The pin can pass over the hole.** "One query per step" can be met with a salted example and would stay green.
+- **Required:**
+  - a per-step table of transitions (old leaf or wrapper → new), each marked refused or resumed;
+  - a decision on the unsalted direction. Salting an unfiltered scan changes bytes that are Java-compatible today. The likely answer is to document it as record-layer parity (the target's record layer doesn't validate either) and add a CHANGELOG entry;
+  - pins in both directions, including the DISTINCT removal.
+
+### Medium
+
+**M1. The in-union size check has four gaps (4.3, :737-758).**
+- **(a) Unmeasured record-layer break.** "Record-layer callers … fail as the target's record layer does" (:742-744) is still SOURCE only; the oracle measures only the relational size of 24. Before breaking Go's record-layer API, measure the JVM under the default configuration with `IN (10,20) ORDER BY col1` and with a one-value list. Add a CHANGELOG breaking-change entry. Section 14 (:1082) says no decision here is owner-visible; this one is.
+- **(b) Size-0 construction paths survive the arm deletion.** `NewRecordQueryInUnionPlan` and `…WithBindingAliases` hard-code 0 (`in_union.go:42-67`). The ordered arm falls back to 0 when the context is nil (`rule_implement_in_union.go:371-374`). Once the check lands, each builds a plan that always fails. The target's factory requires the size, so either require the parameter or delete these paths.
+- **(c) Check placement.** The target checks before its size-0 and size-1 fast paths (`RecordQueryInUnionPlan.java:151-162`). Go's `executeInUnion` has three earlier returns (`executor_new_plans.go:1847-1877`). State that the check comes first, and pin a one-value list under a size of 0.
+- **(d) Runtime-bound arrays.** Go's in-union executes only sources known at planning time; a nil source is unsupported. When WS-E section 4 adds `IN ?` arrays, the check must use each execution's bound size, not the size seen when the plan was cached. Section 13 (:1061) requires SAME for the `w8_in25_param_*` rows, which cannot pass before that. State the ordering.
+
+**M2. The RFC-238 7c coupling misstates plan identity (9.3, :994).**
+- Go's scan leaf carries the SQL spelling (MEASURED: `Scan(foo.table$nested)`), and that string feeds the salts' `record-types` field (`scan_range_execution_identity.go:348,445`) and the structural key.
+- Moving the leaf to stored names in the same commit therefore changes salts and plan identities for every table whose name is escaped, and outstanding continuations for those tables get rejected.
+- Either narrow "plan identities never change" to the display decode, or require 7c to accept a legacy fingerprint, as `legacyIndexScanRangeFingerprintSaltFields` does (`:416-429`), and pin it.
+
+**M3. The oracle cannot see in-union merge order.**
+- T1's IN-matching rows have the same order by id as by col1 (spec :50-53). So the ORDER BY col1 rows cannot tell a union compared by (COL1, ID) from one compared by ID.
+- That comparison key is exactly what 4.3 rewrites, and it also positions the union's continuation.
+- Add a row that breaks the tie, such as `(5, 10, …)`, and pin both engines.
+
+### Low
+- **W11.**
+  - WS-E 6.6 in this same tree still names `SnapshotIsolationUnsupportedError` (`ws-e-design.md:887-888`). "Edited when next revised" (:848) leaves two designs naming different types for the one place the guard is implemented. Add the pointer now.
+  - Also state which SQLSTATE the error maps to.
+- **W9 sparse index.** Go caches prepared plans keyed on the `?` text (`query_hash.go:44-48`). Run the parameter form with 3 and then NULL on one connection, so a plan that depends on the bound value but is cached under a value-free key gets caught. The oracle uses a fresh schema per probe, so it cannot see this.
+- **Trace attribution (:709, 0.1).**
+  - For ORDER BY col1, `ImplementInUnionRule` yielded the ISCAN in-union, which lost (+1) to the COVERING in-union with FETCH produced by the fetch-pushdown rule. The design says the rule yielded the in-union "over COVERING", which the trace does not show.
+  - Go's pushdown already carries the size (`rule_push_set_operation_through_fetch.go:225-227`); keep that site in the list of rebuilds that must carry it.
+- **9.3 caller list.** The third non-test caller is `cmd/frl/internal/cmd/stats.go:761`, not `fleet/statistics.go`. The conclusion (no Explain renderer decodes names) holds.
+
+**Not covered:** W6 D1–D12 against `CascadesPlanner`, how 4.2's configuration reaches the rule-level cost comparators, and W13 subscript typing beyond its WS-E dependency.

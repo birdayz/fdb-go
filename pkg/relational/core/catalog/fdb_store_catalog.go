@@ -63,7 +63,8 @@ func NewRecordLayerStoreCatalog(catalogSubspace subspace.Subspace) (*RecordLayer
 // NOTE: this is the Java-wire-compat subspace, which the Go sqldriver does
 // NOT yet use — pkg/relational/sqldriver/driver.go opens the catalog via
 // keyspace.RelationalKeyspace.CatalogSubspace() (three strings). Migration
-// to this function from the driver is tracked in TODO.md. Callers reading
+// to this function from the driver is tracked in TODO.md, "Go SQL driver
+// stores the relational catalog and user schemas on a Go-only keyspace". Callers reading
 // a Go-written catalog today (incl. frl's `meta catalog`) should use the
 // keyspace helper; readers of a Java-written catalog (or a future Go
 // driver) should use DefaultCatalogSubspace.
@@ -276,9 +277,10 @@ func (c *RecordLayerStoreCatalog) SaveSchema(txn api.Transaction, s api.Schema, 
 	// flips: the record type key is the LEADING element of every stored
 	// record key, so a key-changing evolution makes the store read old type
 	// A's rows as new type B's — silent data corruption, not an error. This
-	// is the same guard the frl CLI applies (the faithful
-	// MetaDataEvolutionValidator.java:418 port); RepairSchema funnels
-	// through here too.
+	// is the validator the frl CLI's `meta evolve-check` runs (the faithful
+	// MetaDataEvolutionValidator.java:418 port), with the options the rebind
+	// sets; `--allow-no-version-change --allow-literal-carrier-widening`
+	// reproduces them. RepairSchema funnels through here too.
 	if err := c.validateSchemaRebind(txn, s); err != nil {
 		return err
 	}
@@ -327,12 +329,15 @@ func (c *RecordLayerStoreCatalog) validateSchemaRebind(txn api.Transaction, s ap
 	// Version monotonicity is judged on the SQL-layer TEMPLATE VERSION — the
 	// axis this catalog itself stores (TEMPLATES.TEMPLATE_VERSION,
 	// fdb_template_catalog.go's Templates row) and the one the SQL layer
-	// advances per CREATE. The record-layer METADATA version is not a
-	// substitute: it is seeded from the template version and then bumped once
-	// per index (RecordMetaDataBuilder.addIndexCommon:1093-1097), so a v2
-	// template with fewer indexes than v1 legitimately carries a LOWER
-	// metadata version. Comparing versions ACROSS template names is
-	// meaningless, so a name-changing rebind is validated structurally only.
+	// advances per CREATE. The record-layer METADATA version is a different
+	// axis: it is seeded from the template version and then bumped once per
+	// index (RecordMetaDataBuilder.addIndexCommon:1093-1097), so a v2 built
+	// from DDL with fewer indexes than v1 can carry a LOWER metadata version,
+	// and the evolution validator below refuses exactly that, as Java does
+	// (MetaDataEvolutionValidator.java:154): a store opened under metadata
+	// older than its header cannot be opened at all. Comparing versions ACROSS
+	// template names is meaningless, so a name-changing rebind is validated
+	// structurally only.
 	if oldTmpl.MetadataName() == newTmpl.MetadataName() && newTmpl.Version() <= oldTmpl.Version() {
 		return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
 			"cannot rebind schema %s/%s to template %s@%d: version does not advance past the bound %s@%d",
@@ -340,7 +345,12 @@ func (c *RecordLayerStoreCatalog) validateSchemaRebind(txn api.Transaction, s ap
 			newTmpl.MetadataName(), newTmpl.Version(),
 			oldTmpl.MetadataName(), oldTmpl.Version())
 	}
-	validator := recordlayer.NewMetaDataEvolutionValidator().SetAllowNoVersionChange(true).Build()
+	// Literal-carrier widening: a template Go stored before RFC-257 WS-J F2 carries INT
+	// literals as long_value, and the same DDL now builds Java's int_value, which
+	// stores identical bytes; without it every such tenant's rebind is refused as
+	// "key expression changed" (the core validator's default stays Java's equality).
+	validator := recordlayer.NewMetaDataEvolutionValidator().SetAllowNoVersionChange(true).
+		SetAllowLiteralCarrierWidening(true).Build()
 	if verr := validator.Validate(oldRL.Underlying(), newRL.Underlying()); verr != nil {
 		return api.WrapErrorf(verr, api.ErrCodeInvalidSchemaTemplate,
 			"cannot rebind schema %s/%s from template %s@%d to %s@%d: metadata evolution rejected",

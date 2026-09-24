@@ -6,6 +6,7 @@ go_test(
     srcs = [
         "first_error_test.go",
         "group_existence_plan_cost_test.go",
+        "latency_attribution_stress_test.go",
         "raw_fdb_bench_test.go",
         "recordlayer_bench_test.go",
         "statistics_join_order_stress_test.go",

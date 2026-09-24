@@ -42,6 +42,7 @@ import (
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/functions"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
+	"fdb.dev/pkg/relational/core/query"
 	"fdb.dev/pkg/relational/core/query/expr"
 	"fdb.dev/pkg/relational/core/query/logical"
 	"fdb.dev/pkg/relational/core/query/semantic"
@@ -80,58 +81,6 @@ type PlanVisitor struct {
 	// which is valid for cycle detection. Outside of recursive CTEs,
 	// UNION DISTINCT is rejected (only UNION ALL is supported).
 	inRecursiveCTEBody bool
-}
-
-// collectSelectNames does a lightweight scan of the SELECT element list
-// to extract output column names and aliases. It does NOT perform
-// aggregate classification — it simply returns the surface-level name
-// for each SELECT element position, used by ORDER BY positional
-// reference resolution.
-//
-// For COUNT(*) or aggregate functions, it returns the canonical
-// reconstructed name (e.g. "COUNT(*)", "SUM(v)"). For plain columns,
-// it returns the column name. For computed expressions, it returns
-// either the alias or the canonical expression text. SELECT * and
-// SELECT qualifier.* return nil (positional refs are invalid).
-func collectSelectNames(simpleTable *antlrgen.SimpleTableContext) (cols []string, aliases []string) {
-	selElems := simpleTable.SelectElements()
-	if selElems == nil {
-		return nil, nil
-	}
-	elems := selElems.AllSelectElement()
-	for _, elem := range elems {
-		switch e := elem.(type) {
-		case *antlrgen.SelectStarElementContext:
-			// SELECT * — positional refs invalid (no named columns)
-			return nil, nil
-		case *antlrgen.SelectQualifierStarElementContext:
-			if len(elems) == 1 {
-				// sole qualifier.* — no positional refs
-				return nil, nil
-			}
-			// mixed: placeholder slot
-			cols = append(cols, "")
-			aliases = append(aliases, "")
-		case *antlrgen.SelectExpressionElementContext:
-			alias := selectOutputAlias(e)
-			// Try plain column name first.
-			colName, nameErr := columnNameFromExpr(e.Expression(), "SELECT expression")
-			if nameErr != nil {
-				// Computed expression: use alias if present, else
-				// canonical expression text.
-				if alias != "" {
-					cols = append(cols, alias)
-				} else {
-					cols = append(cols, canonicalTextOf(e.Expression()))
-				}
-				aliases = append(aliases, alias)
-			} else {
-				cols = append(cols, colName)
-				aliases = append(aliases, alias)
-			}
-		}
-	}
-	return cols, aliases
 }
 
 // NewPlanVisitor creates a PlanVisitor with the given metadata, defaulting the
@@ -258,8 +207,28 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 			if producer.Body() == nil {
 				return nil, api.NewError(api.ErrCodeUnsupportedQuery, "CTE body has no logical plan")
 			}
-			if !recursive {
-				source, exact := exactVirtualScopeSource(name, producer.Body(), v.md, nil, v.cteScopes)
+			{
+				var source semantic.ScopeSource
+				var exact bool
+				if recursive {
+					// The seed schema was only the temporary declaration used to
+					// bind self-references. Main-query consumers must resolve against
+					// the completed producer's common row, before their Values are
+					// built (QueryVisitor.handleRecursiveNamedQuery publishes the
+					// recursive union's quantifier, not the temporary scan).
+					scan := logical.NewScan(name, "")
+					scan.Source = logical.CTEScanSource(producer)
+					row, typeErr := query.LogicalResultTypeAfterUnionPromotionWithCTEs(scan, v.md, nil)
+					if typeErr != nil && v.md != nil {
+						return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery,
+							"recursive CTE %q has no exact common result row: %v", name, typeErr)
+					}
+					if typeErr == nil {
+						source, exact = virtualScopeSourceFromResultType(name, scan, v.md, row, aliases, v.cteScopes)
+					}
+				} else {
+					source, exact = exactVirtualScopeSource(name, producer.Body(), v.md, nil, v.cteScopes)
+				}
 				if !exact {
 					delete(v.cteScopes, upper)
 					v.cteOnScopes[upper] = semantic.ScopeSource{}
@@ -381,9 +350,8 @@ func (v *PlanVisitor) visitSimpleTableBody(simpleTable *antlrgen.SimpleTableCont
 // visitSimpleTableBodyUnfolded builds the block; visitSimpleTableBody folds
 // its ON-clause EXISTS afterwards.
 func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleTableContext) (logical.LogicalOperator, error) {
-	// Step 1: FROM → parse the source first. Java's QueryVisitor
-	// rejects FROM-less SELECTs before any function dispatch, so
-	// parseFromSource must run before classification/validation.
+	// Step 1: parse the source before classifying the SELECT list. An absent
+	// FROM yields a singleton with no visible attributes, as in QueryVisitor.
 	fs, err := parseFromSource(simpleTable)
 	if err != nil {
 		return nil, err
@@ -406,21 +374,13 @@ func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleT
 	// The expander is built only when the branch that consumes it can be
 	// reached at all, and even then it builds its scope LAZILY.
 	//
-	// This path runs for EVERY SELECT while the star-under-GROUP-BY branch
-	// needs a GROUP BY clause to fire, so the parse-tree presence of one is a
-	// free and exact precondition. MEASURED, because laziness alone was not
-	// free: deferring the scope saved 12 allocs / ~600 B per plan on the
-	// star-free shapes but allocated a closure on every call here, which a
-	// join-heavy plan makes many of — two_table_join went +51 allocs. Gating on
-	// the GROUP BY removes both costs, since a query with no GROUP BY now
-	// allocates nothing at all for star expansion.
-	//
-	// A nil expander is the classifier's "cannot expand" signal and keeps the
-	// asserted 42803 refusal. That is correct here rather than merely cheap: with
-	// no GROUP BY clause the classifier never consults the expander, so nil and
-	// a working expander are indistinguishable to it.
+	// GROUP BY, positional ORDER BY, and mixed star/ordinary SELECT slots
+	// consume the expander. Gate its construction on those typed parse-tree
+	// shapes: laziness alone still allocates a closure on every SELECT,
+	// including star-free joins. A nil expander is the classifier's "cannot
+	// expand" signal; branches outside these shapes do not consult it.
 	var expandStar starExpander
-	if simpleTable.GroupByClause() != nil {
+	if simpleTable.GroupByClause() != nil || hasPositionalOrderBy(simpleTable) || hasMixedSelectStar(simpleTable) {
 		expandStar = starExpanderFor(fs, v.md, v.schemaName, v.cteScopes)
 	}
 	cls, err := classifySelectElements(simpleTable, expandStar)
@@ -479,10 +439,8 @@ func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleT
 		return nil, err
 	}
 
-	// Collect SELECT column names and aliases from ANTLR for ORDER BY
-	// positional reference resolution. This is a lightweight scan —
-	// aggregate classification stays in the selectClassification.
-	selectCols, selectAliases := collectSelectNames(simpleTable)
+	// Positional consumers share the classifier's expanded visible slots.
+	selectCols, selectAliases := cls.selectCols, cls.selectAliases
 
 	// Step 4: ORDER BY → wrap with sort directly from ANTLR. Reads
 	// simpleTable.OrderByClause() and resolves positional references
@@ -504,7 +462,7 @@ func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleT
 	// Step 5: Projection (non-aggregate) + DISTINCT → directly from
 	// ANTLR. Only builds a projection for non-aggregate queries;
 	// aggregate queries have their projection handled in visitSelectGroupBy.
-	op = v.visitFinalProjection(op, simpleTable, hasAggregate, stripPrefix)
+	op = v.visitFinalProjection(op, cls, hasAggregate, stripPrefix)
 	if simpleTable.DISTINCT() != nil {
 		op = logical.NewDistinct(op)
 	}
@@ -556,8 +514,8 @@ func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleT
 	} else if expanded {
 		needRebuild = true
 	}
-	if hasAnyQualifiedStar(sq) {
-		if starErr := expandQualifiedStars(sq, v.md, v.schemaName, queryCTEScopes); starErr != nil {
+	if hasProjectionStar(sq) {
+		if starErr := expandProjectionStars(sq, v.md, v.schemaName, queryCTEScopes); starErr != nil {
 			return nil, starErr
 		}
 		needRebuild = true
@@ -775,19 +733,7 @@ func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleT
 	}
 
 	// (3) Validate ORDER BY columns (ambiguous/undefined, scalar subquery rejection).
-	projAliasSet := make(map[string]bool)
-	if sq.projAliases != nil {
-		for _, a := range sq.projAliases {
-			if a != "" {
-				projAliasSet[strings.ToUpper(a)] = true
-			}
-		}
-	}
-	for _, ac := range sq.aggCols {
-		if ac.outName != "" {
-			projAliasSet[strings.ToUpper(ac.outName)] = true
-		}
-	}
+
 	for _, ob := range sq.orderBy {
 		if ob.rawExpr != nil {
 			hasSubquery := false
@@ -812,22 +758,19 @@ func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleT
 	}
 	if resolver != nil {
 		for _, ob := range sq.orderBy {
+			// Java resolves visible output aliases before consulting source scope,
+			// including when the source has zero or one column with that name.
+			if bare, matches := orderByOutputAliasBinding(ob.rawExpr, sq, resolver); bare && matches > 0 {
+				if matches > 1 {
+					name, _, _, _ := splitColumnRef(ob.rawExpr)
+					return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn, "Ambiguous alias %s", name)
+				}
+				continue
+			}
 			if ob.rawExpr != nil {
 				if _, walkErr := resolver.WalkExpression(ob.rawExpr); walkErr != nil {
 					var ambigErr *semantic.AmbiguousColumnError
 					if errors.As(walkErr, &ambigErr) {
-						// A BARE key naming exactly ONE projection output
-						// alias takes precedence over FROM-scope ambiguity —
-						// the sort executes over the projected row, where
-						// that alias key is unambiguous (the output-first
-						// rule the ColumnNotFound arm below applies).
-						// orderByOutputAliasBinding enforces both restrictions:
-						// the raw key must BE a bare identifier, and the name
-						// must bind exactly one output column; everything else
-						// surfaces the scope's 42702.
-						if bare, n := orderByOutputAliasBinding(ob.rawExpr, ob.colName, sq); bare && n == 1 {
-							continue
-						}
 						// Java's exact SemanticAnalyzer text — the reference as
 						// written, byte-equal in the conformance harness
 						// (verified for duplicate AND distinct aliases).
@@ -841,9 +784,6 @@ func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleT
 					}
 					var notFoundErr *semantic.ColumnNotFoundError
 					if errors.As(walkErr, &notFoundErr) {
-						if projAliasSet[strings.ToUpper(ob.colName)] {
-							continue
-						}
 						if ob.bare != "" {
 							if resolveColumnRefStructural(resolver, ob.bare, ob.qualifier, ob.qualified, ob.segs) == nil {
 								continue
@@ -862,7 +802,7 @@ func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleT
 	// (4) Validate GROUP BY columns.
 	if resolver != nil {
 		for _, gb := range sq.groupBy {
-			if gb.expr != nil {
+			if gb.expr != nil || gb.bound != nil {
 				continue
 			}
 			if gb.bare != "" {
@@ -905,7 +845,7 @@ func (v *PlanVisitor) visitSimpleTableBodyUnfolded(simpleTable *antlrgen.SimpleT
 			}
 		}
 		for _, ac := range sq.aggCols {
-			if ac.groupCol == "" || ac.groupColBare == "" || exprKeyDisplays[ac.groupCol] {
+			if ac.groupCol == "" || ac.groupColBare == "" || ac.groupColValue != nil || exprKeyDisplays[ac.groupCol] {
 				continue
 			}
 			if err := resolveColumnRefStructural(resolver, ac.groupColBare, ac.groupColQualifier, ac.groupColQualified, ac.groupColSegs); err != nil {
@@ -1281,7 +1221,9 @@ func (v *PlanVisitor) visitFrom(simpleTable *antlrgen.SimpleTableContext, fs *fr
 		return nil, err
 	}
 	var op logical.LogicalOperator
-	if fs.inlineValues != nil {
+	if fs.tableName == "" && fs.derivedQuery == nil && fs.inlineValues == nil {
+		op = logical.NewSingleton()
+	} else if fs.inlineValues != nil {
 		var err error
 		op, err = buildInlineValuesLogical(fs.inlineValues, fs.tableAlias, fs.bindingID, v.md)
 		if err != nil {
@@ -1527,19 +1469,16 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 	return op, stripPrefix, nil
 }
 
-// groupKeysEquivalent reports whether two COLUMN group keys are the same
-// grouping column under the identity buildAggregateOutputSlots matches
-// with: (qualified, qualifier, bare) case-insensitively. Two equivalent
-// keys duplicate a grouping value column, which Java rejects 42702
-// (Expressions.pullUp's ambiguity assertion). A bare key and a
-// differently-QUALIFIED key of another source are NOT equivalent — Java's
-// value identity keeps `a.k, b.k` legal. EXPRESSION keys never decide
-// here: their identity is the resolved VALUE (or the token stream when no
-// resolver exists) at the caller — Display is the raw source slice, and
-// comparing it treats `amount+1` and `amount + 1` as different
-// expressions. An expression pair that somehow reaches this comparison
-// fails OPEN (no 42702) rather than guessing from text.
+// groupKeysEquivalent compares already-bound keys by source value. Keys not
+// yet bound retain their structured (qualified, qualifier, bare) comparison
+// until the semantic construction-time check. Equal output labels alone cannot
+// collapse two bound sources. Duplicate grouping values raise Java's 42702
+// (Expressions.pullUp's ambiguity assertion). Unbound expression keys are
+// handled by the caller, never guessed from their display strings here.
 func groupKeysEquivalent(a, b logical.GroupKey) bool {
+	if a.Value != nil && b.Value != nil {
+		return groupKeysPullUpEqual(a.Value, b.Value)
+	}
 	if a.Bare != "" && b.Bare != "" {
 		return a.Qualified == b.Qualified &&
 			strings.EqualFold(a.Bare, b.Bare) &&
@@ -1611,39 +1550,13 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 		return groupBy[idx], true
 	}
 
-	// rebaseToInternal rewrites a sort key for the DEFERRED-strip case: the
-	// sort sits BELOW the reshaping projection, over the aggregate's
-	// internal layout, so a key naming a SELECT alias (which exists only
-	// ABOVE the projection) is rebased to its underlying expression. The
-	// alias is checked FIRST — SQL resolves ORDER BY names against output
-	// columns before source columns, so `SELECT id AS v … GROUP BY id, v
-	// ORDER BY v` sorts by id (the alias), not the hidden group key v.
-	rebaseToInternal := func(name string, bareRef bool) string {
-		// Output aliases bind BARE one-segment identifiers only: a
-		// qualified key (`d.x`) or an aggregate/computed key names source
-		// data, never the SELECT alias. The parse tree decides (bareRef),
-		// not the name text — delimited aliases can spell "x.y" or
-		// "SUM(S)".
-		if !bareRef {
-			return name
-		}
-		for i, al := range deferredStripAliases {
-			if al != "" && strings.EqualFold(al, name) && i < len(deferredStripProj) {
-				return deferredStripProj[i]
-			}
-		}
-		return name
-	}
-
 	obExprs := orderByCtx.AllOrderByExpression()
 	if len(obExprs) == 0 {
 		return op
 	}
 
-	// Java errors 42701 (COLUMN_ALREADY_EXISTS) on `ORDER BY b, b`
-	// with the same column repeated. Stricter than Postgres, but
-	// matching Java's behavior for 100% alignment.
-	seenOrderCols := make(map[string]bool)
+	// Preserve every key: duplicate-name validation follows semantic resolution,
+	// and rebasing a label does not merge its source identity.
 	keys := make([]logical.SortKey, 0, len(obExprs))
 
 	for _, obExpr := range obExprs {
@@ -1677,20 +1590,12 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 			break
 		}
 		if isPos {
-			key := strings.ToUpper(posName)
-			if seenOrderCols[key] {
-				// Duplicate — classifySelectElements already errors on
-				// this, so we'll never reach here in practice. Skip to
-				// match the validated behavior.
-				continue
-			}
-			seenOrderCols[key] = true
 			// Pos carries the SELECT-list position: a positional key IS an
 			// output ordinal by SQL definition, so the translator bakes it
 			// directly to the projection's output slot. Under a DEFERRED
 			// strip the sort input is the aggregate's INTERNAL layout whose
-			// slots differ from the visible ones — bake the underlying
-			// expression text instead and drop the positional binding.
+			// slots differ from the visible ones. Retain the selected output
+			// position and its native aggregate ordinal through rebasing.
 			if len(deferredStripProj) > 0 && pos >= 1 && pos <= len(deferredStripProj) {
 				sk := logical.SortKey{Expr: deferredStripProj[pos-1], Dir: dir, NullsFirst: nf, Pos: pos}
 				if pos <= len(deferredOutputOrdinals) && deferredOutputOrdinals[pos-1] >= 0 {
@@ -1723,22 +1628,31 @@ func (v *PlanVisitor) visitOrderBy(op logical.LogicalOperator, simpleTable *antl
 			bareRef := exprIsBareColumnRef(obExpr.Expression())
 			kb, kq, kqf, ksegs := splitColumnRef(obExpr.Expression())
 			origColName := colName
+			outputPos := 0
 			if len(deferredStripProj) > 0 {
-				colName = rebaseToInternal(colName, bareRef)
+				outputPos, _ = selectOutputAliasPosition(obExpr.Expression(), deferredStripAliases)
+				if outputPos > 0 && outputPos <= len(deferredStripProj) {
+					colName = deferredStripProj[outputPos-1]
+				}
 			}
 			// Resolve GROUP BY alias (`ORDER BY z` where `GROUP BY
 			// x.col1 AS z`) to the underlying column before building
 			// the sort key, so the Cascades planner sees a field that
 			// actually exists in the aggregate output schema.
-			if resolved, ok := resolveGroupByAlias(colName); ok {
-				colName = resolved
+			// An output alias already owns its rebased expression. Only an
+			// unresolved authored bare name can name an ephemeral GROUP alias.
+			if bareRef && outputPos == 0 {
+				if resolved, ok := resolveGroupByAlias(colName); ok {
+					colName = resolved
+				}
 			}
-			key := strings.ToUpper(colName)
-			if seenOrderCols[key] {
-				continue
+			// The selected output slot survives rebasing. Its rendered name is
+			// diagnostic, not another alias to resolve in a subsequent pass.
+			sk := logical.SortKey{Expr: strip(colName), Dir: dir, NullsFirst: nf, Pos: outputPos, BareRef: bareRef, Bare: kb, Qualifier: kq, Qualified: kqf, Segs: ksegs}
+			if outputPos > 0 && outputPos <= len(deferredOutputOrdinals) && deferredOutputOrdinals[outputPos-1] >= 0 {
+				sk.AggregateOutputOrdinal = deferredOutputOrdinals[outputPos-1]
+				sk.HasAggregateOutputOrdinal = true
 			}
-			seenOrderCols[key] = true
-			sk := logical.SortKey{Expr: strip(colName), Dir: dir, NullsFirst: nf, BareRef: bareRef, Bare: kb, Qualifier: kq, Qualified: kqf, Segs: ksegs}
 			if kb != "" && (colName != origColName || sk.Expr != colName) {
 				// A COLUMN key rebased/alias-resolved to an internal OUTPUT
 				// name, or with its prefix stripped — BARE from here on
@@ -1931,14 +1845,14 @@ func resolveBaked(rv values.Value, _ bool) values.FieldValue {
 
 // resolveProjectionValue keeps either exact resolver shape a SELECT slot may
 // own: a field access baked against a declared row, or the whole-object QOV of
-// a scalar lateral-unnest binding. WITH ORDINALITY takes the first form (AS and
+// a scalar or struct lateral-unnest binding. WITH ORDINALITY takes the first form (AS and
 // AT are distinct fields of one exact two-slot row); non-ordinal UNNEST takes
 // the second (the element itself is the flowed object).
 func resolveProjectionValue(rv values.Value) values.Value {
 	if baked := resolveBaked(rv, true); baked != nil {
 		return baked
 	}
-	if qov, ok := values.AsQuantifiedObjectValue(rv); ok && qov.FlowedType().Code() != values.TypeCodeRecord {
+	if qov, ok := values.AsQuantifiedObjectValue(rv); ok {
 		return qov
 	}
 	return nil
@@ -2007,10 +1921,10 @@ func resolveQualifiedBakedPath(resolver *expr.Resolver, segs []semantic.Identifi
 
 // resolveQualifiedProjectionValuePath is the qualified projection caller's
 // exact-value gate. Most sources resolve to a FieldValue baked against their
-// declared row, but a non-ordinal scalar lateral unnest flows the element as
+// declared row, but a non-ordinal lateral unnest flows the element as
 // the whole QuantifiedObjectValue. Rejecting that second exact shape made a
 // correctly expanded `V.*` report that V declared no column order even though
-// the source's declared contract is precisely the scalar QOV.
+// the source's declared contract is precisely the whole-element QOV.
 func resolveQualifiedProjectionValuePath(resolver *expr.Resolver, segs []semantic.Identifier) values.Value {
 	if len(segs) < 2 {
 		return nil
@@ -2149,100 +2063,34 @@ func (v *PlanVisitor) visitLimit(op logical.LogicalOperator, simpleTable *antlrg
 	return op, nil
 }
 
-// visitFinalProjection builds the non-aggregate projection by reading
-// SELECT elements directly from the ANTLR parse tree. Aggregate
-// queries have their projection handled in visitSelectGroupBy; this
-// only fires when hasAggregate is false.
-//
-// SELECT * (projCols nil) and SELECT qualifier.* (sole qualifier-star)
-// skip the projection node — the downstream scan delivers all columns.
-// Mixed qualifier-star + named columns are handled as regular slots.
-func (v *PlanVisitor) visitFinalProjection(op logical.LogicalOperator, simpleTable *antlrgen.SimpleTableContext, hasAggregate bool, stripPrefix string) logical.LogicalOperator {
-	if hasAggregate {
+// visitFinalProjection consumes the same expanded slots used by positional
+// grouping and ordering. Aggregate queries publish their projection through
+// visitSelectGroupBy instead.
+func (v *PlanVisitor) visitFinalProjection(op logical.LogicalOperator, cls *selectClassification, hasAggregate bool, stripPrefix string) logical.LogicalOperator {
+	if hasAggregate || len(cls.projCols) == 0 {
 		return op
 	}
-
-	selElems := simpleTable.SelectElements()
-	if selElems == nil {
-		return op
-	}
-
-	strip := func(s string) string {
-		if stripPrefix != "" && strings.HasPrefix(strings.ToUpper(s), stripPrefix) {
-			return s[len(stripPrefix):]
+	projs := make([]string, len(cls.projCols))
+	aliases := append([]string(nil), cls.projAliases...)
+	computed := make([]bool, len(projs))
+	refs := make([]logical.ColumnRef, len(projs))
+	for i, col := range cls.projCols {
+		if col.star {
+			// A parse-only star is expanded once a source scope is available.
+			continue
 		}
-		return s
-	}
-
-	elems := selElems.AllSelectElement()
-	if len(elems) == 0 {
-		return op
-	}
-
-	// Check for SELECT * or sole SELECT qualifier.* — no projection.
-	if len(elems) == 1 {
-		switch elems[0].(type) {
-		case *antlrgen.SelectStarElementContext:
-			return op
-		case *antlrgen.SelectQualifierStarElementContext:
-			return op
+		if cls.projExprs[i] != nil {
+			projs[i] = canonicalTextOf(cls.projExprs[i])
+			computed[i] = true
+			continue
 		}
-	}
-
-	var projs []string
-	var aliases []string
-	var computed []bool
-	var refs []logical.ColumnRef
-
-	for _, elem := range elems {
-		switch e := elem.(type) {
-		case *antlrgen.SelectStarElementContext:
-			// Mixed * with other elements — already rejected by
-			// classifySelectElements. Defensive no-op.
-			return op
-		case *antlrgen.SelectQualifierStarElementContext:
-			// Mixed qualifier.* slot — placeholder. The downstream
-			// execution expands it.
-			projs = append(projs, "")
-			aliases = append(aliases, "")
-			computed = append(computed, false)
-			refs = append(refs, logical.ColumnRef{})
-		case *antlrgen.SelectExpressionElementContext:
-			alias := selectOutputAlias(e)
-			// Try plain column name first.
-			colName, nameErr := columnNameFromExpr(e.Expression(), "SELECT expression")
-			if nameErr != nil {
-				// Computed expression: use the raw expression text.
-				exprText := canonicalTextOf(e.Expression())
-				projs = append(projs, exprText)
-				aliases = append(aliases, alias)
-				computed = append(computed, true)
-				refs = append(refs, logical.ColumnRef{})
-			} else {
-				rendered := strip(colName)
-				projs = append(projs, rendered)
-				aliases = append(aliases, alias)
-				computed = append(computed, false)
-				// The SEGMENTS behind the rendering this visitor just joined.
-				// columnNameFromExpr and splitColumnRef read the same FullId
-				// with the same per-segment quote stripping, so the triple
-				// spells colName exactly — reconciled against the emitted name
-				// because the derived-table shell may have stripped a
-				// qualifier prefix off it. An aggregate item (`SUM(v)`) is not
-				// a FullColumnName, so it captures nothing and its rendered
-				// name is never read as qualified.
-				bare, qual, qualified, segs := splitColumnRef(e.Expression())
-				refs = append(refs, projColRef(
-					projCol{name: colName, bare: bare, qualifier: qual, qualified: qualified, segs: segs},
-					rendered))
-			}
+		rendered := col.name
+		if stripPrefix != "" && strings.HasPrefix(strings.ToUpper(rendered), stripPrefix) {
+			rendered = rendered[len(stripPrefix):]
 		}
+		projs[i] = rendered
+		refs[i] = projColRef(col, rendered)
 	}
-
-	if len(projs) == 0 {
-		return op
-	}
-
 	proj := logical.NewProject(op, projs, aliases)
 	proj.IsComputed = computed
 	proj.ProjectionRefs = refs

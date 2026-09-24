@@ -1,0 +1,91 @@
+**NAK: RFC-257 WS-E design v9 (Graefe lens)**
+
+- **Tree:** `1cf2b55d3598fca1645cd2f684b6c7b8d7529937`
+- **Design:** `rfcs/257-java-upgrade-audit/ws-e-design.md`, SHA-256 `d76887b8ee7e04e559d699ce19bb2e614792ff3f4ee3de0ec10a9e35eec86e14`, 3163 lines. I recomputed both from `git show`.
+- **Java:** 4.14.2.0 (`fdacd162a9`).
+- **Method:** read-only. I read the three v8 verdicts, the full diff from v8, the sections it touches, the oracle and its evidence, and the Java and Go sources cited below. I ran no tests.
+
+**Verified**
+- **Oracle:** the v9 Describe has 27 pins, and every Java pin reads as the design says. Both runs report "Ran 9 of 57". M9 reddens only its own row (`wse10-M9.log:169,189-190`).
+- **Evidence hashes:** I checked 5 of the 10 source hashes against the tree blobs; all 5 match.
+- **Census:** `.Eval(nil)` has 1 code line (`logical_predicate.go:8072`). `.Evaluate(nil)` has 16 code lines and 4 comment lines. Both reproduce with `git grep` at the tree.
+- **Teardown test:** it asserts `context.Canceled`, and the log shows 3 RUN and 3 PASS under Bazel. The store-open comment is corrected.
+- **Resolved v8 findings:**
+  - Graefe: M1, M2, and all three LOWs.
+  - Torvalds: M2, M4 and M5, plus the XXXXX, two-instance, `exists_with_aggregate#6` and IN-lane LOWs.
+  - Storage: M3, L1 to L4, and L6.
+
+## HIGH
+
+**H1. The v8 H2 finding (the `nested_ins` shape) is not resolved: the design names one cause for keeping the target plan, and both the code and the prototype show it does not do that (design 719-752).**
+- **The claim:** "The NestedLoopJoin sibling guard is what keeps the prototype's FlatMap from winning."
+- **Why the code cannot do it:**
+  - The guard refuses a leg only when its Reference holds an `ExplodeExpression` member that is uncorrelated to the other leg (`rule_implement_nested_loop_join.go:128-137`; `getExplodeExpression`, `rule_implement_in_join.go:545-552`).
+  - The FlatMap's inner is `PredicatesFilter(Explode)`, which is correlated to the outer, so the guard passes it.
+- **Why the prototype contradicts it:**
+  - The prototype kept the guard (`fdb-explode-probe/.../rule_implement_nested_loop_join.go:117`) and still planned the FlatMap (`wse8-explode-suites.log:15018-15020`).
+  - For constant lists, the port's admission is the prototype's, so the design as written reproduces the FlatMap and fails its own pin.
+- **The same gap for `#7`:** the two-source IN-union has no Go mechanism either. Java's comes from `PartitionSelectRule`'s lower={T} partition (`PartitionSelectRule.java:85-114`) feeding `ImplementInUnionRule.java:131-161`.
+- **Fix:** find out on the prototype why Go's PLANNING prefers the FlatMap: a cost rung, or enumeration. Specify that change here; if it is the cost model, it is a Graefe-gated change. Label the port's shapes as HYPOTHESIS until then.
+
+**H2. Provenance is lost wherever the memo deduplicates a yield (2195-2201, 2286-2296).**
+- **The design's mechanism:** "a provenance field on the yield". A yield that deduplicates against an existing member leaves no record.
+- **What the design's argument covers:** only rules applied to the folded yield. It does not cover Go-only rules applied to the SOURCE.
+- **Example:** `WHERE id = 5 AND COALESCE(1 / 0, 5) IS NULL AND id = 5`.
+  - `FilterDedupPredicatesRule` (`default_rules.go:44`) yields S0d, which is unfolded.
+  - `simplify(S0d)` = `[false]` = `simplify(S0)`, so the yield deduplicates.
+  - S0d is in no class, reaches PLANNING, and the primary-key probe rescues it: 22012 where the target returns no rows.
+  - `FilterMergeRule` and `SelectMergeRule` on the source behave the same way, and the outcome depends on rule order.
+- **Fix:**
+  - Record provenance as a memo relation on the member a yield resolves to, whether it was inserted or deduplicated.
+  - Take each class as a connected component.
+  - Pin this example, and assert the member set that reaches PLANNING.
+
+**H3. The NaN mapping reverses RFC-208 without citing it (899-905).**
+- **What RFC-208 decided:**
+  - Exact ranges are scoped to non-NaN values because "selecting an exact suffix across every payload cannot be represented" (`rfcs/208-...md:111-117`).
+  - An equality that can fan out must not be treated as physically fixed for ordering (:512-527).
+  - The binder enforces this as "correct-or-loud" (`scan_range_binding.go:17-23`).
+- **What the design leaves out:**
+  - "The two key ranges" hold only for a TERMINAL component. The design does not define `IDX(f, w)` with `w = 5`.
+  - It does not define ordering. Across NaN payloads, a suffix column such as `id` is not ordered, which breaks `ORDER BY` over that suffix and the IN-union's `COMPARE BY (_.F, _.ID)` merge.
+- **Unmeasured:** the target most likely probes one bit pattern (SOURCE), so Go's indexed answer over payload NaNs goes beyond the target's.
+- **Fix:** cite RFC-208; restrict the mapping to terminal keys or keep the suffix as a residual; mark the equality not physically fixed; and declare the extension.
+
+## MEDIUM
+
+**M1. The chain's schedule and registration are wrong (2222-2240, 3044-3046).**
+- **Wrong WS-F step:** WS-F D3 provides only the types, and their `OnMatch` fails (`ws-f-design.md:247-255`). The chain executes through D4's `ConditionalTransformTask` with D1's progress, so WS-E must land after D4.
+- **Re-firing before D5:** until WS-F's D5 staleness gate, every rule re-fires in every round (ws-f 2.2). On a second round, DecorrelateValuesRule's yield deduplicates, which is no progress, so the simplification fires beside the decorrelated member.
+- **Standalone registrations:** DecorrelateValuesRule is also registered twice on its own (`default_rules.go:159`, `:400`, both composed into REWRITING at `planner_options.go:242-243`). While either remains, the chain's condition cannot hold. The design must delete both.
+- **WS-F F-5:** it deletes the designation scope (ws-f 2.3), which the prune's comparator names (2294). State what happens to the prune then.
+
+**M2. Moving NormalizePredicatesRule breaks its REWRITING consumer (2298-2302).**
+- Go's `PredicateToLogicalUnionRule` runs only in REWRITING (`default_rules.go:149`) and assumes CNF input from Normalize (`rule_predicate_to_logical_union.go:16-17, 106-110`).
+- Java runs both rules in PLANNING, where PredicateToLogicalUnionRule is a match-partition rule (`PlanningRuleSet.java:107, 184-188`).
+- **Fix:** move both, or measure what is lost. At the moment the move is unmeasured.
+
+**M3. The canonicalization site has no column type (1161-1169).**
+- `ConvertToProtoValue(fd, val)` (`proto_value.go:168, 317-323`) and the executor's converter (`executor.go:4459-4463`) receive only a FieldDescriptor.
+- DATE and TIMESTAMP are STRING fields, and their type is "not recoverable from the proto descriptor alone" (`metadata/proto_types.go:74-77`).
+- A third string write site exists: `record_constructor_message.go:152-154`.
+- **Fix:** specify how the SQL column type reaches each site, including array elements and struct members, backed by a census of those sites.
+
+## LOW
+
+- **"One parser" (1170):** `functions.ParseTimestamp` has five layouts, fractional seconds included (`functions/time.go:24-37`). It still serves `functions/cast.go:204, 216` and `compare.go:95, 103`. Delete or re-point them.
+- **Unlabelled SOURCE claims:**
+  - The UNIQUE and union-leg "prune disabled → unfolded wins" unit test (2583) is plausible via `indexProvableMaxCard` (`planning_cost_model.go:497-510`), but it was not measured.
+  - Nothing shows the union-leg SQL reaches `AdvanceStagePreservingMembers`. Go today plans it as a union of finals (its GO line).
+- **Cost of a comparand source:** once the IN-union carries a comparand source, `LiteralFanout` (`in_union.go:245-285`) reports it as unknown. State what that does to the cost.
+- **GREATEST/LEAST "instant order" (1280-1290):** it holds only when the TIMESTAMP operands are canonical. The design does not say what a promoted DATE over unreadable text evaluates to.
+- **Storage v8 M1:** its continuation half is not answered. For ±0, the IN-union has a different number of children from the target's.
+- **"No date or time type":** measured for DATE only. TIMESTAMP is SOURCE (`builder.go:1020`).
+
+**Measured vs SOURCE**
+- **Measured:** the v9 oracle rows and GO lines, the census counts, the teardown test, and the prototype's FlatMap with the guard present.
+- **SOURCE:**
+  - H1's cause.
+  - H2's example.
+  - H3's handling of non-terminal keys and ordering, and the target's one-payload probe.
+  - M1 to M3.

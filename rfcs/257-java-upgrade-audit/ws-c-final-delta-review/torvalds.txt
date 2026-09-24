@@ -1,0 +1,18 @@
+**NAK — reviewed TREE `5dc2a9cf465ff439ac75d1e5eb5682eecd0ca38b`.**
+
+Reviewed the complete 17-file source delta (1,148 additions, 65 deletions) from `2a4d33046f8640673643ea989709665f425cbbc5`, all four prior NAKs, accepted design, final scope, linked evidence, and relevant Java source at `fdacd162a9c8acfadc49082b89185c823ab8ae4a`. Accepted WS-B base: `ba06f34ff8998f61040a491e4f3a3e8b8de7ccf9`.
+
+1. **P2 — Published targets remain in follow-up ownership, breaking independent closeout after retirement.**  
+   [online_indexer_queue.go:312](/home/birdy/projects/fdb-go/pkg/recordlayer/online_indexer_queue.go:312) revisits every original target and skips it only while its current state is scannable. Successful publication in [online_indexer.go:1343](/home/birdy/projects/fdb-go/pkg/recordlayer/online_indexer.go:1343) never permanently removes that target from renewal/validation.
+
+   A concrete interaction requires no competing process: build sorted targets A, B, C, with A declaring B as its replacement and C queued. Closeout publishes A, then B. B’s publication invokes replacement retirement, which disables A through [index_state.go:553](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state.go:553). C’s next drain commit—including an empty final transaction—then rejects **already-completed A** as disabled. C remains queued and the build fails. A fresh single-target rebuild of published A can similarly abort B’s remaining follow-up through state/stamp validation.
+
+   **Fix:** retire targets from this session’s follow-up ownership after successful publication commits, preserving the original target list for stamp identity. Subsequent changes to released targets must not veto remaining targets. Add a real-FDB regression for replacement retirement during sequential closeout and for disablement/rebuild after publication. The existing retirement regression leaves published targets readable and disables its interleaving callback before closeout ([online_indexer_followup_test.go:166](/home/birdy/projects/fdb-go/pkg/recordlayer/online_indexer_followup_test.go:166)), so it misses this case.
+
+The other four fixes close their original findings: admission precedes destructive opening/preparation; cleanup owns its deadline-aware readiness polling and calls `Get` only when ready; consumed nested Any boundaries use Java-compatible validation; mutual renewal bypasses peer-range reads only after committed admission. Detached backend cleanup may finish later, clearing only the old session’s UUID keys.
+
+Existing **local** evidence confirms 93/93 uncached targets, 183/3604 scoped race specs plus ordinary tests/seeds (2,143 RUN lines), and 9/1523 JVM specs with 12 nested-Any verdicts. All 35 frozen source hashes match the reviewed tree. Those passing runs do not cover the interaction above.
+
+Format maximum15/default14, approved extensions, C++7.3.77, SPFresh queue exclusion and unchanged algorithms/LIRE remain preserved. HNSW is synchronous; no deferred child-backend proof is established. GuardiANN remains WS-D; absent Lucene, distinct from Go TEXT, remains upgrade-wide work.
+
+Read-only review: no tests, mutations, edits, or operational changes performed.

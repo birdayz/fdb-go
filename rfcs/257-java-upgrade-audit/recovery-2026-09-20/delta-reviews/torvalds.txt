@@ -1,0 +1,41 @@
+**NAK — WS-A + WS-E1 implementation code** at final tree `9f8d0f63cc15aa364dd237a62650a4bf73e5babe`.
+
+I read all four prior reports, the complete rejected-to-final delta, surrounding source, and the relevant frozen Java reference. The SELECT-slot fix remains incomplete in two places:
+
+1. **P2 — Positional ORDER BY still confuses labels with slot identity.** For `t(id PRIMARY KEY)`, consider:
+   ```sql
+   SELECT *, 8 AS x FROM t a, t b ORDER BY 1, 2
+   ```
+   Expansion assigns both ID slots alias `ID` at [select_parser.go:945](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/select_parser.go:945). Positional resolution prefers that alias, and [select_parser.go:1325](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/select_parser.go:1325) rejects the second key as duplicate `ID` with 42701. These positions select different source columns. The explicit-column equivalent retains distinct `A.ID` and `B.ID` names.
+
+   **Required fix:** make positional duplicate detection use slot/expression identity, preserving rejection of genuinely repeated keys. Retain a multirow, two-source star regression asserting the complete ordered cross product.
+
+2. **P2 — GROUP BY still discards or ignores bound star identity.** With the same one-column table:
+   ```sql
+   SELECT *, COUNT(*) AS n FROM t p, t p GROUP BY 1, 2
+   ```
+   The expanded positions carry distinct source bindings, but [plan_visitor.go:1502](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/plan_visitor.go:1502) compares only qualifier/name and rejects them as duplicate grouping expressions. Later validation also re-resolves bound keys by spelling at [plan_visitor.go:827](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/plan_visitor.go:827). Additionally, [select_parser.go:113](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/select_parser.go:113) rebuilds stripped keys without preserving `Value`.
+
+   **Required fix:** preserve bound identity through key stripping, aggregate output classification, validation and slot matching. Compare bound expressions rather than display names; resolve names only for unresolved references. Retain duplicate-label/source regressions with independently varying values, plus genuine duplicate-expression rejection controls.
+
+These are static source findings, not newly executed reproductions. Both concern the requested authoritative-slot conversion.
+
+The RaBitQ rounding barriers, nil/typed-nil array guards, and transactional descriptor-closure correction address their reported defects. Exact architecture-specific NaN goldens match the measured Java behavior; universal NaN-byte identity is not required. The fixture corrections retain bounded subdivision, complete row assertions and unchanged product retry behavior.
+
+I reconciled artifact hashes, all 6,286 verified-tree hashes and all 6,288 final-freeze hashes. The final tree’s differences from the verified code tree are confined to the four stated documentation/evidence files. Evidence establishes:
+
+- **93/93 uncached targets passed:** 40,605 RUN = 40,600 PASS + five existing skips.
+- **14/14 uncached race targets passed:** 21,059 RUN = PASS.
+- Eight sequential 1M samples match recorded counts/timings; all 11 EXPLAIN lines agree. The retained outliers and planner measurements support the stated limited scope, without establishing universal performance parity.
+- The post-documentation `just test` passed all 93 targets.
+
+Unmet gates remain separate:
+
+- Correct the remaining slot-identity defects and retain focused regression evidence; implementation approval remains unmet.
+- Historical executor startup-timeout causation remains unestablished; CLI networking repair is separate.
+- Fresh GitHub authentication and owner publication authorization remain absent.
+- Legacy RaBitQ disable/rebuild remains a deployment prerequisite.
+
+Approved nullable-array/raw/scalar/sorting extensions remain required; FDB C++ remains **7.3.77**. This does not approve WS-B–WS-K, overall upgrade completion, publication or merge. Historical design/security ACKs are not implementation ACKs.
+
+No edits, agents, worktrees, tests/builds, Git-state changes or GitHub contact were performed.

@@ -1,0 +1,21 @@
+**ACK — scoped WS-B/SPFresh correction confirmation. No remaining actionable findings in the reviewed delta.**
+
+Reviewed Git **tree `48b50548b11a53bd1452a627689c440535a3d093`** against **tree `dd0956b11e901609edcd5f19d36ef64f04482b8a`**. I completed the production/test delta, all four retained NAKs, approved design, caller tracing, retained evidence, and tagged Java `fdacd162a9c8acfadc49082b89185c823ab8ae4a`. This review’s [launch log](/var/tmp/fdb-upgrade-recovery/ws-b/clear-policy-spfresh.log:5) records `gpt-6-astra/xhigh`.
+
+All four findings are resolved:
+
+1. **Reload deadlock:** [Reload](/home/birdy/projects/fdb-go/pkg/recordlayer/store.go:1890) follows `stateMu → registry → view`, consistent with maintenance-triggered uniqueness cleanup. Both builder loading sites use unpublished handles. View operations introduce no reverse acquisition. The deterministic regression demonstrates the remaining real violation and queued writer; cancellation safely unwinds the buggy execution before range materialization.
+
+2. **Clear-only cache staleness:** [Context clearing](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state.go:320) invalidates unclassified nonempty ranges before clearing, independently of later Open. Known data excludes header/state; unopened record exclusions require complete containment and a persisted, parseable header with a valid minimum format. Missing/malformed headers and read failures retain conservative invalidation. Thirteen classification cases and the separate clear-only transaction exercise committed stamps, maintenance, scans, and uncached reopening.
+
+3. **Noncacheable deletion over-invalidation:** [DeleteStore](/home/birdy/projects/fdb-go/pkg/recordlayer/store_api.go:165) preserves tagged Java’s header-derived stamp decision through internal clearing. Tuple-range boundaries, shared-view updates, pending-version/local-version cleanup, and retirement-callback cancellation remain intact. Header-read errors precede mutations; opened deletion/recreation negative controls and cacheable/malformed positives remain covered.
+
+4. **Stale exported snapshots:** [Snapshot copying](/home/birdy/projects/fdb-go/pkg/recordlayer/store_api.go:225) lazily initializes and clones the common index-state authority under lock for both APIs. Reload failures preserve existing state; established conflicts survive publication.
+
+The common maintenance/search gates now preserve the transactional adaptation relevant to [SPFresh §§3.2, 4.2.2](/home/birdy/projects/fdb-go/.claude/skills/spfresh-reviewer/spfresh-paper.pdf) and [RFC094 §2.1](/home/birdy/projects/fdb-go/rfcs/094-spfresh-vector-index.md:107). SPFresh source, LIRE, closure replication, pruning, generation fences, snapshot data reads, encoding, and budgets are unchanged; the prior assessment against [SPANN §§3.2.1–3.2.3](/home/birdy/projects/fdb-go/.claude/skills/spfresh-reviewer/spann-paper.pdf) stands.
+
+Evidence reconciles: **6,848 source hashes and 36 evidence hashes match**; source-to-reviewed-tree differences are documentation/evidence only. Logs support **93/93 uncached targets**, **14/14 scoped race targets**, recordlayer **3426/3427**, conformance **1391/1510**, and four compiled mutation kills. This excludes full relational race coverage and actual CI.
+
+The latest residual **does not independently block this milestone**: orders **1.0159× (+1.59%)**, customers **1.0407× (+4.07%)**, against verified merge-base `e48f5b4965543cd4d99b5578356059e12d969c7c`. Four runs retain 24 RUN/PASS, 26 matching row-count outputs, and zero reported retries. Two sequential samples per side establish neither parity nor causation.
+
+Approved extensions and the Java deletion-callback correction remain preserved. WS-C–K remain excluded; queue/state4/format15 remain disabled. No edits, tests/builds, Git mutations, GitHub requests, publication, or delegation occurred.

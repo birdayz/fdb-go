@@ -1,0 +1,76 @@
+**NAK.** Tree `72fe965617516b0b9d9ebef01d28a19e5ef21007` is a tree object. The design file's SHA256 is `a1993f1579acdaa5e59f9adc75c7ac7a751dc7a030dcbdc4ffccbf4b0f25524f` and it has 787 lines; I checked both.
+
+Every v2 finding from all three reviewers is resolved, except the partial one in finding 4 below. Finding 1 is new, and this revision introduced it. Findings 1–6 come from reading source; I ran nothing.
+
+## Findings, most severe first
+
+**1. Medium: one shared heartbeat identity plus the bounded, detached cleanup lets a late clear erase a live heartbeat.**
+- Revision 3 correctly adopts Java's single `indexerId` (`online_indexer.go:474-481`; IndexingBase.java:457).
+- But the cleanup is a blind own-key clear whose pure-Go commit can land after the 30s bound returns (`online_indexer_queue.go:290-293`, `:343-366`: "The backend may still finish its detached own-key clear after we return").
+- The accepted cleanup design defended that with `rfcs/257-java-upgrade-audit/ws-c-cleanup/README.md:20`: "late clears are harmless because each build uses a new UUID". That premise is now false, and the file wasn't updated. A grep for "new UUID" finds it.
+- Consequence: if attempt N's clear commits after attempt N+1 (or a later `BuildIndex` or `MergeIndexes` on the same indexer) wrote the same key `[9, idx, 7, id]`, the live key is gone until the next renewal.
+  - During that gap an exclusive REBUILD, or a fresh mark, is admitted and clears state under a running session. That breaks the invariant §7.2 chose to be stricter than Java about.
+  - Revision 2's failure mode was a lockout (fail-closed). This one fails open.
+- Java awaits `clearHeartbeats()` in the future chain (IndexingBase.java:174) and has no detached return.
+- Fix: read the key in the cleanup transaction before clearing it, so a late commit conflicts with the next write, or is rejected as too old. Pin it with the existing readiness barrier: hold the cleanup future past its deadline, run the next attempt, release, and assert the heartbeat survives. Then correct README:20.
+
+**2. Low: a CHANGELOG over-claim.** It says a MUTUAL mismatch "relaunches up to Java's attempt limit (six sessions)".
+- CONTINUE over a saved MUTUAL_BY_RECORDS stamp throws at once in Java (OnlineIndexer.java:212-213) and in Go (the catcher's `return indexingCatchFail` after the method switch).
+- The same holds for a *blocked* MUTUAL stamp. Only blocked BY_RECORDS, MULTI_TARGET and BY_INDEX stamps cost six sessions.
+
+**3. Low: the declared precedence divergence lists too few cases.**
+- The DIVERGENCES.md entry names a blocked stamp, MUTUAL under CONTINUE, and ERROR.
+- Go also returns `SynchronizedSessionLockedError` on attempt 1 where Java ends differently in three more cases:
+  - `IfMismatchPrevious` MARK_READABLE (Java: `PartlyBuiltException`);
+  - a MULTI_TARGET stamp the takeover rules refuse (Java: `PartlyBuiltException` after six sessions);
+  - a saved BY_INDEX source that doesn't resolve (Java: the catcher's decode or metadata error).
+- Replace the list with the rule: any case where Java's catcher doesn't end on a heartbeat check.
+
+**4. Low: storage v2 finding 4 is only partly closed.**
+- Only the three builder-derived specs (`online_indexer_test.go:1351` loop) assert the WRITE_ONLY/BY_INDEX state left behind.
+- The unscannable-source refusal (`:4206`, v2's `:4015`) still checks only the error.
+- No spec pins the attempt-limit case that §7.3 and the CHANGELOG describe.
+
+**5. Low (wire): the new check resolves the source by name, then uses the caller's object.**
+- `buildIndexingStamp` (`online_indexer.go:1928-1934`) and the scan use `oi.sourceIndex`.
+- Java compiles the stamp from `metaData.getIndex(name)` (IndexingByIndex.java:68-71, 95-101).
+- So a hand-built `*Index` with a different subspace key or `LastModifiedVersion` writes a stamp Java wouldn't. This predates revision 3, but this check is the place to close it: use the resolved index, or refuse an object that isn't the metadata's.
+
+**6. Low: the `LastBuildOutcome` reset is unpinned.**
+- The "a failed call reports nothing" case uses a fresh indexer. Deleting `oi.lastOutcome = IndexBuildOutcomeNone` at `BuildIndex` entry would stay green.
+- The documented "after one failed" contract needs a success followed by a failure on the same indexer.
+
+**7. Nits.**
+- Fleet: `total += n` now precedes the error check (`fleet/build.go:194`). A failure event's `Records` now includes the failed build while `Indexes` excludes it, the comment still says "what DID get built", and the CHANGELOG doesn't mention it.
+- The frl and fleet `PartlyBuiltError` advice points to mutual and multi-target continuations, which neither tool can run.
+- `buildIndexAttempt`'s doc (`:1205-1208`) still reads as a per-attempt identity. The heartbeat `info` field on the wire is `"online index build"`, where Java writes the stamp method (IndexingBase.java:457). A grep of DIVERGENCES.md finds nothing on this; the same grep's positive control hits the code line. This predates revision 3.
+- `newHeartbeat` still mints and throws away a UUID on every call via `NewIndexingHeartbeat` (`indexing_heartbeat.go:50`).
+
+## What checks out (from source)
+- **Error classes:**
+  - both Go-only checks now return `RecordCoreStorageError`, which neither the catcher nor `isRetryableError` handles (`runner.go:410`);
+  - the follow-up skips scannable targets, so only a DISABLED target reaches it. That is the class Java's state check raises (IndexingThrottle.java:436-440).
+- **Undefined source:**
+  - the check sits after ERROR, MARK_READABLE, skip and the followers, and before admission;
+  - Java's `getIndexingTypeStamp` likewise throws before `updateHeartbeat` (IndexingBase.java:452-460);
+  - `MetaDataError` isn't caught, so nothing is written.
+- **Builder:** its messages and their order match OnlineIndexer.java:867-878.
+- **Outcome API:** `LastBuildOutcome` and its two callers are consistent. Both callers use `SetMarkReadable(true)` and neither is mutual, so `LeftAlone` from disabled publication and `CompletedByPeers` can't reach them.
+- **CHANGELOG:** its other corrections are accurate.
+- **DIVERGENCES.md:** the seven listed items are present and true, apart from finding 3.
+
+## Measured
+- The md5 of all 12 files in `evidence-md5.txt` matches the candidate tree (I recomputed them).
+- Evidence tree `2b0de4e8` differs from the candidate only in four documentation and review files.
+- `justtest.log`: "Executed 19 out of 94 tests: 94 tests pass".
+- All ten mutation logs (m17–m22 and m71a–c) show "marker count 1", the applied diff, "Ran 369 of 3694", reds that match the table (m71a: 20, including the reproducer) and "restored".
+- Census reds:
+
+  | Census | recordlayer | frl | other targets |
+  |---|---|---|---|
+  | skip | 10 specs | 1 test | 0 |
+  | MARK_READABLE | 6 specs | 0 | 0 |
+  | catch | 17 specs + `TestIndexBlockLeaseReadsTheEnvClock` | 0 | 0 |
+
+  Run counts for the other targets: chaos 230, sqldriver 16, conformance "12 of 1556", frl 375, fleet 15.
+- `loop40.log`: 40 "Ran 2 of" lines, 40 "SUCCESS! -- 2 Passed | 0 Failed", no "FAIL!".

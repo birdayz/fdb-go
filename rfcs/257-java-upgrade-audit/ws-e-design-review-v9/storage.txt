@@ -1,0 +1,81 @@
+**NAK: RFC-257 WS-E design v9 (storage/wire lens)**
+
+- **Tree:** `1cf2b55d3598fca1645cd2f684b6c7b8d7529937`
+- **Design:** `rfcs/257-java-upgrade-audit/ws-e-design.md`, SHA-256 `d76887b8ee7e04e559d699ce19bb2e614792ff3f4ee3de0ec10a9e35eec86e14`, 3163 lines. I recomputed the hash from the tree blob and it matches.
+- **Java:** `fdacd162a9`.
+- **Method:** read-only, nothing run. I read the three v8 verdicts, the full v9 design and its diff from v8, the oracle diff, evidence-run.txt, evidence-mutations.txt and wse10-M9.log, and the Go and Java sources cited below.
+
+## HIGH
+
+**H1. DATE and TIMESTAMP columns are STRING at every Go layer, so the canonicalization site and the lane depend on a type no stored column has. SOURCE, with one measured confirmation.**
+- **What the design assumes:** 4.3(1)(ii) canonicalizes "by COLUMN type" in the write converters (:1156-1170). 4.3(2) admits the lane "by static type" (:1212-1221).
+- **What the tree does:**
+  - DDL writes `TYPE_STRING` and no marker (builder.go:1019-1022).
+  - Every template, the builder's (builder.go:702) and the catalog's (fdb_template_catalog.go:297), rebuilds its columns from the proto descriptor. That type "is not recoverable from the proto descriptor alone" (proto_types.go:73-78).
+  - The planner's single authority for a stored column's type is `FieldTypeForProtoField` (proto_field_type.go:50), which returns STRING here, and so does rlcatalog.go:398-409.
+  - Both converters switch on `fd.Kind()` only (proto_value.go:317-323, executor.go:4459-4462).
+- **Measured confirmation:** round v9's GO line for `greatest_date_timestamp_select` is `[STRING]`. Go's `MaximumType(DATE, TIMESTAMP)` is TIMESTAMP (type.go:1410, 1683-1688) and would render as "TIMESTAMP" (cascades_generator.go:6404-6407). So `d` and `t` are STRING.
+- **Consequences:**
+  - `SET d = d` stays STRING to STRING, so the repair claim fails.
+  - "A STRING into a DATE column is refused with 22007" never fires.
+  - The lane never admits a column, including D in TestFDB_TemporalComparandDateColumn.
+  - `GREATEST(d, t)` stays STRING after the port, which contradicts :1280-1288.
+  - The bound-time.Time table (:1315-1322) contradicts itself. A DATE column *is* a STRING column, and the design's own lattice rule says "time.Time … into STRING are 22000" (:1485-1486). So either every existing time.Time write into a DATE or TIMESTAMP column becomes 22000, or promotionMap's TIMESTAMP-to-STRING edge (type.go:1412) stores timestamp text. It is `FormatDate` in neither case.
+- **Fix:** do one of the following, and in either case add a test that opens the template through the catalog in a new connection and asserts each column's type:
+  - Name where the temporal column type is persisted, for example a field option in the stored MetaData. Those are catalog bytes Java reads, so this needs a Java load measurement and a stated outcome for templates created before the change.
+  - Or narrow 4.3(1)-(2) to values statically typed DATE or TIMESTAMP, and withdraw the column claims, the repair claim, the table and their CHANGELOG entries.
+
+## MEDIUM
+
+**M1. The two NaN key ranges only work for the last constrained component (:895-903).**
+- The binder represents an equality as exact alternatives. Zero widening uses a single range only when `!anyLaterComparisonConstrains` (scan_range_binding.go:410-425).
+- The NaN class cannot be listed as alternatives. So `[EQUALS q0, EQUALS q1]` (nested_ins, the shape 4.1(b) keeps) or `f = ? AND g = ?` with a NaN has no exact range set.
+- `PhysicalEqualityShape` depends on the current refusal: `UnsupportedKnownNaN`, a seek bound of "one or two", and float multiplicity left unknown "because their domain includes the unsupported NaN equivalence class" (properties/physical_equality_shape.go:15-31).
+- A UNIQUE DOUBLE index can hold NaNs with several payloads, which would break the one-row proof.
+- The label is also wrong: the two blocks are the tuple order, not `CompareFloat64`'s (:820-824 says the two orders disagree there).
+- **Fix:** state the outcome for a NaN followed by another constrained component, update the shape fields and the uniqueness proofs, and test composite and nested probes, a UNIQUE index holding two NaN payloads, and a resume inside each NaN range.
+
+**M2. Provenance is lost when the memo deduplicates a yield (:2288-2296). SOURCE.**
+- Yields are deduplicated at commit (expression_rule_call.go:141-153), and the design stores provenance as "a provenance field on the yield".
+- **Example:** take `[id=5, TRUE, COALESCE(1/0,5) IS NULL]`.
+  - FilterDropTrue, which the prune leaves alone, yields `S2` without the TRUE.
+  - Simplifying the original and `S2` both give `[FALSE]`, which is committed once.
+  - With a single provenance value, `S2` belongs to no class, crosses into PLANNING, and its primary-key probe wins. Go raises 22012 where the target answers no rows.
+- Overlapping classes have no stated pruning rule.
+- **Fix:** make provenance a set unioned on dedup, define pruning when classes overlap, and test this shape.
+
+**M3. Standalone `DecorrelateValuesRule` registrations defeat the chain (:2221-2240).**
+- It is registered at default_rules.go:159 (DefaultExpressionRules, which REWRITING runs) and at :400. Java registers it only inside the chain (RewritingRuleSet.java:50-58).
+- Under WS-F's contract a deduplicated yield is not progress (ws-f-design.md:145-149). If the standalone instance fires first, the chain's call is a duplicate and simplification fires on the original. That builds exactly the member the design says cannot exist.
+- **Fix:** delete both standalone registrations, and the old simplification rule at :398.
+
+**M4. "One parser" misses a third parser.**
+- `functions.ParseTimestamp` (functions/time.go:24-37) reads five layouts, including fractional seconds. It serves the per-row CAST to DATE and TIMESTAMP (functions/cast.go:200-219) and compare.go:95-103.
+- Only values.go:4534-4560 is repointed. So "readable everywhere or nowhere" (:1177) is false: `'…10:00:00.5'` casts per row but fails as a constant CAST and as an assignment.
+
+**M5. The year-domain check covers only a bound time.Time (:1115-1119).**
+- The RFC 3339 layout accepts an offset. `'9999-12-31T23:00:00-05:00'` becomes year 10000 in UTC, and `'0000-01-01T00:30:00+01:00'` becomes year −1.
+- `FormatTimestamp` and `FormatDate` then store text that no parser reads and that sorts out of instant order, in records and index keys.
+- **Fix:** refuse these in the parser, and test both edges.
+
+**M6. The second crossing holds no finals.** `AdvanceStagePreservingMembers` runs exactly when there are "No finals to promote" (unified_tasks.go:98-108). State how the finals comparator ranks exploratory members there, and over which child members.
+
+## LOW
+
+- **L1. Census matcher:** the matcher text (:2115-2116) still names only `Evaluate(nil)`, while the population (:2032-2034) now includes `Eval`. Widen the matcher and its arm test.
+- **L2. The nested IN-join mechanism is contradicted (:731-733).** The prototype kept the sibling guard and still chose a FlatMap whose inner side is correlated, which that guard does not refuse. Label the mechanism SOURCE and name the deciding rung.
+- **L3. The UNIQUE rescue in Go is SOURCE** (planning_cost_model.go:2918-2931). The prototype measured only the primary key, the primary-key IN and the non-unique index, but the Status paragraph says "measured".
+
+## Verified
+
+- **v8 findings resolved in the text:**
+  - storage M1, M3, M4, L1 (store_state_cache.go:269-273), L2, L3, L4 and L6; L5 only partly (see M4);
+  - Graefe H1 and H2 (the target's shape is measured), M1, M2 and M3 (checked against Java: ConditionalCascadesRule.java:54, 88-93);
+  - Torvalds' findings, including `errors.Is(err, context.Canceled)` at go_runner_test.go:432.
+- **Censuses at the tree:** `.Eval(nil)` gives 1 code line (logical_predicate.go:8072), and `.Evaluate(nil)` gives 20 lines.
+- **Oracle:**
+  - 27 pins, and the v9 GO lines are as the design states.
+  - `f_in_nan_twice_index` fails at scan_range_binding.go:35.
+  - M9 reddens exactly its one row: "Ran 1 of 57 Specs", "0 Passed | 1 Failed", "Executed 1 out of 1 test" (wse10-M9.log).
+
+**Measured vs SOURCE:** only H1's STRING confirmation and the oracle facts are measured. Everything else above is derived from source; I ran nothing, including the M2 and M3 scenarios.

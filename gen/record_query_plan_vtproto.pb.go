@@ -3034,33 +3034,6 @@ func (m *PValue_CosineDistanceRowNumberValue) MarshalToSizedBufferVT(dAtA []byte
 	}
 	return len(dAtA) - i, nil
 }
-func (m *PValue_RowNumberHighOrderValue) MarshalToVT(dAtA []byte) (int, error) {
-	size := m.SizeVT()
-	return m.MarshalToSizedBufferVT(dAtA[:size])
-}
-
-func (m *PValue_RowNumberHighOrderValue) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
-	i := len(dAtA)
-	if m.RowNumberHighOrderValue != nil {
-		size, err := m.RowNumberHighOrderValue.MarshalToSizedBufferVT(dAtA[:i])
-		if err != nil {
-			return 0, err
-		}
-		i -= size
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
-		i--
-		dAtA[i] = 0x3
-		i--
-		dAtA[i] = 0xd2
-	} else {
-		i = protohelpers.EncodeVarint(dAtA, i, 0)
-		i--
-		dAtA[i] = 0x3
-		i--
-		dAtA[i] = 0xd2
-	}
-	return len(dAtA) - i, nil
-}
 func (m *PValue_DistanceValue) MarshalToVT(dAtA []byte) (int, error) {
 	size := m.SizeVT()
 	return m.MarshalToSizedBufferVT(dAtA[:size])
@@ -3196,6 +3169,86 @@ func (m *PValue_CardinalityValue) MarshalToSizedBufferVT(dAtA []byte) (int, erro
 	}
 	return len(dAtA) - i, nil
 }
+func (m *PValue_ArrayAggValue) MarshalToVT(dAtA []byte) (int, error) {
+	size := m.SizeVT()
+	return m.MarshalToSizedBufferVT(dAtA[:size])
+}
+
+func (m *PValue_ArrayAggValue) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+	i := len(dAtA)
+	if m.ArrayAggValue != nil {
+		size, err := m.ArrayAggValue.MarshalToSizedBufferVT(dAtA[:i])
+		if err != nil {
+			return 0, err
+		}
+		i -= size
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
+		i--
+		dAtA[i] = 0x4
+		i--
+		dAtA[i] = 0x82
+	} else {
+		i = protohelpers.EncodeVarint(dAtA, i, 0)
+		i--
+		dAtA[i] = 0x4
+		i--
+		dAtA[i] = 0x82
+	}
+	return len(dAtA) - i, nil
+}
+func (m *PUserDefinedFunctionArgumentDefaultValue) MarshalVT() (dAtA []byte, err error) {
+	if m == nil {
+		return nil, nil
+	}
+	size := m.SizeVT()
+	dAtA = make([]byte, size)
+	n, err := m.MarshalToSizedBufferVT(dAtA[:size])
+	if err != nil {
+		return nil, err
+	}
+	return dAtA[:n], nil
+}
+
+func (m *PUserDefinedFunctionArgumentDefaultValue) MarshalToVT(dAtA []byte) (int, error) {
+	size := m.SizeVT()
+	return m.MarshalToSizedBufferVT(dAtA[:size])
+}
+
+func (m *PUserDefinedFunctionArgumentDefaultValue) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+	if m == nil {
+		return 0, nil
+	}
+	i := len(dAtA)
+	_ = i
+	var l int
+	_ = l
+	if m.unknownFields != nil {
+		i -= len(m.unknownFields)
+		copy(dAtA[i:], m.unknownFields)
+	}
+	if m.Value != nil {
+		size, err := m.Value.MarshalToSizedBufferVT(dAtA[:i])
+		if err != nil {
+			return 0, err
+		}
+		i -= size
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
+		i--
+		dAtA[i] = 0x12
+	}
+	if m.IsProvided != nil {
+		i--
+		if *m.IsProvided {
+			dAtA[i] = 1
+		} else {
+			dAtA[i] = 0
+		}
+		i--
+		dAtA[i] = 0x8
+	}
+	return len(dAtA) - i, nil
+}
+
 func (m *PUserDefinedMacroFunction) MarshalVT() (dAtA []byte, err error) {
 	if m == nil {
 		return nil, nil
@@ -3225,6 +3278,27 @@ func (m *PUserDefinedMacroFunction) MarshalToSizedBufferVT(dAtA []byte) (int, er
 	if m.unknownFields != nil {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
+	}
+	if len(m.DefaultArgumentValues) > 0 {
+		for iNdEx := len(m.DefaultArgumentValues) - 1; iNdEx >= 0; iNdEx-- {
+			size, err := m.DefaultArgumentValues[iNdEx].MarshalToSizedBufferVT(dAtA[:i])
+			if err != nil {
+				return 0, err
+			}
+			i -= size
+			i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
+			i--
+			dAtA[i] = 0x2a
+		}
+	}
+	if len(m.ArgumentNames) > 0 {
+		for iNdEx := len(m.ArgumentNames) - 1; iNdEx >= 0; iNdEx-- {
+			i -= len(m.ArgumentNames[iNdEx])
+			copy(dAtA[i:], m.ArgumentNames[iNdEx])
+			i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.ArgumentNames[iNdEx])))
+			i--
+			dAtA[i] = 0x22
+		}
 	}
 	if m.Body != nil {
 		size, err := m.Body.MarshalToSizedBufferVT(dAtA[:i])
@@ -3726,6 +3800,64 @@ func (m *PCountValue) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(*m.Operator))
 		i--
 		dAtA[i] = 0x8
+	}
+	return len(dAtA) - i, nil
+}
+
+func (m *PArrayAggValue) MarshalVT() (dAtA []byte, err error) {
+	if m == nil {
+		return nil, nil
+	}
+	size := m.SizeVT()
+	dAtA = make([]byte, size)
+	n, err := m.MarshalToSizedBufferVT(dAtA[:size])
+	if err != nil {
+		return nil, err
+	}
+	return dAtA[:n], nil
+}
+
+func (m *PArrayAggValue) MarshalToVT(dAtA []byte) (int, error) {
+	size := m.SizeVT()
+	return m.MarshalToSizedBufferVT(dAtA[:size])
+}
+
+func (m *PArrayAggValue) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+	if m == nil {
+		return 0, nil
+	}
+	i := len(dAtA)
+	_ = i
+	var l int
+	_ = l
+	if m.unknownFields != nil {
+		i -= len(m.unknownFields)
+		copy(dAtA[i:], m.unknownFields)
+	}
+	if m.Limit != nil {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(*m.Limit))
+		i--
+		dAtA[i] = 0x18
+	}
+	if m.IgnoreNulls != nil {
+		i--
+		if *m.IgnoreNulls {
+			dAtA[i] = 1
+		} else {
+			dAtA[i] = 0
+		}
+		i--
+		dAtA[i] = 0x10
+	}
+	if m.Child != nil {
+		size, err := m.Child.MarshalToSizedBufferVT(dAtA[:i])
+		if err != nil {
+			return 0, err
+		}
+		i -= size
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
+		i--
+		dAtA[i] = 0xa
 	}
 	return len(dAtA) - i, nil
 }
@@ -5868,54 +6000,6 @@ func (m *PRecordTypeValue) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(*m.Alias)))
 		i--
 		dAtA[i] = 0xa
-	}
-	return len(dAtA) - i, nil
-}
-
-func (m *PRowNumberHighOrderValue) MarshalVT() (dAtA []byte, err error) {
-	if m == nil {
-		return nil, nil
-	}
-	size := m.SizeVT()
-	dAtA = make([]byte, size)
-	n, err := m.MarshalToSizedBufferVT(dAtA[:size])
-	if err != nil {
-		return nil, err
-	}
-	return dAtA[:n], nil
-}
-
-func (m *PRowNumberHighOrderValue) MarshalToVT(dAtA []byte) (int, error) {
-	size := m.SizeVT()
-	return m.MarshalToSizedBufferVT(dAtA[:size])
-}
-
-func (m *PRowNumberHighOrderValue) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
-	if m == nil {
-		return 0, nil
-	}
-	i := len(dAtA)
-	_ = i
-	var l int
-	_ = l
-	if m.unknownFields != nil {
-		i -= len(m.unknownFields)
-		copy(dAtA[i:], m.unknownFields)
-	}
-	if m.IsReturningVectors != nil {
-		i--
-		if *m.IsReturningVectors {
-			dAtA[i] = 1
-		} else {
-			dAtA[i] = 0
-		}
-		i--
-		dAtA[i] = 0x18
-	}
-	if m.EfSearch != nil {
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(*m.EfSearch))
-		i--
-		dAtA[i] = 0x10
 	}
 	return len(dAtA) - i, nil
 }
@@ -9427,33 +9511,6 @@ func (m *PRecordQueryPlan_SortPlan) MarshalToSizedBufferVT(dAtA []byte) (int, er
 	}
 	return len(dAtA) - i, nil
 }
-func (m *PRecordQueryPlan_StreamingAggregationPlan) MarshalToVT(dAtA []byte) (int, error) {
-	size := m.SizeVT()
-	return m.MarshalToSizedBufferVT(dAtA[:size])
-}
-
-func (m *PRecordQueryPlan_StreamingAggregationPlan) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
-	i := len(dAtA)
-	if m.StreamingAggregationPlan != nil {
-		size, err := m.StreamingAggregationPlan.MarshalToSizedBufferVT(dAtA[:i])
-		if err != nil {
-			return 0, err
-		}
-		i -= size
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
-		i--
-		dAtA[i] = 0x1
-		i--
-		dAtA[i] = 0xca
-	} else {
-		i = protohelpers.EncodeVarint(dAtA, i, 0)
-		i--
-		dAtA[i] = 0x1
-		i--
-		dAtA[i] = 0xca
-	}
-	return len(dAtA) - i, nil
-}
 func (m *PRecordQueryPlan_TypeFilterPlan) MarshalToVT(dAtA []byte) (int, error) {
 	size := m.SizeVT()
 	return m.MarshalToSizedBufferVT(dAtA[:size])
@@ -9778,15 +9835,15 @@ func (m *PRecordQueryPlan_TableFunctionPlan) MarshalToSizedBufferVT(dAtA []byte)
 	}
 	return len(dAtA) - i, nil
 }
-func (m *PRecordQueryPlan_StreamingAggregationPlan2) MarshalToVT(dAtA []byte) (int, error) {
+func (m *PRecordQueryPlan_StreamingAggregationPlan) MarshalToVT(dAtA []byte) (int, error) {
 	size := m.SizeVT()
 	return m.MarshalToSizedBufferVT(dAtA[:size])
 }
 
-func (m *PRecordQueryPlan_StreamingAggregationPlan2) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+func (m *PRecordQueryPlan_StreamingAggregationPlan) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	i := len(dAtA)
-	if m.StreamingAggregationPlan2 != nil {
-		size, err := m.StreamingAggregationPlan2.MarshalToSizedBufferVT(dAtA[:i])
+	if m.StreamingAggregationPlan != nil {
+		size, err := m.StreamingAggregationPlan.MarshalToSizedBufferVT(dAtA[:i])
 		if err != nil {
 			return 0, err
 		}
@@ -9856,6 +9913,33 @@ func (m *PRecordQueryPlan_RecursiveDfsJoinPlan) MarshalToSizedBufferVT(dAtA []by
 		dAtA[i] = 0x2
 		i--
 		dAtA[i] = 0xc2
+	}
+	return len(dAtA) - i, nil
+}
+func (m *PRecordQueryPlan_CoveringIndexValuePlan) MarshalToVT(dAtA []byte) (int, error) {
+	size := m.SizeVT()
+	return m.MarshalToSizedBufferVT(dAtA[:size])
+}
+
+func (m *PRecordQueryPlan_CoveringIndexValuePlan) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+	i := len(dAtA)
+	if m.CoveringIndexValuePlan != nil {
+		size, err := m.CoveringIndexValuePlan.MarshalToSizedBufferVT(dAtA[:i])
+		if err != nil {
+			return 0, err
+		}
+		i -= size
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
+		i--
+		dAtA[i] = 0x2
+		i--
+		dAtA[i] = 0xca
+	} else {
+		i = protohelpers.EncodeVarint(dAtA, i, 0)
+		i--
+		dAtA[i] = 0x2
+		i--
+		dAtA[i] = 0xca
 	}
 	return len(dAtA) - i, nil
 }
@@ -9986,6 +10070,26 @@ func (m *PRecordQueryAggregateIndexPlan) MarshalToSizedBufferVT(dAtA []byte) (in
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
+	if m.IndexEntryToRecordValue != nil {
+		size, err := m.IndexEntryToRecordValue.MarshalToSizedBufferVT(dAtA[:i])
+		if err != nil {
+			return 0, err
+		}
+		i -= size
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
+		i--
+		dAtA[i] = 0x42
+	}
+	if m.ResultType != nil {
+		size, err := m.ResultType.MarshalToSizedBufferVT(dAtA[:i])
+		if err != nil {
+			return 0, err
+		}
+		i -= size
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
+		i--
+		dAtA[i] = 0x3a
+	}
 	if m.GroupByResultValue != nil {
 		size, err := m.GroupByResultValue.MarshalToSizedBufferVT(dAtA[:i])
 		if err != nil {
@@ -10078,6 +10182,66 @@ func (m *PRecordQueryCoveringIndexPlan) MarshalToSizedBufferVT(dAtA []byte) (int
 	}
 	if m.ToRecord != nil {
 		size, err := m.ToRecord.MarshalToSizedBufferVT(dAtA[:i])
+		if err != nil {
+			return 0, err
+		}
+		i -= size
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
+		i--
+		dAtA[i] = 0x1a
+	}
+	if m.RecordTypeName != nil {
+		i -= len(*m.RecordTypeName)
+		copy(dAtA[i:], *m.RecordTypeName)
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(*m.RecordTypeName)))
+		i--
+		dAtA[i] = 0x12
+	}
+	if m.IndexPlan != nil {
+		size, err := m.IndexPlan.MarshalToSizedBufferVT(dAtA[:i])
+		if err != nil {
+			return 0, err
+		}
+		i -= size
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
+		i--
+		dAtA[i] = 0xa
+	}
+	return len(dAtA) - i, nil
+}
+
+func (m *PRecordQueryCoveringIndexValuePlan) MarshalVT() (dAtA []byte, err error) {
+	if m == nil {
+		return nil, nil
+	}
+	size := m.SizeVT()
+	dAtA = make([]byte, size)
+	n, err := m.MarshalToSizedBufferVT(dAtA[:size])
+	if err != nil {
+		return nil, err
+	}
+	return dAtA[:n], nil
+}
+
+func (m *PRecordQueryCoveringIndexValuePlan) MarshalToVT(dAtA []byte) (int, error) {
+	size := m.SizeVT()
+	return m.MarshalToSizedBufferVT(dAtA[:size])
+}
+
+func (m *PRecordQueryCoveringIndexValuePlan) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+	if m == nil {
+		return 0, nil
+	}
+	i := len(dAtA)
+	_ = i
+	var l int
+	_ = l
+	if m.unknownFields != nil {
+		i -= len(m.unknownFields)
+		copy(dAtA[i:], m.unknownFields)
+	}
+	if m.IndexEntryToRecordValue != nil {
+		size, err := m.IndexEntryToRecordValue.MarshalToSizedBufferVT(dAtA[:i])
 		if err != nil {
 			return 0, err
 		}
@@ -10794,6 +10958,16 @@ func (m *PRecordQueryExplodePlan) MarshalToSizedBufferVT(dAtA []byte) (int, erro
 	if m.unknownFields != nil {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
+	}
+	if m.ZeroBasedOrdinality != nil {
+		i--
+		if *m.ZeroBasedOrdinality {
+			dAtA[i] = 1
+		} else {
+			dAtA[i] = 0
+		}
+		i--
+		dAtA[i] = 0x18
 	}
 	if m.WithOrdinality != nil {
 		i--
@@ -13890,103 +14064,6 @@ func (m *PRecordQueryStreamingAggregationPlan) MarshalToSizedBufferVT(dAtA []byt
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
-	if m.IsCreateDefaultOnEmpty != nil {
-		i--
-		if *m.IsCreateDefaultOnEmpty {
-			dAtA[i] = 1
-		} else {
-			dAtA[i] = 0
-		}
-		i--
-		dAtA[i] = 0x38
-	}
-	if m.CompleteResultValue != nil {
-		size, err := m.CompleteResultValue.MarshalToSizedBufferVT(dAtA[:i])
-		if err != nil {
-			return 0, err
-		}
-		i -= size
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
-		i--
-		dAtA[i] = 0x32
-	}
-	if m.AggregateAlias != nil {
-		i -= len(*m.AggregateAlias)
-		copy(dAtA[i:], *m.AggregateAlias)
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(*m.AggregateAlias)))
-		i--
-		dAtA[i] = 0x2a
-	}
-	if m.GroupingKeyAlias != nil {
-		i -= len(*m.GroupingKeyAlias)
-		copy(dAtA[i:], *m.GroupingKeyAlias)
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(*m.GroupingKeyAlias)))
-		i--
-		dAtA[i] = 0x22
-	}
-	if m.GroupingKeyValue != nil {
-		size, err := m.GroupingKeyValue.MarshalToSizedBufferVT(dAtA[:i])
-		if err != nil {
-			return 0, err
-		}
-		i -= size
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
-		i--
-		dAtA[i] = 0x1a
-	}
-	if m.AggregateValue != nil {
-		size, err := m.AggregateValue.MarshalToSizedBufferVT(dAtA[:i])
-		if err != nil {
-			return 0, err
-		}
-		i -= size
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
-		i--
-		dAtA[i] = 0x12
-	}
-	if m.Inner != nil {
-		size, err := m.Inner.MarshalToSizedBufferVT(dAtA[:i])
-		if err != nil {
-			return 0, err
-		}
-		i -= size
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
-		i--
-		dAtA[i] = 0xa
-	}
-	return len(dAtA) - i, nil
-}
-
-func (m *PRecordQueryStreamingAggregationPlan2) MarshalVT() (dAtA []byte, err error) {
-	if m == nil {
-		return nil, nil
-	}
-	size := m.SizeVT()
-	dAtA = make([]byte, size)
-	n, err := m.MarshalToSizedBufferVT(dAtA[:size])
-	if err != nil {
-		return nil, err
-	}
-	return dAtA[:n], nil
-}
-
-func (m *PRecordQueryStreamingAggregationPlan2) MarshalToVT(dAtA []byte) (int, error) {
-	size := m.SizeVT()
-	return m.MarshalToSizedBufferVT(dAtA[:size])
-}
-
-func (m *PRecordQueryStreamingAggregationPlan2) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
-	if m == nil {
-		return 0, nil
-	}
-	i := len(dAtA)
-	_ = i
-	var l int
-	_ = l
-	if m.unknownFields != nil {
-		i -= len(m.unknownFields)
-		copy(dAtA[i:], m.unknownFields)
-	}
 	if m.CompleteResultValue != nil {
 		size, err := m.CompleteResultValue.MarshalToSizedBufferVT(dAtA[:i])
 		if err != nil {
@@ -15707,9 +15784,6 @@ func (m *PValue) ResetVT() {
 		if oneof, ok := m.SpecificValue.(*PValue_CosineDistanceRowNumberValue); ok {
 			oneof.CosineDistanceRowNumberValue.ReturnToVTPool()
 		}
-		if oneof, ok := m.SpecificValue.(*PValue_RowNumberHighOrderValue); ok {
-			oneof.RowNumberHighOrderValue.ReturnToVTPool()
-		}
 		if oneof, ok := m.SpecificValue.(*PValue_DistanceValue); ok {
 			oneof.DistanceValue.ReturnToVTPool()
 		}
@@ -15725,6 +15799,9 @@ func (m *PValue) ResetVT() {
 		if oneof, ok := m.SpecificValue.(*PValue_CardinalityValue); ok {
 			oneof.CardinalityValue.ReturnToVTPool()
 		}
+		if oneof, ok := m.SpecificValue.(*PValue_ArrayAggValue); ok {
+			oneof.ArrayAggValue.ReturnToVTPool()
+		}
 		m.Reset()
 	}
 }
@@ -15736,6 +15813,28 @@ func (m *PValue) ReturnToVTPool() {
 }
 func PValueFromVTPool() *PValue {
 	return vtprotoPool_PValue.Get().(*PValue)
+}
+
+var vtprotoPool_PUserDefinedFunctionArgumentDefaultValue = sync.Pool{
+	New: func() interface{} {
+		return &PUserDefinedFunctionArgumentDefaultValue{}
+	},
+}
+
+func (m *PUserDefinedFunctionArgumentDefaultValue) ResetVT() {
+	if m != nil {
+		m.Value.ReturnToVTPool()
+		m.Reset()
+	}
+}
+func (m *PUserDefinedFunctionArgumentDefaultValue) ReturnToVTPool() {
+	if m != nil {
+		m.ResetVT()
+		vtprotoPool_PUserDefinedFunctionArgumentDefaultValue.Put(m)
+	}
+}
+func PUserDefinedFunctionArgumentDefaultValueFromVTPool() *PUserDefinedFunctionArgumentDefaultValue {
+	return vtprotoPool_PUserDefinedFunctionArgumentDefaultValue.Get().(*PUserDefinedFunctionArgumentDefaultValue)
 }
 
 var vtprotoPool_PUserDefinedMacroFunction = sync.Pool{
@@ -15751,8 +15850,16 @@ func (m *PUserDefinedMacroFunction) ResetVT() {
 		}
 		f0 := m.Arguments[:0]
 		m.Body.ReturnToVTPool()
+		clear(m.ArgumentNames)
+		f1 := m.ArgumentNames[:0]
+		for _, mm := range m.DefaultArgumentValues {
+			mm.ResetVT()
+		}
+		f2 := m.DefaultArgumentValues[:0]
 		m.Reset()
 		m.Arguments = f0
+		m.ArgumentNames = f1
+		m.DefaultArgumentValues = f2
 	}
 }
 func (m *PUserDefinedMacroFunction) ReturnToVTPool() {
@@ -15973,6 +16080,28 @@ func (m *PCountValue) ReturnToVTPool() {
 }
 func PCountValueFromVTPool() *PCountValue {
 	return vtprotoPool_PCountValue.Get().(*PCountValue)
+}
+
+var vtprotoPool_PArrayAggValue = sync.Pool{
+	New: func() interface{} {
+		return &PArrayAggValue{}
+	},
+}
+
+func (m *PArrayAggValue) ResetVT() {
+	if m != nil {
+		m.Child.ReturnToVTPool()
+		m.Reset()
+	}
+}
+func (m *PArrayAggValue) ReturnToVTPool() {
+	if m != nil {
+		m.ResetVT()
+		vtprotoPool_PArrayAggValue.Put(m)
+	}
+}
+func PArrayAggValueFromVTPool() *PArrayAggValue {
+	return vtprotoPool_PArrayAggValue.Get().(*PArrayAggValue)
 }
 
 var vtprotoPool_PDerivedValue = sync.Pool{
@@ -16958,27 +17087,6 @@ func (m *PRecordTypeValue) ReturnToVTPool() {
 }
 func PRecordTypeValueFromVTPool() *PRecordTypeValue {
 	return vtprotoPool_PRecordTypeValue.Get().(*PRecordTypeValue)
-}
-
-var vtprotoPool_PRowNumberHighOrderValue = sync.Pool{
-	New: func() interface{} {
-		return &PRowNumberHighOrderValue{}
-	},
-}
-
-func (m *PRowNumberHighOrderValue) ResetVT() {
-	if m != nil {
-		m.Reset()
-	}
-}
-func (m *PRowNumberHighOrderValue) ReturnToVTPool() {
-	if m != nil {
-		m.ResetVT()
-		vtprotoPool_PRowNumberHighOrderValue.Put(m)
-	}
-}
-func PRowNumberHighOrderValueFromVTPool() *PRowNumberHighOrderValue {
-	return vtprotoPool_PRowNumberHighOrderValue.Get().(*PRowNumberHighOrderValue)
 }
 
 var vtprotoPool_PRowNumberValue = sync.Pool{
@@ -18215,9 +18323,6 @@ func (m *PRecordQueryPlan) ResetVT() {
 		if oneof, ok := m.SpecificPlan.(*PRecordQueryPlan_SortPlan); ok {
 			oneof.SortPlan.ReturnToVTPool()
 		}
-		if oneof, ok := m.SpecificPlan.(*PRecordQueryPlan_StreamingAggregationPlan); ok {
-			oneof.StreamingAggregationPlan.ReturnToVTPool()
-		}
 		if oneof, ok := m.SpecificPlan.(*PRecordQueryPlan_TypeFilterPlan); ok {
 			oneof.TypeFilterPlan.ReturnToVTPool()
 		}
@@ -18254,14 +18359,17 @@ func (m *PRecordQueryPlan) ResetVT() {
 		if oneof, ok := m.SpecificPlan.(*PRecordQueryPlan_TableFunctionPlan); ok {
 			oneof.TableFunctionPlan.ReturnToVTPool()
 		}
-		if oneof, ok := m.SpecificPlan.(*PRecordQueryPlan_StreamingAggregationPlan2); ok {
-			oneof.StreamingAggregationPlan2.ReturnToVTPool()
+		if oneof, ok := m.SpecificPlan.(*PRecordQueryPlan_StreamingAggregationPlan); ok {
+			oneof.StreamingAggregationPlan.ReturnToVTPool()
 		}
 		if oneof, ok := m.SpecificPlan.(*PRecordQueryPlan_MultiIntersectionOnValuesPlan); ok {
 			oneof.MultiIntersectionOnValuesPlan.ReturnToVTPool()
 		}
 		if oneof, ok := m.SpecificPlan.(*PRecordQueryPlan_RecursiveDfsJoinPlan); ok {
 			oneof.RecursiveDfsJoinPlan.ReturnToVTPool()
+		}
+		if oneof, ok := m.SpecificPlan.(*PRecordQueryPlan_CoveringIndexValuePlan); ok {
+			oneof.CoveringIndexValuePlan.ReturnToVTPool()
 		}
 		m.Reset()
 	}
@@ -18315,6 +18423,8 @@ func (m *PRecordQueryAggregateIndexPlan) ResetVT() {
 		m.ResultValue.ReturnToVTPool()
 		m.Constraint.ReturnToVTPool()
 		m.GroupByResultValue.ReturnToVTPool()
+		m.ResultType.ReturnToVTPool()
+		m.IndexEntryToRecordValue.ReturnToVTPool()
 		m.Reset()
 	}
 }
@@ -18349,6 +18459,29 @@ func (m *PRecordQueryCoveringIndexPlan) ReturnToVTPool() {
 }
 func PRecordQueryCoveringIndexPlanFromVTPool() *PRecordQueryCoveringIndexPlan {
 	return vtprotoPool_PRecordQueryCoveringIndexPlan.Get().(*PRecordQueryCoveringIndexPlan)
+}
+
+var vtprotoPool_PRecordQueryCoveringIndexValuePlan = sync.Pool{
+	New: func() interface{} {
+		return &PRecordQueryCoveringIndexValuePlan{}
+	},
+}
+
+func (m *PRecordQueryCoveringIndexValuePlan) ResetVT() {
+	if m != nil {
+		m.IndexPlan.ReturnToVTPool()
+		m.IndexEntryToRecordValue.ReturnToVTPool()
+		m.Reset()
+	}
+}
+func (m *PRecordQueryCoveringIndexValuePlan) ReturnToVTPool() {
+	if m != nil {
+		m.ResetVT()
+		vtprotoPool_PRecordQueryCoveringIndexValuePlan.Put(m)
+	}
+}
+func PRecordQueryCoveringIndexValuePlanFromVTPool() *PRecordQueryCoveringIndexValuePlan {
+	return vtprotoPool_PRecordQueryCoveringIndexValuePlan.Get().(*PRecordQueryCoveringIndexValuePlan)
 }
 
 var vtprotoPool_PIndexKeyValueToPartialRecord_PCopier = sync.Pool{
@@ -19866,31 +19999,6 @@ func (m *PRecordQueryStreamingAggregationPlan) ReturnToVTPool() {
 }
 func PRecordQueryStreamingAggregationPlanFromVTPool() *PRecordQueryStreamingAggregationPlan {
 	return vtprotoPool_PRecordQueryStreamingAggregationPlan.Get().(*PRecordQueryStreamingAggregationPlan)
-}
-
-var vtprotoPool_PRecordQueryStreamingAggregationPlan2 = sync.Pool{
-	New: func() interface{} {
-		return &PRecordQueryStreamingAggregationPlan2{}
-	},
-}
-
-func (m *PRecordQueryStreamingAggregationPlan2) ResetVT() {
-	if m != nil {
-		m.Inner.ReturnToVTPool()
-		m.AggregateValue.ReturnToVTPool()
-		m.GroupingKeyValue.ReturnToVTPool()
-		m.CompleteResultValue.ReturnToVTPool()
-		m.Reset()
-	}
-}
-func (m *PRecordQueryStreamingAggregationPlan2) ReturnToVTPool() {
-	if m != nil {
-		m.ResetVT()
-		vtprotoPool_PRecordQueryStreamingAggregationPlan2.Put(m)
-	}
-}
-func PRecordQueryStreamingAggregationPlan2FromVTPool() *PRecordQueryStreamingAggregationPlan2 {
-	return vtprotoPool_PRecordQueryStreamingAggregationPlan2.Get().(*PRecordQueryStreamingAggregationPlan2)
 }
 
 var vtprotoPool_PRecordQueryTypeFilterPlan = sync.Pool{
@@ -21677,20 +21785,6 @@ func (m *PValue_CosineDistanceRowNumberValue) SizeVT() (n int) {
 	}
 	return n
 }
-func (m *PValue_RowNumberHighOrderValue) SizeVT() (n int) {
-	if m == nil {
-		return 0
-	}
-	var l int
-	_ = l
-	if m.RowNumberHighOrderValue != nil {
-		l = m.RowNumberHighOrderValue.SizeVT()
-		n += 2 + l + protohelpers.SizeOfVarint(uint64(l))
-	} else {
-		n += 3
-	}
-	return n
-}
 func (m *PValue_DistanceValue) SizeVT() (n int) {
 	if m == nil {
 		return 0
@@ -21761,6 +21855,37 @@ func (m *PValue_CardinalityValue) SizeVT() (n int) {
 	}
 	return n
 }
+func (m *PValue_ArrayAggValue) SizeVT() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.ArrayAggValue != nil {
+		l = m.ArrayAggValue.SizeVT()
+		n += 2 + l + protohelpers.SizeOfVarint(uint64(l))
+	} else {
+		n += 3
+	}
+	return n
+}
+func (m *PUserDefinedFunctionArgumentDefaultValue) SizeVT() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.IsProvided != nil {
+		n += 2
+	}
+	if m.Value != nil {
+		l = m.Value.SizeVT()
+		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+	}
+	n += len(m.unknownFields)
+	return n
+}
+
 func (m *PUserDefinedMacroFunction) SizeVT() (n int) {
 	if m == nil {
 		return 0
@@ -21780,6 +21905,18 @@ func (m *PUserDefinedMacroFunction) SizeVT() (n int) {
 	if m.Body != nil {
 		l = m.Body.SizeVT()
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+	}
+	if len(m.ArgumentNames) > 0 {
+		for _, s := range m.ArgumentNames {
+			l = len(s)
+			n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+		}
+	}
+	if len(m.DefaultArgumentValues) > 0 {
+		for _, e := range m.DefaultArgumentValues {
+			l = e.SizeVT()
+			n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+		}
 	}
 	n += len(m.unknownFields)
 	return n
@@ -21950,6 +22087,26 @@ func (m *PCountValue) SizeVT() (n int) {
 	if m.Child != nil {
 		l = m.Child.SizeVT()
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+	}
+	n += len(m.unknownFields)
+	return n
+}
+
+func (m *PArrayAggValue) SizeVT() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.Child != nil {
+		l = m.Child.SizeVT()
+		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+	}
+	if m.IgnoreNulls != nil {
+		n += 2
+	}
+	if m.Limit != nil {
+		n += 1 + protohelpers.SizeOfVarint(uint64(*m.Limit))
 	}
 	n += len(m.unknownFields)
 	return n
@@ -22692,22 +22849,6 @@ func (m *PRecordTypeValue) SizeVT() (n int) {
 	if m.In != nil {
 		l = m.In.SizeVT()
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
-	}
-	n += len(m.unknownFields)
-	return n
-}
-
-func (m *PRowNumberHighOrderValue) SizeVT() (n int) {
-	if m == nil {
-		return 0
-	}
-	var l int
-	_ = l
-	if m.EfSearch != nil {
-		n += 1 + protohelpers.SizeOfVarint(uint64(*m.EfSearch))
-	}
-	if m.IsReturningVectors != nil {
-		n += 2
 	}
 	n += len(m.unknownFields)
 	return n
@@ -24214,20 +24355,6 @@ func (m *PRecordQueryPlan_SortPlan) SizeVT() (n int) {
 	}
 	return n
 }
-func (m *PRecordQueryPlan_StreamingAggregationPlan) SizeVT() (n int) {
-	if m == nil {
-		return 0
-	}
-	var l int
-	_ = l
-	if m.StreamingAggregationPlan != nil {
-		l = m.StreamingAggregationPlan.SizeVT()
-		n += 2 + l + protohelpers.SizeOfVarint(uint64(l))
-	} else {
-		n += 3
-	}
-	return n
-}
 func (m *PRecordQueryPlan_TypeFilterPlan) SizeVT() (n int) {
 	if m == nil {
 		return 0
@@ -24396,14 +24523,14 @@ func (m *PRecordQueryPlan_TableFunctionPlan) SizeVT() (n int) {
 	}
 	return n
 }
-func (m *PRecordQueryPlan_StreamingAggregationPlan2) SizeVT() (n int) {
+func (m *PRecordQueryPlan_StreamingAggregationPlan) SizeVT() (n int) {
 	if m == nil {
 		return 0
 	}
 	var l int
 	_ = l
-	if m.StreamingAggregationPlan2 != nil {
-		l = m.StreamingAggregationPlan2.SizeVT()
+	if m.StreamingAggregationPlan != nil {
+		l = m.StreamingAggregationPlan.SizeVT()
 		n += 2 + l + protohelpers.SizeOfVarint(uint64(l))
 	} else {
 		n += 3
@@ -24432,6 +24559,20 @@ func (m *PRecordQueryPlan_RecursiveDfsJoinPlan) SizeVT() (n int) {
 	_ = l
 	if m.RecursiveDfsJoinPlan != nil {
 		l = m.RecursiveDfsJoinPlan.SizeVT()
+		n += 2 + l + protohelpers.SizeOfVarint(uint64(l))
+	} else {
+		n += 3
+	}
+	return n
+}
+func (m *PRecordQueryPlan_CoveringIndexValuePlan) SizeVT() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.CoveringIndexValuePlan != nil {
+		l = m.CoveringIndexValuePlan.SizeVT()
 		n += 2 + l + protohelpers.SizeOfVarint(uint64(l))
 	} else {
 		n += 3
@@ -24506,6 +24647,14 @@ func (m *PRecordQueryAggregateIndexPlan) SizeVT() (n int) {
 		l = m.GroupByResultValue.SizeVT()
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
+	if m.ResultType != nil {
+		l = m.ResultType.SizeVT()
+		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+	}
+	if m.IndexEntryToRecordValue != nil {
+		l = m.IndexEntryToRecordValue.SizeVT()
+		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+	}
 	n += len(m.unknownFields)
 	return n
 }
@@ -24526,6 +24675,28 @@ func (m *PRecordQueryCoveringIndexPlan) SizeVT() (n int) {
 	}
 	if m.ToRecord != nil {
 		l = m.ToRecord.SizeVT()
+		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+	}
+	n += len(m.unknownFields)
+	return n
+}
+
+func (m *PRecordQueryCoveringIndexValuePlan) SizeVT() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.IndexPlan != nil {
+		l = m.IndexPlan.SizeVT()
+		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+	}
+	if m.RecordTypeName != nil {
+		l = len(*m.RecordTypeName)
+		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+	}
+	if m.IndexEntryToRecordValue != nil {
+		l = m.IndexEntryToRecordValue.SizeVT()
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
 	n += len(m.unknownFields)
@@ -24817,6 +24988,9 @@ func (m *PRecordQueryExplodePlan) SizeVT() (n int) {
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
 	if m.WithOrdinality != nil {
+		n += 2
+	}
+	if m.ZeroBasedOrdinality != nil {
 		n += 2
 	}
 	n += len(m.unknownFields)
@@ -25963,43 +26137,6 @@ func (m *PIndexAggregateFunction) SizeVT() (n int) {
 }
 
 func (m *PRecordQueryStreamingAggregationPlan) SizeVT() (n int) {
-	if m == nil {
-		return 0
-	}
-	var l int
-	_ = l
-	if m.Inner != nil {
-		l = m.Inner.SizeVT()
-		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
-	}
-	if m.AggregateValue != nil {
-		l = m.AggregateValue.SizeVT()
-		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
-	}
-	if m.GroupingKeyValue != nil {
-		l = m.GroupingKeyValue.SizeVT()
-		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
-	}
-	if m.GroupingKeyAlias != nil {
-		l = len(*m.GroupingKeyAlias)
-		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
-	}
-	if m.AggregateAlias != nil {
-		l = len(*m.AggregateAlias)
-		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
-	}
-	if m.CompleteResultValue != nil {
-		l = m.CompleteResultValue.SizeVT()
-		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
-	}
-	if m.IsCreateDefaultOnEmpty != nil {
-		n += 2
-	}
-	n += len(m.unknownFields)
-	return n
-}
-
-func (m *PRecordQueryStreamingAggregationPlan2) SizeVT() (n int) {
 	if m == nil {
 		return 0
 	}
@@ -31838,47 +31975,6 @@ func (m *PValue) UnmarshalVT(dAtA []byte) error {
 				m.SpecificValue = &PValue_CosineDistanceRowNumberValue{CosineDistanceRowNumberValue: v}
 			}
 			iNdEx = postIndex
-		case 58:
-			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field RowNumberHighOrderValue", wireType)
-			}
-			var msglen int
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return protohelpers.ErrIntOverflow
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				msglen |= int(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-			if msglen < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			postIndex := iNdEx + msglen
-			if postIndex < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			if postIndex > l {
-				return io.ErrUnexpectedEOF
-			}
-			if oneof, ok := m.SpecificValue.(*PValue_RowNumberHighOrderValue); ok {
-				if err := oneof.RowNumberHighOrderValue.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
-					return err
-				}
-			} else {
-				v := PRowNumberHighOrderValueFromVTPool()
-				if err := v.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
-					return err
-				}
-				m.SpecificValue = &PValue_RowNumberHighOrderValue{RowNumberHighOrderValue: v}
-			}
-			iNdEx = postIndex
 		case 59:
 			if wireType != 2 {
 				return fmt.Errorf("proto: wrong wireType = %d for field DistanceValue", wireType)
@@ -32084,6 +32180,47 @@ func (m *PValue) UnmarshalVT(dAtA []byte) error {
 				m.SpecificValue = &PValue_CardinalityValue{CardinalityValue: v}
 			}
 			iNdEx = postIndex
+		case 64:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field ArrayAggValue", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if oneof, ok := m.SpecificValue.(*PValue_ArrayAggValue); ok {
+				if err := oneof.ArrayAggValue.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+					return err
+				}
+			} else {
+				v := PArrayAggValueFromVTPool()
+				if err := v.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+					return err
+				}
+				m.SpecificValue = &PValue_ArrayAggValue{ArrayAggValue: v}
+			}
+			iNdEx = postIndex
 		default:
 			iNdEx = preIndex
 			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
@@ -32106,6 +32243,114 @@ func (m *PValue) UnmarshalVT(dAtA []byte) error {
 				m.unknownFields = append(m.unknownFields, dAtA[iNdEx:iNdEx+skippy]...)
 				iNdEx += skippy
 			}
+		}
+	}
+
+	if iNdEx > l {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
+func (m *PUserDefinedFunctionArgumentDefaultValue) UnmarshalVT(dAtA []byte) error {
+	l := len(dAtA)
+	iNdEx := 0
+	for iNdEx < l {
+		preIndex := iNdEx
+		var wire uint64
+		for shift := uint(0); ; shift += 7 {
+			if shift >= 64 {
+				return protohelpers.ErrIntOverflow
+			}
+			if iNdEx >= l {
+				return io.ErrUnexpectedEOF
+			}
+			b := dAtA[iNdEx]
+			iNdEx++
+			wire |= uint64(b&0x7F) << shift
+			if b < 0x80 {
+				break
+			}
+		}
+		fieldNum := int32(wire >> 3)
+		wireType := int(wire & 0x7)
+		if wireType == 4 {
+			return fmt.Errorf("proto: PUserDefinedFunctionArgumentDefaultValue: wiretype end group for non-group")
+		}
+		if fieldNum <= 0 {
+			return fmt.Errorf("proto: PUserDefinedFunctionArgumentDefaultValue: illegal tag %d (wire type %d)", fieldNum, wire)
+		}
+		switch fieldNum {
+		case 1:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field IsProvided", wireType)
+			}
+			var v int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				v |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			b := bool(v != 0)
+			m.IsProvided = &b
+		case 2:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Value", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if m.Value == nil {
+				m.Value = PValueFromVTPool()
+			}
+			if err := m.Value.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		default:
+			iNdEx = preIndex
+			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
+			if err != nil {
+				return err
+			}
+			if (skippy < 0) || (iNdEx+skippy) < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if (iNdEx + skippy) > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.unknownFields = append(m.unknownFields, dAtA[iNdEx:iNdEx+skippy]...)
+			iNdEx += skippy
 		}
 	}
 
@@ -32250,6 +32495,79 @@ func (m *PUserDefinedMacroFunction) UnmarshalVT(dAtA []byte) error {
 				m.Body = PValueFromVTPool()
 			}
 			if err := m.Body.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		case 4:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field ArgumentNames", wireType)
+			}
+			var stringLen uint64
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				stringLen |= uint64(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			intStringLen := int(stringLen)
+			if intStringLen < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			postIndex := iNdEx + intStringLen
+			if postIndex < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.ArgumentNames = append(m.ArgumentNames, string(dAtA[iNdEx:postIndex]))
+			iNdEx = postIndex
+		case 5:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field DefaultArgumentValues", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if len(m.DefaultArgumentValues) == cap(m.DefaultArgumentValues) {
+				m.DefaultArgumentValues = append(m.DefaultArgumentValues, &PUserDefinedFunctionArgumentDefaultValue{})
+			} else {
+				m.DefaultArgumentValues = m.DefaultArgumentValues[:len(m.DefaultArgumentValues)+1]
+				if m.DefaultArgumentValues[len(m.DefaultArgumentValues)-1] == nil {
+					m.DefaultArgumentValues[len(m.DefaultArgumentValues)-1] = &PUserDefinedFunctionArgumentDefaultValue{}
+				}
+			}
+			if err := m.DefaultArgumentValues[len(m.DefaultArgumentValues)-1].UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
 				return err
 			}
 			iNdEx = postIndex
@@ -33369,6 +33687,134 @@ func (m *PCountValue) UnmarshalVT(dAtA []byte) error {
 				return err
 			}
 			iNdEx = postIndex
+		default:
+			iNdEx = preIndex
+			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
+			if err != nil {
+				return err
+			}
+			if (skippy < 0) || (iNdEx+skippy) < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if (iNdEx + skippy) > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.unknownFields = append(m.unknownFields, dAtA[iNdEx:iNdEx+skippy]...)
+			iNdEx += skippy
+		}
+	}
+
+	if iNdEx > l {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
+func (m *PArrayAggValue) UnmarshalVT(dAtA []byte) error {
+	l := len(dAtA)
+	iNdEx := 0
+	for iNdEx < l {
+		preIndex := iNdEx
+		var wire uint64
+		for shift := uint(0); ; shift += 7 {
+			if shift >= 64 {
+				return protohelpers.ErrIntOverflow
+			}
+			if iNdEx >= l {
+				return io.ErrUnexpectedEOF
+			}
+			b := dAtA[iNdEx]
+			iNdEx++
+			wire |= uint64(b&0x7F) << shift
+			if b < 0x80 {
+				break
+			}
+		}
+		fieldNum := int32(wire >> 3)
+		wireType := int(wire & 0x7)
+		if wireType == 4 {
+			return fmt.Errorf("proto: PArrayAggValue: wiretype end group for non-group")
+		}
+		if fieldNum <= 0 {
+			return fmt.Errorf("proto: PArrayAggValue: illegal tag %d (wire type %d)", fieldNum, wire)
+		}
+		switch fieldNum {
+		case 1:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Child", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if m.Child == nil {
+				m.Child = PValueFromVTPool()
+			}
+			if err := m.Child.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		case 2:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field IgnoreNulls", wireType)
+			}
+			var v int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				v |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			b := bool(v != 0)
+			m.IgnoreNulls = &b
+		case 3:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Limit", wireType)
+			}
+			var v int32
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				v |= int32(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			m.Limit = &v
 		default:
 			iNdEx = preIndex
 			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
@@ -38258,98 +38704,6 @@ func (m *PRecordTypeValue) UnmarshalVT(dAtA []byte) error {
 				return err
 			}
 			iNdEx = postIndex
-		default:
-			iNdEx = preIndex
-			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
-			if err != nil {
-				return err
-			}
-			if (skippy < 0) || (iNdEx+skippy) < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			if (iNdEx + skippy) > l {
-				return io.ErrUnexpectedEOF
-			}
-			m.unknownFields = append(m.unknownFields, dAtA[iNdEx:iNdEx+skippy]...)
-			iNdEx += skippy
-		}
-	}
-
-	if iNdEx > l {
-		return io.ErrUnexpectedEOF
-	}
-	return nil
-}
-func (m *PRowNumberHighOrderValue) UnmarshalVT(dAtA []byte) error {
-	l := len(dAtA)
-	iNdEx := 0
-	for iNdEx < l {
-		preIndex := iNdEx
-		var wire uint64
-		for shift := uint(0); ; shift += 7 {
-			if shift >= 64 {
-				return protohelpers.ErrIntOverflow
-			}
-			if iNdEx >= l {
-				return io.ErrUnexpectedEOF
-			}
-			b := dAtA[iNdEx]
-			iNdEx++
-			wire |= uint64(b&0x7F) << shift
-			if b < 0x80 {
-				break
-			}
-		}
-		fieldNum := int32(wire >> 3)
-		wireType := int(wire & 0x7)
-		if wireType == 4 {
-			return fmt.Errorf("proto: PRowNumberHighOrderValue: wiretype end group for non-group")
-		}
-		if fieldNum <= 0 {
-			return fmt.Errorf("proto: PRowNumberHighOrderValue: illegal tag %d (wire type %d)", fieldNum, wire)
-		}
-		switch fieldNum {
-		case 2:
-			if wireType != 0 {
-				return fmt.Errorf("proto: wrong wireType = %d for field EfSearch", wireType)
-			}
-			var v int32
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return protohelpers.ErrIntOverflow
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				v |= int32(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-			m.EfSearch = &v
-		case 3:
-			if wireType != 0 {
-				return fmt.Errorf("proto: wrong wireType = %d for field IsReturningVectors", wireType)
-			}
-			var v int
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return protohelpers.ErrIntOverflow
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				v |= int(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-			b := bool(v != 0)
-			m.IsReturningVectors = &b
 		default:
 			iNdEx = preIndex
 			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
@@ -45567,47 +45921,6 @@ func (m *PRecordQueryPlan) UnmarshalVT(dAtA []byte) error {
 				m.SpecificPlan = &PRecordQueryPlan_SortPlan{SortPlan: v}
 			}
 			iNdEx = postIndex
-		case 25:
-			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field StreamingAggregationPlan", wireType)
-			}
-			var msglen int
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return protohelpers.ErrIntOverflow
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				msglen |= int(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-			if msglen < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			postIndex := iNdEx + msglen
-			if postIndex < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			if postIndex > l {
-				return io.ErrUnexpectedEOF
-			}
-			if oneof, ok := m.SpecificPlan.(*PRecordQueryPlan_StreamingAggregationPlan); ok {
-				if err := oneof.StreamingAggregationPlan.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
-					return err
-				}
-			} else {
-				v := PRecordQueryStreamingAggregationPlanFromVTPool()
-				if err := v.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
-					return err
-				}
-				m.SpecificPlan = &PRecordQueryPlan_StreamingAggregationPlan{StreamingAggregationPlan: v}
-			}
-			iNdEx = postIndex
 		case 26:
 			if wireType != 2 {
 				return fmt.Errorf("proto: wrong wireType = %d for field TypeFilterPlan", wireType)
@@ -46102,7 +46415,7 @@ func (m *PRecordQueryPlan) UnmarshalVT(dAtA []byte) error {
 			iNdEx = postIndex
 		case 38:
 			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field StreamingAggregationPlan2", wireType)
+				return fmt.Errorf("proto: wrong wireType = %d for field StreamingAggregationPlan", wireType)
 			}
 			var msglen int
 			for shift := uint(0); ; shift += 7 {
@@ -46129,16 +46442,16 @@ func (m *PRecordQueryPlan) UnmarshalVT(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			if oneof, ok := m.SpecificPlan.(*PRecordQueryPlan_StreamingAggregationPlan2); ok {
-				if err := oneof.StreamingAggregationPlan2.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+			if oneof, ok := m.SpecificPlan.(*PRecordQueryPlan_StreamingAggregationPlan); ok {
+				if err := oneof.StreamingAggregationPlan.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
 					return err
 				}
 			} else {
-				v := PRecordQueryStreamingAggregationPlan2FromVTPool()
+				v := PRecordQueryStreamingAggregationPlanFromVTPool()
 				if err := v.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
 					return err
 				}
-				m.SpecificPlan = &PRecordQueryPlan_StreamingAggregationPlan2{StreamingAggregationPlan2: v}
+				m.SpecificPlan = &PRecordQueryPlan_StreamingAggregationPlan{StreamingAggregationPlan: v}
 			}
 			iNdEx = postIndex
 		case 39:
@@ -46221,6 +46534,47 @@ func (m *PRecordQueryPlan) UnmarshalVT(dAtA []byte) error {
 					return err
 				}
 				m.SpecificPlan = &PRecordQueryPlan_RecursiveDfsJoinPlan{RecursiveDfsJoinPlan: v}
+			}
+			iNdEx = postIndex
+		case 41:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field CoveringIndexValuePlan", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if oneof, ok := m.SpecificPlan.(*PRecordQueryPlan_CoveringIndexValuePlan); ok {
+				if err := oneof.CoveringIndexValuePlan.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+					return err
+				}
+			} else {
+				v := PRecordQueryCoveringIndexValuePlanFromVTPool()
+				if err := v.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+					return err
+				}
+				m.SpecificPlan = &PRecordQueryPlan_CoveringIndexValuePlan{CoveringIndexValuePlan: v}
 			}
 			iNdEx = postIndex
 		default:
@@ -46792,6 +47146,78 @@ func (m *PRecordQueryAggregateIndexPlan) UnmarshalVT(dAtA []byte) error {
 				return err
 			}
 			iNdEx = postIndex
+		case 7:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field ResultType", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if m.ResultType == nil {
+				m.ResultType = PTypeFromVTPool()
+			}
+			if err := m.ResultType.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		case 8:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field IndexEntryToRecordValue", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if m.IndexEntryToRecordValue == nil {
+				m.IndexEntryToRecordValue = PValueFromVTPool()
+			}
+			if err := m.IndexEntryToRecordValue.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
 		default:
 			iNdEx = preIndex
 			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
@@ -46945,6 +47371,162 @@ func (m *PRecordQueryCoveringIndexPlan) UnmarshalVT(dAtA []byte) error {
 				m.ToRecord = PIndexKeyValueToPartialRecordFromVTPool()
 			}
 			if err := m.ToRecord.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		default:
+			iNdEx = preIndex
+			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
+			if err != nil {
+				return err
+			}
+			if (skippy < 0) || (iNdEx+skippy) < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if (iNdEx + skippy) > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.unknownFields = append(m.unknownFields, dAtA[iNdEx:iNdEx+skippy]...)
+			iNdEx += skippy
+		}
+	}
+
+	if iNdEx > l {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
+func (m *PRecordQueryCoveringIndexValuePlan) UnmarshalVT(dAtA []byte) error {
+	l := len(dAtA)
+	iNdEx := 0
+	for iNdEx < l {
+		preIndex := iNdEx
+		var wire uint64
+		for shift := uint(0); ; shift += 7 {
+			if shift >= 64 {
+				return protohelpers.ErrIntOverflow
+			}
+			if iNdEx >= l {
+				return io.ErrUnexpectedEOF
+			}
+			b := dAtA[iNdEx]
+			iNdEx++
+			wire |= uint64(b&0x7F) << shift
+			if b < 0x80 {
+				break
+			}
+		}
+		fieldNum := int32(wire >> 3)
+		wireType := int(wire & 0x7)
+		if wireType == 4 {
+			return fmt.Errorf("proto: PRecordQueryCoveringIndexValuePlan: wiretype end group for non-group")
+		}
+		if fieldNum <= 0 {
+			return fmt.Errorf("proto: PRecordQueryCoveringIndexValuePlan: illegal tag %d (wire type %d)", fieldNum, wire)
+		}
+		switch fieldNum {
+		case 1:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field IndexPlan", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if m.IndexPlan == nil {
+				m.IndexPlan = PRecordQueryPlanFromVTPool()
+			}
+			if err := m.IndexPlan.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		case 2:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field RecordTypeName", wireType)
+			}
+			var stringLen uint64
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				stringLen |= uint64(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			intStringLen := int(stringLen)
+			if intStringLen < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			postIndex := iNdEx + intStringLen
+			if postIndex < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			s := string(dAtA[iNdEx:postIndex])
+			m.RecordTypeName = &s
+			iNdEx = postIndex
+		case 3:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field IndexEntryToRecordValue", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if m.IndexEntryToRecordValue == nil {
+				m.IndexEntryToRecordValue = PValueFromVTPool()
+			}
+			if err := m.IndexEntryToRecordValue.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
 				return err
 			}
 			iNdEx = postIndex
@@ -48520,6 +49102,27 @@ func (m *PRecordQueryExplodePlan) UnmarshalVT(dAtA []byte) error {
 			}
 			b := bool(v != 0)
 			m.WithOrdinality = &b
+		case 3:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field ZeroBasedOrdinality", wireType)
+			}
+			var v int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				v |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			b := bool(v != 0)
+			m.ZeroBasedOrdinality = &b
 		default:
 			iNdEx = preIndex
 			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
@@ -55314,288 +55917,6 @@ func (m *PRecordQueryStreamingAggregationPlan) UnmarshalVT(dAtA []byte) error {
 		}
 		if fieldNum <= 0 {
 			return fmt.Errorf("proto: PRecordQueryStreamingAggregationPlan: illegal tag %d (wire type %d)", fieldNum, wire)
-		}
-		switch fieldNum {
-		case 1:
-			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field Inner", wireType)
-			}
-			var msglen int
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return protohelpers.ErrIntOverflow
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				msglen |= int(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-			if msglen < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			postIndex := iNdEx + msglen
-			if postIndex < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			if postIndex > l {
-				return io.ErrUnexpectedEOF
-			}
-			if m.Inner == nil {
-				m.Inner = PPhysicalQuantifierFromVTPool()
-			}
-			if err := m.Inner.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
-				return err
-			}
-			iNdEx = postIndex
-		case 2:
-			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field AggregateValue", wireType)
-			}
-			var msglen int
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return protohelpers.ErrIntOverflow
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				msglen |= int(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-			if msglen < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			postIndex := iNdEx + msglen
-			if postIndex < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			if postIndex > l {
-				return io.ErrUnexpectedEOF
-			}
-			if m.AggregateValue == nil {
-				m.AggregateValue = PValueFromVTPool()
-			}
-			if err := m.AggregateValue.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
-				return err
-			}
-			iNdEx = postIndex
-		case 3:
-			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field GroupingKeyValue", wireType)
-			}
-			var msglen int
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return protohelpers.ErrIntOverflow
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				msglen |= int(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-			if msglen < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			postIndex := iNdEx + msglen
-			if postIndex < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			if postIndex > l {
-				return io.ErrUnexpectedEOF
-			}
-			if m.GroupingKeyValue == nil {
-				m.GroupingKeyValue = PValueFromVTPool()
-			}
-			if err := m.GroupingKeyValue.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
-				return err
-			}
-			iNdEx = postIndex
-		case 4:
-			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field GroupingKeyAlias", wireType)
-			}
-			var stringLen uint64
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return protohelpers.ErrIntOverflow
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				stringLen |= uint64(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-			intStringLen := int(stringLen)
-			if intStringLen < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			postIndex := iNdEx + intStringLen
-			if postIndex < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			if postIndex > l {
-				return io.ErrUnexpectedEOF
-			}
-			s := string(dAtA[iNdEx:postIndex])
-			m.GroupingKeyAlias = &s
-			iNdEx = postIndex
-		case 5:
-			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field AggregateAlias", wireType)
-			}
-			var stringLen uint64
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return protohelpers.ErrIntOverflow
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				stringLen |= uint64(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-			intStringLen := int(stringLen)
-			if intStringLen < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			postIndex := iNdEx + intStringLen
-			if postIndex < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			if postIndex > l {
-				return io.ErrUnexpectedEOF
-			}
-			s := string(dAtA[iNdEx:postIndex])
-			m.AggregateAlias = &s
-			iNdEx = postIndex
-		case 6:
-			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field CompleteResultValue", wireType)
-			}
-			var msglen int
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return protohelpers.ErrIntOverflow
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				msglen |= int(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-			if msglen < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			postIndex := iNdEx + msglen
-			if postIndex < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			if postIndex > l {
-				return io.ErrUnexpectedEOF
-			}
-			if m.CompleteResultValue == nil {
-				m.CompleteResultValue = PValueFromVTPool()
-			}
-			if err := m.CompleteResultValue.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
-				return err
-			}
-			iNdEx = postIndex
-		case 7:
-			if wireType != 0 {
-				return fmt.Errorf("proto: wrong wireType = %d for field IsCreateDefaultOnEmpty", wireType)
-			}
-			var v int
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return protohelpers.ErrIntOverflow
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				v |= int(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-			b := bool(v != 0)
-			m.IsCreateDefaultOnEmpty = &b
-		default:
-			iNdEx = preIndex
-			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
-			if err != nil {
-				return err
-			}
-			if (skippy < 0) || (iNdEx+skippy) < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			if (iNdEx + skippy) > l {
-				return io.ErrUnexpectedEOF
-			}
-			m.unknownFields = append(m.unknownFields, dAtA[iNdEx:iNdEx+skippy]...)
-			iNdEx += skippy
-		}
-	}
-
-	if iNdEx > l {
-		return io.ErrUnexpectedEOF
-	}
-	return nil
-}
-func (m *PRecordQueryStreamingAggregationPlan2) UnmarshalVT(dAtA []byte) error {
-	l := len(dAtA)
-	iNdEx := 0
-	for iNdEx < l {
-		preIndex := iNdEx
-		var wire uint64
-		for shift := uint(0); ; shift += 7 {
-			if shift >= 64 {
-				return protohelpers.ErrIntOverflow
-			}
-			if iNdEx >= l {
-				return io.ErrUnexpectedEOF
-			}
-			b := dAtA[iNdEx]
-			iNdEx++
-			wire |= uint64(b&0x7F) << shift
-			if b < 0x80 {
-				break
-			}
-		}
-		fieldNum := int32(wire >> 3)
-		wireType := int(wire & 0x7)
-		if wireType == 4 {
-			return fmt.Errorf("proto: PRecordQueryStreamingAggregationPlan2: wiretype end group for non-group")
-		}
-		if fieldNum <= 0 {
-			return fmt.Errorf("proto: PRecordQueryStreamingAggregationPlan2: illegal tag %d (wire type %d)", fieldNum, wire)
 		}
 		switch fieldNum {
 		case 1:

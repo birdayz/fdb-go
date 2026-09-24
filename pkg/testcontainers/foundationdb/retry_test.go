@@ -109,8 +109,42 @@ func TestRetryContainerStart(t *testing.T) {
 		if !errors.Is(err, context.Canceled) {
 			t.Errorf("expected context.Canceled, got %v", err)
 		}
+		if !errors.Is(err, transient) {
+			t.Errorf("startup cancellation erased the failed attempt: %v", err)
+		}
 		if calls != 1 {
 			t.Errorf("expected to stop after 1 attempt on cancellation, got %d", calls)
+		}
+	})
+
+	t.Run("deadline retains failed attempt", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := context.WithDeadline(context.Background(), time.Unix(0, 0))
+		defer cancel()
+		calls := 0
+		_, err := retryContainerStart(ctx, 3, noBackoff, func() (*Container, error) {
+			calls++
+			return nil, transient
+		})
+		if calls != 1 || !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, transient) {
+			t.Fatalf("deadline must retain both context and startup cause without retry: calls=%d err=%v", calls, err)
+		}
+	})
+
+	t.Run("backoff cancellation retains failed attempt", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		calls := 0
+		_, err := retryContainerStart(ctx, 3, func(int) time.Duration {
+			cancel() // cancel after the attempt and before waiting, without a timing race
+			return time.Hour
+		}, func() (*Container, error) {
+			calls++
+			return nil, transient
+		})
+		if calls != 1 || !errors.Is(err, context.Canceled) || !errors.Is(err, transient) {
+			t.Fatalf("backoff cancellation must retain startup cause without retry: calls=%d err=%v", calls, err)
 		}
 	})
 }

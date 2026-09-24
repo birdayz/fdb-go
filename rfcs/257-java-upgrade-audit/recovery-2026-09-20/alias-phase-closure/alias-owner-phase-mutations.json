@@ -1,0 +1,82 @@
+[
+  {
+    "name": "ordinary-eligibility",
+    "file": "pkg/relational/core/embedded/logical_predicate.go",
+    "old": "names = make([]string, len(sq.selectSlots))\n\t\t\tfor i, slot := range sq.selectSlots {\n\t\t\t\tif _, authored := slot.element.(*antlrgen.SelectExpressionElementContext); authored {\n\t\t\t\t\tnames[i] = slot.alias\n\t\t\t\t}\n\t\t\t}",
+    "new": "names = projectionOutputNames(sq)",
+    "mutation_sha256": "1255b04ad387b73d254399d16a6047484479c3a6d543fb0a50ccf2b32a7a7cee",
+    "command": [
+      "bazelisk",
+      "test",
+      "//pkg/relational/core/embedded:embedded_test",
+      "//pkg/relational/sqldriver:sqldriver_test",
+      "--nocache_test_results",
+      "--test_output=all",
+      "--test_arg=--test.run=^TestOrderByExactMetadata_|^TestFDB_NoFromSelectProbe$"
+    ],
+    "exit": 3,
+    "failures": [
+      "TestOrderByExactMetadata_PlainInheritedNameIsQualified (0.04s)",
+      "TestOrderByExactMetadata_PlainInheritedNameIsQualified/SELECT_ts.n.sk,_ts.id_AS_sk_FROM_ts_ORDER_BY_sk (0.02s)",
+      "TestOrderByExactMetadata_PlainInheritedNameIsQualified/SELECT_id,_v_AS_id_FROM_t_ORDER_BY_id (0.03s)",
+      "TestOrderByExactMetadata_PlainInheritedNameIsQualified/SELECT_t.*,_t.id_AS_v_FROM_t_ORDER_BY_v (0.03s)",
+      "TestOrderByExactMetadata_PlainInheritedNameIsQualified/SELECT_v,_id_AS_v_FROM_t_ORDER_BY_v (0.03s)"
+    ],
+    "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-owner-phase-mutant2-ordinary-eligibility.log",
+    "sha256": "0d292fe62dc26d57636c0838203b0e28816a4655e8ab33f28d878eb8db83d9fa"
+  },
+  {
+    "name": "early-named-duplicates",
+    "file": "pkg/relational/core/embedded/select_parser.go",
+    "old": "kb, kq, kqf, ksegs := splitColumnRef(obExpr.Expression())",
+    "new": "for _, previous := range cls.orderBy {\n\t\t\t\t\tif previous.colName == colName {\n\t\t\t\t\t\treturn nil, api.NewErrorf(api.ErrCodeColumnAlreadyExists, \"duplicate column %q in ORDER BY\", colName)\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t\tkb, kq, kqf, ksegs := splitColumnRef(obExpr.Expression())",
+    "mutation_sha256": "c2148c4710e38c7350cef940646bb34791dcbf40112d7912320d3ad90d93fb3a",
+    "command": [
+      "bazelisk",
+      "test",
+      "//pkg/relational/core/embedded:embedded_test",
+      "//pkg/relational/sqldriver:sqldriver_test",
+      "--nocache_test_results",
+      "--test_output=all",
+      "--test_arg=--test.run=^TestOrderByExactMetadata_|^TestFDB_NoFromSelectProbe$"
+    ],
+    "exit": 3,
+    "failures": [
+      "TestOrderByExactMetadata_AmbiguousOutputAlias (0.04s)",
+      "TestOrderByExactMetadata_AmbiguousOutputAlias/SELECT_id_AS_z,_v_AS_z_FROM_t_GROUP_BY_id,_v_ORDER_BY_z,_z (0.02s)",
+      "TestOrderByExactMetadata_AmbiguousOutputAlias/SELECT_id_AS_z,_v_AS_z_FROM_t_ORDER_BY_z,_z (0.03s)",
+      "TestFDB_NoFromSelectProbe (0.05s)",
+      "TestFDB_NoFromSelectProbe/alias_owner_ambiguity_before_duplicate_plain (0.05s)",
+      "TestFDB_NoFromSelectProbe/group_alias_quoted_order (0.10s)",
+      "TestFDB_NoFromSelectProbe/alias_owner_quoted (0.12s)",
+      "TestFDB_NoFromSelectProbe/alias_owner_ambiguity_before_duplicate_grouped (0.14s)"
+    ],
+    "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-owner-phase-mutant2-early-named-duplicates.log",
+    "sha256": "8bd4a41b01f7fdf9c5a9837843c9e9d158311604e93b6ff3f9b85f103a34427c"
+  },
+  {
+    "name": "ignore-named-duplicates",
+    "file": "pkg/relational/core/embedded/logical_predicate.go",
+    "old": "if err := validateNamedSortColumns(sq); err != nil {",
+    "new": "if err := validateNamedSortColumns(sq); err != nil && false {",
+    "mutation_sha256": "f0a315b09dee13d3079fbb9041207ac0fc7356e1cab0689bdfd22dd3768ac320",
+    "command": [
+      "bazelisk",
+      "test",
+      "//pkg/relational/core/embedded:embedded_test",
+      "//pkg/relational/sqldriver:sqldriver_test",
+      "--nocache_test_results",
+      "--test_output=all",
+      "--test_arg=--test.run=^TestOrderByExactMetadata_|^TestFDB_NoFromSelectProbe$"
+    ],
+    "exit": 3,
+    "failures": [
+      "TestFDB_NoFromSelectProbe (0.05s)",
+      "TestFDB_NoFromSelectProbe/alias_owner_duplicate_name (0.01s)",
+      "TestFDB_NoFromSelectProbe/group_alias_repeat_qualified_order (0.01s)",
+      "TestFDB_NoFromSelectProbe/group_alias_repeat_quoted_order (0.01s)"
+    ],
+    "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-owner-phase-mutant2-ignore-named-duplicates.log",
+    "sha256": "4c84cad9310238c30b3b85d3b984583d5d67fc3f23bc48f93474087d17b9e743"
+  }
+]

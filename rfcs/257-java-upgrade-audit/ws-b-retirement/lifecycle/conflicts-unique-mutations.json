@@ -1,0 +1,65 @@
+[
+  {
+    "name": "disabled-decision",
+    "compiled": true,
+    "killed": true,
+    "exit": 3,
+    "log": "conflicts-unique-mutant-disabled-decision.log"
+  },
+  {
+    "name": "maintainer-state",
+    "compiled": true,
+    "killed": true,
+    "exit": 3,
+    "log": "conflicts-unique-mutant-maintainer-state.log"
+  },
+  {
+    "name": "bitmap-state-error",
+    "compiled": true,
+    "killed": true,
+    "exit": 3,
+    "log": "conflicts-unique-mutant-bitmap-state-error.log"
+  },
+  {
+    "name": "survivor-cleanup",
+    "compiled": true,
+    "killed": true,
+    "exit": 3,
+    "log": "conflicts-unique-mutant-survivor-cleanup.log"
+  },
+  {
+    "name": "violation-wire",
+    "compiled": true,
+    "killed": true,
+    "exit": 3,
+    "log": "conflicts-unique-mutant-violation-wire.log"
+  },
+  {
+    "name": "violation-error",
+    "compiled": true,
+    "killed": true,
+    "exit": 3,
+    "log": "conflicts-unique-mutant-violation-error.log"
+  },
+  {
+    "name": "scan-ScanIndex",
+    "compiled": true,
+    "killed": true,
+    "exit": 3,
+    "log": "conflicts-unique-mutant-scan-ScanIndex.log"
+  },
+  {
+    "name": "scan-scanIndexByType",
+    "compiled": true,
+    "killed": true,
+    "exit": 3,
+    "log": "conflicts-unique-mutant-scan-scanIndexByType.log"
+  },
+  {
+    "name": "scan-scanTimeWindowLeaderboard",
+    "compiled": true,
+    "killed": true,
+    "exit": 3,
+    "log": "conflicts-unique-mutant-scan-scanTimeWindowLeaderboard.log"
+  }
+]

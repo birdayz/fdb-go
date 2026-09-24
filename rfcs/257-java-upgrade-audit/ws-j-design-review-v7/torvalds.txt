@@ -1,0 +1,78 @@
+**NAK.** Tree `1718c9c7437d3038bdadd6defd996d7ca6824997`. Design `ws-j-design.md` SHA256 `d2b84437093a214f195cb3bd03d46b9ae7305b2617bd38f5b63439a6e77f936a`, 1799 lines; I recomputed the hash from the tree and it matches. Java is at `fdacd162a`. This was a read-only review: I ran no tests, probes or mutations.
+
+**Checked and correct**
+- **The v6 findings.** All three verdicts' findings are addressed at least in text. The residuals are below.
+- **Evidence binds the bytes.** I re-hashed 11 of the 49 files in evidence-v7 from the tree, and all 11 match. The `just test` tree `334578b2` differs from the candidate only in review outputs, the design, the README and evidence-v7.
+- **Logs.** `wsj7-vr-jvm.log` has 31 `VALIDATE_RECORDS` lines. `wsj7-ev2.log` has 8 WSJSAT-PIN lines and both WSJUD lines, each `target-stored=<nil> go-driver=<nil>`.
+- **Mutations.** wm3 reddens five cases on the SetRecords path, and wm4 reddens the ordering test.
+- **The Build-time check itself.** It runs last in `Build` (metadata.go:1486-1490) and is skipped only when the caller named the union (`unionNamed`, :363). The loader-only call is gone. `Build` is the only place a `RecordMetaData` is constructed outside tests.
+- **What SQL can emit.** Go's SQL builder emits only the messages each table reaches (builder.go:791-845), so SQL cannot produce an unreached UnionDescriptor.
+- **The lane table** is ArithmeticValue.java:406-522 exactly: 25 + 4×16 + 12 + 6 = 107 rows.
+- **The write paths.** `CreateTemplate` is the only template writer in the catalog API (api/catalog.go).
+- **The EQUIVALENT normalization** matches Java's `Index(proto)` (Index.java:198-213).
+- **Stale phrasing is gone.** The v6 phrasings appear 0 times in `.go`/`.md` outside the review logs; the positive control `reachableThroughFields` gives 4 lines in the same command.
+
+## MEDIUM
+
+**1. Reachability does not tell a data message from a legacy union** (metadata_proto.go:424, design :1451, :8).
+- **The shape that slips through.** Take `UnionDescriptor{_B=1; _A=2; _Batch=3}` with no usage option, beside `U{usage=UNION; _A=1; _B=2; _Batch=3}`, where `Batch { repeated UnionDescriptor items = 1 }`.
+  - Before the upgrade, both the loader and `SetRecords` framed the records by UnionDescriptor.
+  - `U` reaches UnionDescriptor through `Batch`, so the file is exempt and loads under `U`. Every B row is then read as an A row, silently.
+- **The migration cannot repair it.** The file already loads, so the migration refuses it with "nothing to migrate" (:1545).
+- **Where the text overclaims.**
+  - The unit case "the type of a record type's field" pins only the scalar (data) variant.
+  - The status line "an envelope holding legacy unions is refused" (:8) is false when the envelope is a record type.
+  - (r) (:1782) does not declare this case, which Torvalds v6 #6 asked for.
+- **Fix:** either sharpen the discriminator, or declare the case and give the migration a route.
+  - **Sharper rule:** refuse when UnionDescriptor, read the way the pre-upgrade loader read it, frames a record type that the found union also frames. Measure this against the SQL shapes on both engines before adopting it.
+  - **Or:** declare the case in (r), DIVERGENCES and the CHANGELOG, pin it, and let an explicit `union=UnionDescriptor` migrate a file that already loads.
+
+**2. Extending the refusal to `SetRecords` is an incomplete conversion.**
+- **The only remedy offered is the wrong one for Go's own data.** The pre-upgrade `SetRecords` always framed by UnionDescriptor (`e48f5b496:metadata.go:277`). Yet the only remedy the CHANGELOG offers is to name the union the target finds. For every pre-upgrade Go writer, that is the silent misread one API call away.
+- **The right in-code remedy is not stated.** It is to edit the `.proto`: mark UnionDescriptor as UNION and demote the other candidate. The error text points at `MigrateLegacyRecordsFile`, which takes a stored `gen.MetaData`, not a compiled descriptor.
+- **The named escape does not survive storage.** `SaveRecordMetaData` builds through `RecordMetaDataFromProto` (metadata_store.go:79), so metadata built with the named union cannot be saved, and no Go loader will read it back. This is undeclared and unpinned.
+- **A doc comment now contradicts the code.** `SetRecordsWithUnionName`'s doc (metadata.go:269-276) justifies refusing any other name by exactly this load-back argument.
+
+**3. The EQUIVALENT carrier** (:1117-1160).
+- **"Every setter of `Index` clears" cannot be enforced.**
+  - `Index` exposes `Type`, `RootExpression`, `Options`, the version fields and `Predicate` as public fields (index.go:166-205).
+  - `addIndexCommon` itself assigns `LastModifiedVersion` directly (metadata.go:594-602).
+  - Any later direct write therefore saves the stale stored proto without a word.
+  - **Fix:** have `indexToProto` re-run the class comparator when it emits, and emit the stored proto only if the index still compares EQUIVALENT.
+- **"So no reader sees a difference" (:1160) is false for Go.**
+  - Go's `indexFromProto` never reads `value_expression`; I found 0 reads in `pkg/recordlayer` outside the unrelated Cascades values, with `GetIndexType` hits as the control.
+  - It also defaults an absent `added_version` to the last-modified version, where Java uses 1 (Index.java:215-218, :227-233).
+  - The comparator folds `value_expression` into the root, but Go then maintains a carried index under the bare root.
+  - **Fix:** port both into step 3, with a JVM pin.
+
+## LOW
+
+4. **The whole-name guard (:375).**
+   - **The gap:** after `Restore(t, 3)`, a new version 4 is admitted while bindings to (t, 5) still dangle, and `Restore(t, 5)` then interleaves two histories under one name.
+   - **Fix:** refuse creating (t, v) while any dangling binding of t has a version ≥ v.
+5. **The restore's "bound set has not grown" re-read (:429).**
+   - **The contradiction:** by the design's own argument the re-read is unnecessary. If it is kept, it is an unbounded range read inside one transaction.
+   - **Fix:** add a read-conflict range over the (t, v) index range instead of reading it.
+6. **"Go's DDL cannot produce a no-lane key" (:674) is unmeasured.**
+   - F4 says Go types `d & 1` over a DOUBLE column, and no oracle index shape uses bit or bitmap functions over DOUBLE, FLOAT or STRING.
+   - If Go's DDL accepts such a key, Go refuses it with 42F59 at `CreateTemplate`, while the target refuses it at the clause with XX000.
+   - Also, "every function key" (:661) must mean every arithmetic key: CARDINALITY and the order functions have no ArithmeticValue row.
+7. **The LIMIT walk (:795) ports only `visitLimitClause`.** The same walk refuses, in tree order, an `IN (SELECT …)` and NULL IN-items (AstNormalizer.java:446-463). Port those refusals together or declare them.
+8. **The ordering test is thinner than the design says.**
+   - `TestAmbiguousLegacyUnionRefusalComesAfterTheTargetsFaults` has no primary-key fault on the loader path; the design claims "both paths" (:1386).
+   - It asserts only that the error is "not (d)", never the specific fault.
+   - wm4 reddens at the first Fatalf, so the later arms are not shown to discriminate.
+9. **Text.**
+   - The design (:1472) and DIVERGENCES give the pre-upgrade `SetRecords` a fallback chain it never had: it took UnionDescriptor, or fell into the union-less mode. That mode could not serialize records (`e48f5b496:store.go:2053`), so no data is exposed.
+   - The migration arm at :1524 would refuse the self-holding union, even though removing the message removes its only reference.
+
+## Measured vs hypothesis
+- **Measured:**
+  - the 31 records shapes on both engines;
+  - UnionDescriptor as a table and as a STRUCT, through Go's catalog library and Go's SQL driver;
+  - the F2b saturated entries (and the sign-flip mutation);
+  - the v7 mutations;
+  - the 479-run tally over two passes.
+- **Source only:**
+  - findings 1–9 (finding 1's shape is constructed from source, not run);
+  - everything in steps 1–3: the carrier, the restore with its batching, the guard, the lane check and the migration arms.

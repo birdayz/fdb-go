@@ -1,0 +1,58 @@
+**NAK.** I reviewed tree `eb79c50e127ebbed64612a10811d9020bc723b18` and design SHA256 `508e5cd5fe89179d448aa44a9f14b36f8ed000362a69bb588fab910aff5b3ffe` (1310 lines), both re-hashed and matching. Java is at `fdacd162a`. This was read-only: I ran nothing. MEASURED means the fact is in a run record or committed evidence; SOURCE means I read it in code.
+
+**Checked and correct**
+- **Evidence hashes:** four of the evidence-v4 hashes match the tree: the validator, `generator.go`, `metadata.go` and the oracle spec.
+- **`literalKeyCarrier`:** it sets the carrier from the static type for every Go integer kind, and refuses an INT outside 32 bits and an unsigned value beyond int64 (`generator.go:916-984`).
+- **Widening arm:** `literalValuesEquivalent` runs one way only (`validator.go:1371-1388`). It is wired only through `validateSchemaRebind`. Carriers survive a proto round trip (`metadata_proto.go:733-785`). Each of the five v4 mutations records its text and presence.
+- **Union validation:** `validateRecordUnion` checks in Java's order (`RecordMetaDataBuilder.java:687-716`). `Build` returns the first fault. Go's `fetchUnionDescriptor` equals Java's.
+- **Signed readers and writers:** they are consistent across `values`, `functions`, the executor, `proto_field_type` and `rlcatalog`.
+- **MEASURED (`wsj4-ev2.log`):** the T1 XX000s at `:1783-1798`, the INT_MAX lane probe at `:1884-1889`, the raw F2b hex at `:1969-1971` (compared against the primary-key suffix), and the Guava duplicate-key message at `:2112-2114`.
+- **Plan cache:** parameters are `ConstantObjectValue`, so the plan cache's literal-text coupling is described accurately.
+- **Guard key:** `TEMPLATES_VALUE_INDEX` has Java's key order (`catalog/metadata.go:37`).
+- **Index predicates:** their literals come from `generator_predicate.go:462`, which WS-J did not touch. The strict predicate-equality arm therefore forces no spurious rebuilds.
+
+## HIGH
+
+**1. The carry rule undoes the F2 upgrade path it is meant to enable.**
+- Section 4 (:863, :872-873) makes an index EQUIVALENT when its root is "equal under 3.2's one-way literal-carrier arm". It then says "the rebuilt proto is replaced by the stored one field for field".
+- A pre-F2 tenant's v2 therefore keeps `long_value`. The roots become proto-equal, so the widening arm is never reached on this path.
+- The target keeps failing EVERY query of that table: MEASURED XX000 on T1's primary-key read, EXPLAIN, ordered scan and count.
+- This contradicts four other statements:
+  - §3.2 (~:476): the validator "admits the carrier difference";
+  - §3.5 (:764): the carry path "moves such a tenant to the `int_value` key";
+  - test 5 (:951): "the target plans the bitmap reads over v2";
+  - the TODO.md F11 block (~:14675-14683) and CHANGELOG.
+- The DIVERGENCES (m) decline would become permanent for every library-stored tenant, and so would Java's whole-table failure on shared clusters.
+- Needed: define the carried proto field by field. Keep the stored options and every other field, but take the rebuilt root when it differs only by the one-way arm, with no version move. Test 5 must also assert v2's stored root bytes (`int_value`), not only the target's plan.
+
+## MEDIUM
+
+**2. F13's population is misstated in two directions.**
+- **(i) Silent re-framing (SOURCE).** Master's loader resolved the union by name first: `UnionDescriptor`, then `RecordTypeUnion`, then usage=UNION (`e48f5b496:metadata_proto.go:790-812`).
+  - A stored file holding `UnionDescriptor` beside a usage=UNION message, or beside a message named `RecordTypeUnion`, now loads under the OTHER union.
+  - Its records were framed with `UnionDescriptor`'s field numbers.
+  - That is neither refused nor migrated. The migration's (a) arm would itself fail with "Only one union descriptor is allowed".
+  - §4c ("What stops loading", :1076) and CHANGELOG omit this shape. Refuse it on load with a specific message, or migrate it.
+- **(ii) Arm (b) is not "no union" (:1105).** Master's `SetRecordsWithUnionName(fd, "<custom>")` over an unannotated union framed records by that union. On reload, master fell into union-less mode.
+  - "Only the pre-upgrade build reads them" is false, because that build's loader could not read them either.
+  - Let the migration annotate a union the caller names, instead of refusing.
+
+**3. The single-merge containment is recorded only in the WS-J design (:4-10).**
+- The umbrella's gates (`rfcs/257-java-4.14.2.0-upgrade.md:717-743`) do not tie the branch merge to WS-J §8 steps 1 and 3.
+- WS-J's landed F1/F2/F13 share one uncommitted tree with WS-D, WS-E and WS-F, which have their own gates and may clear first.
+- CHANGELOG already documents APIs that do not exist: `git grep -c "MigrateLegacyRecordsFile|SaveMigratedLegacyMetaData|migrate-legacy"` finds 0 in `pkg`/`cmd`. Positive control: 2 hits in CHANGELOG and 4 in the design.
+- Put the gate in the umbrella RFC and in TODO.md.
+
+## LOW
+
+4. **The one-way arm's rationale (:507) does not survive `allowIndexRebuilds`.** A reverse move, or any key with no lane, becomes a CHANGED index. It is admitted without the root check (Java `:657-662`, Go `validator.go:531-533`) and stored. It cannot be reached from Go DDL today; reword the rationale, or refuse keys with no lane at template save.
+5. **A schema bound to a deleted version has no exit that keeps its data.** The gone-version refusal blocks repair, the guard blocks re-creating (t, v), and CREATE SCHEMA fails. Consider refusing the Go-only `DeleteTemplateVersion` while schemas bind (t, v), or document a byte-exact restore.
+6. **EQUIVALENT plus field-for-field replacement silently drops some differences:** the deprecated `index_type`/`value_expression`, extensions, and any changed option the validator ignores. Compare every other field generically, as the oracle does.
+7. **FLOAT-column operand entries are still not compared across engines** (half of v3 storage finding 7). Only DOUBLE and BIGINT are pinned; the float32 `nullableLong` arm and the `double→float` widening arm have no cross-engine byte pin.
+8. **Stale text:**
+   - :407 says "11 reads"; it is 15.
+   - :467 says "Go's 13 answers"; `wsjNonIntGoPins` has 19.
+   - :895 cites `metadata.go:1161-1167`; the check is now at about `:1177-1184`.
+9. **F11 migration order versus the guard.** Copying schema rows before their template rows trips the §2 guard. Add that to the TODO F11 block.
+
+Remaining SOURCE hypotheses, not measured: the concurrency claims for the guard, the carry rule's version arithmetic, and the rebuild-on-open budget. None of them is pinned until the §8 step 1 and step 3 FDB tests land.

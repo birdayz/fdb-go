@@ -64,7 +64,8 @@ const (
 	OutcomeSkipped Outcome = "skipped"
 	// OutcomeBuilt means at least one index was driven to READABLE.
 	OutcomeBuilt Outcome = "built"
-	// OutcomeNoWork means the store had no DISABLED/WRITE_ONLY index.
+	// OutcomeNoWork means the store had no DISABLED/WRITE_ONLY index, or every
+	// such index was published by another builder before its session ran.
 	OutcomeNoWork Outcome = "no-work"
 	// OutcomeFailed means this target errored. Other targets still ran.
 	OutcomeFailed Outcome = "failed"

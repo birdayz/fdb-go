@@ -1,0 +1,25 @@
+# RFC-257 WS-J design v14: the mutation record for the code WS-J has landed on this tree.
+# v13's gates found none recorded under WS-J (Graefe L3, Torvalds 9 / storage v12 #11).
+
+# The absent-root refusal, the typed error and the rootless Build/serialize refusals were mutated in
+# WS-C revision 9's run on the frozen copy fdb-wsc9 (tree 3b1587fafbd31525e918fbb44e71e394bf97c44c), whose
+# records are /var/tmp/fdb-upgrade-recovery/wsc-v9/final/ (run.sh, mutate.sh, run.out, mut-m97*.log,
+# mut-m98*.log, mut-m103*.log and their *.full.log), and tabled in ws-c-design.md 7.9. Each exits 3:
+#   m97  a rootless index builds                 reddens TestKeyExpressionDeserializationErrorsAreJavas
+#   m98  the root refusal an untyped error       reddens the same, and TestStoredIndexSubspaceKeyIsReadAsJavaReadsIt
+#   m103 a rootless index serialized             reddens TestKeyExpressionDeserializationErrorsAreJavas
+
+# The HeldBy array-element arm (legacyUnionHolder follows a repeated field's element type), which v13
+# pinned without a mutation, on the working tree (base HEAD 71ccd8cf8), records in
+# /var/tmp/fdb-upgrade-recovery/wsj-held-mut/:
+#   baseline: bazelisk test //pkg/recordlayer:recordlayer_test --nocache_test_results
+#     --test_arg=-test.run=^TestStoredMetaDataWithAnAmbiguousLegacyUnionIsRefused$ : exit 0, 19 subtests
+#     PASS, the array-element subtest among them (baseline.log, baseline.full.log);
+#   mutant: pkg/recordlayer/metadata_proto.go, `if target == nil {` -> `if target == nil ||
+#     fields.Get(i).IsList() { // MUTANT` (marker count 1, diff in mutant.log): exit 3, reddening exactly
+#     TestStoredMetaDataWithAnAmbiguousLegacyUnionIsRefused/a_legacy_UnionDescriptor_held_as_an_array's_element;
+#     the file restored and compared ("restored").
+
+# The code v14 adds to step 3 (3.6's deserialization refusals, the store-open probe, the route's writer
+# and key comparison, checkReservedNumbers, R2's interval) is unbuilt; section 3.6 and 4c require a
+# mutation per refusal in step 3's evidence.

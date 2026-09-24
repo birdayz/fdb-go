@@ -1,0 +1,16 @@
+**ACK — IMPLEMENTATION CODE** at tree `0dedbe1b1083358fb9568a31178084c043fa31e0`. No required implementation fixes remain in this delta.
+
+Reviewed the complete 26-file tree diff from `15c853e0f15c1daed5214da4998308e30c577ed7`, frozen additions, actual prior reports/prompts, and pinned Java `fdacd162a9c8acfadc49082b89185c823ab8ae4a`. Session metadata confirms **gpt-6-astra / xhigh / read-only**.
+
+- **Prior quoted-identity NAK resolved:** [UNION lookup](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:7358) counts exact label identities and uses exact `Bare` identity. Relaxed lookup runs only after no exact match. Ambiguity and missing-name validation precede duplicate checking; an ordinal is assigned only for one matching slot. Fallback map iteration cannot select an arbitrary owner because multiple matches fail.
+- **Shared SELECT interactions resolved:** [alias selection](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_builder.go:1017) and [named duplicate comparison](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:6360) preserve normalized case and identifier segments. This agrees with Java’s normalization, `lookupAlias`, and identifier-based duplicate grouping.
+- **Regression contracts remain intact:** both constructors pin lower/upper/mixed/reversed ordering, unquoted `x → X`, repeated-key `42701`, and missing-name `42703`. UNION retains `Pos`; ordinary SELECT correctly checks the projected Value consumed from that position. Genuine ambiguity, dotted-versus-qualified ownership, raw-metadata compatibility, star elision, and normalization controls remain.
+- **Java/FDB evidence is discriminating:** all 56 recorded probes match their frozen expectations, including three indexed positive controls. The three multirow UNION cases preserve exact ordered rows and case-sensitive columns while explicitly recording the existing combined-ordering and sort-fallback divergences. No new exception, assertion weakening, golden change, or corpus admission appears.
+
+Evidence reconciles **6,478 frozen hashes** against tree and workspace; **9,906 RUN/PASS entries** across five uncached affected targets, with zero failures/skips; and **nine compiled mutation kills**, with reconstructed source/log hashes matching and sources restored.
+
+**Execution gates remain open.** The single inspected snapshot credits fuzz: **30 seconds, four workers, 4,022,465 executions**, without coverage guidance. Full93, race15, `just test`, and ABBA two-per-side remain uncredited. The interrupted prior full run is not green.
+
+**Publication remains gated.** HEAD is `71ccd8cf8b3fd0dbafe283e91171818e36af555e`; PR786 remains draft under the stated scope. Commit/push/merge remain unauthorized. No edits, builds/tests, agents/worktrees, Git mutations, polling/waiting, or GitHub contact occurred.
+
+WS-B–K and the whole upgrade remain open. Storage unchanged-scope ACK, FDB C++7.3.77, approved extensions, and legacyRaBitQ disable/rebuild prerequisites stand. GRV/RPC attribution remains bounded; historical timeout causation remains unexplained.

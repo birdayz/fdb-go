@@ -1,0 +1,273 @@
+# RFC-257 WS-F / cascades W7: explicit index-entry readers — design research report
+
+This was read-only research. I ran no tests, probes or builds, and made no edits. Bash was denied in this session, so I could not run `git diff 4.11.1.0 4.14.2.0`. What changed upstream comes from the audit's W7 path ledger (`rfcs/257-java-upgrade-audit/cascades.md:550-573`) plus my reading of the full target Java sources.
+
+**Base-version mismatch.** You said the previous pin was 4.11.1.0. The RFC (`rfcs/257-java-4.14.2.0-upgrade.md:22`) and the audit (`cascades.md:10`) both diff from **4.12.11.0**. I have not read anything that changed between 4.11.1.0 and 4.12.11.0.
+
+## Bottom line
+
+- **Go's reader scaffolding can't run in production today, for four independent reasons.**
+  - `IndexEntryObjectValue` requires an interface that `recordlayer.IndexEntry` doesn't implement.
+  - It reads the wrong tuples: the extracted primary key and the indexed key prefix, not raw KEY and VALUE.
+  - It expects a context shape (`map[CorrelationIdentifier]any`) the executor never passes.
+  - Its ordinal walk only descends `[]any`, but real entries hold `tuple.Tuple`.
+- **Java's "equality-bound grouping" at-most-one arm can't fire.** It asks whether the whole grouping record is among the per-column equality-bound values, and it never is. At this target only the scalar (ungrouped) arm proves anything.
+- **Go can't reach even the scalar arm from SQL.** It deliberately never builds a candidate for an ungrouped aggregate index (pinned by `TestUngroupedAggregateIndexDeclinesCandidacy`, because of a Java wrong-answer bug). The cardinality port is therefore unit-pinned only.
+- **Which plans switch:**
+
+| Plan | Emitted by the planner? | Decoder after W7 |
+|---|---|---|
+| `RecordQueryAggregateIndexPlan` | Yes, unchanged | Reader preferred; existing layout cursors kept as the fallback |
+| `RecordQueryCoveringIndexValuePlan` (new) | No — built by hand in tests, as in Java | Reader only |
+| `RecordQueryCoveringIndexPlan` | Yes — same class, explain, identity and continuation salt | Reader, in the last DFS step (my decision, explained under D8) |
+
+## 1. What Java does at 4.14.2.0
+
+**The conversion trait** (`plans/RecordQueryPlanWithIndexEntryToQueriedRecord.java`)
+- There are three conversion routes:
+  - `intoStoredRecordShape` (:88-95) decodes into the stored record type's descriptor.
+  - `toQueriedRecord(shape, converter)` (:112-121) decodes into an explicit shape, such as the aggregate's dynamic result descriptor.
+  - `toQueriedRecord(Value)` (:139-150) binds the `IndexEntry` under `Quantifier.current()` via `context.withBinding(CORRELATION, …)` (:146-147) and evaluates the reader.
+
+**The leaf** (`values/IndexEntryObjectValue.java`)
+- `eval` (:127-137) reads `source == KEY ? getKey() : getValue()`. So `OTHER` reads VALUE.
+- The ordinal walk is `getForOrdinalPath` (`IndexKeyValueToPartialRecord.java:160-173`): a null midway returns null; out-of-bounds throws.
+- It then applies `TupleFieldsHelper.tupleValueToRuntimeValue` (`TupleFieldsHelper.java:284-300`): INT→int, BYTES→ByteString, ENUM→EnumLite, everything else raw.
+- A missing binding throws (`requireNonNull`, :128).
+- The constructor verifies the result type is primitive, enum or UUID (:81).
+- Equality compares only the ordinal path (:120-123); the hash folds path and source (:145-147).
+- Explain renders `KEY:[0]` (:151-155).
+- Proto fields (`record_query_plan.proto:570-575`): alias, source (`PTupleSource`: KEY=1, VALUE=2, OTHER=3), ordinal path, result type.
+
+**The helper** (`cascades/IndexEntryToRecordValueHelper.java`) is a trie over field names.
+- `cover` (:64-68): the first covering source wins.
+- `withChild` (:78-80).
+- `toRecordValue(targetType)` (:91-109) emits one `Column.of(field, value)` per target field, in target order, so field names, types and indexes are preserved. Nested record fields recurse.
+- Uncovered fields (`absent`, :116-122) become `NullValue(fieldType)`, except a non-nullable array, which becomes an empty `LightArrayConstructorValue`.
+- `entryColumn` (:135-144) is `FieldValue.ofFieldName(base, name).extractFromIndexEntryMaybe(…, source, [ordinal])`.
+
+**Extraction** (`Value.java:669-695`) runs three rules and takes the single matched `FieldValue` plus its compensated leaf:
+- `MatchSimpleFieldValueRule` (:60-86) requires functional dependence on the base value and refuses `ROW_VERSION` (:72-81).
+- `MatchFieldValueOverFieldValueRule` (:60-87) fuses nested field paths.
+- `CompensateToOrderedBytesValueRule` (:80-82) wraps the leaf in the inverse (`from_ordered_bytes`).
+
+**Covering reader construction** (`ScanWithFetchMatchCandidate.computeIndexEntryToLogicalRecord`, :137-193)
+- Refuses more than one queried record type (:142-144).
+- KEY ordinal *i* is the position in `indexKeyValues`. That list is the index key columns followed by the primary key trimmed of components already in the index (`ValueIndexExpansionVisitor.java:163-191`, `trimPrimaryKey` at :169, ordinal `keySize+i` at :180). VALUE ordinals come from the value part.
+- Each extraction feeds both the copier builder (`addCoveringField`, :100-120) and the trie (`recordCoveredField`, :200-208).
+- The builder refuses coverage when a required field is missing or a repeated field would be covered (`Builder.isValid`, `IndexKeyValueToPartialRecord.java:791-811`). It silently skips pseudo-fields absent from the descriptor (:747-759).
+- The reader is null only when nothing was covered (:215-221).
+- **At this target the reader is unused by planning:** `ValueIndexScanMatchCandidate.tryFetchCoveringIndexScan` still builds the old `RecordQueryCoveringIndexPlan` from the copiers (:276-282); the windowed candidate does the same (:444). Push-through uses the same logical key/value Values (:287-299).
+
+**Aggregate reader** (`AggregateIndexMatchCandidate.java`)
+- `createIndexEntryToRecordValue` (:514-521) calls the static layout function `indexEntryToRecordValue` (:548-579). The target is the select-having type (grouping columns, then aggregate columns).
+  - Ordinary aggregate: grouping column *i* reads `KEY[i]`; aggregate column *i* reads `VALUE[i-g]`.
+  - Permuted aggregate: every column reads from KEY. Aggregate column *i* reads `KEY[i-p]`; a trailing grouping column reads `KEY[i+m]` (m = number of aggregate columns); leading grouping columns read `KEY[i]`.
+  - "Permuted" is decided by index type (:181-183), not by `p`, so a permuted index with `p=0` still reads everything from KEY.
+- `toEquivalentPlan` (:419-437) passes both the copiers and the reader to the plan.
+
+**Aggregate plan** (`RecordQueryAggregateIndexPlan.java`)
+- The reader field is nullable (:92-93).
+- It is preferred when present (:145-148). Otherwise the copiers decode into `context.getTypeRepository().getMessageDescriptor(resultValue.getResultType())`, the dynamic result descriptor rather than a stored record descriptor (:149-156).
+- The reader is carried through `strictlySorted` (:211-214), `translateCorrelations` (:263-285) and `minimize` (:294-298).
+- It is excluded from equality and hash (:302-330) and from `planHash` (:343-352).
+- It is serialized last in every mode and read last; absent reads back as null (:388-415, :451-457).
+- The AISCAN explain prints the copiers, never the reader (`ExplainPlanVisitor.java:225-232`).
+
+**Covering-Value plan** (`RecordQueryCoveringIndexValuePlan.java`)
+- It carries the index plan, a record-type name and a non-null reader (:78-83).
+- `hasPrimaryKey` is true unless the scan is BY_GROUP (:125). `ALL_FIELDS` (:193-195).
+- Its result type is `IndexedValue` over the inner index plan's type (:208-215).
+- Translation (:232-246) and minimize (:255-259) keep the reader.
+- Equality and hash include the reader (:272-300). The legacy plan hash is the index plan's own; the continuation hash is `(BASE_HASH, indexPlan)` without the reader (:313-322).
+- Proto: plan tag 41, fields 1-3 (:341-347).
+- Explain: `COVERING(<index> -> <reader>)` (`ExplainPlanVisitor.java:261-275`).
+- Every property delegates to the index plan: Cardinalities (:241-246), Ordering (:270-272), Derivations (:280-282), PrimaryKey (:208-214), DistinctRecords (:174-181). StoredRecord returns true (:170-172).
+
+**Aggregate cardinality** (`CardinalitiesProperty.java:201-228`)
+- No match candidate → unknown maximum. A candidate of the wrong kind → fully unknown.
+- `groupByResultValue.getChildren() ≤ 1` → at most one row.
+- Otherwise it checks whether child 0 is among `ordering.getEqualityBoundValues()`.
+- **Why that last check can't fire:** child 0 is `RecordConstructorValue.ofUnnamed(pulledUpGroupingValues)`, correlated to the select-where quantifier (`AggregateIndexExpansionVisitor.java:284-289`, `GroupByExpression.nestedResults` :753-760). The equality-bound values are per-column field values rebased to `Quantifier.current()` (`computeOrderingFromScanComparisons` :325-337; `Ordering.java:222-234`). A record value can never equal a single-column field value.
+- The scalar arm is sound for BITMAP_VALUE because the bucket offset is added as an implicit grouping column (`BitmapAggregateIndexExpansionVisitor.java:122-126`).
+
+## 2. Go today: what exists and where it differs
+
+**Leaf** (`values/value_index_entry_object.go`)
+- `IndexEntryReader` (:88-96) declares `PrimaryKey() any` and `IndexValues() any`. The real `*recordlayer.IndexEntry` methods return `tuple.Tuple`, so it doesn't satisfy the interface.
+- Even if it did, the semantics are wrong: `PrimaryKey()` returns the extracted primary key (`index_scan.go:233-241`) and `IndexValues()` returns `Key[:ColumnSize]` (:245-254). The raw tuples are the `Key` and `Value` fields (:221-225).
+- `Evaluate` wants a `map[CorrelationIdentifier]any` (:139). The runtime context is `*RowEvalContext`, which implements `GetCorrelationBinding` (`values.go:2410-2456`).
+- `walkOrdinalPath` only descends `[]any` (:175), but `tuple.Tuple` is a named slice type (`tuple.go:70`).
+- A missing binding, a wrong binding type or a nil context all silently return nil (:136-150), which reads as SQL NULL. Java throws.
+- `OTHER` returns nil (:157-158); Java reads VALUE.
+- The constructor has no result-type check (:104-117).
+- There is no explain arm, so it renders as `indexEntryObject`.
+- The only tests use a fake entry (`value_index_entry_object_test.go:9-18`).
+
+**Stale comments describing the wrong tuples** (my Grep over the repo, excluding `fdb-record-layer/`, found these five source sites): `value_index_entry_object.go:69,85`, `map_field_values.go:445`, `semantic_equals.go:59`, `index_entry_semantic_test.go:41`. The same grep also hit `rfcs/257-java-upgrade-audit/ws-f-research/readers.log`, a log from earlier attempts at this research, which I deliberately did not use.
+
+**Aggregates**
+- Go's plan and candidate are name-based: `aggregate_index.go:65-118` and `aggregate_index_candidate.go:22-93`.
+- Execution: the ordinary cursor is `executor_new_plans.go:444-499`; the permuted cursor is :355-414.
+- Go-only protections that must survive:
+  - vacated-group drop (`liveGroupsOnly`, :454-469);
+  - PERMUTED_MIN null repair using the raw grouping-key tuple (:375-408);
+  - result-layout validation (:125-146);
+  - permuted layout validation (:53-92).
+- The ordinary cursor does not convert the aggregate slot (:488-492).
+- Candidates are built only for SUM, COUNT, COUNT_NOT_NULL, PERMUTED_MAX and PERMUTED_MIN (`cascades_generator.go:3730-3748`). Grouping count 0 is declined (:3759) and permuted size above 0 is declined (:3771-3777).
+- `ProvenCardinalities` always returns unknown maximum (`cardinality_bounds.go:232-234`).
+
+**Covering**
+- Go emits `Fetch(Covering(IndexScan))` for every value/windowed access, unconditionally (`abstract_data_access_rule.go:775-800`). Java gates this on reader/copier buildability.
+- The decoder maps covered columns by name using `PrimaryKey()` and `IndexValues()` (`executor.go:1489-1564`).
+- For nested, expression and multi-type layouts it falls back to fetching the record (:569-593).
+- Push-through blocks every index-key field whenever any function key exists (`match_candidate_index.go:1352-1366`), and declines nested field paths (:1391).
+
+**Machinery Go doesn't have**
+- No port of the helper, the extraction rules or the copier builder.
+- No `PValue` or `PRecordQueryPlan` codec: a Grep for `*ValueToProto/FromProto/ToPValue/FromPValue` function names in non-test `pkg` code found only an unrelated key-expression decoder. The generated protos do carry plan tag 41 and field 8 (`gen/record_query_plan.pb.go:11111`, :11301, :11454-11458).
+
+**Why nested readers need care in Go**
+- `values.Field` has no proto field number (`type.go:351-366`), and the type repository numbers synthesized fields positionally (`proto_type.go:466`, `int32(i+1)`). Java keeps the stored field numbers.
+- Go reads nested messages by descriptor position (`field_value.go:984-993`), so reads work. But the write path's by-number message copy could misassign fields if a synthesized nested message reached an `INSERT … SELECT`.
+
+## 3. Design decisions
+
+**D1 — Raw binding contract**
+- Add `values.IndexEntryTuples { IndexEntryKey() tuple.Tuple; IndexEntryValue() tuple.Tuple }`. `*recordlayer.IndexEntry` implements it by returning `e.Key` and `e.Value`, with a compile-time assertion in `recordlayer`.
+- Remove `IndexEntryReader`. Never reuse `PrimaryKey()` or `IndexValues()` for readers.
+- `Evaluate` requires a `CorrelationBinder`. The executor supplies a per-cursor, reusable binder that layers `values.CurrentCorrelation()` → entry over the query's outer bindings (Java's `withBinding`).
+- The walk descends both `tuple.Tuple` and `[]any`. A null midway stays null; out-of-bounds is a loud error.
+- A missing binding, a nil context or a wrong binding type is an error, not nil. KEY reads KEY; anything else reads VALUE, as in Java.
+- Add a checked constructor that returns an error for record or array result types (Java's `Verify`), with no panics. Add an explain arm rendering `KEY:[0]`.
+- Keep Go's stricter equality that also compares source; it is consistent with the hash and pinned by `rfcs/044`.
+
+**D2 — Where row-domain conversion happens**
+- The leaf stays a pure extractor, per RFC-162 (`rfcs/162-uuid-indexable.md:84-90`). Java's INT/BYTES/ENUM conversions are identities in Go's row domain (int64, `[]byte`, int64).
+- Readers convert when they write a row slot, through one exported `values.TupleElementToRowValue`, moved from `executor.go:1246-1263` (UUID→`[16]byte`, float32→float64, Versionstamp→12 bytes). The executor delegates to it.
+- RFC-162's statement that "Java's leaf never renders type" is contradicted by `IndexEntryObjectValue.java:136`. It also appears in `uuid_indexable_roundtrip_fdb_test.go:145`; both copies need correcting.
+
+**D3 — Helper port**
+- Port it as a Go trie with `cover`, `withChild`, `toRecordValue` and `entryColumn`: target field order, first source wins, `NullValue(fieldType)` for uncovered fields, `NewArrayConstructorValue(elem, nil)` for uncovered non-null arrays (`value_array_constructor.go:34-91`).
+- Reader record constructors stay anonymous: don't call `SetTypeName`, so `FinalizePlan` can never raise a declared-name clash.
+- Materialize reader output directly:
+  - top-level fields go into `PositionalRow` slots of the plan's result type;
+  - nested record columns become messages of the **stored** nested descriptor, filled by field name. This is the analogue of Java's `MessageCopier` and matches base-scan rows, which keep nested messages raw.
+- This avoids the positional-numbering hazard above. The stamped descriptors on reader constructors are then only needed to satisfy the finalize walk.
+
+**D4 — Extraction rules**
+- Port the three rules with Go's field-path values.
+- **Deliberate divergence:** Go does *not* port Java's `ROW_VERSION` refusal. Java refuses because a version has nowhere to go in a partial record (its own comment anticipates loosening once a record constructor builds the row). Go's row has a `__ROW_VERSION` slot, and Go covers versions from VERSION indexes today (`executor.go:1252-1260`). Document this at the rule and pin it with a test.
+
+**D5 — Aggregate reader**
+- Port the static layout function. The target is the plan's result type (grouping columns plus the canonical aggregate name). The candidate gains `permuted` and `permutedSize`.
+- Attach the reader at every rule-built plan: `rule_aggregate_data_access.go:150`, :412 and :1326.
+- The executor prefers the reader and keeps the existing layout cursors as the copier-equivalent fallback. The vacated-group drop runs before decoding; the MIN repair runs after, using the raw grouping key from the layout, never converted slots.
+- Check the reader against the result type loudly when the cursor opens.
+- Keep the reader out of the plan's structural key and the execution salt (`scan_range_execution_identity.go:459-485` must stay byte-identical so in-flight continuations still resume). Explain is unchanged.
+- Add the reader to `plan_finalize.go:166-177`.
+
+**D6 — Cardinality**
+- The rule stamps explicit candidate grouping evidence onto the plan. Hand-built plans have none.
+- No evidence → unknown maximum. Grouping count 0 → at most one row. Grouped → unknown maximum, which is what Java actually computes.
+- Don't add a Go-only fully-equality-bound arm; it would change cost and therefore plan choice.
+- Java's "wrong candidate kind" arm has no Go analogue because the evidence is typed.
+
+**D7 — Covering-Value plan in Go**
+- New file `plans/covering_index_value_scan.go`: index plan, record-type name, reader, stable result value.
+- Structural key covers the inner plan, the record-type name and the reader (semantic equality/hash). The observational plan hash and the new execution salt use a distinct kind and exclude the reader, so it differs from the covering salt.
+- The primary key is set unless the scan is BY_GROUP.
+- `WithIndexPlan`, strictly-sorted and distinct-proof rebuilds keep the reader.
+- Explain: the old covering label plus the reader after an arrow, passed down rather than spliced into the string: `IndexScan(IDX, [..] COVERING -> {F: KEY:[0], …})`. This follows Java's own principle that the two plans "explain the same way except for what follows the arrow" (`ExplainPlanVisitorTest.java:315-316`).
+- Needs arms or registration in:
+  - `plan_properties.go` (distinct :89-99, stored :229, primary key :316-325) and `derivations_evaluator.go:58`;
+  - delegating cost/cardinality/ordering hint methods and `hint_contracts.go` (:71, :121, :149);
+  - `index_scan_carrier.go`, `plan_finalize.go`, executor dispatch (`executor.go:240`), rowdiff classification.
+- It needs no memo admission, because it is never emitted.
+
+**D8 — Old covering plan (decision)**
+- It stays the emitted class, with byte-identical explain, identity and salt, which satisfies the RFC's "do not switch emission".
+- In the final step its decoder becomes the reader built by the Go port of `computeIndexEntryToLogicalRecord`. Covering is emitted only when that construction succeeds, which is Java's gate: single record type, valid builder, no repeated fields. Push-through uses the logical key/value Values, as Java does.
+- Why this over keeping the name decoder: Java's old plan already evaluates the same extraction Values through `FieldWithValueCopier`, and Java proves copiers and readers equivalent (`IndexEntryTranslatorEquivalenceTest`). Go has no copiers, so this *is* the faithful port of the old plan. The alternative keeps three Go-only gaps: nested covering served by fetch, function-key columns never pushable, and multi-type COVERING labels that actually fetch.
+
+**D9 — Serialization and identity**
+- No stored bytes change and no continuations change (Go continuations don't embed plans).
+- These obligations wait for the WS-G codec:
+  - aggregate reader field 8 written last and read last, absent → nil (the fallback path);
+  - plan tag 41;
+  - the leaf proto;
+  - `TupleSource` mapped explicitly, because Go's iota values 0/1/2 don't equal the proto's 1/2/3;
+  - VC0's `result_value`/`group_by_result_value`, which Go's name-based plan doesn't hold.
+- Java's `theValueSurvivesSerialization` (`AggregateIndexEntryToRecordValueTest.java:167-176`) can only be ported once that codec exists. Its javadoc contradicts its own assertion.
+
+**D10 — Go-only extension guards**
+- Steps 1-6 touch none of: outer joins, strict-single, null-on-empty, lateral, IN-subquery, FROM-less, or nullable-array reads. The nullable-array rule is respected: uncovered nullable arrays are NULL, non-null arrays empty.
+- The ungrouped-candidacy decline stays.
+- Step 7 must keep the reader through `rebasePlanBuriedRefs` (`rule_implement_nested_loop_join.go:3854-3872`, :4097-4106).
+
+## 4. Tests, and the proof each behaviour gets
+
+**Java tests to port**
+- `AggregateIndexEntryToRecordValueTest`: ordinary aggregate (:127-138), permuted size 1 via a real BY_GROUP scan (:144-155), permuted size 0 renders `KEY:[0..2]` (:185-191), serialization (:167-176, waits for WS-G).
+- `IndexEntryTranslatorEquivalenceTest` (:71-113, :119-152): nested and repeated-field-first-wins cases, on real entries, compared against Go's old decoder and against a fetch.
+- `FDBCoveringIndexValuePlanTest`: all ten tests (:101-312). The plan is built by hand from the inner scan of a covering plan obtained through `PlanPhysicalForTest` (`plan_harness.go:42`).
+- `GroupByTest.rewritingAnAggregateIndexPlanKeepsItsEntryReader` (:165-190).
+- `ExplainPlanVisitorTest` (:318-339).
+
+**Go-specific tests**
+- Every leaf error arm; source OTHER; a nested-tuple walk.
+- The vacated-group drop and MIN repair on both the reader and fallback paths.
+- UUID and float grouping keys.
+- Group-existence and multi-intersection merges.
+- A resumed continuation across pages.
+- All three cardinality arms, plus a pin that fully bound grouped plans stay unknown.
+
+**End-to-end proof**
+- Aggregate explain doesn't change, so a yamsql `plan_contains` can't prove the reader is used. Use typed plan assertions through `PlanPhysicalForTest` that the reader exists with the expected sources.
+- The existing aggregate FDB tests become the sentinels on the reader path. Verify with mutations: remove the reader and the fallback stays green; corrupt a reader ordinal and the tests go red.
+- Step 7 gets a new yamsql file: a nested struct index and an order-descending index, each asserting `plan_contains: COVERING` and `plan_not_contains: Fetch`, with rows.
+
+## 5. What will change
+
+**Steps 1-6 shouldn't change any explain string or plan shape.**
+- Expected changes:
+  - `value_index_entry_object_test.go` (the fake entry, and the nil-on-miss cases that become errors);
+  - `TestFinalizePlanCoversStructuralKey` (`plan_finalize_test.go:738`), which fails until the new finalize arms exist — as intended;
+  - the hint-contract enumeration tests;
+  - a new salt case in the scan-range identity tests.
+- If an existing salt digest moves, that is a bug.
+
+**Step 7 is the only step with plan and golden changes.**
+- Fetch disappears for nested and function-key projections.
+- COVERING disappears for multi-type index scans.
+- `covering_logical_row_test.go` and `terminal_replay_exec_test.go:149` get rewritten.
+- `explaindiff/testdata/plan_shape.golden` and the covering yamsql files need individual review.
+- This needs a 1M stress run before and after (stress-test workflow in CLAUDE.md). Every step needs Graefe's review.
+
+## 6. DFS order
+
+1. Raw binding (D1/D2), real-entry FDB tests, and fixing the five stale comment sites and the RFC-162 claim.
+2. Helper, extraction rules and nested materialization (D3/D4).
+3. Aggregate reader: construction, carry-through, finalize, executor preference plus fallback, protections (D5).
+4. Cardinality evidence (D6).
+5. Covering-Value plan and all its registries (D7).
+6. Candidate-side port of `computeIndexEntryToLogicalRecord` and the equivalence tests.
+7. Old covering decoder moves to the reader, with emission gate and push-through (D8).
+
+## 7. Findings that need a durable home
+
+These must go in `TODO.md` / the RFC, not stay in this report:
+- Java's equality-bound cardinality arm cannot fire. Pin it with a cross-engine probe as a test.
+- Go's distinct-records computation has no aggregate arm and returns false (`plan_properties.go:74-157`); Java returns true (`DistinctRecordsProperty.java:157-159`). Fix it in step 5, since the same file is edited.
+- The RFC-162 Java claim is inaccurate.
+- The 4.11.1.0 vs 4.12.11.0 base mismatch.
+- The positional-numbering write hazard for any synthesized nested message.
+
+## 8. What I did not read
+
+- Any 4.11.1.0→4.12.11.0 changes, and the raw diff itself (no Bash).
+- The full body of `WindowedIndexScanMatchCandidate.java` (grep only).
+- Java's `Simplification.compute`, `FieldValue` internals, `TupleFieldsHelper.toProto` and plan-serialization dispatch.
+- Go's `windowed_index_match_candidate.go`, the aggregate cost/ordering hints, `fk_chain_cardinality.go`, and the 25 non-test files that reference `*RecordQueryCoveringIndexPlan` (Grep over `pkg/`, excluding `covering_index_scan.go`) beyond the arms cited above.
+- The earlier `ws-f-research` logs, deliberately.

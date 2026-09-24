@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"errors"
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -61,45 +62,24 @@ var _ = Describe("CountNotNullIndex", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("GroupAll counts ALL entries including null (Java compat)", func() {
-		ks := specSubspace()
-
-		// GroupAll(Field("price")) = all columns are GROUPING → grouped portion is empty.
-		// Java's null check on empty grouped portion always passes → null prices ARE counted.
-		// This matches Java: GroupAll + COUNT_NOT_NULL == GROUP BY with no null filtering.
+	It("refuses GroupAll, as Java's validator does", func() {
+		// COUNT_NOT_NULL counts a grouped value, so Java's validator requires one
+		// (validateGrouping(1), AtomicMutationIndexMaintainerFactory.java:105-106);
+		// the conformance spec "Index validation at build, as Java builds"
+		// measures the shape family on the JVM.
 		idx := NewCountNotNullIndex("count_price", GroupAll(Field("price")))
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
-		md, err := builder.Build()
-		Expect(err).NotTo(HaveOccurred())
-
-		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-			store, err := NewStoreBuilder().
-				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
-			Expect(err).NotTo(HaveOccurred())
-
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(100)})
-			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(2)})
-			Expect(err).NotTo(HaveOccurred())
-			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(3), Price: proto.Int32(200)})
-			Expect(err).NotTo(HaveOccurred())
-
-			entries, err := AsList(ctx, store.ScanIndex(idx, TupleRangeAll, nil, ForwardScan()))
-			Expect(err).NotTo(HaveOccurred())
-
-			// ALL 3 entries — null price IS counted (grouped portion is empty, no null check)
-			Expect(entries).To(HaveLen(3))
-
-			return nil, nil
-		})
-		Expect(err).NotTo(HaveOccurred())
+		_, err := builder.Build()
+		var keyErr *KeyExpressionError
+		Expect(errors.As(err, &keyErr)).To(BeTrue(), "%T: %v", err, err)
+		Expect(keyErr.Message).To(Equal("index type requires grouping at least 1 fields"))
 	})
 
 	It("decrements on delete of non-null entry", func() {
 		ks := specSubspace()
 
-		idx := NewCountNotNullIndex("count_price", GroupAll(Field("price")))
+		idx := NewCountNotNullIndex("count_price", Ungrouped(Field("price")))
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()

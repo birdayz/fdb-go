@@ -1,0 +1,68 @@
+**Verdict: NAK**
+
+- **Tree:** `9265beef3e5c9dd9ec86caaade526c8137552976`
+- **Design:** `rfcs/257-java-upgrade-audit/ws-c-design.md`, SHA256 `7b32e4008a889f98a9b801831a2f51a66dceb72b0ef56f0d6eeb9f49d83a996c`, 387 lines. I checked the hash and line count myself.
+
+One Java claim in the addendum is false and is used to justify leaving something unported (F1). The heartbeat check also still makes late sessions fail where Java skips (F2).
+
+## Findings, most severe first
+
+**F1 — High. False Java claim, written in the design and in a code comment.** `ws-c-design.md:352` and `online_indexer.go:62-64` say `ifMismatchPrevious` is stored and returned but "no indexing code reads it". Java does read it, at `OnlineIndexer.java:177`, in `indexingCatcher` when a `PartlyBuiltException` comes back:
+- **CONTINUE, the default:** retries using the previously stamped method (`:188-213`).
+- **REBUILD:** starts again with `setIfWriteOnly(REBUILD)` (`:216-221`).
+- **Anything else:** rethrows.
+
+`:237-243` also switches to `ifWriteOnly REBUILD` when a by-index source fails validation. Go has no equivalent. `git grep -i 'fallbackToRecordsScan|indexingCatcher|IfMismatch'` over `*.go` and `*.md` finds only the two sites making the false claim. A positive control over the same non-test pathspec does find `PartlyBuiltError`. So Go hands a `PartlyBuiltError` straight to the caller, where Java by default carries on with the old method. The gap existed before this change; what is new is the addendum recording it as not needed.
+
+Fix: remove both copies of the claim. Port `IfMismatchPrevious` and the catcher's three branches, with tests. Its REBUILD branch can now be expressed with `IfWriteOnly`.
+
+**F2 — Medium. Heartbeat admission runs before the desired action is resolved.** This is from reading the source; I did not run it.
+- **Go:** `checkPreparationHeartbeats` runs in the pre-open check (`online_indexer.go:1254`) and again at `online_indexer_queue.go:86`. It allows live peers only when the primary is write-only (`queue.go:48`). So on a READABLE primary, a live foreign heartbeat on any target raises `SynchronizedSessionLockedError`.
+- **Java:** the heartbeat object is created only in `setIndexingTypeOrThrow` (`IndexingBase.java:450-460`), on the build path. The skip, MARK_READABLE and ERROR paths never read heartbeats.
+- **How it's reached:** `markReadable` publishes targets one at a time, primary first (`online_indexer.go:1406-1449`), and may drain a queue in between. During that window a follower still holds the publisher's live heartbeat. A late session over the same targets, mutual or exclusive, then fails instead of skipping. That is the same late-peer problem the reproducer pins, now in multi-target form. Under an ERROR policy the caller also sees the lock error instead of "Index state is not as expected".
+- **Fix:** resolve the action first. Check peers only on the build path; the legacy-key fail-closed check can stay. Pin it with a multi-target reproducer.
+
+**F3 — Low. The mutual + queue refusal runs too early.** Go tests `mutual && IsWriteOnlyWithQueue` on the state before any clear, and before follower validation (`queue.go:118-120`). Java tests it after the clears (`IndexingBase.java:465-469`), and `clearAndMarkIndexWriteOnly` has no queue guard (`FDBRecordStore.java:3188-3191`). Two consequences:
+- A mutual REBUILD of a queued primary or follower rebuilds as WRITE_ONLY in Java but is refused in Go.
+- With the default policy, a DISABLED primary with a queued follower gives a `RecordCoreError` in Go instead of Java's mismatch `ValidationException`.
+
+The addendum's REBUILD options make both reachable for the first time. Neither is tested.
+
+**F4 — Low. MARK_READABLE on a WRITE_ONLY_WITH_QUEUE index never drains.** On that path `queue.go:101-102` returns no queued targets. `markReadable` therefore retries `IndexNotBuiltError{PendingWrites}` 100 times without draining in between (`online_indexer.go:1416-1459`), then fails. Java doesn't drain either, and it erases the queue on publish (`IndexingSubspaces.java:234-235`), losing queued writes. Go failing closed is the safer outcome, but it is undocumented and wastes 100 transactions. Either refuse up front, with the divergence documented at that line, or drain first. Add a test either way.
+
+**F5 — Low. Gaps in the test population.**
+- The rule that a mismatched follower is cleared *alone* is not isolated. The positive spec uses a DISABLED primary, whose default is REBUILD, so everything gets cleared anyway. Add IfDisabled CONTINUE with a REBUILD follower and assert the primary's orphan entry survives.
+- Nothing tests that a skip ignores a mismatched follower (READABLE primary plus DISABLED follower should skip).
+- MARK_READABLE across several targets is untested, as are the F2–F4 shapes.
+- "resumes multi-target build from partial progress" no longer resumes anything; rename it or make it resume.
+
+**F6 — Nit (evidence).** The logs don't all describe this tree:
+- `desired-green`, `desired-mut*` and the loop logs report spec lines :4219, :4335 and :3473. The candidate has them at :4223, :4339 and :3477, so those runs predate the census edits. Only `skip-census2` matches the candidate's line numbers.
+- `desired-fixed.log` contains only "Executed 3 out of 3 tests". The "3635 of 3636" figure appears in `skip-census2`, and that was a run with the skip mutation applied.
+- `wse8-justtest2.log` records no tree, and 91 of its 94 targets were cached.
+
+Section 7 should say which tree each log ran on. Separately, `IndexingValidationError` lacks Java's `INDEX_VERSION` key (`IndexingBase.java:203-207`).
+
+## What checks out
+
+**Read from source:**
+- `GetStateDesiredAction` matches Java: the defaults at `:1250-1253`, READABLE_UNIQUE_PENDING always MARK_READABLE, and a `RecordCoreError` for an unknown state or action.
+- The order ERROR → MARK_READABLE → clear-or-skip, the definition of a continued build, and the follower condition all match.
+- A fresh session marks uncleared targets WRITE_ONLY, including DISABLED under CONTINUE.
+- Not porting `enforceStampOverwrite` is harmless: `clearIndexData` already erases the stamp and heartbeats (`index_state.go:853`).
+- A skip writes nothing. Cleanup clears only this session's own heartbeat keys.
+
+**Callers:**
+- The fleet builder only picks DISABLED or WRITE_ONLY indexes. If an index is published between listing and building, it now reports 0 records instead of rebuilding destructively.
+- `frl index rebuild` clears first (`index_write.go:190-196`), so it is unaffected.
+- `frl index build` on a READABLE index now prints "built … (0 records scanned)".
+
+**Measured, from the logs:**
+- `desired-red.log`: the exact "has unbuilt ranges" message, 1 of 1 failed.
+- `desired-green.log`: 18 specs, all named.
+- The mutation logs go red on 3, 1 and 3 specs, as the design says.
+- `run_1` and `run_40`: 2 passed each, and Bazel reported pass across all 40 runs.
+- `skip-census2` lists the five expected specs.
+- `justtest2`: 94 targets pass.
+
+**CHANGELOG:** accurate as far as it goes. Add that READABLE_UNIQUE_PENDING with mark-readable off is now a no-op (it used to rebuild), and update the entry for F1 and F2 once they're fixed.

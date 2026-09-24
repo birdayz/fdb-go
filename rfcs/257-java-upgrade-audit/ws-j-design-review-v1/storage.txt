@@ -1,0 +1,57 @@
+**NAK** on tree `eb426a53f814802d5c9ff1f4fca67ee199f4c1cd`, design SHA256 `1388036404d405a028df761a1055370d267e36dd6fdda6c93cb9b00a058a5814` (hash verified with `git show … | sha256sum`). Java checked at `fdacd162a`.
+
+This was a read-only source review. I ran no tests, probes or mutations. Every "MEASURED" below comes from the tree's `evidence-run.txt`; everything else is a SOURCE finding.
+
+**The trie fix itself is correct.** It matches `FieldValueTrieNode.java:212-218` (equality check, then prefix check), it is registered in the Bazel target (`embedded/BUILD.bazel:169,453`), and the mutation evidence shows it reddens when reverted.
+
+**The design has two storage problems that block it.**
+
+### High
+
+1. **Section 4's new table order breaks template evolution, and the design doesn't address it.**
+   - In Java, the final table order (and so the record-type keys and union field numbers) depends on which tables the index clauses name and in what order (`DdlVisitor.java:559-564`, `FileDescriptorSerializer.java:104-112`, `RecordMetadataSerializer.java:70`).
+   - Concretely: v1 has tables A, B and `ia` on A. v2 adds `ib` on B. The key order goes from B=0, A=1 to A=0, B=1.
+   - Java's `saveSchema` and `repairSchema` (`RecordLayerStoreCatalog.java:232-279`) run no evolution check. So Java would likely misread data after such a repair. This is a SOURCE hypothesis and needs measuring.
+   - Go keeps its rebind validator (`fdb_store_catalog.go:305-352`), which rejects a record-type key change (`metadata_evolution_validator.go:339-344`) and treats union field numbers as type identity (`:208-229`).
+   - After the port, the next DDL version of any Go template stored before WS-J will fail `RepairSchema`, and so `fleet/migrate.go:96`, for every tenant. Adding an index to an earlier table will also be refused, which Go accepts today.
+   - Needed: a v1→v2 oracle pair, a decided boundary behaviour (treat it as an upstream bug and report it; e.g. carry forward the previous stored version's keys), and FDB tests that include `fleet.Migrate`.
+
+2. **Section 3.2's "no migration" claim is not shown for the direction that matters.**
+   - Key maintenance really is width-independent (`LongArithmethicFunctionKeyExpression.java:96-98`). But Java's planner builds Values from stored key expressions: `KeyExpressionExpansionVisitor.java:224` → `toValue:121-124`, with a stored `long_value` becoming a LONG literal (`LiteralKeyExpression.java:114`).
+   - The bitmap functions have only `_LI` and `_II` operators (`ArithmeticValue.java:515-522`), and `encapsulate` fails verification when no operator exists (`:226-229`).
+   - MEASURED: Go stores `bitmap_bucket_offset(ID, long_value 10000)` (bitmap-aggregate-index `AGG_INDEX_1/2`). Java planning over such a Go-stored index likely throws.
+   - Go-stored `bitand(D, long 1)` and `add(D, long 1)` would expand to the `_LL` operators and never match Java's `_LI` query Values.
+   - After section 6, Go's own lanes also lack `(LONG, LONG)` for the bitmap functions.
+   - Needed: an oracle run in the Go-stores/Java-plans direction, and a compatibility decision for templates Go has already stored.
+
+### Medium
+
+3. **CREATE SCHEMA order is only half ported.** Go creates the record store before `SaveSchema` (`create_schema.go:61-69`). Java saves with ERROR first (`:90`), then calls `createOrOpen(ERROR_IF_EXISTS)` and maps `RecordStoreAlreadyExists` to 42F06 (`:101-104`). If the pre-check is deleted without reordering, an existing schema fails at store creation with the wrong error.
+4. **The tally is overstated.** The design says "62 byte-identical". In `evidence-run.txt`, of the 118 `WSJ ` lines, only 44 show `md-bytes-equal` and 30 show `md-bytes-differ`. Fifteen runs are classed "both-accept-equal" even though their canonicalized MetaData differs (the F3 keys, e.g. create-drop-create-template). The spec's classification ignores MetaData, so F3 could regress with the tally still green.
+5. **The pins don't cover the wire facts the design depends on.**
+   - `wsjJavaDigest` covers only name, type, options, root, predicate and record type. It leaves out versions, `subspace_key`, the metadata version, record-type keys and union field numbers.
+   - The F3 Java values (C=0/B=1/A=2, IB=2…) exist only as log lines.
+   - The query spec pins nothing (it only asserts `n == len(probes)`), although design sections 0 and 6 say it does.
+6. **Legacy vs tuple extremum storage is missing.** The umbrella and audit W9 require it (`ExtremumEverStorage.java:76`). The only corpus templates with `LEGACY_EXTREMUM_EVER` (aggregate-index-tests:21, index-ddl:27) are rejected on one engine or the other, so they are never compared, and no hand-written shape covers it.
+7. **The concurrency test targets the wrong transaction.** The property to prove is that the no-op saver commits after another transaction commits a write to a row it read. That only holds if the whole `Initialize` transaction issues zero writes. The test should specify the already-initialized state, and show that a first-time concurrent initialization conflicts once and then converges on retry.
+
+### Low
+
+8. COPY does not rebuild from DDL; it imports the stored MetaData bytes (`CopyPlan.java:441-454`). Drop it from section 4's list of consequences.
+9. `wsjCanonical` also sorts `message_type`, a canonicalization the design doesn't declare, and it hides the message order section 4 says it fixes. Java emits each table's messages in `TreeSet` order (`TypeRepository.java:269-271`), and Go's builder already does the same. Rename anonymous types in place and compare the order.
+10. Harvest scope:
+    - A `create (unique )?index` grep finds 333 hits in 71 files, against 328 statements harvested; the gap isn't reconciled.
+    - Seven files contain `create vector index`, e.g. semantic-search and guardiann-semantic-search. Six have no plain `create index`, so the harvest regex never sees them, and the positive control uses the same regex so it can't notice.
+    - Scope the "every template that declares an index" claim, or harvest these files (Go already supports HNSW index DDL).
+11. Section 5 (enums): the stored enum bytes follow table-visit order plus a per-table `TreeSet` (`FileDescriptorSerializer.java:131-138`), and enums no table references are never stored. Add shapes for an enum used by a moved table and for two enums sharing a value name.
+12. The oracle measures the tooling path (`BuildSchemaTemplateFromDDLNamed` + `ToProto`), not the bytes the production path stores. "Raw bytes" is really a deterministic re-marshal of the parsed messages. The trie fix is pinned only on the tooling path, so add one SQL- or FDB-level test.
+13. `fieldAccessorToKeyExpression` is at `:377-396`, not `:343-366`. `fleet/migrate.go` is missing from the caller table.
+
+### Checked and correct
+
+- SchemaExistsBehavior: its contracts and messages, 42F06, the `saveSchema` order, and the initialize/repair/COPY policy choices.
+- Java's DDL assembly order and index versioning: `DdlVisitor.java:497/519/547-548`, `accept:392-405`, `RecordLayerTable.accept:133-143`, `addIndexCommon:1103-1109`.
+- Metadata serialization order: the `HashMap` at `:1473`/`:673` and the `TreeMap` at `:668`.
+- Literal typing: `visitLiteralValue:196-197`, `parseDecimal:96-98` and `BITMAP_DEFAULT_ENTRY_SIZE:106/1115`.
+- Accessor equality: `ResolvedAccessor:684` and `AnnotatedAccessor:169-199`.
+- Go's catalog template name and version equal Java's (`:85/:89` vs `:113-114`).

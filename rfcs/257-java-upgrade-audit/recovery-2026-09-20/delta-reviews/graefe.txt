@@ -1,0 +1,33 @@
+**NAK — WS-A + WS-E1 implementation code** at tree `9f8d0f63cc15aa364dd237a62650a4bf73e5babe`.
+
+I read all four prior reports and the complete delta from tree `a8940de29c3726e44d5e14779f321b732e11be88`, then traced the fixes through frozen surrounding source and Java `fdacd162a9c8acfadc49082b89185c823ab8ae4a`. Milestone base remains `71ccd8cf8b3fd0dbafe283e91171818e36af555e`.
+
+Two remaining **P2 defects** prevent reconfirmation. Both concern the requested preservation of expanded-slot identity:
+
+1. **Positional ORDER BY still confuses labels with identity.** Expanded star slots receive their bare column names as aliases at [select_parser.go:945](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/select_parser.go:945). Positional resolution prefers those aliases, and duplicate detection keys on their text at [select_parser.go:1325](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/select_parser.go:1325).
+
+   For a one-column `t(id)`, `SELECT a.*, b.* FROM t a, t b ORDER BY 1, 2` therefore rejects with duplicate `ID` (`42701`), although the positions address different source attributes. The equivalent explicit projection `SELECT a.id, b.id ...` avoids that collision. The visitor repeats the same label-based check at [plan_visitor.go:1640](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/plan_visitor.go:1640).
+
+   **Required fix:** preserve ordinal/expression identity through duplicate detection in both consumers. Retain a regression with distinct source values and colliding output labels.
+
+2. **Positional GROUP BY’s bound identity is ignored downstream.** The new mapping correctly captures `col.bound` at [select_parser.go:1406](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/select_parser.go:1406), but [groupKeysEquivalent:1502](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/plan_visitor.go:1502) compares only names and qualifiers. For the same one-column table, `SELECT * FROM t, t GROUP BY 1, 2` consequently rejects two different bound source slots as duplicate grouping keys (`42702`).
+
+   Preservation is also incomplete elsewhere: [stripGroupKeyLeadingSegment:110](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/select_parser.go:110) reconstructs keys without `Value`; aggregate reclassification at [select_parser.go:1258](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/select_parser.go:1258) drops the bound projection value; [plan_visitor.go:827](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/plan_visitor.go:827) resolves bound grouping slots by name again.
+
+   **Required fix:** carry bound values through stripping, aggregate reclassification, validation and output rebasing; compare semantic identities. Add duplicate-source/duplicate-label positional grouping contracts.
+
+These are source-derived findings, not newly executed reproductions. They concern Go’s approved positional extensions; Java’s measured refusal does not establish their correctness.
+
+The RaBitQ rounding, checked-array nil guards, transactional descriptor closure and fixture corrections resolve their reviewed defects. Java’s measured architecture-specific NaN signs are respected; universal NaN-byte identity is unnecessary. Product transaction retry behavior remains unchanged.
+
+I reconciled **93 uncached passing targets**, **40,605 RUN = 40,600 PASS + 5 existing skips**, and **14 uncached race targets with 21,059 RUN = PASS**. Frozen hashes match both trees; only the stated four documentation/evidence files separate verified code from final. ARM64 records 273 passes and zero fused instructions in the inspected encoding symbols. All 176 stress timing entries reconcile; the noisy medians establish no universal performance guarantee.
+
+Separate remaining gates:
+
+- Correct the slot-identity defects and retain regression verification; implementation approval remains unmet.
+- Historical executor startup-timeout causation remains unestablished, separately from the CLI networking repair.
+- Fresh GitHub authentication and owner publication authorization remain absent.
+
+Approved nullable-array/raw/scalar/sorting extensions remain required; FDB C++ stays **7.3.77**. This does not approve WS-B–K, overall completion, publication or merge. Historical design/security ACKs retain their original scope.
+
+No edits, tests/builds, agents, worktrees, Git-state changes or GitHub contact occurred.

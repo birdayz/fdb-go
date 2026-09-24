@@ -1,0 +1,476 @@
+//go:build bazelrunfiles
+
+package conformance_test
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"fdb.dev/gen"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/descriptorpb"
+)
+
+// mapRecordsFile is a records file whose one record type holds a proto map
+// field, m (map<string, int64>), whose entry message is MEntry. Protobuf-java's
+// isRepeated() is true for a map field, and Go's IsList() is not, so a map is
+// where the two engines' key validation could part.
+func mapRecordsFile() *descriptorpb.FileDescriptorProto {
+	optional := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum()
+	repeated := descriptorpb.FieldDescriptorProto_LABEL_REPEATED.Enum()
+	field := func(name string, number int32, label *descriptorpb.FieldDescriptorProto_Label, typ descriptorpb.FieldDescriptorProto_Type, typeName string) *descriptorpb.FieldDescriptorProto {
+		f := &descriptorpb.FieldDescriptorProto{Name: proto.String(name), Number: proto.Int32(number), Label: label, Type: typ.Enum()}
+		if typeName != "" {
+			f.TypeName = proto.String(typeName)
+		}
+		return f
+	}
+	return &descriptorpb.FileDescriptorProto{
+		Name:    proto.String("key_validation_map.proto"),
+		Package: proto.String("keyvalidation"),
+		Syntax:  proto.String("proto2"),
+		MessageType: []*descriptorpb.DescriptorProto{
+			{
+				Name: proto.String("MapRec"),
+				Field: []*descriptorpb.FieldDescriptorProto{
+					field("id", 1, optional, descriptorpb.FieldDescriptorProto_TYPE_INT64, ""),
+					field("m", 2, repeated, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, ".keyvalidation.MapRec.MEntry"),
+				},
+				NestedType: []*descriptorpb.DescriptorProto{{
+					Name: proto.String("MEntry"),
+					Field: []*descriptorpb.FieldDescriptorProto{
+						field("key", 1, optional, descriptorpb.FieldDescriptorProto_TYPE_STRING, ""),
+						field("value", 2, optional, descriptorpb.FieldDescriptorProto_TYPE_INT64, ""),
+					},
+					Options: &descriptorpb.MessageOptions{MapEntry: proto.Bool(true)},
+				}},
+			},
+			{
+				Name:  proto.String("RecordTypeUnion"),
+				Field: []*descriptorpb.FieldDescriptorProto{field("_MapRec", 1, optional, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, ".keyvalidation.MapRec")},
+			},
+		},
+	}
+}
+
+// mapMetaData is serialized meta-data over mapRecordsFile with one value index
+// on MapRec whose root is root, written without Go's Build so a root Go
+// refuses reaches both loaders.
+func mapMetaData(root recordlayer.KeyExpression) *gen.MetaData {
+	return &gen.MetaData{
+		Records: mapRecordsFile(),
+		RecordTypes: []*gen.RecordType{{
+			Name:       proto.String("MapRec"),
+			PrimaryKey: recordlayer.Field("id").ToKeyExpression(),
+		}},
+		Indexes: []*gen.Index{{
+			Name:                proto.String("idx"),
+			RecordType:          []string{"MapRec"},
+			RootExpression:      root.ToKeyExpression(),
+			AddedVersion:        proto.Int32(1),
+			LastModifiedVersion: proto.Int32(1),
+		}},
+		Version: proto.Int32(1),
+	}
+}
+
+// demoMetaDataWithRoot is the demo records with one value index on Order whose
+// root is root, written without Go's Build.
+func demoMetaDataWithRoot(root recordlayer.KeyExpression) *gen.MetaData {
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+	builder.AddIndex("Order", recordlayer.NewIndex("idx", recordlayer.Field("price")))
+	md, err := builder.Build()
+	Expect(err).NotTo(HaveOccurred())
+	p, err := md.ToProto()
+	Expect(err).NotTo(HaveOccurred())
+	for _, idx := range p.GetIndexes() {
+		if idx.GetName() == "idx" {
+			idx.RootExpression = root.ToKeyExpression()
+		}
+	}
+	return p
+}
+
+// Key validation at build, both loaders on the same bytes. The class is the
+// Java exception's full name (the two InvalidExpressionExceptions share a
+// simple name), and Go's error type is that class's (errors.go): a
+// KeyExpression.InvalidExpressionException is KeyExpressionError, a
+// Query.InvalidExpressionException is QueryInvalidExpressionError, an
+// UnsupportedOperationException is UnsupportedOperationError. The texts are
+// equal, not prefixes.
+var _ = Describe("Key validation at build, as Java builds", func() {
+	const (
+		keyInvalid   = "com.apple.foundationdb.record.metadata.expressions.KeyExpression$InvalidExpressionException"
+		queryInvalid = "com.apple.foundationdb.record.query.expressions.Query$InvalidExpressionException"
+		unsupported  = "java.lang.UnsupportedOperationException"
+	)
+	for _, c := range []struct {
+		name string
+		md   func() *gen.MetaData
+		// class is Java's, empty when Java builds; text is Java's message.
+		class, text string
+		// goOnly is Go's declared refusal where Java builds (DIVERGENCES.md,
+		// "A proto map field is not fanned out in a key expression").
+		goOnly string
+	}{
+		{"a nesting into a scalar field", func() *gen.MetaData {
+			return demoMetaDataWithRoot(recordlayer.Nest("price", recordlayer.Field("type")))
+		}, unsupported, "This field is not of message type. (com.apple.foundationdb.record.Order.price)", ""},
+		{"a map field read as a scalar", func() *gen.MetaData {
+			return mapMetaData(recordlayer.Field("m"))
+		}, keyInvalid, "m is repeated with FanType.None", ""},
+		{"a map field fanned out as a leaf", func() *gen.MetaData {
+			return mapMetaData(recordlayer.FanOut("m"))
+		}, queryInvalid, "m is a nested message, but accessed as a scalar", ""},
+		{"a map field nested with FanType.None", func() *gen.MetaData {
+			return mapMetaData(recordlayer.Nest("m", recordlayer.Field("value")))
+		}, keyInvalid, "m is repeated with FanType.None", ""},
+		{"a map field fanned out into a field its entry lacks", func() *gen.MetaData {
+			return mapMetaData(recordlayer.NestFanOut("m", recordlayer.Field("nope")))
+		}, keyInvalid, "Descriptor MEntry does not have field: nope", ""},
+		{"a map field fanned out into its entry's value", func() *gen.MetaData {
+			return mapMetaData(recordlayer.NestFanOut("m", recordlayer.Field("value")))
+		}, "", "", "m is a map field; Go does not fan out a map in a key expression"},
+	} {
+		It("builds as Java does: "+c.name, func() {
+			p := c.md()
+			var java javaAnyVerdict
+			Expect(NewJavaInvoker().InvokeAs(context.Background(), "buildMetaDataAnyVerdict", map[string]any{
+				"protoBytes": bytesToInts(marshalMetaData(p)),
+			}, &java)).To(Succeed())
+			_, goErr := recordlayer.RecordMetaDataFromProto(proto.Clone(p).(*gen.MetaData))
+			fmt.Fprintf(GinkgoWriter, "KEY_VALIDATION %q java=%t %s %q go=%T %v\n", c.name, java.Valid, java.Class, java.Error, goErr, goErr)
+
+			if c.class == "" {
+				Expect(java.Valid).To(BeTrue(), "Java: %s %s", java.Class, java.Error)
+				var unsupportedErr *recordlayer.UnsupportedOperationError
+				Expect(errors.As(goErr, &unsupportedErr)).To(BeTrue(), "Go: %T %v", goErr, goErr)
+				Expect(unsupportedErr.Message).To(Equal(c.goOnly))
+				return
+			}
+			Expect(java.Valid).To(BeFalse())
+			Expect(java.Class).To(Equal(c.class))
+			if c.text != "" {
+				Expect(java.Error).To(Equal(c.text))
+			}
+			var goMessage string
+			switch c.class {
+			case keyInvalid:
+				var e *recordlayer.KeyExpressionError
+				Expect(errors.As(goErr, &e)).To(BeTrue(), "Go: %T %v", goErr, goErr)
+				goMessage = e.Message
+			case queryInvalid:
+				var e *recordlayer.QueryInvalidExpressionError
+				Expect(errors.As(goErr, &e)).To(BeTrue(), "Go: %T %v", goErr, goErr)
+				goMessage = e.Message
+			case unsupported:
+				var e *recordlayer.UnsupportedOperationError
+				Expect(errors.As(goErr, &e)).To(BeTrue(), "Go: %T %v", goErr, goErr)
+				goMessage = e.Message
+			}
+			Expect(goMessage).To(Equal(java.Error))
+		})
+	}
+})
+
+// validatorIndex is one serialized index for indexValidationMetaData.
+type validatorIndex struct {
+	name, recordType, typ string
+	root                  recordlayer.KeyExpression
+	options               map[string]string
+	// added and lastModified default to 1; key is the subspace key, the name
+	// when empty.
+	added, lastModified int32
+	key                 string
+}
+
+// indexValidationMetaData is the demo records at version 5 with the given
+// indexes and former indexes, serialized without Go's Build so a shape Go
+// refuses reaches both loaders.
+func indexValidationMetaData(storeVersions bool, indexes []validatorIndex, formers []*gen.FormerIndex) *gen.MetaData {
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+	md, err := builder.Build()
+	Expect(err).NotTo(HaveOccurred())
+	p, err := md.ToProto()
+	Expect(err).NotTo(HaveOccurred())
+	p.Version = proto.Int32(5)
+	p.StoreRecordVersions = proto.Bool(storeVersions)
+	for _, vi := range indexes {
+		added, lastModified := vi.added, vi.lastModified
+		if added == 0 {
+			added = 1
+		}
+		if lastModified == 0 {
+			lastModified = 1
+		}
+		key := vi.key
+		if key == "" {
+			key = vi.name
+		}
+		idx := &gen.Index{
+			Name:                proto.String(vi.name),
+			RecordType:          []string{vi.recordType},
+			Type:                proto.String(vi.typ),
+			RootExpression:      vi.root.ToKeyExpression(),
+			SubspaceKey:         tuple.Tuple{key}.Pack(),
+			AddedVersion:        proto.Int32(added),
+			LastModifiedVersion: proto.Int32(lastModified),
+		}
+		for k, v := range vi.options {
+			idx.Options = append(idx.Options, &gen.Index_Option{Key: proto.String(k), Value: proto.String(v)})
+		}
+		p.Indexes = append(p.Indexes, idx)
+	}
+	p.FormerIndexes = append(p.FormerIndexes, formers...)
+	return p
+}
+
+func formerIndex(name, key string, added, removed int32) *gen.FormerIndex {
+	return &gen.FormerIndex{FormerName: proto.String(name), SubspaceKey: tuple.Tuple{key}.Pack(), AddedVersion: proto.Int32(added), RemovedVersion: proto.Int32(removed)}
+}
+
+// Build's index validation, both loaders on the same bytes: each index type's
+// validator (IndexValidator.java and each factory's getIndexValidator) with
+// Java's text and class, and MetaDataValidator.validateCurrentAndFormerIndexes'
+// order, index by index. Two faults on two indexes are placed so that the
+// per-index order and a per-check order disagree; the index names ("a", "b")
+// are in the same order in Java's HashMap and Go's name order, which is the
+// only order this spec relies on.
+var _ = Describe("Index validation at build, as Java builds", func() {
+	const (
+		keyInvalid = "com.apple.foundationdb.record.metadata.expressions.KeyExpression$InvalidExpressionException"
+		metaData   = "com.apple.foundationdb.record.metadata.MetaDataException"
+	)
+	grouped := func(groupedField string, groupBy ...string) recordlayer.KeyExpression {
+		keys := make([]recordlayer.KeyExpression, len(groupBy))
+		for i, g := range groupBy {
+			keys[i] = recordlayer.Field(g)
+		}
+		return recordlayer.GroupBy(recordlayer.Field(groupedField), keys...)
+	}
+	for _, c := range []struct {
+		name          string
+		storeVersions bool
+		indexes       []validatorIndex
+		formers       []*gen.FormerIndex
+		class, text   string
+	}{
+		// The validators.
+		{
+			"a value index over a grouping", false,
+			[]validatorIndex{{name: "a", recordType: "Order", typ: "value", root: grouped("price", "quantity")}},
+			nil,
+			keyInvalid, "grouping not possible in index type",
+		},
+		{
+			"a value index over a version", false,
+			[]validatorIndex{{name: "a", recordType: "Order", typ: "value", root: recordlayer.Concat(recordlayer.Field("price"), recordlayer.VersionKey())}},
+			nil,
+			keyInvalid, "version key not possible in index type",
+		},
+		// Measured: both loaders read a rank root that is not a grouping as
+		// one grouped column, so it reaches the validator valid.
+		{
+			"a rank index over a plain field", false,
+			[]validatorIndex{{name: "a", recordType: "Order", typ: "rank", root: recordlayer.Field("price")}},
+			nil,
+			"", "",
+		},
+		{
+			"a rank index grouping everything", false,
+			[]validatorIndex{{name: "a", recordType: "Order", typ: "rank", root: recordlayer.GroupAll(recordlayer.Field("price"))}},
+			nil,
+			keyInvalid, "index type requires grouping at least 1 fields",
+		},
+		{
+			"a leaderboard without a grouping", false,
+			[]validatorIndex{{name: "a", recordType: "Order", typ: "time_window_leaderboard", root: recordlayer.Field("price")}},
+			nil,
+			keyInvalid, "index type requires grouping",
+		},
+		{
+			"a count with a grouped field", false,
+			[]validatorIndex{{name: "a", recordType: "Order", typ: "count", root: grouped("price", "quantity")}},
+			nil,
+			keyInvalid, "index type does not support non-group fields; use COUNT_NOT_NULL",
+		},
+		{
+			"a sum of two fields", false,
+			[]validatorIndex{{name: "a", recordType: "Order", typ: "sum", root: recordlayer.GroupBy(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), recordlayer.Field("order_id"))}},
+			nil,
+			keyInvalid, "index type only supports single field",
+		},
+		{
+			"a sum of a string", false,
+			[]validatorIndex{{name: "a", recordType: "Customer", typ: "sum", root: grouped("name", "price")}},
+			nil,
+			keyInvalid, "index type only supports integer field",
+		},
+		{
+			"a sum of an sfixed32", false,
+			[]validatorIndex{{name: "a", recordType: "TypedRecord", typ: "sum", root: grouped("val_sfixed32", "price")}},
+			nil,
+			keyInvalid, "index type only supports integer field",
+		},
+		{
+			"count updates cleared when zero", false,
+			[]validatorIndex{{name: "a", recordType: "Order", typ: "count_updates", root: recordlayer.GroupAll(recordlayer.Field("price")), options: map[string]string{"clearWhenZero": "true"}}},
+			nil,
+			metaData, "index type does not support clearWhenZero",
+		},
+		{
+			"count not null cleared when zero over a grouped field", false,
+			[]validatorIndex{{name: "a", recordType: "Order", typ: "count_not_null", root: grouped("price", "quantity"), options: map[string]string{"clearWhenZero": "true"}}},
+			nil,
+			keyInvalid, "index type does not support non-group fields; use COUNT_NOT_NULL",
+		},
+		{
+			"a bitmap over a string position", false,
+			[]validatorIndex{{name: "a", recordType: "Customer", typ: "bitmap_value", root: grouped("name", "price")}},
+			nil,
+			keyInvalid, "index type only supports integer position key",
+		},
+		{
+			"a bitmap over an sfixed32 position", false,
+			[]validatorIndex{{name: "a", recordType: "TypedRecord", typ: "bitmap_value", root: grouped("val_sfixed32", "price")}},
+			nil,
+			"", "",
+		},
+		{
+			"a bitmap of two positions", false,
+			[]validatorIndex{{name: "a", recordType: "Order", typ: "bitmap_value", root: recordlayer.GroupBy(recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity")), recordlayer.Field("order_id"))}},
+			nil,
+			keyInvalid, "index type needs grouped position",
+		},
+		{
+			"a version index without record versions", false,
+			[]validatorIndex{{name: "a", recordType: "Order", typ: "version", root: recordlayer.VersionKey()}},
+			nil,
+			metaData, "index type requires metadata store record version",
+		},
+		{
+			"a max ever version without record versions", false,
+			[]validatorIndex{{name: "a", recordType: "Order", typ: "max_ever_version", root: recordlayer.Ungrouped(recordlayer.VersionKey())}},
+			nil,
+			"", "",
+		},
+		{
+			"a multidimensional index without dimensions", false,
+			[]validatorIndex{{name: "a", recordType: "Order", typ: "multidimensional", root: recordlayer.Concat(recordlayer.Field("coord_x"), recordlayer.Field("coord_y"))}},
+			nil,
+			keyInvalid, "no dimensions key expression or at incorrect place in index",
+		},
+		{
+			"a unique text index", false,
+			[]validatorIndex{{name: "a", recordType: "Customer", typ: "text", root: recordlayer.Field("name"), options: map[string]string{"unique": "true"}}},
+			nil,
+			metaData, "index type does not allow unique indexes",
+		},
+		{
+			"a text index with an empty tokenizer name", false,
+			[]validatorIndex{{name: "a", recordType: "Customer", typ: "text", root: recordlayer.Field("name"), options: map[string]string{"textTokenizerName": ""}}},
+			nil,
+			metaData, "unrecognized text tokenizer",
+		},
+		// A bare root on an aggregate type: Java's Index(proto) wraps it for
+		// RANK, COUNT, MAX_EVER, MIN_EVER and SUM (Index.java:206-213), COUNT
+		// with every column grouped, the others with one.
+		{
+			"a count over a bare field", false,
+			[]validatorIndex{{name: "a", recordType: "Order", typ: "count", root: recordlayer.Field("price")}},
+			nil,
+			keyInvalid, "index type does not support non-group fields; use COUNT_NOT_NULL",
+		},
+		{
+			"a sum over a bare field", false,
+			[]validatorIndex{{name: "a", recordType: "Order", typ: "sum", root: recordlayer.Field("price")}},
+			nil,
+			"", "",
+		},
+		{
+			"a max ever over a bare field", false,
+			[]validatorIndex{{name: "a", recordType: "Order", typ: "max_ever", root: recordlayer.Field("price")}},
+			nil,
+			"", "",
+		},
+		{
+			"a min ever long over a bare field", false,
+			[]validatorIndex{{name: "a", recordType: "Order", typ: "min_ever_long", root: recordlayer.Field("price")}},
+			nil,
+			keyInvalid, "index type requires grouping",
+		},
+		{
+			"a leaderboard over a bare Then", false,
+			[]validatorIndex{{name: "a", recordType: "Order", typ: "time_window_leaderboard", root: recordlayer.Concat(recordlayer.Field("price"), recordlayer.Field("quantity"))}},
+			nil,
+			keyInvalid, "index type requires grouping",
+		},
+		// The order.
+		{"a validator before a shared subspace key", false, []validatorIndex{
+			{name: "a", recordType: "Order", typ: "value", root: recordlayer.Field("price"), key: "k"},
+			{name: "b", recordType: "Order", typ: "permuted_min", root: grouped("price", "quantity"), key: "k"},
+		}, nil, metaData, "permuted size not specified"},
+		{"an index's own checks before a later index's key", false, []validatorIndex{
+			{name: "a", recordType: "Order", typ: "value", root: recordlayer.Field("price"), added: 2, lastModified: 1},
+			{name: "b", recordType: "Order", typ: "value", root: recordlayer.Field("nope")},
+		}, nil, metaData, "Index a has added version 2 which is greater than the last modified version 1"},
+		{"the added version before the type's checks", false, []validatorIndex{
+			{name: "a", recordType: "Order", typ: "value", root: grouped("price", "quantity"), added: 2, lastModified: 1},
+		}, nil, metaData, "Index a has added version 2 which is greater than the last modified version 1"},
+		{"the type's checks before the meta-data version", false, []validatorIndex{
+			{name: "a", recordType: "Order", typ: "value", root: grouped("price", "quantity"), lastModified: 9},
+		}, nil, keyInvalid, "grouping not possible in index type"},
+		{"an index before a former index", false, []validatorIndex{
+			{name: "a", recordType: "Order", typ: "value", root: recordlayer.Field("nope")},
+		}, []*gen.FormerIndex{formerIndex("f", "f", 3, 2)}, keyInvalid, "Descriptor Order does not have field: nope"},
+		{
+			"former indexes before an index sharing a key with one", false,
+			[]validatorIndex{
+				{name: "a", recordType: "Order", typ: "value", root: recordlayer.Field("price"), key: "k"},
+			},
+			[]*gen.FormerIndex{formerIndex("f1", "k", 1, 2), formerIndex("f2", "j", 1, 2), formerIndex("f3", "j", 1, 2)},
+			metaData, "Same subspace key j used by two former indexes f3 and f2",
+		},
+	} {
+		It("builds as Java does: "+c.name, func() {
+			p := indexValidationMetaData(c.storeVersions, c.indexes, c.formers)
+			var java javaAnyVerdict
+			Expect(NewJavaInvoker().InvokeAs(context.Background(), "buildMetaDataAnyVerdict", map[string]any{
+				"protoBytes": bytesToInts(marshalMetaData(p)),
+			}, &java)).To(Succeed())
+			_, goErr := recordlayer.RecordMetaDataFromProto(proto.Clone(p).(*gen.MetaData))
+			fmt.Fprintf(GinkgoWriter, "INDEX_VALIDATION %q java=%t %s %q go=%T %v\n", c.name, java.Valid, java.Class, java.Error, goErr, goErr)
+			if c.class == "" {
+				Expect(java.Valid).To(BeTrue(), "Java: %s %s", java.Class, java.Error)
+				Expect(goErr).NotTo(HaveOccurred())
+				return
+			}
+			Expect(java.Valid).To(BeFalse())
+			Expect(java.Class).To(Equal(c.class))
+			Expect(java.Error).To(Equal(c.text))
+			var goMessage string
+			switch c.class {
+			case keyInvalid:
+				var e *recordlayer.KeyExpressionError
+				Expect(errors.As(goErr, &e)).To(BeTrue(), "Go: %T %v", goErr, goErr)
+				goMessage = e.Message
+			case metaData:
+				var e *recordlayer.MetaDataError
+				Expect(errors.As(goErr, &e)).To(BeTrue(), "Go: %T %v", goErr, goErr)
+				goMessage = e.Message
+			}
+			Expect(goMessage).To(Equal(java.Error))
+		})
+	}
+})

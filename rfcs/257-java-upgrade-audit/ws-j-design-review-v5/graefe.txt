@@ -1,0 +1,81 @@
+**NAK.** Tree `f041bee2e4f12ba0ee362732fe5393761ceb6d34`. Design `rfcs/257-java-upgrade-audit/ws-j-design.md`: I recomputed the SHA256, `a0596896a4b4c5ec5efc577759369eafe0009f09cbb51415c3bc175a892e9446`, 1481 lines. Java is at `fdacd162a`. This was a read-only review; I ran no tests, probes or mutations.
+
+**Checked and correct**
+- **Hashes:** 22 of the 48 `evidence-v5` hashes match the tree. The `just test` run-B tree `010199ee` differs from the candidate only in two files: the oracle README and `evidence-v5.txt`.
+- **`setRecords`:** it is the single guard, and the order is Java's (the "already set" check, then `fetchUnionDescriptor`). The loader runs the subspace settings, then the records, and returns the first records fault (`RecordMetaDataBuilder.java:272-278`).
+- **WIDENED is reachable.** Template save runs only the relational table/column validator (`save_schema_template.go:41`), so nothing refuses v2 before `RepairSchema`. With the stored versions kept, the validator reaches the widening arm (`metadata_evolution_validator.go:569`).
+- **CHANGED is safe.** A rebuild at the same subspace key clears first: `RebuildIndex` goes through `ClearAndMarkIndexWriteOnly`, and `MarkIndexDisabled` clears (as Java does, `FDBRecordStore.java:3824-3831`).
+- **Top-node check:** it runs before `IndexSpec` (`DdlVisitor.java:274`, `MaterializedViewIndexGenerator.java:95-97`). The four `top_*` shapes are measured (`wsj5-ev2.log:890-893`), and so are the INT-edge pins (`:61-87`).
+- Also correct: `literalKeyCarrier`'s refusals, the duplicate-option spec driving Go's loader, the FLOAT pins in the F2b spec, the plan-cache comments, gate 8 and the CHANGELOG entry marked PENDING.
+
+## HIGH
+
+**1. Shape (d)'s refusal rejects SQL templates the target creates and serves.**
+- `refuseAmbiguousLegacyUnion` (`metadata_proto.go:415`) refuses any file with a top-level message `UnionDescriptor` that is not the union it finds.
+- A template with a quoted table or struct named `"UnionDescriptor"` is exactly that shape: a record message beside the usage=UNION `RecordTypeUnion`.
+- Neither engine reserves the name:
+  - Java relational: the only hit is `FileDescriptorSerializer.java:77` (`RecordTypeUnion`).
+  - Go: 0 hits in non-test `pkg/relational`; control: `RecordTypeUnion` on 4 lines of `builder.go`.
+- `deserializeTemplate` loads every template through this loader (`fdb_template_catalog.go:280`). Go would therefore fail with XX000 on a template Java created, and on its own template at the next CREATE SCHEMA or save.
+- The pre-upgrade loader could not have written records framed by that message. It took the table message as the union, and scalar fields map to no record type (`e48f5b496:metadata.go:338-360`).
+- This makes three statements false: design :1228 ("SQL DDL produces none of them"), the CHANGELOG and DIVERGENCES.
+- **Fix:**
+  - Do not refuse when the legacy candidate is the message type of one of the found union's fields.
+  - Add a JVM-spec shape built by SQL DDL.
+  - Correct the three scope sentences.
+- Status: SOURCE, not measured.
+
+## MEDIUM
+
+**2. The load order matches Java only up to the records step.**
+- Java resolves each index's record types before `new Index(proto)`, one index at a time (`RecordMetaDataBuilder.java:185-217`). Go parses every index first (`metadata_proto.go:273`). A duplicate-option fault can therefore hide "Unknown record type" on the same index or an earlier one.
+- Java refuses a `RecordType` entry that names an unknown type (`:219-220`, `:986-995`). Go skips it with `continue` (`:317`).
+- The Go-only (d) refusal runs before Java's index checks. A file the target itself refuses therefore gets Go's message instead of the target's; the refusal belongs after `Build`.
+- The cite is wrong: the message comes from `throwUnknownRecordType` (`RecordMetaDataBuilder.java:994-995`), not `RecordMetaData.java:826` (design :1173).
+
+**3. Section 3.5's coverage wording (:505) would return wrong rows, and its Java claim is inferred, not measured.**
+- The design says the coverage surface "exposes the key's operand fields".
+- The `dplus` entry holds `d + 1` and the PK, not `d` (`COVERING(DPLUS … -> [ID: KEY:[2]])`). Exposing `d` would plan `SELECT d … WHERE d + 1 = 5` as a covering scan of a value the entry does not contain.
+- Today Go blocks every function-key column (`match_candidate_index.go:660-670`).
+- **Fix:** state that a function-key column exposes nothing.
+- "The target never reads the value from its entry" rests on two indirect observations: a 0AF00 (the ordering never matches) and a MAP over a DOUBLE key.
+  - Run the direct probe: `EXPLAIN SELECT d + 1 FROM T2 WHERE d + 1 = 5`, and `i + 1 = 6` at the INT edge.
+  - Add a plan-harness pin that `SELECT i … WHERE i + 1 = 6` does not produce a covering plan.
+
+**4. The merge unit leaves two v5 decisions unscheduled.**
+- **(a) The template-save no-lane refusal (:560).**
+  - It is in neither section 8 nor gate 8.
+  - It depends on section 6's lane table, which is step 6, outside the unit.
+  - Step 3 turns on `allowIndexRebuilds`, under which a reverse or no-lane key is admitted as CHANGED (validator :535-537).
+  - **Fix:** put a save-time check in the unit (the bitmap functions' lane table is two rows, `ArithmeticValue.java:515-522`), or declare the gap.
+- **(b) The `DeleteTemplateVersion` refusal and `RestoreTemplateVersion` (:354).**
+  - They are missing from step 1 (:1423), which does include the gone-version refusal.
+  - Today a schema whose bound version was deleted is still repairable, because `validateSchemaRebind` returns nil.
+  - Step 1 without the delete refusal would therefore open a Go-only way to strand a schema.
+  - **Fix:** name both in step 1 and in gate 8.
+
+## LOW
+
+5. **LIMIT precedence (:653).**
+   - Java refuses LIMIT and OFFSET in `AstNormalizer` (`:254-262`). The normalizer walks DDL children (`:315-318`, from `PlanGenerator.java:167`), so it fires before any template clause is processed.
+   - The design's Go refusal sits in the index query's translation, so a fault in an earlier clause wins in Go.
+   - **Fix:** a typed parse-tree check at statement level, OFFSET included, plus a shape with two faults.
+6. **Orphaned doc comment.** The `legacyUnionNames` and `AmbiguousLegacyUnionError` block was inserted between `loadSubspaceKeySettingsFromProto`'s doc comment and the function (`metadata_proto.go:375-433`). That doc now attaches to `legacyUnionNames`. This is the same defect class as v4 finding 10.
+7. **Stale populations and cites:**
+   - :73 says "= 475 runs" and :193 says "475 runs; evidence-v4" with 59 shapes (13 both-reject). The oracle now has 479 runs: 63 shapes, 17 of them both-reject (24 both-reject overall), and the evidence is v5.
+   - The oracle README :18 says "475 bodies".
+   - The mutations header says "all eight"; there are nine.
+   - The F12 digest measure says "of the 475".
+   - Validator cites :509-514, :562-565 and :531-533 are now :513-517, :567-569 and :535-537.
+8. **Test 5 fixture (:1048).**
+   - v1 is built by the post-port builder and then rewritten, but real pre-F2 tenants also carry the old numbering and the pre-F12 option order.
+   - **Fix:** build v1 with the pre-port builder, as tests 1 and 10 do.
+   - :1009 should say "up to the one-way carrier arm".
+9. **`SetRecordsWithUnionName(fd, "")`** now accepts any union (v4 refused it). Refuse an empty name on the public API.
+
+**Measured vs. hypothesis**
+- **Measured:** the `top_*` shapes; the INT-edge projection; the FLOAT entries in the F2b spec; the 23 records files, including the hand-written (d); the duplicate-option message on both engines; the 479-run tally.
+- **Source only:**
+  - findings 1, 3 (Java's claim) and 5;
+  - the WIDENED double→float equivalence, inferred from `nullableLong` with no cross-engine `double_value` pin;
+  - everything in steps 1–3: the carry classes, the guard, the delete refusal, the restore and the migration.

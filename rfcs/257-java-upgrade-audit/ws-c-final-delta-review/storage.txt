@@ -1,0 +1,17 @@
+**ACK — exact reviewed TREE `5dc2a9cf465ff439ac75d1e5eb5682eecd0ca38b`.**
+
+Reviewed the complete 17-file source delta—1,148 additions, 65 deletions—against prior NAK tree `2a4d33046f8640673643ea989709665f425cbbc5`, with accepted WS-B base `ba06f34ff8998f61040a491e4f3a3e8b8de7ccf9`. Read all four prior NAK verdicts, accepted design, final scope, linked evidence, relevant Java at `fdacd162a9c8acfadc49082b89185c823ab8ae4a`, and Go/C future contracts.
+
+**No actionable correctness findings remain in this delta or its reviewed interactions.** All five findings are closed:
+
+- **Admission:** Serializable checks cover every target before open-time reconciliation and explicit destructive preparation. Refusal preserves heartbeat evidence. [store_builder.go:1435](/home/birdy/projects/fdb-go/pkg/recordlayer/store_builder.go:1435), [online_indexer_queue.go:43](/home/birdy/projects/fdb-go/pkg/recordlayer/online_indexer_queue.go:43).
+- **Bounded cleanup:** Cleanup owns transactions, retries, remaining timeout, and deadline-aware `IsReady` polling. `Get` runs only after readiness; no blocking-Get goroutine is abandoned. Ineffective cancellation is covered by the regression and failing mutation. Detached backend work may finish later, clearing only the terminated session’s UUID keys. [online_indexer_queue.go:204](/home/birdy/projects/fdb-go/pkg/recordlayer/online_indexer_queue.go:204).
+- **Nested Any:** Slash-plus-full-message-name validation covers consumed vector, sliding, delegated insert/delete, and DELETE_WHERE payloads. Custom prefixes remain compatible; failed replay cannot commit entry removal or index changes. [pending_writes_queue.go:217](/home/birdy/projects/fdb-go/pkg/recordlayer/pending_writes_queue.go:217).
+- **Mutual renewal:** Admission becomes session state only after successful commit. Admitted mutual batches renew their own UUID without peer-range read conflicts; rejected and direct/unadmitted paths remain strict. [online_indexer.go:1149](/home/birdy/projects/fdb-go/pkg/recordlayer/online_indexer.go:1149), [online_indexer_queue.go:298](/home/birdy/projects/fdb-go/pkg/recordlayer/online_indexer_queue.go:298).
+- **Follow-up:** Drain and merge callbacks refresh and validate every remaining target in the committing transaction. Scannable targets are retired; subsequent callbacks do not recreate their heartbeats. Retry/continuation publication remains commit-bound. [online_indexer_queue.go:311](/home/birdy/projects/fdb-go/pkg/recordlayer/online_indexer_queue.go:311).
+
+Retained **LOCAL** evidence confirms 93/93 uncached targets; 183/3604 record-layer race specs plus ordinary tests/seeds (2,143 RUN lines); and 9/1523 JVM specs with 12 asserted nested-Any verdicts. All 35 freeze hashes match the candidate and current source, covering all 17 changed files.
+
+Maximum format15/default14, approved extensions, and C++7.3.77 remain preserved. SPFresh remains queue-ineligible with algorithms/LIRE unchanged; HNSW remains synchronous. This establishes no deferred child-backend proof. GuardiANN WS-D and absent Lucene—distinct from Go TEXT—remain upgrade-wide work.
+
+No tests, mutations, edits, or operational changes were performed. This ACK is limited to the completed WS-C delta, not CI or overall migration completion.

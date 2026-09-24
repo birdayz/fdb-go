@@ -46,22 +46,21 @@ var seamAllowlist = map[string]string{
 	// ---- (A) Latency and duration measurement. These values feed a StoreTimer or a log line
 	// and are never written to FDB. Seaming them would make a simulation report zero elapsed
 	// time for every operation, which is worse than useless for the metrics.
-	"pkg/recordlayer/database.go:CommitWithVersionstamp: time.Now": "commit-latency metric",
-	"pkg/recordlayer/database.go:Commit: time.Now":                 "commit-latency metric; the sibling of CommitWithVersionstamp, and every commit path has to record or the metric becomes a function of which API the caller picked",
-	"pkg/recordlayer/database.go:CommitWithHooks: time.Now":        "commit-latency metric; same span as Java's commitAsync, which starts before the pre-commit checks",
+	"pkg/recordlayer/database.go:CommitWithVersionstamp: time.Now": "commit-latency metric shared by all explicit commit APIs; starts before pre-commit checks and excludes post-commit hooks",
 	"pkg/recordlayer/database.go:Run: time.Now":                    "commit-latency metric for the transactor's retry loop, where nothing calls Commit and the commit would otherwise go uncounted",
 	"pkg/recordlayer/database.go:RunWithWeakReads: time.Now":       "commit-latency metric; the Run case, weak-read variant",
 	"pkg/recordlayer/database.go:RunWithVersionstamp: time.Now":    "commit-latency metric; the Run case, versionstamp variant",
 	"pkg/recordlayer/instrumented_cursor.go:OnNext: time.Now": "per-record scan-latency metric. This is the one that MUST stay wall-clock: it is the port of Java's " +
 		"StoreTimer.instrument(Event, RecordCursor), whose whole value is the real elapsed time of each onNext — a seamed clock would report a zero-cost scan",
-	"pkg/recordlayer/database.go:GetReadVersion: time.Now":                "GRV-latency metric",
-	"pkg/recordlayer/online_indexer.go:shouldLogBuildProgress: time.Now":  "progress-log throttle",
-	"pkg/recordlayer/spfresh_write.go:spfreshInsert: time.Now":            "insert-latency metric",
-	"pkg/recordlayer/store.go:saveRecordInternal: time.Now":               "save-latency metric",
-	"pkg/recordlayer/store_builder.go:Create: time.Now":                   "store-create-latency metric",
-	"pkg/recordlayer/store_builder.go:Open: time.Now":                     "store-open-latency metric",
-	"pkg/recordlayer/store_builder.go:RebuildIndex: time.Now":             "rebuild-latency metric",
-	"pkg/relational/core/embedded/plan_logging.go:beginPlanLog: time.Now": "plan-log timestamp; log output, not persisted rows",
+	"pkg/recordlayer/database.go:GetReadVersion: time.Now":                        "GRV-latency metric",
+	"pkg/recordlayer/online_indexer.go:shouldLogBuildProgress: time.Now":          "progress-log throttle",
+	"pkg/recordlayer/online_indexer_queue.go:cleanupHeartbeatAttempt: time.Until": "remaining wall-clock context deadline for best-effort cleanup's FDB transaction timeout; not a persisted timestamp, and a simulated clock cannot be compared to context.WithTimeout's wall-clock deadline",
+	"pkg/recordlayer/spfresh_write.go:spfreshInsert: time.Now":                    "insert-latency metric",
+	"pkg/recordlayer/store.go:saveRecordInternal: time.Now":                       "save-latency metric",
+	"pkg/recordlayer/store_builder.go:Create: time.Now":                           "store-create-latency metric",
+	"pkg/recordlayer/store_builder.go:openWithPreflight: time.Now":                "store-open-latency metric",
+	"pkg/recordlayer/store_builder.go:RebuildIndex: time.Now":                     "rebuild-latency metric",
+	"pkg/relational/core/embedded/plan_logging.go:beginPlanLog: time.Now":         "plan-log timestamp; log output, not persisted rows",
 	"pkg/relational/core/embedded/execution_logging.go:beginExecLog: time.Now": "execution-stats timestamp; the same log-output-not-persisted-rows case as beginPlanLog one layer over. " +
 		"Deliberately NOT the seamed clock ScanLimiterState uses: that one DECIDES where a page ends and which continuation the caller gets, so a wall-clock anchor changes what a seeded run produces. This one is read once at the start of Execute and once at the end, and the only thing derived from the difference is ExecutionDuration and the SlowQuery boolean beside it on a log line — no byte written, no page boundary, no plan choice",
 	"pkg/recordlayer/spfresh_query.go:search: time.Now":               "search-latency metric",
@@ -102,8 +101,8 @@ var seamAllowlist = map[string]string{
 	"pkg/relational/core/embedded/scalar_functions.go:statementNow: time.Now":      "nil-session arm; Session.StatementNow supplies the value when a session is in flight",
 
 	// ---- (D) Test and development harnesses. Not on any persisted-byte path.
-	"pkg/recordlayer/chaos/concurrent.go:RunConcurrent: time.Now":                   "chaos driver's own scheduling",
-	"pkg/relational/conformance/plandiff/go_runner.go:runEphemeral: uuid.NewString": "ephemeral database name for a cross-engine plan-diff run",
+	"pkg/recordlayer/chaos/concurrent.go:RunConcurrent: time.Now":                          "chaos driver's own scheduling",
+	"pkg/relational/conformance/plandiff/go_runner.go:withEphemeralSchema: uuid.NewString": "ephemeral database name for a cross-engine plan-diff run",
 
 	// ---- (E) KNOWN-UNSEAMED PERSISTED SITE. This one does reach persisted rows and is the
 	// standing exception to the bit-exact-replay claim; it is named as such in the RFC-199

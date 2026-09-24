@@ -3,7 +3,6 @@ package recordlayer
 import (
 	"context"
 	"fmt"
-	"strconv"
 
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -40,19 +39,67 @@ func newPermutedMinMaxIndexMaintainer(
 	tx fdb.WritableTransaction,
 	store indexStoreContext,
 	isMax bool,
-) *permutedMinMaxIndexMaintainer {
-	permutedSize := 0
-	if v, ok := index.Options[IndexOptionPermutedSize]; ok {
-		if n, err := strconv.Atoi(v); err == nil {
-			permutedSize = n
-		}
+) (*permutedMinMaxIndexMaintainer, error) {
+	// Java's constructor reads the size with getPermutedSize and throws what
+	// it throws (PermutedMinMaxIndexMaintainer.java:101-113).
+	permutedSize, err := PermutedSizeOption(index)
+	if err != nil {
+		return nil, err
 	}
 	return &permutedMinMaxIndexMaintainer{
 		standardIndexMaintainer: newStandardIndexMaintainer(index, indexSubspace, tx, store),
 		isMax:                   isMax,
 		permutedSize:            permutedSize,
 		secondarySubspace:       secondarySubspace,
+	}, nil
+}
+
+// PermutedSizeOption is Java's PermutedMinMaxIndexMaintainer.getPermutedSize
+// (PermutedMinMaxIndexMaintainer.java:107-113): an absent option is refused
+// ("permuted size not specified"), and a present one is read by
+// Integer.parseInt, whose refusal is a NumberFormatError. The range check
+// against the grouping is the index validator's (validatePermutedIndex).
+// Every reader of the option goes through it: the maintainer, Build's
+// validator, the executor's permuted scan and the chaos model.
+func PermutedSizeOption(index *Index) (int, error) {
+	v, ok := index.Options[IndexOptionPermutedSize]
+	if !ok {
+		return 0, &MetaDataError{Message: "permuted size not specified"}
 	}
+	n, err := javaParseInt(v)
+	if err != nil {
+		return 0, err
+	}
+	return int(n), nil
+}
+
+// validatePermutedIndex is the index validator of Java's
+// PermutedMinMaxIndexMaintainerFactory (PermutedMinMaxIndexMaintainerFactory.java:
+// 66-80), in its order after the base validation: grouping with at least one
+// grouped column, no version column, then the permuted size read, not
+// negative and not past the grouping count.
+func validatePermutedIndex(index *Index) error {
+	grouping, ok := index.RootExpression.(*GroupingKeyExpression)
+	if !ok {
+		return &KeyExpressionError{Message: "index type requires grouping"}
+	}
+	if grouping.GetGroupedCount() < 1 {
+		return &KeyExpressionError{Message: "index type requires grouping at least 1 fields"}
+	}
+	if countVersionColumns(index.RootExpression) > 0 {
+		return &KeyExpressionError{Message: "version key not possible in index type"}
+	}
+	permutedSize, err := PermutedSizeOption(index)
+	if err != nil {
+		return err
+	}
+	if permutedSize < 0 {
+		return &MetaDataError{Message: "permuted size cannot be negative"}
+	}
+	if permutedSize > grouping.GetGroupingCount() {
+		return &MetaDataError{Message: "permuted size cannot be larger than grouping size"}
+	}
+	return nil
 }
 
 // getGroupingCount returns the number of leading grouping (GROUP BY) columns.

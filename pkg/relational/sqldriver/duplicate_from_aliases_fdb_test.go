@@ -124,11 +124,8 @@ func TestFDB_DuplicateFromAliases(t *testing.T) {
 	// product). The architecture-gate condition: duplicate labels AND
 	// per-position values (the two p legs' slots vary independently across
 	// the cross product — never a single-leg echo).
-	// No ORDER BY: positional ORDER BY over a star SELECT is a SEPARATE
-	// both-reject class (Java "Cascades planner could not plan query"; corpus
-	// order_by_position_over_star) — not this test's subject. Row order is
-	// immaterial here; the assertions below are set-membership over the cross
-	// product.
+	// Row order is immaterial here; the assertions below are set-membership
+	// over the cross product. Positional star ordering has its own contracts.
 	starRows, err := db.QueryContext(ctx, "SELECT * FROM p, q, p")
 	if err != nil {
 		t.Errorf("SELECT * over duplicates must ANSWER (Java: duplicate columns): %v", err)

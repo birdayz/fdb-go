@@ -1,0 +1,85 @@
+# F2 (literal carrier width) — fix evidence, measured 2026-09-23
+# Files at measurement (sha256):
+#   ce2276ce57759a4b  pkg/relational/core/query/ddl/generator.go
+#   28fa112fdf152cf6  pkg/relational/core/query/expr/walk.go
+#   3ceb6f79cfd364e2  pkg/recordlayer/long_arithmetic_function.go
+#   3fe8321b3e2c535f  conformance/ws_j_index_fidelity_conformance_test.go
+#
+## 1. Target plans over a Go-stored template (spec 'WS-J Go-stored template planned by the target')
+## BEFORE the fix (walker typed the injected entry size LONG; generator stored the int64 carrier):
+WSJG "EXPLAIN SELECT bitmap_bucket_offset(id) FROM T1 ORDER BY bitmap_bucket_offset(id)"
+over-go-stored=ERROR XX000 VerifyException "unable to encapsulate arithmetic operation due to type mismatch(es)"
+over-java-stored=OK EXPLAIN "ISCAN(AGG_BUCKET <,>) | MAP ((_.ID) bitmap_bucket_offset 10000 AS _0)"
+WSJG "SELECT bitmap_bucket_offset(id) FROM T1 ORDER BY bitmap_bucket_offset(id)"
+over-go-stored=ERROR XX000 VerifyException "unable to encapsulate arithmetic operation due to type mismatch(es)"
+over-java-stored=OK [[0] [20000] [30000]]
+WSJG "EXPLAIN SELECT id FROM T2 ORDER BY d & 1"
+over-go-stored=ERROR 0AF00 UnableToPlanException "Cascades planner could not plan query"
+over-java-stored=ERROR 0AF00 UnableToPlanException "Cascades planner could not plan query"
+WSJG "SELECT id, d & 1 FROM T2 ORDER BY d & 1, id"
+over-go-stored=ERROR 0AF00 UnableToPlanException "Cascades planner could not plan query"
+over-java-stored=ERROR 0AF00 UnableToPlanException "Cascades planner could not plan query"
+WSJG "EXPLAIN SELECT id FROM T2 ORDER BY d + 1"
+over-go-stored=ERROR 0AF00 UnableToPlanException "Cascades planner could not plan query"
+over-java-stored=ERROR 0AF00 UnableToPlanException "Cascades planner could not plan query"
+WSJG "SELECT d + 1 FROM T2 ORDER BY d + 1"
+over-go-stored=ERROR 0AF00 UnableToPlanException "Cascades planner could not plan query"
+over-java-stored=ERROR 0AF00 UnableToPlanException "Cascades planner could not plan query"
+WSJG "EXPLAIN SELECT bitmap_construct_agg(bitmap_bit_position(id)) AS b, category, bitmap_bucket_offset(id) AS o FROM T1 GROUP BY category, bitmap_bucket_offset(id)"
+over-go-stored=ERROR XX000 VerifyException "unable to encapsulate arithmetic operation due to type mismatch(es)"
+over-java-stored=OK EXPLAIN "AISCAN(BM <,> BY_GROUP -> [_0: KEY:[0], _1: KEY:[1], _2: VALUE:[0]]) | MAP (_._2 AS B, _._0 AS CATEGORY, _._1 AS O)"
+## AFTER the fix (full-target run, 21/21 specs):
+WSJG "EXPLAIN SELECT bitmap_bucket_offset(id) FROM T1 ORDER BY bitmap_bucket_offset(id)"
+over-go-stored=OK EXPLAIN "ISCAN(AGG_BUCKET <,>) | MAP ((_.ID) bitmap_bucket_offset 10000 AS _0)"
+over-java-stored=OK EXPLAIN "ISCAN(AGG_BUCKET <,>) | MAP ((_.ID) bitmap_bucket_offset 10000 AS _0)"
+WSJG "SELECT bitmap_bucket_offset(id) FROM T1 ORDER BY bitmap_bucket_offset(id)"
+over-go-stored=OK [[0] [20000] [30000]]
+over-java-stored=OK [[0] [20000] [30000]]
+WSJG "EXPLAIN SELECT id FROM T2 ORDER BY d & 1"
+over-go-stored=ERROR 0AF00 UnableToPlanException "Cascades planner could not plan query"
+over-java-stored=ERROR 0AF00 UnableToPlanException "Cascades planner could not plan query"
+WSJG "SELECT id, d & 1 FROM T2 ORDER BY d & 1, id"
+over-go-stored=ERROR 0AF00 UnableToPlanException "Cascades planner could not plan query"
+over-java-stored=ERROR 0AF00 UnableToPlanException "Cascades planner could not plan query"
+WSJG "EXPLAIN SELECT id FROM T2 ORDER BY d + 1"
+over-go-stored=ERROR 0AF00 UnableToPlanException "Cascades planner could not plan query"
+over-java-stored=ERROR 0AF00 UnableToPlanException "Cascades planner could not plan query"
+WSJG "SELECT d + 1 FROM T2 ORDER BY d + 1"
+over-go-stored=ERROR 0AF00 UnableToPlanException "Cascades planner could not plan query"
+over-java-stored=ERROR 0AF00 UnableToPlanException "Cascades planner could not plan query"
+WSJG "EXPLAIN SELECT bitmap_construct_agg(bitmap_bit_position(id)) AS b, category, bitmap_bucket_offset(id) AS o FROM T1 GROUP BY category, bitmap_bucket_offset(id)"
+over-go-stored=OK EXPLAIN "AISCAN(BM <,> BY_GROUP -> [_0: KEY:[0], _1: KEY:[1], _2: VALUE:[0]]) | MAP (_._2 AS B, _._0 AS CATEGORY, _._1 AS O)"
+over-java-stored=OK EXPLAIN "AISCAN(BM <,> BY_GROUP -> [_0: KEY:[0], _1: KEY:[1], _2: VALUE:[0]]) | MAP (_._2 AS B, _._0 AS CATEGORY, _._1 AS O)"
+Ran 21 of 21 Specs in 153.663 seconds
+## Mutation: walker entry size back to LONG, spec now pinned (over-go-stored == over-java-stored):
+[FAILED] the target over the Go-stored template must answer as over its own: EXPLAIN SELECT bitmap_bucket_offset(id) FROM T1 ORDER BY bitmap_bucket_offset(id)
+Ran 1 of 21 Specs in 7.358 seconds
+#
+## 2. Index-fidelity rows that moved (evidence-run.txt -> this run; everything else identical up to random template names)
+11c11
+< WSJ bitmap-aggregate-index.yamsql:21 java=OK(4) go=OK(4) equal=2 diff=[AGG_INDEX_1:root AGG_INDEX_2:root] missing=[] extra=[] version(go=5 java=5) md-bytes-differ(indexes) md-canonical-differ(indexes)
+---
+> WSJ bitmap-aggregate-index.yamsql:21 java=OK(4) go=OK(4) equal=4 diff=[] missing=[] extra=[] version(go=5 java=5) md-bytes-equal
+48c48
+< WSJ indexed-functions.yamsql:21 java=OK(4) go=OK(4) equal=2 diff=[DMASK1:root DMASK2:root] missing=[] extra=[] version(go=5 java=5) md-bytes-differ(indexes) md-canonical-differ(indexes)
+---
+> WSJ indexed-functions.yamsql:21 java=OK(4) go=OK(4) equal=4 diff=[] missing=[] extra=[] version(go=5 java=5) md-bytes-equal
+73c73
+< WSJ shape:bitmap_bucket_offset_value java=OK(1) go=OK(1) equal=0 diff=[IX:root] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(indexes) md-canonical-differ(indexes)
+---
+> WSJ shape:bitmap_bucket_offset_value java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal
+79,81c79,81
+< WSJ shape:literal_int_arith java=OK(1) go=OK(1) equal=0 diff=[IX:root] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(indexes) md-canonical-differ(indexes)
+< WSJ shape:literal_int_bitand java=OK(1) go=OK(1) equal=0 diff=[IX:root] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(indexes) md-canonical-differ(indexes)
+< WSJ shape:literal_int_int_column java=OK(1) go=OK(1) equal=0 diff=[IX:root] missing=[] extra=[] version(go=2 java=2) md-bytes-differ(indexes) md-canonical-differ(indexes)
+---
+> WSJ shape:literal_int_arith java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal
+> WSJ shape:literal_int_bitand java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal
+> WSJ shape:literal_int_int_column java=OK(1) go=OK(1) equal=1 diff=[] missing=[] extra=[] version(go=2 java=2) md-bytes-equal
+## md-bytes-equal rows: before 44, after 50 (of 118 runs)
+#
+## 3. Unit mutations (go test), each shown present before the run:
+##   generator literalKeyCarrier bypassed -> 4 AsSelect goldens red (bit_mask, constant_arithmetic, complex_grouping_expressions, bitmap_bucket_offset_value_index)
+##   walker entry size LONG -> bitmap_bucket_offset_value_index red
+##   evaluator int32 arm removed -> 5 TestArithmeticNumberWidening arms red
+##   evaluator +Inf saturation removed -> 3 saturation arms red

@@ -1,0 +1,85 @@
+**NAK.** Tree `0e057cc76c3121918e75b71d2b51a37fed21faf9`; `ws-j-design.md` SHA256 `48db2141a5c55e892e625be62a7688daa62439efb6310553c6b8f4e741d5722c` (I recomputed it; the working-tree copy is identical). Java is at `fdacd162a`. The review was read-only: I ran no tests, probes or mutations.
+
+## Measured
+- **No WS-J code changed since v14.** Between `e23ae6f5` and the candidate, `pkg/` is untouched. The only conformance change is WS-E's TASK-COUNT hunk in `sql_plan_steps.java`, so v14's oracle result (61/61) and its mutations still apply.
+- **The `HeldBy` binding holds.** `binding.txt`'s `good.go` is blob `46799f1f`, which is the candidate's `metadata_proto.go`. Line 515 matches the diff in `mutant.log`.
+- **Everything in 4d is unbuilt.** The findings below come from reading source.
+
+## HIGH
+**H1. Flipping (d) removes a landed guard that fails closed, and nothing replaces it** (`:2847`).
+- **One population gains nothing from the flip.** Java cannot see the Go driver's F11 catalog (42F55, `:427-429`, 9 (h)). So every SQL-family (d) template stored there was written by pre-upgrade Go, and the flip can only misread it.
+- **In-code `SetRecords` is not addressed.** v7 added that refusal because a startup-built (d) program silently switched unions (`:2328-2330`); 4d does not mention it. After the flip, such a program's stores are re-framed with no route:
+  - the route serves `FDBMetaDataStore` only;
+  - `SetRecordsWithUnionName("UnionDescriptor")` fails the name check (`:2126-2129`).
+- **"The one form a bounded read can find" (`:2845`) is false.** In (d) with type-prefixed keys, pre-upgrade keys are UnionDescriptor's field numbers, so the same probe applies. A limit-1 decode of one record under the target union would also flag it.
+- **The migration depends on the ordinary load refusing (d).** Its "nothing to migrate" guard (`:2784-2787`) and its output check (`:2778-2780`) assume that refusal. After the flip every (d) file "already loads". State that the legacy routes run the (d) check explicitly.
+- **Stale text, not marked:**
+  - `:2369-2377`, `:2798-2800` and `:2821-2824` in the design;
+  - `DIVERGENCES.md:2912-2914`, which still gives the rationale 4d supersedes.
+
+**H2. The `NullStandin` port (`:2962`) is wrong in meaning, too narrow, and has no plan for entries already written.**
+- **NULL_UNIQUE is described backwards.** NULL turns off the uniqueness check; NULL_UNIQUE keeps it, so two nulls collide (`Key.java:109-111`).
+- **The scope misses two call sites of `keyContainsNonUniqueNull`:**
+  - COUNT_NOT_NULL (`AtomicMutation.java:165-171`; Go `atomic_index_helpers.go:121`), where the stored count values differ;
+  - `IndexMaintenanceFilter.NO_NULLS` (`:54`).
+
+  Go's unique check skips every nil (`index_maintainer.go:365, :458`; `rank_index_maintainer.go:173`).
+- **Java issue #4141:** when the message itself is null (for example an absent nested parent), NOT_NULL yields null, not the type's default (`FieldKeyExpression.java:80-89, :179-180, :229-239`). The one-line rule in the design would write different bytes.
+- **Entries already written:**
+  - Go has maintained Java's NOT_NULL indexes with null keys. After the port, updates and deletes compute default-valued keys and leave the old null entries behind as ghosts.
+  - Go's `ToProto` rewrote NOT_NULL as NOT_UNIQUE (`key_expression_proto.go:45, :81`), so any metadata Go re-saved has already changed Java's index definition without a version bump.
+  - Go's validator cannot see the difference (`metadata_evolution_validator_test.go:2000`).
+- **Needed:**
+  - rebuild guidance or a detector;
+  - key-expression equality that includes the standin (validator, and the EQUIVALENT carry class);
+  - pins for an absent nested parent and for COUNT_NOT_NULL.
+
+## MEDIUM
+**M1. The `SetRecords` option port is itself a re-framing of stores** (`:2876`).
+- Every Go build so far keyed a type by its union field number and ignored `(record).record_type_key` (`e48f5b496` `:366-374`; the candidate has no option handling). After the port, such an in-code store is keyed by the option's value, the same silent misread as (f)/(g).
+- It is not in owner item 9, not in the probe, and not in the CHANGELOG plan.
+- Java's in-code path also processes `since_version`, `(field).primary_key`, `(field).index` and schema options (`RecordMetaDataBuilder.java:897-919`). These are undeclared: none appear in DIVERGENCES.md (the positive control `primary_key` does match unrelated lines there).
+
+**M2. The probe (`:2884-2921`):**
+- **Its cost is not "once per process" (`:2896`).**
+  - The default cache is `PassThroughRecordStoreStateCache`, which caches nothing, so the probe runs on every open.
+  - The version-stamp cache stores only `cacheable` headers, expires after 1 minute, and misses whenever the global stamp moves.
+  - Java's deprecate-a-union-field pattern (`:2533-2535`) pays this cost on every open.
+- **The index-root and count-key arms add nothing as gated.** Under the all-keys-prefixed condition, entries under p exist only if records under p exist. Those arms are sound under the second condition alone, which is where they would add coverage. Meanwhile 9 (y) (`:3349`) still lists them as residual.
+- **"Runs only when it cannot be wrong" is false for unmanaged in-code Java histories**, which v15's own scoping bullet concedes. Declare that lock-out.
+- **The conditional remedy can misdiagnose.** Take `{T _W = 1; T b = 5}` with a top-level W: pre-upgrade Go wrote W rows under 1 and T rows under 5. The error then reports both writers and offers no remedy, although the route would fix it.
+- **The detector cannot work as specified** (`:2917`). The record layer records no metadata-store-to-record-store binding, and the affected population is library users (`:2394-2396`). Say how stores are enumerated.
+- Graefe v14 M3 asked that the route check the stated writer with the probe's reads. That is still unaddressed.
+
+**M3. Unresolved v14 findings:**
+- **Graefe L1:** 9 (x) (`:3325-3327`) still says Java admits both and serves the tenant. Java's `repairSchema` → `loadSchema` → `parseSchemaTable :489` fails on a gone version (`RecordLayerStoreCatalog.java:272-279`). The owner item rests on a wrong fact about Java.
+- **Graefe L3:** the migration's writer is still implicit. A (c) file whose union both builds choose can only be pre-upgrade Go's, yet whether the migration frames it name-first and writes `explicit_key` is unstated (`:2714`).
+- **Graefe M1:**
+  - `get_versionstamp_incarnation` (`key_expression.go:1536`) is a key function Java has only as a SQL Value, so Go loads, and can write, a key Java refuses. It has no hits in the design or DIVERGENCES.md.
+  - Arity is counted by `arguments.getColumnSize()` (`FunctionKeyExpression.java:124`), but Go's `ColumnSize` for a function always returns 1 (`:1587`).
+  - The wrapping of a builder-time `RecordCoreException` (`:236-240`) is unstated.
+
+## LOW
+- **Absent children (`:2950`):** Grouping, Dimensions, KeyWithValue, Split and Function children are proto2 `required` (`record_key_expression.proto:57, 62, 68, 73, 100`), so on stored bytes they fail at parse. Only `Nesting.child` (`:53`) is reachable from stored bytes.
+- **"Invalid fan type N"** cannot be produced in Java at all, since Java's enum is closed; `buildPartial` cannot make it. 3.6 still pins "fan type 7" and "an unknown function" (`:1660-1664`) and cites `:1546` (`:1642`).
+- **"Java's, whole" still over-claims.** Go keeps untyped load refusals of its own (split point, grouped count, split size).
+- **"Go refuses on load only what the target also refuses" (`:2837`)** contradicts 9 (u).
+- **The (d) refusal kept in `CreateTemplate` of a new template** refuses DDL the target accepts. Justify it or drop it, declare it, and state the new-version case.
+- **Carried over from v14 Graefe L4:**
+  - `DdlVisitor.java:223-224` (`:2360`) is nullability code; `build()` is at `:263`, `:281` and `:319`;
+  - the `LegacyRecordTypeKeyError` sentence still sits under (z) (`:3373-3376`);
+  - (z)'s body still says "limit 1" (`:3364`).
+- **Cross-reference:** 4d says the shared-store and rolling-upgrade cases are declared in 9 (y), but 9 (y) holds only the marker. DIVERGENCES.md is where they are actually declared.
+
+## Resolved, checked against source
+- storage H2 / Torvalds H2 (function names are loaded; declared);
+- storage M2 (`explicit_key`: `RecordMetaDataBuilder.java:233-234, :381-383, :420-421, :903-905`);
+- Torvalds M2 (`e48f5b496` `:340-374`, `:1837`);
+- Torvalds M3, M4 and L2–L5;
+- storage L1, L3 and L4;
+- probe conditions 1 and 2 (`RecordMetaData.java:511-512`; the validator's `:234`, `:391`, `:424`).
+
+## Graefe lens
+- Sections 3.3–3.5, 4 and 6 are unchanged since v14.
+- The deserialization class hierarchy matches Java's.
+- Reading each framing as the target reads it is Java's reading. The residual is scoped too narrowly: H1, M1 and M2.

@@ -1,0 +1,70 @@
+**NAK**
+
+- **Tree:** `d0ce9ed51b2ffce11e96ae5db2a98cda56882e07`
+- **`ws-d-design.md` SHA256:** `c3b80bc41e3d34e134410a089e420414bc793f5e7b8e7632e60038d2309379cb`. I recomputed it with `git show TREE:path | sha256sum` and it matches.
+
+The review is complete and read-only. I read:
+- all four v4 verdicts;
+- the full v5 design and the v4→v5 diff;
+- the oracle README, the Go spec, the Java probe and the accessor class.
+
+I did not re-read the research reports. I checked claims against Java at `fdacd162` (confirmed by reading `fdb-record-layer/.git/HEAD`, because `git -C fdb-record-layer` was denied) and against Go at the candidate tree.
+
+`git diff --stat f0cb2957 d0ce9ed5 -- pkg gen proto cmd` is empty. As a positive control, adding `conformance` to the same command lists exactly the 5 oracle files.
+
+### P1 — Applying the hard cap in inline mode rests on a false safety claim, and its ordering can't be built (design 399-402, 647-658)
+- **Java's behaviour.** Java skips the cap on purpose when `maintainInTransaction` is set (`Insert.java:330-338`), and its own test relies on that (`CollapseScenarioTest.java:857-859`). Inline mode means `autoMergeDuringCommit` (`VectorIndexMaintainer.java:374`), and in that mode no merge-required signal is raised (`GuardiannVectorIndexEngine.java:198-202`).
+- **The claim "only changes behaviour where the target already fails" is false.**
+  - Split and merge tasks get normal priority (`Primitives.java:1412-1414`), and inline mode runs one task per insert in key order (`:984-994`).
+  - So a cluster that *can* be split still reaches hardMax if there is a backlog. Two realistic cases: switching to inline mode after a deferred bulk load, or `hardMax` (which can be changed after creation) set close to `max`.
+  - Java accepts those inserts; Go would refuse them.
+- **The ordering can't be built as written.**
+  - If "cap check before every other engine write" includes the inline drain, the check sees the topology from before that drain (`Insert.java:206-215`). It then refuses an insert that the drained split would have placed in a new cluster.
+  - If the check runs after the drain, the capacity error aborts the same transaction, including that drain. The hot cluster then never relieves itself, and nothing signals a merge.
+  - Capacity errors don't poison the context. So a caller that catches the error and commits leaves the record permanently unindexed, because a re-save of the same record is filtered as unchanged.
+- **Not measured.** Every oracle call passes `maintainInTransaction=false` (`guardiann_probe_conformance.java:90,97,463,473`).
+- **Needed:** keep Java's skip in inline mode. Alternatively, apply the cap only to a persisted "unsplittable" state set by the terminal reconcile, checked after the drain. Either way, measure inline mode in the oracle.
+
+### P2
+1. **The merge-refusal rows say "Parity", but the design's own golden contradicts that (175-176, 192-194).**
+   - With `KMeansMaxIterations=0` or `-1`, and with DOT_PRODUCT or EUCLIDEAN_SQUARE, the target consumes the stalled split once the cluster shrinks: `shrink=ok drain=1 clusters=[{3 0 20}]` (`_test.go:375-376,382-383`).
+   - Livelocks also end: `SplitNumNearestClusters` shows `shrink … drain=2` (`:371`).
+   - With `CollapseConcurrency=0`, every non-duplicate drain completes (`:379`). With `BounceConcurrency=0`, 2 tasks run before the throw (`:380`).
+   - Go refuses before the lease claim, which blocks every task. For collapse and bounce concurrency (both changeable), inserts keep going while every split stops. Clusters therefore hit the hard cap, an outage the target doesn't have, and "backpressure applies as in the target" (193) is false.
+   - This also contradicts the design's own rule at 162-166, that each check runs where the target itself would fail.
+   - **Needed:** raise the typed error in the task kind that consumes the broken knob. That is parity for the throwing rows; declare a divergence only for the livelock rows.
+   - Refusals that depend on data (trained RaBitQ, 212) must be decided before the claim-only commit. Otherwise the "stores byte-for-byte unchanged" claim (279-281) is false.
+2. **Inserts on a merge-refused index in inline mode are unspecified (186-194 vs 236-238).** Deletes suppress inline maintenance; inserts only "continue". But an inline insert first runs a task (`Insert.java:206-212`), so it is either refused (contradicting "continue") or runs the throwing or livelocking task. This leaves v4 SPFresh P2-1 open. Specify the behaviour and add a fixture.
+3. **Poisoning the context is scoped too broadly (119-124, 151-157, 206-207).**
+   - A search refusal buffers nothing, yet it would make the whole transaction uncommittable; in Java a caller can still commit its other writes after a failed query.
+   - Java's continuation replay never touches the engine, the quantizer or access info (`VectorIndexMaintainer.java:208-223`), and the design itself says replay runs no search (97-98). Refusing replay "matching the target" is wrong, and it adds an access-info read Java doesn't do.
+   - Open and evolution guards must not poison the transaction that disables or drops the index; otherwise "removal stays possible" (215) fails.
+   - **Needed:** poison only from mutation entry points that may have buffered writes, and remove the replay refusal.
+4. **The foreign-lease backoff lets the build's heartbeat expire (512-515).**
+   - The wait can last up to the 60 s merge-lease window (`VectorIndexMergeLock.java:63,103`), and nothing refreshes the build heartbeat meanwhile. That heartbeat's default lease is 30 s (`online_indexer.go:643-644`).
+   - Admission ignores stale heartbeats (`indexing_heartbeat.go:85-87,140`), so a second builder can be admitted in the middle of the session.
+   - **Needed:** refresh the heartbeat in slices shorter than its lease, or cap the wait. The wait must also stop on ctx cancellation and iterator `Close`.
+
+### P3
+1. **Refusing deletes "at the engine entry" when `deleteConcurrency < 1` refuses more than Java.** Java returns before the `forEach` when access info or the identity is absent (`Delete.java:112-123` vs `:170-176`). The oracle only deleted a PK that was present.
+2. **The progress rule contradicts itself.**
+   - Line 662 says the reconcile never lowers the primary count. It does: the count is `RunningStats.numElements` (`ClusterMetadata.java:88-90`), and the reconcile rebuilds the stats from the surviving references (626-634). So the stale-inflated shape lowers it, and 544-545 can't be measured as stated.
+   - The comparison baseline is also a trap: Java's exception count is `numPrimary+1` (`Insert.java:336`). Comparing a re-read against that field makes an unchanged cluster look like progress, so recovery spins until the retry budget runs out. Define the baseline as the primary count before the insert.
+3. **Oracle evidence has gaps.**
+   - The logs live outside the tree (`/var/tmp`). The knob runs record neither how many specs ran nor a source hash, and no recorded run covers all 7 specs against these bytes.
+   - The knob loop leaks its environment and `cancel` if an assertion fails (`_test.go:414-435`); use `DeferCleanup`.
+   - Label the inline-mode statements as source hypotheses, not measured facts.
+
+### Checked and correct
+- **The poison mechanism exists and is sound:**
+  - The commit-check machinery is `database.go:1063-1076` and `:1128-1145`.
+  - Every record-context commit path runs it (`database.go:1319`, `runner.go:329`), including the relational layer (`catalog/fdb_transaction.go:55`).
+  - Each retry gets a fresh context (`runner.go:289,356`), so a poison can't leak into the next attempt.
+- **Update filter:** `removeCommonEntries` compares key and value (`index_maintainer.go:720-769`). Java's vector maintainer inherits the filter (`StandardIndexMaintainer.java:209-227`); only the atomic-mutation maintainer overrides it. Queue replay does not filter (`VectorIndexMaintainer.java:453-468`).
+- **Cited Java and Go facts match source:**
+  - the set of options Java allows to change (`GuardiannVectorIndexEngine.java:84-97`);
+  - the iterator retry schedule (`throttled_retrying_iterator.go:88-93`) and `decreaseLimit` (`indexing_throttle.go:74-94`);
+  - `SetMergeSessionID` (`indexing_merger.go:38`);
+  - the quantizer throw site `:359` (`Primitives.java:352-359`) and `hnsw/Delete.java:213`.
+- **Oracle specs are tight:** the hash, split, empty-neighbour, queue and backpressure specs pin exact lengths and summaries.
+- **The rest of the v4 findings are answered.**

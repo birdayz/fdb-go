@@ -1,0 +1,54 @@
+**NAK.** Tree `eb426a53f814802d5c9ff1f4fca67ee199f4c1cd`, design SHA256 `1388036404d405a028df761a1055370d267e36dd6fdda6c93cb9b00a058a5814` (I re-hashed it myself).
+
+**Verified against Java source:**
+- **F1 trie fix:** it matches `FieldValueTrieNode.java:212-218`, and the recursion's prefix is equivalent.
+- **F3 chain:** matches `DdlVisitor.java:547-564`, `RecordLayerSchemaTemplate.java:482-490,617-620,392-405`, `FileDescriptorSerializer.java:92-113,162-172`, `RecordMetadataSerializer.java:64-89,108-113` and `RecordMetaData.java:668-673`. The union.yamsql detail line in the evidence agrees.
+- **Existence policies:** the four `SchemaExistsBehavior` contracts, their messages, and the `saveSchema` check order (`RecordLayerStoreCatalog.java:232-269`) are right.
+- **Bit/bitmap lanes:** match `ArithmeticValue.java:500-522`.
+- **Literal widths:** Java stores an `Integer` when the value fits (`ParseHelpers.java:96-98`), and the bitmap entry size is an INT (`SemanticAnalyzer.java:106,1115`).
+
+## HIGH
+
+1. **F3 breaks evolution for templates Go has already stored.** Today Go numbers record types by declaration order (`builder.go:517-522`). After the port, resubmitting the *same* DDL for an existing multi-table template renumbers record-type keys and union fields (17 of 75 corpus templates are affected). Repair then fails in `validateSchemaRebind` with "record type key changed" (`metadata_evolution_validator.go:335-344`). Without that validator, the store would read one table's rows as another's. §4 argues the Java↔Go rebuild hazard but not the old-Go↔new-Go one this port creates. The companion reorder (§9b) has the same problem. It needs a decided policy, an FDB test (old Go template → new DDL → repair), and DIVERGENCES and CHANGELOG entries.
+
+2. **§3.3 enumerates unnest shapes; Java admits by structure.** Java 4.14's `IndexSpec` is a generic visitor:
+   - specs merge with a scan count, and anything but exactly one scan is rejected (`IndexSpec.java:255-270,166`);
+   - an explode contributes no scan (`:414-416`);
+   - every node's result is checked (`:418-433`), and only the innermost select may own a predicate (`:387-401`).
+
+   Values are resolved by `QuantifierValues.resolve`, which dereferences quantifiers and then simplifies (`QuantifierValues.java:78-106,126-155`).
+
+   New `decompose` arms (join with unnest legs, derived table over an unnest) will reject shapes Java accepts, with messages Java never gives: nested unnest (`t.arr AS a, a.sub AS b`), plain single-scan derived tables, and a derived table plus an outer ORDER BY. The derived form also needs `ek.k` resolved down to `t6.c*.k` through the derived projection. That is Value resolution, not the "same semantic scope" (name resolution) the design names. Port the merge and the quantifier-value resolver onto Go's logical tree instead. Add oracle shapes for nested unnest, a non-unnest derived table, the inner-select and select-having predicate rejections, and join-message precedence.
+
+3. **The CREATE SCHEMA reorder is incomplete.** Go creates the FDB store *before* `SaveSchema` (`create_schema.go`, `Execute`). Java saves first, then opens the store with ERROR_IF_EXISTS and maps that failure to 42F06 (`RecordLayerCreateSchemaConstantAction.java:90-105`). If the pre-check is deleted without moving store creation after `SaveSchema`, a duplicate CREATE SCHEMA surfaces `RecordStoreAlreadyExistsError` (`store_builder.go:1384`). Nothing in `pkg/relational` maps that error (0 hits).
+
+## MEDIUM
+
+4. **The oracle's canonicalization goes beyond what §4 declares, and hides part of F3.** §4 says anonymous type names are canonicalized "positionally". `wsjCanonical` actually renames them by owner path and sorts `message_type` by name. That sort erases descriptor message order, which §4 says the port will match, so the §7.1 acceptance check cannot fail on it. Rename in place and keep the order.
+   - The Java pin digest (`indexShapeKey`, `index_shape_helpers_test.go:95-105`) leaves out index versions, record-type keys and union numbers. F3's measured Java facts are printed, not pinned.
+
+5. **The §0 tally is mislabelled.** "62 byte-identical" is really index-level equality. 14 of those rows show `md-canonical-differ(records,record_types)`, for example union.yamsql:21 and join-tests.yamsql:21.
+
+6. **The query oracle pins nothing.** The WSJQ spec only asserts `n == len(probes)`; Java's results are never checked. Go's values are printed through lossy float formatting (`-2.14749e+09`), so the §7.4 comparison would compare lossy strings. Pin Java's outcomes, print integers exactly, and add probes where no lane exists (DOUBLE & INT, `bitmap_bucket_offset(double)`, STRING).
+
+7. **§6 doesn't change how Go types these ops.** Go's `ArithmeticValue.Type()` promotes generically (`values.go:3642-3659`), so a bit op with a DOUBLE operand would be typed DOUBLE. Java finds no physical operator for that combination and refuses it. The design should resolve the lane once, at construction, as Java does, and state the rejection error.
+
+8. **"Planner matching unaffected" (§3.2) is not measured.**
+   - The semantic hash includes the carrier type (`const:%T=%v`, `semantic_hash.go:207-208`).
+   - Index predicates already read `int_value` back as int32 (`index_predicate_to_query.go:179-186`).
+   - Needed: EXPLAIN pins over literal-bearing indexes, both Go-created and Java-created.
+   - The FLOAT carrier arm is also unmeasured: Java only produces a `Float` for `1.5f` (`ParseHelpers.java:76`). Add shapes for `1.5f`, `1L`, `1i` and negative literals.
+
+9. **F6 misses the index-predicate side of #4624.** `enum-distinct-from-function.yamsql:27-28` says the bug "reproduces … inside a CREATE INDEX … WHERE". The audit's W9 title includes "enum predicate handling". Add an enum-predicate index shape and pin how Java stores the compared literal.
+
+## LOW
+
+10. **Existence policies:**
+    - The concurrent-initialize test must start from an already-initialized catalog. Java's first-time path also writes the database and template rows (`RecordLayerStoreCatalog.java:180-189,239-242`), so two fresh initializations conflict in Java too.
+    - "Red today with 1020" is a hypothesis; it hasn't been measured.
+    - The in-memory `SaveSchema` checks the template before the database (`store_catalog.go:75-110`), the opposite of Java, and its `RepairSchema` bypasses `SaveSchema` entirely.
+    - Under UPGRADE, the version-monotonicity and cross-name branches of `validateSchemaRebind` become unreachable. That guard needs reconciling, not silently keeping.
+
+11. **The harvest guard only checks file count (71) and its own template count (75).** Add a statement-level census that reconciles every `create (unique )?index` occurrence in the corpus with the 328 harvested. That includes multi-line `- query: |` forms, which `query_templates` can't match.
+
+12. **A Java line cite is wrong:** §3.3 cites `ValueToKeyExpressionVisitor` lines 343-366. The array-admission code is at 376-398 (the check itself is at 392).

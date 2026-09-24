@@ -1,0 +1,140 @@
+[
+  {
+    "name": "cache-admission",
+    "file": "pkg/recordlayer/store_state_cache.go",
+    "old": "if entry.recordStoreState.StoreHeader.GetCacheable() {\n\t\t\tc.addToCache",
+    "new": "if entry.recordStoreState.StoreHeader != nil {\n\t\t\tc.addToCache",
+    "mutated_sha256": "394eee0e39223ea28d1d730a5cd02385ced31ee7ab142dfaa7e382a6782c2ac0",
+    "log": "/var/tmp/fdb-upgrade-recovery/ws-b/cache-delete-mutant-cache-admission.log",
+    "sha256": "d8b836bec1c8c801f35bc894715ff94d13508f11274a902b550b9484a9d44c12",
+    "failures": [
+      "  [FAIL] Store State Cache MetaDataVersionStampStoreStateCache [It] non-cacheable store is not cached"
+    ],
+    "exit": 3,
+    "command": [
+      "bazelisk",
+      "test",
+      "//pkg/recordlayer:recordlayer_test",
+      "--nocache_test_results",
+      "--test_output=all",
+      "--test_arg=--ginkgo.focus=Store State Cache|DeleteStore"
+    ]
+  },
+  {
+    "name": "cache-eviction",
+    "file": "pkg/recordlayer/store_state_cache.go",
+    "old": "c.invalidateOlderEntry(subKey, currentStamp)",
+    "new": "c.invalidateOlderEntry(subKey, nil)",
+    "mutated_sha256": "e9bd86f801c06f96d2e4f4c4869da0978ab2508abb5b7d8c177a5d425d300a6b",
+    "log": "/var/tmp/fdb-upgrade-recovery/ws-b/cache-delete-mutant-cache-eviction.log",
+    "sha256": "4da49c8760891e966121e30cdc16a66f67a4edb3aa74db633c2ea1d389524d55",
+    "failures": [
+      "  [FAIL] Store State Cache MetaDataVersionStampStoreStateCache [It] SetStateCacheability(false) disables caching"
+    ],
+    "exit": 3,
+    "command": [
+      "bazelisk",
+      "test",
+      "//pkg/recordlayer:recordlayer_test",
+      "--nocache_test_results",
+      "--test_output=all",
+      "--test_arg=--ginkgo.focus=Store State Cache|DeleteStore"
+    ]
+  },
+  {
+    "name": "cache-old-header",
+    "file": "pkg/recordlayer/store.go",
+    "old": "header := proto.Clone(store.storeHeader).(*gen.DataStoreInfo)\n\theader.Cacheable",
+    "new": "header := store.storeHeader\n\theader.Cacheable",
+    "mutated_sha256": "ab055c8e7d5df5d46b29860302ff6c91354f586f3ad9aabd3a3ac57c87a06f14",
+    "log": "/var/tmp/fdb-upgrade-recovery/ws-b/cache-delete-mutant-cache-old-header.log",
+    "sha256": "ff5e8e491e5bebb448952c384eb6bea91cd363e9c2b9a2e596aa7dea930c7f60",
+    "failures": [
+      "  [FAIL] Store State Cache MetaDataVersionStampStoreStateCache [It] SetStateCacheability(false) disables caching",
+      "  [FAIL] Store State Cache MetaDataVersionStampStoreStateCache [It] SetStateCacheability propagates stamp read failure without publishing the header"
+    ],
+    "exit": 3,
+    "command": [
+      "bazelisk",
+      "test",
+      "//pkg/recordlayer:recordlayer_test",
+      "--nocache_test_results",
+      "--test_output=all",
+      "--test_arg=--ginkgo.focus=Store State Cache|DeleteStore"
+    ]
+  },
+  {
+    "name": "delete-header-conflict",
+    "file": "pkg/recordlayer/store_api.go",
+    "old": "ctx.Transaction().Get(ss.Pack(tuple.Tuple{StoreInfoKey})).Get()",
+    "new": "ctx.Transaction().Snapshot().Get(ss.Pack(tuple.Tuple{StoreInfoKey})).Get()",
+    "mutated_sha256": "88732eaa9e50698e1f2ba66d210e8e1aa7945baa503a9059a987513ff8086a16",
+    "log": "/var/tmp/fdb-upgrade-recovery/ws-b/cache-delete-mutant-delete-header-conflict.log",
+    "sha256": "c049635654517f9348d486dd59a6717ab1587f6d88ac8129a945331a28af480b",
+    "failures": [
+      "  [FAIL] FDBRecordStore API DeleteStore [It] enforces delete conflicts cacheable=false warm=false headerUpdate=true deleteFirst=false",
+      "  [FAIL] FDBRecordStore API DeleteStore [It] enforces delete conflicts cacheable=false warm=true headerUpdate=true deleteFirst=false",
+      "  [FAIL] FDBRecordStore API DeleteStore [It] enforces delete conflicts cacheable=true warm=false headerUpdate=true deleteFirst=false",
+      "  [FAIL] FDBRecordStore API DeleteStore [It] enforces delete conflicts cacheable=true warm=true headerUpdate=true deleteFirst=false"
+    ],
+    "exit": 3,
+    "command": [
+      "bazelisk",
+      "test",
+      "//pkg/recordlayer:recordlayer_test",
+      "--nocache_test_results",
+      "--test_output=all",
+      "--test_arg=--ginkgo.focus=Store State Cache|DeleteStore"
+    ]
+  },
+  {
+    "name": "delete-version-cleanup",
+    "file": "pkg/recordlayer/store_api.go",
+    "old": "ctx.ClearRange(fdb.KeyRange{Begin: begin, End: end})",
+    "new": "ctx.Transaction().ClearRange(fdb.KeyRange{Begin: begin, End: end})",
+    "mutated_sha256": "412ed28b71f536c2cee8f8961408cb9e750c7a6bcce6b64a7939d1c58d49166c",
+    "log": "/var/tmp/fdb-upgrade-recovery/ws-b/cache-delete-mutant-delete-version-cleanup.log",
+    "sha256": "04e3ca07c62e9290126ba9aeced370686cf1f5dd4312b88210d963d0d6fcd467",
+    "failures": [
+      "  [FAIL] FDBRecordStore API DeleteStore [It] preserves range boundaries and removes delayed version writes"
+    ],
+    "exit": 3,
+    "command": [
+      "bazelisk",
+      "test",
+      "//pkg/recordlayer:recordlayer_test",
+      "--nocache_test_results",
+      "--test_output=all",
+      "--test_arg=--ginkgo.focus=Store State Cache|DeleteStore"
+    ]
+  },
+  {
+    "name": "delete-invalidation",
+    "file": "pkg/recordlayer/store_api.go",
+    "old": "err != nil || header.GetCacheable()",
+    "new": "err != nil && header.GetCacheable()",
+    "mutated_sha256": "83a3777b52d81d777c27e0d9e52b37e25abae64d86ef427264325e500ac9234f",
+    "log": "/var/tmp/fdb-upgrade-recovery/ws-b/cache-delete-mutant-delete-invalidation.log",
+    "sha256": "b1f5e3b820aa9a18c8e177c4ba00469c25b95ca23ed2cc1c53633282fdca7c85",
+    "failures": [
+      "  [FAIL] FDBRecordStore API DeleteStore [It] enforces delete conflicts cacheable=true warm=false headerUpdate=false deleteFirst=false",
+      "  [FAIL] FDBRecordStore API DeleteStore [It] enforces delete conflicts cacheable=true warm=false headerUpdate=false deleteFirst=true",
+      "  [FAIL] FDBRecordStore API DeleteStore [It] enforces delete conflicts cacheable=true warm=false headerUpdate=true deleteFirst=true",
+      "  [FAIL] FDBRecordStore API DeleteStore [It] enforces delete conflicts cacheable=true warm=true headerUpdate=false deleteFirst=false",
+      "  [FAIL] FDBRecordStore API DeleteStore [It] enforces delete conflicts cacheable=true warm=true headerUpdate=false deleteFirst=true",
+      "  [FAIL] FDBRecordStore API DeleteStore [It] enforces delete conflicts cacheable=true warm=true headerUpdate=true deleteFirst=true",
+      "  [FAIL] FDBRecordStore API DeleteStore [It] deletes with header policy malformed-tag",
+      "  [FAIL] FDBRecordStore API DeleteStore [It] deletes with header policy malformed-varint",
+      "  [FAIL] FDBRecordStore API DeleteStore [It] invalidates cacheable headers even with an unsupported format"
+    ],
+    "exit": 3,
+    "command": [
+      "bazelisk",
+      "test",
+      "//pkg/recordlayer:recordlayer_test",
+      "--nocache_test_results",
+      "--test_output=all",
+      "--test_arg=--ginkgo.focus=Store State Cache|DeleteStore"
+    ]
+  }
+]

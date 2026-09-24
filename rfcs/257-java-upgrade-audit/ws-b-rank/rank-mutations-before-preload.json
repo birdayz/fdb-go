@@ -1,0 +1,32 @@
+[
+  {
+    "name": "omit-enrichment",
+    "compiled_and_killed": true,
+    "exit": 3
+  },
+  {
+    "name": "append-pk-to-score",
+    "compiled_and_killed": true,
+    "exit": 3
+  },
+  {
+    "name": "missing-rank-empty",
+    "compiled_and_killed": true,
+    "exit": 3
+  },
+  {
+    "name": "offset-absolute-rank",
+    "compiled_and_killed": true,
+    "exit": 3
+  },
+  {
+    "name": "ignore-unreadable",
+    "compiled_and_killed": true,
+    "exit": 3
+  },
+  {
+    "name": "snapshot-rank-read",
+    "compiled_and_killed": false,
+    "exit": 0
+  }
+]

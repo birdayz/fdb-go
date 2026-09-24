@@ -1,0 +1,76 @@
+**NAK.** Tree `b6aaf7546ad0ae91305679c9454860ab18ca010e`. Design `ws-j-design.md` SHA256 `1455e2450393c5a507d808a2c7fa9e41bf2244b5104fe5ffeedaa1e09a49cf4a` (631 lines; I re-hashed it myself).
+
+This was a read-only review; I ran nothing. Where a finding rests on source reading rather than a measurement, it is labelled SOURCE.
+
+**Checked and correct:**
+- **Evidence matches the tree.** All nine sha256 values in `evidence-v2.txt` match the tree's files. Both logs show "Ran 5 of 23 … 5 Passed". There are 466 `WSJ ` lines and 466 pins, and the section-0 tally adds up.
+- **The operand fix matches Java.** `nullableLong` follows `Key.java:553-562,579-582`. Java reads both operands before its null check (`LongArithmethicFunctionKeyExpression.java:96-98`), and Go does the same. `javaDoubleToLong` follows JLS 5.1.3.
+- **Literal widths.** The walker has only one place that injects the entry size. FLOAT literals come in as float32 (`expr.go:2213-2216`), so narrowing them loses nothing.
+- **F12.** Java's `Index` keeps option insertion order (`ImmutableMap.copyOf`, `Index.java:131`).
+
+## High
+
+1. **The carry rule collides with the rebind validator (a logic hole).**
+   - §4 (:432-440) says a changed index definition "gets a new last-modified version", and that therefore the validator "never refuses a Go-built evolution".
+   - `validateSchemaRebind` builds the validator without `SetAllowIndexRebuilds` (`fdb_store_catalog.go:344`). So `metadata_evolution_validator.go:488-492` refuses the rebind with "last modified version of index changed". Java does the same by default (`MetaDataEvolutionValidator.java:651-655`).
+   - Every Go-built version that modifies an existing index is therefore refused. That includes every tenant holding an index whose stored root the landed F1 fix changes.
+   - §4's FDB test list has no changed-index v2.
+   - The design must decide `allowIndexRebuilds` on the rebind path, and who rebuilds the index and within what transaction budget. It then needs an FDB test: old-root F1 index → v2 → `RepairSchema`/`fleet.Migrate`.
+
+2. **F2b's claim about Java's index entries is labelled MEASURED but was never measured.** The claim appears in three places: design :270-276, README item 9, and the test comment at `version_index_incomplete_versionstamp_fdb_test.go:155-170`.
+   - The non-integer spec never reads index entries.
+   - What it does observe (no row for `=2` and `=3`, row order 2,1,3) fits truncation (-2) and also floor (-4) for `d = -1.5`.
+   - The main interop direction is also untested: Go writing into a Java-created template that has an `int_value` literal.
+   - Needed: Java writes rows, Go writes rows into the same store, and the raw index entries are compared byte for byte. Include -1.5, 2.9999, NaN, ±Inf and 2^63.
+
+## Medium
+
+3. **Four of the Go-stored spec's seven reads cannot tell the widths apart.**
+   - `ORDER BY d & 1` and `ORDER BY d + 1` return UnableToPlan on both sides, before and after the fix (`evidence-f2.txt`).
+   - So the v1 storage concern stays unmeasured: a Go-stored `long_value` in `bitand`/`add` might not match Java's query Values.
+   - Java can serve literal-bearing arithmetic indexes: `c * 1.5 = 2` is answered by `COVERING(IX…)`.
+   - Use `WHERE d & 1 = 1` and `WHERE d + 1 = 5`, and add an old `long_value` variant, since the upgrade story depends on it.
+
+4. **The landed fixes are not pinned by the oracle.**
+   - The Go class is only recorded, never asserted. The 155 `both-accept-equal` runs, including the 6 that F2 moved to byte-equal, can regress green wherever unit goldens don't happen to cover them.
+   - Add a ratchet now. Pin the equal-set, with options sorted or the F12 runs excluded by name.
+
+5. **The production-path pin is deferred without a blocker.**
+   - Both front ends already call the same `parseIndexDefinition` (`ddl.go:215`, `cascades_generator.go:7619`), which leads to `queryddl.Generate`.
+   - So the yamsql/FDB pin through `execCreateSchemaTemplate` that v1 asked for can land today. Deferring it to step 1 is a deferral, and the findings table marks F1 and F2 FIXED without an end-to-end test.
+
+6. **Rule (e) relaxes a ported Java component.**
+   - Java compares literals by proto equality (`LiteralKeyExpression.java:213-214`). So Java's validator refuses an `int_value`↔`long_value` change as "index key expression changed" (`:717-722`).
+   - Scope the relaxation to the relational rebind path as an explicit option, leaving the core validator unchanged.
+   - State the criterion as value-preserving (`float64(float32(v)) == v`), not "width-only".
+
+7. **A read divergence on the shared query surface is not recorded.**
+   - The design records Java's wrong answer (`WHERE d + d = 3` returns no row), but not Go's answer over the same index.
+   - SOURCE: Go's flat index bridge declines arithmetic functions (`index_expansion.go:937-988`), so Go presumably scans and returns id 1.
+   - Measure Go's answer, add it to DIVERGENCES, and report the Java behaviour upstream.
+
+8. **The upgrade and tracking records are incomplete.**
+   - §4's list of what changes for already-persisted DDL omits the landed F1 root change.
+   - CHANGELOG has no entry for either landed change to what Go persists. My grep came back empty; a positive-control grep of the same file matched 4 lines.
+   - §3.2 calls the literal width "moot" for driver-stored templates, yet the F11 TODO block never cross-references §3.2/§4. Migrating those templates later will require exactly that width and numbering rewrite.
+
+## Low
+
+- **The census has a tautological check.** harvest.py defines `variant_extra = n_idx - in_bodies`, so the spec's `HarvestedStatements == InTemplateBodies + VariantDuplicates` can never fail. "In body" also means the line is covered by a block, not that the statement is in the harvested text. Assert `VariantDuplicates == 0` at this corpus.
+- **Classification:** a Go-only index that is not a companion is classed metadata-diverge; it belongs in index-diverge.
+- **Counts and wording:**
+  - "All eight literal-spelling shapes" lists ten.
+  - §2 says UPGRADE "refuses … equal", but its own bullet says no-op on equal.
+  - "Removing the float arm reddens it" (:276) has no evidence entry.
+  - The unit mutations were run under `go test` only.
+- **Stale or misplaced text:**
+  - The oracle header still says it pins a digest of "the stored index shapes".
+  - The doc comment for `wsjIndexStatementRE` sits above `wsjQuantifierAliasRE`.
+  - The comment "wsjTemplate parses body" sits above `wsjParsedTemplate`.
+  - The TODO.md progress block added in this delta says "118 index runs, 11 query probes" and points to notes under `/var/tmp`.
+  - `ws-j-oracle/__pycache__/*.pyc` is committed.
+  - The F2b FDB test lives in `version_index_incomplete_versionstamp_fdb_test.go`.
+- **Misc:**
+  - The design never states that the legacy-vs-tuple extremum finding is closed by the `extremum_ever_*` shapes being byte-equal.
+  - `ActualType` uses Go's `%T` while `ExpectedType` uses a Java class name.
+  - `literalKeyCarrier` silently wraps an out-of-range int64 typed INT.

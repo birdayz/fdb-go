@@ -1,0 +1,25 @@
+**NAK — implementation code for WS-A + WS-E1.**
+
+Reviewed the frozen diff from base commit `71ccd8cf8b3fd0dbafe283e91171818e36af555e` to candidate **tree** `a8940de29c3726e44d5e14779f321b732e11be88`, against Java `fdacd162a9c8acfadc49082b89185c823ab8ae4a`. Three fixes are required:
+
+1. **P1 — RaBitQ arithmetic is not yet portable byte-exact arithmetic.**  
+   [rabitq.go:600](/home/birdy/projects/fdb-go/pkg/rabitq/rabitq.go:600) accumulates unrounded products; the quantization calculations at [rabitq.go:459](/home/birdy/projects/fdb-go/pkg/rabitq/rabitq.go:459) have the same exposure. Go permits fused multiply-add, and the supplied Go 1.26.6 ARM64 compiler explicitly performs that rewrite. This changes intermediate rounding from Java’s scalar reductions, which deliberately determine persisted calibration bytes ([RaBitQuantizer.java:161](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/rabitq/RaBitQuantizer.java:161)). ARM64 is a shipped platform. Force explicit binary64 rounding at the relevant multiplication boundaries throughout encoding and retain discriminating byte contracts on an FMA-capable architecture. AMD64 goldens alone do not establish this guarantee.
+
+2. **P2 — Failed lookup can mutate a sealed descriptor graph.**  
+   [proto_type.go:514](/home/birdy/projects/fdb-go/pkg/recordlayer/query/plan/cascades/values/proto_type.go:514) registers `ARRAY<UNKNOWN>` successfully without defining its wrapper. After sealing, [MessageDescriptorFor:231](/home/birdy/projects/fdb-go/pkg/recordlayer/query/plan/cascades/values/proto_type.go:231) accepts that registration, then defines the missing wrapper outside the registration transaction. Wrapper registration invalidates the compiled graph and cached descriptors; its UNKNOWN field subsequently fails. Thus: register a valid record and this array, seal, obtain the record descriptor, perform the failing array lookup, then obtain the record descriptor again—the graph can be recompiled with different descriptor identity. Make sealed lookup strictly nonmutating, and validate the complete representable closure transactionally. Pin descriptor identity and repository contents across failed lookups.
+
+3. **P2 — Mixed-star expansion and positional consumers use different slot populations.**  
+   Early expansion is conditional on aggregates ([select_parser.go:1159](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/select_parser.go:1159)), but positional ORDER BY is validated before later projection expansion ([select_parser.go:1294](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/select_parser.go:1294)). For a two-column `t(id,v)`, `SELECT *, 8 AS x FROM t ORDER BY 3` is incorrectly rejected against two written items instead of three visible slots. Aggregate GROUP BY has the converse mismatch: [select_parser.go:1382](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/select_parser.go:1382) indexes the original parse elements using an expanded ordinal. For example, slot 2 after a two-column star can select the following literal’s AST instead of `v`. Establish one ordered, expanded SELECT-slot representation before positional resolution; preserve each slot’s expression ownership. Add zero-width and wide-star positional composition contracts.
+
+The BOOLEAN Explode with empty projection and completed recursive-row publication are appropriate Cascades boundaries. These findings require preserving the approved raw/nullable-array, scalar and sorting extensions.
+
+I reconciled the supplied uncached evidence: **92/92 targets passed**, and **all 6,280 frozen hashes match the candidate tree**. All 16 canonical protos match the specified Java source. The measured wide-star Java ordering refusal remains distinct from Go’s positive extension.
+
+Separate unmet verification/publication gates:
+
+- Six-target runtime race remains uncredited; the new-machine baseline/current 1M comparison is pending.
+- Fixes need focused regressions, refreshed verification and implementation review.
+- The earlier executor startup timeout’s cause remains unknown; the repaired host/container networking mismatch does not explain it.
+- WS-B–K completion and publication/merge approval are outside this verdict. Historical reports and design/security ACKs remain their original evidence classes.
+
+No edits, tests/builds, agents, worktrees or Git-state changes were performed.

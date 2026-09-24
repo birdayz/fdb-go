@@ -1,0 +1,88 @@
+**NAK.** Tree `204151ab1e3aafa12c1b0202bc6c76c5f45c6c09`; `rfcs/257-java-upgrade-audit/ws-e-design.md` SHA-256 `cbb0316f31798de432948a57aef6379728854e31b3d9d3fe2f7a43a7e1eb65d1`. I recomputed the hash and it matches.
+
+The review was read-only: I ran no tests or probes and made no edits. **SOURCE** marks a claim that rests on reading Java rather than on a measurement.
+
+## High
+
+**H1. DRY_RUN and SNAPSHOT on a connection have no Go way to set them and no reset when a connection returns to the pool (§6.2).**
+- `EmbeddedConnection.SetOptions` is the only setter, and it replaces the whole option set (`embedded/connection.go:157-158`).
+- `api.Connection.SetOption` (`api/connection.go:56`) is declared but not implemented.
+- The DSN reads only an allowlist and silently ignores every other parameter (`sqldriver/dsn.go:93-122`).
+- `ResetSession` restores schema, transaction and caches, but not `c.options` (`connection.go:828-853`).
+- Consequence: a DRY_RUN set through `Raw` stays on the connection after it goes back to the pool. The next borrower's DML reports success and writes nothing. The code already calls this data loss (`cascades_generator.go:910-921,1293-1294,1964-1966`) and a test guards it (`dml_dry_run_fdb_test.go:7-12`). The design does not mention either.
+- Replacing the whole set also silently drops the DSN's security option `restrict_ddl_to_session_database`.
+- Fix:
+  - Specify how options are set: a merging `SetOption` and/or a DSN parameter.
+  - Make `ResetSession` restore the connector's options.
+  - Retire those comments and point the guard test at the pool-return case.
+  - Add an FDB test: set DRY_RUN via `Raw`, close, then `db.Exec` on the same physical connection must store.
+
+**H2. The strict assignment rules cover only bound values and literals; Java applies them to every assigned expression.**
+- Java type-checks each INSERT/UPDATE value by its type (`ExpressionVisitor.java:1090,1118-1123` → `PromoteValue.inject` → INCOMPATIBLE_TYPE at `PromoteValue.java:370`).
+- Go keeps narrowing expressions and column sources (`functions/proto_value.go:263-297`). `logical_predicate.go:5668-5670` says so outright: "Plain-column narrowing … NOT checked".
+- After the design, `VALUES (3, 1.5)` fails with 22000, but these still store narrowed values the target refuses (SOURCE):
+  - `VALUES (3, 1.5 + 0.0)`
+  - `UPDATE F SET f = f + 0.5`
+  - `INSERT … SELECT` of a DOUBLE or BIGINT column
+- That is both a write divergence and the "accepted or refused depending on syntax" defect that `proto_value.go:266-275` warns against.
+- Fix:
+  - Check every INSERT VALUES, UPDATE SET and INSERT…SELECT source by type at planning.
+  - Measure one expression and one column source per lane.
+  - The obsolete-test list is incomplete. `float_integer_types_probe_test.go:34-56` stores `0.1` and `1.5` into FLOAT and expects success; only `:67-76` is listed.
+
+**H3. The time.Time rule is described wrongly, and today's actual rule corrupts values. v2 finding #5 is still open.**
+- The design says "DATE when it is midnight UTC".
+- The code tests for midnight in the value's own zone (`embedded/utilities.go:258`) and then renders in UTC (`functions/time.go:13-20`).
+- So `2024-01-01T00:00+02:00` binds as `'2023-12-31'`, which loses 22 hours in a TIMESTAMP column. A value at UTC midnight carried in another zone binds as TIMESTAMP.
+- Whichever reading is implemented, the stored bytes and index keys either change or stay corrupt.
+- "Keep their own rules" does not say what text is stored for DATE→TIMESTAMP, TIMESTAMP→DATE or STRING→TIMESTAMP. Today the channel stores a string verbatim (`proto_value.go:313-319`). Without that, the claim "`WHERE ts = ?` keeps matching" cannot be checked.
+- Fix:
+  - Define the rule on the instant, fix the corruption and pin it with a regression test.
+  - Give a table of stored text per (bound type × column type).
+  - Add read-back and index-equality tests against rows written by today's text channel.
+
+## Medium
+
+**M1. DRY_RUN coverage per statement class.**
+- Java reads DRY_RUN only in `QueryPlan.applyOptions` (`:434,500-503`); no other reader exists in relational-core main. So DDL on a DRY_RUN connection writes the catalog (SOURCE).
+- DELETE honours DRY_RUN (`RecordQueryDeletePlan.java:100`, SOURCE).
+- The design's line 16, "writes nothing", contradicts this, and §6.2 measured only INSERT, UPDATE and SELECT.
+- Also, `render` never prints `updateCount`, so the count a dry run reports is unmeasured.
+- Fix: measure DELETE and one DDL on a DRY_RUN connection, and state what Go's RowsAffected is.
+
+**M2. The parameter type table is not the "every Go kind stated" it claims.**
+- Today every `fmt.Stringer` binds as its `String()` text (`connection.go:966-968`). That decides the stored bytes for stringer-generated enums and `time.Duration`, and the design is silent on it.
+- Named kinds (`type Status int32`) and pointers (`*int32`, a nil `*T`) are also unstated. If they fall through `ErrSkip`, database/sql widens them to int64, which becomes LONG and fails with 22000 in INTEGER columns. That is an undeclared break for common Go code.
+- The order between Valuer and the type table is unstated, and `uuid.UUID` is a Valuer whose `Value()` is a string.
+- Fix: type by `reflect.Kind` after dereferencing pointers, state the order, keep or delete the Stringer rule explicitly, and add read-back tests.
+
+**M3. Array parameters outside `IN ?`.** The design does not say whether a slice is accepted in INSERT or UPDATE for an ARRAY column (Java's `setArray` is). A nil slice becoming an empty array rather than NULL writes different record bytes. Also state that `[]uint8` means BYTES before ARRAY<INT>.
+
+**M4. Batch binding errors.** Only UTF-8 is checked across the whole batch before anything runs. Today `substituteParams` fails the whole batch first (`utilities.go:156-159`). Missing parameters (42F02), uint64 overflow (22003) and unsupported types must also be checked before the first statement, or an auto-commit batch applies partially.
+
+**M5. The snapshot read list mixes sites that follow isolation with sites that are always snapshot.**
+- `record_count.go:171-172` always reads at snapshot (Java's `getSnapshotRecordCount`). So do the rank `InitNeeded` and `PreloadForLookup` calls (`rank_index_maintainer.go:248,361,372`; `aggregate_function.go:565,576`). A "serializable control" test will fail on these, or tempt a change that diverges from Java.
+- "Go has no TEXT index" is false (`text_index_maintainer.go:21-23,402`). Say instead that it is unreachable from SQL.
+- Index-state reads are snapshot range reads plus explicit conflict keys (`index_state.go:478-485,693`), matching Java (`FDBRecordStore.java:4241-4242`). They are not "serializable".
+- `GetAllIndexStates` adds a conflict key for every index in the metadata (`store_api.go:103-108`), not just the plan's. Say which behaviour the revalidation test pins.
+- The legacy-format version load (`key_value_cursor.go:489-490`, Java `:1458-1460`) needs a test on an old-format store.
+
+## Low
+
+- **L1.** On a snapshot connection all DML is refused, so the §6.8 connection-scope test cannot perform its "reader-side WRITE" through SQL. Say how it writes.
+- **L2.** START TRANSACTION, COMMIT and ROLLBACK are Go-only SQL (`connection.go:916-950`). Refusing ROLLBACK on a snapshot connection has no target basis. Keep ROLLBACK admitted and label this statement class SOURCE.
+- **L3.** Silently ignoring extra DML arguments replaces today's 22023 guard. List it among the declared consequences.
+- **L4.** The text says "all five probes"; §8 lists four.
+- **L5.** The read scope is correctly labelled SOURCE. The harness already sets connection options, so the two-connection probe could run now.
+- **L6.** State that UTF-8 validation recurses into `IN ?` slice elements.
+
+## Checked and correct
+
+- The evidence hashes match this tree's files (`06e18e43…`, `b1f5851f…`), and the v3 pins match the evidence lines.
+- `bindExtended` is now shared by both Java steps.
+- The first Describe binds an `int` kind as int32 and checks that its probe set equals its pin set.
+- The promotion lattice is as cited. A NULL-typed constant can take any column type (`ConstantObjectValue.java:117-118`), which is consistent with the pinned untyped-NULL INSERT.
+- Snapshot admission (`PlanGenerator.java:170-171,507-517`) and the COPY-continuation rejection (`:296-305`) are as described.
+- The record fetch after an index scan is serializable (`FDBRecordStoreBase.java:1417`).
+- The isolation enum's zero value is SNAPSHOT, and the only construction site sets SERIALIZABLE (`scan_properties.go:63,247`).
+- The CQ-78 block is appended at the end of TODO.md and points back to the design.

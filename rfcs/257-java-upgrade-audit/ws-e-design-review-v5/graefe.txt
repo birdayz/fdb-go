@@ -1,0 +1,69 @@
+**NAK** on the RFC-257 WS-E design v5. It does not clear the Graefe gate.
+
+- **Tree:** `c9fd46b8655f19cb0b897f5d272f311121626463`
+- **Design:** `rfcs/257-java-upgrade-audit/ws-e-design.md`, SHA-256 `478dc077b98af12d13987f7e9d95cf93798d7276ebd6e46f3d91d35f96267358`, 1726 lines. I recomputed the hash and line count; both match.
+- **Java:** `fdacd162a9c8…`, read from `.git/HEAD`.
+
+The review was read-only. **SOURCE** marks a consequence I derived from reading code; I did not measure it.
+
+**What holds**
+- **Evidence:** I recomputed four of the eight evidence source hashes and all four match this tree: the spec, `sql_plan_steps.java`, `go_runner.go`, and `go_runner_test.go` (the "now" hash). The logs show "Ran 6 of 30" with 6 passed in both `wse6-all1.log` and `wse6-all2.log`. M1 and M2 each fail all 6 Describes, M3 fails only its own Describe, and M4 fails its one spec.
+- **Traces:** the v5 traces really do settle the target's mechanism. A fold to `true` counts `conjuncts=0` and wins; a fold to `null` or `false` ties and the semantic hash decides (`trace_v4_schema…` against `trace_null_strict…eq_one`).
+- **v4 findings closed at the design level:**
+  - index-state conflicts per scanned index (the scan paths do call `readIndexState`);
+  - the recursive assignment lattice;
+  - time.Time canonicalization;
+  - the Valuer order;
+  - the Go runner's `update` flag and `withTeardown`.
+
+## HIGH
+
+**H1. Go has a second, eager predicate-folding path, and the design never assigns it (§5.4a, line 1158; line 1071; §5.4b, line 1175).**
+- **The translator folds before Cascades.** `predicates.SimplifyPredicateValues` REPLACES WHERE, ON, QUALIFY and subquery predicates before planning. The call sites:
+  - `logical_predicate.go:163, 192, 238, 1345, 1381, 1427, 1668, 1724, 1788, 2712, 2754, 4479, 5350` (installFirstWherePredicate), `7887`;
+  - `bound_query.go:419`, `logical_qualify.go:47`, `plan_visitor.go:1048, 1086`, `subquery_clause.go:40`.
+- **`rejectsNull` has a generic fold too.** It adds `Simplify(…, DefaultSimplifyRules())` (`rule_eliminate_null_on_empty.go:152-153`). Two of those rules fold composite subtrees through `EvaluateConstant`: `ComparisonConstantSimplifyRule` (`rule_simplify.go:398-417`) and `ValuePredicateConstantFoldRule` (`rule_value_predicate_fold.go:54`).
+- **Java has neither path.**
+  - fdb-relational-core's `query/` package calls only the DEFAULT value set, via `Value.simplify` (`Expression.java:243, 303`; `Expressions.java:104`; `OrderByExpression.java:80, 92`).
+  - Predicates fold only through `QueryPredicateSimplificationRule`, and through `rejectsNull` with `ConstantFoldingRuleSet` (`ConstantPredicateFoldingUtil.java:189-193`).
+- **Consequences:**
+  - Under §5.4a, ConstantFoldingRuleSet would replace every SQL predicate at translation. The REWRITING prune in the SQL path would then never see the unfolded member, which contradicts line 1071.
+  - The planned prune tests (line 1236) would therefore be vacuous for SQL.
+  - "No rule set contains Go's generic fold" is false for `rejectsNull`. That decides outer-to-inner join conversion, which interacts with RFC-152.
+- **Fix:**
+  - Remove the translator folds, so predicates fold only through the rule, as in Java.
+  - Port `rejectsNull` onto ConstantFoldingRuleSet and delete the `EvaluateConstant` arms.
+  - Extend the (a) census test to `SimplifyPredicateValues` and `Simplify`.
+
+**H2. Go's prune is not the target's on the rung that decides this regime (§5.4g, line 1208: "the port… but for its outer-join criterion"; "every outcome decided before the hash is therefore the target's").**
+- **Tautology count.** Java filters tautologies before counting, so `[true]` counts 0 (`NormalizedResidualPredicateProperty.java:84-85, 111, 117`), and the trace confirms `conjuncts=0`. Go sums `normalFormSize` per predicate with no tautology filter (`designated_final.go:246-253`), and a ConstantPredicate falls to the default arm, which counts 1 (`normal_form.go:196-217`).
+  - SOURCE consequence: the measured deterministic rows become Go hash ties. These are `null_strict_div0_cast_null_is_null_where`, `coalesce_true_*_where` and `coalesce_not_cast_null_head_where`.
+- **Per-conjunct simplification.** Java simplifies the whole `AndPredicate.and(predicates)` with Identity/Annulment/Absorption (`QueryPredicateSimplificationRule.java:108-127`; `DefaultQueryPredicateRuleSet.java:41-59`). Go simplifies one predicate at a time (`rule_query_predicate_simplification.go:47-55`).
+  - SOURCE consequence: `n > 0 AND COALESCE(1/0, 5) IS NULL` collapses to `false` in the target (1 conjunct against 2), a deterministic win with no rows. In Go it is [n>0, false], 2 against 2, a tie, which can raise the division.
+- **Rung 4.** Go's code itself documents a second difference from Java: the tiebreak at the highest level (`planning_cost_model.go`, comment on `comparePredicateCountByLevel`).
+- **Fix:**
+  - Specify the rule over the conjunction and the tautology filter.
+  - Measure one multi-conjunct `false` row and one multi-conjunct `true` row.
+
+## MEDIUM
+
+**M1. The explode rule's shape is not Java's (§4.1b, line 505).**
+- Go matches a `LogicalFilterExpression` (`rule_in_to_explode.go:57`). It pushes `col = explode` into an inner filter over `f.GetInner()`.
+- Java matches a `SelectExpression` whose quantifiers are all ForEach. It adds the explode as a sibling quantifier and keeps the predicate at the select (`InComparisonToExplodeRule.java:126-176`).
+- **Consequences:**
+  - The correlated `b IN (a, 999)` that §4.1 promises would form a correlation cycle in Go's shape: the explode depends on the inner, and the inner filter depends on the explode.
+  - `classifyInSourceKind` defaults a non-constant value to `InSourceValues` (`rule_implement_in_join.go:575-584`). `extractInValues` then evaluates FieldValues to NULL, which is a wrong-answer hazard. State the flip of that default and pin it.
+- **Fix:** specify porting the matcher and the rule structure.
+
+**M2. The tie declaration misstates Go (line 1214).**
+- Go does have alias-invariant semantic hashes. `SelectExpression.HashCodeWithoutChildren` mixes the hashes of the result value and the predicates (`select.go:260-272`), and `deepHash` breaks the tie (`designated_final.go:308-334`).
+- The result value varies with the schema, so "the same one on every run" holds only per statement and schema.
+- Either vary the schema in the 20-run test, or specify a Go tiebreak that does not depend on the schema.
+
+## LOW
+
+- **(iv), line 1519, cites the lazy path.** `:452-453` is `getRecordStoreState()`. Open goes through `:2627` → `loadRecordStoreStateAsync` (`:4116-4117`) via the pass-through cache. The claim holds, but it is unlabelled SOURCE.
+- **`EffectiveConstant.from(Object)` is missing.** Line 1065 says "exactly three shapes", but Java also has `from(Object)` (`ConstantPredicateFoldingUtil.java:~262-279`: a non-null non-Boolean is NOT_NULL). Go's `NewLiteralComparison` comparands need it.
+- **The single-element IN collapse is Go-only.** The target keeps an INJOIN for `id IN (1)` [in_single_literal_explain]. Declare it as a plan-only difference.
+
+**Measured vs SOURCE.** The target facts behind H1 and H2 are measured (the traces). H1's Go facts and H2's code gap are read from source. Only H2's per-row Go consequences, the Java-translator absence and M1 are SOURCE.

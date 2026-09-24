@@ -5,6 +5,8 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
+	"fdb.dev/pkg/relational/core/query/logical"
 )
 
 func nestedGroupKey(t testing.TB, correlation, leaf string, ordinal int) values.Value {
@@ -88,4 +90,41 @@ func TestAggregateGroupKeyMirrorsTakeTheExactNestedPath(t *testing.T) {
 			t.Fatalf("flat exact group key ColumnDef = %+v, want bare Name=STATUS and no display label", cols)
 		}
 	})
+}
+
+func TestGroupKeyStripRetainsBoundIdentity(t *testing.T) {
+	t.Parallel()
+	value := nestedGroupKey(t, "A", "SK", 0)
+	for _, key := range []logical.GroupKey{
+		{Display: "A.N.SK", Bare: "SK", Qualifier: "A.N", Qualified: true, Segs: []string{"A", "N", "SK"}, Value: value},
+		{Display: "A.N.SK", Bare: "SK", Qualifier: "A.N", Qualified: true, Value: value},
+	} {
+		stripped := stripGroupKeyLeadingSegment(key, "N.SK")
+		if stripped.Value != value {
+			t.Fatalf("prefix stripping lost the bound grouping value: %+v", stripped)
+		}
+		if stripped.Display != "N.SK" {
+			t.Fatalf("stripped display = %q", stripped.Display)
+		}
+	}
+}
+
+func TestGroupAliasPreservesBareBoundStar(t *testing.T) {
+	t.Parallel()
+	q, err := parseQueryFromSelect(t, "SELECT * FROM t GROUP BY 2 AS id, 1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	simple := q.QueryExpressionBody().(*antlrgen.QueryTermDefaultContext).QueryTerm().(*antlrgen.SimpleTableContext)
+	a := nestedGroupKey(t, "SOURCE", "SK", 0)
+	b := nestedGroupKey(t, "SOURCE", "CO", 1)
+	cls, err := classifySelectElements(simple, func(string) ([]projCol, bool) {
+		return []projCol{{name: "ID", bare: "ID", bound: a}, {name: "V", bare: "V", bound: b}}, true
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cls.aggCols) != 2 || !groupKeysPullUpEqual(cls.aggCols[0].groupColValue, a) || !groupKeysPullUpEqual(cls.aggCols[1].groupColValue, b) {
+		t.Fatalf("GROUP alias replaced a bound bare star attribute: %+v", cls.aggCols)
+	}
 }

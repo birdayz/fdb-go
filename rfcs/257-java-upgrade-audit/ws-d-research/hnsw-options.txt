@@ -1,0 +1,344 @@
+The implementation should proceed through **engine admission → lossless HNSW storage/results → Java traversal semantics → record-layer integration → GuardiANN integration**. The existing HNSW code, WS-A numerical work, and WS-C queue/maintenance driver are substantial reusable foundations. They do not yet provide the HNSW contracts that GuardiANN consumes.
+
+I researched the pinned Java checkout at `fdacd162a9c8acfadc49082b89185c823ab8ae4a` and read the current Go files directly, including all of `hnsw.go` and `vector_index_maintainer.go`. I treated `f0cb29576cde624e0f1c6e22ca18a5180d1b298f` as the supplied accepted WS-C baseline. **Everything below is a source conclusion or proposed design; there is no measured runtime evidence.** I ran no tests, probes, builds, or mutations.
+
+The scope follows [RFC257 WS-D](/home/birdy/projects/fdb-go/rfcs/257-java-4.14.2.0-upgrade.md:390), [extensions-vector W1/W2](/home/birdy/projects/fdb-go/rfcs/257-java-upgrade-audit/extensions-vector.md:39), and [record-storage W4/W5](/home/birdy/projects/fdb-go/rfcs/257-java-upgrade-audit/record-storage.md:136). The audit’s old Go line numbers are superseded by the mappings below.
+
+**One pure, typed option resolver should govern metadata validation, evolution, planning, and engine construction.** Today those responsibilities disagree: the maintainer parses permissively, build validation recognizes legacy names, and evolution compares raw strings.
+
+| Responsibility | Pinned Java source | Current Go source and required change |
+|---|---|---|
+| Typed keys and aliases | [VectorIndexOptionKeys.java:47](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/VectorIndexOptionKeys.java:47) | [vector_index_maintainer.go:139](/home/birdy/projects/fdb-go/pkg/recordlayer/vector_index_maintainer.go:139): replace scattered string parsing with shared descriptors and an error-returning resolver. |
+| Duplicate-name rejection | [VectorIndexOptionsHelper.java:70](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/VectorIndexOptionsHelper.java:70) | [vector_index_validation.go:31](/home/birdy/projects/fdb-go/pkg/recordlayer/vector_index_validation.go:31): reject two names for one logical option before resolving either. |
+| Effective immutable comparison | [VectorIndexOptionsHelper.java:137](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/VectorIndexOptionsHelper.java:137) | [metadata_evolution_validator.go:839](/home/birdy/projects/fdb-go/pkg/recordlayer/metadata_evolution_validator.go:839): compare parsed/defaulted configurations, then consume all handled aliases from the changed-options set. |
+| Engine selection and evolution | [VectorIndexEngine.java:215](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/VectorIndexEngine.java:215), [248](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/VectorIndexEngine.java:248) | [store.go:1305](/home/birdy/projects/fdb-go/pkg/recordlayer/store.go:1305): currently always constructs HNSW for `VECTOR`. |
+| HNSW configuration | [HnswVectorIndexEngine.java:187](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/HnswVectorIndexEngine.java:187) | [vector_index_maintainer.go:122](/home/birdy/projects/fdb-go/pkg/recordlayer/vector_index_maintainer.go:122): construct from the resolved configuration, without reparsing or silently substituting defaults. |
+
+The index-metadata catalog must preserve this exact naming direction:
+
+| Logical option | Canonical name written to metadata | Accepted read alias | Type |
+|---|---|---|---|
+| Metric | `hnswMetric` | `vectorMetric` | Metric enum |
+| Dimensions | `hnswNumDimensions` | `vectorNumDimensions` | Integer |
+| Sampling probability | `hnswSampleVectorStatsProbability` | `vectorSampleVectorStatsProbability` | Double |
+| Maintenance probability | `hnswMaintainStatsProbability` | `vectorMaintainStatsProbability` | Double |
+| Statistics threshold | `hnswStatsThreshold` | `vectorStatsThreshold` | Integer |
+| Quantization enabled | `hnswUseRaBitQ` | `vectorUseRaBitQ` | Boolean |
+| Extra bits | `hnswRaBitQNumExBits` | `vectorRaBitQNumExBits` | Integer |
+
+These legacy canonical names are deliberate rolling-upgrade behavior, explicitly implemented at [VectorIndexOptionKeys.java:53](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/VectorIndexOptionKeys.java:53). The scan option has the opposite migration direction: write `vectorReturnVectors`, accept `hnswReturnVectors`. [VectorIndexScanOptions.java:50](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/VectorIndexScanOptions.java:50)
+
+Concrete resolver decisions:
+
+- Keep canonical name, aliases, value type, parser, serializer, and configuration destination in one descriptor catalog.
+- Detect alias duplication by **presence**, including equal-valued duplicates. Do this before canonical-first reading could hide the duplicate.
+- Require dimensions; the record-metadata resolver must not inherit Go’s current fallback of 128.
+- Parse integers with Java’s signed 32-bit bounds. Do not use partial scanning.
+- Serialize metrics using enum names. Java metric parsing is case-sensitive; engine parsing is case-insensitive.
+- Preserve Java’s actual boolean behavior: `Boolean.parseBoolean` recognizes case-insensitive `"true"` and otherwise returns false. Calling this a strict boolean parser would misdescribe the source. Any stricter Go-facing convenience API should remain separate.
+- Keep a tri-state return-vector option: absent, explicitly false, explicitly true.
+- Validate new metadata before evolution comparison. Alias-only migration, engine-name case changes, and introducing an explicit structural default should compare equal.
+- Treat engine identity as immutable, with absent engine resolving to HNSW. Empty, whitespace-padded, and unknown engine names are not additional defaults. [VectorIndexEngineKind.java:50](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/VectorIndexEngineKind.java:50)
+- Preserve approved Go input forms through a separate expression/vector-input adapter. Do not remove raw/scalar/nullable-array support as a side effect of importing Java metadata parsing.
+
+Java’s parser factories substantiate the type-specific behavior at [VectorOptionKey.java:211](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/VectorOptionKey.java:211).
+
+The effective HNSW configuration should retain these defaults and constraints:
+
+| Setting | Default | Java constraint |
+|---|---:|---|
+| Metric | Euclidean | Recognized enum |
+| Dimensions | Required | At least 1 |
+| Inlining | false | Boolean |
+| `M` / `MMax` / `MMax0` | 16 / 16 / 32 | 4–200 / 4–200 / 4–300; `M ≤ MMax ≤ MMax0` |
+| Construction / repair exploration | 200 / 64 | 100–400 / `M`–400 |
+| Extend candidates / keep pruned connections | false / false | Boolean |
+| Sampling / maintenance probability | 0.5 / 0.05 | `(0,1]` when RaBitQ is enabled |
+| Statistics threshold | 1000 | Greater than 10 when RaBitQ is enabled |
+| RaBitQ / extra bits | false / 4 | Config checks extra bits 1–15 when enabled |
+| Concurrent node / neighborhood / layer-delete work | 16 / 10 / 2 | 1–64 / 1–20 / 1–10 |
+
+Source: [Config.java:72](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/Config.java:72), [validation at 93](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/Config.java:93). Defaults for connectivity are independent constants; increasing `M` must not automatically increase `MMax`.
+
+There is a source-level wrinkle worth preserving explicitly: Java `Config` permits 9–15 extra bits, but the actual quantizer accepts only 1–8 because its calibration table has nine entries including unused entry zero. Go’s quantizer likewise supports 1–8. This is **not evidence that WS-A needs a new 15-bit encoder**. Retain the declared configuration value, never silently replace it with 4, and distinguish configuration validity from an unsupported quantizer capability before mutation. [RaBitQuantizer.java:57](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/rabitq/RaBitQuantizer.java:57), [rabitq.go:329](/home/birdy/projects/fdb-go/pkg/rabitq/rabitq.go:329)
+
+For HNSW, mutable options are the three statistics settings and three concurrency settings. Metric, dimensions, inlining, connectivity, construction/repair exploration, candidate-selection flags, quantization enablement, and extra bits remain immutable. Compare actual configuration fields rather than quantizer object identity. [HnswVectorIndexEngine.java:227](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/HnswVectorIndexEngine.java:227)
+
+**Engine admission must precede mutation and cover every entry path.** A constructor-only check is insufficient. Current saves call `saveWithSplit` before updating secondary indexes, and maintainers are cached by index name. Consequently, discovering an invalid engine only when the index maintainer is first constructed can happen after record mutations have been buffered. [store.go:690](/home/birdy/projects/fdb-go/pkg/recordlayer/store.go:690), [store.go:759](/home/birdy/projects/fdb-go/pkg/recordlayer/store.go:759), [store.go:1239](/home/birdy/projects/fdb-go/pkg/recordlayer/store.go:1239)
+
+The admission design should therefore:
+
+1. Resolve and validate all `VECTOR` metadata at metadata construction/open/evolution boundaries.
+2. Preserve an immutable resolved engine/configuration on the store or maintainer.
+3. Check admission before save/delete mutations, queue serialization/replay, rebuild writes, prefix deletion, and direct graph access through a record maintainer.
+4. Route scans, including continuation replay, through the admitted engine identity.
+5. Refuse unavailable GuardiANN before touching its subspace during intermediate implementation stages. That refusal is an intermediate safety property; it is not WS-D completion.
+
+The existing build helper should not be mistaken for complete coverage. Its direct call found in the current tree is the sliding-window delegate validator; metadata construction invokes the sliding-window validation pass. Add general vector validation explicitly. [sliding_window_index_validation.go:28](/home/birdy/projects/fdb-go/pkg/recordlayer/sliding_window_index_validation.go:28), [delegate call at 94](/home/birdy/projects/fdb-go/pkg/recordlayer/sliding_window_index_validation.go:94), [metadata.go:1467](/home/birdy/projects/fdb-go/pkg/recordlayer/metadata.go:1467)
+
+Java’s structural validator requires a top-level key-with-value expression and rejects grouping, uniqueness, version columns, and fanout. Its comment says one value column, but the method does not actually check that count. Preserve approved Go expression extensions explicitly rather than deriving additional prohibitions from that comment. [VectorIndexMaintainerFactory.java:132](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/VectorIndexMaintainerFactory.java:132)
+
+**The HNSW wire change is small, but its preservation surface is large.** Let `P` be the selected graph partition subspace, `pack` FoundationDB tuple packing, and parentheses inside a tuple denote nested tuple elements.
+
+| Object | Key beneath `P` | Value |
+|---|---|---|
+| Compact node | `pack(0, layer, (primaryKey…))` | `pack(0, (vectorBytes), ((neighborPK…), …))`, optionally followed by fourth element `(additionalValues…)` |
+| Inlining edge, upper layers only | `pack(0, layer, (sourcePK…), (neighborPK…))` | `pack(vectorBytes)` |
+| Access information | `pack(1)` | `pack(entryLayer, (entryPK…), (entryVectorBytes), rotatorSeed, (centroidBytes) or null)` |
+| Sample aggregate | `pack(2, partialCount, UUID)` | `pack(doubleVectorBytes)` |
+
+Authoritative serialization: [CompactStorageAdapter.java:164](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/CompactStorageAdapter.java:164), [write at 229](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/CompactStorageAdapter.java:229), [InliningStorageAdapter.java:289](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/InliningStorageAdapter.java:289), [StorageAdapter.java:281](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/StorageAdapter.java:281), [StorageHelpers.java:130](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/common/StorageHelpers.java:130).
+
+Raw vector bytes retain their type ordinal and big-endian component representation: HALF 0, SINGLE 1, DOUBLE 2. Quantized representation continues to use the accepted WS-A codec. The additional values are an opaque nested tuple, not vector components.
+
+The fourth field needs an explicit presence distinction: absent covering values produce a three-field node; a present empty tuple produces a four-field node. Do not use `len(values)==0` to decide whether to omit it.
+
+Current Go loses that information at every structural level:
+
+| Go location | Required change |
+|---|---|
+| [parsedNode, hnsw.go:1618](/home/birdy/projects/fdb-go/pkg/recordlayer/hnsw.go:1618) | Add optional additional-values storage with ownership/presence semantics. |
+| [saveNodeLayer, 1731](/home/birdy/projects/fdb-go/pkg/recordlayer/hnsw.go:1731) | Conditionally serialize the fourth nested tuple and cache it. |
+| [parseNodeValue, 1769](/home/birdy/projects/fdb-go/pkg/recordlayer/hnsw.go:1769) | Parse and retain the fourth field; currently returns immediately after neighbors. |
+| [single load, 1850](/home/birdy/projects/fdb-go/pkg/recordlayer/hnsw.go:1850), [batch load, 1899](/home/birdy/projects/fdb-go/pkg/recordlayer/hnsw.go:1899) | Populate the complete cached node. |
+| [edge-list load, 1974](/home/birdy/projects/fdb-go/pkg/recordlayer/hnsw.go:1974), [preload, 2053](/home/birdy/projects/fdb-go/pkg/recordlayer/hnsw.go:2053) | Preserve values even when the immediate caller requests only neighbors. |
+| [repair candidates, 970](/home/birdy/projects/fdb-go/pkg/recordlayer/hnsw.go:970), [repair writes, 1184](/home/birdy/projects/fdb-go/pkg/recordlayer/hnsw.go:1184) | Carry the original complete node through repair and write its additional values unchanged. |
+| [graph write dispatcher, 335](/home/birdy/projects/fdb-go/pkg/recordlayer/hnsw.go:335) | Accept complete node data rather than reconstructing a node from vector and neighbors alone. |
+
+The practical internal representation should be a complete stored-node record containing vector bytes/provenance, neighbor spans, and optional covering tuple. Neighbor changes should operate on that record. This makes preservation a structural invariant instead of a growing collection of cache lookups and extra arguments.
+
+Apply that invariant to initial insertion, reverse-edge insertion, pruning, lonely-node creation, deletion repair, and entry-point replacement. Java writes the original candidate node with its changed neighborhood, which is why the covering tuple survives. New insertion supplies additional values only at layer zero. [Insert.java:518](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/Insert.java:518), [Delete.java:379](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/Delete.java:379)
+
+Preserve the upper-layer contract: inlining nodes have no own stored vector and forbid additional values. A lonely inlining node writes no sentinel edge. Empty edge ranges cannot establish whether a node is alive; layer zero is authoritative. [InliningNode.java:48](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/InliningNode.java:48), [Go’s existing handling, hnsw.go:2258](/home/birdy/projects/fdb-go/pkg/recordlayer/hnsw.go:2258)
+
+Keep transaction-local cache invalidation after `DeleteWhere`; current Go already clears the storage cache after clearing the partition. Adding covering fields must not weaken that behavior. [vector_index_maintainer.go:1237](/home/birdy/projects/fdb-go/pkg/recordlayer/vector_index_maintainer.go:1237)
+
+**Results need a common representation before adding the missing APIs.** Java’s common result contains primary key, optional raw/reconstructed vector, optional additional values, distance, and rank/row number. The vector must be a raw HALF/SINGLE/DOUBLE representation, not encoded RaBitQ bytes. [ResultEntry.java:50](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/common/ResultEntry.java:50)
+
+Use an internal result with those five properties. Preserve raw representation when no reconstruction is necessary; provide decoded `[]float64` convenience separately if needed. Extend or adapt the existing public Go result rather than forcing all callers to consume an encoded storage vector.
+
+| Operation | Vector | Additional values | Distance / rank |
+|---|---|---|---|
+| kNN/ring search | Controlled by `includeVectors` | Returned independently of vector inclusion | Search objective distance / zero-based result row |
+| Fetch | Always reconstructed when present | Returned | `0 / -1` |
+| Outward traversal | Controlled by `includeVectors` | Returned independently | Distance from center / `-1` |
+| Diagnostic layer scan | Compact-node vector when available | Compact values | `0 / -1` |
+
+Sources: [Search.java:292](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/Search.java:292), [Primitives.java:520](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/Primitives.java:520), [Search.java:631](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/Search.java:631), [Primitives.java:1129](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/Primitives.java:1129).
+
+Fetch must read access information first, return absent when the graph or base node is absent, and reconstruct through the current storage transform. Cardinality must classify **EMPTY / SINGLE / MULTIPLE using at most two layer-zero entries**, without counting the graph or requiring access information. The latter is directly used to prevent impossible GuardiANN merges. [Primitives.java:566](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/Primitives.java:566)
+
+Reuse WS-A’s provenance distinction. Current Go correctly distinguishes already-transformed access-info DOUBLE vectors from ordinary raw node vectors through `hnswVector.transformed`; the type byte alone cannot establish coordinates. [hnsw.go:211](/home/birdy/projects/fdb-go/pkg/recordlayer/hnsw.go:211)
+
+Reconstruction should follow this order:
+
+- Obtain the vector in storage coordinates, decoding quantized data or transforming pre-centroid raw data as appropriate.
+- Subtract the stored translation.
+- Apply the inverse rotation.
+- Return a raw vector.
+- Do not attempt to restore an original cosine norm.
+
+The existing Go inverse transform is reusable. Java explicitly says normalization is not undone. [StorageTransform.java:61](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/common/StorageTransform.java:61), [fht_kac_rotator.go:272](/home/birdy/projects/fdb-go/pkg/recordlayer/fht_kac_rotator.go:272)
+
+There is an important **record-layer boundary**: Java’s low-level result carries covering values, but the pinned record maintainer does not expose them as extra `IndexEntry.Value` columns. It emits exactly one value: vector bytes or null. Its HNSW engine also passes null additional values on record insertion. Therefore, implement full low-level covering preservation and common-result propagation, while keeping Java-compatible record entries at one optional vector column. Do not silently reinterpret existing Go scalar-array values as covering columns. [VectorIndexMaintainer.java:263](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/VectorIndexMaintainer.java:263), [HnswVectorIndexEngine.java:110](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/HnswVectorIndexEngine.java:110)
+
+The return-vector default is `!config.useRaBitQ`, overridden by either explicit boolean value. It depends on configured quantization, not whether centroid training has already activated encoding. Current Go always emits `Tuple{nil}`. [VectorIndexOptionsHelper.java:195](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/VectorIndexOptionsHelper.java:195), [vector_index_maintainer.go:578](/home/birdy/projects/fdb-go/pkg/recordlayer/vector_index_maintainer.go:578)
+
+Carry the tri-state option through execution as well. The current plan stores `*bool` but exposes it through a getter that collapses absent and false; structural identity uses that collapsed value. The executor’s existing range construction does not transport the return-vector option. These are integration seams, not reasons to change SPFresh’s stream protocol. [vector_index_scan.go:215](/home/birdy/projects/fdb-go/pkg/recordlayer/query/plan/plans/vector_index_scan.go:215), [structural identity at 239](/home/birdy/projects/fdb-go/pkg/recordlayer/query/plan/plans/vector_index_scan.go:239), [executor.go:747](/home/birdy/projects/fdb-go/pkg/recordlayer/query/executor/executor.go:747)
+
+Existing vector continuations serialize materialized entry keys/values plus list position. Retain that format and include the newly populated vector bytes naturally. On resume, reconstruct the saved results before considering a search. Java already does this; Go’s single-partition path currently performs a search before constructing the cursor even when a continuation is present. [VectorIndexMaintainer.java:203](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/VectorIndexMaintainer.java:203), [vector_index_maintainer.go:517](/home/birdy/projects/fdb-go/pkg/recordlayer/vector_index_maintainer.go:517), [continuation encoding at 682](/home/birdy/projects/fdb-go/pkg/recordlayer/vector_index_maintainer.go:682)
+
+**Search should share one objective-parameterized beam-search core, with outward traversal as a separate stateful consumer.** This is the cleanest dependency boundary for GuardiANN.
+
+| Search mode | Objective | Upper-layer width | Base-layer width |
+|---|---|---:|---:|
+| Ordinary kNN | `distance(query, vector)` | 1 | `efSearch` |
+| Ring search | `abs(distance(query, vector) − radius)` | `clamp(floor(sqrt(efSearch)), 8, 32)` | `efSearch` |
+| Outward initialization | Ring objective at the minimum radius | Same formula using `efRingSearch` | `efRingSearch` |
+
+These are executable branches in [Search.java:149](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/Search.java:149), [179](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/Search.java:179), and [670](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/Search.java:670). Ring-search results report the ring objective. Outward initialization subsequently recomputes ordinary distance from the center.
+
+The Java algorithm retains a nearest-candidate queue, a bounded nearest-result set, and visited state. It fetches appropriate node representations for each layer rather than assuming that the access-info representation is interchangeable with the current layer’s stored representation. Its distance ordering has a primary-key tiebreaker. [Search.java:501](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/Search.java:501), [NodeReferenceWithDistance.java:38](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/NodeReferenceWithDistance.java:38)
+
+Current Go’s nearest-candidate implementation pops up to four candidates before expansion, inserts results using distance alone, and uses a distance-only heap comparator. Those choices are not a source proof of Java-equivalent traversal. [hnsw.go:1325](/home/birdy/projects/fdb-go/pkg/recordlayer/hnsw.go:1325), [hnsw.go:1422](/home/birdy/projects/fdb-go/pkg/recordlayer/hnsw.go:1422), [hnsw.go:2809](/home/birdy/projects/fdb-go/pkg/recordlayer/hnsw.go:2809)
+
+The design should preserve Java’s semantic expansion order first, while still pipelining independent neighbor reads. Use one comparison routine implementing Java `Double.compare` behavior followed by tuple ordering, including NaN and signed-zero cases. Preserve strict distance admission/termination comparisons where Java uses them; a comparator tiebreaker does not authorize changing those conditions.
+
+HNSW’s default record-layer exploration remains:
+
+`min(max(4*k, 64), max(k, 400))`
+
+Java returns an explicit supplied `efSearch` unchanged. Go currently also has `max(efSearch,k)` in graph search and an executor-level default of 200. Keep these surfaces distinct during migration so that the engine default actually reaches Java-compatible calls; do not accidentally retain executor overrides as the “Java default.” [HnswVectorIndexEngine.java:157](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/HnswVectorIndexEngine.java:157), [hnsw.go:1249](/home/birdy/projects/fdb-go/pkg/recordlayer/hnsw.go:1249), [executor.go:683](/home/birdy/projects/fdb-go/pkg/recordlayer/query/executor/executor.go:683)
+
+The outward iterator requires the following exact state and transitions:
+
+1. Retain the zoom-in search’s transform and node cache.
+2. Recompute each seed’s actual center distance.
+3. Initialize candidate, output, and optional quick-start queues using distance/PK ordering.
+4. Maintain spatial restrictions: an outside set plus an inside set limited to one boundary-nearest entry.
+5. Emit an eligible quick-start item before ordinary refill.
+6. Otherwise expand candidates until the output queue reaches `efOutwardSearch` or no candidates remain.
+7. Suppress ordinary output for **all original quick-start keys**. Java snapshots that key set at initialization, rather than accumulating only keys actually emitted.
+8. Preserve a prepared next result across repeated readiness calls; consume it only on `next`.
+9. Propagate read failures and make cancellation terminate pending iterator work without inventing transaction cancellation.
+
+Sources: [OutwardTraversalIterator.java:120](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/OutwardTraversalIterator.java:120), [refill at 186](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/OutwardTraversalIterator.java:186), [quick-start set at 307](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/OutwardTraversalIterator.java:307).
+
+The cutoff has a non-obvious source contract: **radius zero or null minimum PK disables the cutoff entirely**. Otherwise output is strictly after the `(minimumRadius, minimumPK)` pair. Eligibility for internal visited state uses an inclusive comparison in the appropriate branch. Do not simplify this into a conventional radius-only predicate. [SpatialRestrictions.java:76](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/SpatialRestrictions.java:76)
+
+This traversal is approximate and can produce inversions. `efOutwardSearch` controls output buffering, not a global exact sort or a bound on every state structure. Preserve that contract and keep it separate from SPFresh’s independent ordered stream and LIRE algorithms.
+
+Insertion/deletion can reuse much of the existing graph machinery, with two important constraints. First, Java insertion is a no-op for an existing PK, including its existing vector and additional values. Preserve current direct-Go upsert as an explicitly separate convenience, and make the engine/centroid-HNSW path call a Java-compatible insert-if-absent operation. [Insert.java:196](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/Insert.java:196), [Go upsert at hnsw.go:369](/home/birdy/projects/fdb-go/pkg/recordlayer/hnsw.go:369)
+
+Second, preserve deletion’s ordered repair candidate construction, per-layer RNG splitting, layer-zero liveness checks, original node payloads, and highest surviving replacement entry point. Existing Go already has substantial repair logic; this is a refinement of its inputs, randomness, and payload transport. [Delete.java:260](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/Delete.java:260), [hnsw.go:970](/home/birdy/projects/fdb-go/pkg/recordlayer/hnsw.go:970)
+
+**Operation randomness and layer assignment must remain separate implementations.** Java operation seeding starts at zero and folds every unsigned packed-key byte by applying SplitMix64 to `seed XOR byte`. SplitMix64 adds `0x9e3779b97f4a7c15`, uses shifts 30/27/31, and multipliers `0xbf58476d1ce4e5b9` and `0x94d049bb133111eb`. The resulting seed initializes `SplittableRandom`. UUID seeding folds all 16 big-endian UUID bytes. [RandomHelpers.java:51](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/common/RandomHelpers.java:51), [mix and fold at 85](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/common/RandomHelpers.java:85)
+
+Change both Go operation-seed sites:
+
+- [newSplittableRandomForKey, hnsw.go:2757](/home/birdy/projects/fdb-go/pkg/recordlayer/hnsw.go:2757).
+- The separate first-insert rotation seed calculation at [hnsw.go:603](/home/birdy/projects/fdb-go/pkg/recordlayer/hnsw.go:603).
+
+Reuse the existing SplittableRandom stream/split mechanics. Split child streams in input iteration order before their work can complete in a different order. Java’s helper attaches a split stream to each iterated item. [RandomHelpers.java:208](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/common/RandomHelpers.java:208)
+
+Leave `topLayer` unchanged: it continues to use the Java tuple hash and `splitMixDouble`, followed by the exponential layer formula. [Primitives.java:1110](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/Primitives.java:1110), [hnsw.go:2696](/home/birdy/projects/fdb-go/pkg/recordlayer/hnsw.go:2696)
+
+The shared UUID helper needs three distinct behaviors:
+
+- Deterministic random UUID: two RNG `nextLong` values, stamped version 4 and IETF variant.
+- Deterministic identity UUID: Java `UUID.nameUUIDFromBytes` over packed PK bytes or raw UUID bytes—MD5/version 3, without introducing a namespace prefix.
+- Nondeterministic UUID: entropy-backed version 4, consuming no operation RNG draws.
+
+These must not be conflated with GuardiANN’s separate SHA-256-derived version-8 content signature. [RandomHelpers.java:134](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/common/RandomHelpers.java:134), [identity overload at 174](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/common/RandomHelpers.java:174)
+
+The sample-key discrepancy is pre-existing and concrete. Go currently writes a 16-byte **byte string**, without UUID stamping. Java writes a tuple UUID. Change new writes to `tuple.UUID` using the existing DST entropy seam and version/variant stamping; the tuple UUID code is `0x30`. HNSW’s Java sample path uses nondeterministic UUID generation, so this must not advance the operation RNG. [hnsw.go:729](/home/birdy/projects/fdb-go/pkg/recordlayer/hnsw.go:729), [tuple.go:119](/home/birdy/projects/fdb-go/pkg/fdbgo/fdb/tuple/tuple.go:119), [Insert.java:335](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/hnsw/Insert.java:335)
+
+Keep legacy byte-string samples readable: Java’s aggregate reader consumes the count field and vector value without inspecting the UUID field. Preserve snapshot reverse reads, a bounded batch, and explicit conflict keys only for consumed entries. Malformed aggregate data should surface an error rather than Go’s current silent skip. [StorageHelpers.java:69](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/common/StorageHelpers.java:69), [reader at 162](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/common/StorageHelpers.java:162), [hnsw.go:755](/home/birdy/projects/fdb-go/pkg/recordlayer/hnsw.go:755)
+
+Existing access information remains authoritative. Updating operation RNG does not justify rewriting established rotation seeds or rebuilding arbitrary existing HNSW graphs.
+
+**Close raw cosine behavior at the vector-engine boundary without changing SPFresh or approved scalar semantics.** Java raw cosine returns positive infinity when either squared norm is zero, then returns NaN for nonfinite norms/dot product, otherwise computes `1 − dot/(sqrt(normA)*sqrt(normB))` without clamping. Go returns 1 for zero norms and clamps similarity in both decoded and byte-distance paths. [MetricDefinition.java:203](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/linear/MetricDefinition.java:203), [hnsw_vector.go:110](/home/birdy/projects/fdb-go/pkg/recordlayer/hnsw_vector.go:110), [hnsw_distance_bytes.go:114](/home/birdy/projects/fdb-go/pkg/recordlayer/hnsw_distance_bytes.go:114)
+
+Introduce engine-specific metric finalization and route HNSW distance evaluation, heuristic pairwise comparisons, and the new traversal through it. Keep SPFresh’s metric call path stable; it currently shares `vectorDistance`. [spfresh_query.go:798](/home/birdy/projects/fdb-go/pkg/recordlayer/spfresh_query.go:798)
+
+Preserve Java’s check order, including zero before the nonfinite check. Keep quantized-estimator error behavior distinct from raw cosine. WS-A’s accepted encoder/reconstruction work should be consumed unchanged; the raw cosine discrepancy is not evidence that that work should be reopened.
+
+**The engine adapter should own vector structure operations; the maintainer should own record-layer policy.** A practical internal interface needs:
+
+| Capability | Required contract |
+|---|---|
+| Search | Admitted engine, partition subspace, chosen read isolation, typed scan options, common results |
+| Insert | Transaction, partition, trimmed PK, vector, task-event register, maintain-in-transaction flag |
+| Delete | Same inputs, including the old vector needed by GuardiANN |
+| Task-count access | Optional; absent for HNSW |
+| Merge-required policy | HNSW false; GuardiANN dependent on maintenance mode |
+| Execute deferred tasks | Count budget, absolute deadline, transaction-bound register; return actual work executed |
+| Read/write instrumentation | Optional metrics, independent of mandatory task accounting |
+
+Java exposes this separation in [VectorIndexEngine.java:73](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/VectorIndexEngine.java:73).
+
+Keep partition selection, primary-key trimming/reconstruction, prefix locks, queue payload handling, and continuation construction in `vectorIndexMaintainer`. Replace the hardwired `withPrefixWriteLock` graph callback with an admitted engine operation. Ordinary updates and queue replay already converge at [index_maintainer_queue.go:80](/home/birdy/projects/fdb-go/pkg/recordlayer/index_maintainer_queue.go:80); that is the main write integration point.
+
+Do not inherit its HNSW-specific deletion assumption into GuardiANN: current removal tolerates vector-decoding failure and deletes by PK. GuardiANN deletion requires the vector. Validate/decode the required input before entering its mutation path.
+
+HNSW must remain synchronous:
+
+- Task counts absent.
+- No merge-required signal.
+- Maintainer `MergeIndex` completes without work.
+- Direct engine deferred-task execution is an error, catching incorrect dispatch.
+
+That matches [HnswVectorIndexEngine.java:133](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/HnswVectorIndexEngine.java:133) and the existing Go no-op maintenance behavior at [index_deferred_maintenance.go:246](/home/birdy/projects/fdb-go/pkg/recordlayer/index_deferred_maintenance.go:246).
+
+Instrumentation belongs in this adapter boundary. Java instruments HNSW reads during insertion and deletion as well as searches, counts key plus value bytes, and supports a null timer. Go’s current `HNSWStats` counts I/O operations/cache hits, so it is useful but not equivalent to the store-timer contract. [HnswVectorIndexEngine.java:108](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/HnswVectorIndexEngine.java:108), [byte accounting at 288](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/HnswVectorIndexEngine.java:288), [hnsw_stats.go:11](/home/birdy/projects/fdb-go/pkg/recordlayer/hnsw_stats.go:11)
+
+**GuardiANN needs these HNSW capabilities as real dependencies.** They cannot be supplied by renaming SPFresh operations.
+
+| GuardiANN consumer | HNSW dependency |
+|---|---|
+| Cluster discovery for search/insertion/maintenance | Outward centroid traversal with returned vectors and quick-start |
+| Bounce follow-up processing | Fetch centroid by cluster-ID tuple |
+| Undersized-cluster merge decision | Constant-cost EMPTY/SINGLE/MULTIPLE cardinality |
+| Split/merge centroid publication | Java-compatible insert/delete and correct transaction-local visibility |
+| Shared listeners | Accurate KV events and independent transactional task notifications |
+
+Actual call sites: [GuardiANN Primitives.java:489](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/Primitives.java:489), [BounceTask.java:227](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/BounceTask.java:227), [merge cardinality at Primitives.java:1339](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/Primitives.java:1339), [SplitMergeTask.java:769](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/SplitMergeTask.java:769). The centroid traversal explicitly enables both vector inclusion and quick-start. [Primitives.java:86](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/main/java/com/apple/foundationdb/async/guardiann/Primitives.java:86)
+
+Reuse WS-C’s queue format and driver. Current vector queue serialization retains complete primary keys and packed key/value tuples; replay applies old entries before new entries. [index_maintainer_queue.go:24](/home/birdy/projects/fdb-go/pkg/recordlayer/index_maintainer_queue.go:24)
+
+Reuse its transaction-local deferred-maintenance control, stable session ID, adaptive budgets, and precommit registration hook. The existing driver registers the callback on its transaction before calling the maintainer. The hook itself explicitly requires registration for each backend-created child transaction. [indexing_merger.go:27](/home/birdy/projects/fdb-go/pkg/recordlayer/indexing_merger.go:27), [index_deferred_maintenance.go:236](/home/birdy/projects/fdb-go/pkg/recordlayer/index_deferred_maintenance.go:236)
+
+The remaining integration contract is concrete:
+
+- Task enqueue/execute events must mutate accounting in the transaction that actually enqueues/executes the work.
+- A null timer must never suppress task accounting. Java’s GuardiANN listener forwards register events regardless of timer presence. [GuardiannVectorIndexEngine.java:528](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/GuardiannVectorIndexEngine.java:528)
+- The record maintainer composes count and merge-signal registers, honors maintain-in-transaction, and restores a missed signal when a later write finds an existing backlog. [VectorIndexMaintainer.java:372](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/VectorIndexMaintainer.java:372)
+- GuardiANN integration must supply RFC-defined sparse counts, secondary tags 0/1/2, lease claim followed by verified drain, delete-guard conflicts, negative-count disable, and actual executed-task feedback. These are dependencies of the adapter; the WS-C driver does not supply the backend automatically.
+- Every actual backend child transaction must install the inherited precommit callback on its own store/context before committing.
+
+The required future callback proof should drive a **real GuardiANN task through the real maintenance transaction path**, identify every committing child transaction, and demonstrate callback registration/execution there. It should include a failed/retried child and loss of session ownership. A fake maintainer calling the hook, or observing it only on the coordinator, cannot establish this property. No such proof was run during this research.
+
+SPFresh remains on its separate dispatch at [store.go:1333](/home/birdy/projects/fdb-go/pkg/recordlayer/store.go:1333). Its storage, maintenance, ordered streaming, and LIRE remain independent. No Lucene implementation is supplied by Go TEXT, and no change to C++ 7.3.77 is needed.
+
+**The Java tests provide useful shapes, but several new preservation tests are still necessary.** These are proposed validation work, not executed results.
+
+| Java test source | Shape to port or extend |
+|---|---|
+| [VectorIndexOptionKeysTest.java:57](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/provider/foundationdb/indexes/VectorIndexOptionKeysTest.java:57) | Equal-valued duplicate aliases rejected; single alias accepted; real metadata build/evolution reaches the guard. |
+| [VectorIndexOptionKeysTest.java:125](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/provider/foundationdb/indexes/VectorIndexOptionKeysTest.java:125) | Both alias-migration directions accepted with unchanged effective value; canonical writes and catalog completeness. |
+| [HnswVectorIndexTest.java:78](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/provider/foundationdb/indexes/HnswVectorIndexTest.java:78) | Explicit defaults accepted; structural changes and engine switches rejected; mutable tuning changes accepted. |
+| [VectorIndexScanOptionsTest.java:88](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/provider/foundationdb/indexes/VectorIndexScanOptionsTest.java:88) | Legacy scan option resolves to canonical identity; reserialization canonicalizes; duplicate aliases in proto rejected. |
+| [CardinalityTest.java:92](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/test/java/com/apple/foundationdb/async/hnsw/CardinalityTest.java:92) | Empty, one, two, and 25 nodes. Add same-transaction insert/delete and limit-two read-footprint assertions. |
+| [OperationsTest.java:146](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/test/java/com/apple/foundationdb/async/hnsw/OperationsTest.java:146) | Compact and inlining serialization. Extend with absent/empty/populated fourth fields and mixed-writer neighbor rewrites. |
+| [OperationsTest.java:249](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/test/java/com/apple/foundationdb/async/hnsw/OperationsTest.java:249) | Transform/inverse round trip; normalized input compares against normalized original, not original magnitude. |
+| [OperationsTest.java:282](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/test/java/com/apple/foundationdb/async/hnsw/OperationsTest.java:282) | Inlining, extend-candidates, keep-pruned, and RaBitQ combinations; separate metric coverage. |
+| [OperationsTest.java:643](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-extensions/src/test/java/com/apple/foundationdb/async/hnsw/OperationsTest.java:643) | Outward traversal from a nonzero distance/PK boundary; recall and ordering quality with permitted inversions. |
+| [VectorIndexEngineTestSuite.java:404](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/provider/foundationdb/indexes/VectorIndexEngineTestSuite.java:404) | Grouped record-index scans with explicit return-vectors true/false; value-column presence and per-group results. |
+| [HnswVectorIndexTest.java:60](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/test/java/com/apple/foundationdb/record/provider/foundationdb/indexes/HnswVectorIndexTest.java:60) | HNSW has no counts and direct deferred execution is illegal. |
+
+Additional focused cases should cover:
+
+- Covering tuples surviving every load/cache route, insertion pruning, deletion repair, same-transaction rewrites, and a fresh transaction.
+- Fetch missing/present, raw/encoded/pre-centroid vectors, and values returned when search vectors are suppressed.
+- Duplicate Java insertion preserving both old vector and old covering tuple, alongside retained direct-Go upsert behavior.
+- Quick-start enabled/disabled, equal distances with composite PKs, filtered quick-start seeds, radius-zero/null-PK cutoff behavior, exhaustion, and repeated readiness.
+- Packed-key RNG known answers including high-bit bytes, UUID byte ordering/stamping, deterministic split order, and unchanged layer assignments.
+- Raw cosine zero/nonfinite/no-clamp cases in decoded, byte, heuristic, and traversal paths.
+- Unknown/unavailable engine rejection before any buffered mutation, including queued and decorated paths.
+- Continuation replay after graph changes, without recomputing saved entries.
+
+Do not convert Java’s approximate traversal test into an exact-sort assertion. Conversely, do not import relaxed recall thresholds to excuse mismatched codecs, ordering rules, or lifecycle behavior. Some count/inversion assertions in the Java outward test are inside a logging-enabled branch; a Go port should make its intended assertions unconditional.
+
+**The live-JVM oracle can extend existing seams without a new harness.** `VectorIndexSteps` is already registered by the conformance server, and the Go side already invokes it through `NewJavaInvoker().InvokeAs`. Existing steps cover record writes/searches, queue replay, and WS-A RaBitQ bytes. [conformance_server.java:71](/home/birdy/projects/fdb-go/conformance/conformance_server.java:71), [vector_index_conformance.java:51](/home/birdy/projects/fdb-go/conformance/vector_index_conformance.java:51), [queue replay at 156](/home/birdy/projects/fdb-go/conformance/vector_index_conformance.java:156), [Go byte oracle at 45](/home/birdy/projects/fdb-go/conformance/vector_index_conformance_test.go:45)
+
+The current Java search step returns only order IDs, so it cannot establish vector payload, covering tuple, distance, rank, or continuation parity. [vector_index_conformance.java:284](/home/birdy/projects/fdb-go/conformance/vector_index_conformance.java:284)
+
+Proposed oracle seams:
+
+| Seam | Inputs and observations |
+|---|---|
+| Pure option/config resolution | Metadata options → canonical engine, effective fields, canonical serialization, exact error category |
+| Metadata evolution | Old/new definitions → acceptance or immutable-option rejection |
+| Common RNG | Packed PK/UUID bytes → initial stream outputs, split outputs, UUID bytes, separately unchanged top layer |
+| Direct HNSW operation script | Config, fixed subspace, operation sequence → fetch/search/ring/outward results and raw KV hex |
+| Covering interoperability | Java writes four-field nodes; Go changes neighborhoods/deletes other nodes; Java reopens and verifies retained tuples; reverse direction too |
+| Result/continuation | Tri-state vector option and page size → packed entry values, saved continuation, resumed entries |
+| Sampling | Controlled sample fixtures → tuple element types, consumed keys/conflicts, aggregate count/vector; avoid expecting entropy-generated UUIDs to match |
+| Real GuardiANN maintenance | Actual task execution → child commit callbacks, task-event accounting, lease ownership, retry behavior |
+
+Use packed tuple and raw-vector hex for the interchange boundary. For special floating-point values, transmit IEEE bits or tagged values rather than relying on ordinary JSON numbers. Force the target’s scalar backend where a deterministic numerical/structural oracle requires it. Compare persisted bytes exactly; use documented numerical tolerances only for reconstructed/approximate results.
+
+**The depth-first implementation order should close dependencies before exposing their consumers.**
+
+1. **Admission branch:** typed key descriptors → duplicate detection → pure effective configuration → engine resolution → evolution checks → pre-mutation admission across metadata/store/queue/decorated paths. Keep GuardiANN unavailable until its implementation is ready.
+2. **Common primitive branch:** operation RNG/UUID helpers → Java vector-engine cosine/comparator behavior → common result representation. Reuse WS-A quantization and existing inverse rotation.
+3. **Storage branch:** complete parsed-node representation → three/four-field codec → all single/batch/edge/preload caches → compact writer → insertion/pruning/deletion preservation. Establish lossless mixed-writer storage before higher APIs.
+4. **Mutation branch:** Java insert-if-absent alongside the preserved direct-Go upsert → updated operation seeds in first insert/statistics/delete → sample UUID writes and existing conflict protocol.
+5. **Read primitive branch:** provenance-aware reconstruction → fetch → limit-two cardinality → diagnostic result scan.
+6. **Search branch:** shared objective-based beam search → layer-appropriate vector fetching → distance/PK ordering → ordinary kNN → ring search.
+7. **Traversal branch:** spatial restrictions → outward iterator state machine → quick-start suppression/readiness/cancellation → centroid-HNSW interface.
+8. **Record adapter branch:** admitted HNSW engine → tri-state scan options through planning/execution → optional vector payloads → continuation replay → timer listeners → synchronous maintenance assertions.
+9. **GuardiANN integration branch:** connect its actual centroid consumers and separate backend; connect transaction-bound task registers, counts/leases/delete guard, and WS-C driver.
+10. **Completion branch:** live-JVM cross-writer cases and the real GuardiANN child-transaction callback proof. Refusal-only engine gating and fake callback tests cannot satisfy this final step.
+
+I read the full production `async/hnsw` package, the named record-layer option/factory/HNSW-engine classes, the common RNG/result/storage-transform helpers, and the current Go HNSW/maintainer files. **Explicit unread scope:** I did not fully read the entire GuardiANN clustering/task implementation, its task-count/lease helper implementations, all common async collectors, the complete scalar/SIMD backend, the entire Java test suite, or the full planner/executor. GuardiANN call sites, selected tests, and planner/executor handoff points were inspected where needed to establish dependencies. This report therefore specifies the assigned HNSW and adapter design; it does not certify the full GuardiANN backend or claim implementation or runtime validation.

@@ -1,0 +1,65 @@
+**NAK** on TREE `5e7c222e40d0557ef65133a8d7da0d88472b7ac4`, design SHA256 `6151d5873435054f6f34367102ef80cc01391c9931df82850dc42fa52dcc25de` (hash recomputed; it matches).
+
+**Oracle (MEASURED, verified):** the spec blob's hash matches `de215ddd…`. Runs wsf-4 and wsf-5 each show "Ran 1 of 24 Specs … SUCCESS" and "Executed 1 out of 1 test". wsf-mut2 goes red with "target answer for w13_subscript_zero moved". There are 36 probes over 4 schemas. The five groups in the brief are the design table's five rows, not five schemas. The Java side runs `runPreparedWithSetup` with no connection options, so the W8 rows really do measure the relational default configuration. **Not verified:** I couldn't check the tag-diff claims in §0.3 because `git -C fdb-record-layer` was denied. Target-source claims were checked against the 4.14.2.0 checkout.
+
+## High
+
+1. **W8: "the rung itself does not change" is false (design :544-546).**
+   - Go's PREFER_INDEX arm (`planning_cost_model.go:1263-1271`) ranks a lone primary scan below *every* plan without a sort.
+   - Java only rules on a lone primary scan against a single index scan with fetch (`PlanningCostModel.java:465-468`, `:563-567`). Against anything else, such as a covering scan with no fetch, it abstains and the lower rungs decide.
+   - So DIVERGENCES.md's "Two things change versus Java, and nothing else" (`:634`) is wrong for the index-preferring configurations. That third divergence was harmless only while no SQL path could reach it; W8 makes it live on every SQL query.
+   - The oracle can't show the target's verdict: all W8/W9 probes are `SELECT *`, where a no-fetch plan can't occur. Add JVM probes such as `SELECT col1 FROM T1` and `SELECT id FROM T1 WHERE col1 <> 10`, and record a decision.
+   - Coupled problem: with nil stats, rule-level `CostModel()` strips the configuration (`implementation_rule.go:110-118`, `expression_rule_call.go:107`). OptimizeGroup still gets the full context via `WithStatistics` (`planner_options.go:252`, `planner.go:365`).
+   - So under 4.2 alone, PREFER_INDEX reaches OptimizeGroup but not rule-level choices (e.g. `rule_implement_in_union.go:350`). The claim "With NONE this changes nothing" (:504-507) becomes false once 4.2 lands. The two need explicit sequencing and a stated scope for what else the full context turns on at rule level.
+
+2. **W6: the physical prune's winner selection is never designed.**
+   - With a physical prune, the REWRITING comparator decides which single tree PLANNING ever sees.
+   - Go's `RewritingCostModelLess` deliberately omits Java's first criterion, `outerJoinCount` (`planning_cost_model.go:83-105` vs `RewritingCostModel.java:64-65`), and has a known level tiebreak divergence (`:131-135`).
+   - It is also built on `newDesignationScope()` (`:117-119`; `planner.go:878-885`), which §2.6 step 7 deletes.
+   - The design says nothing about the REWRITING cost model. It needs:
+     - a comparator decision;
+     - derivations re-plumbed to Java's `Verify(==1)` form;
+     - census entries classified as comparator-caused versus a missing PLANNING rule.
+
+3. **W6 plannability gate (:291-302): the resolution rule is incomplete, and its instrument doesn't exist.**
+   - "Planner event listener, as the WS-D probe harness does" is unsupported. A `git grep` for `PlannerEventListeners|PlannerEvent|Debugger.setDebugger` over `conformance/` at TREE returns nothing. WS-D's only listeners are GuardiANN `OnWriteListener.NOOP` / `OnReadListener.NOOP` (`guardiann_probe_conformance.java:67`).
+   - Java has the API (`cascades/events/PlannerEventListeners.java`). Building the harness is unlisted work, and §4.3 depends on it too.
+   - Census entries whose SQL the JVM rejects have no Java mechanism to port. These are the preserved Go-only extensions: IN-subquery, nullable-array, LIMIT and the in-memory sort fallback. Either state their resolution (a Go-only re-derivation, documented and deeply tested), or the census can never empty.
+   - Re-run the census at the D12 rule set, which is what ships, not only at step 7.
+
+## Medium
+
+4. **D7's explored-marking (:234-236) escapes the test-only option.** `newRestrictedFinalReference` (`expression_rule_call.go:337-399`) backs `MemoizeFinalExpressionsFromOther` for PLANNING rules: 17 non-test hits across 14 files in `cascades/` (Grep). Marking it explored changes PLANNING whether or not the prune option is on. The scheduling report flagged this as unmeasured (`scheduling.txt` §10); the design dropped the caveat.
+
+5. **§4.3's premise is wrong, and there's a sequencing hazard.**
+   - Neither engine uses the size to decide whether to yield the InUnion: Java only passes it to the plan (`ImplementInUnionRule.java:171,211`), and so does Go (`rule_implement_in_union.go:371-379`). So "after the configuration port (which changes the in-union size…)" (:582-583) can't change the plan choice, and the root-cause probe need not wait for F-7.
+   - Hazard: landing the execution check with size 24 (`RecordQueryInUnionPlan.java:151-154`) before plan parity makes Go fail `IN (25+ values) ORDER BY id` with "too many IN values". Go answers that query with rows today, and the target plans the measured 2-value form as SCAN | FILTER. Make plan parity a precondition of the check, or land them together.
+
+6. **Two phases billed as "no plan change" do change plans.**
+   - F-3 includes the aggregate distinct-records arm (:424-426; Java `DistinctRecordsProperty.java:157-159`). Go's own comment says distinct-records drives rule firing (`plan_properties.go:93-95`).
+   - F-2's ordinality distinctness (`:240-241`) also applies to the one-based SQL `AT` explodes.
+   - §12's list of plan-changing phases (:804) omits both.
+
+7. **W9 gaps.**
+   - Java's query-side gate is `canBeUsedInScanPrefix`, applied in every `SelectExpression` constructor (`SelectExpression.java:118-120,744`; `RangeConstraints.java:756-787`). It admits IS_DISTINCT_FROM as a deferred sargable. Change 1 (:601) admits only NOT_DISTINCT_FROM; decide on IS_DISTINCT_FROM and probe a multi-column index.
+   - Go builds candidates for sparse value indexes (`cascades_generator.go:3003-3046`). Admitting NOT_DISTINCT_FROM adds a new implication case: `IS NOT DISTINCT FROM NULL`, or a parameter bound to NULL, against a `WHERE x IS NOT NULL` index. That's an unprobed wrong-rows dimension; add a JVM probe and a regression test.
+
+## Low
+
+8. **Stale text 4.2 makes false that the design doesn't list:**
+   - `planner_options.go:53-56` ("the rest are the Java defaults…");
+   - `plan_context.go:50-52` and `:87-89` ("no SQL surface sets a non-default…");
+   - DIVERGENCES.md `:630-634`.
+
+   Two inaccuracies in 4.2 itself:
+   - "`disableRewritingRules` when every rule is disabled" (:543) is wrong: Java keys it on the DISABLE_PLANNER_REWRITING option (`PlannerConfiguration.java:164-166,177`).
+   - `plannerOptionsFrom(nil)` returns before any configuration is applied (`planner_options.go:76-77`, called from `plan_harness.go:581`), so the new configuration must be applied on that path too.
+
+9. **W13.**
+   - The shared setup INSERT runs before every probe, so all four dotted-name probes show the same 42F00. The oracle can't tell which statement fails.
+   - Go's DDL accepted the table, but whether its stored descriptor name for `"foo.table$nested"` matches Java's is unmeasured. That is a wire-compat question.
+   - There's no `arr[?]` probe (parameter bound as INT vs LONG), yet the BIGINT rule depends on the index's static type. Go does type literal `1` as INT, like Java (`expr.go:2230-2234`).
+
+10. **W11 (:666-668).** Confirm the zero-valued isolation risk in production code, not just tests. `DefaultExecuteProperties` is SERIALIZABLE (`scan_properties.go:247`), so the risk is struct literals.
+
+**Verified as claimed:** the relational configuration (PREFER_INDEX, size 24); the 8 `ResolveQualifiedTableName` call sites; Go's integer-literal typing; the subscript and `IndexEntryObjectValue` semantics; the W6 Go facts; that Java emits `FETCH(COVERING)` when the reader builds; and that all SQL planning goes through `plannerOptionsFrom`.

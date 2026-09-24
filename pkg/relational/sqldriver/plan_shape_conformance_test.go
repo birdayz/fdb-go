@@ -8934,12 +8934,10 @@ func TestFDB_ScalarSubqueryInSelect(t *testing.T) {
 		t.Fatalf("INSERT ref_t: %v", err)
 	}
 
-	t.Run("scalar_subquery_in_select_unsupported", func(t *testing.T) {
-		_, err := db.QueryContext(ctx, "SELECT (SELECT COUNT(*) FROM main_t)")
-		if err == nil {
-			t.Errorf("expected error for scalar subquery in SELECT, got nil")
-		} else {
-			t.Logf("expected error: %v", err)
+	t.Run("scalar_subquery_in_select", func(t *testing.T) {
+		rows := collectRows(t, db, "SELECT (SELECT COUNT(*) FROM main_t)")
+		if len(rows) != 1 || len(rows[0]) != 1 || toInt64(rows[0][0]) != 5 {
+			t.Fatalf("scalar count = %v, want [[5]]", rows)
 		}
 	})
 

@@ -1,0 +1,90 @@
+**NAK: RFC-257 WS-E design v8 (Torvalds lens)**
+
+- **Tree:** `612fd91e5f07c78c54789633e87ada47899d75c3`
+- **Design:** `rfcs/257-java-upgrade-audit/ws-e-design.md`, SHA-256 `7a3b7ca963ddde5ef98ee653b9d55d6c82657f3fa13447fce0826b9fecfc1e14`, 2893 lines. I recomputed the hash from `git show` output.
+- **Java:** 4.14.2.0 (`fdacd162a9`).
+- **Method:** read-only. I read the three v7 verdicts, the full v8 design and its diff from v7, the oracle and evidence files, the prototype logs, Java and Go. I ran nothing.
+
+**v7 findings.** Most are resolved:
+- **WHO DECIDES:** the boundary prune; its mechanism is measured for the primary-key and primary-key IN rows.
+- **Partition guard:** the rows are measured. TestFDB_GroupByWithWherePush's IN/HAVING subtest passes.
+- **Tests and citations:** teardown `t.Cleanup`, the 42F63/42F55 codes, the 26 distinct entries, the SOURCE labels, and the UUID and store-open citations.
+- **Temporal lane:** the complements, `<>` and the IN-lane sharing.
+
+What remains, including new findings:
+
+## HIGH
+
+**H1. The IN-list deduplication uses Go's equality, not the target's (§4.1(b), design 774-791; SOURCE).**
+- The design sends every SQL list through `ArrayDistinctValue` "as the target does".
+- Go's version uses `==` (value_array_distinct.go:61-110 → value_in.go:81), so -0.0 equals 0.0 and NaN does not equal NaN.
+- Java uses `stream().distinct()` (ArrayDistinctValue.java:102), which is `Double.equals`: the opposite on both counts.
+- The design itself calls `v IN (-0.0, 0.0)` "an all-duplicate list" (658), which is Go's reading.
+- Either reading goes wrong:
+  - With Java's dedup, two signed-zero probes through the zero-widening binder (TestFDB_CompositeIndexZeroWidening) can return each row twice.
+  - With Go's dedup, the result diverges from the target, and runtime NaN lists become explodable: two NaN probes.
+- The dedup tests use only integers (789-791).
+- **Fix:** state the equality and how it interacts with widening. Pin ±0 and NaN lists through the per-row IN, the IN-join, the IN-union and the FlatMap-inner explode.
+
+## MEDIUM
+
+**M1. The prune's class is structural, but the design claims it is scoped to the rule (2065-2079).**
+- The prototype's `samePredicateVariantClass` (boundary_predicate_prune.go:60-88) also groups the yields of Go-only REWRITING rules:
+  - NormalizePredicatesRule (default_rules.go:148; it yields the same quantifiers and result, rule_normalize_predicates.go:74-106). In Java it runs in PLANNING only (PlanningRuleSet.java:107; it is absent from RewritingRuleSet.java:52-72).
+  - FilterDropTrue and FilterDedup.
+- So "for exactly the members this rule creates" is false.
+- "Removes only what the target's REWRITING would never have let reach PLANNING" is also false: Go can prune the original predicate in favour of its CNF form, while in the target the original is the REWRITING winner that PLANNING then normalizes.
+- The corpus impact is measured at zero, but the RFC-186 override rests on this argument.
+- **Fix:** restrict the prune to classes that contain the ported rule's yield, or move NormalizePredicatesRule to PLANNING. Add the CNF pair to the class-partition test.
+
+**M2. The census states a population that its matcher does not cover (1844-1861).**
+- logical_predicate.go:8072 calls `cp.Eval(nil)`, which evaluates both operands with no context (comparisons.go:958-977).
+- That is a no-context evaluation at planning (the outer-routing tautology test), and it is neither found nor assigned.
+- The command I ran over `pkg/**` and `cmd/**` found exactly one such predicate `.Eval(nil)`. The same command found the known `EvalAgainst` sites, which confirms it is well-formed.
+
+**M3. The assignment conversion covers the runtime half only (1030-1054).**
+- `compilePromotion` (promote_prepared.go:118-201) has no DATE or TIMESTAMP arms. The NULL arm at :136 lacks them too.
+- So DATE→TIMESTAMP fails at Prepare. It does not reach "invalid carrier" at runtime, as the design says (1037-1038).
+- Same-type assignment gets no PromoteValue, and :372-374 passes the value through unchanged. The design's `SET d = d` repair therefore has no canonicalization site.
+- Two parsers disagree:
+  - The DATE CAST parser (values.go:4534-4547) refuses RFC 3339.
+  - `ParseTemporalText` (the four layouts at values.go:2732) accepts it.
+  - So the same text is 22007 as a STRING source and assigns as a TIMESTAMP source.
+
+**M4. The indexed rescue is contradicted by its own measurement, so the planned test cannot hold.**
+- 2035-2040 and the (j) test (2329-2332) say the unfolded member wins on the cardinality rung beside an indexed conjunct.
+- Without the prune, only the primary-key and primary-key IN rows fail (wse8-prune-rows-noprune.log:16-20); the `n > 0` and `n = 5` rows pass.
+- So the indexed scenario rows do not pin the prune, and the "wins with the prune disabled" unit test is specified to assert something measured false.
+- **Fix:** restrict that test to the primary-key and IN rows, or add a unique-index row.
+
+**M5. The temporal lane defines no outcome for a NULL comparand (1089-1100).**
+- NULL-strictness covers only D. A comparand like `CAST(? AS TIMESTAMP)` bound to NULL is admitted as uncorrelated.
+- The only stated failure arm is 22007 from `ParseTemporalText`.
+- The property test's comparands (1123-1126) omit NULL.
+
+## LOW
+
+- **IN-union conversion (760-773):**
+  - It omits the plan side. The identity, hash and copy fold the pre-evaluated slice (in_union.go:39, 225-242, 304-326).
+  - It also omits the target's size check at open (RecordQueryInUnionPlan.java:152-153). Go has never enforced one: `GetMaxSize` has no executor reader.
+- **The explode rule has two matchers (597-608)**, but the one-name requirement is not carried over. The prototype registered a second name, `InComparisonToExplodeSelectRule` (wse8-explode-findings.txt:4).
+- **The design says XX000** for the IN-list VerifyException (2056, 2864). The pin says **XXXXX** (ws_e_probe_conformance_test.go:1656; evidence-run.txt:89).
+- **TestGoSQLRunner_CanceledRunStillTearsDown** asserts only `err != nil` (go_runner_test.go:427-433). A conversion error that never cancels would pass it, and §4.3 rewrites that binding path. Assert `context.Canceled`.
+- **`exists_with_aggregate#6`:** "as the target's annulment does" is wrong (2157-2160). The target does not fold `1 = 0` (pk_annulling_fold_explain), and QUALIFY is Go-only.
+- **IN-list lane rule:** it (1071-1076) omits the uncorrelated condition at 1062-1065, so the lane of a correlated list is ambiguous.
+- **ev9/justtest.log** does not bind to this tree. It ran on tree `f2f272dc`, and "Executed 43 out of 94" means 51 targets were cached. The design does not cite it.
+
+**Verified**
+- **Hashes:** all nine oracle source hashes match the tree, two of them checked via `git show` blobs.
+- **Oracle:** 31 probes equal 31 pins. Both runs report "Ran 8 of 52". M8 fails on exactly its row.
+- **Census counts:** `Evaluate(nil)` is 16 code lines plus 4 comment lines; `EvaluateConstant` is 18; `readIndexState` is 38 lines, 35 calls in 14 files; UUID is 6.
+- **Prune whole-suite run:** 94 of 94 targets, 89 pass, and the 5 reds match the named tests. Prune versus no prune differs in 2 entries.
+- **Citations:** `NewAnyOf` is at combinators.go:99, and rule dispatch does not key on the matcher's root type. The PickValue and store-open citations hold.
+
+**Measured vs SOURCE**
+- **Measured:** M2, M3, M4, the counts and the evidence.
+- **SOURCE:**
+  - H1's duplicate-row consequence and M1's plan impact.
+  - The one-rule registration: the whole-suite run used two names.
+  - The effect of the port's type folds through the prune: the stand-in cannot make them, so all 6 typefold rows fail with and without the prune.
+  - The rejectsNull dump, which is gated to implementation.

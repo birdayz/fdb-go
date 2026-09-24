@@ -74,7 +74,7 @@ func CountSumMetadata() *recordlayer.RecordMetaData {
 func RankMetadata() *recordlayer.RecordMetaData {
 	b := newBuilder()
 	b.AddIndex("Order", recordlayer.NewIndex("hunt_r_price", recordlayer.Field("price")))
-	b.AddIndex("Order", recordlayer.NewRankIndex("hunt_r_rank", recordlayer.Field("price")))
+	b.AddIndex("Order", recordlayer.NewRankIndex("hunt_r_rank", recordlayer.Ungrouped(recordlayer.Field("price"))))
 	return mustBuild(b)
 }
 

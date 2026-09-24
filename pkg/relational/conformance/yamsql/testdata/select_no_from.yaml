@@ -1,25 +1,19 @@
-# select_no_from.yaml
-#
-# FROM-less SELECT — fdb-relational 4.11.1.0's QueryVisitor.visitSimpleTable
-# (line 225) asserts `simpleTableContext.fromClause() != null` with
-# `ErrorCode.UNSUPPORTED_QUERY` and message "query is not supported". Go's
-# `extractFromSimpleTable` mirrors the rejection at parse time. This file
-# pins the rejection across the constant-projection shapes that previously
-# worked end-to-end (literal arithmetic, string literal, NULL, NOT TRUE,
-# CAST on literal).
+# FROM-less SELECT uses Java 4.14.2.0's one-row source. Bare NULL retains
+# the Go raw-read behavior; the live Java probe pins its metadata rejection.
 name: select_no_from
 schema_template: |
   CREATE TABLE t (id BIGINT, PRIMARY KEY (id))
 tests:
   - query: SELECT 1 + 2
-    error_code: "0AF00"
+    plan_contains: Explode
+    rows: [[3]]
   - query: SELECT 'hello'
-    error_code: "0AF00"
+    rows: [[hello]]
   - query: SELECT NULL
-    error_code: "0AF00"
+    rows: [[null]]
   - query: SELECT 'abc'
-    error_code: "0AF00"
+    rows: [[abc]]
   - query: SELECT NOT TRUE
-    error_code: "0AF00"
+    rows: [[false]]
   - query: SELECT CAST(1.7 AS BIGINT)
-    error_code: "0AF00"
+    rows: [[2]]

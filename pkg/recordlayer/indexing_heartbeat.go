@@ -7,6 +7,7 @@ import (
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"
 )
@@ -45,8 +46,15 @@ type IndexingHeartbeat struct {
 // production — the UUID and timestamps then come from crypto/rand and the wall clock,
 // byte-identical to the pre-seam behavior.
 func NewIndexingHeartbeat(info string, leaseLengthMs int64, allowMutual bool, env *dst.Env) *IndexingHeartbeat {
+	return newIndexingHeartbeatWithID(newIndexerID(env), info, leaseLengthMs, allowMutual, env)
+}
+
+// newIndexingHeartbeatWithID is Java's IndexingHeartbeat constructor, which takes
+// the indexer's ID (IndexingHeartbeat.java:66): an OnlineIndexer passes its one
+// identity rather than minting one per heartbeat.
+func newIndexingHeartbeatWithID(indexerID uuid.UUID, info string, leaseLengthMs int64, allowMutual bool, env *dst.Env) *IndexingHeartbeat {
 	return &IndexingHeartbeat{
-		indexerID:     newIndexerID(env),
+		indexerID:     indexerID,
 		info:          info,
 		createTimeMs:  env.Now().UnixMilli(),
 		leaseLengthMs: leaseLengthMs,
@@ -74,9 +82,9 @@ func heartbeatSubspace(storeSubspace subspace.Subspace, index *Index) subspace.S
 }
 
 // heartbeatKey returns the FDB key for this indexer's heartbeat.
-// Layout: [9, indexSubspaceKey, 7, uuid_string]
+// Layout: [9, indexSubspaceKey, 7, UUID]
 func (h *IndexingHeartbeat) heartbeatKey(storeSubspace subspace.Subspace, index *Index) fdb.Key {
-	return heartbeatSubspace(storeSubspace, index).Sub(h.indexerID.String()).Bytes()
+	return heartbeatSubspace(storeSubspace, index).Sub(tuple.UUID(h.indexerID)).Bytes()
 }
 
 // CheckAndUpdate checks for conflicting heartbeats and updates this indexer's heartbeat.
@@ -85,17 +93,38 @@ func (h *IndexingHeartbeat) heartbeatKey(storeSubspace subspace.Subspace, index 
 // heartbeat from a different indexer exists, returns a SynchronizedSessionLockedError.
 // Stale heartbeats (older than leaseLengthMs) are ignored — the process is presumed dead.
 //
-// In mutual mode: skips the check entirely and just updates.
+// In mutual mode: validates key compatibility but permits active peers.
 //
-// Called once per buildRange transaction to maintain liveness.
-// Matches Java's IndexingHeartbeat.checkAndUpdateHeartbeat().
+// Used for admission and exclusive renewal. Already-admitted mutual sessions
+// renew only their own key, matching Java's mutual checkAndUpdateHeartbeat path.
 func (h *IndexingHeartbeat) CheckAndUpdate(tx fdb.WritableTransaction, storeSubspace subspace.Subspace, index *Index) error {
-	if h.allowMutual {
-		h.update(tx, storeSubspace, index)
-		return nil
+	if err := h.checkAdmission(tx, storeSubspace, index, h.allowMutual); err != nil {
+		return err
 	}
+	h.update(tx, storeSubspace, index)
+	return nil
+}
 
-	// Non-mutual: scan all heartbeats and reject if active peer exists.
+// heartbeatBlocksSession is Java's admission predicate over another session's heartbeat
+// age: it is a live session when age > -1 day and age < lease
+// (IndexingHeartbeat.checkSingleHeartbeat, IndexingHeartbeat.java:106-107). A heartbeat
+// dated more than a day ahead is bad data, "long enough to tolerate reasonable clock skews
+// between nodes". Admission applies it to every heartbeat key;
+// CheckAnyOngoingOnlineIndexBuilds applies it to each indexer id's surviving heartbeat
+// after Java's collapse of (U) and (U, x) keys, so the two agree on one key per id and
+// can differ when an id has two keys (see CheckAnyOngoingOnlineIndexBuilds).
+func heartbeatBlocksSession(ageMs, leaseMs int64) bool {
+	return ageMs > -86_400_000 && ageMs < leaseMs
+}
+
+// checkAdmission reads without renewing so destructive preparation cannot hide
+// incompatible keys or live ownership. A fresh rebuild must exclude peers even
+// when its subsequent range-building transactions will allow mutual workers.
+func (h *IndexingHeartbeat) checkAdmission(tx fdb.WritableTransaction, storeSubspace subspace.Subspace, index *Index, allowMutual bool) error {
+	// Legacy Go builders use string keys and ignore UUID keys. Fail closed even
+	// in mutual mode until operators fence old workers and clear legacy keys.
+	// A dual reader cannot make those old writers respect Java UUID heartbeats.
+	// Non-mutual sessions additionally reject active UUID peers.
 	hbSub := heartbeatSubspace(storeSubspace, index)
 	rr := tx.GetRange(hbSub, fdb.RangeOptions{})
 	kvs, err := rr.GetSliceWithError()
@@ -105,16 +134,11 @@ func (h *IndexingHeartbeat) CheckAndUpdate(tx fdb.WritableTransaction, storeSubs
 
 	now := h.env.Now().UnixMilli()
 	for _, kv := range kvs {
-		// Extract the UUID from the key.
-		t, err := fastSubspaceUnpack(kv.Key, len(hbSub.Bytes()))
-		if err != nil || len(t) == 0 {
-			continue
+		otherID, err := heartbeatIndexerID(kv.Key, hbSub, index)
+		if err != nil {
+			return err
 		}
-		otherID, ok := t[0].(string)
-		if !ok {
-			continue
-		}
-		if otherID == h.indexerID.String() {
+		if allowMutual || otherID == h.indexerID {
 			continue // our own heartbeat
 		}
 
@@ -126,16 +150,11 @@ func (h *IndexingHeartbeat) CheckAndUpdate(tx fdb.WritableTransaction, storeSubs
 
 		age := now - hb.GetHeartbeatTimeMilliseconds()
 
-		// Clock skew protection: reject heartbeats >1 day in the future.
-		// Matches Java's age > TimeUnit.DAYS.toMillis(-1).
-		if age < -86_400_000 {
-			continue
-		}
-
-		if age < h.leaseLengthMs {
+		if heartbeatBlocksSession(age, h.leaseLengthMs) {
 			// Active heartbeat from another process — cannot proceed.
 			return &SynchronizedSessionLockedError{
-				ExistingIndexerID: otherID,
+				IndexerID:         h.indexerID,
+				ExistingIndexerID: otherID.String(),
 				ExistingInfo:      hb.GetInfo(),
 				HeartbeatAgeMs:    age,
 				LeaseLengthMs:     h.leaseLengthMs,
@@ -144,7 +163,6 @@ func (h *IndexingHeartbeat) CheckAndUpdate(tx fdb.WritableTransaction, storeSubs
 		// Stale heartbeat — process is presumed dead, ignore.
 	}
 
-	h.update(tx, storeSubspace, index)
 	return nil
 }
 
@@ -180,8 +198,13 @@ func CleanupAllHeartbeats(tx fdb.WritableTransaction, storeSubspace subspace.Sub
 
 // SynchronizedSessionLockedError is returned when a non-mutual indexer detects
 // an active heartbeat from another indexer process.
-// Matches Java's SynchronizedSessionLockedException.
+// Matches Java's SynchronizedSessionLockedException, with its log keys
+// (indexing/IndexingHeartbeat.java:111-115): INDEXER_ID (IndexerID, the refused
+// indexer's own identity), EXISTING_INDEXER_ID, AGE_MILLISECONDS and
+// TIME_LIMIT_MILLIS. ExistingInfo, the holder's heartbeat info, is a Go
+// addition: Java's exception carries no info key.
 type SynchronizedSessionLockedError struct {
+	IndexerID         uuid.UUID
 	ExistingIndexerID string
 	ExistingInfo      string
 	HeartbeatAgeMs    int64
@@ -193,6 +216,35 @@ func (e *SynchronizedSessionLockedError) Error() string {
 		"index build session locked by another indexer (id=%s, info=%s, age=%dms, lease=%dms)",
 		e.ExistingIndexerID, e.ExistingInfo, e.HeartbeatAgeMs, e.LeaseLengthMs,
 	)
+}
+
+// IndexingHeartbeatKeyError rejects legacy or malformed heartbeat keys before
+// admitting UUID-only builders. Old Go builders must be stopped and fenced before
+// administrative cleanup; automatically expiring these keys cannot establish that.
+type IndexingHeartbeatKeyError struct {
+	IndexName string
+	Key       []byte
+}
+
+func (e *IndexingHeartbeatKeyError) Error() string {
+	return fmt.Sprintf("incompatible indexing heartbeat key %x for index %q: fence legacy builders and clean heartbeat keys before starting UUID-only builders", e.Key, e.IndexName)
+}
+
+// heartbeatIndexerID is Java's heartbeatKeyToIndexerId,
+// indexHeartbeatSubspace(store, index).unpack(key).getUUID(0)
+// (IndexingHeartbeat.java:201-203): the key's FIRST element must be a UUID and any
+// trailing elements are ignored, so a (UUID, x) key names that UUID's heartbeat in
+// both engines. A key whose first element is not a UUID, or that has no element, is
+// a throw in Java (ClassCastException / IndexOutOfBoundsException) and an
+// IndexingHeartbeatKeyError here.
+func heartbeatIndexerID(key []byte, ss subspace.Subspace, index *Index) (uuid.UUID, error) {
+	parts, err := fastSubspaceUnpack(key, len(ss.Bytes()))
+	if err == nil && len(parts) >= 1 {
+		if id, ok := parts[0].(tuple.UUID); ok {
+			return uuid.UUID(id), nil
+		}
+	}
+	return uuid.Nil, &IndexingHeartbeatKeyError{IndexName: index.Name, Key: append([]byte(nil), key...)}
 }
 
 // ReadHeartbeats reads all heartbeats for an index. Useful for diagnostics.
@@ -207,19 +259,19 @@ func ReadHeartbeats(tx fdb.ReadTransaction, storeSubspace subspace.Subspace, ind
 	var heartbeats []*gen.IndexBuildHeartbeat
 	var indexerIDs []string
 	for _, kv := range kvs {
-		t, err := fastSubspaceUnpack(kv.Key, len(hbSub.Bytes()))
-		if err != nil || len(t) == 0 {
-			continue
-		}
-		id, ok := t[0].(string)
-		if !ok {
-			continue
+		id, err := heartbeatIndexerID(kv.Key, hbSub, index)
+		if err != nil {
+			return nil, nil, err
 		}
 		var hb gen.IndexBuildHeartbeat
 		if err := hb.UnmarshalVT(kv.Value); err != nil {
-			continue
+			hb = gen.IndexBuildHeartbeat{
+				Info:                      proto.String(InvalidHeartbeatInfo),
+				CreateTimeMilliseconds:    proto.Int64(0),
+				HeartbeatTimeMilliseconds: proto.Int64(0),
+			}
 		}
-		indexerIDs = append(indexerIDs, id)
+		indexerIDs = append(indexerIDs, id.String())
 		heartbeats = append(heartbeats, &hb)
 	}
 	return heartbeats, indexerIDs, nil

@@ -1,0 +1,39 @@
+**NAK — WS-A/WS-E1 IMPLEMENTATION CODE** at frozen tree `36a716b31e3f6e0596377fd76167da46e143a549`.
+
+I read all four reports, the complete 15-file tree delta, necessary frozen-source interactions, and Java at `fdacd162a9c8acfadc49082b89185c823ab8ae4a`. The 6,391-file freeze matches the candidate’s blobs; published HEAD remains `71ccd8cf8b3fd0dbafe283e91171818e36af555e`.
+
+**P2 — The changed alias-binding boundary still selects an owner for an ambiguous output name.**
+
+Using the retained `wide_t(id,v)` fixture:
+
+```sql
+SELECT id AS z, v AS z
+FROM wide_t
+GROUP BY id, v
+ORDER BY z
+```
+
+Java requires **42702**. Its [SemanticAnalyzer.java:655](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/SemanticAnalyzer.java:655) rejects multiple matching SELECT aliases before selecting an expression.
+
+The candidate instead permits binding to the first output:
+
+- [logical_builder.go:1019](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_builder.go:1019) returns the first matching position without checking for another match. Both constructors use this helper.
+- Because the source has no `Z`, validation takes the presence-only `ColumnNotFound` bypass at [plan_visitor.go:802](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/plan_visitor.go:802) and its shell counterpart, [logical_predicate.go:2445](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:2445). The match-count check only handles an existing FROM-scope ambiguity.
+- [logical_predicate.go:6156](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:6156) then installs the first projection’s Value, and line 6176 protects that selection.
+
+This is a **source-derived remaining contract gap**, not an executed reproduction or a claim that duplicate-alias acceptance originated in this delta.
+
+**Required fix:** establish zero/one/multiple visible-output matches before committing alias ownership; raise 42702 for multiple matches through both construction paths. Preserve legal duplicate output labels when ORDER BY does not reference them ambiguously. Add this regression with an alias absent from the source, plus an alias matching one unambiguous source column.
+
+The new [duplicate-name regression:168](/home/birdy/projects/fdb-go/pkg/relational/sqldriver/no_from_select_probe_test.go:168) checks repeated ORDER keys (`z,z`), not two SELECT outputs named `z`. Existing [Q47:1080](/home/birdy/projects/fdb-go/pkg/relational/sqldriver/cte_box_unnest_on_resolution_probe_fdb_test.go:1080) relies on an already-ambiguous source name, so it does not discriminate this gap.
+
+The reported ownership repairs otherwise hold: slot/native-ordinal transport, authored-identifier lookup, exact Value preservation, and numeric-syntax classification address the supplied failures. The corrected visitor entry point and explicit P/Q checks discriminate their intended boundaries. All seven mutation hashes and recorded failure lists reconcile. The 22 completed Java probe records preserve the documented refusals and independent Go extensions.
+
+Separate unmet verification/publication gates:
+
+- At inspection, no completed final results/population JSONs were available. Candidate-bound full 93, race 14, fuzz, `just test`, and nominal ABBA verification remain uncredited. In-flight work is neither failure nor success; earlier-tree greens and the failed fuzz setup provide no substitute.
+- Verify the ambiguity repair and regression on its resulting frozen tree.
+- The <5ms aspiration and universal parity remain unestablished. Historical executor startup-timeout causation still requires unavailable original artifacts.
+- Legacy RaBitQ disable/rebuild remains a deployment prerequisite. Commit/push/merge remain forbidden; PR786 stays draft/unchanged. WS-B–K and whole-upgrade completion remain open.
+
+Accepted storage/RaBitQ/array/descriptor/fixture scope and approved extensions remain accepted; FDB C++ stays **7.3.77**. No edits, builds/tests, agents, worktrees, Git-state changes, or GitHub contact occurred.

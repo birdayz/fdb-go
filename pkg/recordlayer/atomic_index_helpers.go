@@ -110,7 +110,8 @@ func updateWhileWriteOnlyNonIdempotent(
 }
 
 // evaluateGroupingKeysNotNull extracts the grouping key tuple(s) from a record,
-// filtering out any tuples where the GROUPED (trailing) columns contain null values.
+// filtering out any tuples where the GROUPED (trailing) columns contain a
+// NullStandin.NULL.
 // Used by COUNT_NOT_NULL maintainer.
 //
 // The GROUPED suffix, and only it. Java splits the evaluated entry before the
@@ -144,11 +145,21 @@ func evaluateGroupingKeysNotNull(index *Index, record *FDBStoredRecord[proto.Mes
 	totalColumns := index.RootExpression.ColumnSize()
 	groupedCount := totalColumns - groupingCount
 
+	// Only a NullStandin.NULL drops the row, as keyContainsNonUniqueNull
+	// decides it: a null from a NULL_UNIQUE or NOT_NULL field, or a function's
+	// plain null, is counted.
+	var standins []bool
 	result := make([]tuple.Tuple, 0, len(tuples))
 	for _, values := range tuples {
 		hasNull := false
 		for i := groupingCount; i < len(values) && i < totalColumns; i++ {
-			if values[i] == nil {
+			if values[i] != nil {
+				continue
+			}
+			if standins == nil {
+				standins = nonUniqueNullColumns(index.RootExpression)
+			}
+			if i < len(standins) && standins[i] {
 				hasNull = true
 				break
 			}

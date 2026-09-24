@@ -1,0 +1,76 @@
+{
+  "scope": "Nine full affected non-FDB unit/planner targets on recovered source. Not full just test or runtime/Java verification.",
+  "compiler": "go version go1.26.6 linux/amd64",
+  "source_manifest": "/var/tmp/fdb-upgrade-recovery/units-freeze.json",
+  "source_manifest_sha256": "a44ec8caedbdec5ddb616be8cb8264c8d5661fd7ecf379e312751f00cb683a26",
+  "source_files_verified_unchanged": 6276,
+  "log": "/var/tmp/fdb-upgrade-recovery/full-units.log",
+  "log_sha256": "eeab13f5caa031632ce4b36b0be906763c9ebb2e10973322e07900c9d23e22f0",
+  "bep_sha256": "74c94e47a4bfc4d75212a13e77afee23bd07ce94c1539ace166ed515790904b0",
+  "parser": "Go test2json; nonempty RUN/end multisets and package outcome checked per complete Bazel target block",
+  "results": [
+    {
+      "target": "//pkg/rabitq:rabitq_test",
+      "counts": {
+        "run": 266,
+        "pass": 266
+      }
+    },
+    {
+      "target": "//pkg/relational/core/query/logical:logical_test",
+      "counts": {
+        "run": 62,
+        "pass": 62
+      }
+    },
+    {
+      "target": "//pkg/recordlayer/query/plan/cascades/values:values_test",
+      "counts": {
+        "run": 2427,
+        "pass": 2427
+      }
+    },
+    {
+      "target": "//pkg/relational/core/query/expr:expr_test",
+      "counts": {
+        "run": 322,
+        "pass": 322
+      }
+    },
+    {
+      "target": "//pkg/relational/core/query:query_test",
+      "counts": {
+        "run": 517,
+        "pass": 517
+      }
+    },
+    {
+      "target": "//pkg/recordlayer/query/plan/cascades:cascades_test",
+      "counts": {
+        "run": 3682,
+        "pass": 3682
+      }
+    },
+    {
+      "target": "//pkg/relational/core/embedded:embedded_test",
+      "counts": {
+        "run": 2215,
+        "pass": 2215
+      }
+    },
+    {
+      "target": "//pkg/relational/conformance/explaindiff:explaindiff_test",
+      "counts": {
+        "run": 53,
+        "pass": 53
+      }
+    },
+    {
+      "target": "//pkg/docscheck:docscheck_test",
+      "counts": {
+        "run": 917,
+        "pass": 917
+      }
+    }
+  ]
+}

@@ -72,3 +72,48 @@ func AssertOrdinalJoinSeed(rc *RecordConstructorValue) {
 		}
 	}
 }
+
+// ValidateOrdinalJoinSeedForLegs checks the complete declared input population,
+// including zero-width legs which cannot be inferred from field runs. Each
+// non-empty leg must contribute every direct, frontier-pinned ordinal exactly
+// once, in declaration order. Empty legs contribute multiplicity, not fields.
+func ValidateOrdinalJoinSeedForLegs(rc *RecordConstructorValue, legs []QuantifiedObjectValue) error {
+	if rc == nil || len(legs) < 2 {
+		return fmt.Errorf("ordinal join seed requires a record and at least two declared legs")
+	}
+	seen := make(map[CorrelationIdentifier]struct{}, len(legs))
+	slot := 0
+	for _, leg := range legs {
+		if leg == nil {
+			return fmt.Errorf("ordinal join seed has a nil declared leg")
+		}
+		if _, duplicate := seen[leg.Correlation()]; duplicate {
+			return fmt.Errorf("ordinal join seed repeats declared leg %s", leg.Correlation())
+		}
+		seen[leg.Correlation()] = struct{}{}
+		row, ok := leg.FlowedType().(*RecordType)
+		if !ok {
+			return fmt.Errorf("ordinal join seed leg %s is not a record", leg.Correlation())
+		}
+		for ordinal := range row.Fields {
+			if slot >= len(rc.Fields) {
+				return fmt.Errorf("ordinal join seed omits leg %s ordinal %d", leg.Correlation(), ordinal)
+			}
+			field, ok := rc.Fields[slot].Value.(*fieldValue)
+			if !ok || field.Resolved == nil || !field.Resolved.FrontierPinned {
+				return fmt.Errorf("ordinal join seed slot %d is not a frontier-pinned field", slot)
+			}
+			accessor, single := field.Resolved.Single()
+			owner, isOwner := AsQuantifiedObjectValue(field.Child)
+			if !single || accessor.Ordinal != ordinal || !isOwner ||
+				owner.Correlation() != leg.Correlation() || !FlowedTypesEqual(owner, leg) {
+				return fmt.Errorf("ordinal join seed slot %d does not read declared leg %s ordinal %d", slot, leg.Correlation(), ordinal)
+			}
+			slot++
+		}
+	}
+	if slot != len(rc.Fields) {
+		return fmt.Errorf("ordinal join seed has %d fields, declared legs cover %d", len(rc.Fields), slot)
+	}
+	return nil
+}

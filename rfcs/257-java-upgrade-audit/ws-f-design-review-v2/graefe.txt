@@ -1,0 +1,82 @@
+**NAK**
+
+- **Tree:** `d40cc865737fe57df9f3a0880684608f1a793de0`
+- **Design:** `rfcs/257-java-upgrade-audit/ws-f-design.md`, SHA256 `afbbf93dd308db399f98723e2523b12c1a314171167424aa14941484dce92c5e`. I recomputed the hash and it matches.
+
+This was a read-only review; I ran no tests or probes.
+
+**The oracle holds up (measured).**
+- The spec (`b17869be…`) and `sql_plan_steps.java` (`657353c8…`) match the hashes in the evidence file.
+- wsf2-9 and wsf2-10 each show "Ran 1 of 25 Specs … 1 Passed" and "Executed 1 out of 1 test"; wsf2-9 has 70 `WSF … SAME|DIFF` lines.
+- Both mutation runs fail with the expected "target answer … moved" and "Go answer … moved" messages.
+- The v1 oracle findings are fixed: both engines are pinned, Go setup errors are shown separately, and the run has a timeout.
+
+## High
+
+**1. W8 (4.2.3): one query per class can't show the class verdict, and Java's rung abstains on the covering class.**
+- Java's rule for PREFER_INDEX only fires when the index side is a single index scan *with a fetch* (`PlanningCostModel.java:465-468, 563-567`). A covering scan with no fetch (`w8_covering_all/neq/id_neq`) falls through.
+- Reading the source, the lower rungs then tie (`:195-284`; `UnmatchedFieldsCountProperty.java:96-119` gives 1 vs 1 here), so the choice is made by `planHash` (`:335-339`). Go can't reproduce that, because it uses FNV.
+- There may also be a cycle: COVERING beats ISCAN on fetch count (`:225-231`), ISCAN beats SCAN on the rung (`:497-501`), and COVERING vs SCAN is decided by hash. v1 already raised that Java's rung isn't a total preorder; v2 still doesn't answer it.
+- As designed, the per-class Go pins would lock in a hash outcome as if it were a class verdict.
+- **Fix:** have `planRuleTrace` call `PlanningCostModel.compare` on each pair of root members (it already does this for in-union yields). Vary table and index names to move the hash. Then record the covering class as a declared divergence rather than as agreement.
+
+**2. W6 (2.3/2.6): the physical prune interacts with the missing `outerJoinCount`, and the design leaves this open.**
+- Under today's virtual prune, the memo still holds the rewritten outer join. Under a physical prune, PLANNING sees only the un-rewritten outer-join select.
+- Go's FlatMap for a LEFT OUTER join needs the two legs to be correlated (`rule_implement_nested_loop_join.go:291-307, 387-400`). So the target's `FlatMap + DefaultOnEmpty` index-probe shape may become impossible to derive. "The physical prune does not change that argument" is a hypothesis, not a measurement.
+- The census categories also break here:
+  - LEFT JOIN is SQL the target accepts, so listing "the materialized outer join" under the Go-extension arm is wrong.
+  - A different survivor counts as "comparator-caused, fixed in the comparator", which 2.3 forbids.
+- **Fix:** decide before step 7. Either port `outerJoinCount` and derive the materialized NLJ (RFC-152) from the rewritten form, or add a documented Go-only PLANNING rewrite of the outer join. Pin it with a probe of a LEFT JOIN on an indexed ON column.
+
+**3. IN-list (4.3): the stated cause contradicts Go's code, so the one-step landing isn't safe.**
+- Go already adjusts the bindings (CHOOSE/SORTED), keeps the provider's ordering set and enumerates satisfying keys (`rule_implement_in_union.go:268-284, 411-495`).
+- Reading Java's source, I1 legs look admissible for ORDER BY id too: fixed values are dropped from the ordering sequence (`Ordering.java:636-648`), the record type is bound implicitly (`ValueIndexLikeMatchCandidate.java:154-163`), and the Union enumerator is at `:1337-1394`.
+- The trace shows *that* no I1 in-union exists, not *why*. Porting the ordering computation could therefore change nothing, and the size check would then fail on `w8_in25_order_by_id_rows`.
+- **Fix:** extend the trace to dump the inner reference's partitions and their orderings on both engines, then fix at whatever layer that points to.
+- Separately, the fetch placement still differs, is undiagnosed, and §13 requires these rows to be SAME:
+  - ORDER BY col1: target `FETCH(INUNION(COVERING))`, Go `InUnion(IndexScan)`.
+  - No ORDER BY: target `INJOIN(ISCAN)`, Go `Fetch(InJoin(COVERING))`.
+
+## Medium
+
+4. **D7:** Java marks *every* restricted reference as explored, PLANNING callers included (`Reference.java:587-594`, reached from `CascadesRuleCall.java:486-490` and `:518-523`). Leaving Go's PLANNING callers unmarked and "measuring at the gate" is a Go-only departure from Java; porting Java's behaviour should be the default. The design's count of 9 callers also misses the three `MemoizeMemberPlansFromOther` callers (`dml_inner_candidates.go`, `rule_implement_filter.go`, `rule_implement_projection.go`), which go through the same helper (`expression_rule_call.go:309-324`).
+5. **W13 (0.1, 9.2):** the measured claim is wrong. The Go pin `w13_display_insert_explain` is `OK EXPLAIN "Insert(foo.table$nested)"`, so EXPLAIN INSERT works. Only executing the INSERT fails, which puts the defect on the execution path.
+6. **§12:** only leaf swaps are covered. F-2 and F-3 6a remove a DISTINCT above an unchanged leaf, and F-5 moves operators above unchanged leaves. Say whether those continuations resume and that resuming them is correct, and pin one.
+7. **F-7** bundles three causes: the configuration flip, the ordering port and the arm deletion. That contradicts "each flip has one cause". Land size 24, the ordering port, the deletion and the check first; flip PREFER_INDEX afterwards.
+
+## Low
+
+8. Go accepts `INDEX_FETCH_METHOD` and ignores it (`planner_options.go:25-31`), while Java passes it into the index plans (`ValueIndexScanMatchCandidate.java:268`). "No other value is reachable" is therefore false.
+9. **Stale text:**
+   - The comment on `costModelDiagnosticsOnlyContext` ("must not activate new winner criteria").
+   - The `DISABLE_PLANNER_REWRITING` comment in `planner_options.go`, which D12 makes false.
+   - The design should also say whether metadata-based criteria (#2, #12) now apply at rule level.
+10. For the IN-subquery extension, "keeps its in-join plan" needs a named guard. Java's rule accepts `QuantifiedObjectValue` sources (`ImplementInUnionRule.java:148-150`).
+11. §13 demands SAME on every W8 row, but the `w8_in25_param_*` rows depend on WS-E §4.
+12. The 2.8 closure grep excludes "rfcs/ other than this one", yet this design itself contains "designated final" (2.2, 2.3), so it can never close.
+13. Record-layer API callers of an in-union that fail at the default size of 0 need a CHANGELOG entry, not just test changes.
+
+## Verified against 4.14.2.0 and the tree
+
+- **`CascadesPlanner`:** `:839-862`, `:956-970`, `:1102-1158`, `:1233-1249`, `:1371-1391`.
+- **Rule sets and configuration:**
+  - `RewritingRuleSet` `:50-107`, including `OPTIONAL_RULES` expansion.
+  - `PlannerConfiguration` `:158-169`.
+  - The in-union check at `:151-154`, with no size gate in the rule (`:171-212`).
+- **Cost model:** `PlanningCostModel` `:188-193` (vector rung placement).
+- **W9 and W7 sources:**
+  - `RangeConstraints` `:726-799`.
+  - Seven `RangeMatchableValue` implementers (multiline grep over core `main`).
+  - Covering emission `:276-282`.
+- **Go call-site counts:**
+  - Seven `RecordCoreArgumentError{` sites.
+  - Nine non-test `MemoizeFinalExpressionsFromOther` callers.
+  - The Go PREFER_INDEX arm at `planning_cost_model.go:1256-1271`.
+
+## Not verified
+
+- D8's "six REWRITING matcher predicates".
+- Whether D5's "first exploration" matches `ConstraintsMap` semantics.
+- The details of W7 D1–D6.
+- The W12 rebuild sites.
+- The umbrella RFC's WS-G list.

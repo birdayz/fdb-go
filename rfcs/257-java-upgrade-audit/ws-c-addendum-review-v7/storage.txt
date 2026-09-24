@@ -1,0 +1,76 @@
+**NAK.** Tree `aa29308afd7637d7e98a42ef1d108335013ead8c`, `ws-c-design.md` SHA256 `0ff22d05c138b986f4bf3e1291765023223db87bb58349c46f746ec58c61e6c9`, 1326 lines; I recomputed both. This was read-only: I ran no tests, probes or mutations. Findings are from source unless marked **measured**. Every v6 finding is resolved in substance. The two Low findings below are the same class as v6's: a claim, or one way in, that goes past what the code does.
+
+## Findings
+
+**1. Low: a nil subspace key still gets in, and revision 7 made one path worse.**
+- **The ways in.** `SetSubspaceKey(nil)` is now refused. But:
+  - An `Index` or `FormerIndex` built as a struct literal still has a nil key, because `subspaceKey` is unexported and defaults to nil.
+  - A typed nil passes the setter: `tupleEquivalentValue` returns `(*big.Int)(nil)` and `(*FDBRecordVersion)(nil)` unchanged (`subspace_key_identity.go:120-123`, `:135-138`), so `normalized == nil` is false (`index.go:502`). Packing a nil `*big.Int` then panics in `encodeBigInt`.
+- **What happens next.**
+  - `Build` has no nil check (`metadata.go:1196-1235`). The index is maintained under the null item, and `indexToProto` omits the key (`metadata_proto.go:662-665`), so a reload puts it under its name.
+  - `RemoveIndex` turns it into a former index with a nil key (`metadata.go:677-683`). The new `formerIndexToProto` writes that as a null item (`metadata_proto.go:941`), which the new loader refuses (`:974-976`). So Go saves meta-data it cannot reload. Before revision 7, Go wrote the key as absent and read it back as nil.
+- **Also:** a `SetSubspaceKey(nil)` made after `AddIndex` is never collected (`:617-619`). Java throws at the call.
+- **Java:** this state cannot exist; every constructor normalizes the key or refuses it (`Index.java:89-97`, `:132`; `FormerIndex.java:51-58`).
+- **Fix:**
+  - default a nil key to the name in `addIndexCommon`, as Java's constructors do;
+  - refuse typed nils in the setter;
+  - refuse a nil former-index key in `Build` with Java's message;
+  - pin each.
+
+**2. Low: the evolution validator and message-parity claims go past the code.**
+- **7.7:1210** says "Every check now runs in Java's order with Java's message first", and that `validateIndex` is Java's method. The later arms of `validateIndex` keep Go's messages, none of which starts with Java's:
+  - `metadata_evolution_validator.go:479`, `:704`, `:735`, `:739`, `:749`, `:754`, `:762`, `:813`, `:827`;
+  - for example, Go's `index "x" type changed` against Java's "index type changed", and Go's "no longer covers record type" against Java's "new index removes record type" (`MetaDataEvolutionValidator.java:663-747`).
+- **A different verdict, pre-existing.** The root is compared by proto equality (`:729-740`), not `KeyExpression.equals`:
+  - `FieldKeyExpression.equals` ignores the null standin (`FieldKeyExpression.java:406-410`), but Go's proto carries `NullInterpretation` (`key_expression_proto.go:39-47`);
+  - so Go refuses a root change that only alters null interpretation, and Java accepts it.
+- **Fix:** scope the sentence. Then either compare roots with `keyExpressionEquals` (keeping the literal-carrier extension) or declare the divergence.
+- **Build's collision messages.** `CHANGELOG.md:~200` says "Java's message", which holds only in part:
+  - Go names the colliding pair in name order (`metadata.go:1196`); Java names it in HashMap order (`RecordMetaDataBuilder.java:148`, `RecordMetaData.java:318-320`). The two differ for names like `c` and `ba`.
+  - Go renders the key with `%v`, so a `[]byte` key prints as `[112 98]`.
+  - The conformance shapes pass only because `i0` and `i1` happen to hash in name order.
+
+**3. Nits**
+- **Miscount (measured).** 7.7:1220 says "ten of them on the verdict". `jvm-subspace-base.keep.log` shows 9 verdict flips and 7 cases where both engines refuse with different messages.
+- **"Then refuses it"** (`DIVERGENCES.md:2789`, `CHANGELOG.md:176`, 7.7). This reads as though the merge refuses the mutual builder. In fact the merge's exclusive check fails the merge, and the builder keeps running.
+- **Stale in this same change.**
+  - `subspace_key_identity.go:26-28` ("Go stores the key as it was given") and the `GetIndexFromSubspaceKey` comment (`metadata.go:~2123-2129`, "not normalized on assignment") are both false now that `SetSubspaceKey` normalizes.
+  - That comment also declares only the Integer case. Its one real caller, `savedSourceIndex` (`online_indexer.go:1259-1268`), also differs for a nested-tuple key. Java passes a decoded `Tuple` (`OnlineIndexer.java:205-208`), and its `List` key never equals it, so Java fails the BY_INDEX continuation where Go continues it.
+- **Evidence scope (measured).**
+  - `wsc-v7/metadata_proto.go.good` predates the WS-J fold-in: the options loop is at `:870`, after the key, where the candidate has it at `:843`. So `focus1` and m56 ran on that earlier file. m56's mutated function is byte-identical, so its result holds, but say so.
+  - `just test`'s tree changed during the run, from `8b5de696` to `768e2870` (docs only). `src.sha` shows the code unchanged, but 7.7 does not mention the move.
+- **`fdb.Key`** is not copied by `tupleEquivalentValue`, while `[]byte` is.
+
+## Every v6 and WS-J v10 finding is resolved (except as above)
+- **Graefe 1, Torvalds 1, storage 1:**
+  - the type is compared raw (`index.go:691`);
+  - `subspaceKeyIdentity` matches `TupleTypeUtil.java:98-124` arm by arm: the strict bounds (`:112`), Float and Double as separate types with a canonical NaN, and lists normalized item by item;
+  - the predicate is equal only for the same shared proto or two equal row-number windows (`IndexPredicate.java:105-121`, `:790-801`);
+  - `keyExpressionEquals` is checked against all 13 `equals` overrides in `expressions/`. Every Go KeyExpression type has an arm (14, counting Cardinality).
+- **Torvalds 2:** the field-by-field table is in place.
+- **Graefe 2, storage 2:** the merge's lock-out is scoped correctly (`IndexingHeartbeat.java:88-93`, `IndexingBase.java:454-457`, `indexing_heartbeat.go:141`).
+- **Nits:** all fixed, with m58 and m59 reddening their specs. The nil-target guard now sits where Java's NullPointerException falls (`OnlineIndexer.java:866-881`).
+- **WS-J v10:** all four inputs are fixed:
+  - the former-index key reader and writer;
+  - `SetSubspaceKey(nil)` at the setter;
+  - `RecordCoreArgumentError`, checked at all nine construction sites;
+  - the test binding: `proto.Unmarshal` is the production decoder (`metadata_store.go:146`, `fdb_template_catalog.go:286`).
+- **The options move** (WS-J's code, folded into this tree): options are now read before the root and key, as in `Index.java:198-221`.
+
+## What holds
+- **Every subspace-key comparison now uses `subspaceKeyIdentity`.** A grep of non-test, non-generated `*.go` (20 files mention subspace keys; that is the positive control) finds only `Build`, `GetIndexFromSubspaceKey`, the evolution validator and `equalsJava`. The old helpers (`normalizeSubspaceKey`, `subspaceKeyString`, `buildFormerIndexMap`) are gone (0 definitions).
+- **The evolution validator** follows Java's four-loop order and its three helpers (`MetaDataEvolutionValidator.java:479-627`).
+- **Storage:**
+  - normalizing on assignment moves no prefix, because the tuple encoder writes integers by value (`tuple.go:255-326`);
+  - dedup can only keep objects the meta-data owns, so nothing is built under a foreign key;
+  - the session and merge writes are unchanged since v6.
+- **Measured:**
+  - 16 candidate blobs match `ev11/src2.sha`, and the final run found 0 files changed;
+  - `final-targets`: 4 of 4 targets passed; `recordlayer_test` ran 3705 of 3706 (the one skip is the environment-gated million-record spec), with all 9 new plain tests passing;
+  - JVM specs: 57 of 1582 passed; the 22 new specs' full lines match between the engines;
+  - on revision 6's tree, 16 of 17 fail, and former-index keys fail 4 of 5;
+  - WSJIXK ran all four shapes;
+  - m45–m60: each shows marker count 1, its diff at the candidate's own line, exit 3, the reds as tabled, and "restored" (no `NOT RESTORED` lines);
+  - `just test`: 44 of 94 targets executed, 94 pass.
+
+The preserved boundaries are all unaffected: the approved Go extensions, C++ 7.3.77, format max 15 / default 14, and the single query pipeline.

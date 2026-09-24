@@ -541,10 +541,11 @@ func sortSectionFD(name string) protoreflect.FieldDescriptor {
 func TestProtoValueToDriver_Uint32(t *testing.T) {
 	t.Parallel()
 	fd := sortSectionFD("section_number") // fixed32
+	// protobuf-java's signed Integer: all 32 bits set is -1.
 	v := protoreflect.ValueOfUint32(math.MaxUint32)
 	got := ProtoValueToDriver(fd, v)
-	if got != int64(math.MaxUint32) {
-		t.Errorf("got %v (%T), want int64(%d)", got, got, uint32(math.MaxUint32))
+	if got != int64(-1) {
+		t.Errorf("got %v (%T), want int64(-1)", got, got)
 	}
 }
 
@@ -627,33 +628,36 @@ func TestConvertToProtoValue_Uint32(t *testing.T) {
 	}
 }
 
-func TestConvertToProtoValue_Uint32_MaxValue(t *testing.T) {
+// The column is INT: its range is the INT range, and a negative value is stored
+// as the Integer's 32 bits, as protobuf-java's setField stores it, so it reads
+// back (signed) as the same value.
+func TestConvertToProtoValue_Uint32_IntRange(t *testing.T) {
 	t.Parallel()
 	fd := sortSectionFD("section_number")
-	v, err := ConvertToProtoValue(fd, int64(math.MaxUint32))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if uint32(v.Uint()) != math.MaxUint32 {
-		t.Errorf("got %d, want MaxUint32", v.Uint())
+	for _, tc := range []struct {
+		in   int64
+		bits uint32
+	}{{math.MaxInt32, math.MaxInt32}, {-1, math.MaxUint32}, {math.MinInt32, 1 << 31}} {
+		v, err := ConvertToProtoValue(fd, tc.in)
+		if err != nil {
+			t.Fatalf("%d: %v", tc.in, err)
+		}
+		if uint32(v.Uint()) != tc.bits {
+			t.Errorf("%d: stored bits %#x, want %#x", tc.in, v.Uint(), tc.bits)
+		}
+		if back := ProtoValueToDriver(fd, v); back != tc.in {
+			t.Errorf("%d: read back %v", tc.in, back)
+		}
 	}
 }
 
-func TestConvertToProtoValue_Uint32_Negative(t *testing.T) {
+func TestConvertToProtoValue_Uint32_OutOfIntRange(t *testing.T) {
 	t.Parallel()
 	fd := sortSectionFD("section_number")
-	_, err := ConvertToProtoValue(fd, int64(-1))
-	if err == nil {
-		t.Fatal("expected error for negative value in uint32 field")
-	}
-}
-
-func TestConvertToProtoValue_Uint32_Overflow(t *testing.T) {
-	t.Parallel()
-	fd := sortSectionFD("section_number")
-	_, err := ConvertToProtoValue(fd, int64(math.MaxUint32+1))
-	if err == nil {
-		t.Fatal("expected error for overflow in uint32 field")
+	for _, in := range []int64{math.MaxInt32 + 1, math.MaxUint32, math.MinInt32 - 1} {
+		if _, err := ConvertToProtoValue(fd, in); err == nil {
+			t.Fatalf("%d: expected an out-of-range error for an INT column", in)
+		}
 	}
 }
 
@@ -669,12 +673,20 @@ func TestConvertToProtoValue_Uint64(t *testing.T) {
 	}
 }
 
+// A signed Long in the target: a negative value is stored as its 64 bits and
+// reads back as itself.
 func TestConvertToProtoValue_Uint64_Negative(t *testing.T) {
 	t.Parallel()
 	fd := sortSectionFD("number_of_bytes")
-	_, err := ConvertToProtoValue(fd, int64(-1))
-	if err == nil {
-		t.Fatal("expected error for negative value in uint64 field")
+	v, err := ConvertToProtoValue(fd, int64(-1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Uint() != math.MaxUint64 {
+		t.Errorf("stored bits %#x, want all ones", v.Uint())
+	}
+	if back := ProtoValueToDriver(fd, v); back != int64(-1) {
+		t.Errorf("read back %v, want -1", back)
 	}
 }
 
@@ -958,7 +970,9 @@ func TestRoundTrip_UnsignedKinds(t *testing.T) {
 		want  int64
 	}{
 		{"fixed32_zero", sortSectionFD("section_number"), 0, 0},
-		{"fixed32_max", sortSectionFD("section_number"), math.MaxUint32, math.MaxUint32},
+		{"fixed32_int_max", sortSectionFD("section_number"), math.MaxInt32, math.MaxInt32},
+		{"fixed32_negative", sortSectionFD("section_number"), -5, -5},
+		{"fixed64_negative", sortSectionFD("number_of_bytes"), -5, -5},
 		{"fixed64_42", sortSectionFD("number_of_bytes"), 42, 42},
 	}
 	for _, tc := range tests {

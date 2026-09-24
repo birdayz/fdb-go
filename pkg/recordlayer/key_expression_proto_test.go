@@ -1,6 +1,7 @@
 package recordlayer
 
 import (
+	"errors"
 	"testing"
 
 	"fdb.dev/gen"
@@ -393,4 +394,98 @@ func TestLiteralKeyExpressionEvaluate(t *testing.T) {
 			t.Fatal("expected column size 2")
 		}
 	})
+}
+
+// TestKeyExpressionDeserializationErrorsAreJavas pins the serialized key
+// expressions Java's readers refuse with KeyExpression.DeserializationException
+// to the Go type and to Java's text, and the Go-only refusal of an index with
+// no root at Build, which keeps Go from storing what no reader can load.
+func TestKeyExpressionDeserializationErrorsAreJavas(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name string
+		expr *gen.KeyExpression
+		want string
+	}{
+		{"no root", &gen.KeyExpression{}, "Exactly one root must be specified for an index"},
+		{"two roots", &gen.KeyExpression{Field: &gen.Field{FieldName: proto.String("a"), FanType: gen.Field_SCALAR.Enum()}, Empty: &gen.Empty{}}, "Exactly one root must be specified for an index"},
+		{"a nesting without its parent", &gen.KeyExpression{Nesting: &gen.Nesting{Child: &gen.KeyExpression{Empty: &gen.Empty{}}}}, "Serialized Nesting is missing parent"},
+		{"a then of one child", &gen.KeyExpression{Then: &gen.Then{Child: []*gen.KeyExpression{{Empty: &gen.Empty{}}}}}, "Then must have at least 2 children"},
+		{"a nested then without a root", &gen.KeyExpression{Then: &gen.Then{Child: []*gen.KeyExpression{{Empty: &gen.Empty{}}, {}}}}, "Exactly one root must be specified for an index"},
+	} {
+		_, err := KeyExpressionFromProto(c.expr)
+		var de *KeyExpressionDeserializationError
+		if !errors.As(err, &de) || de.Message != c.want {
+			t.Errorf("%s: %v (%T), want the DeserializationException %q exactly", c.name, err, err, c.want)
+		}
+	}
+
+	// A Then whose only child is a Then of two: Java decodes and flattens the
+	// children before it counts them (ThenKeyExpression.java:77-86), so it
+	// loads as the two fields, and so does a nested Then of three.
+	field := func(name string) *gen.KeyExpression {
+		return &gen.KeyExpression{Field: &gen.Field{FieldName: proto.String(name), FanType: gen.Field_SCALAR.Enum(), NullInterpretation: gen.Field_NOT_UNIQUE.Enum()}}
+	}
+	then := func(children ...*gen.KeyExpression) *gen.KeyExpression {
+		return &gen.KeyExpression{Then: &gen.Then{Child: children}}
+	}
+	for _, c := range []struct {
+		name string
+		expr *gen.KeyExpression
+		want KeyExpression
+	}{
+		{"a Then of one Then", then(then(field("a"), field("b"))), Concat(Field("a"), Field("b"))},
+		{"a Then of a Then and a field", then(then(field("a"), field("b")), field("c")), Concat(Field("a"), Field("b"), Field("c"))},
+	} {
+		got, err := KeyExpressionFromProto(c.expr)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		composite, ok := got.(*CompositeKeyExpression)
+		if !ok || !keyExpressionEquals(got, c.want) {
+			t.Fatalf("%s: loaded %v, want the flat %v", c.name, got, c.want)
+		}
+		for _, child := range composite.SubKeyExpressions() {
+			if _, nested := child.(*CompositeKeyExpression); nested {
+				t.Fatalf("%s: a composite child survived: %v", c.name, got)
+			}
+		}
+		// And it is written back in Java's flat shape.
+		written := composite.ToKeyExpression()
+		for _, child := range written.GetThen().GetChild() {
+			if child.GetThen() != nil {
+				t.Fatalf("%s: wrote a nested Then: %v", c.name, written)
+			}
+		}
+	}
+	// Concat is Java's constructor: a composite child contributes its children.
+	if got := Concat(Concat(Field("a"), Field("b")), Field("c")).(*CompositeKeyExpression); len(got.SubKeyExpressions()) != 3 {
+		t.Fatalf("Concat kept a nested composite: %v", got)
+	}
+
+	b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+	b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+	b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+	b.AddIndex("Order", &Index{Name: "rootless", Type: IndexTypeValue, Options: map[string]string{}})
+	_, err := b.Build()
+	var mdErr *MetaDataError
+	if !errors.As(err, &mdErr) || mdErr.Message != "Index rootless has no root expression" {
+		t.Fatalf("Build = %v, want the rootless index refused", err)
+	}
+
+	// An index's root emptied after Build is not serialized either.
+	b = NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+	b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+	b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+	b.AddIndex("Order", NewIndex("emptied", Field("price")))
+	md, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	md.GetIndex("emptied").RootExpression = nil
+	if _, err := md.ToProto(); !errors.As(err, &mdErr) || mdErr.Message != "Index emptied has no root expression" {
+		t.Fatalf("ToProto = %v, want the rootless index refused", err)
+	}
 }

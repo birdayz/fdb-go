@@ -201,3 +201,18 @@ remaining gates are recorded in RFC-257's **Execution ledger**, including its
 red run above remains historical; a subsequent full run also failed (84/92
 passed), with repairs tracked rather than its result relabeled green. No full
 upgrade pass, current performance comparison or implementation ACK is implied.
+
+## Draft publication and subsequent verification
+
+[Draft PR #786](https://github.com/birdayz/fdb-go/pull/786) first publishes only the
+RFC/audit/review evidence and legacy fixture. Its documentation-only commit passed
+the normal hook, including 92/92 executed test targets; it is not the upgraded
+implementation or an upgrade conformance pass. RFC-257's draft-publication
+checkpoint distinguishes the two trees and records remaining work.
+
+`limit-design/` retains the three design-only ACKs for immutable lazy LIMIT
+envelopes at virtual tree `7485a5d948bacc3cadc802499d3069acb3340eca`.
+`ws-a-promotion-verification.json`, reproduced by `reconcile-promotion.py`,
+reconciles completed target output blocks and their nonempty RUN/terminal-event
+multisets. It explicitly records the interrupted ninth race target; it never
+converts eight completed targets into a passing whole command.

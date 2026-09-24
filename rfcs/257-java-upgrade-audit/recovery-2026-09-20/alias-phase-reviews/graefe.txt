@@ -1,0 +1,42 @@
+**NAK — IMPLEMENTATION CODE** at tree `e1496e0d87778d57a90b5fd3287f39a38da04dec`.
+
+The supplied regressions close the previously reported table-column collisions and plain/grouped `z,z` precedence failures. Two source-derived defects remain; neither reproducer was executed during this read-only review.
+
+1. **P2 — Authored-AS-only eligibility excludes legitimately unqualified inherited names.**  
+   [logical_predicate.go:3152](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:3152) assumes every ordinary inherited attribute is qualified. Unnamed inline `VALUES` sources are an exception:
+
+   ```sql
+   SELECT "_0", "_1" AS "_0"
+   FROM VALUES (9, 1), (3, 2)
+   ORDER BY "_0"
+   ```
+
+   Java’s [QueryVisitor.java:734](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/visitors/QueryVisitor.java:734) constructs an unnamed operator, whose output qualifiers are cleared. Both selected expressions therefore have eligible name `_0`; `lookupAlias` produces **42702 / Ambiguous alias _0**. The new Go loop counts only the explicit alias, selects the second output and suppresses ambiguity. The prior candidate counted both.
+
+   **Required fix:** derive eligibility from resolved SQL identifier qualification, including unnamed-source provenance, while keeping ordinary named-table attributes excluded. Preserve grouped eligibility and exact slot/Value ownership. Add paired unnamed/named inline-source probes and both-constructor ambiguity assertions.
+
+2. **P2 — Moving duplicate validation loses it across UNION clause lifting.**  
+   The sole new invocation at [logical_predicate.go:6328](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:6328) is unreachable for lifted UNION ordering:
+
+   ```sql
+   SELECT id FROM t
+   UNION ALL SELECT id FROM t
+   ORDER BY id, id
+   ```
+
+   [Clause lifting:5954](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:5954) clears `sq.orderBy`; `upgradeSortKeyValues` consequently returns without checking it. [validateUnionOrderByColumns:7314](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:7314) binds each key independently and performs no duplicate check. Both keys become output position 1. The preceding parser rejected this with **42701**; Java also validates repeated resolved names. Accepted combined-result sorting does not justify losing that rejection.
+
+   **Required fix:** retain authored ORDER metadata through lifting and validate duplicates after union-scope resolution. Add catalog-path regressions for repeated valid names and semantic-error precedence. Do not restore premature parser rejection.
+
+I reviewed the tree delta, frozen additions, actual prior reviews/prompts and corresponding Java source. All **6,411 frozen hashes** match the tree and workspace. Session metadata confirms **gpt-6-astra / xhigh / read-only**.
+
+Completed evidence reconciles: **35 Java records**, **9,115 RUN/PASS entries across two uncached affected targets**, three applied/compiled/killed/restored mutations, and fuzz **30 seconds / four workers / 3,937,316 executions**. The two corrected original queries retain exact negative assertions and their positive row checks. The invalid inherited-name mutation and initial build-only failure receive no credit.
+
+Separate execution/publication gates remain:
+
+- At the single verification snapshot, full93, race14, `just test` and nominal1M ABBA lacked completed evidence. Cancelled suites remain uncredited. Repairs require refreezing and verification.
+- Bounded GRV/RPC attribution stands; no universal parity claim. Historical startup-timeout causation still lacks original artifacts. Legacy RaBitQ disable/rebuild remains prerequisite.
+- HEAD remains `71ccd8cf8b3fd0dbafe283e91171818e36af555e`; no commit/push/merge authorization. PR786 remains draft/unchanged.
+- WS-B–K remain open; unchanged storage ACK, FDB C++ **7.3.77**, and approved nullable-array/raw/scalar/sorting extensions stand.
+
+No edits, builds/tests, agents/worktrees, Git mutations or GitHub contact occurred.

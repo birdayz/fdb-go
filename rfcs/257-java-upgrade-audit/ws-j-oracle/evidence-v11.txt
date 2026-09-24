@@ -1,0 +1,65 @@
+# WS-J design v11 evidence (run together with WS-C addendum revision 7's)
+
+The code under review was hashed before any run (ev11/src.sha: the change set against HEAD 71ccd8cf8,
+every file but *.md and the review directories, 1056 files, /var/tmp/fdb-upgrade-recovery/ev11-files.txt)
+and verified after `just test` (sha256sum -c: 0 not OK). One test file was then added,
+TestReusedIndexMessageKeepsAnEmptySubspaceKey in pkg/recordlayer/metadata_proto_test.go, and the final
+set was hashed again (ev11/src2.sha: the change set with the *.md files, less the review directories,
+ws-c-design.md, this file and the WS-E design and oracle, 1127 files, ev11c-files.txt) before the second
+WS-J pass and the final targets, and verified after them: 0 not OK. Drivers ev11a.sh, ev11b.sh and
+ev11c.sh in /var/tmp/fdb-upgrade-recovery; logs in /var/tmp/fdb-upgrade-recovery/ev11/.
+
+## Results
+- WS-J pass 1 (ev11/wsj-ev1.log): Ran 31 of 57 Specs in 31.371 seconds; SUCCESS! -- 31 Passed | 0 Failed | 0 Pending | 26 Skipped.
+- WS-J pass 2 (ev11/wsj-ev2.log, on the final set): Ran 31 of 57 Specs in 31.312 seconds; SUCCESS! -- 31 Passed | 0 Failed | 0 Pending | 26 Skipped.
+- JVM meta-data specs, "Java refuses the same records descriptors" (35) with the WS-C 7.7 specs
+  "Subspace-key identity in meta-data validation" (6), "Subspace-key pairing in meta-data evolution" (11)
+  and "Former-index subspace keys read as Java reads them" (5) (ev11/jvm-md.log): Ran 57 of 1582 Specs in 6.115 seconds; SUCCESS! -- 57 Passed | 0 Failed | 0 Pending | 1525 Skipped.
+- WS-C revision 7 focus (revision 6's, with the FDBMetaDataStore, MetaDataEvolutionValidator and
+  RecordMetaDataBuilder Describes; ev11/wsc-focus.log): Ran 600 of 3706 Specs in 15.832 seconds; SUCCESS! -- 600 Passed | 0 Failed | 0 Pending | 3106 Skipped.
+- `just test` on tree 8b5de696df158b5f06d38d543b994cf5f8478398: "Executed 44 out of 94 tests: 94 tests pass."
+  (ev11/justtest.log; the 44 executed in ev11/justtest-executed.txt). The tree after the run,
+  768e287083d68b68a0a9e2680b6359c5f9702312, differs from it in five documents only (CHANGELOG.md,
+  DIVERGENCES.md, TODO.md, the umbrella RFC and ws-j-design.md, edited during the run; none is in src.sha).
+- On the final set, uncached: //pkg/recordlayer:recordlayer_test (every plain test, the new one among them,
+  and "Ran 3705 of 3706 Specs", 3705 passed; ev11/final-recordlayer-test.log), //pkg/docscheck:docscheck_test,
+  //pkg/relational/core/metadata:metadata_test (TestLegacyUnionTemplateErrorRemedies among them) and
+  //pkg/relational/core/catalog:catalog_test: "Executed 4 out of 4 tests: 4 tests pass." (ev11/final-targets.log).
+
+## The corpus tally, both passes (unchanged from v10)
+WSJ-TALLY map[both-accept-companion:4 both-accept-equal:166 both-accept-index-diverge:4 both-accept-metadata-diverge:180 both-reject:24 java-accept-go-reject:101]
+WSJ-TALLY map[both-accept-companion:4 both-accept-equal:166 both-accept-index-diverge:4 both-accept-metadata-diverge:180 both-reject:24 java-accept-go-reject:101]
+md-canonical-differ values, pass 1: 180 md-canonical-differ(records,record_types), 4 md-canonical-differ(records,indexes,record_types)
+md-canonical-differ values, pass 2: 180 md-canonical-differ(records,record_types), 4 md-canonical-differ(records,indexes,record_types)
+
+## The v11 pins' lines, whole (pass 1)
+WSJIXK present and empty java=ERROR com.apple.foundationdb.record.RecordCoreException subspace key must encode a single item tuple go=index WSJ_IDX: subspace key must encode a single item tuple
+WSJIXK two items java=ERROR com.apple.foundationdb.record.RecordCoreException subspace key must encode a single item tuple go=index WSJ_IDX: subspace key must encode a single item tuple
+WSJIXK a null item java=ERROR com.apple.foundationdb.record.RecordCoreArgumentException Index subspace key cannot be null go=index WSJ_IDX: Index subspace key cannot be null (index="WSJ_IDX", subspace_key=<nil>)
+WSJIXK a repeated option beside an empty key java=ERROR java.lang.IllegalArgumentException Multiple entries with same key: a=2 and a=1 go=index WSJ_IDX: Multiple entries with same key: a=2 and a=1
+WSJTT a UUID table beside a UUID column target-stored=0A000: a table or STRUCT named UnionDescriptor that the pre-upgrade Go loader read as the union is not supported: records file names two union candidates: UnionDescriptor (the pre-upgrade Go choice) and RecordTypeUnion (the union the target uses); this build cannot load a stored SQL schema template in this shape, which the target loads; a new template must give the table or STRUCT another name go-driver=0A000: a table or STRUCT named UnionDescriptor that the pre-upgrade Go loader read as the union is not supported: records file names two union candidates: UnionDescriptor (the pre-upgrade Go choice) and RecordTypeUnion (the union the target uses); a SQL schema template cannot edit its records file, so give the table or STRUCT another name
+WSJTT struct target-stored=0A000: a table or STRUCT named UnionDescriptor that the pre-upgrade Go loader read as the union is not supported: records file names two union candidates: UnionDescriptor (the pre-upgrade Go choice) and RecordTypeUnion (the union the target uses); this build cannot load a stored SQL schema template in this shape, which the target loads; a new template must give the table or STRUCT another name go-driver=0A000: a table or STRUCT named UnionDescriptor that the pre-upgrade Go loader read as the union is not supported: records file names two union candidates: UnionDescriptor (the pre-upgrade Go choice) and RecordTypeUnion (the union the target uses); a SQL schema template cannot edit its records file, so give the table or STRUCT another name
+WSJTT table target-stored=0A000: a table or STRUCT named UnionDescriptor that the pre-upgrade Go loader read as the union is not supported: records file names two union candidates: UnionDescriptor (the pre-upgrade Go choice) and RecordTypeUnion (the union the target uses); this build cannot load a stored SQL schema template in this shape, which the target loads; a new template must give the table or STRUCT another name go-driver=0A000: a table or STRUCT named UnionDescriptor that the pre-upgrade Go loader read as the union is not supported: records file names two union candidates: UnionDescriptor (the pre-upgrade Go choice) and RecordTypeUnion (the union the target uses); a SQL schema template cannot edit its records file, so give the table or STRUCT another name
+WSJTT table with a STRUCT column target-stored=<nil> go-driver=<nil>
+WSJTT table with a UUID column target-stored=<nil> go-driver=<nil>
+WSJTT table with a column named for a table target-stored=0A000: a table or STRUCT named UnionDescriptor that the pre-upgrade Go loader read as the union is not supported: records file names two union candidates: UnionDescriptor (the pre-upgrade Go choice) and RecordTypeUnion (the union the target uses); this build cannot load a stored SQL schema template in this shape, which the target loads; a new template must give the table or STRUCT another name go-driver=0A000: a table or STRUCT named UnionDescriptor that the pre-upgrade Go loader read as the union is not supported: records file names two union candidates: UnionDescriptor (the pre-upgrade Go choice) and RecordTypeUnion (the union the target uses); a SQL schema template cannot edit its records file, so give the table or STRUCT another name
+WSJTT table with a table-typed column and an index target-stored=<nil> go-driver=<nil>
+
+## Hashed-set spot checks (src2.sha)
+54990bc60c2389757ddb8fe6845482aadddfa848701694dcebb1c842e1142685  conformance/ws_j_index_fidelity_conformance_test.go
+a5b657a91537e3ce0b7b388b37bbfb199b9a53aa11c183853ee54682163e4e5b  conformance/subspace_key_identity_conformance_test.go
+ad0b03148c98fb2efe4e08d8d589534f27787a70b56fa7509a58c2d6a8e36b9d  pkg/recordlayer/index.go
+45c4e2c302a831bb36465e4301e5b2f75a43c9071e91be41aa83970fc55201a5  pkg/recordlayer/metadata_proto.go
+7cf2cb2b0079df01d9c29a38d1a450e053eb1f9acd8b6db50b48a3c882945214  pkg/recordlayer/metadata_proto_test.go
+2c02d05fcdcf16b667570fa3fbe380cc1a6588e18c3efb47a90a5a9a746b01d2  pkg/recordlayer/metadata.go
+52c6d2d9dd29a4ef1319f15c175d791f6753ad40b15d94448154e81445f344a2  pkg/recordlayer/metadata_evolution_validator.go
+35cf385cfe6b79d60b9f36c75d0db0d763d12a958067a423657872b8658ca9a5  pkg/recordlayer/subspace_key_identity.go
+e3f30caefa9ef21c2afcb53475e364ad58ccf4c3bd452db276b31ad53851dfc1  pkg/recordlayer/subspace_key_identity_test.go
+7722e3e4a7b0b16eda3ce01f24c76a5d606d6d6cb9bac58d74d8a57637d792e3  pkg/recordlayer/online_indexer.go
+6503403fe793aa8909d05396478d935c90fc83acd034dc6148a4941dad91ea2e  pkg/recordlayer/rank_scan.go
+18970f5b77b2a4ebedab3ba368c95c542fef120e9e77fd26ec56ac67baec0914  pkg/relational/core/metadata/builder.go
+3198482ecc2bfc65defcd3c6af89135b009b27b9cdb196d04901e654a492af5f  pkg/relational/core/catalog/fdb_template_catalog.go
+2e1614c0393b8098b5b5ba1401207507612053247c6080d7f78bfe794be8cd84  CHANGELOG.md
+7a492c1a277308cede9ebeaecc9fe6d6448d8c3a30ddcfc710612dc1681bfea5  DIVERGENCES.md
+feb56db60591576c94106fc0b69ec0ec39536fc468d14ad03af5a053eed2f0e8  TODO.md
+33a8fc1e35d537978db7e69ad40a140870911b3829df9d6a108e6bc7abdbf608  rfcs/257-java-upgrade-audit/ws-j-design.md

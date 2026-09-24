@@ -1,0 +1,89 @@
+**NAK**
+
+- **Tree:** `cc94face9f554e277346f6061becf84c658abc3b`.
+- **Design:** `ws-d-design.md`, SHA256 `e8a870a4739015a2c9d3e5e83831c08424ac64e1a64e2443e014ae6c6f889814`. I recomputed it from the tree blob and it matches.
+- **Java:** `fdb-record-layer/.git/HEAD` = `fdacd162…`.
+- **Read:** all four v7 verdicts, the full v8 design and its diff from v7, the oracle README, both evidence files, the v8 oracle source diffs, the delta outside `rfcs/`, and the cited Java and Go.
+- **Oracle integrity:** all four source hashes match `evidence-run.txt:4-7`, and there are 13 GuardiANN `It` specs.
+- **Nothing run or changed:** no tests, probes, mutations or edits.
+
+## P2 — The peel bound rests on the wrong axis; many isolated outliers still strand (design 890-898, 927-933)
+
+**The claim.** The bound is "logarithmic because the slowest measured pattern at least halves M per round." That is true only of the 60/40 shape.
+
+**What the outlier rows show.** Every outlier row removes one member of M per round:
+- `[999 1]I>999[999 1]I>998…` in `evidence-run.txt:189,191`;
+- nested: 999 → 997 at `:190`.
+
+The refit isolates one far point, the peeled point rejoins the core by nearest centroid, and the next outlier is isolated. So the number of rounds follows the number of separately isolatable outliers, not log n.
+
+**Why the measurements don't catch this.** Every measured shape has at most 3 outliers, and all are 2-D (`tightGrid`). In high-dimensional embeddings, far outliers are nearly orthogonal to each other, so each one gets isolated on its own.
+
+**The fallthrough is therefore ordinary data.** At n = 1000 the bound is 12 refits, so any cluster with ≥ 13 such outliers (about 1.3%) goes to the reconcile. The reconcile clears the flag but never splits the cluster:
+- **Deferred mode:** it strands at the cap as the target does, and the hand-off ends with the typed capacity error.
+- **Inline mode:** each re-armed split runs up to 13 extra KMeans fits plus a serializable read of the whole posting inside a user's insert, until the count passes hardMax and the partition wedges.
+
+For this population, (h) only delays the stall the README (item 3) says it removes.
+
+**Mutation evidence.** The v8 mutation `bound=12→11` kills a golden string only. No measured shape reaches the bound.
+
+**Needed:**
+- Measure m ∈ {13, 20, 50} isolated outliers at n = 1000 in realistic dimension.
+- Then decide: either a peel whose round count does not scale with m (keeping the nearest-centroid and minChildFraction invariants), or declare this population and its consequence under (h).
+- Measure the peel plus reconcile at n = 2000 in high dimension against the 5 s transaction limit, because inline mode pays it inside user inserts.
+
+## P3
+
+1. **The reachability claim for the reconcile failure is incomplete (971-973).**
+   - In the GuardiANN main sources, `primaryClusterHardMax()` is read only at `Insert.java:335/337`. Split re-homing (`SplitMergeTask:621-651`) and reassign moves can push a neighbour above the cap in deferred mode.
+   - The reconcile failure then fires in merge drains (MergeIndexes, the hand-off), not only in inline mode or when an operator lowers the cap.
+   - Outcome is parity with the target (it throws at :397 there), but correct the sentence and add a fixture for the deferred merge-drain case.
+2. **The reconcile failure reuses the capacity error type, which contradicts two sentences.**
+   - 204-206 and 575 say capacity errors never poison. The reconcile's one does (962-967).
+   - The target throws `NoSuchElementException` at :397. `ClusterCapacityExceeded` means insert backpressure, so a caller doing `errors.As` on it will try "merge and retry", which fails again.
+   - Use a distinct type or an explicit cause field, and key poisoning on where the error is raised.
+3. **The (d) population statement is inexact (309-312).**
+   - It omits the trained bits-9 quantizer check, which `consumerOutcome` does predict for task bodies.
+   - It misses the bounce's follow-up enqueue (`BounceTask.java:285-309` → `SplitMergeTask.valueTuple:135` / ReassignTask :158). That write constructs the quantizer, `consumerOutcome` does not predict it, so Go's inline delete fails there, as the target's does. State it.
+4. **The isolation contract of `consumerOutcome` is unstated for `runTask` (292-309).**
+   - Java reads cluster metadata with the serializable transaction (`Primitives.fetchClusterMetadata(transaction, …)`).
+   - The false-alarm exit then writes the full metadata (`SplitMergeTask:178-183`). A snapshot read there would silently lose a concurrent insert's stats update.
+   - Make isolation a parameter (serializable in `runTask`, snapshot only for the skip), forbid reusing the skip's snapshot reads in `runTask`, and pin it with a conflict fixture.
+5. **Line 913 is an orphan fragment ("child holds no member of M.").** v8 deleted the sentence explaining how the identical-coordinate mass exits (`undersizedChildHoldsNoMass`).
+6. **The lease `just test` claim overstates (702-703).**
+   - TODO.md:14564-14575 records a red run (the docscheck wording and the conformance timeout) with no tree id.
+   - That run predates the heartbeat-admin change, which touched `pkg/recordlayer/indexing_heartbeat.go`.
+   - Record a green `//pkg/recordlayer` on this tree, or restate the claim.
+7. **The delta summary omits some WS-E test infrastructure** (not WS-D, and harmless): `runPreparedWithSetup` in `sql_plan_steps.java`, `plandiff/go_runner.go` args, and `JavaError.SQLState`.
+
+## Closed from v7 (verified)
+
+- **Inline insert cap:** withdrawn. The target's insert path is unchanged, the collapse→REASSIGN→reassign fixture was added, and the identical-mass inline row is replayed.
+- **Bounce dependency pick:** it is the first draw of `RandomHelpers.random(getTaskId())`, over the fetched dependency order (`BounceTask.java:123-162`).
+- **Merge prologue:** the no-mergeable-neighbour exit clears the flag before KMeans (`selectMergeCandidate`).
+- **Livelock refusal:** keyed on the knob value.
+- **reassignNumNeighboringClusters -1:** measured (`evidence-run:72-74`).
+- **Bits-9 obsolete/live:** measured (`:204-205`).
+- **Labels:** measured and source labels corrected.
+- **Tag-5 ordering:** now consistent.
+- **Removal claim:** narrowed.
+- **Claim-race fixture:** split into same-cluster and different-cluster arms.
+- **Lease-wait qualifier:** added.
+- **Cost statement:** corrected; a lone cluster evaluates a single 1→2 candidate (`SplitMergeTask:334-343`).
+- **Existing-PK exit** before the quantizer (`Insert:226-235`).
+- **Heartbeat-admin divergence:** Java computes `heartbeatTime < now + lease` (`OnlineIndexer.java:461-462`), as DIVERGENCES.md states.
+
+## Measured vs hypothesis
+
+**Measured (items 1-17):**
+- the peel at n ≤ 1000, but only with ≤ 3 outliers in 2-D;
+- obsolete tasks under trained bits-9;
+- the reassign -1 livelock.
+
+**Still hypothesis:**
+- peel rounds for many high-dimensional outliers (P2);
+- reconcile cost at hardMax;
+- the deferred-mode reconcile failure;
+- the bounce follow-up under bits-9;
+- the REMAINING list (825-833);
+- every Go-only mechanism.

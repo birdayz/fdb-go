@@ -6,14 +6,17 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -34,10 +37,52 @@ const (
 	TakeoverByRecordsToMutual
 )
 
+// IndexingDesiredAction is what a build session does with the index state it
+// finds. Matches Java's OnlineIndexer.IndexingPolicy.DesiredAction.
+type IndexingDesiredAction int
+
+const (
+	// DesiredActionDefault leaves the choice to Java's builder default for the
+	// state: REBUILD if disabled, CONTINUE if write-only or readable. It is the
+	// zero value, so an IndexingPolicy that never mentions a state gets Java's
+	// default for it.
+	DesiredActionDefault IndexingDesiredAction = iota
+	// DesiredActionError refuses to start a session over the state.
+	DesiredActionError
+	// DesiredActionRebuild clears the index and builds it from scratch.
+	DesiredActionRebuild
+	// DesiredActionContinue continues a write-only build, builds a disabled index
+	// without clearing it, and leaves a readable index alone.
+	DesiredActionContinue
+	// DesiredActionMarkReadable publishes the index without building it.
+	DesiredActionMarkReadable
+)
+
 // IndexingPolicy configures how the OnlineIndexer handles stamp conflicts,
 // blocked stamps, and build method conversions.
 // Matches Java's OnlineIndexer.IndexingPolicy.
 type IndexingPolicy struct {
+	// IfDisabled, IfWriteOnly and IfReadable choose what a session does with the
+	// primary index's state (Java ifDisabled/ifWriteOnly/ifReadable). The zero
+	// value is Java's default for that state; see GetStateDesiredAction.
+	IfDisabled  IndexingDesiredAction
+	IfWriteOnly IndexingDesiredAction
+	IfReadable  IndexingDesiredAction
+
+	// IfMismatchPrevious chooses what BuildIndex does when the index is partly
+	// built by a different method than the one requested (Java
+	// ifMismatchPrevious, read by OnlineIndexer.indexingCatcher). CONTINUE, the
+	// zero value's meaning, continues the previous method; REBUILD clears and
+	// builds by the requested one; ERROR and MARK_READABLE return the
+	// PartlyBuiltError. See GetIfMismatchPrevious.
+	IfMismatchPrevious IndexingDesiredAction
+
+	// ForbidRecordScan stops a BY_INDEX build whose source index cannot be used
+	// from falling back to a records scan (Java forbidRecordScan).
+	ForbidRecordScan bool
+
+	// InitialMergesCountLimit is the initial deferred-merge budget (zero is unlimited).
+	InitialMergesCountLimit int64
 	// ForceStampOverwrite forces writing the stamp without conflict checks on
 	// fresh (non-continued) builds, or allows overwriting on continued builds
 	// when no records have been scanned. Used internally during rebuild.
@@ -52,6 +97,86 @@ type IndexingPolicy struct {
 
 	// AllowedTakeovers is the set of allowed build method conversions.
 	AllowedTakeovers map[TakeoverType]bool
+
+	// PendingWriteQueueIndexes explicitly requests deferred maintenance by index name.
+	PendingWriteQueueIndexes map[string]bool
+	// Nil selects Java's default of 100 closeout attempts; zero remains explicit.
+	PendingWriteQueueIndexesMaxDrainAttempts *int64
+}
+
+// GetStateDesiredAction resolves what a session does with an index in state.
+// Matches Java's IndexingPolicy.getStateDesiredAction, with the builder defaults
+// (IndexingPolicy.Builder: ifDisabled REBUILD, ifWriteOnly CONTINUE, ifReadable
+// CONTINUE) standing in for an unset field. READABLE_UNIQUE_PENDING is always
+// MARK_READABLE, as in Java: the index is built and only publication remains.
+func (p *IndexingPolicy) GetStateDesiredAction(state IndexState) (IndexingDesiredAction, error) {
+	var set, def IndexingDesiredAction
+	switch state {
+	case IndexStateDisabled:
+		def = DesiredActionRebuild
+		if p != nil {
+			set = p.IfDisabled
+		}
+	case IndexStateWriteOnly, IndexStateWriteOnlyWithQueue:
+		def = DesiredActionContinue
+		if p != nil {
+			set = p.IfWriteOnly
+		}
+	case IndexStateReadable:
+		def = DesiredActionContinue
+		if p != nil {
+			set = p.IfReadable
+		}
+	case IndexStateReadableUniquePending:
+		return DesiredActionMarkReadable, nil
+	default:
+		return 0, &RecordCoreError{Message: "bad index state: " + state.String()}
+	}
+	switch set {
+	case DesiredActionDefault:
+		return def, nil
+	case DesiredActionError, DesiredActionRebuild, DesiredActionContinue, DesiredActionMarkReadable:
+		return set, nil
+	default:
+		return 0, &RecordCoreError{Message: fmt.Sprintf("bad indexing desired action %d for index state %s", int(set), state)}
+	}
+}
+
+// GetIfMismatchPrevious resolves IfMismatchPrevious, with Java's builder default
+// CONTINUE standing in for an unset field (IndexingPolicy.Builder). An action
+// outside the enum is a RecordCoreError, as in GetStateDesiredAction.
+func (p *IndexingPolicy) GetIfMismatchPrevious() (IndexingDesiredAction, error) {
+	if p == nil || p.IfMismatchPrevious == DesiredActionDefault {
+		return DesiredActionContinue, nil
+	}
+	switch p.IfMismatchPrevious {
+	case DesiredActionError, DesiredActionRebuild, DesiredActionContinue, DesiredActionMarkReadable:
+		return p.IfMismatchPrevious, nil
+	}
+	return 0, &RecordCoreError{Message: fmt.Sprintf("bad indexing desired action %d for a mismatched previous build", int(p.IfMismatchPrevious))}
+}
+
+// withIfWriteOnly is Java's policy.toBuilder().setIfWriteOnly(action).build():
+// the catcher's retries replace the indexer's policy and never write through
+// the caller's pointer.
+func (p *IndexingPolicy) withIfWriteOnly(action IndexingDesiredAction) *IndexingPolicy {
+	var copied IndexingPolicy
+	if p != nil {
+		copied = *p
+	}
+	copied.IfWriteOnly = action
+	return &copied
+}
+
+func (p *IndexingPolicy) ShouldUsePendingWriteQueue(index *Index) bool {
+	return p != nil && p.PendingWriteQueueIndexes[index.Name]
+}
+
+func (p *IndexingPolicy) GetPendingWriteQueueIndexesMaxDrainAttempts() int64 {
+	if p == nil || p.PendingWriteQueueIndexesMaxDrainAttempts == nil {
+		return 100
+	}
+	return *p.PendingWriteQueueIndexesMaxDrainAttempts
 }
 
 // ShouldAllowUnblock returns true if the policy allows unblocking a stamp with the given blockID.
@@ -164,8 +289,11 @@ type IndexBuildState struct {
 // LoadIndexBuildState loads the build state for an index within an open store.
 // Matches Java's IndexBuildState.loadIndexBuildStateAsync().
 func LoadIndexBuildState(store *FDBRecordStore, index *Index) (*IndexBuildState, error) {
-	state := store.GetIndexState(index.Name)
-	if state != IndexStateWriteOnly {
+	state, err := store.readIndexState(index.Name)
+	if err != nil {
+		return nil, fmt.Errorf("load build state: %w", err)
+	}
+	if !state.IsWriteOnly() {
 		return &IndexBuildState{State: state}, nil
 	}
 
@@ -221,14 +349,20 @@ func (e *TimeLimitExceededError) Error() string {
 // Matches Java's OnlineIndexer with IndexingByRecords, IndexingByIndex,
 // IndexingMultiTargetByRecords, and IndexingMutuallyByRecords.
 type OnlineIndexer struct {
-	db               *FDBDatabase
-	metaData         *RecordMetaData
-	targetIndexes    []*Index // target indexes to build (first = primary for range tracking)
-	sourceIndex      *Index   // non-nil = BY_INDEX strategy (single target only)
-	subspace         subspace.Subspace
-	limit            int
-	maxRetries       int // max retries per range on transient failures (0 = no retries)
-	recordsPerSecond int // inter-transaction rate limit (0 = unlimited, default 10000)
+	mergeRequiredIndexes []*Index
+	mergers              map[string]*indexingMerger
+	db                   *FDBDatabase
+	metaData             *RecordMetaData
+	targetIndexes        []*Index           // target indexes to build (first = primary for range tracking)
+	queuedIndexes        []*Index           // reconstructed from persisted states after preparation commits
+	sessionHeartbeat     *IndexingHeartbeat // stable across all transactions of the build
+	admittedHeartbeat    *IndexingHeartbeat // published only after preparation commits
+	retiredBuildTargets  map[string]bool    // commit-bound completion; targetIndexes still defines stamp identity
+	sourceIndex          *Index             // non-nil = BY_INDEX strategy (single target only)
+	subspace             subspace.Subspace
+	limit                int
+	maxRetries           int // max retries per range on transient failures (0 = no retries)
+	recordsPerSecond     int // inter-transaction rate limit (0 = unlimited, default 10000)
 	// enforcedPostTransactionDelay, if > 0, is a fixed per-transaction delay (ms) applied
 	// INSTEAD of recordsPerSecond. Java OnlineIndexOperationConfig.enforcedPostTransactionDelay.
 	enforcedPostTransactionDelay int
@@ -236,9 +370,24 @@ type OnlineIndexer struct {
 	recordTypes                  []string          // record types to index (empty = all types; not allowed with multi-target)
 	policy                       *IndexingPolicy   // stamp conflict resolution policy (nil = default behavior)
 	throttle                     *indexingThrottle // adaptive throttle (created at Build time)
-	mutual                       bool              // true = MUTUAL_BY_RECORDS (concurrent building)
-	mutualBoundaries             [][]byte          // pre-set fragment boundaries (nil = single fragment)
-	leaseLengthMs                int64             // heartbeat lease duration in ms (default 30000)
+	mutual                       bool              // the policy asks for MUTUAL_BY_RECORDS; see buildsMutually
+	// fallbackToRecordsScan is set by the build catcher when the requested
+	// method cannot be used and the build continues as a records scan (Java
+	// OnlineIndexer.fallbackToRecordsScan). Like Java's, it is never reset: a
+	// later BuildIndex on the same indexer keeps scanning records.
+	fallbackToRecordsScan bool
+	// enforcedStampOverwrite is Java IndexingBase.enforceStampOverwrite, set with
+	// the fallback: the records scan must replace the abandoned method's stamp.
+	enforcedStampOverwrite bool
+	// indexerID is this indexer's heartbeat identity, minted once (Java
+	// IndexingCommon.indexerId): every attempt the catcher runs, and every merge,
+	// writes its heartbeat under it, so an attempt never mistakes the previous
+	// attempt's heartbeat for a live peer.
+	indexerID uuid.UUID
+	// lastOutcome is what the last completed BuildIndex did; see LastBuildOutcome.
+	lastOutcome      IndexBuildOutcome
+	mutualBoundaries [][]byte // pre-set fragment boundaries (nil = single fragment)
+	leaseLengthMs    int64    // heartbeat lease duration in ms (default defaultLeaseLengthMs)
 	// markReadableEnabled controls whether BuildIndex marks the index readable (and
 	// thus erases the per-build bookkeeping) at the end. Defaults to true. Matches
 	// Java's OnlineIndexer.buildIndex(boolean markReadable): set false to build the
@@ -307,10 +456,75 @@ func (oi *OnlineIndexer) isMultiTarget() bool {
 	return len(oi.targetIndexes) > 1
 }
 
+// buildsMutually and buildsByIndex pick the build method the way Java's
+// OnlineIndexer.getIndexer picks the indexer: mutual first, then by index for a
+// single target, and a records scan once the catcher has fallen back. The
+// policy's own mutual flag (oi.mutual) still decides what Java decides from
+// policy.isMutual() rather than from the indexer: the queue refusals and the
+// catcher's UnexpectedReadable arm.
+func (oi *OnlineIndexer) buildsMutually() bool {
+	return oi.mutual && !oi.fallbackToRecordsScan
+}
+
+func (oi *OnlineIndexer) buildsByIndex() bool {
+	return oi.sourceIndex != nil && !oi.isMultiTarget() && !oi.fallbackToRecordsScan && !oi.buildsMutually()
+}
+
+// newHeartbeat is a heartbeat under this indexer's one identity, minted from
+// env the first time it is needed.
+func (oi *OnlineIndexer) newHeartbeat(info string, allowMutual bool, env *dst.Env) *IndexingHeartbeat {
+	if oi.indexerID == uuid.Nil {
+		oi.indexerID = newIndexerID(env)
+	}
+	return newIndexingHeartbeatWithID(oi.indexerID, info, resolvedLeaseLengthMs(oi.leaseLengthMs), allowMutual, env)
+}
+
+// IndexBuildOutcome is what a BuildIndex call did. It is a Go extension: Java's
+// buildIndex returns nothing, and a session that left a READABLE index alone,
+// one that only published, and a build over an empty store all return 0 records.
+type IndexBuildOutcome int
+
+const (
+	// IndexBuildOutcomeNone: no BuildIndex call has completed, or the last one
+	// failed.
+	IndexBuildOutcomeNone IndexBuildOutcome = iota
+	// IndexBuildOutcomeBuilt: the call succeeded and built. Either the attempt
+	// that ended it ran the build over the targets' ranges (published unless
+	// publication was disabled), which it counts even when it indexed no
+	// records, as over an empty store; or an earlier attempt indexed records
+	// and failed into a retry, whatever the attempt that ended the call then
+	// found: the targets published, which it may have done itself
+	// (MARK_READABLE), or a mutual build its peers completed.
+	IndexBuildOutcomeBuilt
+	// IndexBuildOutcomeLeftAlone: the call neither built nor published. That
+	// covers two cases: the primary index was READABLE under CONTINUE (what frl
+	// reports as already readable), or MARK_READABLE was resolved with
+	// publication disabled (unreachable from frl, which always publishes).
+	IndexBuildOutcomeLeftAlone
+	// IndexBuildOutcomePublished: the call published the targets without
+	// building them (MARK_READABLE).
+	IndexBuildOutcomePublished
+	// IndexBuildOutcomeCompletedByPeers: a mutual build found every target
+	// already published by its peers, and this call indexed nothing.
+	IndexBuildOutcomeCompletedByPeers
+)
+
+// LastBuildOutcome reports what the last BuildIndex call did, over all of its
+// attempts, when it returned no error; IndexBuildOutcomeNone before any call,
+// and after a call that failed, whatever an earlier call of the same indexer
+// did.
+func (oi *OnlineIndexer) LastBuildOutcome() IndexBuildOutcome {
+	return oi.lastOutcome
+}
+
 // OnlineIndexerBuilder constructs an OnlineIndexer.
 type OnlineIndexerBuilder struct {
-	indexer    OnlineIndexer
-	singleMode bool // true if SetIndex was used (mutually exclusive with AddTargetIndex)
+	indexer OnlineIndexer
+	// setIndexErr is the refusal Java's setIndex throws when targets are already
+	// set (OnlineIndexer.java:668-671). Go's builder chains, so the refusal is
+	// held here and Build returns it before anything else, where Java's would
+	// have been thrown before build() was reached.
+	setIndexErr error
 }
 
 // NewOnlineIndexerBuilder creates a new builder.
@@ -400,25 +614,38 @@ func (b *OnlineIndexerBuilder) SetMetaData(md *RecordMetaData) *OnlineIndexerBui
 	return b
 }
 
-// SetIndex sets a single target index to build. Mutually exclusive with
-// AddTargetIndex/SetTargetIndexes.
+// SetIndex adds the index to build, as Java's setIndex does
+// (OnlineIndexer.java:668-676): it is refused when targets are already set
+// ("setIndex may not be used when other target indexes are already set", an
+// IndexingValidationError that Build returns), a nil index is skipped (Build
+// then reports "index must be set"), and nothing stops AddTargetIndex after it.
 func (b *OnlineIndexerBuilder) SetIndex(index *Index) *OnlineIndexerBuilder {
-	b.indexer.targetIndexes = []*Index{index}
-	b.singleMode = true
+	if len(b.indexer.targetIndexes) > 0 {
+		if b.setIndexErr == nil {
+			b.setIndexErr = &IndexingValidationError{Message: "setIndex may not be used when other target indexes are already set"}
+		}
+		return b
+	}
+	if index != nil {
+		b.indexer.targetIndexes = append(b.indexer.targetIndexes, index)
+	}
 	return b
 }
 
-// AddTargetIndex adds a target index for multi-target building. Mutually
-// exclusive with SetIndex. Matches Java's OnlineIndexer.Builder.addTargetIndex().
+// AddTargetIndex adds a target index for multi-target building. Matches Java's
+// OnlineIndexer.Builder.addTargetIndex(), which checks nothing.
 func (b *OnlineIndexerBuilder) AddTargetIndex(index *Index) *OnlineIndexerBuilder {
 	b.indexer.targetIndexes = append(b.indexer.targetIndexes, index)
 	return b
 }
 
-// SetTargetIndexes sets multiple target indexes for multi-target building.
-// Mutually exclusive with SetIndex. Matches Java's OnlineIndexer.Builder.setTargetIndexes().
+// SetTargetIndexes replaces the target list. Matches Java's
+// OnlineIndexer.Builder.setTargetIndexes().
 func (b *OnlineIndexerBuilder) SetTargetIndexes(indexes []*Index) *OnlineIndexerBuilder {
-	b.indexer.targetIndexes = indexes
+	// A copy, as Java's setTargetIndexes makes one (OnlineIndexer.java:698):
+	// AddTargetIndex and SetIndex append to this slice, and Build reorders it,
+	// neither of which may write into the caller's array.
+	b.indexer.targetIndexes = slices.Clone(indexes)
 	return b
 }
 
@@ -441,11 +668,13 @@ func (b *OnlineIndexerBuilder) SetRecordTypes(types ...string) *OnlineIndexerBui
 	return b
 }
 
-// SetSourceIndex sets the source index for the BY_INDEX strategy. The source
-// index must be a READABLE VALUE index whose root expression does not create
-// duplicates. Both source and target must apply to exactly one record type,
-// and the target's type must be a superset of the source's.
-// Not allowed with multi-target building.
+// SetSourceIndex sets the source index for the BY_INDEX strategy. Build refuses
+// it with several targets or a mutual policy. Everything else about it is
+// checked when BuildIndex runs, as Java checks it: the source must be a
+// scannable VALUE index on the target's one record type whose root expression
+// creates no duplicates, and a source that is not is answered by the build
+// catcher with a records-scan fallback (or an IndexingValidationError under
+// IndexingPolicy.ForbidRecordScan).
 // Matches Java's OnlineIndexer.Builder.setSourceIndex().
 func (b *OnlineIndexerBuilder) SetSourceIndex(index *Index) *OnlineIndexerBuilder {
 	b.indexer.sourceIndex = index
@@ -514,10 +743,27 @@ func (b *OnlineIndexerBuilder) SetMutualIndexingBoundaries(boundaries [][]byte) 
 	return b
 }
 
+// defaultLeaseLengthMs is Java's OnlineIndexOperationConfig.DEFAULT_LEASE_LENGTH_MILLIS
+// (OnlineIndexOperationConfig.java:61). A peer judges another session's heartbeat
+// stale by ITS OWN lease (IndexingHeartbeat.java:106-107, indexing_heartbeat.go
+// checkAdmission), so a default-configured Java builder treats a Go heartbeat
+// older than 10s as dead; a longer Go default would only make Go slower to admit
+// after a Java session died, while a Go session that renews less often than 10s
+// is admitted-over by Java either way.
+const defaultLeaseLengthMs int64 = 10_000
+
+// resolvedLeaseLengthMs maps the unset (zero) lease to Java's default.
+func resolvedLeaseLengthMs(ms int64) int64 {
+	if ms == 0 {
+		return defaultLeaseLengthMs
+	}
+	return ms
+}
+
 // SetLeaseLengthMs sets the heartbeat lease duration in milliseconds. If a
 // heartbeat is not updated within this duration, the process is presumed dead.
-// Default is 30000 (30 seconds). Only relevant for non-mutual mode; in mutual
-// mode heartbeats are written but not checked.
+// Default is Java's 10000 (defaultLeaseLengthMs). Only relevant for non-mutual
+// mode; in mutual mode heartbeats are written but not checked.
 // Matches Java's OnlineIndexer.IndexingPolicy.setLeaseLengthMillis().
 func (b *OnlineIndexerBuilder) SetLeaseLengthMs(ms int64) *OnlineIndexerBuilder {
 	b.indexer.leaseLengthMs = ms
@@ -529,6 +775,9 @@ func (b *OnlineIndexerBuilder) SetLeaseLengthMs(ms int64) *OnlineIndexerBuilder 
 // target indexes by name (the alphabetically-first index becomes the "primary"
 // that drives range tracking).
 func (b *OnlineIndexerBuilder) Build() (*OnlineIndexer, error) {
+	if b.setIndexErr != nil {
+		return nil, b.setIndexErr
+	}
 	if b.indexer.db == nil {
 		return nil, fmt.Errorf("online indexer: database is required")
 	}
@@ -536,7 +785,8 @@ func (b *OnlineIndexerBuilder) Build() (*OnlineIndexer, error) {
 		return nil, fmt.Errorf("online indexer: metadata is required")
 	}
 	if len(b.indexer.targetIndexes) == 0 {
-		return nil, fmt.Errorf("online indexer: at least one target index is required")
+		// Java validateIndexSetting's first check (OnlineIndexer.java:862-864).
+		return nil, &MetaDataError{Message: "index must be set"}
 	}
 	if b.indexer.subspace == nil {
 		return nil, fmt.Errorf("online indexer: subspace is required")
@@ -545,22 +795,70 @@ func (b *OnlineIndexerBuilder) Build() (*OnlineIndexer, error) {
 		b.indexer.limit = 100
 	}
 
-	// Deduplicate target indexes by name (matches Java's HashSet dedup).
-	seen := make(map[string]bool, len(b.indexer.targetIndexes))
+	// Java OnlineIndexer.Builder.validateIndexSetting (OnlineIndexer.java:866-878),
+	// in its order: a source index with more than one target, counted BEFORE
+	// duplicates are removed, then the dedup, then a source index with a mutual
+	// policy, each a ValidationException; the targets' presence in the metadata
+	// after that, and the record types (validateTypes) last.
+	if b.indexer.sourceIndex != nil {
+		if len(b.indexer.targetIndexes) > 1 {
+			return nil, &IndexingValidationError{Message: "Indexing multi targets by a source index is not supported (yet)", SourceIndexName: b.indexer.sourceIndex.Name}
+		}
+	}
+
+	// Remove duplicates as Java's HashSet does (OnlineIndexer.java:871-874):
+	// by Index.equals, the FIRST of equal objects kept. Two objects that share a
+	// name but differ in anything Java's equality compares (a subspace key, a
+	// version, a root) are both kept, and the one that is not the metadata's
+	// own is refused below; an equal copy listed after the metadata's own is
+	// dropped, and one listed before it is kept and refused, as in Java.
 	deduped := make([]*Index, 0, len(b.indexer.targetIndexes))
 	for _, idx := range b.indexer.targetIndexes {
-		if !seen[idx.Name] {
-			seen[idx.Name] = true
+		dup := false
+		for _, kept := range deduped {
+			if kept.equalsJava(idx) {
+				dup = true
+				break
+			}
+		}
+		if !dup {
 			deduped = append(deduped, idx)
 		}
 	}
 	b.indexer.targetIndexes = deduped
+	if b.indexer.sourceIndex != nil && b.indexer.mutual {
+		return nil, &IndexingValidationError{Message: "Indexing mutually by a source index is not supported (yet)", SourceIndexName: b.indexer.sourceIndex.Name}
+	}
+	for _, idx := range b.indexer.targetIndexes {
+		if idx == nil {
+			// Java's ArrayList admits a null target, and its HashSet keeps one
+			// of several. The build then fails with a NullPointerException at
+			// the sort or the metadata check below (OnlineIndexer.java:879-880),
+			// after the two ValidationExceptions above. Go reports the missing
+			// index at the same point instead of panicking.
+			return nil, &MetaDataError{Message: "index must be set"}
+		}
+	}
 
-	// Validate all target indexes exist in metadata (matches Java's OnlineIndexer.Builder).
+	// Sort target indexes by name before the metadata check, as Java does
+	// (targetIndexes.sort(Comparator.comparing(Index::getName)),
+	// OnlineIndexer.java:879), so the refusal names the alphabetically first
+	// target that fails, and so the primary index (the first) is deterministic.
+	// The sort is stable: objects of one name keep the order they were given.
+	sort.SliceStable(b.indexer.targetIndexes, func(i, j int) bool {
+		return b.indexer.targetIndexes[i].Name < b.indexer.targetIndexes[j].Name
+	})
+
+	// Every target must be the metadata's OWN index object, as Java's
+	// validateIndexSetting requires (`index != metaData.getIndex(name)`,
+	// OnlineIndexer.java:880-883): the range set, the maintainers and the index
+	// entries are keyed by the object's subspace key and versions, so an object
+	// that only shares the metadata index's name would build under keys the
+	// metadata does not name, while the state and publication go by name.
 	md := b.indexer.metaData
 	for _, idx := range b.indexer.targetIndexes {
-		if md.GetIndex(idx.Name) == nil {
-			return nil, fmt.Errorf("online indexer: index %q not contained within specified metadata", idx.Name)
+		if md.GetIndex(idx.Name) != idx {
+			return nil, &MetaDataError{Message: "Index " + idx.Name + " not contained within specified metadata"}
 		}
 	}
 
@@ -582,40 +880,13 @@ func (b *OnlineIndexerBuilder) Build() (*OnlineIndexer, error) {
 		}
 	}
 
-	// Sort target indexes by name so primary index selection is deterministic.
-	// Matches Java's OnlineIndexer.Builder.validateIndexSetting():
-	// targetIndexes.sort(Comparator.comparing(Index::getName))
-	sort.Slice(b.indexer.targetIndexes, func(i, j int) bool {
-		return b.indexer.targetIndexes[i].Name < b.indexer.targetIndexes[j].Name
-	})
-
 	isMulti := len(b.indexer.targetIndexes) > 1
 
-	// Mutual exclusivity: SetIndex vs multi-target.
-	if b.singleMode && isMulti {
-		return nil, fmt.Errorf("online indexer: SetIndex may not be used when other target indexes are set")
-	}
-
 	// Multi-target restrictions (matches Java's IndexingCommon).
-	if isMulti || b.indexer.mutual {
-		if len(b.indexer.recordTypes) > 0 {
-			return nil, fmt.Errorf("online indexer: preset record types not allowed with multi-target/mutual indexing")
-		}
-		if b.indexer.sourceIndex != nil {
-			return nil, fmt.Errorf("online indexer: source index (BY_INDEX) not allowed with multi-target/mutual indexing")
-		}
+	if (isMulti || b.indexer.mutual) && len(b.indexer.recordTypes) > 0 {
+		return nil, fmt.Errorf("online indexer: preset record types not allowed with multi-target/mutual indexing")
 	}
-
-	if b.indexer.sourceIndex != nil {
-		if err := b.validateSourceIndex(); err != nil {
-			return nil, err
-		}
-	}
-
-	// Default lease length: 30 seconds.
-	if b.indexer.leaseLengthMs == 0 {
-		b.indexer.leaseLengthMs = 30_000
-	}
+	b.indexer.leaseLengthMs = resolvedLeaseLengthMs(b.indexer.leaseLengthMs)
 
 	// Create adaptive throttle (matches Java's IndexingThrottle initialization)
 	b.indexer.throttle = newIndexingThrottle(b.indexer.limit, b.indexer.maxRetries, b.indexer.recordsPerSecond, b.indexer.enforcedPostTransactionDelay)
@@ -623,65 +894,53 @@ func (b *OnlineIndexerBuilder) Build() (*OnlineIndexer, error) {
 	return &b.indexer, nil
 }
 
-// validateSourceIndex checks that the source index is valid for BY_INDEX building.
-// Matches Java's IndexingByIndex.validateSourceAndTargetIndexes().
-func (b *OnlineIndexerBuilder) validateSourceIndex() error {
-	src := b.indexer.sourceIndex
-	tgt := b.indexer.targetIndexes[0]
-	md := b.indexer.metaData
-
-	// Source must be a VALUE index.
-	if src.Type != IndexTypeValue {
-		return fmt.Errorf("online indexer: source index %q must be a VALUE index, got %q", src.Name, src.Type)
+// validateSourceAndTargetIndexes checks that the source index can feed a
+// BY_INDEX build of the target. Matches Java's
+// IndexingByIndex.validateSourceAndTargetIndexes (IndexingByIndex.java:240-252),
+// messages included, and runs where Java runs it: at session time, after the
+// state transaction, so that the build catcher can answer a failure by falling
+// back to a records scan (or return it under ForbidRecordScan) rather than the
+// builder refusing an indexer Java would build.
+func (oi *OnlineIndexer) validateSourceAndTargetIndexes() error {
+	src := oi.sourceIndex
+	srcTypes := oi.metaData.RecordTypesForIndex(src)
+	targetTypes := oi.indexedRecordTypes()
+	if len(targetTypes) != 1 {
+		return oi.sourceValidationError("target index has multiple types")
 	}
-
-	// Source root expression must not create duplicates.
-	if createsDuplicates(src.RootExpression) {
-		return fmt.Errorf("online indexer: source index %q root expression creates duplicates", src.Name)
-	}
-
-	// Both source and target must apply to exactly one record type.
-	srcTypes := indexRecordTypes(md, src)
-	tgtTypes := indexRecordTypes(md, tgt)
-
 	if len(srcTypes) != 1 {
-		return fmt.Errorf("online indexer: source index %q must apply to exactly 1 record type, got %d", src.Name, len(srcTypes))
+		return oi.sourceValidationError("source index has multiple types")
 	}
-	if len(tgtTypes) != 1 {
-		return fmt.Errorf("online indexer: target index %q must apply to exactly 1 record type, got %d", tgt.Name, len(tgtTypes))
-	}
-
-	// Target's record type must be a superset of source's.
-	if srcTypes[0] != tgtTypes[0] {
-		return fmt.Errorf("online indexer: target index type %q does not cover source index type %q", tgtTypes[0], srcTypes[0])
-	}
-
-	return nil
-}
-
-// indexRecordTypes returns the record type names that have this index defined.
-// Returns all types for universal indexes.
-func indexRecordTypes(md *RecordMetaData, idx *Index) []string {
-	for _, uIdx := range md.GetUniversalIndexes() {
-		if uIdx.Name == idx.Name {
-			// Universal — applies to all types.
-			var names []string
-			for _, rt := range md.RecordTypes() {
-				names = append(names, rt.Name)
-			}
-			return names
+	for _, rt := range srcTypes {
+		if rt.IsSynthetic() {
+			return oi.sourceValidationError("source index is on synthetic record types")
 		}
 	}
-	var names []string
-	for _, rt := range md.RecordTypes() {
-		for _, rtIdx := range md.GetIndexesForRecordType(rt.Name) {
-			if rtIdx.Name == idx.Name {
-				names = append(names, rt.Name)
+	if createsDuplicates(src.RootExpression) {
+		return oi.sourceValidationError("source index creates duplicates")
+	}
+	if src.Type != IndexTypeValue {
+		return oi.sourceValidationError("source index is not a VALUE index")
+	}
+	for _, srcType := range srcTypes {
+		covered := false
+		for _, rt := range targetTypes {
+			if rt.Name == srcType.Name {
+				covered = true
 				break
 			}
 		}
+		if !covered {
+			return oi.sourceValidationError("source index's type is not equal to target index's")
+		}
 	}
-	return names
+	return nil
+}
+
+// sourceValidationError is Java's IndexingBase.validateOrThrowEx failure, with
+// its INDEX_NAME, SOURCE_INDEX and INDEXER_ID keys.
+func (oi *OnlineIndexer) sourceValidationError(msg string) *IndexingValidationError {
+	return &IndexingValidationError{Message: msg, IndexName: oi.primaryIndex().Name, SourceIndexName: oi.sourceIndex.Name, IndexerID: oi.indexerID}
 }
 
 // indexedRecordTypes returns the record types this build targets — the explicit
@@ -780,6 +1039,9 @@ func (oi *OnlineIndexer) maybePresetRecordsRange(ctx context.Context) error {
 		if err != nil {
 			return nil, err
 		}
+		if err := oi.validateBuildSession(store); err != nil {
+			return nil, err
+		}
 		tr := store.context.Transaction()
 		// Mark the leading and trailing out-of-range gaps as built, sequentially per
 		// target (ordered mutations within the transaction, matching Java's insertRanges):
@@ -818,24 +1080,256 @@ func unpackRangeEndBoundary(b []byte) (tuple.Tuple, EndpointType, error) {
 	return nil, 0, fmt.Errorf("range end boundary %x is neither a tuple nor a tuple+0xff bound", b)
 }
 
-// BuildIndex runs the full index build: marks WRITE_ONLY, builds all records,
-// then marks READABLE. Returns the number of records indexed.
-// Matches Java's OnlineIndexer.buildIndex().
+// indexingAttemptsLimit is Java's OnlineIndexer.INDEXING_ATTEMPTS_RECURSION_LIMIT,
+// a safety net over the catcher's retries that the algorithm should never reach.
+const indexingAttemptsLimit = 5
+
+// requestedIndexingMethod is what a BY_INDEX continuation replaced: the policy
+// and source index the caller asked for, restored with REBUILD if the previous
+// method's source index turns out to be unusable (Java indexingLauncher's
+// requestedPolicy).
+type requestedIndexingMethod struct {
+	policy      *IndexingPolicy
+	sourceIndex *Index
+}
+
+// indexingCatch is what the build catcher makes of a failed attempt.
+type indexingCatch int
+
+const (
+	// indexingCatchFail returns the error.
+	indexingCatchFail indexingCatch = iota
+	// indexingCatchRetry runs another attempt under the adjusted method.
+	indexingCatchRetry
+	// indexingCatchDone ends the build successfully: mutual peers have
+	// published every target.
+	indexingCatchDone
+)
+
+// BuildIndex runs the index build and returns the number of records scanned.
+// Matches Java's OnlineIndexer.buildIndex: every attempt resolves the session
+// against the primary index's state, which may build (and then publish), only
+// publish, or leave a READABLE index alone, and a failed attempt goes to
+// indexingCatcher, which may retry it by another method.
+//
+// The count is every record scanned by every attempt, a retried one included.
+// LastBuildOutcome reports what the call did.
 func (oi *OnlineIndexer) BuildIndex(ctx context.Context) (int64, error) {
+	oi.lastOutcome = IndexBuildOutcomeNone
+	var requested *requestedIndexingMethod
+	var total int64
+	// The outcome is the CALL's, not its last attempt's: an attempt that indexed
+	// records and then failed into a retry built them, whatever the next attempt
+	// finds (a peer may publish in between, and the next attempt then leaves the
+	// READABLE index alone or ends the mutual build as completed by its peers).
+	built := false
+	outcomeOfCall := func(last IndexBuildOutcome) IndexBuildOutcome {
+		if built {
+			return IndexBuildOutcomeBuilt
+		}
+		return last
+	}
+	for attempt := 1; ; attempt++ {
+		n, outcome, err := oi.buildIndexAttempt(ctx)
+		total += n
+		if err == nil {
+			oi.lastOutcome = outcomeOfCall(outcome)
+			return total, nil
+		}
+		if n > 0 {
+			built = true
+		}
+		catch, next, err := oi.indexingCatcher(ctx, err, attempt, requested)
+		switch catch {
+		case indexingCatchDone:
+			oi.lastOutcome = outcomeOfCall(IndexBuildOutcomeCompletedByPeers)
+			return total, nil
+		case indexingCatchRetry:
+			requested = next
+		default:
+			return total, err
+		}
+	}
+}
+
+// indexingCatcher ports Java's OnlineIndexer.indexingCatcher
+// (OnlineIndexer.java:152-274) arm for arm:
+//   - a PartlyBuiltError follows IfMismatchPrevious: CONTINUE resumes a single
+//     target's previous method (a records scan for BY_RECORDS or
+//     MULTI_TARGET_BY_RECORDS, the saved source index for BY_INDEX), REBUILD
+//     rebuilds by the requested method, and anything else fails;
+//   - an IndexingValidationError of a BY_INDEX build restores the requested
+//     method with REBUILD when the failed source was a continuation's, and
+//     otherwise falls back to a records scan unless ForbidRecordScan;
+//   - under a mutual policy an UnexpectedReadableError ends the build when every
+//     target is readable, and otherwise falls back to a records scan, whose
+//     session start checks and publishes what the peers left.
+//
+// Java counts the attempt a failure arrived on from one; past
+// indexingAttemptsLimit the error is returned whatever it is.
+func (oi *OnlineIndexer) indexingCatcher(ctx context.Context, err error, attempt int, requested *requestedIndexingMethod) (indexingCatch, *requestedIndexingMethod, error) {
+	logger := oi.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	if attempt > indexingAttemptsLimit {
+		logger.LogAttrs(ctx, slog.LevelError, "Too many indexing attempts",
+			slog.Int("attempt", attempt), slog.String("index", oi.targetIndexNamesForLog()))
+		return indexingCatchFail, nil, err
+	}
+
+	var partly *PartlyBuiltError
+	if errors.As(err, &partly) {
+		action, aerr := oi.policy.GetIfMismatchPrevious()
+		if aerr != nil {
+			return indexingCatchFail, nil, aerr
+		}
+		logger.LogAttrs(ctx, slog.LevelInfo, "conflicting indexing type stamp",
+			slog.Int("attempt", attempt), slog.String("index", oi.targetIndexNamesForLog()),
+			slog.Int("desired_action", int(action)),
+			slog.String("actual", partly.SavedStamp), slog.String("expected", partly.ExpectedStamp))
+		switch action {
+		case DesiredActionContinue:
+			if oi.isMultiTarget() {
+				return indexingCatchFail, nil, err
+			}
+			switch partly.Saved.GetMethod() {
+			case gen.IndexBuildIndexingStamp_BY_RECORDS, gen.IndexBuildIndexingStamp_MULTI_TARGET_BY_RECORDS:
+				// Java allows the fallback from a multi-target build to a single
+				// target, but not to a subset.
+				oi.fallBackToRecordsScan()
+				return indexingCatchRetry, nil, nil
+			case gen.IndexBuildIndexingStamp_BY_INDEX:
+				source, serr := oi.savedSourceIndex(partly.Saved)
+				if serr != nil {
+					return indexingCatchFail, nil, serr
+				}
+				orig := &requestedIndexingMethod{policy: oi.policy, sourceIndex: oi.sourceIndex}
+				oi.sourceIndex = source
+				return indexingCatchRetry, orig, nil
+			}
+			return indexingCatchFail, nil, err
+		case DesiredActionRebuild:
+			oi.policy = oi.policy.withIfWriteOnly(DesiredActionRebuild)
+			return indexingCatchRetry, nil, nil
+		}
+		return indexingCatchFail, nil, err
+	}
+
+	var validation *IndexingValidationError
+	if oi.sourceIndex != nil && errors.As(err, &validation) {
+		if requested != nil {
+			logger.LogAttrs(ctx, slog.LevelWarn, "The previous method's source index isn't usable. Rebuild by the requested policy",
+				slog.Int("attempt", attempt), slog.String("index", oi.targetIndexNamesForLog()))
+			oi.policy = requested.policy.withIfWriteOnly(DesiredActionRebuild)
+			oi.sourceIndex = requested.sourceIndex
+			return indexingCatchRetry, nil, nil
+		}
+		if (oi.policy == nil || !oi.policy.ForbidRecordScan) && !oi.fallbackToRecordsScan {
+			logger.LogAttrs(ctx, slog.LevelWarn, "Fallback to a by-record scan",
+				slog.Int("attempt", attempt), slog.String("index", oi.targetIndexNamesForLog()))
+			oi.fallBackToRecordsScan()
+			return indexingCatchRetry, nil, nil
+		}
+	}
+
+	if oi.mutual {
+		var unexpected *UnexpectedReadableError
+		if errors.As(err, &unexpected) {
+			if unexpected.AllReadable {
+				return indexingCatchDone, nil, nil
+			}
+			oi.fallBackToRecordsScan()
+			return indexingCatchRetry, nil, nil
+		}
+	}
+	return indexingCatchFail, nil, err
+}
+
+// fallBackToRecordsScan is the catcher's switch to Java's
+// IndexingMultiTargetByRecords, which getIndexer hands a forced stamp overwrite.
+func (oi *OnlineIndexer) fallBackToRecordsScan() {
+	oi.fallbackToRecordsScan = true
+	oi.enforcedStampOverwrite = true
+}
+
+// savedSourceIndex resolves the source index a BY_INDEX stamp names, as Java
+// resolves the policy's source index subspace key: Index.decodeSubspaceKey, then
+// RecordMetaData.getIndexFromSubspaceKey.
+func (oi *OnlineIndexer) savedSourceIndex(stamp *gen.IndexBuildIndexingStamp) (*Index, error) {
+	key, err := tuple.Unpack(stamp.GetSourceIndexSubspaceKey())
+	if err != nil || len(key) != 1 {
+		return nil, &RecordCoreError{Message: "subspace key must encode a single item tuple"}
+	}
+	source := oi.metaData.GetIndexFromSubspaceKey(key[0])
+	if source == nil {
+		return nil, &MetaDataError{Message: fmt.Sprintf("Unknown index subspace key %v", key[0])}
+	}
+	return source, nil
+}
+
+// buildIndexAttempt is one launch of Java's indexing function: the session
+// start, the build by the method the catcher has left in force, and the
+// publication. Each attempt writes a heartbeat under that method with the
+// indexer's one identity (Java's indexerId, shared by every attempt of the
+// indexer, IndexingCommon.java:53), and removes it when the attempt ends; the
+// throttle's adapted limit carries over, where Java's new indexer per attempt
+// starts again from the configured one.
+func (oi *OnlineIndexer) buildIndexAttempt(ctx context.Context) (int64, IndexBuildOutcome, error) {
+	// Java's policy names its source index, and each session compiles the stamp
+	// and validates the source from the metadata's index of that name
+	// (IndexingByIndex.java:68-71, :95-101), so a caller's *Index whose subspace
+	// key, versions or type differ from the metadata's never reaches the stamp or
+	// validateSourceAndTargetIndexes. (The scan already reads the source by name.)
+	// A name the metadata lacks is refused in the state transaction
+	// (prepareIndexingState).
+	if oi.buildsByIndex() && oi.metaData != nil {
+		if resolved := oi.metaData.GetIndex(oi.sourceIndex.Name); resolved != nil {
+			oi.sourceIndex = resolved
+		}
+	}
+	// Java names a build's heartbeat by its stamp's method (IndexingBase.java:457);
+	// Go's SynchronizedSessionLockedError also reports it as ExistingInfo, a Go
+	// addition (Java's lock exception carries no info key).
+	heartbeat := oi.newHeartbeat(oi.buildIndexingStamp().GetMethod().String(), oi.buildsMutually(), oi.db.Env())
+	oi.sessionHeartbeat = heartbeat
+	oi.admittedHeartbeat = nil
+	defer func() {
+		if oi.sessionHeartbeat != nil {
+			oi.cleanupPendingQueueHeartbeat(heartbeat)
+			oi.sessionHeartbeat = nil
+			oi.admittedHeartbeat = nil
+		}
+	}()
 	// The build clock, not a metric: this anchor is what throttleBetweenRanges measures the
 	// configured timeLimit against, so it decides when the build stops and therefore HOW MANY
 	// RANGES end up durably recorded in the built-range set. It has to come off the env clock
 	// or a simulated build stops at a wall-clock-determined, unreproducible point.
 	startTime := oi.db.Env().Now()
 
-	// Step 1: Mark all target indexes as WRITE_ONLY.
-	if err := oi.markWriteOnly(ctx); err != nil {
-		return 0, fmt.Errorf("mark write-only: %w", err)
+	// Step 1: Resolve the session against the index state, marking the targets
+	// WRITE_ONLY when it builds.
+	start, err := oi.markWriteOnly(ctx)
+	if err != nil {
+		return 0, IndexBuildOutcomeNone, fmt.Errorf("mark write-only: %w", err)
+	}
+	switch start {
+	case indexingSessionSkip:
+		return 0, IndexBuildOutcomeLeftAlone, nil
+	case indexingSessionMarkReadable:
+		if !oi.markReadableEnabled {
+			return 0, IndexBuildOutcomeLeftAlone, nil
+		}
+		if err := oi.markReadable(ctx); err != nil {
+			return 0, IndexBuildOutcomeNone, fmt.Errorf("mark readable: %w", err)
+		}
+		return 0, IndexBuildOutcomePublished, nil
 	}
 
 	// Step 2: Build in chunks across multiple transactions.
-	if oi.mutual {
-		return oi.buildIndexMutual(ctx, startTime)
+	if oi.buildsMutually() {
+		n, err := oi.buildIndexMutual(ctx, startTime)
+		return n, IndexBuildOutcomeBuilt, err
 	}
 
 	// Multi-target (BY_RECORDS) builds preset the out-of-range gaps as already-built so
@@ -844,12 +1338,18 @@ func (oi *OnlineIndexer) BuildIndex(ctx context.Context) (int64, error) {
 	// paths.
 	if oi.isMultiTarget() {
 		if err := oi.maybePresetRecordsRange(ctx); err != nil {
-			return 0, fmt.Errorf("preset records range: %w", err)
+			return 0, IndexBuildOutcomeNone, fmt.Errorf("preset records range: %w", err)
 		}
 	}
 
 	buildFn := oi.buildRange
-	if oi.sourceIndex != nil {
+	if oi.buildsByIndex() {
+		// Java IndexingByIndex.buildIndexInternalAsync validates after the state
+		// transaction has committed, so a failure leaves the target WRITE_ONLY
+		// under a BY_INDEX stamp that the catcher's records scan then overwrites.
+		if err := oi.validateSourceAndTargetIndexes(); err != nil {
+			return 0, IndexBuildOutcomeNone, err
+		}
 		buildFn = oi.buildRangeByIndex
 	}
 
@@ -857,16 +1357,22 @@ func (oi *OnlineIndexer) BuildIndex(ctx context.Context) (int64, error) {
 	for {
 		n, hasMore, err := oi.buildRangeWithRetries(ctx, buildFn)
 		if err != nil {
-			return totalRecords, fmt.Errorf("build range: %w", err)
+			return totalRecords, IndexBuildOutcomeNone, fmt.Errorf("build range: %w", err)
 		}
 		totalRecords += n
+		if err := oi.drainPendingIndexWrites(ctx, heartbeat); err != nil {
+			return totalRecords, IndexBuildOutcomeNone, err
+		}
+		if err := oi.mergeRequestedIndexes(ctx); err != nil {
+			return totalRecords, IndexBuildOutcomeNone, err
+		}
 		if !hasMore {
 			break
 		}
 
 		// Time-limit check + enforced post-transaction delay + progress log between ranges.
 		if err := oi.throttleBetweenRanges(ctx, startTime, totalRecords, n); err != nil {
-			return totalRecords, err
+			return totalRecords, IndexBuildOutcomeNone, err
 		}
 	}
 
@@ -874,27 +1380,19 @@ func (oi *OnlineIndexer) BuildIndex(ctx context.Context) (int64, error) {
 	// resume the build). Matches Java OnlineIndexer.buildIndex(boolean markReadable).
 	if oi.markReadableEnabled {
 		if err := oi.markReadable(ctx); err != nil {
-			return totalRecords, fmt.Errorf("mark readable: %w", err)
+			return totalRecords, IndexBuildOutcomeNone, fmt.Errorf("mark readable: %w", err)
 		}
 	}
 
-	return totalRecords, nil
+	return totalRecords, IndexBuildOutcomeBuilt, nil
 }
 
 // buildIndexMutual runs the mutual (concurrent) build path.
-//
-// LIMITATION: Multi-target mutual builds should only target idempotent indexes
-// (VALUE, RANK, VERSION, etc.). Non-idempotent indexes (COUNT, SUM, COUNT_UPDATES)
-// can double-count when two concurrent builders process the same fragment and one's
-// InsertRange(requireEmpty) detects the contest after index entries are already written.
-// Idempotent indexes are unaffected (SET is idempotent). Build non-idempotent indexes
-// with a separate single-target indexer.
 func (oi *OnlineIndexer) buildIndexMutual(ctx context.Context, startTime time.Time) (int64, error) {
 	mutual, err := newMutualIndexBuilder(oi)
 	if err != nil {
 		return 0, fmt.Errorf("init mutual builder: %w", err)
 	}
-	defer mutual.cleanup(ctx)
 
 	// Mutual builds preset the out-of-range gaps as already-built (Java
 	// IndexingMutuallyByRecords), before the fragmented build loop.
@@ -914,6 +1412,9 @@ func (oi *OnlineIndexer) buildIndexMutual(ctx context.Context, startTime time.Ti
 			return totalRecords, fmt.Errorf("mutual build range: %w", err)
 		}
 		totalRecords += n
+		if err := oi.mergeRequestedIndexes(ctx); err != nil {
+			return totalRecords, err
+		}
 		if !hasMore {
 			break
 		}
@@ -1097,45 +1598,39 @@ func (oi *OnlineIndexer) currentLimitForLog() int {
 	return oi.limit
 }
 
-// markWriteOnly transitions all target indexes to WRITE_ONLY state.
+// markWriteOnly runs the session's state transaction (prepareIndexingState):
+// Java IndexingBase.handleStateAndDoBuildIndexAsync's first transaction, where
+// the primary index's state and the policy decide whether the session builds
+// (marking every target WRITE_ONLY), only publishes, or leaves the index alone.
+// The primary (first by name) drives the decision and the followers must agree
+// with it.
 //
-// For single-target: matches Java's IndexingBase.handleIndexingState().
-// For multi-target: matches Java's IndexingMultiTargetByRecords, where the
-// primary index (first in list) drives resume detection and all indexes must
-// be in a consistent state.
-//
-// Note: Java's OnlineIndexer opens stores with IndexMaintenanceFilter.NONE
-// (no auto-rebuild), so it can skip READABLE indexes. Our openStore() uses
-// plain Open() which auto-rebuilds via checkPossiblyRebuild, ensuring new
-// indexes are properly detected and transitioned to WRITE_ONLY/DISABLED.
-func (oi *OnlineIndexer) markWriteOnly(ctx context.Context) error {
-	_, err := oi.db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-		store, err := oi.openStore(rtx)
+// The store is opened through the ordinary open path, whose metadata
+// reconciliation (checkPossiblyRebuild) may itself rebuild or disable indexes
+// before the session reads their states. checkOpenHeartbeats runs first for
+// that reason.
+func (oi *OnlineIndexer) markWriteOnly(ctx context.Context) (indexingSessionStart, error) {
+	oi.admittedHeartbeat = nil
+	oi.retiredBuildTargets = nil
+	var start indexingSessionStart
+	result, err := oi.db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+		store, err := oi.openStoreWithPreflight(rtx, oi.checkOpenHeartbeats)
 		if err != nil {
 			return nil, err
 		}
-
-		newStamp := oi.buildIndexingStamp()
-		primary := oi.primaryIndex()
-		continuedBuild := store.IsIndexWriteOnly(primary.Name)
-
-		if !continuedBuild {
-			// Fresh start: clear all target indexes and mark WRITE_ONLY.
-			// Java's enforceStampOverwrite() is unnecessary here because
-			// clearIndexData removes the stamp, so setIndexingTypeOrThrow
-			// will write unconditionally (savedStamp=nil, continuedBuild=false).
-			for _, idx := range oi.targetIndexes {
-				if _, err := store.ClearAndMarkIndexWriteOnly(idx.Name); err != nil {
-					return nil, err
-				}
-			}
-		}
-
-		// For continued builds: validates stamp compatibility and resumes.
-		// For fresh starts: writes the new stamp (no saved stamp after clear).
-		return nil, oi.setIndexingTypeOrThrow(store, continuedBuild, newStamp)
+		queued, attemptStart, err := oi.prepareIndexingState(store)
+		start = attemptStart
+		return queued, err
 	})
-	return err
+	if err != nil {
+		return 0, err
+	}
+	// Never publish a target set derived from an attempt that did not commit.
+	oi.queuedIndexes = result.([]*Index)
+	if start == indexingSessionBuild {
+		oi.admittedHeartbeat = oi.sessionHeartbeat
+	}
+	return start, nil
 }
 
 // setIndexingTypeOrThrow implements Java's IndexingBase.setIndexingTypeOrThrow().
@@ -1154,9 +1649,17 @@ func (oi *OnlineIndexer) setIndexingTypeOrThrow(store *FDBRecordStore, continued
 // Matches Java's IndexingBase.setIndexingTypeOrThrow(store, continuedBuild, index, newStamp).
 func (oi *OnlineIndexer) setIndexingTypeOrThrowForIndex(store *FDBRecordStore, continuedBuild bool, index *Index, newStamp *gen.IndexBuildIndexingStamp) error {
 	policy := oi.policy
+	state, err := store.readIndexState(index.Name)
+	if err != nil {
+		return err
+	}
+	if oi.mutual && state.IsWriteOnlyWithQueue() {
+		return &RecordCoreError{Message: "Mutual indexing cannot continue a pending write queue index build", IndexName: index.Name}
+	}
+	forceStampOverwrite := oi.enforcedStampOverwrite || (policy != nil && policy.ForceStampOverwrite)
 
 	// Step 1: forceStampOverwrite + fresh session = no questions asked.
-	if policy != nil && policy.ForceStampOverwrite && !continuedBuild {
+	if forceStampOverwrite && !continuedBuild {
 		return store.SaveIndexingTypeStamp(index, newStamp)
 	}
 
@@ -1209,7 +1712,7 @@ func (oi *OnlineIndexer) setIndexingTypeOrThrowForIndex(store *FDBRecordStore, c
 	}
 
 	// Step 8: forceStampOverwrite + continued build — allow if no records scanned.
-	if policy != nil && policy.ForceStampOverwrite {
+	if forceStampOverwrite {
 		if isWriteOnlyButNoRecordScanned(store, store.context, index) {
 			return store.SaveIndexingTypeStamp(index, newStamp)
 		}
@@ -1245,6 +1748,10 @@ func (oi *OnlineIndexer) newPartlyBuiltError(savedStamp, expectedStamp *gen.Inde
 		SavedStamp:    stampToString(savedStamp),
 		ExpectedStamp: stampToString(expectedStamp),
 		Message:       msg,
+		Saved:         savedStamp,
+		Expected:      expectedStamp,
+		IndexerID:     oi.indexerID,
+		IndexVersion:  index.LastModifiedVersion,
 	}
 }
 
@@ -1265,32 +1772,74 @@ func stampToString(stamp *gen.IndexBuildIndexingStamp) string {
 func (oi *OnlineIndexer) markReadable(ctx context.Context) error {
 	var firstErr error
 	for _, idx := range oi.targetIndexes {
-		_, err := oi.db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-			store, err := oi.openStore(rtx)
-			if err != nil {
-				return nil, err
+		if oi.retiredBuildTargets[idx.Name] {
+			continue
+		}
+		var err error
+		attempts := max(int64(1), oi.policy.GetPendingWriteQueueIndexesMaxDrainAttempts())
+		queuedInSession := false
+		for _, queued := range oi.queuedIndexes {
+			if queued.Name == idx.Name {
+				queuedInSession = true
+				break
 			}
-			// Java IndexingBase.markIndexReadableForIndex (IndexingBase.java:322-326)
-			// picks between the two marks on the policy, NOT unconditionally:
-			//   policy.shouldAllowUniquePendingState(store)
-			//       ? store.markIndexReadableOrUniquePending(index)
-			//       : store.markIndexReadable(index);
-			// The default policy answers false, so the default outcome of a build that
-			// found duplicates is a failed build, not a quietly pending index.
-			if oi.shouldAllowUniquePendingState(store) {
-				if _, err = store.MarkIndexReadableOrUniquePending(idx.Name); err != nil {
-					return nil, err
-				}
-			} else if _, err = store.MarkIndexReadable(idx.Name); err != nil {
-				return nil, err
+		}
+		for {
+			if err = ctx.Err(); err != nil {
+				return err
 			}
-			// Once the index is readable there is no need for the per-build bookkeeping.
-			// Matches Java's IndexingBase: erase scanned-records/type-stamp/heartbeats in
-			// the same transaction as the mark (eraseAllIndexingDataButTheLockAndRangeSet),
-			// for both READABLE and READABLE_UNIQUE_PENDING.
-			return nil, store.eraseAllIndexingDataButTheLockAndRangeSet(idx)
-		})
-		if err != nil && firstErr == nil {
+			if queuedInSession {
+				err = oi.drainPendingIndexWritesForIndex(ctx, idx, oi.sessionHeartbeat)
+			}
+			if err == nil {
+				err = oi.mergeRequestedIndexes(ctx)
+			}
+			if err == nil {
+				_, err = oi.db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					store, err := oi.openStore(rtx)
+					if err != nil {
+						return nil, err
+					}
+					// Java IndexingBase.markIndexReadableForIndex (IndexingBase.java:322-326)
+					// picks between the two marks on the policy, NOT unconditionally:
+					//   policy.shouldAllowUniquePendingState(store)
+					//       ? store.markIndexReadableOrUniquePending(index)
+					//       : store.markIndexReadable(index);
+					// The default policy answers false, so the default outcome of a build that
+					// found duplicates is a failed build, not a quietly pending index.
+					if oi.shouldAllowUniquePendingState(store) {
+						if _, err = store.MarkIndexReadableOrUniquePending(idx.Name); err != nil {
+							return nil, err
+						}
+					} else if _, err = store.MarkIndexReadable(idx.Name); err != nil {
+						return nil, err
+					}
+					// Once the index is readable there is no need for the per-build bookkeeping.
+					// Matches Java's IndexingBase: erase scanned-records/type-stamp/heartbeats in
+					// the same transaction as the mark (eraseAllIndexingDataButTheLockAndRangeSet),
+					// for both READABLE and READABLE_UNIQUE_PENDING.
+					return nil, store.eraseAllIndexingDataButTheLockAndRangeSet(idx)
+				})
+			}
+			attempts--
+			// A non-empty queue is worth another attempt only when this session
+			// drains it, as Java re-drains its queued indexes. A MARK_READABLE
+			// session publishes a WRITE_ONLY_WITH_QUEUE index it never drained;
+			// Java's store erases the queue as it marks the index readable, losing
+			// the queued writes, while Go's MarkIndexReadable refuses a non-empty
+			// queue with PendingWrites. Retrying that refusal would only repeat it,
+			// so it is returned at once.
+			var notBuilt *IndexNotBuiltError
+			var conflict fdb.Error
+			retry := (errors.As(err, &notBuilt) && notBuilt.PendingWrites && queuedInSession) || (errors.As(err, &conflict) && conflict.Code == 1020)
+			if err == nil || attempts <= 0 || !retry {
+				break
+			}
+			err = nil
+		}
+		if err == nil {
+			oi.retireBuildTarget(idx)
+		} else if firstErr == nil {
 			firstErr = err
 		}
 	}
@@ -1311,14 +1860,20 @@ func (oi *OnlineIndexer) markReadable(ctx context.Context) error {
 func (oi *OnlineIndexer) buildRange(ctx context.Context) (int64, bool, error) {
 	var recordsProcessed int64
 	var hasMore bool
+	var mergeRequests []*Index
 
 	_, err := oi.db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 		// Reset on retry — previous attempt's values are stale.
 		recordsProcessed = 0
+		mergeRequests = nil
 		hasMore = false
 
 		store, err := oi.openStore(rtx)
 		if err != nil {
+			return nil, err
+		}
+
+		if err := oi.validateBuildSession(store); err != nil {
 			return nil, err
 		}
 
@@ -1379,6 +1934,12 @@ func (oi *OnlineIndexer) buildRange(ctx context.Context) (int64, bool, error) {
 				break
 			}
 
+			if oi.allTargetIndexesIdempotent() {
+				if err := store.AddRecordReadConflict(rec.PrimaryKey); err != nil {
+					return nil, err
+				}
+			}
+
 			// Update each target index that applies to this record.
 			for _, idx := range oi.targetIndexes {
 				if !oi.shouldIndexRecordForIndex(rec, idx) {
@@ -1419,7 +1980,7 @@ func (oi *OnlineIndexer) buildRange(ctx context.Context) (int64, bool, error) {
 
 		for _, idx := range oi.targetIndexes {
 			rangeSet := NewIndexingRangeSet(store.subspace, idx)
-			if _, err := rangeSet.InsertRange(rtx.Transaction(), rangeBeginBytes, rangeEndBytes, true); err != nil {
+			if err := insertIndexBuildRange(rangeSet, rtx.Transaction(), idx, rangeBeginBytes, rangeEndBytes); err != nil {
 				return nil, fmt.Errorf("mark range built for %q: %w", idx.Name, err)
 			}
 		}
@@ -1432,9 +1993,13 @@ func (oi *OnlineIndexer) buildRange(ctx context.Context) (int64, bool, error) {
 			}
 		}
 
+		mergeRequests = store.GetIndexDeferredMaintenanceControl().GetMergeRequiredIndexes()
 		return nil, nil
 	})
 
+	if err == nil {
+		oi.mergeRequiredIndexes = mergeRequests
+	}
 	return recordsProcessed, hasMore, err
 }
 
@@ -1447,7 +2012,7 @@ func (oi *OnlineIndexer) buildRange(ctx context.Context) (int64, bool, error) {
 // Matches Java's IndexingByRecords/IndexingByIndex/IndexingMultiTargetByRecords
 // compileSingleTargetLegacyIndexingTypeStamp()/compileTargetIndexesLegacyIndexingTypeStamp().
 func (oi *OnlineIndexer) buildIndexingStamp() *gen.IndexBuildIndexingStamp {
-	if oi.sourceIndex != nil {
+	if oi.buildsByIndex() {
 		return &gen.IndexBuildIndexingStamp{
 			Method:                         gen.IndexBuildIndexingStamp_BY_INDEX.Enum(),
 			SourceIndexSubspaceKey:         tuple.Tuple{oi.sourceIndex.SubspaceTupleKey()}.Pack(),
@@ -1455,7 +2020,7 @@ func (oi *OnlineIndexer) buildIndexingStamp() *gen.IndexBuildIndexingStamp {
 		}
 	}
 
-	if len(oi.targetIndexes) == 1 && !oi.mutual {
+	if len(oi.targetIndexes) == 1 && !oi.buildsMutually() {
 		return &gen.IndexBuildIndexingStamp{
 			Method: gen.IndexBuildIndexingStamp_BY_RECORDS.Enum(),
 		}
@@ -1469,7 +2034,7 @@ func (oi *OnlineIndexer) buildIndexingStamp() *gen.IndexBuildIndexingStamp {
 	}
 
 	method := gen.IndexBuildIndexingStamp_MULTI_TARGET_BY_RECORDS
-	if oi.mutual {
+	if oi.buildsMutually() {
 		method = gen.IndexBuildIndexingStamp_MUTUAL_BY_RECORDS
 	}
 
@@ -1487,10 +2052,12 @@ func (oi *OnlineIndexer) buildIndexingStamp() *gen.IndexBuildIndexingStamp {
 func (oi *OnlineIndexer) buildRangeByIndex(ctx context.Context) (int64, bool, error) {
 	var recordsProcessed int64
 	var hasMore bool
+	var mergeRequests []*Index
 
 	_, err := oi.db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 		// Reset on retry — previous attempt's values are stale.
 		recordsProcessed = 0
+		mergeRequests = nil
 		hasMore = false
 
 		store, err := oi.openStore(rtx)
@@ -1498,21 +2065,27 @@ func (oi *OnlineIndexer) buildRangeByIndex(ctx context.Context) (int64, bool, er
 			return nil, err
 		}
 
-		// Validate source index is still scannable.
-		if !store.IsIndexScannable(oi.sourceIndex.Name) {
-			return nil, fmt.Errorf("online indexer: source index %q is not scannable", oi.sourceIndex.Name)
+		if err := oi.validateBuildSession(store); err != nil {
+			return nil, err
 		}
 
 		// FormatVersion 10 check: non-idempotent indexes cannot be built from a source
 		// index on stores with format version < CHECK_INDEX_BUILD_TYPE_DURING_UPDATE.
 		// On older format versions, UpdateWhileWriteOnly uses primary key range set checks
-		// which are incorrect for source-index-based builds.
-		// Matches Java's IndexingByIndex.validateSourceAndTargetIndexes().
-		if store.GetFormatVersion() < formatVersionCheckIndexBuildType {
-			if !isIndexIdempotent(oi.primaryIndex()) {
-				return nil, fmt.Errorf("online indexer: cannot build non-idempotent index %q from source index on format version %d (requires >= %d)",
-					oi.primaryIndex().Name, store.GetFormatVersion(), formatVersionCheckIndexBuildType)
-			}
+		// which are incorrect for source-index-based builds. Both this and the
+		// scannability check below are Java IndexingByIndex.buildRangeOnly's
+		// validateOrThrowEx failures, which the build catcher answers by falling
+		// back to a records scan.
+		if store.GetFormatVersion() < formatVersionCheckIndexBuildType && !isIndexIdempotent(oi.primaryIndex()) {
+			return nil, oi.sourceValidationError("target index is not idempotent")
+		}
+
+		state, err := store.readIndexState(oi.sourceIndex.Name)
+		if err != nil {
+			return nil, err
+		}
+		if !state.IsScannable() {
+			return nil, oi.sourceValidationError("source index is not scannable")
 		}
 
 		rangeSet := NewIndexingRangeSet(store.subspace, oi.primaryIndex())
@@ -1591,6 +2164,11 @@ func (oi *OnlineIndexer) buildRangeByIndex(ctx context.Context) (int64, bool, er
 				continue
 			}
 
+			if oi.allTargetIndexesIdempotent() {
+				if err := store.AddRecordReadConflict(rec.PrimaryKey); err != nil {
+					return nil, err
+				}
+			}
 			if err := maintainer.Update(nil, rec); err != nil {
 				return nil, fmt.Errorf("index record pk=%v: %w", rec.PrimaryKey, err)
 			}
@@ -1611,7 +2189,7 @@ func (oi *OnlineIndexer) buildRangeByIndex(ctx context.Context) (int64, bool, er
 			hasMore = !bytes.Equal(missing.End, rangeSetFinalKey)
 		}
 
-		_, err = rangeSet.InsertRange(rtx.Transaction(), rangeBeginBytes, rangeEndBytes, true)
+		err = insertIndexBuildRange(rangeSet, rtx.Transaction(), oi.primaryIndex(), rangeBeginBytes, rangeEndBytes)
 		if err != nil {
 			return nil, fmt.Errorf("mark range built: %w", err)
 		}
@@ -1621,9 +2199,13 @@ func (oi *OnlineIndexer) buildRangeByIndex(ctx context.Context) (int64, bool, er
 			store.AddBuildProgress(oi.primaryIndex(), recordsProcessed)
 		}
 
+		mergeRequests = store.GetIndexDeferredMaintenanceControl().GetMergeRequiredIndexes()
 		return nil, nil
 	})
 
+	if err == nil {
+		oi.mergeRequiredIndexes = mergeRequests
+	}
 	return recordsProcessed, hasMore, err
 }
 
@@ -1643,7 +2225,7 @@ func isIndexIdempotent(index *Index) bool {
 	case IndexTypeRank:
 		// RANK is idempotent only when !CountDuplicates.
 		// Matches Java's RankIndexMaintainer.isIdempotent().
-		return index.Options[IndexOptionRankCountDuplicates] != "true"
+		return !index.GetBooleanOption(IndexOptionRankCountDuplicates, false)
 	case IndexTypeCount, IndexTypeCountNotNull, IndexTypeCountUpdates, IndexTypeSum:
 		return false
 	default:
@@ -1703,6 +2285,10 @@ func (oi *OnlineIndexer) shouldIndexRecordForIndex(rec *FDBStoredRecord[proto.Me
 
 // openStore opens an FDBRecordStore for the current transaction.
 func (oi *OnlineIndexer) openStore(rtx *FDBRecordContext) (*FDBRecordStore, error) {
+	return oi.openStoreWithPreflight(rtx, nil)
+}
+
+func (oi *OnlineIndexer) openStoreWithPreflight(rtx *FDBRecordContext, preflight func(*FDBRecordStore) error) (*FDBRecordStore, error) {
 	// The format version rides along with every store this indexer opens. Java
 	// threads it the same way, by reusing the caller's record-store builder
 	// (IndexingCommon.getRecordStoreBuilder), so an indexer cannot silently open a
@@ -1717,7 +2303,7 @@ func (oi *OnlineIndexer) openStore(rtx *FDBRecordContext) (*FDBRecordStore, erro
 	if oi.formatVersion != nil {
 		sb = sb.SetFormatVersion(*oi.formatVersion)
 	}
-	return sb.Open()
+	return sb.openWithPreflight(preflight)
 }
 
 // BlockIndex sets the block flag on the indexing stamp for all target indexes.
@@ -1806,7 +2392,11 @@ func (oi *OnlineIndexer) MarkReadableIfBuilt(ctx context.Context) (bool, error) 
 			return nil, err
 		}
 		for _, idx := range oi.targetIndexes {
-			if store.IsIndexReadable(idx.Name) {
+			state, err := store.readIndexState(idx.Name)
+			if err != nil {
+				return nil, err
+			}
+			if state == IndexStateReadable {
 				continue
 			}
 			rangeSet := NewIndexingRangeSet(store.subspace, idx)

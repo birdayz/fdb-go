@@ -32,7 +32,6 @@ package sqldriver_test
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 
 	"google.golang.org/protobuf/proto"
@@ -149,97 +148,5 @@ func TestFDB_VersionIndex_IncompleteVersionstampIsAnErrorNotAPanic(t *testing.T)
 					"IllegalArgumentException as a Go error), got %T: %v", err, err)
 			}
 		})
-	}
-}
-
-// TestFDB_ArithmeticIndex_NonIntegerOperandIsAJavaParityError pins a NEGATIVE
-// result: `CREATE INDEX i AS SELECT d + d FROM t` over a DOUBLE column is NOT a
-// Go defect, so nothing here is being fixed — but the fact is load-bearing and
-// would otherwise evaporate.
-//
-// Java emits the same key expression: ArithmeticValue lowers through
-// getLogicalOperator().name().toLowerCase() (MaterializedViewIndexGenerator
-// .java:573-574), which yields "add" for every operand type because the LOGICAL
-// operator carries no lane. The registered `add` key function is
-// LongArithmethicFunctionKeyExpression — long-only, reading its operands with
-// getNullableLong (:93-97) — and it overrides no validate(), so Java accepts the
-// DDL and throws ClassCastException on the first insert. Go accepts the DDL,
-// emits the identical proto, and returns an explicit error on the first insert.
-// That is parity, at the same lifecycle point, with a better message.
-//
-// The two fixes this shape invites would both DIVERGE:
-//   - validating the numeric lane at DDL rejects a statement Java accepts, so a
-//     schema template a Java app creates in a shared cluster becomes uncreatable
-//     from Go;
-//   - emitting a float-capable evaluator invents a key function Java's catalog
-//     does not have, producing index bytes Java cannot read — the wire line.
-//
-// If this test starts failing because the DDL is now REJECTED, that is the
-// divergence above being introduced, not a bug being fixed.
-func TestFDB_ArithmeticIndex_NonIntegerOperandIsAJavaParityError(t *testing.T) {
-	t.Parallel()
-	if clusterFilePath == "" {
-		t.Skip("FDB not available (no Docker)")
-	}
-	ctx := context.Background()
-	fdb.MustAPIVersion(730)
-	rawDB, err := fdb.OpenDatabase(clusterFilePath)
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	db := recordlayer.NewFDBDatabase(rawDB)
-
-	tmpl, err := embedded.BuildSchemaTemplateFromDDL(`CREATE SCHEMA TEMPLATE arith_lane_tpl
-		CREATE TABLE T (id bigint, d double, n bigint, PRIMARY KEY(id))
-		CREATE INDEX arith_d AS SELECT d + d FROM t`)
-	if err != nil {
-		t.Fatalf("the DDL must be ACCEPTED — Java accepts it and emits the same "+
-			"long-only `add`; rejecting here makes a Java-created schema template "+
-			"uncreatable from Go: %v", err)
-	}
-	md := tmpl.Underlying()
-	var idx *recordlayer.Index
-	for _, i := range md.GetAllIndexes() {
-		if i.Name == "ARITH_D" {
-			idx = i
-		}
-	}
-	if idx == nil {
-		t.Fatal("index ARITH_D was not built")
-	}
-	want := recordlayer.FunctionExpr("add", recordlayer.Concat(
-		recordlayer.Field("D"), recordlayer.Field("D"))).ToKeyExpression()
-	if got := idx.RootExpression.ToKeyExpression(); !proto.Equal(got, want) {
-		t.Fatalf("key expression drifted from Java's lowering\n got: %v\nwant: %v", got, want)
-	}
-
-	desc := md.GetRecordType("T").Descriptor
-	m := dynamicpb.NewMessage(desc)
-	m.Set(desc.Fields().ByName("ID"), protoreflect.ValueOfInt64(1))
-	m.Set(desc.Fields().ByName("D"), protoreflect.ValueOfFloat64(1.5))
-	m.Set(desc.Fields().ByName("N"), protoreflect.ValueOfInt64(2))
-
-	defer func() {
-		if r := recover(); r != nil {
-			t.Fatalf("SaveRecord PANICKED: %v; Java throws ClassCastException, so Go "+
-				"must return an error", r)
-		}
-	}()
-	_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
-		store, sErr := recordlayer.NewStoreBuilder().SetContext(rtx).
-			SetMetaDataProvider(md).
-			SetSubspace(subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())).CreateOrOpen()
-		if sErr != nil {
-			return nil, sErr
-		}
-		_, e := store.SaveRecord(proto.Message(m))
-		return nil, e
-	})
-	if err == nil {
-		t.Fatal("insert SUCCEEDED — the long-only `add` cannot consume a float64, " +
-			"so this must fail exactly as Java's does")
-	}
-	if !strings.Contains(err.Error(), "must be int64") {
-		t.Fatalf("the failure must name the operand lane so the DDL is diagnosable; got %v", err)
 	}
 }

@@ -3836,9 +3836,16 @@ func TestScalarProtoToGo_Uint32Kinds(t *testing.T) {
 	} {
 		t.Run(kind.String(), func(t *testing.T) {
 			t.Parallel()
+			// protobuf-java's signed Integer: all 32 bits set is -1.
 			got := values.ProtoScalarKindToRowValue(kind, protoreflect.ValueOfUint32(math.MaxUint32))
-			if got != int64(math.MaxUint32) {
-				t.Errorf("got %v (%T), want int64(%d)", got, got, uint32(math.MaxUint32))
+			if got != int64(-1) {
+				t.Errorf("got %v (%T), want int64(-1)", got, got)
+			}
+			if got := values.ProtoScalarKindToRowValue(kind, protoreflect.ValueOfUint32(3000000000)); got != int64(-1294967296) {
+				t.Errorf("3000000000: got %v (%T), want int64(-1294967296)", got, got)
+			}
+			if got := values.ProtoScalarKindToRowValue(kind, protoreflect.ValueOfUint32(42)); got != int64(42) {
+				t.Errorf("42: got %v (%T), want int64(42)", got, got)
 			}
 		})
 	}

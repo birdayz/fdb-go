@@ -1,0 +1,90 @@
+**NAK: RFC-257 WS-E design v10 (Graefe lens)**
+
+- **Tree:** `4d41fb8144ee269e1f5cd5e145f9f54ab0e0e99d`
+- **Design:** `rfcs/257-java-upgrade-audit/ws-e-design.md`, SHA-256 `df8dfdc91782423462b8ef3855db836c72406decb7408098199b8033b55938a6`, 3294 lines. I recomputed the hash and line count from `git show`.
+- **Java:** 4.14.2.0 (`fdacd162a`).
+- **Method:** read-only; I ran nothing. I read the three v9 verdicts, the v9→v10 diff, the sections it touches (4.1, 4.3, 5.4, 8), the WS-F design, the oracle and its records, and the sources cited below.
+
+**Verified**
+- **Oracle v10:** 12 pins. Two runs each report "Ran 10 of 58", 10 passed (`wse11-all1.log:2393`, `wse11-all2.log:2397`). M10 reddens only `nan_then_eq_where` (`wse11-M10.log:96,116`). Both checksum checks give 10 OK lines and no other. 5 of the 10 source hashes match the tree blobs.
+- **Memo dump:** 32 IDX_AB lines and no `[=, =]` access. That supports "never built", measured.
+- **Partition arm:**
+  - Full arm: 158 FAIL lines (D-suites).
+  - Explode-only-predicate variant: 54F02 at the 150,000 task cap (`E-suites:23342`).
+  - Scoped arm: fails only the four yamsql files and the two zero-widening subtests (G-suites).
+- **Java:**
+  - The "do it in lower" arm (`PartitionSelectRule.java:201-205`).
+  - The in-union's product and first-source-outermost order (`RecordQueryInUnionPlan.java:151-175, 331-353`).
+  - One predicate-free select per in-union (`ImplementInUnionRule.java:78-117`).
+  - Normalize and PredicateToLogicalUnion in PLANNING (`PlanningRuleSet.java:107, 188`).
+- **Registrations:** DecorrelateValuesRule at `default_rules.go:159` and `:400` (the chain subsumes :400, and WS-F D12 drops the other).
+- **Resolved v9 findings:**
+  - Graefe: H1 (#7 labelled HYPOTHESIS), H2, M1, M2, M3 and the LOWs.
+  - Torvalds: H1, H2, M1, M2, M4, M5 and L1–L6.
+  - Storage: H1, M2–M5 and L1–L3.
+
+## HIGH
+
+**H1. A NaN known only at runtime, at a non-terminal component, has no mechanism (1030-1045).**
+- The design says: "every later comparison is a residual filter over the scan".
+- A plan-level residual only works for a literal NaN, which Go knows at planning. For `nan_in_then_in`, a bound `f = ?`, or a comparand source, the plan has already put `[EQUALS q0, EQUALS q1]` into the scan. The binder (`scan_range_binding.go:388-392`) only builds ranges; it cannot filter entries.
+- The two ways out are both unstated, and each is a Graefe-gated choice:
+  - **(a) Binder-level entry filter:** its continuation semantics and scan-limit accounting need to be specified.
+  - **(b) Never make a component after a possibly-NaN float equality sargable:** every dynamic float composite equality loses its second key component, and the target's nested shape over DOUBLE columns is lost.
+- The third option, refusing as today, leaves `nan_in_then_in_where` failing.
+- This is the v9 Torvalds M3 / storage M1 finding, still half-resolved. State the mechanism, and for (b) measure the plan corpus.
+
+## MEDIUM
+
+**M1. The NaN extension's SOURCE premise is false (1026-1028, 1047, 1051, 3265).**
+- The claim that every NaN a statement produces is "`CAST('NaN' AS DOUBLE)`'s one pattern" does not hold in Go:
+  - Go's `CAST('NaN' AS DOUBLE)` is `strconv.ParseFloat` = `0x7ff8000000000001` (`values.go:4639`; `embedded/utilities.go:19-27`).
+  - `CAST(CAST('NaN' AS FLOAT) AS DOUBLE)` is `0x7ff8000000000000`.
+  - Java's `Double.parseDouble` gives `0x7ff8000000000000`.
+- On a shared cluster:
+  - The target's index probe misses rows that Go SQL wrote.
+  - A UNIQUE index accepts one NaN row per engine.
+  - So "the rows are the same" and "two canonical NaNs" are wrong.
+- This write-side divergence (different stored bytes for the same SQL) has no entry: zero hits in DIVERGENCES.md and TODO.md.
+- **Fix:** make Go's SQL NaN produce Java's bits, which is the wire rule, or restate the declaration and test NaNs written by both engines, including the UNIQUE case.
+
+**M2. The RFC-182 union leg is handed to WS-F, which does not carry it (2407-2410).**
+- The design says "WS-F's census covers the RFC-182 leg".
+- `ws-f-design.md` has 0 lines matching `182|PreservingMembers|No finals`, against 10 for "census" as the control.
+- Its D7 ("any child with none → no yield") keeps groups without finals, so the crossing that preserves members (`unified_tasks.go:98-108`) survives, unpruned.
+- `union_leg_type_annulling_fold_where` then rests on SOURCE. Make it an explicit WS-F dependency.
+
+**M3. The negative control needs a configuration WS-F retires (2701).**
+- The test runs "with WS-F's physical prune off (its test-only option)".
+- After that option becomes the default, D9–D12 "never run without it", the designated final is deleted, and `Verify(==1)` returns an error (`ws-f-design.md:355-378`).
+- WS-E lands after that point, so the control cannot run. Build it by ranking the two members directly, or have WS-F keep a no-prune test path.
+
+**M4. #7 is load-bearing, not an open refinement (803-826).**
+- With the arm, #7 moves from a streaming `FlatMap(outer=InUnion(IndexScan(IDX_VAL,[=])))` to `InMemorySort(InJoin(FlatMap…))` (`wse11-explode-F.diff:5-8`).
+- That happens because the arm replaces the upper placement that produced the old plan.
+- So step 5 cannot land without #7's derivation. Say so; add a guard that no ordered two-IN query gains an InMemorySort; and probe the hypothesis now. A task observer on the compensation member of the prototype would test it, instead of naming D5.
+
+## LOW
+
+1. **Rung claims (2427, 2449).**
+   - "Neither of which touches those rungs" is false: WS-F 2.3's second change is the level rung's tiebreak (`comparePredicateCountByLevel`, `planning_cost_model.go:136`), and WS-E adds a tautology filter to the conjunct rung.
+   - The physical prune ranks every member of a group, not "the same members" as v8's class prune.
+   - This is harmless for original/fold pairs that share children, but re-run WS-F's zero-lost-plan census on WS-E's comparator change.
+2. **The multi-binding executor's "concatenated without them" (805, 824)** targets an arm that WS-F 4.3 deletes.
+3. **Seed-17 task counts are not traceable (783).** 42,723, 382,371 and 43,919 appear in no named record; the E log shows only the cap. Cite the log.
+4. **The partition scoping is "declared" with no named home (784).** Name the DIVERGENCES.md entry and a comment at the rule site. Add the unit case "every upper an explode, but one depends on the lower → upper".
+5. **Bare `WHERE X AND X` is a tie row.** The deduplicated `[X]` and `[FALSE]` each have one conjunct; the target collapses duplicates at construction (`SelectExpression.java:708-719`). Pin it in 5.4(g); the design pins only the `id = 5` rows.
+6. **CompareValues' `time.Time` deletion rests on a grep of `system_rows.go` only.** The rows come from `system_tables.go:92`. Scope the check to the row producers.
+
+**Measured vs SOURCE**
+- **Measured:**
+  - The oracle rows, checksum checks and mutation run.
+  - The memo dump and the #7 memo: two-binding InUnion only over IDX_VAL `[*]` (`wse11-twoin-memo.log:13`).
+  - The arm's failure counts and #7's InMemorySort plan.
+- **SOURCE, still hypotheses:**
+  - The cause of #7 (the D5 suspect).
+  - That the physical prune settles the deduplicated-variant, UNIQUE and union-leg rows.
+  - The runtime NaN mechanism.
+  - The NaN-pattern premise, which the tree refutes.
+
+This review is complete, and the verdict is NAK.

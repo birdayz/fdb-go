@@ -145,6 +145,8 @@ func (store *FDBRecordStore) SaveRecordBatch(
 	// Also validate update lock once (same for all records).
 	store.stateMu.RLock()
 	defer store.stateMu.RUnlock()
+	store.indexStateView.maintenance.RLock()
+	defer store.indexStateView.maintenance.RUnlock()
 	if err := store.validateRecordUpdateAllowedLocked(); err != nil {
 		return nil, err
 	}
@@ -201,7 +203,7 @@ func (store *FDBRecordStore) SaveRecordBatch(
 			if oldRecordExists {
 				oldsizeInfoPtr = &oldsizeInfo
 			}
-			if err := saveWithSplit(tx, recordsSubspace, p.primaryKey, data,
+			if err := saveWithSplit(store.context, tx, recordsSubspace, p.primaryKey, data,
 				splitEnabled, false, oldsizeInfoPtr, &newsizeInfo); err != nil {
 				return nil, fmt.Errorf("record %d: save: %w", i, err)
 			}

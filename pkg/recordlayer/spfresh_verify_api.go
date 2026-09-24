@@ -38,8 +38,12 @@ func SearchSPFreshIndex(store *FDBRecordStore, indexName string, queryVector []f
 	if idx.Type != IndexTypeVectorSPFresh {
 		return nil, fmt.Errorf("spfresh search: index %q has type %q, not %q", indexName, idx.Type, IndexTypeVectorSPFresh)
 	}
-	if !store.IsIndexScannable(indexName) {
-		return nil, &IndexNotReadableError{IndexName: indexName, CurrentState: store.GetIndexState(indexName)}
+	state, err := store.readIndexState(indexName)
+	if err != nil {
+		return nil, err
+	}
+	if !state.IsScannable() {
+		return nil, &IndexNotReadableError{IndexName: indexName, CurrentState: state}
 	}
 	// Validate the query dimension before searching — searchCurrentGeneration's
 	// distance kernel slices centroid vectors to len(queryVector) and would

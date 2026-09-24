@@ -1,0 +1,83 @@
+**NAK.** Tree `aa29308afd7637d7e98a42ef1d108335013ead8c`. I recomputed the design hash from the tree: `33a8fc1e35d537978db7e69ad40a140870911b3829df9d6a108e6bc7abdbf608`, 2532 lines. Java is at `fdacd162a`. This was a read-only review: I ran no tests, probes or mutations.
+
+## What holds
+- **Option order.** `indexFromProto` now reads type and options before the root and the key (`metadata_proto.go:843-855`), matching `Index.java:198-225`, including the legacy `index_type` branch. The duplicate-key refusal matches Guava's first-duplicate behaviour.
+- **Marking in place.** `LegacyUnionTemplateError` marks the loader's own error, so every wrapper survives.
+- **Measurements checked against the logs:**
+  - WS-J "Ran 31 of 57" on both passes, with identical `WSJ-TALLY` lines. Pass 1 has 180 `md-canonical-differ(records,record_types)` lines.
+  - WSJIXK's four shapes, the repeated option included, on both engines. The WSJTT store-side and load-side suffixes.
+  - `TestStoredIndexSubspaceKeyIsReadAsJavaReadsIt` (7 subtests) and `TestReusedIndexMessageKeepsAnEmptySubspaceKey` pass, run uncached.
+  - Six spot-check hashes match the tree. The `just test` tree differs from the candidate only in docs and `metadata_proto_test.go`, which then ran uncached.
+  - The VT-pool grep and its control reproduce.
+
+## HIGH
+**1. The restore's two-history check is too narrow (design :618-626).**
+- It compares only record-type keys and union numbers.
+- The design's own hazard (:555-559) is a foreign version that "differs only in a predicate, with matching index versions". That passes this check.
+- Restore (t,3) beside a fresh v1 with the same tables. Latest becomes 3. A schema bound to v1 is then repaired onto v3. The rebind validator admits the predicate change, and the sparse index is misread silently.
+- **Fix:** compare the carry rule's index invariants per name (subspace key, added version, and at equal last-modified versions the compared fields including the predicate) plus FormerIndexes. Add that case to the tests.
+
+## MEDIUM
+**2. Step (ii) of the edited-file route does not use step (i)'s framing (:2113-2120 vs :2137-2141).**
+- `unionCorrespondence` pairs union fields by their declared TYPE and refuses any non-message union field (`metadata_evolution_validator.go:318-322`).
+- The name-first framing step (i) adopts is exactly where name and type disagree. The pre-upgrade writer framed records by field NUMBER with a raw BytesType tag (`e48f5b496:store.go:2072`).
+- The pinned (d) shape "a UnionDescriptor with a scalar `_T`" (`metadata_validate_records_test.go:434`) is therefore refused as "field in union is not a message type". So are the non-message fields step (i) deliberately suspends. None of these edits can pass, so ":2093 the way out of every shape" is false.
+- A `_X` field whose type is Y is compared as Y.
+- **Fix:** pair from the loaded record types' union fields, not the old union's field types, or declare these shapes routeless. Test the scalar `_T` shape.
+
+**3. R1's bound is false for predicates and the record count key (:2157-2160).**
+- Neither Go's `Build` nor Java's `MetaDataValidator` validates index predicates or the record count key against descriptors.
+- `resolveFieldPath` returns "unset" for a missing field (`index_predicate.go:303-311`).
+- So a predicate through a removed holder silently changes the sparse index's membership, with no rebuild.
+- **Fix:** add an explicit R1 check over predicate paths and the count key, and test both.
+
+**4. R2 cannot pass under the store's default validator (:2137, :2161-2166).**
+- `DefaultMetaDataEvolutionValidator` has `allowIndexRebuilds=false` (`:72`; `metadata_store.go:32`).
+- The CHANGED index R2 requires is refused as "last modified version of index changed" (`:689-690`).
+- The planned test "R2 admitted with the index CHANGED" fails as specified.
+- **Fix:** state the option the route sets, or add it as a third relaxation scoped to R2's indexes.
+
+**5. The in-memory lock-order premise is false (:966-970).**
+- `SaveSchema` checks the template before taking `c.mu` (`store_catalog.go:86-101`).
+- `RepairSchema` releases `c.mu` before `LoadSchemaTemplate` (`:142-147`).
+- No existing path holds both mutexes, and SaveSchema's check-then-bind is not atomic against the new guarded `DeleteTemplateVersion`.
+- **Fix:** specify that both methods hold `c.mu` across their template reads, and add a `-race` interleaving test.
+
+## LOW
+6. **`HeldBy` undercovers the SQL family** (`metadata_proto.go:495-514`; design :1966).
+   - A STRUCT nested in a STRUCT, or a nullable-array wrapper holding UnionDescriptor, gets `HeldBy=""`. Those SQL templates are told the records-file remedy.
+   - Reachability from the union found is the right discriminator.
+   - The WSJTT spec asserts only `NotTo(BeEmpty())` (`ws_j_index_fidelity_conformance_test.go:2993`), and the unit test sets `HeldBy` by hand.
+7. **WIDENED under the lane check contradicts (m) and 3.2** (:1533-1535 vs :1005-1008, :2469-2473).
+   - A pre-F2 `v & 1` over a DOUBLE, restated at `int_value`, is WIDENED and then refused with 42F59.
+   - Every pre-upgrade tenant holds the `long_value` form.
+   - State this, and pin it.
+8. **The "one write entry" drops Execute's checks** (:1537; `save_schema_template.go:33-41`).
+   - `v′ ≤ latest` and the relational validator run in `Execute`, not in `CreateTemplate`.
+   - A library caller can store a carried version below latest, with a metadata version above latest's.
+9. **The carried route maps (d) "as the load does"** (:1525).
+   - A new version that introduces (d) gets the Stored remedy ("cannot load a stored…"), although it is being stored.
+10. **Stale text:**
+    - §9 (p) (:2481-2484) still has v10's route: `SaveMigratedLegacyMetaData` for edited files, UnionDescriptor holders only.
+    - §4 says Go lacks "former index key used for new index" (:1606-1611), and step 3 still lists it (:2408). It is at `metadata_evolution_validator.go:508` on this tree.
+    - The message quote at :1723-1725 and the cites at :833/:865 (`:513-517`, `:535-537`, `:567-569`) point at code WS-C revision 7 moved.
+11. **R1's "no later version can reuse it" (:2155) overclaims.** `validateMessageDescriptor` compares fields, never reserved ranges.
+12. **Evidence.** `TestLegacyUnionTemplateErrorRemedies` is in the target's `srcs`, but `ev11c.sh` used `--test_output=errors` and no per-test log survives. Its run is inferred, not observed.
+
+## v10 findings
+- **Resolved:**
+  - Graefe 2, 5 and 9;
+  - storage 2 and 6;
+  - Torvalds 4, 6, 8 and 9;
+  - the FormerIndex, `SetSubspaceKey(nil)` and rendering items are on this tree under WS-C 7.7 and gated there.
+- **Only partly resolved:**
+  - Graefe 1 / storage 1 / Torvalds 1 (finding 2);
+  - storage 4 (finding 1);
+  - Torvalds 3 (finding 3);
+  - Graefe 7 / Torvalds 7 (finding 5);
+  - Graefe 8 (finding 6);
+  - Graefe 3 (finding 8).
+
+## Measured vs source-only
+- **Measured:** everything listed under "What holds".
+- **Source-only:** findings 1-11, and everything not yet built in steps 1-3 (`loadStoredAsWritten`, R1/R2, the in-memory wiring, the restore's reads and check, the carried `CreateTemplate`).

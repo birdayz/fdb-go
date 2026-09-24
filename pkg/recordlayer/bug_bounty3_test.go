@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"context"
+	"errors"
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -336,9 +337,11 @@ var _ = Describe("Bug Bounty Round 3", func() {
 		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
 		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
 
+		// Java's Then constructor throws at the concat (ThenKeyExpression.java:63-65).
 		_, err := builder.Build()
-		Expect(err).To(HaveOccurred(),
-			"FIX: Build() should reject Concat() with zero children as primary key")
+		var rcErr *RecordCoreError
+		Expect(errors.As(err, &rcErr)).To(BeTrue(), "%T: %v", err, err)
+		Expect(rcErr.Message).To(Equal("Then must have at least 2 children"))
 	})
 
 	It("BUG2: COUNT_NOT_NULL should only check null on grouped portion, not grouping columns", func() {

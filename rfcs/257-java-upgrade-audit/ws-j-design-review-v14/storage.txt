@@ -1,0 +1,69 @@
+**NAK.** Tree `e23ae6f5589da822c878fb9ab436db9a09095ef2`; `ws-j-design.md` SHA256 `3308f31a9674a12f79514a357d59694900289454f235ef12e1733fb7dab47254`, 3178 lines (both recomputed). Java is at `fdacd162a`. The review was read-only: I ran no tests, probes or mutations. Most v13 findings are fixed, but three of v14's own additions carry new defects that cross the wire line.
+
+## Measured, and it holds
+- **Oracle:** 61 of 61 on `512ae248`, with an unchanged `WSJ-TALLY` (`oracle.log:2676`, `:6271-6272`). Between `512ae248` and the candidate, `pkg/recordlayer` changes only in `spfresh_write.go`.
+- **Mutations:** m97, m98 and m103 each have marker count 1, exit 3, redden `TestKeyExpressionDeserializationErrorsAreJavas`, and are restored. The `HeldBy` mutant exits 3 and reddens exactly the array-element subtest; its baseline passes 19 subtests.
+
+## v13 findings
+Every v13 finding is answered in the text. These hold on source:
+- **(g) keys:** the target key is the smallest field (`RecordType.java:171-179`) and pre-upgrade Go used the last (e48f5b496 loop and `:1837`).
+- **(ii):** `SetDisallowTypeRenames` refuses a rename (Java `:363-367`), and `:423-426` refuses a changed key.
+- **(iv):** `EnumValue` equality compares name and number, `VectorType` compares precision and dimensions (which is all of `VectorOptions`, `record_metadata_options.proto:63-67`), and `StructType` recurses.
+- **The symmetric carrier arm** is sound, since both carriers store the same tuple bytes.
+- **R2 at stored + 1** is sound.
+- **(x)** has no exit, as declared.
+- **9 (z):** both Go relational builders set explicit keys (`builder.go:522` at e48f5b496, `:523` now).
+- **Paperwork:** the DIVERGENCES.md PENDING entries are at `:3053`, `:3092` and `:3107`, and the TODO block is appended at the end of the file (`:14941`).
+
+## HIGH
+**H1. The store-open probe refuses Java stores, and its remedy re-keys them** (`:2520-2533`, (y) `:3146-3148`).
+- **The skip rule is too narrow.** It skips only when another type has the pre-upgrade number as an EXPLICIT key. Two other cases find records under that number:
+  - **(f) and (g) together:** `{T a = 1; Y _T = 5}`, with top-level T and Y. Pre-upgrade Go keyed T at 5; the target keys Y at 5 by the implicit rule. The probe for T reads Y's rows.
+  - **A type U whose primary key does not start with `recordType()`:** a row with `id = 5` sits in the same range.
+- **Mixed stores:** a store both Java and pre-upgrade Go wrote also trips the probe.
+- **The remedy is stated unconditionally.** An explicit key of 5 is metadata Java reads too, so Java-written T rows under 1 vanish for both engines. One `FDBMetaDataStore` can also serve stores that different engines wrote.
+- **Fix:**
+  - probe only when `RecordMetaData.primaryKeyHasRecordTypePrefix()` holds for the whole metadata (Java `:511-513`);
+  - skip when any type's target key, implicit or explicit, equals the number;
+  - have the route read under today's number (limit 1) and refuse if it finds a row;
+  - make the error's remedy conditional, and declare the shared-metadata-store case.
+
+**H2. 3.6's "Function not defined" at load locks Go out of Java stores it opens today.**
+- **Where the names come from:** Java resolves function names through its ServiceLoader registry (`FunctionKeyExpression.java:117-131`). The Lucene and Geophile spatial modules register their own functions, and so can applications.
+- **What Go does today:** it loads any function name (`key_expression_proto.go:391-400`). It refuses an unknown index type only when it looks up a maintainer (`store.go:1346`), not at load.
+- **After 3.6:** any Java store with a Lucene, spatial or application-function index fails to open in Go. That is the same trade-off v14 used to withdraw `LegacyFramingError`, and the design neither states nor declares it.
+- **The arity check has nothing to read.** Go's registry maps a name to an evaluator with no bounds (`key_expression.go:1531-1546`).
+- **Fix:** decide it — load and fail per index, or refuse and declare it as an owner item. Define where each function's arity bounds come from, and how the public `RegisterFunction` supplies them.
+
+## MEDIUM
+**M1. Four of 3.6's six shapes never reach the constructors on stored bytes.**
+- **Why:** `field_name`, `fan_type` and the Function's fields are proto2 `required` (`record_key_expression.proto:36-37`, `:99-100`). Java parses stored bytes with `parseFrom` (`FDBMetaDataStore.java:329`, `RecordLayerStoreSchemaTemplateCatalog.java:221`), which refuses a missing required field at parse. Go's `proto.Unmarshal` (`metadata_store.go:146`, `:171`, `fdb_template_catalog.go:286`) checks required fields too.
+- **Consequence:** on bytes, "Invalid fan type 7" is unreachable in Java, because an unknown closed-enum value leaves the required field unset. "Invalid null interpretation" (`Key.java:418`) is unreachable for the same reason.
+- **Fix:**
+  - pin the parse-level outcome on both engines;
+  - keep the constructor-level refusals for protos built in memory;
+  - say which layer the JVM oracle measures;
+  - add the wrapping 3.6 omits, the record count key (`RecordMetaDataBuilder.java:260-265`) and the counter faults (`:292-295`).
+- Go's handling of closed enums is a hypothesis; measure it.
+
+**M2. The design names the wrong explicit-key field** (`:2528`, `:2681`, `:2687`).
+- **The problem:** it says `record_type_key`, which is the message option (`record_metadata_options.proto:47`). Java's stored load ignores that option (`setRecords(proto)` passes false, `:381-383`; options are read only at `:897-905`), and Go ignores it on both paths.
+- **Fix:** the route, the migration and the error text must write `RecordType.explicit_key` (`record_metadata.proto:180`, read at `:233-234`).
+- **Related:** 4c's "`SetRecords` keys each type as Java keys it" (`:2480`) is false for a file carrying the option, because Java's `setRecords(FileDescriptor)` processes it (`:420-421`). That divergence is undeclared.
+
+**M3. The storage and operator view is incomplete.**
+- **Unstated:** whether the probe is a snapshot or serializable read, its conflict range, and its cost on every open of a Java store that is never edited.
+- **Nothing to find the affected stores:** operators get no detector for stores in shapes (f) and (g), and no warning at load.
+- **Rolling upgrades:** mixing pre-upgrade and new nodes on such a store writes in divergent framings. That is undeclared.
+- **In-process metadata:** its remedy is `SetRecordTypeKey`, not the route, which cannot reach it.
+
+## LOW
+1. **9 (z) over-claims.** A restore of a version below the latest that commits first does not conflict with `CreateTemplate`: `CreateTemplate`'s reverse read (from `fdb_template_catalog.go:72`) covers only the latest and above. The outcome is safe, but say so. The scan is also not literally "limit 1" (nil scan properties).
+2. **`checkReservedNumbers` pairing is unspecified** for the two legacy writers, whose stored side does not load (`:2635`). State which union pairs the raw stored proto.
+3. **Two claims need scoping:**
+   - (f)'s "framed the same way by both builds" (`:2496`) is wrong, since pre-upgrade Go skipped the field;
+   - "Java never writes under that number" (`:2523`) holds only for histories the validator managed.
+4. **The `HeldBy` mutation is not hash-bound.** It ran on a moving working tree, though the mutated line matches the candidate's `:515`.
+
+## Measured vs source
+**Measured:** the hash, the oracle and the mutations. **From source:** everything else, including H1–M3. Every v14 step is unbuilt.

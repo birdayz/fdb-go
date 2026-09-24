@@ -1,0 +1,72 @@
+[
+  {
+    "kind": "bypass-validation",
+    "exit": 3,
+    "failures": [
+      "TestLatencySampleValidation",
+      "TestLatencySampleValidation/execution_error",
+      "TestLatencySampleValidation/plan_error",
+      "TestLatencySampleValidation/missing_execution",
+      "TestLatencySampleValidation/extra_execution",
+      "TestLatencySampleValidation/no_planning_time",
+      "TestLatencySampleValidation/no_query_time",
+      "TestLatencySampleValidation/no_store_timers",
+      "TestLatencySampleValidation/extra_plan",
+      "TestLatencySampleValidation/no_execution_time",
+      "TestLatencySampleValidation/missing_plan",
+      "TestLatencySampleValidation/wrong_rows"
+    ],
+    "mutated_sha256": "e64e6d7246208939a8ce433f13219899d31dde1ab06f0722d22ecb9792cef660",
+    "command": [
+      "bazelisk",
+      "test",
+      "//pkg/relational/sqldriver/stress:stress_test",
+      "--nocache_test_results",
+      "--test_output=all",
+      "--test_arg=--test.run=^TestLatencySampleValidation$"
+    ]
+  },
+  {
+    "kind": "restored",
+    "exit": 0,
+    "runs": {
+      "TestLatencySampleValidation": 1,
+      "TestLatencySampleValidation/valid": 1,
+      "TestLatencySampleValidation/missing_plan": 1,
+      "TestLatencySampleValidation/extra_plan": 1,
+      "TestLatencySampleValidation/missing_execution": 1,
+      "TestLatencySampleValidation/extra_execution": 1,
+      "TestLatencySampleValidation/plan_error": 1,
+      "TestLatencySampleValidation/execution_error": 1,
+      "TestLatencySampleValidation/wrong_rows": 1,
+      "TestLatencySampleValidation/no_planning_time": 1,
+      "TestLatencySampleValidation/no_execution_time": 1,
+      "TestLatencySampleValidation/no_query_time": 1,
+      "TestLatencySampleValidation/no_store_timers": 1
+    },
+    "passes": {
+      "TestLatencySampleValidation": 1,
+      "TestLatencySampleValidation/valid": 1,
+      "TestLatencySampleValidation/extra_plan": 1,
+      "TestLatencySampleValidation/execution_error": 1,
+      "TestLatencySampleValidation/missing_plan": 1,
+      "TestLatencySampleValidation/missing_execution": 1,
+      "TestLatencySampleValidation/wrong_rows": 1,
+      "TestLatencySampleValidation/extra_execution": 1,
+      "TestLatencySampleValidation/no_store_timers": 1,
+      "TestLatencySampleValidation/plan_error": 1,
+      "TestLatencySampleValidation/no_execution_time": 1,
+      "TestLatencySampleValidation/no_planning_time": 1,
+      "TestLatencySampleValidation/no_query_time": 1
+    },
+    "sha256": "8b814f343ae968396dcc345a721d4ff515f7bee1cd35792a59488d78c2d481e7",
+    "command": [
+      "bazelisk",
+      "test",
+      "//pkg/relational/sqldriver/stress:stress_test",
+      "--nocache_test_results",
+      "--test_output=all",
+      "--test_arg=--test.run=^TestLatencySampleValidation$"
+    ]
+  }
+]

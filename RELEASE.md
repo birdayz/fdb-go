@@ -12,11 +12,15 @@ Tags are `v0.MINOR.PATCH`. Two axes, deliberately decoupled:
   (renamed/removed exported symbols, changed signatures). Patch bumps (`v0.N.P`) are bug fixes and
   additive only. Pin a version and read `CHANGELOG.md` before upgrading.
 - **FDB wire format (the hard line — stable across every tag).** Records, indexes, record versions,
-  continuations, and split records stay **byte-compatible with Java `fdb-record-layer-core`
-  4.12.11.0** in *every* release, pre-1.0 included. Go, C, and Java apps share one cluster and read
+  continuations, and split records must stay **byte-compatible with the Java
+  `fdb-record-layer-core` target declared by each release**, pre-1.0 included. Go, C, and Java apps share one cluster and read
   each other's data; a release that broke that would be a bug, not a minor bump. Any change that
   *did* touch persisted bytes would be called out explicitly in the `CHANGELOG.md` **Compatibility**
   block and gated on conformance + cross-engine differential + binding-stress proof.
+
+The current development target is Java **4.14.2.0**. Its RFC-257 upgrade is incomplete
+and red; it cannot be released on the strength of the earlier target's verification.
+Tagged releases retain their own dependency and compatibility evidence.
 
 The required dependency versions for a release (Java Record Layer, FDB C++ client, Go) are the pins
 in `MODULE.bazel` / `go.mod`; the CI doc-consistency guard (`pkg/docscheck`) fails if a living doc

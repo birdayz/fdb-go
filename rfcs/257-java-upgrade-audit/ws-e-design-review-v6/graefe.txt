@@ -1,0 +1,90 @@
+**NAK: RFC-257 WS-E design v6**
+
+- **Tree:** `66663d5d8d1946a4891985e75c682cb98a18609f`
+- **Design:** `ws-e-design.md`, SHA-256 `a0703c84462f9a6dc3e47ceee69f64b2ea5c54a9c597b1b95c1fa54b1b79b853`, 2154 lines. I recomputed both and they match.
+- **Java:** `fdacd162a9c8…`, read from `.git/HEAD`.
+- **Method:** read-only. SOURCE marks a conclusion I drew from reading code, not from a run.
+
+**Checked and correct**
+- **Evidence:** 5 of the 9 source hashes match the tree blobs: the spec, `sql_plan_steps.java`, `go_runner.go`, `go_runner_test.go` and `BUILD.bazel`. M1 shows "Ran 1 of 32", failed. The DATE baseline test passes, and its mutation fails.
+- **Go claims:** the 19 translator folds, the dead `DefaultFolder`/`SimplifyAll`, and the driver's one caller (`rule_eliminate_null_on_empty.go:153`) are all as the design states.
+- **Java claims that match the design:**
+  - the ConstantFoldingRuleSet contents and QueryPredicateSimplificationRule (`:105-131`);
+  - `foldPredicateAtNull` and both `EffectiveConstant.from` overloads;
+  - the tautology filter (`NormalizedResidualPredicateProperty.java:82-121`) and the RewritingCostModel rungs;
+  - `isSupportedExplodeValue`/`computeInSource`, JDK `UUID.fromString`, `stringToEnumValue`, and CAST nullability (`ExpressionVisitor.java:532`).
+
+## HIGH
+
+**H1. In Go, the whole-conjunction port never sees a single-table WHERE (§5.4a/c/g/h).**
+- **What Go builds:** a one-source WHERE becomes `LogicalFilterExpression` (from `cascades_translator.go:3007`) under a `LogicalProjectionExpression`.
+- **What the rule matches:** QueryPredicateSimplificationRule matches only `SelectExpression` (`rule_query_predicate_simplification.go:31`).
+- **Nothing converts one into the other:** among the rules that match a filter, only `rule_in_to_explode.go:305` and `rule_push_filter_below_join.go:141` build a select.
+- **Go's own EXPLAIN lines confirm the shape:** `Project(PredicatesFilter(Scan(T)))` (evidence-run.txt:1080, 1088, 1320).
+- **Consequence:** with the 19 folds deleted, nothing simplifies these predicates. Every §5.4 row is single-table, so after the port (SOURCE):
+  - Go evaluates the unfolded predicate and raises 22012 where the target answers rows (`null_strict_div0_cast_null_is_null_where`, `coalesce_true_erroring_tail_where`, `conj_true_where`);
+  - the tie rows are not ties in Go, so the promised hash-rung mutation cannot redden any of them;
+  - §5.4h's rungs are never reached.
+- **The design handles the filter shape only for the explode rule** (lines 535-544).
+- **Trap in the obvious fix:** reading the filter as a select and yielding a `SelectExpression`, as §4.1(b) does, makes every fold lose, because fewest selects wins (`RewritingCostModel.java:70-77`; `isSelectExpression`, `planning_cost_model.go:160-163`).
+- **Fix:**
+  - Specify how the rule reaches a one-source filter: either translate the WHERE as the target's select, or run the rule over the filter and yield the same kind of expression.
+  - Cover its interplay with Go-only `FilterDropTruePredicatesRule`/`NoOpFilterRule`.
+  - Measure one deterministic, one conjunction and one tie row on a fold-free tree.
+
+## MEDIUM
+
+**M1. The measurements leave out the cross-engine corpus (§5.4a, g).** (MEASURED)
+- `--test_tag_filters=-stress,-conformance_java` excludes `//conformance:conformance_test` and `rfc257_oracle_test` (BUILD.bazel:79-101, 133, 263-264). That is 92 of the 94 targets `just test` runs.
+- So "the three failing tests are exactly these" and the tautology run's "92 of 92" cover that 92-target population only. It omits the 1424-spec Java-parity net, which is the one most sensitive to fold changes.
+- The rejectsNull narrowing (fewer outer→inner conversions) is left entirely to the implementation gate.
+- **Fix:** re-run with `conformance_java` included, and add a plan-corpus dump for the rejectsNull port.
+
+**M2. The fold census misses three more translation-time folds (§5.4 "four places").**
+- `expr.go:1095`, `:1185` and `:1374` call `EvaluateConstant` on any constant subtree during translation:
+  - widen to DOUBLE;
+  - narrow a float against an integer column, which rewrites the operator and clamps out-of-range bounds;
+  - narrow to FLOAT.
+- `amount > 3 - 2` is folded there. So the third case of `TestPlanHarness_ConstantExpressionComparandIsSargable` does not show sargability without folding.
+- The census test only enumerates the callers of the three Simplify entry points. It must assign `EvaluateConstant` callers too.
+
+**M3. The NOT_NULL arm turns wrong nullability typing into wrong answers (§5.3).** (SOURCE)
+- The census drives NOT NULL classes only with an erroring child. The other failure is a value Go types NOT NULL that can still be NULL: IS NULL then folds to FALSE without evaluating it.
+- **CAST:**
+  - `CastValue.Type` says a CAST "may produce NULL on out-of-range / unsupported source" (`values.go:4234-4240`), and `castEvaluated` falls through to `return nil, nil` (`:4685`).
+  - If CAST takes its operand's nullability, every such arm must raise, as Java's CastValue does, or be refused at planning.
+- **Scan leaves:**
+  - They type proto3 scalars, required fields and flat repeated arrays NOT NULL (`proto_field_type.go:28-31, 58-65`).
+  - FieldValue inherits the root's nullability (`field_value.go:456-490`), which widens only on null-on-empty edges (`quantifier.go:393-404`) or the gated-path seeds (`ordinal_seed.go:241-249`).
+- **Missing tests:**
+  - `IS [NOT] NULL` over a NOT NULL column of the null-supplying side, on every Go outer-join path: materialized NLJ, null-on-empty, gated and clustered;
+  - a CAST whose evaluation yields NULL.
+
+**M4. The DATE-key projection has no stated source for the comparand's type, and its consumers are not enumerated (§4.3).** (SOURCE)
+- **The analogy fails:** the float projection it cites keys on the runtime carrier. DATE and TIMESTAMP comparands are both `string` (`scan_range_binding.go:586-591`), and `coerceTupleElementForKey`'s operandType is passed nil at both call sites (`:556`, `:981`).
+- **Why it matters:** projecting by the shape of the text would probe a legacy date-only TIMESTAMP value as a DATE through the index, while the residual lane compares instants. That is the plan-dependence the lane exists to remove.
+- **Fix:**
+  - Carry the lane, or the comparand's static type, from the plan to the binder.
+  - List what is not covered first: per-row IN/NOT IN, IS DISTINCT FROM, GREATEST/LEAST, and join equality.
+
+**M5. The explode port is missing its phase and termination rules (§4.1b).**
+- **Phase:**
+  - Java registers the rule in PLANNING only (`PlanningRuleSet.java:108`). Go also fires it in REWRITING (`default_rules.go:118`), where its select loses the select-count rung.
+  - More generally, Go's REWRITING runs all of `DefaultExpressionRules`, while Java runs five (`RewritingRuleSet.java:50-72`). So Go's prune ranks members the target never builds, and the (j) tests should assert the member set, not only the survivor.
+- **Termination:**
+  - The deleted idempotency guard exists "to prevent infinite memo growth from fresh-alias SelectExpressions" (`rule_in_to_explode.go:65-68`).
+  - State what replaces it, and add a test that the memo stays bounded.
+- **Conjuncts:** the filter holds the whole WHERE as one predicate (`cascades_translator.go:3000-3006`). Say that reading it as a select splits the AND into conjuncts.
+
+## LOW
+
+- **The CASE defect's trigger can be identified** (SOURCE):
+  - EvaluateConstantPromotionRule case 3 (`:75-85`) drops a nullable promote over a NOT NULL literal branch, and `PickValue.withChildren` then fails its equal-types check (`:200`).
+  - Go ports that rule, so state how Go's CASE rebuild avoids reproducing the 22000.
+  - The `withNullability(true)` line is `:203`, not `:200`.
+- **UUID boundary:** `Long.parseLong` refuses 2^63 to 2^64−1, but only 17 digits were measured. Pin `1-2-3-4-8000000000000000` as refused and `7fffffffffffffff` as accepted.
+- **Record-typed IN:** the record arm (`InComparisonToExplodeRule.java:147-148, 204-224`) is not mentioned. Both engines refuse record IN operands (`expr.go:1631-1646`), so state that.
+
+**Measured vs SOURCE**
+- **Measured:** H1's Go plan shape; M1's populations.
+- **SOURCE:** the rule matching and the post-port consequences in H1, and all of M2–M5.

@@ -1,11 +1,13 @@
 package recordlayer
 
 import (
-	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"math/big"
+	"slices"
 	"sort"
+	"sync/atomic"
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -84,8 +86,9 @@ type RecordMetaData struct {
 	// Java equivalent: RecordMetaData.getFormerIndexes()
 	formerIndexes []*FormerIndex
 
-	// unionDescriptor is the protobuf message descriptor for UnionDescriptor.
-	// Nil if the schema has no union (single-type).
+	// unionDescriptor is the records file's union message, found as Java's
+	// fetchUnionDescriptor finds it. Every built RecordMetaData has one: Java has
+	// no union-less mode, and neither does Build.
 	// Matches Java's RecordMetaData.getUnionDescriptor().
 	unionDescriptor protoreflect.MessageDescriptor
 
@@ -134,6 +137,7 @@ type preservedMetaDataFields struct {
 	unnestedRecordTypes  []*gen.UnnestedRecordType
 	userDefinedFunctions []*gen.PUserDefinedFunction
 	views                []*gen.PView
+	storedQueries        []*gen.PStoredQuery
 
 	// unknown holds everything the generated Go type has no field for —
 	// principally the MetaData extension range (1000-2000), which is where
@@ -246,8 +250,17 @@ type RecordMetaDataBuilder struct {
 	formerIndexes            []*FormerIndex
 	counterBasedSubspaceKeys bool
 	subspaceKeyCounter       int64
-	buildErrors              []error
-	unionDescriptor          protoreflect.MessageDescriptor
+	// buildErrors are the faults the builder's calls recorded, in call order,
+	// and buildErrorSeqs their places in program order (nextBuildFaultSeq),
+	// which Build compares with the SetSubspaceKey refusals of addedIndexes.
+	buildErrors    []error
+	buildErrorSeqs []uint64
+	// addedIndexes is every index handed to an AddIndex, kept even when the
+	// add was refused or the index later removed: Java threw a refused
+	// SetSubspaceKey at the set, so the refusal ends the program wherever the
+	// index went afterwards.
+	addedIndexes    []*Index
+	unionDescriptor protoreflect.MessageDescriptor
 	// preserved carries the unmodelled proto fields through to the built
 	// metadata. See preservedMetaDataFields.
 	preserved preservedMetaDataFields
@@ -261,20 +274,27 @@ func NewRecordMetaDataBuilder() *RecordMetaDataBuilder {
 	}
 }
 
-// SetRecordsWithUnionName is SetRecords with an explicit union message
-// name. Use this when the proto file's union message is not called
-// "UnionDescriptor" — e.g. schemas that must coexist with another
-// RecordMetaData in the same Go package (gen.*), where duplicate
-// UnionDescriptor symbols would clash. Behaviour is identical to
-// SetRecords in every other respect.
+// SetRecordsWithUnionName is SetRecords for a caller that names the union
+// message it expects. The union is still found as Java finds it
+// (fetchUnionDescriptor: the one message with (record).usage = UNION, else the
+// one named RecordTypeUnion), and a name that differs from the one found is
+// refused: metadata built around any other message would be refused by this
+// same binary when it is loaded back (RecordMetaDataFromProto runs the same
+// search), and by the target. An empty name names no union and is refused: it
+// would otherwise accept whatever union the search finds, which is SetRecords.
 func (b *RecordMetaDataBuilder) SetRecordsWithUnionName(fd protoreflect.FileDescriptor, unionName string) *RecordMetaDataBuilder {
-	return b.setRecordsWithUnionName(fd, unionName)
+	if unionName == "" {
+		b.recordBuildError(&MetaDataError{Message: "union message name is empty"})
+		return b
+	}
+	return b.setRecords(fd, unionName, true)
 }
 
 // SetRecords sets the protobuf file descriptor containing record definitions.
-// Uses the default union message name "UnionDescriptor".
+// The union is found as Java's setRecords finds it (fetchUnionDescriptor: the one
+// message with (record).usage = UNION, else the one named RecordTypeUnion).
 func (b *RecordMetaDataBuilder) SetRecords(fd protoreflect.FileDescriptor) *RecordMetaDataBuilder {
-	return b.setRecordsWithUnionName(fd, "UnionDescriptor")
+	return b.setRecords(fd, "", true)
 }
 
 // A SECOND CALL IS REFUSED, WHICH IS WHY THE ORPHAN ROUTE BELOW IS CLOSED.
@@ -301,10 +321,8 @@ func (b *RecordMetaDataBuilder) SetRecords(fd protoreflect.FileDescriptor) *Reco
 //
 // The guard records a build error rather than throwing because a SETTER has no
 // error channel: it returns *RecordMetaDataBuilder for chaining, so it defers to
-// Build, which is what every other rejecting setter here does. That is the
-// checkable reason, and it is not "the package never panics" -- it does, and
-// GetRecordType below is one example, which panics because
-// a GETTER has no builder to return and Java throws there too. The second
+// Build, which is what every other rejecting setter here does, and what
+// GetRecordType does for an unknown name. The second
 // descriptor is NOT applied, so a caller that ignores the Build error still sees
 // the first descriptor rather than a half-merged one.
 // JAVA HAS AN ESCAPE HATCH THIS PACKAGE DOES NOT: updateRecords
@@ -319,44 +337,67 @@ func (b *RecordMetaDataBuilder) SetRecords(fd protoreflect.FileDescriptor) *Reco
 // TestRefusedSetRecordsLeavesTheFirstDescriptorInPlace (which is the only arm
 // that catches a guard written one line lower) and
 // TestUniversalIndexRoundTripsThroughAnEmptyRecordTypeList.
-func (b *RecordMetaDataBuilder) setRecordsWithUnionName(fd protoreflect.FileDescriptor, unionName string) *RecordMetaDataBuilder {
+//
+// setRecords is the one place the guard lives: SetRecords, SetRecordsWithUnionName
+// and RecordMetaDataFromProto all come through it. Java refuses a second
+// descriptor before it looks for a union (RecordMetaDataBuilder.java:384, then
+// fetchUnionDescriptor), so the guard comes first here too. wantUnion, when not
+// empty, is the union name a caller expects; a different union is refused.
+// processExtensionOptions is Java's flag of the same name: true for a records
+// file a program hands the builder, which reads the file's extension options
+// (metadata_extension_options.go), and false for stored meta-data, whose
+// primary keys and indexes are its own.
+func (b *RecordMetaDataBuilder) setRecords(fd protoreflect.FileDescriptor, wantUnion string, processExtensionOptions bool) *RecordMetaDataBuilder {
 	if b.fileDescriptor != nil {
-		b.buildErrors = append(b.buildErrors, &MetaDataError{Message: "Records already set."})
+		b.recordBuildError(&MetaDataError{Message: "Records already set."})
+		return b
+	}
+	union, err := fetchUnionDescriptor(fd)
+	if err != nil {
+		b.recordBuildError(err)
+		return b
+	}
+	if wantUnion != "" && string(union.Name()) != wantUnion {
+		b.recordBuildError(&MetaDataError{Message: fmt.Sprintf(
+			"union message %s is not the union descriptor of the records file (found %s)", wantUnion, union.Name())})
 		return b
 	}
 	b.fileDescriptor = fd
-
-	// Find the named union message to map fields to record types.
-	unionDesc := fd.Messages().ByName(protoreflect.Name(unionName))
-	if unionDesc == nil {
-		// If no UnionDescriptor, treat each message as a separate record type
-		b.setRecordsWithoutUnion(fd)
-		return b
+	// Java's validateRecords (RecordMetaDataBuilder.java:635-638) runs whenever a
+	// records descriptor is set: data types first, then the union.
+	if err := validateRecordDataTypes(fd); err != nil {
+		b.recordBuildError(err)
 	}
-	b.unionDescriptor = unionDesc
 
-	unionFields := unionDesc.Fields()
+	b.unionDescriptor = union
+	if err := validateRecordUnion(fd, union); err != nil {
+		b.recordBuildError(err)
+	}
+
+	unionFields := union.Fields()
 
 	for i := 0; i < unionFields.Len(); i++ {
 		field := unionFields.Get(i)
-		fieldName := string(field.Name())
-
-		var recordTypeName string
-		var recordMsgDesc protoreflect.MessageDescriptor
-		switch {
-		case len(fieldName) > 1 && fieldName[0] == '_':
-			// RecordLayer convention: `_TypeName`.
-			recordTypeName = fieldName[1:]
-			recordMsgDesc = fd.Messages().ByName(protoreflect.Name(recordTypeName))
-		case field.Kind() == protoreflect.MessageKind:
-			// fdb-relational convention: derive type name from the
-			// field's type reference rather than the field name.
-			recordMsgDesc = field.Message()
-			if recordMsgDesc != nil {
-				recordTypeName = string(recordMsgDesc.Name())
-			}
+		if field.Kind() != protoreflect.MessageKind {
+			// validateRecordUnion refused it above, in Java's field order.
+			continue
 		}
-		if recordMsgDesc == nil || recordTypeName == "" {
+		recordMsgDesc := field.Message()
+		recordTypeName := string(recordMsgDesc.Name())
+		if existing := b.recordTypes[recordTypeName]; existing != nil {
+			if existing.Descriptor != recordMsgDesc {
+				// Java's processRecordType (RecordMetaDataBuilder.java:893-895).
+				b.recordBuildError(&MetaDataError{Message: "There is already a record type named " + recordTypeName})
+				continue
+			}
+			if int(field.Number()) < existing.RecordTypeIndex {
+				existing.RecordTypeIndex = int(field.Number())
+			}
+			canonical := protoreflect.Name("_" + recordTypeName)
+			preferred := existing.UnionFieldDescriptor
+			if field.Name() == canonical || preferred.Name() != canonical && field.Number() > preferred.Number() {
+				existing.UnionFieldDescriptor = field
+			}
 			continue
 		}
 
@@ -372,6 +413,12 @@ func (b *RecordMetaDataBuilder) setRecordsWithUnionName(fd protoreflect.FileDesc
 			UnionFieldDescriptor: field, // Store the union field for reflection
 		}
 		b.recordTypes[recordTypeName] = recordType
+		if processExtensionOptions {
+			b.processRecordTypeOptions(recordType)
+		}
+	}
+	if processExtensionOptions {
+		b.processSchemaOptions(fd)
 	}
 
 	return b
@@ -391,28 +438,6 @@ func (m *RecordMetaData) FileDescriptor() protoreflect.FileDescriptor { return m
 func (b *RecordMetaDataBuilder) SetRecordsSourceProto(fdp *descriptorpb.FileDescriptorProto) *RecordMetaDataBuilder {
 	b.recordsSourceProto = fdp
 	return b
-}
-
-// setRecordsWithoutUnion handles schemas without UnionDescriptor (fallback)
-func (b *RecordMetaDataBuilder) setRecordsWithoutUnion(fd protoreflect.FileDescriptor) {
-	messages := fd.Messages()
-	recordTypeIndex := 0
-	for i := 0; i < messages.Len(); i++ {
-		msg := messages.Get(i)
-		// Skip UnionDescriptor and other internal messages
-		if msg.Name() != "UnionDescriptor" {
-			recordType := &RecordType{
-				Name:                 string(msg.Name()),
-				Descriptor:           msg,
-				PrimaryKey:           nil, // Will be set explicitly
-				SinceVersion:         0,   // Matches Java's null default
-				RecordTypeIndex:      recordTypeIndex,
-				UnionFieldDescriptor: nil, // No union field
-			}
-			b.recordTypes[string(msg.Name())] = recordType
-			recordTypeIndex++
-		}
-	}
 }
 
 // SetRecordCountKey sets the key expression for partitioning record counts.
@@ -468,13 +493,13 @@ func (b *RecordMetaDataBuilder) GetSubspaceKeyCounter() int64 {
 // error, so the guard is not a convenience.
 func (b *RecordMetaDataBuilder) SetSubspaceKeyCounter(counter int64) *RecordMetaDataBuilder {
 	if !b.counterBasedSubspaceKeys {
-		b.buildErrors = append(b.buildErrors, &MetaDataError{
+		b.recordBuildError(&MetaDataError{
 			Message: "Counter-based subspace keys not enabled",
 		})
 		return b
 	}
 	if counter <= b.subspaceKeyCounter {
-		b.buildErrors = append(b.buildErrors, &MetaDataError{
+		b.recordBuildError(&MetaDataError{
 			Message: fmt.Sprintf(
 				"Subspace key counter must be set to a value greater than its current value: expected greater than %d, actual %d",
 				b.subspaceKeyCounter, counter),
@@ -536,7 +561,11 @@ func (b *RecordMetaDataBuilder) GetRecordTypes() map[string]*RecordType {
 func (b *RecordMetaDataBuilder) AddIndex(recordTypeName string, index *Index) *RecordMetaDataBuilder {
 	rt, ok := b.recordTypes[recordTypeName]
 	if !ok {
-		b.buildErrors = append(b.buildErrors, &MetaDataError{
+		// The index was handed to AddIndex even though the add is refused: a
+		// SetSubspaceKey refusal recorded on it before this call is a Java
+		// throw at that earlier set, so firstFault must still see it.
+		b.addedIndexes = append(b.addedIndexes, index)
+		b.recordBuildError(&MetaDataError{
 			Message: fmt.Sprintf("Unknown record type %s", recordTypeName),
 		})
 		return b
@@ -575,11 +604,18 @@ func (b *RecordMetaDataBuilder) addIndexCommon(index *Index) {
 	if b.indexes == nil {
 		b.indexes = make(map[string]*Index)
 	}
+	b.addedIndexes = append(b.addedIndexes, index)
 	if _, exists := b.indexes[index.Name]; exists {
-		b.buildErrors = append(b.buildErrors, &MetaDataError{
+		b.recordBuildError(&MetaDataError{
 			Message: fmt.Sprintf("Index %s already defined", index.Name),
 		})
 		return
+	}
+	if index.subspaceKey == nil && index.subspaceKeyErr == nil && !index.useExplicitSubspaceKey {
+		// A struct literal carries no key. Every Java constructor sets the key
+		// to the index name (Index.java:89-97, :132), so the Go index gets it
+		// here, before the counter, which replaces a defaulted key.
+		index.subspaceKey = index.Name
 	}
 	b.assignSubspaceKey(index)
 	if index.LastModifiedVersion <= 0 {
@@ -605,15 +641,24 @@ func (b *RecordMetaDataBuilder) AddMultiTypeIndex(recordTypeNames []string, inde
 	if len(recordTypeNames) == 1 {
 		return b.AddIndex(recordTypeNames[0], index)
 	}
-	b.addIndexCommon(index)
+	// A Java program resolves every name before it calls addMultiTypeIndex
+	// (getRecordType, RecordMetaDataBuilder.java:986-996, :1177), so an unknown
+	// name is the fault and the index is not added. The index is still kept
+	// as handed to the builder, as AddIndex keeps a refused one.
+	types := make([]*RecordType, 0, len(recordTypeNames))
 	for _, name := range recordTypeNames {
 		rt, ok := b.recordTypes[name]
 		if !ok {
-			b.buildErrors = append(b.buildErrors, &MetaDataError{
+			b.addedIndexes = append(b.addedIndexes, index)
+			b.recordBuildError(&MetaDataError{
 				Message: fmt.Sprintf("Unknown record type %s", name),
 			})
-			continue
+			return b
 		}
+		types = append(types, rt)
+	}
+	b.addIndexCommon(index)
+	for _, rt := range types {
 		rt.multiTypeIndexes = append(rt.multiTypeIndexes, index)
 	}
 	return b
@@ -628,10 +673,16 @@ func (b *RecordMetaDataBuilder) AddUniversalIndex(index *Index) *RecordMetaDataB
 }
 
 // RemoveIndex removes an index by name and records it as a FormerIndex
-// to prevent subspace key reuse. Matches Java's RecordMetaDataBuilder.removeIndex(String).
+// to prevent subspace key reuse. Matches Java's RecordMetaDataBuilder.removeIndex(String),
+// including its refusal of a name no index has (RecordMetaDataBuilder.java:1199-1203),
+// which Go records in program order for Build to return, as every builder
+// fault is.
 func (b *RecordMetaDataBuilder) RemoveIndex(indexName string) *RecordMetaDataBuilder {
 	idx, ok := b.indexes[indexName]
 	if !ok {
+		b.recordBuildError(&MetaDataError{
+			Message: fmt.Sprintf("No index named %s defined", indexName),
+		})
 		return b
 	}
 
@@ -674,12 +725,17 @@ func (b *RecordMetaDataBuilder) GetFormerIndexes() []*FormerIndex {
 }
 
 // GetRecordType returns the record type builder for setting primary keys, etc.
-// Panics with MetaDataError if the record type does not exist, matching Java's
-// RecordMetaDataBuilder.getRecordType() which throws MetaDataException.
+//
+// A name no record type has is Java's MetaDataException "Unknown record type
+// <name>" (RecordMetaDataBuilder.java:986-996), thrown at the call. Go records
+// it in program order, as every builder fault is, for Build to return, and
+// hands back a builder over a record type the meta-data does not hold, so a
+// chained setter changes nothing.
 func (b *RecordMetaDataBuilder) GetRecordType(name string) *RecordTypeBuilder {
 	recordType := b.recordTypes[name]
 	if recordType == nil {
-		panic(&MetaDataError{Message: fmt.Sprintf("unknown record type %q", name)})
+		b.recordBuildError(&MetaDataError{Message: fmt.Sprintf("Unknown record type %s", name)})
+		return &RecordTypeBuilder{recordType: &RecordType{Name: name}, builder: b}
 	}
 	return &RecordTypeBuilder{
 		recordType: recordType,
@@ -737,74 +793,126 @@ func (b *RecordMetaDataBuilder) GetRecordType(name string) *RecordTypeBuilder {
 // those two setters, which is a divergence from Java's `private final` plus
 // `ImmutableMap.copyOf`: DIVERGENCES.md has the analysis and the fix.
 func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
-	// Check for errors accumulated during builder method calls.
-	if len(b.buildErrors) > 0 {
-		return nil, errors.Join(b.buildErrors...)
+	// A setter records its fault instead of throwing (it has no error channel);
+	// Java throws at the FIRST fault, so the first recorded one in program
+	// order is the error, and nothing a later call recorded can mask or reorder
+	// it. That includes a refused SetSubspaceKey, recorded on its Index at the
+	// set, before or after AddIndex, of an index later removed or refused as a
+	// duplicate too (firstFault).
+	if err := b.firstFault(); err != nil {
+		return nil, err
+	}
+	// A former index with the null key Java's FormerIndex constructor refuses
+	// (FormerIndex.java:51-58): nothing in Go builds such a former index, but
+	// FormerIndex.SubspaceKey is an exported field.
+	for _, fi := range b.formerIndexes {
+		if isNilSubspaceKey(fi.SubspaceKey) {
+			return nil, &RecordCoreArgumentError{Message: "FormerIndex initialized with null subspace key", IndexName: fi.FormerName, SubspaceKey: fi.SubspaceKey, HasSubspaceKey: true}
+		}
 	}
 
-	// Validate at least one record type is defined.
-	// Matches Java's MetaDataValidator.validate() which throws "No record types defined in meta-data".
-	if len(b.recordTypes) == 0 {
-		return nil, &MetaDataError{Message: "no record types defined in meta-data"}
+	// The record types are walked by name wherever Build checks them, so
+	// which of several faults is reported does not depend on map order. Java
+	// walks a HashMap (RecordMetaDataBuilder.java:147, :1473), whose order is
+	// its own; the name order is Go's fixed stand-in for it.
+	recordTypeNames := slices.Sorted(maps.Keys(b.recordTypes))
+
+	// A record type without a primary key: Java's build refuses it while it
+	// builds the record types, before it validates anything
+	// (RecordMetaDataBuilder.java:1480-1491).
+	for _, name := range recordTypeNames {
+		if b.recordTypes[name].PrimaryKey == nil {
+			return nil, &MetaDataError{Message: fmt.Sprintf("Record type %s must have a primary key", name)}
+		}
 	}
 
 	// Validate union descriptor oneof structure.
-	// Matches Java's MetaDataValidator.validateUnionDescriptor():
+	// Matches Java's MetaDataValidator.validateUnionDescriptor()
+	// (MetaDataValidator.java:60, :68-78), which runs first:
 	//   - Must have at most 1 oneof
 	//   - If a oneof exists, it must contain all fields
 	if b.unionDescriptor != nil {
 		oneofs := b.unionDescriptor.Oneofs()
 		if oneofs.Len() > 1 {
-			return nil, &MetaDataError{Message: "union descriptor has more than one oneof"}
+			return nil, &MetaDataError{Message: "Union descriptor has more than one oneof"}
 		}
 		if oneofs.Len() == 1 {
 			oneof := oneofs.Get(0)
 			if oneof.Fields().Len() != b.unionDescriptor.Fields().Len() {
-				return nil, &MetaDataError{Message: "union descriptor oneof must contain every field"}
+				return nil, &MetaDataError{Message: "Union descriptor oneof must contain every field"}
 			}
 		}
 	}
 
-	// Validate primary keys: must be set, must produce at least one column,
-	// and must not create duplicates.
-	// Matches Java's MetaDataValidator.validatePrimaryKey().
-	for name, rt := range b.recordTypes {
-		if rt.PrimaryKey == nil {
-			return nil, &MetaDataError{Message: fmt.Sprintf("record type %q has no primary key set", name)}
-		}
+	// Validate at least one record type is defined.
+	// Matches Java's MetaDataValidator.validate() (MetaDataValidator.java:61-63).
+	if len(b.recordTypes) == 0 {
+		return nil, &MetaDataError{Message: "No record types defined in meta-data"}
+	}
+
+	// Java's validateRecordType, per record type, in its order
+	// (MetaDataValidator.java:64, :80-101): the primary key validated against the
+	// descriptor and refused if it can produce more than one entry, the record
+	// type key unique, the since version not past the meta-data version. All
+	// of it runs before any index is validated, as Java's validateRecordType
+	// runs for every type before validateCurrentAndFormerIndexes.
+	//
+	// Two record types collide exactly when their keys occupy the same BYTES,
+	// so the seen-set is keyed on the tuple encoding rather than on the value.
+	// Keying on the value missed real collisions — int64(7) and uint(7) are
+	// distinct values with identical encodings, and a record-type-prefixed
+	// primary key built from them puts two types in one key space, where a
+	// save silently overwrites the other type's record.
+	typeKeySeen := make(map[string]string)
+	for _, name := range recordTypeNames {
+		rt := b.recordTypes[name]
+		// Go-only: an empty primary key. Java's validator has no such check;
+		// Go refuses it because such a record's split clear range is the whole
+		// records subspace, every other record type's records included
+		// (DIVERGENCES.md, "Build's record-type checks: the order, and two Go-only refusals").
 		if rt.PrimaryKey.ColumnSize() == 0 {
-			return nil, &MetaDataError{Message: fmt.Sprintf("record type %q has a primary key that produces no columns (EmptyKeyExpression or empty Concat are not valid primary keys)", name)}
-		}
-		if createsDuplicates(rt.PrimaryKey) {
-			return nil, &MetaDataError{Message: fmt.Sprintf("record type %q has a primary key that can create duplicates (fan-out not allowed on primary keys)", name)}
-		}
-	}
-
-	// Validate primary key and index expressions against proto message descriptors.
-	// Matches Java's MetaDataValidator.validatePrimaryKeyForRecordType() and
-	// MetaDataValidator.validateIndexForRecordType() which call KeyExpression.validate(Descriptor).
-	for name, rt := range b.recordTypes {
-		if rt.Descriptor != nil && rt.PrimaryKey != nil {
-			if err := validateKeyExpression(rt.PrimaryKey, rt.Descriptor); err != nil {
-				return nil, &MetaDataError{Message: fmt.Sprintf("record type %q: primary key validation failed: %v", name, err)}
-			}
+			return nil, &MetaDataError{Message: fmt.Sprintf("record type %q has a primary key that produces no columns (EmptyKeyExpression is not a valid primary key)", name)}
 		}
 		if rt.Descriptor != nil {
-			for _, idx := range rt.indexes {
-				if err := validateKeyExpression(idx.RootExpression, rt.Descriptor); err != nil {
-					return nil, &MetaDataError{Message: fmt.Sprintf("record type %q: index %q validation failed: %v", name, idx.Name, err)}
-				}
+			if err := validateKeyExpression(rt.PrimaryKey, rt.Descriptor); err != nil {
+				// Java's KeyExpression.validate throws its exception unwrapped
+				// (MetaDataValidator.java:97, :190).
+				return nil, err
 			}
 		}
+		if createsDuplicates(rt.PrimaryKey) {
+			return nil, &MetaDataError{Message: fmt.Sprintf("Primary key for %s can generate more than one entry", name)}
+		}
+		key := rt.GetRecordTypeKey()
+		dedup, ok := recordTypeKeyIdentity(key)
+		if !ok {
+			// Unreachable while both doors canonicalize and Build reports
+			// builder errors before this loop; stated as an error rather than
+			// left to pack, which would panic.
+			return nil, &MetaDataError{Message: fmt.Sprintf(
+				"record type %q: record type key %v (%T) cannot be used as a key", name, key, key)}
+		}
+		if prevName, exists := typeKeySeen[dedup]; exists {
+			return nil, &MetaDataError{Message: fmt.Sprintf(
+				"Same record type key %v used by both %s and %s", key, name, prevName)}
+		}
+		typeKeySeen[dedup] = name
+		if rt.SinceVersion > b.version {
+			return nil, &MetaDataError{Message: fmt.Sprintf(
+				"Record type %s has since version of %d which is greater than the meta-data version %d",
+				name, rt.SinceVersion, b.version)}
+		}
 	}
-	// Validate universal indexes against all record types.
-	for _, idx := range b.universalIndexes {
-		for name, rt := range b.recordTypes {
-			if rt.Descriptor != nil {
-				if err := validateKeyExpression(idx.RootExpression, rt.Descriptor); err != nil {
-					return nil, &MetaDataError{Message: fmt.Sprintf("record type %q: universal index %q validation failed: %v", name, idx.Name, err)}
-				}
-			}
+
+	// An index without a root is refused first. Go-only as a refusal: Java's
+	// constructors take a @Nonnull root, and a null one fails its validation
+	// with a NullPointerException, so no Java program builds such meta-data;
+	// Go's struct literal can, and indexToProto would store an index with no
+	// root, which Java's reader and Go's refuse ("Exactly one root must be
+	// specified for an index").
+	for _, name := range slices.Sorted(maps.Keys(b.indexes)) {
+		if b.indexes[name].RootExpression == nil {
+			return nil, &MetaDataError{Message: fmt.Sprintf("Index %s has no root expression", name)}
 		}
 	}
 
@@ -930,31 +1038,12 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 		return nil, &MetaDataError{Message: fmt.Sprintf(bad.format, bad.names[0])}
 	}
 
-	// Validate no duplicate record type keys.
-	// Matches Java's MetaDataValidator which checks for duplicate type keys.
-	//
-	// Two record types collide exactly when their keys occupy the same BYTES,
-	// so the seen-set is keyed on the tuple encoding rather than on the value.
-	// Keying on the value missed real collisions — int64(7) and uint(7) are
-	// distinct values with identical encodings, and a record-type-prefixed
-	// primary key built from them puts two types in one key space, where a
-	// save silently overwrites the other type's record.
-	typeKeySeen := make(map[string]string)
-	for name, rt := range b.recordTypes {
-		key := rt.GetRecordTypeKey()
-		dedup, ok := recordTypeKeyIdentity(key)
-		if !ok {
-			// Unreachable while both doors canonicalize and Build reports
-			// builder errors before this loop; stated as an error rather than
-			// left to pack, which would panic.
-			return nil, &MetaDataError{Message: fmt.Sprintf(
-				"record type %q: record type key %v (%T) cannot be used as a key", name, key, key)}
-		}
-		if prevName, exists := typeKeySeen[dedup]; exists {
-			return nil, &MetaDataError{Message: fmt.Sprintf(
-				"record types %q and %q have the same record type key %v", prevName, name, key)}
-		}
-		typeKeySeen[dedup] = name
+	// Java's MetaDataValidator.validateCurrentAndFormerIndexes, after every
+	// record type (MetaDataValidator.java:64-65, :103-116): each index's
+	// validator, subspace key, versions and replacements, then each former
+	// index, then an index and a former index sharing a key.
+	if err := b.validateCurrentAndFormerIndexes(recordTypeNames); err != nil {
+		return nil, err
 	}
 
 	// Compute primaryKeyComponentPositions ON THE BUILDER'S OBJECTS, and before
@@ -1123,6 +1212,7 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 	preserved.unnestedRecordTypes = append([]*gen.UnnestedRecordType(nil), b.preserved.unnestedRecordTypes...)
 	preserved.userDefinedFunctions = append([]*gen.PUserDefinedFunction(nil), b.preserved.userDefinedFunctions...)
 	preserved.views = append([]*gen.PView(nil), b.preserved.views...)
+	preserved.storedQueries = append([]*gen.PStoredQuery(nil), b.preserved.storedQueries...)
 	if b.preserved.unknown != nil {
 		preserved.unknown = make([]byte, len(b.preserved.unknown))
 		copy(preserved.unknown, b.preserved.unknown)
@@ -1131,253 +1221,6 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 	var recordsSourceProto *descriptorpb.FileDescriptorProto
 	if b.recordsSourceProto != nil {
 		recordsSourceProto = proto.Clone(b.recordsSourceProto).(*descriptorpb.FileDescriptorProto)
-	}
-
-	// Validate no duplicate subspace keys among current indexes.
-	// Matches Java's MetaDataValidator.validateIndexes().
-	// Use normalizeSubspaceKey to handle type mismatches after proto round-trip.
-	indexSubspaceKeySeen := make(map[any]string)
-	for _, idx := range indexes {
-		sk := normalizeSubspaceKey(idx.SubspaceTupleKey())
-		if prevName, exists := indexSubspaceKeySeen[sk]; exists {
-			return nil, &MetaDataError{Message: fmt.Sprintf("indexes %q and %q have the same subspace key %v", prevName, idx.Name, sk)}
-		}
-		indexSubspaceKeySeen[sk] = idx.Name
-	}
-
-	// Validate no former index subspace key conflicts with current indexes.
-	// Use normalizeSubspaceKey to handle type mismatches after proto round-trip
-	// (e.g. int vs int64 from FDB tuple unpack). Bug 13 fix.
-	for _, fi := range b.formerIndexes {
-		for _, idx := range indexes {
-			if normalizeSubspaceKey(fi.SubspaceKey) == normalizeSubspaceKey(idx.SubspaceTupleKey()) {
-				return nil, &MetaDataError{Message: fmt.Sprintf("index %q reuses subspace key of former index %q", idx.Name, fi.FormerName)}
-			}
-		}
-	}
-
-	// Validate former index version ordering.
-	// Matches Java's MetaDataValidator: addedVersion ≤ removedVersion, both ≤ metadata version.
-	for _, fi := range b.formerIndexes {
-		if fi.AddedVersion > fi.RemovedVersion {
-			return nil, &MetaDataError{Message: fmt.Sprintf("former index %q has addedVersion (%d) > removedVersion (%d)", fi.FormerName, fi.AddedVersion, fi.RemovedVersion)}
-		}
-		if fi.AddedVersion > b.version {
-			return nil, &MetaDataError{Message: fmt.Sprintf("former index %q has addedVersion (%d) > metadata version (%d)", fi.FormerName, fi.AddedVersion, b.version)}
-		}
-		if fi.RemovedVersion > b.version {
-			return nil, &MetaDataError{Message: fmt.Sprintf("former index %q has removedVersion (%d) > metadata version (%d)", fi.FormerName, fi.RemovedVersion, b.version)}
-		}
-	}
-
-	// Validate index addedVersion ≤ lastModifiedVersion.
-	// Matches Java's IndexValidator: addedVersion ≤ lastModifiedVersion.
-	for _, idx := range indexes {
-		if idx.AddedVersion > 0 && idx.LastModifiedVersion > 0 && idx.AddedVersion > idx.LastModifiedVersion {
-			return nil, &MetaDataError{Message: fmt.Sprintf("index %q has addedVersion (%d) > lastModifiedVersion (%d)", idx.Name, idx.AddedVersion, idx.LastModifiedVersion)}
-		}
-	}
-
-	// Validate index versions do not exceed the metadata version.
-	// Matches Java's MetaDataValidator.validateIndex() (MetaDataValidator.java:124-133).
-	// An index whose lastModifiedVersion is ahead of the metadata version reads as
-	// "added since" every store header version forever, so each later version bump
-	// re-decides its rebuild policy and can clear an already-built index.
-	for _, idx := range indexes {
-		if idx.AddedVersion > b.version {
-			return nil, &IndexVersionTooNewError{
-				IndexName:           idx.Name,
-				Kind:                IndexVersionAdded,
-				AddedVersion:        idx.AddedVersion,
-				LastModifiedVersion: idx.LastModifiedVersion,
-				MetaDataVersion:     b.version,
-			}
-		}
-		if idx.LastModifiedVersion > b.version {
-			return nil, &IndexVersionTooNewError{
-				IndexName:           idx.Name,
-				Kind:                IndexVersionLastModified,
-				AddedVersion:        idx.AddedVersion,
-				LastModifiedVersion: idx.LastModifiedVersion,
-				MetaDataVersion:     b.version,
-			}
-		}
-	}
-
-	// Validate record type since-versions do not exceed the metadata version.
-	// Matches Java's MetaDataValidator.validateRecordType() (MetaDataValidator.java:88-92).
-	for name, rt := range b.recordTypes {
-		if rt.SinceVersion > b.version {
-			return nil, &MetaDataError{Message: fmt.Sprintf(
-				"record type %q has since version %d which is greater than the meta-data version %d",
-				name, rt.SinceVersion, b.version)}
-		}
-	}
-
-	// Validate atomic index types require GroupingKeyExpression as root.
-	// Matches Java's AtomicMutationIndexMaintainerFactory.getIndexValidator() which calls
-	// validateGrouping(), and IndexValidator.validateGrouping() which throws if the root
-	// expression is not a GroupingKeyExpression.
-	// Without this, indexGroupingCount() silently treats all columns as "grouping" and
-	// zero as "grouped/aggregated", causing the index to malfunction (bugs #26-28).
-	for _, idx := range indexes {
-		switch canonicalIndexType(idx.Type) {
-		case IndexTypeCount, IndexTypeCountNotNull, IndexTypeCountUpdates,
-			IndexTypeSum,
-			IndexTypeMinEverLong, IndexTypeMaxEverLong,
-			IndexTypeMinEverTuple, IndexTypeMaxEverTuple:
-			if _, ok := idx.RootExpression.(*GroupingKeyExpression); !ok {
-				return nil, &MetaDataError{Message: fmt.Sprintf(
-					"%s index %q requires a GroupingKeyExpression as root expression; "+
-						"wrap with Ungrouped(), GroupAll(), or GroupBy()",
-					idx.Type, idx.Name)}
-			}
-		}
-	}
-
-	// Validate TEXT indexes name a registered tokenizer and an in-range version.
-	// Matches Java's TextIndexMaintainerFactory.getIndexValidator().validate()
-	// (TextIndexMaintainerFactory.java:106-111), which resolves the tokenizer and
-	// calls tokenizer.validateVersion(tokenizerVersion) during META-DATA validation.
-	//
-	// Java checks this twice, and the two checks are not redundant: the metadata
-	// check rejects a bad index definition when the schema is built, while
-	// DefaultTextTokenizer.tokenize's validateVersion (DefaultTextTokenizer.java:174,
-	// mirrored at text_tokenizer.go:153) guards the write path against a version
-	// threaded in from a stored per-record tokenizer version. Only the second existed
-	// in Go, so an index naming an unknown tokenizer or an out-of-range version was
-	// accepted at build time and failed later, at the first record save.
-	for _, idx := range indexes {
-		if canonicalIndexType(idx.Type) != IndexTypeText {
-			continue
-		}
-		// The other three checks in the SAME Java method
-		// (TextIndexMaintainerFactory.java:102-104): validateNotVersion,
-		// validateNotUnique, validateNoValue. Ported together rather than
-		// leaving the tokenizer half alone — a validator that implements one of
-		// four checks reads as "TEXT indexes are validated" while three ways to
-		// build a broken one stay open.
-		if countVersionColumns(idx.RootExpression) > 0 {
-			return nil, &MetaDataError{Message: fmt.Sprintf(
-				"text index %q: version key not possible in index type", idx.Name)}
-		}
-		if idx.IsUnique() {
-			return nil, &MetaDataError{Message: fmt.Sprintf(
-				"text index %q: index type does not allow unique indexes", idx.Name)}
-		}
-		if _, isKeyWithValue := idx.RootExpression.(*KeyWithValueExpression); isKeyWithValue {
-			// Java's TODO on this line reads "allow value expressions for
-			// covering text indexes"; until Java allows it, Go does not either.
-			return nil, &MetaDataError{Message: fmt.Sprintf(
-				"text index %q: no value expression allowed in index type", idx.Name)}
-		}
-		tok, err := getTextTokenizer(idx)
-		if err != nil {
-			return nil, &MetaDataError{Message: fmt.Sprintf(
-				"text index %q: %v", idx.Name, err)}
-		}
-		version, err := getTextTokenizerVersion(idx)
-		if err != nil {
-			return nil, &MetaDataError{Message: fmt.Sprintf(
-				"text index %q: %v", idx.Name, err)}
-		}
-		if err := ValidateTokenizerVersion(tok, version); err != nil {
-			return nil, &MetaDataError{Message: fmt.Sprintf(
-				"text index %q: %v", idx.Name, err)}
-		}
-	}
-
-	// Validate BITMAP_VALUE indexes.
-	// Matches Java's BitmapValueIndexMaintainerFactory.getIndexValidator() which calls
-	// validateGrouping(1) and validateNotVersion(). The root expression must be a
-	// GroupingKeyExpression with exactly 1 grouped column (the position field).
-	for _, idx := range indexes {
-		if idx.Type != IndexTypeBitmapValue {
-			continue
-		}
-		gke, ok := idx.RootExpression.(*GroupingKeyExpression)
-		if !ok {
-			return nil, &MetaDataError{Message: fmt.Sprintf(
-				"BITMAP_VALUE index %q requires a GroupingKeyExpression as root expression; "+
-					"wrap with GroupBy()",
-				idx.Name)}
-		}
-		if gke.GetGroupedCount() != 1 {
-			return nil, &MetaDataError{Message: fmt.Sprintf(
-				"BITMAP_VALUE index %q must have exactly 1 grouped column (the position field), got %d",
-				idx.Name, gke.GetGroupedCount())}
-		}
-	}
-
-	// Validate VERSION indexes.
-	// Matches Java's VersionIndexMaintainerFactory.getIndexValidator() which calls:
-	//   validateNotGrouping(), validateStoresRecordVersions(), validateVersionKey(), validateNotUnique().
-	for _, idx := range indexes {
-		if idx.Type != IndexTypeVersion {
-			continue
-		}
-		if !b.storeRecordVersions {
-			return nil, &MetaDataError{Message: fmt.Sprintf("VERSION index %q requires SetStoreRecordVersions(true)", idx.Name)}
-		}
-		if idx.IsUnique() {
-			return nil, &MetaDataError{Message: fmt.Sprintf("VERSION index %q does not support unique", idx.Name)}
-		}
-		if _, ok := idx.RootExpression.(*GroupingKeyExpression); ok {
-			return nil, &MetaDataError{Message: fmt.Sprintf("VERSION index %q does not support grouping", idx.Name)}
-		}
-		if countVersionColumns(idx.RootExpression) != 1 {
-			return nil, &MetaDataError{Message: fmt.Sprintf("VERSION index %q: there must be exactly 1 version entry in index", idx.Name)}
-		}
-	}
-
-	// Validate MAX_EVER_VERSION indexes.
-	// Matches Java's AtomicMutationIndexMaintainerFactory validator:
-	//   validateGrouping(1), validateVersionInGroupedKeys(), validateStoresRecordVersions().
-	// Must have exactly 1 version column in the grouped (aggregated) portion,
-	// no version columns in the grouping portion, and storeRecordVersions enabled.
-	for _, idx := range indexes {
-		if idx.Type != IndexTypeMaxEverVersion {
-			continue
-		}
-		if !b.storeRecordVersions {
-			return nil, &MetaDataError{Message: fmt.Sprintf("MAX_EVER_VERSION index %q requires SetStoreRecordVersions(true)", idx.Name)}
-		}
-		gke, ok := idx.RootExpression.(*GroupingKeyExpression)
-		if !ok {
-			return nil, &MetaDataError{Message: fmt.Sprintf("MAX_EVER_VERSION index %q must use a GroupingKeyExpression", idx.Name)}
-		}
-		// Check version columns in grouping vs grouped portions by examining the
-		// child expressions of the whole key's composite. The first groupingCount
-		// columns are grouping; the rest are grouped.
-		groupingCount := gke.GetGroupingCount()
-		groupedCount := gke.GetGroupedCount()
-		if groupedCount < 1 {
-			return nil, &MetaDataError{Message: fmt.Sprintf("MAX_EVER_VERSION index %q must have at least 1 grouped column", idx.Name)}
-		}
-		// Count version columns in grouping vs grouped portions.
-		groupingVersionCount, groupedVersionCount := countVersionColumnsInGroupParts(gke.wholeKey, groupingCount)
-		if groupingVersionCount != 0 {
-			return nil, &MetaDataError{Message: fmt.Sprintf("MAX_EVER_VERSION index %q: there must be no version entries in grouping key", idx.Name)}
-		}
-		if groupedVersionCount != 1 {
-			return nil, &MetaDataError{Message: fmt.Sprintf("MAX_EVER_VERSION index %q: there must be exactly 1 version entry in grouped key", idx.Name)}
-		}
-	}
-
-	// Validate index replacement chains.
-	// Matches Java's MetaDataValidator.validateIndex(): replacement indexes must exist
-	// and must not themselves have replacements (no multi-level chains).
-	for _, idx := range indexes {
-		replacements := idx.GetReplacedByIndexNames()
-		for _, replacementName := range replacements {
-			replacement, exists := indexes[replacementName]
-			if !exists {
-				return nil, &MetaDataError{Message: fmt.Sprintf("index %q has replacement index %q that is not in the metadata", idx.Name, replacementName)}
-			}
-			if len(replacement.GetReplacedByIndexNames()) > 0 {
-				return nil, &MetaDataError{Message: fmt.Sprintf("index %q has replacement index %q that itself has replacement indexes", idx.Name, replacementName)}
-			}
-		}
 	}
 
 	// No record-type-key binding happens here, deliberately. A key expression
@@ -1394,8 +1237,8 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 		if rt.UnionFieldDescriptor != nil {
 			rt.unionFieldNumber = rt.UnionFieldDescriptor.Number()
 			msgType, err := protoregistry.GlobalTypes.FindMessageByName(rt.Descriptor.FullName())
-			if err != nil {
-				// Dynamic schemas (not in global proto registry) fall back to dynamicpb.
+			if err != nil || msgType.Descriptor() != rt.Descriptor {
+				// Dynamic or revised schemas must decode against the current descriptor.
 				// This allows runtime-constructed schemas (e.g. from DDL) to be used
 				// for both serialization and deserialization.
 				desc := rt.Descriptor
@@ -1403,7 +1246,12 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 			} else {
 				rt.newMessage = func() proto.Message { return msgType.New().Interface() }
 			}
-			fnToRT[rt.unionFieldNumber] = rt
+			for i := 0; i < b.unionDescriptor.Fields().Len(); i++ {
+				field := b.unionDescriptor.Fields().Get(i)
+				if field.Message() == rt.Descriptor {
+					fnToRT[field.Number()] = rt
+				}
+			}
 		}
 	}
 
@@ -1423,13 +1271,6 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 		subspaceKeyCounter:      b.subspaceKeyCounter,
 		usesSubspaceKeyCounter:  b.counterBasedSubspaceKeys,
 		preserved:               preserved,
-	}
-
-	// Sliding-window (top-N vector) index validation. Runs on the assembled
-	// metadata rather than on the builder because it asks which record types an
-	// index covers, and RecordTypesForIndex is the one authority on that.
-	if err := validateSlidingWindowIndexes(md); err != nil {
-		return nil, err
 	}
 
 	// Derived here, beside fieldNumberToRecordType above, so the value is
@@ -1495,8 +1336,7 @@ func (rtb *RecordTypeBuilder) SetRecordTypeKey(key any) *RecordTypeBuilder {
 		// Wrapped with %w, not flattened into a message: the caller has to be
 		// able to match the cause with errors.As, which is how Go says
 		// `catch (MetaDataException e)`.
-		rtb.builder.buildErrors = append(rtb.builder.buildErrors,
-			fmt.Errorf("record type %q: %w", rtb.recordType.Name, err))
+		rtb.builder.recordBuildError(fmt.Errorf("record type %q: %w", rtb.recordType.Name, err))
 		return rtb
 	}
 	rtb.recordType.explicitRecordTypeKey = canonical
@@ -1717,9 +1557,10 @@ func (m *RecordMetaData) GetRecordType(name string) *RecordType {
 // assignment census presented as a mutation census -- which survived a round of
 // review, because the two read alike and the missing shape was delete().
 //
-//	Insertions, subscript form -- 8:
-//	  2 on the BUILDER, before any RecordMetaData exists, both in this file:
-//	    one in setRecordsWithUnionName, one in setRecordsWithoutUnion
+//	Insertions, subscript form -- 7:
+//	  1 on the BUILDER, before any RecordMetaData exists, in this file:
+//	    setRecords (the union-less fallback that held a second one
+//	    is gone: Java has no union-less mode)
 //	  6 post-Build, every one in a test:
 //	    1 in record_type_key_identity_test.go
 //	    5 in metadata_evolution_validator_test.go
@@ -1954,20 +1795,25 @@ func (m *RecordMetaData) GetAllIndexes() map[string]*Index {
 // Universal indexes cover all record types. Type-specific indexes cover only
 // the record types they are associated with.
 // Matches Java's RecordMetaData.recordTypesForIndex(Index).
+//
+// The types come in name order, so a caller reporting the first of them that
+// violates something names the same one on every run.
 func (m *RecordMetaData) RecordTypesForIndex(idx *Index) []*RecordType {
+	names := slices.Sorted(maps.Keys(m.recordTypes))
 	// Check if it's a universal index.
 	for _, ui := range m.universalIndexes {
 		if ui.Name == idx.Name {
 			result := make([]*RecordType, 0, len(m.recordTypes))
-			for _, rt := range m.recordTypes {
-				result = append(result, rt)
+			for _, name := range names {
+				result = append(result, m.recordTypes[name])
 			}
 			return result
 		}
 	}
 	// Type-specific: find which types have this index.
 	var result []*RecordType
-	for _, rt := range m.recordTypes {
+	for _, name := range names {
+		rt := m.recordTypes[name]
 		for _, i := range m.GetIndexesForRecordType(rt.Name) {
 			if i.Name == idx.Name {
 				result = append(result, rt)
@@ -2021,22 +1867,33 @@ func (m *RecordMetaData) GetFormerIndexesSince(version int) []*FormerIndex {
 }
 
 // GetIndexFromSubspaceKey returns the index with the given subspace key, or nil.
-// Matches Java's RecordMetaData.getIndexFromSubspaceKey().
+// Java's RecordMetaData.getIndexFromSubspaceKey (RecordMetaData.java:329-336)
+// compares each index's normalized key with the ARGUMENT AS GIVEN by equals. Go
+// normalizes the argument too (subspaceKeyIdentity), so two arguments differ
+// from Java's: an int argument finds an index whose key is int64, where Java's
+// Integer argument misses a Long key, and a tuple argument finds an index whose
+// key is the same list, where Java's Tuple argument never equals a List key.
+// The second is reached by the one non-test caller, savedSourceIndex, which
+// passes a decoded stamp item as Java's OnlineIndexer passes
+// Index.decodeSubspaceKey's (OnlineIndexer.java:205-208): for a source index
+// keyed by a nested tuple Java fails the BY_INDEX resume with an unknown key and
+// Go resumes from the index the stamp names (DIVERGENCES.md, "BY_INDEX resume
+// over a nested-tuple source key"). Java throws MetaDataException on a miss; Go
+// returns nil.
 func (m *RecordMetaData) GetIndexFromSubspaceKey(key any) *Index {
-	normalized := normalizeSubspaceKey(key)
+	want := subspaceKeyIdentity(key)
 	for _, idx := range m.indexes {
-		if normalizeSubspaceKey(idx.SubspaceTupleKey()) == normalized {
+		if subspaceKeyIdentity(idx.SubspaceTupleKey()) == want {
 			return idx
 		}
 	}
 	return nil
 }
 
-// GetIndexesToBuildSince returns indexes that were added or modified since the
-// given metadata version. Used by CreateOrOpen to detect new indexes that need
-// to be built when opening an existing store with updated metadata.
-// Matches Java's RecordMetaData.getIndexesToBuildSince(int).
-func (m *RecordMetaData) GetIndexesToBuildSince(version int) []*Index {
+// GetIndexesSince returns all indexes modified since the given metadata version,
+// including replaced originals whose state still needs reconciliation.
+// Matches Java's RecordMetaData.getIndexesSince(int).
+func (m *RecordMetaData) GetIndexesSince(version int) []*Index {
 	var result []*Index
 	for _, idx := range m.indexes {
 		if idx.LastModifiedVersion > version {
@@ -2046,15 +1903,29 @@ func (m *RecordMetaData) GetIndexesToBuildSince(version int) []*Index {
 	return result
 }
 
-// GetUnionDescriptor returns the protobuf message descriptor for UnionDescriptor.
-// Returns nil if the schema has no union (single-type schema).
+// GetIndexesToBuildSince excludes replaced originals from changed indexes.
+// Matches Java's RecordMetaData.getIndexesToBuildSince(int).
+func (m *RecordMetaData) GetIndexesToBuildSince(version int) []*Index {
+	var result []*Index
+	for _, index := range m.GetIndexesSince(version) {
+		if len(index.GetReplacedByIndexNames()) == 0 {
+			result = append(result, index)
+		}
+	}
+	return result
+}
+
+// GetUnionDescriptor returns the records file's union message (never nil on a
+// built RecordMetaData: a records file without one is refused).
 // Matches Java's RecordMetaData.getUnionDescriptor().
 func (m *RecordMetaData) GetUnionDescriptor() protoreflect.MessageDescriptor {
 	return m.unionDescriptor
 }
 
 // GetUnionFieldForRecordType returns the union field descriptor for a record type.
-// Returns nil if the record type has no union field (single-type schema).
+// Every record type of a built RecordMetaData is a union field (validateRecordUnion
+// refuses a RECORD-usage message that is not), so this is nil only for a record
+// type the metadata does not hold.
 // Matches Java's RecordMetaData.getUnionFieldForRecordType().
 func (m *RecordMetaData) GetUnionFieldForRecordType(rt *RecordType) protoreflect.FieldDescriptor {
 	return rt.UnionFieldDescriptor
@@ -2122,55 +1993,31 @@ func primaryKeyStartsWithRecordType(expr KeyExpression) bool {
 	return false
 }
 
-// normalizeSubspaceKey normalizes a subspace key for comparison. All integer
-// types (int, int32, int64) are normalized to int64 so that Go's any equality
-// works correctly after proto round-trip (FDB tuple unpack returns int64,
-// valueFromProto may return int32, and Go code may use int). Without this,
-// int64(42) != int(42) in Go's any comparison. Fixes bug 13.
-//
-// `[]byte` keys are normalized to `string` because byte slices are
-// unhashable in Go and would panic when used as a map key. Adversarial
-// proto inputs (e.g. via the FuzzRecordMetaDataFromProto fuzz target)
-// can carry `[]byte` subspace keys; without this branch,
-// `RecordMetaDataBuilder.Build` would panic with "hash of unhashable
-// type: []uint8" rather than returning a typed error. The string-cast
-// preserves byte-equality semantics for keys with the same byte
-// content, but does collapse `[]byte("x")` and `"x"` into the same
-// equivalence class — that's a harmless conflation here because any
-// metadata that mixes the two for the same logical subspace is
-// already malformed.
-func normalizeSubspaceKey(key any) any {
-	switch k := key.(type) {
-	case int:
-		return int64(k)
-	case int32:
-		return int64(k)
-	case int64:
-		return k
-	case []byte:
-		return string(k)
-	case tuple.Tuple:
-		// Nested tuples are produced by `fastDecodeTuple` when the
-		// proto-encoded subspace key carries an FDB nested-tuple type
-		// code. Like `[]byte`, a `tuple.Tuple` (= []any) is unhashable
-		// in Go and would panic on map insert. Java doesn't currently
-		// emit nested tuples as subspace keys, so this is preemptive
-		// hardening rather than a known-triggering case (the fuzz has
-		// run 16M+ iterations without finding one), but the cost is
-		// trivial and the alternative is a surprise panic if the input
-		// ever takes that shape.
-		return fmt.Sprintf("%v", k)
-	default:
-		return key
+// formerIndexNameSuffix is Java's rendering of a former index's name after
+// "Former index" and "former index": a space and the name, or nothing for an
+// unnamed one (MetaDataValidator.java:110-112, :163-178).
+func formerIndexNameSuffix(fi *FormerIndex) string {
+	if fi.FormerName == "" {
+		return ""
 	}
+	return " " + fi.FormerName
+}
+
+// formerIndexNameOrUnknown is how MetaDataValidator names a former index that
+// may have no name.
+func formerIndexNameOrUnknown(fi *FormerIndex) string {
+	if fi.FormerName == "" {
+		return "<unknown>"
+	}
+	return fi.FormerName
 }
 
 // deepCopySubspaceKey returns a subspace key that shares no mutable state with
 // its argument.
 //
-// THE SHAPES ARE TAKEN FROM THE DECODER, NOT FROM normalizeSubspaceKey. That
-// function is a normaliser for map-key hashing and its `default` arm returns
-// the key untouched, so it bounds nothing -- reading it as the authority on
+// THE SHAPES ARE TAKEN FROM THE DECODER, NOT FROM subspaceKeyIdentity. That
+// function normalizes for comparison and its `default` arm keeps the key as
+// given, so it bounds nothing -- reading a normalizer as the authority on
 // "which shapes are reachable" is how the []byte-only version of this copy came
 // to describe itself as complete. The producers are `formerIndexFromProto`
 // (`fi.SubspaceKey = t[0]` off a decoded tuple) and `Index.SubspaceTupleKey`,
@@ -2273,11 +2120,6 @@ func countVersionColumns(expr KeyExpression) int {
 		return countVersionColumns(e.innerKey)
 	case *NestingKeyExpression:
 		return countVersionColumns(e.child)
-	case *RecordTypeKeyExpression:
-		if e.nested != nil {
-			return countVersionColumns(e.nested)
-		}
-		return 0
 	case *FunctionKeyExpression:
 		return countVersionColumns(e.arguments)
 	default:
@@ -2346,4 +2188,98 @@ func (m *RecordMetaData) computeAmbiguousDeclaredNames() ([]string, bool) {
 		}
 	}
 	return worst, worst != nil
+}
+
+// buildFaultSeq orders every recorded builder fault and SetSubspaceKey
+// refusal across builders and indexes: Java throws each at its call, so the
+// one recorded first is the one a Java program would have died on.
+var buildFaultSeq atomic.Uint64
+
+func nextBuildFaultSeq() uint64 { return buildFaultSeq.Add(1) }
+
+// recordBuildError records a fault a builder call found, for Build to return
+// if nothing recorded earlier did.
+func (b *RecordMetaDataBuilder) recordBuildError(err error) {
+	b.buildErrors = append(b.buildErrors, err)
+	b.buildErrorSeqs = append(b.buildErrorSeqs, nextBuildFaultSeq())
+}
+
+// firstFault is the fault recorded first in program order among the
+// builder's calls and the SetSubspaceKey refusals of every index ever handed
+// to AddIndex, or nil.
+func (b *RecordMetaDataBuilder) firstFault() error {
+	var first error
+	var firstSeq uint64
+	consider := func(err error, seq uint64) {
+		if err != nil && (first == nil || seq < firstSeq) {
+			first, firstSeq = err, seq
+		}
+	}
+	for i, err := range b.buildErrors {
+		consider(err, b.buildErrorSeqs[i])
+	}
+	considerKey := func(expr KeyExpression) {
+		seq, err := keyConstructionFault(expr)
+		consider(err, seq)
+	}
+	for _, idx := range b.addedIndexes {
+		consider(idx.subspaceKeyErr, idx.subspaceKeyErrSeq)
+		considerKey(idx.RootExpression)
+	}
+	for _, rt := range b.recordTypes {
+		considerKey(rt.PrimaryKey)
+	}
+	considerKey(b.recordCountKey)
+	return first
+}
+
+// errThenArity is Java's refusal of a Then of fewer than two children
+// (ThenKeyExpression.java:63-65), a RecordCoreException thrown where the Then
+// is built.
+func errThenArity() error {
+	return &RecordCoreError{Message: "Then must have at least 2 children"}
+}
+
+// keyConstructionFault is the earliest refusal in program order that Java's
+// constructors would have thrown building expr, with its place, or (0, nil):
+// a Then of fewer than two children (Concat) or a function create refuses
+// (FunctionExpr, CardinalityExpr).
+func keyConstructionFault(expr KeyExpression) (uint64, error) {
+	var firstSeq uint64
+	var first error
+	consider := func(seq uint64, err error) {
+		if err != nil && (first == nil || seq < firstSeq) {
+			firstSeq, first = seq, err
+		}
+	}
+	switch e := expr.(type) {
+	case *CompositeKeyExpression:
+		if e.arityFaultSeq != 0 {
+			consider(e.arityFaultSeq, errThenArity())
+		}
+		for _, child := range e.expressions {
+			consider(keyConstructionFault(child))
+		}
+	case *NestingKeyExpression:
+		consider(keyConstructionFault(e.child))
+	case *GroupingKeyExpression:
+		consider(keyConstructionFault(e.wholeKey))
+	case *KeyWithValueExpression:
+		consider(keyConstructionFault(e.innerKey))
+	case *FunctionKeyExpression:
+		consider(e.faultSeq, e.fault)
+		consider(keyConstructionFault(e.arguments))
+	case *CardinalityFunctionKeyExpression:
+		consider(e.faultSeq, e.fault)
+		consider(keyConstructionFault(e.arguments))
+	case *DimensionsKeyExpression:
+		consider(keyConstructionFault(e.WholeKey))
+	case *SplitKeyExpression:
+		consider(keyConstructionFault(e.joined))
+	case *ListKeyExpression:
+		for _, child := range e.children {
+			consider(keyConstructionFault(child))
+		}
+	}
+	return firstSeq, first
 }

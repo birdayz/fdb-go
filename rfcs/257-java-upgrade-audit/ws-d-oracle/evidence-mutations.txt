@@ -1,0 +1,55 @@
+# Mutation runs (each: mutation verified present with grep, then restored and cmp-verified)
+## knob golden: SplitNumNearestClusters summary altered
+[FAIL] GuardiANN target oracle [It] maps which GuardiANN consumers throw for degenerate knob values
+Ran 1 of 1530 Specs in 12.283 seconds
+FAIL! -- 0 Passed | 1 Failed | 0 Pending | 1529 Skipped
+## hash formula: bytes treated unsigned
+Ran 1 of 1526 Specs in 9.497 seconds
+FAIL! -- 0 Passed | 1 Failed | 0 Pending | 1525 Skipped
+## inline golden (ok*20->ok*19) and refit golden (KEEP_CURRENT->ACCEPT_CANDIDATE)
+[FAIL] GuardiANN target oracle [It] records inline-maintenance inserts
+[FAIL] GuardiANN target oracle [It] records whether a size-balanced split is usable where the plain split is not
+Ran 2 of 1532 Specs in 6.252 seconds
+FAIL! -- 0 Passed | 2 Failed | 0 Pending | 1530 Skipped
+## design v7 specs: five mutations in one run (each verified present with grep -c = 1, then restored and cmp-verified)
+##   Go: peel "maxRefits": 8 -> 2; shape "inlineTail": 5 -> 4; inline golden deletes=[ok*18,] -> [ok*17,]
+##   Java: obsolete-task staging disabled (&& false); record-layer probe forces autoMergeDuringCommit(false)
+##   the peel failure is the round bound (sixtyFortyAtFraction045 =roundBound); the obsolete merge livelocks
+##   (40 executions); the autoMerge row hits VectorIndexClusterTooLargeException at save 12
+##   log: /var/tmp/fdb-upgrade-recovery/ws-d-oracle-mut-v7b.log
+[FAIL] GuardiANN target oracle [It] records inline-maintenance inserts
+[FAIL] GuardiANN target oracle [It] measures the iterated outlier peel on the split counterexample shapes
+[FAIL] GuardiANN target oracle [It] records the target on the split counterexample shapes in deferred and inline mode
+[FAIL] GuardiANN target oracle [It] consumes obsolete tasks as no-ops under the knob those tasks would consume
+[FAIL] GuardiANN target oracle [It] records inline maintenance reached through the record layer
+Ran 13 of 1536 Specs in 42.160 seconds
+FAIL! -- 8 Passed | 5 Failed | 0 Pending | 1523 Skipped
+## design v8 rows: three golden mutations in one run of //conformance:rfc257_oracle_test (each verified present with grep -c = 1, then restored and cmp-verified)
+##   bits9Obsolete drain=[1,0,] -> [1,1,0,]; ReassignNumNeighboringClusters=-1 drain=2 -> 3; peel sixtyFortyAtFraction045N1000 bound=12 -> 11
+##   log: /var/tmp/fdb-upgrade-recovery/rfc257-oracle-mut-v8.log
+[FAIL] GuardiANN target oracle [It] maps which GuardiANN consumers throw for degenerate knob values
+[FAIL] GuardiANN target oracle [It] measures the iterated outlier peel on the split counterexample shapes
+[FAIL] GuardiANN target oracle [It] consumes obsolete tasks as no-ops under the knob those tasks would consume
+Ran 14 of 14 Specs in 37.807 seconds
+FAIL! -- 11 Passed | 3 Failed | 0 Pending | 0 Skipped
+## design v9 floor: the geometric removal floor weakened to 2^r - 1 (verified present, restored, cmp-verified)
+##   log: /var/tmp/fdb-upgrade-recovery/wsd-hd-peel-mut.log (a 17-spec target, before the WS-J/WS-E specs joined it)
+[FAIL] GuardiANN target oracle [It] measures the peel on many isolated high-dimensional outliers
+Ran 1 of 17 Specs in 80.334 seconds
+## design v10 sampled refits: floor-sample:S mode with sampling turned off (sampleSize forced to Integer.MAX_VALUE;
+##   "MUTATION sampling off" grep -c = 1 before the run, restored and cmp-verified after); log: /var/tmp/fdb-upgrade-recovery/wsd-sample-mut.log
+[FAIL] GuardiANN target oracle [It] measures the peel on many isolated high-dimensional outliers
+Ran 1 of 21 Specs in 121.961 seconds
+## design v11 heartbeat parse: heartbeatIndexerID back to exactly one element (len(parts) == 1; grep -c = 1 before the run, restored and cmp-verified); logs: /var/tmp/fdb-upgrade-recovery/hb-v11-go-mut.log, /var/tmp/fdb-upgrade-recovery/hb-v11-jvm-mut.log
+[FAILED] a (UUID, x) heartbeat key parses as its UUID, as Java's getUUID(0) does
+Ran 1 of 3616 Specs in 5.594 seconds
+[FAILED] in [It] - conformance/index_state_conformance_test.go:254 @ 09/23/26 14:29:04.116
+Ran 1 of 1524 Specs in 6.276 seconds
+## design v11 heartbeat parse: single-pass check (key parsed inside the time loop, so parsing stops at the first live heartbeat; python count of the mutated block = 1, restored and cmp-verified); logs: /var/tmp/fdb-upgrade-recovery/hb-v11-go-lazy.log, /var/tmp/fdb-upgrade-recovery/hb-v11-jvm-lazy.log
+[FAILED] a non-UUID heartbeat key (Versionstamp(\xff\x00\x00\x00\x00\x00\x00\x00\x00\x00, 7)) is an error, got <nil>
+Ran 1 of 3616 Specs in 5.600 seconds
+[FAILED] Go's ongoing check on a versionstamp heartbeat key after a live one: <nil>
+Ran 1 of 1524 Specs in 6.366 seconds
+## design v11 generated high-d peel (item 23): the unsampled 'floor' mode fitting on a 256-member sample (sampleSize default Integer.MAX_VALUE -> 256; grep -c ': 256;' = 1 before the run, restored and cmp-verified); log: /var/tmp/fdb-upgrade-recovery/wsd-gen-mut.log
+[FAILED] in [It] - conformance/guardiann_probe_conformance_test.go:1210 @ 09/23/26 14:43:02.819
+Ran 1 of 25 Specs in 29.239 seconds

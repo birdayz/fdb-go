@@ -538,20 +538,6 @@ func divergenceHolds(div *plandiff.Divergence, query string, javaResult, goResul
 	}
 }
 
-// writeClusterFileToTemp materialises the cluster file string contents
-// (env.ClusterFile) to a temp file on disk and returns its path. The
-// Go embedded SQL driver's DSN takes a `cluster_file=<path>` option,
-// not the file contents — so the conformance test writes once per It
-// block and removes it on cleanup.
-func writeClusterFileToTemp(contents string) string {
-	f, err := os.CreateTemp("", "fdb-conformance-*.cluster")
-	Expect(err).NotTo(HaveOccurred())
-	_, err = f.WriteString(contents)
-	Expect(err).NotTo(HaveOccurred())
-	Expect(f.Close()).To(Succeed())
-	return f.Name()
-}
-
 var _ = Describe("RunSql Harness", func() {
 	var (
 		ctx  context.Context

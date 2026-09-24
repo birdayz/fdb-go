@@ -1,0 +1,75 @@
+**NAK.** Tree `b6aaf7546ad0ae91305679c9454860ab18ca010e`, design SHA256 `1455e2450393c5a507d808a2c7fa9e41bf2244b5104fe5ffeedaa1e09a49cf4a` (631 lines; I re-hashed it). Java at `fdacd162a`.
+
+This was a read-only review; I ran no tests. "MEASURED" means the fact is in the tree's evidence files, and all nine hashes in `evidence-v2.txt` match this tree's bytes. The tally reconciles with `WSJ-TALLY`: 155 + 22 + 168 + 20 + 101 = 466.
+
+**Checked and correct:**
+- **3.1:** unchanged since v1.
+- **3.2 carrier:** `literalKeyCarrier` stores what Java stores. `int32` becomes `int_value` (`metadata_proto.go:735`), and the INT entry size matches `SemanticAnalyzer.java:106,1115`.
+- **3.2 widening:** `nullableLong` matches `Key.java:579-582`. Both operands are read before the null check, enums arrive as int64 (`key_expression.go:264,403`), and double→long narrowing follows Java.
+- **Java citations:** DdlVisitor `:497,547-564`; the ImmutableMap option order; OnSourceIndexGenerator (`:223,304`); `createTemplate` ERROR_IF_EXISTS (`:229-247`).
+- **F11** is properly escalated (`TODO.md:14642`).
+
+## HIGH
+
+1. **The landed 3.2 fix breaks evolution today, and the remedy is not landed.**
+   - The rebind validator compares root expressions with `proto.Equal` (`metadata_evolution_validator.go:535-541`), and the catalog does not allow index rebuilds (`fdb_store_catalog.go:345`).
+   - So any Go-stored template with an INT literal in an index is refused when a version rebuilt on this tree is rebound via `RepairSchema` / `fleet.Migrate` (`migrate.go:96`): "key expression changed". That covers every bitmap aggregate index, `d & 1` and `d + 1`.
+   - Driver-stored templates are hit too. F11 makes them invisible to Java, not to Go's own validator.
+   - The width-only rule (design `:278-291`) is scheduled for step 2 (`:593`).
+   - `git grep` for `long_value|int_value|literal width` in CHANGELOG, DIVERGENCES and TODO finds 0 (control: `WS-J` hits TODO.md 4 times).
+   - Needed: land the width-only validator arm with 3.2, pinned by an FDB test: v1 stored with `long_value` → rebuilt v2 → `RepairSchema` succeeds with no rebuild.
+
+2. **Go's planner never uses the indexes F1 made storable.**
+   - Every index whose root has a scalar nested leaf is dropped as a candidate (`plan_context_builder.go:171-178`, `index_expansion.go:54-59`, `match_candidate_index.go:1177-1180`).
+   - So 3.1's promised "EXPLAIN that the index is used for `ORDER BY s.x, ts`" (`:233-236`) cannot pass.
+   - 3.3b (`:361-372`) covers only aggregate grouping and never names this gate, which also blocks the aggregate rule.
+   - Needed: a section on value-index nested-leaf matching, removing the gate. Java's value-index expansion handles nesting natively (SOURCE, unverified here).
+   - Add a Java plan oracle for the value shapes; WSJP has GROUP BY reads only.
+   - Land the production pin now: both front ends already call `queryddl.Generate` (`ddl.go:582`).
+
+3. **3.3's "structural port" targets the wrong representation.**
+   - Java's IndexSpec (`:338-416`) and QuantifierValues walk the Cascades `RelationalExpression` graph.
+   - Go's query path already lowers the same logical tree into that graph (`TranslateToCascadesWithError`, `cascades_generator.go:447`).
+   - Section 3.3 (`:327`) instead hosts the port on the pre-lowering logical tree and gives no node mapping. Java's precedence is defined per expression class:
+     - record type before scan count (`:255-277`);
+     - the predicate belongs to the first select that holds one, with the inner-select vs select-having messages (`:387-401`);
+     - result checks on every node except Explode (`:418-433`).
+   - Run the port on the translated graph, or give the class→operator table and show every precedence arm survives.
+
+## MEDIUM
+
+4. **The carry rule overclaims "never refuses" (`:432-441`).**
+   - The catalog's validator refuses a new record type whose SinceVersion is 0 (`:364-380`). Go's builder never sets it: 0 hits in `pkg/relational/core/metadata` (control: `builder.go` has 31 funcs). So a v2 that adds a table is refused.
+   - New indexes must exceed the old metadata version (`:589-597`), not "stored maxima".
+   - Tenants can be bound to older versions, so carry from the bound version, not only the latest.
+   - Add a new-table v2 to the FDB tests.
+
+5. **Companion runs are labelled F3, and §7.1 cannot be met.**
+   - MEASURED: 29 runs carry an RFC-209 companion. All 23 metadata-diverge runs with `indexes,version` differ because of the companion, yet §0 (`:118-120`) calls them "all of it F3".
+   - `wsjCanonical` keeps companions and the class logic (oracle `:995-1004`) counts them, so these runs can never be both-accept-equal. That contradicts §7.1's "companions excepted" (`:582`).
+   - Declare a mutation-verified companion canonicalization, or give companions their own class.
+   - The evidence also shows 7 version-diff runs, 3 of them also options-order, not "6 / two".
+
+6. **The F2b read side is undecided.**
+   - MEASURED: Java serves `WHERE d + d = 3` from truncated index entries and returns no row. That is a Java wrong answer.
+   - SOURCE, unmeasured: Go answers correctly only because it declines arithmetic function keys (`index_expansion.go:937-1000`).
+   - Decide Go's matching policy, pin Go's answer, record the divergence, and report it upstream.
+
+7. **§6 lane resolution skips Java's first check.**
+   - Java's `encapsulate` rejects non-primitive operands with a SemanticException, ARGUMENT_TO_ARITHMETIC_OPERATOR_IS_OF_COMPLEX_TYPE (`ArithmeticValue.java:215-220`), before it looks up a lane.
+   - ENUM, UUID, ARRAY and RECORD are non-primitive (`Type.java:786-789`). §5 makes `enum_col & 1` reachable, and it takes that arm, not XX000.
+   - The refusal list (`:560`) should be two steps, with ENUM, UUID and array probes.
+   - The NULL arm is SOURCE: none of the 18 probes covers it.
+
+8. **The Go-stored spec discriminates on three reads, not seven.**
+   - Reads 2-5 are UnableToPlan on both sides, before and after the fix (`evidence-f2.txt` §1), so "seven reads equal" (`:101,256`) is really three.
+   - Replace them with index-served equality reads.
+   - The type-promotion axis of the carrier fix is unprobed: add DOUBLE/FLOAT-column + INT-literal and INT-column + DOUBLE-literal shapes. `f + 1` is Java-accepted but never byte-compared.
+
+## LOW
+
+- "All eight literal-spelling shapes" (`:257`) lists ten spellings.
+- The driver-stored copy gets one read, not "seven reads over each" (`:101`).
+- `KeyExpressionInvalidResultError` pairs a Java class name with a Go `%T` type name (`long_arithmetic_function.go:203`).
+- The census check `harvested == in_bodies + variant_duplicates` is true by definition (`harvest.py` computes the one from the others). Pin `variant_duplicates == 0` instead.
+- The join message is thrown in `pickOneRecordTypeName` (`:273-277`), not at `:94-95` / `:143-144`.

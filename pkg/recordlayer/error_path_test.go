@@ -899,7 +899,7 @@ var _ = Describe("Phase 2 error types", func() {
 
 		var metaErr *MetaDataError
 		Expect(errors.As(err, &metaErr)).To(BeTrue())
-		Expect(metaErr.Message).To(ContainSubstring("has no primary key"))
+		Expect(metaErr.Message).To(Equal("Record type Order must have a primary key"))
 	})
 
 	It("RecordStoreNoInfoButNotEmptyError on headerless store", func() {
@@ -1101,8 +1101,8 @@ var _ = Describe("Error type coverage gaps", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			// Mark WRITE_ONLY (but do NOT build the range set).
-			_, err = store.MarkIndexWriteOnly("Order$price")
+			// Start an unbuilt index; a state-only transition preserves built coverage.
+			_, err = store.ClearAndMarkIndexWriteOnly("Order$price")
 			Expect(err).NotTo(HaveOccurred())
 
 			// Try to mark readable — should fail because range set is incomplete.

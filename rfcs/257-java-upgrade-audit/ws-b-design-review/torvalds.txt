@@ -1,0 +1,21 @@
+**ACK — WS-B design only. Required design changes: none.**
+
+Reviewed the complete design at SHA256 `699f084274f4acf98ebf40c9329a577bac952657e4c57f527f34ce5cb1b17390`, parent RFC257 WS-B, both retained research reports, pinned Java `fdacd162a9c8acfadc49082b89185c823ab8ae4a`, and relevant current Go implementations. Published Go HEAD matches `71ccd8cf8b3fd0dbafe283e91171818e36af555e`.
+
+All five sections provide concrete implementation contracts:
+
+1. **Sliding windows — [design:21](/home/birdy/projects/fdb-go/rfcs/257-java-upgrade-audit/ws-b-design.md:21).** Exact-entry lookup precedes bookkeeping; tracked entries preserve count/boundary and refresh only the appropriate delegate. Ordinary versus write-only callbacks are distinguished from eviction/promotion callbacks. The size-one correction remains explicit. Queue machinery, state 4, and format 15 remain WS-C.
+
+2. **Deletion/cache — [design:50](/home/birdy/projects/fdb-go/rfcs/257-java-upgrade-audit/ws-b-design.md:50).** Header parsing, conditional stamp mutation, dirty-state marking, exact clearing bounds, and deferred-version cleanup compose coherently. Cache admission and old-cacheability fixes are necessary prerequisites. Pinned read versions, sentinel writes, and first-commit assertions make the conflict matrix meaningful without introducing global serializable-stamp contention.
+
+3. **Replacement lifecycle — [design:81](/home/birdy/projects/fdb-go/rfcs/257-java-upgrade-audit/ws-b-design.md:81).** Enumeration is separated from build eligibility; initialization covers fresh stores and reconciliation before policy invocation. Retirement requires every replacement to be exactly READABLE. Transaction-visible state, negative-decision conflicts, lock release before transitions, named checks, and unified commit sequencing address the actual lifecycle gaps.
+
+4. **Metadata evolution — [design:132](/home/birdy/projects/fdb-go/rfcs/257-java-upgrade-audit/ws-b-design.md:132).** Copied option configuration and caller-supplied change sets preserve ownership. Explicitly ignoring `unique` matches Java; unrelated validation remains active. UNION-tag correspondence, descriptor-pair traversal, separate identity/serialization tags, and descriptor-correct factories cover persisted rename/swap/name-reuse behavior. The unionless extension and correct old-descriptor rewrite loop remain intact.
+
+5. **Rank values — [design:175](/home/birdy/projects/fdb-go/rfcs/257-java-upgrade-audit/ws-b-design.md:175).** Dispatch validation, declared score-column extraction, absolute ranks, singleton integer/NULL values, serializable rank lookup, and cursor preservation are specified. Exact value and packed-tuple comparisons close the existing conformance blind spot; persisted bytes remain unchanged.
+
+The delayed-retirement disposition at [design:110](/home/birdy/projects/fdb-go/rfcs/257-java-upgrade-audit/ws-b-design.md:110) is acceptable. The Java behavior remains **source-derived** pending the retained live reproducer. If confirmed, cancellation must be recorded and tested as an intentional no-resurrection correction. Preparing upstream report text grants no publication authority.
+
+The acceptance gates at [design:201](/home/birdy/projects/fdb-go/rfcs/257-java-upgrade-audit/ws-b-design.md:201) remain mandatory: retained regressions and mutation kills, real-FDB conflict/lifecycle coverage, live Java probes, bidirectional metadata/rank interoperability, sliding-window persistence coverage, complete affected/full/race runs, and final implementation review.
+
+No builds, tests, edits, Git mutations, agents, or GitHub contact occurred. Prior WS-A/E1 closure remains separate evidence. This ACK approves implementation of the design; WS-B implementation acceptance, WS-C–K, and whole-upgrade completion remain open.

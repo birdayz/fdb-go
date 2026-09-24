@@ -52,3 +52,24 @@ func arrayElementType(array *values.ArrayType) values.Type {
 	}
 	return array.ElementType
 }
+
+// translateSingleton matches QueryVisitor's one-element BOOLEAN Explode while
+// publishing an empty record. The private element supplies multiplicity, not a
+// SQL attribute; every SELECT-list consumer sees the same zero-column row.
+func (t *cascadesTranslator) translateSingleton() expressions.RelationalExpression {
+	collection := values.NewArrayConstructorValue(values.NotNullBoolean, []values.Value{
+		&values.ConstantValue{Value: true, Typ: values.NotNullBoolean},
+	})
+	explode, err := expressions.NewExplodeExpression(collection)
+	if err != nil {
+		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery, "singleton source: %v", err))
+		return nil
+	}
+	inner := expressions.ForEachQuantifier(expressions.InitialOf(explode))
+	projection, err := expressions.NewLogicalProjectionExpression(nil, inner)
+	if err != nil {
+		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery, "singleton row: %v", err))
+		return nil
+	}
+	return projection
+}

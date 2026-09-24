@@ -131,8 +131,7 @@ func TestFDB_RecursiveCTEColumnListRenamesAliasedSeed(t *testing.T) {
 }
 
 // TestFDB_RecursiveCTEColumnListAndAliasedBranches combines both axes —
-// a table-backed seed (FROM-less SELECT is unsupported, matching Java's
-// visitSimpleTable rejection): the column list renames an aliased seed AND
+// a table-backed seed: the column list renames an aliased seed AND
 // the recursive branch aliases its computed column. Both wraps fire; both
 // must read the alias-named frontier slots.
 func TestFDB_RecursiveCTEColumnListAndAliasedBranches(t *testing.T) {

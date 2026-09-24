@@ -20,14 +20,14 @@ var _ = Describe("FunctionKeyExpression", func() {
 
 	Describe("Proto round-trip", func() {
 		It("round-trips with EmptyKey arguments", func() {
-			original := FunctionExpr("get_versionstamp_incarnation", EmptyKey())
+			original := FunctionExpr("custom_empty_fn", EmptyKey())
 			p := original.ToKeyExpression()
 			restored, err := KeyExpressionFromProto(p)
 			Expect(err).NotTo(HaveOccurred())
 
 			fn, ok := restored.(*FunctionKeyExpression)
 			Expect(ok).To(BeTrue(), "expected *FunctionKeyExpression")
-			Expect(fn.Name()).To(Equal("get_versionstamp_incarnation"))
+			Expect(fn.Name()).To(Equal("custom_empty_fn"))
 			_, argsIsEmpty := fn.Arguments().(*EmptyKeyExpression)
 			Expect(argsIsEmpty).To(BeTrue(), "expected EmptyKeyExpression arguments")
 		})
@@ -192,26 +192,17 @@ var _ = Describe("FunctionKeyExpression", func() {
 		})
 	})
 
+	// The target has get_versionstamp_incarnation only as a SQL function
+	// (IncarnationValue.java:169-171), not in its key-function registry, so it
+	// is not a key function: FunctionKeyExpression.create refuses the name.
 	Describe("get_versionstamp_incarnation", func() {
-		It("returns error with nil record", func() {
+		It("is not a key function", func() {
 			expr := FunctionExpr("get_versionstamp_incarnation", EmptyKey())
+			Expect(expr.fault).To(MatchError("Function not defined"))
 			_, err := expr.Evaluate(nil, nil)
-			Expect(err).To(HaveOccurred())
 			var keErr *KeyExpressionError
 			Expect(errors.As(err, &keErr)).To(BeTrue())
-			Expect(keErr.Message).To(ContainSubstring("get_versionstamp_incarnation requires store context"))
-		})
-
-		It("returns error with nil Store on record", func() {
-			record := &FDBStoredRecord[proto.Message]{
-				Store: nil,
-			}
-			expr := FunctionExpr("get_versionstamp_incarnation", EmptyKey())
-			_, err := expr.Evaluate(record, nil)
-			Expect(err).To(HaveOccurred())
-			var keErr *KeyExpressionError
-			Expect(errors.As(err, &keErr)).To(BeTrue())
-			Expect(keErr.Message).To(ContainSubstring("get_versionstamp_incarnation requires store context"))
+			Expect(keErr.Message).To(ContainSubstring("unknown function key expression"))
 		})
 	})
 

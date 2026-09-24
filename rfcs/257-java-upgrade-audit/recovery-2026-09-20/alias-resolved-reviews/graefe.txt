@@ -1,0 +1,19 @@
+**ACK — IMPLEMENTATION CODE** at tree `15c853e0f15c1daed5214da4998308e30c577ed7`. No required implementation fix remains in this delta.
+
+I reviewed the complete 24-file tree delta, frozen additions, actual prior ACK/NAKs and prompts, and pinned Java `fdacd162a9c8acfadc49082b89185c823ab8ae4a`. Session metadata confirms **gpt-6-astra / xhigh / read-only**.
+
+- **Resolved attribute contracts:** [logical_predicate.go:3180](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:3180) resolves the complete identifier path and derives alias eligibility/name from the returned attribute, requiring no nested access. This preserves Java’s unqualified whole-object `X` when referenced as `X.X`, while ordinary/nested members retain qualification. [plan_visitor.go:1855](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/plan_visitor.go:1855) admits the exact record QOV without introducing lazy names. Both constructors pin `42702 / Ambiguous alias X`; the FDB derived-member control verifies rows **3,9**.
+
+- **UNION cardinality and ownership:** [logical_predicate.go:7386](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:7386) rejects multiple label matches before assigning an ordinal or checking authored duplicates. Repeated labels remain legal to publish. Missing-name precedence, quoted-versus-qualified handling, explicit positions, and unique-name controls remain intact.
+
+- **Phase boundaries:** [logical_predicate.go:5936](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/logical_predicate.go:5936) prepares actual source/derived bodies before classification. Binding allocation and body preparation are idempotent across the subsequent build. The GROUP/positional/mixed-star gate matches ordinary SELECT, supplying positional width while preserving bare-star projection elision.
+
+- **Private normalization contract:** [cascades_translator.go:5779](/home/birdy/projects/fdb-go/pkg/relational/core/query/cascades_translator.go:5779) preserves already aligned rows; required normalization applies the existing constructor’s unique-name rule. SQL labels remain independent. This respects Java’s [no-promotion and ordinal-promotion paths:605](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-relational-core/src/main/java/com/apple/foundationdb/relational/recordlayer/query/LogicalOperator.java:605), while reusing Go’s private datum contract. [Regressions:163](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/union_exact_output_contract_test.go:163) pin both physical populations and identical logical labels; the direct elision test guards unwanted projections.
+
+Evidence reconciles **6,457 frozen hashes**, five uncached affected targets with **9,886 RUN/PASS entries**, zero skips/failures, **50 Java probe records**, and six compiled mutation kills with matching reconstructed source/log hashes and restored sources. Invalid, build-only, nonunique-pattern, and interrupted attempts receive no credit. No golden, allowlist, or corpus relaxation appears in the delta.
+
+**Execution gates remain open.** The single inspected snapshot credits fuzz: **30 seconds, four workers, 2,869,998 executions**, without coverage guidance. Full93, race15, `just test`, and nominal1M ABBA remain uncredited. The baseline is clean at `e48f5b4965543cd4d99b5578356059e12d969c7c`. Cancelled suites are not greens.
+
+**Publication remains gated.** HEAD remains `71ccd8cf8b3fd0dbafe283e91171818e36af555e`; PR786 stays draft. No edits, builds/tests, agents/worktrees, Git mutations, verification polling, or GitHub contact occurred. Commit/push/merge remain unauthorized.
+
+WS-B–K and the whole upgrade remain open. Storage unchanged-scope ACK, FDB C++7.3.77, approved nullable-array/raw/scalar/sorting extensions, and the legacyRaBitQ disable/rebuild prerequisite stand. GRV/RPC latency attribution remains bounded; universal parity and historical startup-timeout causation remain unestablished.

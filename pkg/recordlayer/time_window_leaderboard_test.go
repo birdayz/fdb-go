@@ -51,7 +51,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 
 		// Ungrouped: score=price, timestamp=quantity
 		idx := NewTimeWindowLeaderboardIndex("lb_price_ts",
-			Concat(Field("price"), Field("quantity")))
+			Ungrouped(Concat(Field("price"), Field("quantity"))))
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -113,7 +113,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 		ks := specSubspace()
 
 		idx := NewTimeWindowLeaderboardIndex("lb_multi_win",
-			Concat(Field("price"), Field("quantity")))
+			Ungrouped(Concat(Field("price"), Field("quantity"))))
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -172,7 +172,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 		ks := specSubspace()
 
 		idx := NewTimeWindowLeaderboardIndex("lb_alltime",
-			Concat(Field("price"), Field("quantity")))
+			Ungrouped(Concat(Field("price"), Field("quantity"))))
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -231,7 +231,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 		ks := specSubspace()
 
 		idx := NewTimeWindowLeaderboardIndex("lb_highfirst",
-			Concat(Field("price"), Field("quantity")))
+			Ungrouped(Concat(Field("price"), Field("quantity"))))
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -287,7 +287,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 		ks := specSubspace()
 
 		idx := NewTimeWindowLeaderboardIndex("lb_delete",
-			Concat(Field("price"), Field("quantity")))
+			Ungrouped(Concat(Field("price"), Field("quantity"))))
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -347,7 +347,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 		ks := specSubspace()
 
 		idx := NewTimeWindowLeaderboardIndex("lb_update",
-			Concat(Field("price"), Field("quantity")))
+			Ungrouped(Concat(Field("price"), Field("quantity"))))
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -408,7 +408,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 		ks := specSubspace()
 
 		idx := NewTimeWindowLeaderboardIndex("lb_expire",
-			Concat(Field("price"), Field("quantity")))
+			Ungrouped(Concat(Field("price"), Field("quantity"))))
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -495,7 +495,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 		ks := specSubspace()
 
 		idx := NewTimeWindowLeaderboardIndex("lb_byrank",
-			Concat(Field("price"), Field("quantity")))
+			Ungrouped(Concat(Field("price"), Field("quantity"))))
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -564,7 +564,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 		ks := specSubspace()
 
 		idx := NewTimeWindowLeaderboardIndex("lb_multi_rec",
-			Concat(Field("price"), Field("quantity")))
+			Ungrouped(Concat(Field("price"), Field("quantity"))))
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -624,7 +624,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 		ks := specSubspace()
 
 		idx := NewTimeWindowLeaderboardIndex("lb_outside",
-			Concat(Field("price"), Field("quantity")))
+			Ungrouped(Concat(Field("price"), Field("quantity"))))
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -681,7 +681,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 		ks := specSubspace()
 
 		idx := NewTimeWindowLeaderboardIndex("lb_delwhere",
-			Concat(Field("price"), Field("quantity")))
+			Ungrouped(Concat(Field("price"), Field("quantity"))))
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -736,7 +736,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 		ks := specSubspace()
 
 		idx := NewTimeWindowLeaderboardIndex("lb_persist",
-			Concat(Field("price"), Field("quantity")))
+			Ungrouped(Concat(Field("price"), Field("quantity"))))
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -815,7 +815,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 		ks := specSubspace()
 
 		idx := NewTimeWindowLeaderboardIndex("lb_nodir",
-			Concat(Field("price"), Field("quantity")))
+			Ungrouped(Concat(Field("price"), Field("quantity"))))
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -856,7 +856,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 		ks := specSubspace()
 
 		idx := NewTimeWindowLeaderboardIndex("lb_badtype",
-			Concat(Field("price"), Field("quantity")))
+			Ungrouped(Concat(Field("price"), Field("quantity"))))
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -896,7 +896,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 		ks := specSubspace()
 
 		idx := NewTimeWindowLeaderboardIndex("lb_scorerange",
-			Concat(Field("price"), Field("quantity")))
+			Ungrouped(Concat(Field("price"), Field("quantity"))))
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -944,7 +944,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 		ks := specSubspace()
 
 		idx := NewTimeWindowLeaderboardIndex("lb_hsf_rank",
-			Concat(Field("price"), Field("quantity")))
+			Ungrouped(Concat(Field("price"), Field("quantity"))))
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -1077,7 +1077,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 		ks := specSubspace()
 
 		idx := NewTimeWindowLeaderboardIndex("lb_coexist",
-			Concat(Field("price"), Field("quantity")))
+			Ungrouped(Concat(Field("price"), Field("quantity"))))
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -1135,7 +1135,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 		ks := specSubspace()
 
 		idx := NewTimeWindowLeaderboardIndex("lb_empty",
-			Concat(Field("price"), Field("quantity")))
+			Ungrouped(Concat(Field("price"), Field("quantity"))))
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -1169,7 +1169,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 		ks := specSubspace()
 
 		idx := NewTimeWindowLeaderboardIndex("lb_types",
-			Concat(Field("price"), Field("quantity")))
+			Ungrouped(Concat(Field("price"), Field("quantity"))))
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -1230,7 +1230,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 		ks := specSubspace()
 
 		idx := NewTimeWindowLeaderboardIndex("lb_idempotent",
-			Concat(Field("price"), Field("quantity")))
+			Ungrouped(Concat(Field("price"), Field("quantity"))))
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -1276,7 +1276,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 		ks := specSubspace()
 
 		idx := NewTimeWindowLeaderboardIndex("lb_recfn_rank",
-			Concat(Field("price"), Field("quantity")))
+			Ungrouped(Concat(Field("price"), Field("quantity"))))
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -1333,7 +1333,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 		ks := specSubspace()
 
 		idx := NewTimeWindowLeaderboardIndex("lb_recfn_nil",
-			Concat(Field("price"), Field("quantity")))
+			Ungrouped(Concat(Field("price"), Field("quantity"))))
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -1383,7 +1383,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 		ks := specSubspace()
 
 		idx := NewTimeWindowLeaderboardIndex("lb_recfn_auto",
-			Concat(Field("price"), Field("quantity")))
+			Ungrouped(Concat(Field("price"), Field("quantity"))))
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -1436,7 +1436,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 		ks := specSubspace()
 
 		idx := NewTimeWindowLeaderboardIndex("lb_agg_count",
-			Concat(Field("price"), Field("quantity")))
+			Ungrouped(Concat(Field("price"), Field("quantity"))))
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -1499,7 +1499,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 		ks := specSubspace()
 
 		idx := NewTimeWindowLeaderboardIndex("lb_agg_sfr",
-			Concat(Field("price"), Field("quantity")))
+			Ungrouped(Concat(Field("price"), Field("quantity"))))
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -1560,7 +1560,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 		ks := specSubspace()
 
 		idx := NewTimeWindowLeaderboardIndex("lb_agg_rfs",
-			Concat(Field("price"), Field("quantity")))
+			Ungrouped(Concat(Field("price"), Field("quantity"))))
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -1615,7 +1615,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 		ks := specSubspace()
 
 		idx := NewTimeWindowLeaderboardIndex("lb_agg_skip",
-			Concat(Field("price"), Field("quantity")))
+			Ungrouped(Concat(Field("price"), Field("quantity"))))
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -1804,7 +1804,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 		ks := specSubspace()
 
 		idx := NewTimeWindowLeaderboardIndex("lb_rebuild",
-			Concat(Field("price"), Field("quantity")))
+			Ungrouped(Concat(Field("price"), Field("quantity"))))
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -1864,7 +1864,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 		ks := specSubspace()
 
 		idx := NewTimeWindowLeaderboardIndex("lb_rebuild_always",
-			Concat(Field("price"), Field("quantity")))
+			Ungrouped(Concat(Field("price"), Field("quantity"))))
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -1954,7 +1954,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 
 		// Phase 2: Create metadata WITH leaderboard index.
 		idx := NewTimeWindowLeaderboardIndex("lb_online",
-			Concat(Field("price"), Field("quantity")))
+			Ungrouped(Concat(Field("price"), Field("quantity"))))
 		builder2 := baseMetaData()
 		builder2.AddIndex("Order", idx)
 		mdWithIndex, err := builder2.Build()
@@ -2031,7 +2031,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 
 		// Phase 2: Create metadata with leaderboard index.
 		idx := NewTimeWindowLeaderboardIndex("lb_online_chunked",
-			Concat(Field("price"), Field("quantity")))
+			Ungrouped(Concat(Field("price"), Field("quantity"))))
 		builder2 := baseMetaData()
 		builder2.AddIndex("Order", idx)
 		mdWithIndex, err := builder2.Build()
@@ -2085,7 +2085,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 		ks := specSubspace()
 
 		idx := NewTimeWindowLeaderboardIndex("lb_rebuild_never",
-			Concat(Field("price"), Field("quantity")))
+			Ungrouped(Concat(Field("price"), Field("quantity"))))
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -2150,7 +2150,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 		ks := specSubspace()
 
 		idx := NewTimeWindowLeaderboardIndex("lb_countdup",
-			Concat(Field("price"), Field("quantity")))
+			Ungrouped(Concat(Field("price"), Field("quantity"))))
 		idx.Options[IndexOptionRankCountDuplicates] = "true"
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
@@ -2215,7 +2215,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 		ks := specSubspace()
 
 		idx := NewTimeWindowLeaderboardIndex("lb_delall",
-			Concat(Field("price"), Field("quantity")))
+			Ungrouped(Concat(Field("price"), Field("quantity"))))
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -2266,7 +2266,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 	It("continuation tokens: paginated scan resumes correctly", func() {
 		ks := specSubspace()
 		idx := NewTimeWindowLeaderboardIndex("leaderboard_score",
-			Concat(Field("price"), Field("quantity")))
+			Ungrouped(Concat(Field("price"), Field("quantity"))))
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -2337,7 +2337,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 	It("TIME_WINDOW_RANK with specific time window returns correct rank", func() {
 		ks := specSubspace()
 		idx := NewTimeWindowLeaderboardIndex("leaderboard_score",
-			Concat(Field("price"), Field("quantity")))
+			Ungrouped(Concat(Field("price"), Field("quantity"))))
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		md, err := builder.Build()
@@ -2447,7 +2447,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 			ks := specSubspace()
 
 			idx := NewTimeWindowLeaderboardIndex("lb_rankentry",
-				Concat(Field("price"), Field("quantity")))
+				Ungrouped(Concat(Field("price"), Field("quantity"))))
 			builder := baseMetaData()
 			builder.AddIndex("Order", idx)
 			md, err := builder.Build()
@@ -2507,7 +2507,7 @@ var _ = Describe("TimeWindowLeaderboard", func() {
 			ks := specSubspace()
 
 			idx := NewTimeWindowLeaderboardIndex("lb_rankentry_nil",
-				Concat(Field("price"), Field("quantity")))
+				Ungrouped(Concat(Field("price"), Field("quantity"))))
 			builder := baseMetaData()
 			builder.AddIndex("Order", idx)
 			md, err := builder.Build()

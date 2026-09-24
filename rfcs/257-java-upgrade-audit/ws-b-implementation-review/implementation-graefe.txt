@@ -1,0 +1,41 @@
+**NAK — WS-B has two remaining lifecycle integration gaps.**
+
+Reviewed tree: `bcf0946edd1f5d591542fee4f07481d7826c046d`  
+Base tree: `0dedbe1b1083358fb9568a31178084c043fa31e0`  
+Published HEAD remains `71ccd8cf8b3fd0dbafe283e91171818e36af555e`.
+
+I read the complete code/build/test/script diff, including new files and removals; the full design and three design ACKs; parent RFC257 WS-B; corresponding Java sources at `fdacd162a9c8acfadc49082b89185c823ab8ae4a`; and the retained component/evidence READMEs. These findings are source-derived. No tests, builds, edits, Git mutations, GitHub requests, or agents were used.
+
+1. **P1: Bulk deletion still skips disabled indexes without a state conflict, allowing orphan entries after a rebuild.**
+
+   [store_delete_where.go:53](/home/birdy/projects/fdb-go/pkg/recordlayer/store_delete_where.go:53) uses `getIndexStateLocked`, bypassing the new transaction-visible state reader. Store opening does not supply the missing protection: index states are loaded with snapshot isolation at [store_state_cache.go:275](/home/birdy/projects/fdb-go/pkg/recordlayer/store_state_cache.go:275).
+
+   Concrete sequence: transaction D opens with original index O disabled. Transaction B explicitly rebuilds O while its replacements remain unready, then commits. D executes `DeleteRecordsWhere` using its cached disabled state, skips O, and clears the selected records. D has neither read O’s state serializably nor included O in its index-clear actions. B’s earlier record reads cannot prevent D’s later commit. The result is a readable O containing entries for deleted records.
+
+   Java’s bulk-delete filter calls `getIndexState` at [FDBRecordStore.java:2035](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/FDBRecordStore.java:2035), which registers the state conflict at line 4242.
+
+   **Required:** use the error-returning transactional state gate before every bulk-delete skip. Add real-FDB coverage for both commit orders, cold/cached opens, and two store objects sharing one context. Assert both commit outcomes and surviving record/index bytes.
+
+2. **P1: Direct query and vector scan paths bypass the new lifecycle gate and can scan an index already made unreadable in the same context.**
+
+   The query executor checks cached state at [executor.go:824](/home/birdy/projects/fdb-go/pkg/recordlayer/query/executor/executor.go:824), then invokes `maintainer.Scan` directly at [executor.go:470](/home/birdy/projects/fdb-go/pkg/recordlayer/query/executor/executor.go:470). Ordinary aggregate scans do likewise at [executor_new_plans.go:194](/home/birdy/projects/fdb-go/pkg/recordlayer/query/executor/executor_new_plans.go:194). Vector entry points retain cached checks at [vector_index_maintainer.go:1338](/home/birdy/projects/fdb-go/pkg/recordlayer/vector_index_maintainer.go:1338) and line 1381.
+
+   Open handles A and B for the same context/subspace while an index is readable. Through B, call `ClearAndMarkIndexWriteOnly`. A retains cached READABLE. A’s direct query scan therefore accepts the index and scans its now-cleared data, potentially returning an empty result while matching records remain. The corrected `ScanIndex` rejects this same operation. This is exactly the multiple-store-object contract tested for only three scan routes at [index_state_test.go:1121](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state_test.go:1121).
+
+   **Required:** centralize the error-returning, transaction-visible state gate across these dispatch paths, preserving queries’ stricter READABLE requirement. Extend the existing stale-handle, state-read-error, and refused-scan conflict tests to these routes. Audit the same cached selection pattern in [record_function.go:71](/home/birdy/projects/fdb-go/pkg/recordlayer/record_function.go:71) and [aggregate_function.go:219](/home/birdy/projects/fdb-go/pkg/recordlayer/aggregate_function.go:219).
+
+Both findings concern unchanged callers missed by WS-B’s state-read migration. They are obligations of [design section 3](/home/birdy/projects/fdb-go/rfcs/257-java-upgrade-audit/ws-b-design.md:94), rather than requests to implement later workstreams.
+
+My assessment of all five sections:
+
+- **Sliding replay/delegate routing:** the entry-key-first replay check, in-window refresh, overflow suppression, corruption error, and write-only callback routing are consistent with the design and Java. The approved size-one correction remains intact. See [sliding_window_index_maintainer.go:409](/home/birdy/projects/fdb-go/pkg/recordlayer/sliding_window_index_maintainer.go:409).
+- **Header-aware deletion/cache:** the serializable header-only read, malformed-header invalidation, cacheable-only admission, old-header cacheability handling, and deferred-version cleanup compose correctly. See [store_api.go:165](/home/birdy/projects/fdb-go/pkg/recordlayer/store_api.go:165) and [store_state_cache.go:451](/home/birdy/projects/fdb-go/pkg/recordlayer/store_state_cache.go:451).
+- **Retirement/commit lifecycle:** initialization, build eligibility, exact READABLE readiness, named checks, commit ordering, lock-preserving cleanup, and uniqueness repairs are sound in the inspected core paths. The two integration gaps above prevent milestone acceptance. Cancelling retirement on deletion is the documented, reproduced correction to Java’s resurrection bug and should remain.
+- **Ignored options/union identity:** copied configuration and supplied-set validation preserve structural checks; tag correspondence, descriptor-pair recursion, alias decoding, current-descriptor factories, and strict index-scope evolution are coherent. See [metadata_evolution_validator.go:282](/home/birdy/projects/fdb-go/pkg/recordlayer/metadata_evolution_validator.go:282), line 578, and [metadata.go:1419](/home/birdy/projects/fdb-go/pkg/recordlayer/metadata.go:1419).
+- **Rank-valued bounds:** enrichment reuses the existing scan and cursor machinery, preserves keys/PKs/continuations, and extracts only declared score columns. Terminal replay and all seven snapshot preloads are corrected; actual rank/select reads remain serializable. See [rank_scan.go:44](/home/birdy/projects/fdb-go/pkg/recordlayer/rank_scan.go:44), [index_scan.go:523](/home/birdy/projects/fdb-go/pkg/recordlayer/index_scan.go:523), and [rank_index_maintainer.go:459](/home/birdy/projects/fdb-go/pkg/recordlayer/rank_index_maintainer.go:459).
+
+Other deltas are accounted for: TEXT leaf-descriptor validation supports the options work; full-PK uniqueness keys and survivor cleanup support pending-uniqueness retirement; commit-body consolidation explains the removed DST exemptions; obsolete name-based evolution and sliding replay logic are replaced by the new contracts. Former-index build cleanup removal follows Java’s preservation behavior. Conformance now retains dynamic messages and compares packed rank values. Python drivers and WS-A/E1 closure additions are retained verification/history, not runtime pipelines.
+
+The retained final logs substantiate **93/93 uncached targets**, race **3342/3343** and **1387/1506**, and eight rank mutation kills plus earlier campaigns. Comparing the 6678-file freeze found only subsequent TODO/README updates; source/build hashes matched. That evidence does not exercise the two missed paths.
+
+Approved extensions and the sliding size-one correction remain preserved. Queue/state4/format15 and WS-C–K remain outside this review.

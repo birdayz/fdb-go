@@ -1,0 +1,34 @@
+# RFC-257 WS-J design v12 and WS-C section 7 revision 8: the combined evidence run (2026-09-24)
+# Driver: /var/tmp/fdb-upgrade-recovery/ev12.sh; records in /var/tmp/fdb-upgrade-recovery/ev12/ (run.out is the driver's output).
+#
+# Bytes bound: every file the change set modifies or adds (git diff --name-only HEAD plus untracked, not ignored; the
+# gate-review directories excluded, since a running gate writes there), 1135 files, sha256 recorded before the first run
+# (ev12/src.sha, "hashed 1135 of 1135") and verified after the last (ev12/check.txt): 1135 lines ending ": OK" and 0 other
+# lines ("ok 1135 notok 0"). This file, written after the run, is the one document outside that list.
+#
+# 1. WS-J Describes (//conformance:rfc257_oracle_test, focus "WS-J", uncached), twice:
+#    ev12/wsj-ev1.log: Ran 32 of 59 Specs in 31.159 seconds / SUCCESS! -- 32 Passed | 0 Failed | 0 Pending | 27 Skipped
+#    ev12/wsj-ev2.log: Ran 32 of 59 Specs in 32.400 seconds / SUCCESS! -- 32 Passed | 0 Failed | 0 Pending | 27 Skipped
+#    (32 specs: v11's 31 and the WSJTT shape "struct nested in a struct"; the WSJIXK spec runs its five shapes, the absent
+#    root among them.) The tally line is the same in both runs:
+#    WSJ-TALLY map[both-accept-companion:4 both-accept-equal:166 both-accept-index-diverge:4 both-accept-metadata-diverge:180 both-reject:24 java-accept-go-reject:101]
+# 2. JVM meta-data specs (//conformance:conformance_test, focus "Java refuses the same records descriptors|Subspace-key|
+#    Former-index subspace keys|Field and record-type changes", uncached), ev12/jvm-md.log:
+#    Ran 71 of 1596 Specs in 6.173 seconds / SUCCESS! -- 71 Passed | 0 Failed | 0 Pending | 1525 Skipped
+#    (v11's 57 and this revision's 14: five pairing shapes and nine field shapes.)
+# 3. WS-C focus (//pkg/recordlayer:recordlayer_test, the OnlineIndexer, queue, heartbeat, follow-up, merge, metadata-store,
+#    evolution-validator, builder and identity Describes, uncached), ev12/wsc-focus.log:
+#    Ran 603 of 3709 Specs in 15.827 seconds / SUCCESS! -- 603 Passed | 0 Failed | 0 Pending | 3106 Skipped
+# 4. just test on tree 79499fef51718d3eebfd57837819b505e4a269aa (the same tree after it: 79499fef51718d3eebfd57837819b505e4a269aa), ev12/justtest.log:
+#    "Executed 43 out of 94 tests: 94 tests pass." (43 test logs written by the run,
+#    ev12/justtest-executed.txt; the rest were cached from runs of the same inputs).
+# 5. //pkg/relational/core/metadata:metadata_test uncached with -test.v, ev12/metadata-test-v.log: 51 "--- PASS" lines,
+#    0 "--- FAIL", among them "--- PASS: TestLegacyUnionTemplateErrorRemedies (0.00s)" (v11's run of it
+#    used --test_output=errors and left no per-test line).
+# 6. Final: //pkg/recordlayer:recordlayer_test, //pkg/docscheck:docscheck_test and //pkg/relational/core/catalog:catalog_test,
+#    uncached, with -test.v, ev12/final-targets.log: "Executed 3 out of 3 tests: 3 tests pass.";
+#    recordlayer's Ginkgo run "Ran 3708 of 3709 Specs in 49.920 seconds" (the one skip is the
+#    environment-gated million-record spec); 0 "--- FAIL" lines.
+#
+# Separately, before this run (wsc-v8/): the 20 revision-8 mutations m61-m80, each marker present once, each red, each
+# restored (run-mutations.out, no NOT RESTORED), over a green baseline (baseline.log, "Ran 462 of 3709", 462 passed).

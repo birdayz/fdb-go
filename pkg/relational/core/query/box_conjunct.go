@@ -84,7 +84,7 @@ func (t *cascadesTranslator) classifyLegConjunct(legs []clusterLeg, gateJoin *lo
 	if !t.gatesAsFreshCluster(gateJoin) {
 		return boxConjUnbakeable
 	}
-	_, legTypes := t.ordinalJoinSeedFields(legs)
+	_, legTypes, _ := t.ordinalJoinSeedFields(legs)
 	if legTypes == nil {
 		return boxConjUnbakeable
 	}

@@ -604,6 +604,20 @@ func (m *MetaData) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
+	if len(m.StoredQueries) > 0 {
+		for iNdEx := len(m.StoredQueries) - 1; iNdEx >= 0; iNdEx-- {
+			size, err := m.StoredQueries[iNdEx].MarshalToSizedBufferVT(dAtA[:i])
+			if err != nil {
+				return 0, err
+			}
+			i -= size
+			i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
+			i--
+			dAtA[i] = 0x1
+			i--
+			dAtA[i] = 0x82
+		}
+	}
 	if len(m.Views) > 0 {
 		for iNdEx := len(m.Views) - 1; iNdEx >= 0; iNdEx-- {
 			size, err := m.Views[iNdEx].MarshalToSizedBufferVT(dAtA[:i])
@@ -909,6 +923,62 @@ func (m *PView) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(*m.Definition)
 		copy(dAtA[i:], *m.Definition)
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(*m.Definition)))
+		i--
+		dAtA[i] = 0x12
+	}
+	if m.Name != nil {
+		i -= len(*m.Name)
+		copy(dAtA[i:], *m.Name)
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(*m.Name)))
+		i--
+		dAtA[i] = 0xa
+	}
+	return len(dAtA) - i, nil
+}
+
+func (m *PStoredQuery) MarshalVT() (dAtA []byte, err error) {
+	if m == nil {
+		return nil, nil
+	}
+	size := m.SizeVT()
+	dAtA = make([]byte, size)
+	n, err := m.MarshalToSizedBufferVT(dAtA[:size])
+	if err != nil {
+		return nil, err
+	}
+	return dAtA[:n], nil
+}
+
+func (m *PStoredQuery) MarshalToVT(dAtA []byte) (int, error) {
+	size := m.SizeVT()
+	return m.MarshalToSizedBufferVT(dAtA[:size])
+}
+
+func (m *PStoredQuery) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+	if m == nil {
+		return 0, nil
+	}
+	i := len(dAtA)
+	_ = i
+	var l int
+	_ = l
+	if m.unknownFields != nil {
+		i -= len(m.unknownFields)
+		copy(dAtA[i:], m.unknownFields)
+	}
+	if len(m.TempFunctions) > 0 {
+		for iNdEx := len(m.TempFunctions) - 1; iNdEx >= 0; iNdEx-- {
+			i -= len(m.TempFunctions[iNdEx])
+			copy(dAtA[i:], m.TempFunctions[iNdEx])
+			i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.TempFunctions[iNdEx])))
+			i--
+			dAtA[i] = 0x1a
+		}
+	}
+	if m.Query != nil {
+		i -= len(*m.Query)
+		copy(dAtA[i:], *m.Query)
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(*m.Query)))
 		i--
 		dAtA[i] = 0x12
 	}
@@ -2051,6 +2121,10 @@ func (m *MetaData) ResetVT() {
 			mm.ResetVT()
 		}
 		f7 := m.Views[:0]
+		for _, mm := range m.StoredQueries {
+			mm.ResetVT()
+		}
+		f8 := m.StoredQueries[:0]
 		m.Reset()
 		m.Indexes = f0
 		m.RecordTypes = f1
@@ -2060,6 +2134,7 @@ func (m *MetaData) ResetVT() {
 		m.UnnestedRecordTypes = f5
 		m.UserDefinedFunctions = f6
 		m.Views = f7
+		m.StoredQueries = f8
 	}
 }
 func (m *MetaData) ReturnToVTPool() {
@@ -2118,6 +2193,30 @@ func (m *PView) ReturnToVTPool() {
 }
 func PViewFromVTPool() *PView {
 	return vtprotoPool_PView.Get().(*PView)
+}
+
+var vtprotoPool_PStoredQuery = sync.Pool{
+	New: func() interface{} {
+		return &PStoredQuery{}
+	},
+}
+
+func (m *PStoredQuery) ResetVT() {
+	if m != nil {
+		clear(m.TempFunctions)
+		f0 := m.TempFunctions[:0]
+		m.Reset()
+		m.TempFunctions = f0
+	}
+}
+func (m *PStoredQuery) ReturnToVTPool() {
+	if m != nil {
+		m.ResetVT()
+		vtprotoPool_PStoredQuery.Put(m)
+	}
+}
+func PStoredQueryFromVTPool() *PStoredQuery {
+	return vtprotoPool_PStoredQuery.Get().(*PStoredQuery)
 }
 
 var vtprotoPool_JoinedRecordType_JoinConstituent = sync.Pool{
@@ -2825,6 +2924,12 @@ func (m *MetaData) SizeVT() (n int) {
 			n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 		}
 	}
+	if len(m.StoredQueries) > 0 {
+		for _, e := range m.StoredQueries {
+			l = e.SizeVT()
+			n += 2 + l + protohelpers.SizeOfVarint(uint64(l))
+		}
+	}
 	n += len(m.unknownFields)
 	return n
 }
@@ -2883,6 +2988,30 @@ func (m *PView) SizeVT() (n int) {
 	if m.Definition != nil {
 		l = len(*m.Definition)
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+	}
+	n += len(m.unknownFields)
+	return n
+}
+
+func (m *PStoredQuery) SizeVT() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.Name != nil {
+		l = len(*m.Name)
+		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+	}
+	if m.Query != nil {
+		l = len(*m.Query)
+		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+	}
+	if len(m.TempFunctions) > 0 {
+		for _, s := range m.TempFunctions {
+			l = len(s)
+			n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+		}
 	}
 	n += len(m.unknownFields)
 	return n
@@ -5334,6 +5463,47 @@ func (m *MetaData) UnmarshalVT(dAtA []byte) error {
 				return err
 			}
 			iNdEx = postIndex
+		case 16:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field StoredQueries", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if len(m.StoredQueries) == cap(m.StoredQueries) {
+				m.StoredQueries = append(m.StoredQueries, &PStoredQuery{})
+			} else {
+				m.StoredQueries = m.StoredQueries[:len(m.StoredQueries)+1]
+				if m.StoredQueries[len(m.StoredQueries)-1] == nil {
+					m.StoredQueries[len(m.StoredQueries)-1] = &PStoredQuery{}
+				}
+			}
+			if err := m.StoredQueries[len(m.StoredQueries)-1].UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
 		default:
 			iNdEx = preIndex
 			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
@@ -5591,6 +5761,155 @@ func (m *PView) UnmarshalVT(dAtA []byte) error {
 			}
 			s := string(dAtA[iNdEx:postIndex])
 			m.Definition = &s
+			iNdEx = postIndex
+		default:
+			iNdEx = preIndex
+			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
+			if err != nil {
+				return err
+			}
+			if (skippy < 0) || (iNdEx+skippy) < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if (iNdEx + skippy) > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.unknownFields = append(m.unknownFields, dAtA[iNdEx:iNdEx+skippy]...)
+			iNdEx += skippy
+		}
+	}
+
+	if iNdEx > l {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
+func (m *PStoredQuery) UnmarshalVT(dAtA []byte) error {
+	l := len(dAtA)
+	iNdEx := 0
+	for iNdEx < l {
+		preIndex := iNdEx
+		var wire uint64
+		for shift := uint(0); ; shift += 7 {
+			if shift >= 64 {
+				return protohelpers.ErrIntOverflow
+			}
+			if iNdEx >= l {
+				return io.ErrUnexpectedEOF
+			}
+			b := dAtA[iNdEx]
+			iNdEx++
+			wire |= uint64(b&0x7F) << shift
+			if b < 0x80 {
+				break
+			}
+		}
+		fieldNum := int32(wire >> 3)
+		wireType := int(wire & 0x7)
+		if wireType == 4 {
+			return fmt.Errorf("proto: PStoredQuery: wiretype end group for non-group")
+		}
+		if fieldNum <= 0 {
+			return fmt.Errorf("proto: PStoredQuery: illegal tag %d (wire type %d)", fieldNum, wire)
+		}
+		switch fieldNum {
+		case 1:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Name", wireType)
+			}
+			var stringLen uint64
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				stringLen |= uint64(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			intStringLen := int(stringLen)
+			if intStringLen < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			postIndex := iNdEx + intStringLen
+			if postIndex < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			s := string(dAtA[iNdEx:postIndex])
+			m.Name = &s
+			iNdEx = postIndex
+		case 2:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Query", wireType)
+			}
+			var stringLen uint64
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				stringLen |= uint64(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			intStringLen := int(stringLen)
+			if intStringLen < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			postIndex := iNdEx + intStringLen
+			if postIndex < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			s := string(dAtA[iNdEx:postIndex])
+			m.Query = &s
+			iNdEx = postIndex
+		case 3:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field TempFunctions", wireType)
+			}
+			var stringLen uint64
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				stringLen |= uint64(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			intStringLen := int(stringLen)
+			if intStringLen < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			postIndex := iNdEx + intStringLen
+			if postIndex < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.TempFunctions = append(m.TempFunctions, string(dAtA[iNdEx:postIndex]))
 			iNdEx = postIndex
 		default:
 			iNdEx = preIndex

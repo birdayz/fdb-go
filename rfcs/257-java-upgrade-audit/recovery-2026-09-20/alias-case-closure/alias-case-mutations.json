@@ -1,0 +1,246 @@
+[
+  {
+    "name": "quoted-union-identity",
+    "file": "pkg/relational/core/embedded/logical_predicate.go",
+    "old": "key := label\n\t\tmatches[key]++",
+    "new": "key := strings.ToUpper(label)\n\t\tmatches[key]++",
+    "mutation_sha256": "cf3724e979dc036e62f13df055c30bd5856bdeedc5f188e89e36a8c14960f2b7",
+    "command": [
+      "bazelisk",
+      "test",
+      "//pkg/relational/core/embedded:embedded_test",
+      "//pkg/relational/sqldriver:sqldriver_test",
+      "--nocache_test_results",
+      "--test_output=all",
+      "--test_arg=--test.run=^TestOrderByExactMetadata_|^TestUnionExactOutputContract_|^TestFDB_NoFromSelectProbe$"
+    ],
+    "exit": 3,
+    "failures": [
+      "TestOrderByExactMetadata_QuotedAliasIdentity (0.04s)",
+      "TestOrderByExactMetadata_QuotedAliasIdentity/SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_UNION_ALL_SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_ORDER_BY_\"x\" (0.01s)",
+      "TestOrderByExactMetadata_QuotedAliasIdentity/SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_UNION_ALL_SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_ORDER_BY_x (0.00s)",
+      "TestOrderByExactMetadata_QuotedAliasIdentity/SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_UNION_ALL_SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_ORDER_BY_\"X\",_x (0.01s)",
+      "TestOrderByExactMetadata_QuotedAliasIdentity/SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_UNION_ALL_SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_ORDER_BY_\"x\",_\"X\" (0.01s)",
+      "TestOrderByExactMetadata_QuotedAliasIdentity/SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_UNION_ALL_SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_ORDER_BY_\"X\",_\"x\" (0.02s)",
+      "TestOrderByExactMetadata_QuotedAliasIdentity/SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_UNION_ALL_SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_ORDER_BY_\"X\" (0.01s)",
+      "TestOrderByExactMetadata_QuotedAliasIdentity/SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_UNION_ALL_SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_ORDER_BY_\"x\",_\"x\" (0.01s)",
+      "TestFDB_NoFromSelectProbe (0.06s)",
+      "TestFDB_NoFromSelectProbe/union_quoted_lower (0.02s)",
+      "TestFDB_NoFromSelectProbe/union_quoted_upper (0.00s)",
+      "TestFDB_NoFromSelectProbe/union_quoted_mixed (0.00s)"
+    ],
+    "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-mutant-quoted-union-identity.log",
+    "sha256": "b0e18ea1e0fae6a3e38d5769a46d3e5c0092d36e8616f246f1420bd2dd64b0ec"
+  },
+  {
+    "name": "quoted-select-identity",
+    "file": "pkg/relational/core/embedded/logical_builder.go",
+    "old": "if alias != \"\" && alias == name {",
+    "new": "if alias != \"\" && strings.EqualFold(alias, name) {",
+    "mutation_sha256": "1ad13e2b9f6915e48899bbeb87991fc6daa1e8496d0ee16f8007158da374cbd4",
+    "command": [
+      "bazelisk",
+      "test",
+      "//pkg/relational/core/embedded:embedded_test",
+      "//pkg/relational/sqldriver:sqldriver_test",
+      "--nocache_test_results",
+      "--test_output=all",
+      "--test_arg=--test.run=^TestOrderByExactMetadata_|^TestUnionExactOutputContract_|^TestFDB_NoFromSelectProbe$"
+    ],
+    "exit": 3,
+    "failures": [
+      "TestOrderByExactMetadata_QuotedAliasIdentity (0.03s)",
+      "TestOrderByExactMetadata_QuotedAliasIdentity/SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_ORDER_BY_\"x\" (0.03s)",
+      "TestOrderByExactMetadata_QuotedAliasIdentity/SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_ORDER_BY_\"x\",_\"x\" (0.00s)",
+      "TestOrderByExactMetadata_QuotedAliasIdentity/SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_ORDER_BY_\"x\",_\"X\" (0.00s)",
+      "TestOrderByExactMetadata_QuotedAliasIdentity/SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_ORDER_BY_\"X\",_\"x\" (0.00s)",
+      "TestOrderByExactMetadata_QuotedAliasIdentity/SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_ORDER_BY_\"X\" (0.00s)",
+      "TestOrderByExactMetadata_QuotedAliasIdentity/SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_ORDER_BY_x (0.00s)",
+      "TestOrderByExactMetadata_QuotedAliasIdentity/SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_ORDER_BY_\"X\",_x (0.01s)"
+    ],
+    "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-mutant-quoted-select-identity.log",
+    "sha256": "81ffc3a5551b8f1805bd8905530c3553edb0f11b81083ddef58cca0d33b618c1"
+  },
+  {
+    "name": "quoted-duplicate-identity",
+    "file": "pkg/relational/core/embedded/logical_predicate.go",
+    "old": "if err == nil && previousName == name &&\n\t\t\t\tslices.Equal(previousSegments, segments) {",
+    "new": "if err == nil && strings.EqualFold(previousName, name) &&\n\t\t\t\tslices.EqualFunc(previousSegments, segments, strings.EqualFold) {",
+    "mutation_sha256": "acf9d2c20748e85b8f6c33589a8d5ebc576e7e753f6823721fab0c6ed7058774",
+    "command": [
+      "bazelisk",
+      "test",
+      "//pkg/relational/core/embedded:embedded_test",
+      "//pkg/relational/sqldriver:sqldriver_test",
+      "--nocache_test_results",
+      "--test_output=all",
+      "--test_arg=--test.run=^TestOrderByExactMetadata_|^TestUnionExactOutputContract_|^TestFDB_NoFromSelectProbe$"
+    ],
+    "exit": 3,
+    "failures": [
+      "TestOrderByExactMetadata_QuotedAliasIdentity (0.04s)",
+      "TestOrderByExactMetadata_QuotedAliasIdentity/SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_UNION_ALL_SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_ORDER_BY_\"X\",_\"x\" (0.00s)",
+      "TestOrderByExactMetadata_QuotedAliasIdentity/SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_UNION_ALL_SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_ORDER_BY_\"x\",_\"X\" (0.00s)",
+      "TestOrderByExactMetadata_QuotedAliasIdentity/SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_ORDER_BY_\"x\",_\"X\" (0.00s)",
+      "TestOrderByExactMetadata_QuotedAliasIdentity/SELECT_id_AS_\"x\",_v_AS_\"X\"_FROM_t_ORDER_BY_\"X\",_\"x\" (0.00s)",
+      "TestFDB_NoFromSelectProbe (0.06s)",
+      "TestFDB_NoFromSelectProbe/union_quoted_mixed (0.00s)"
+    ],
+    "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-mutant-quoted-duplicate-identity.log",
+    "sha256": "c099cd2efcb253aca169619119d17ad54fbbe636476c9587e7440bead18cdcfa"
+  },
+  {
+    "name": "resolved-attribute-qualification",
+    "file": "pkg/relational/core/embedded/logical_predicate.go",
+    "old": "if len(segments) == 0 || resolver == nil || resolver.Scope() == nil {",
+    "new": "if len(segments) != 1 || resolver == nil || resolver.Scope() == nil {",
+    "mutation_sha256": "409e699c84825fb2c40a26a0e196d9f0de7292eb696ad6dd4119efa4c574eaf3",
+    "command": [
+      "bazelisk",
+      "test",
+      "//pkg/relational/core/embedded:embedded_test",
+      "//pkg/relational/sqldriver:sqldriver_test",
+      "--nocache_test_results",
+      "--test_output=all",
+      "--test_arg=--test.run=^TestOrderByExactMetadata_|^TestUnionExactOutputContract_|^TestFDB_NoFromSelectProbe$"
+    ],
+    "exit": 3,
+    "failures": [
+      "TestOrderByExactMetadata_UnnamedSourceAlias (0.03s)",
+      "TestOrderByExactMetadata_UnnamedSourceAlias/SELECT_x.x,_99_AS_x_FROM_items_t,_items_t.items_AS_x_ORDER_BY_x,_x (0.02s)",
+      "TestFDB_NoFromSelectProbe (0.06s)",
+      "TestFDB_NoFromSelectProbe/qualified_whole_object_alias_precedence (0.15s)"
+    ],
+    "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-mutant-resolved-attribute-qualification.log",
+    "sha256": "60505ffd0f04d9abbdd5e3f67cd02c6dde21a41801bb41f19b7d4c2ab05cbc0e"
+  },
+  {
+    "name": "record-qov-projection",
+    "file": "pkg/relational/core/embedded/plan_visitor.go",
+    "old": "if qov, ok := values.AsQuantifiedObjectValue(rv); ok {",
+    "new": "if qov, ok := values.AsQuantifiedObjectValue(rv); ok && qov.FlowedType().Code() != values.TypeCodeRecord {",
+    "mutation_sha256": "b3e81ef42dca501eb7dd2e29b520321132352ba88b8dd92faabf5ff6eaf05a27",
+    "command": [
+      "bazelisk",
+      "test",
+      "//pkg/relational/core/embedded:embedded_test",
+      "//pkg/relational/sqldriver:sqldriver_test",
+      "--nocache_test_results",
+      "--test_output=all",
+      "--test_arg=--test.run=^TestOrderByExactMetadata_|^TestUnionExactOutputContract_|^TestFDB_NoFromSelectProbe$"
+    ],
+    "exit": 3,
+    "failures": [
+      "TestOrderByExactMetadata_UnnamedSourceAlias (0.03s)",
+      "TestOrderByExactMetadata_UnnamedSourceAlias/SELECT_x.x,_99_AS_x_FROM_items_t,_items_t.items_AS_x_ORDER_BY_x,_x (0.02s)",
+      "TestFDB_NoFromSelectProbe (0.06s)",
+      "TestFDB_NoFromSelectProbe/qualified_whole_object_alias_precedence (0.00s)",
+      "TestFDB_NoFromSelectProbe/qualified_whole_object_value (0.00s)"
+    ],
+    "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-mutant-record-qov-projection.log",
+    "sha256": "0b41209b9d5dc1c3656900e7426e5b0bd9d5ad63d23cf085df002b6c6e76775c"
+  },
+  {
+    "name": "union-cardinality",
+    "file": "pkg/relational/core/embedded/logical_predicate.go",
+    "old": "if count > 1 {",
+    "new": "if count > 2 {",
+    "mutation_sha256": "77ef1c22e03ee204f112e803fdce62a368f2d66678b4e1d8a616333bcbcb05bd",
+    "command": [
+      "bazelisk",
+      "test",
+      "//pkg/relational/core/embedded:embedded_test",
+      "//pkg/relational/sqldriver:sqldriver_test",
+      "--nocache_test_results",
+      "--test_output=all",
+      "--test_arg=--test.run=^TestOrderByExactMetadata_|^TestUnionExactOutputContract_|^TestFDB_NoFromSelectProbe$"
+    ],
+    "exit": 3,
+    "failures": [
+      "TestOrderByExactMetadata_UnionNamedDuplicates (0.03s)",
+      "TestOrderByExactMetadata_UnionNamedDuplicates/SELECT_*_FROM_t_p,_t_q_UNION_ALL_SELECT_*_FROM_t_p,_t_q_ORDER_BY_id (0.01s)",
+      "TestOrderByExactMetadata_UnionNamedDuplicates/SELECT_*_FROM_t_p,_t_q_UNION_ALL_SELECT_*_FROM_t_p,_t_q_ORDER_BY_id,_id (0.01s)",
+      "TestFDB_NoFromSelectProbe (0.06s)",
+      "TestFDB_NoFromSelectProbe/union_joined_star_ambiguity_before_duplicate (0.00s)",
+      "TestFDB_NoFromSelectProbe/union_joined_star_ambiguous (0.00s)"
+    ],
+    "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-mutant-union-cardinality.log",
+    "sha256": "6604281ad2888739fa1a7dcee4ea57a72870942f793a0fb032ab7acac7c17a23"
+  },
+  {
+    "name": "lifted-star-width",
+    "file": "pkg/relational/core/embedded/logical_predicate.go",
+    "old": "if simpleTable.GroupByClause() != nil || hasPositionalOrderBy(simpleTable) || hasMixedSelectStar(simpleTable) {",
+    "new": "if simpleTable.GroupByClause() != nil || hasMixedSelectStar(simpleTable) {",
+    "mutation_sha256": "5ee24d1e8f2b734a8fd2a3a7e86c2996b20e2c9c92314ab2235a495c6ad5824f",
+    "command": [
+      "bazelisk",
+      "test",
+      "//pkg/relational/core/embedded:embedded_test",
+      "//pkg/relational/sqldriver:sqldriver_test",
+      "--nocache_test_results",
+      "--test_output=all",
+      "--test_arg=--test.run=^TestOrderByExactMetadata_|^TestUnionExactOutputContract_|^TestFDB_NoFromSelectProbe$"
+    ],
+    "exit": 3,
+    "failures": [
+      "TestUnionExactOutputContract_DuplicateSQLLabelsKeepDistinctPhysicalSlots (0.00s)",
+      "TestUnionExactOutputContract_DuplicateSQLLabelsKeepDistinctPhysicalSlots/SELECT_*_FROM_a_p,_a_q_UNION_ALL_SELECT_*_FROM_a_p,_a_q_ORDER_BY_1,_3 (0.02s)",
+      "TestOrderByExactMetadata_UnionDuplicateLabelsRemainLegal (0.04s)",
+      "TestOrderByExactMetadata_UnionDuplicateLabelsRemainLegal/SELECT_*_FROM_t_p,_t_q_UNION_ALL_SELECT_*_FROM_t_p,_t_q_ORDER_BY_1,_3 (0.01s)",
+      "TestFDB_NoFromSelectProbe (0.06s)",
+      "TestFDB_NoFromSelectProbe/union_duplicate_labels_positions (0.00s)"
+    ],
+    "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-mutant-lifted-star-width.log",
+    "sha256": "f9f53217f84b52a0b016ade26d6c76332684c677f927c020c0d2796d92eaf5c8"
+  },
+  {
+    "name": "normalization-row-names",
+    "file": "pkg/relational/core/query/cascades_translator.go",
+    "old": "for i, name := range values.DedupFieldNames(names) {\n\t\tfields[i].Name = name\n\t}\n\treturn commonRow, true, nil",
+    "new": "for i, name := range names {\n\t\tfields[i].Name = name\n\t}\n\treturn commonRow, true, nil",
+    "mutation_sha256": "31fb52e23b1d1c5635efae58218911d4060154a582d70f60bd9e454b021a414d",
+    "command": [
+      "bazelisk",
+      "test",
+      "//pkg/relational/core/embedded:embedded_test",
+      "//pkg/relational/sqldriver:sqldriver_test",
+      "--nocache_test_results",
+      "--test_output=all",
+      "--test_arg=--test.run=^TestOrderByExactMetadata_|^TestUnionExactOutputContract_|^TestFDB_NoFromSelectProbe$"
+    ],
+    "exit": 3,
+    "failures": [
+      "TestUnionExactOutputContract_DuplicateSQLLabelsKeepDistinctPhysicalSlots (0.00s)",
+      "TestUnionExactOutputContract_DuplicateSQLLabelsKeepDistinctPhysicalSlots/SELECT_*_FROM_a_p,_a_q_UNION_ALL_SELECT_*_FROM_a_p,_a_q_ORDER_BY_1,_3 (0.04s)",
+      "TestUnionExactOutputContract_DuplicateSQLLabelsKeepDistinctPhysicalSlots/SELECT_*_FROM_a_p,_a_q_UNION_ALL_SELECT_p.id,_p.v,_q.id,_q.v_FROM_a_p,_a_q (0.04s)",
+      "TestFDB_NoFromSelectProbe (0.06s)",
+      "TestFDB_NoFromSelectProbe/union_duplicate_labels_positions (0.00s)"
+    ],
+    "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-mutant-normalization-row-names.log",
+    "sha256": "807544be71f55c39a5987a5611877be79e0ad2a4ba3577801aa1fa1af13136ed"
+  },
+  {
+    "name": "aligned-row-preservation",
+    "file": "pkg/relational/core/query/cascades_translator.go",
+    "old": "if aligned {",
+    "new": "if aligned && false {",
+    "mutation_sha256": "07f43084afec55120ab2e0e70f1b0a44bcf2f480362849f6ba88a3413611ba74",
+    "command": [
+      "bazelisk",
+      "test",
+      "//pkg/relational/core/embedded:embedded_test",
+      "//pkg/relational/sqldriver:sqldriver_test",
+      "--nocache_test_results",
+      "--test_output=all",
+      "--test_arg=--test.run=^TestOrderByExactMetadata_|^TestUnionExactOutputContract_|^TestFDB_NoFromSelectProbe$"
+    ],
+    "exit": 3,
+    "failures": [
+      "TestUnionExactOutputContract_DuplicateSQLLabelsKeepDistinctPhysicalSlots (0.00s)",
+      "TestUnionExactOutputContract_DuplicateSQLLabelsKeepDistinctPhysicalSlots/SELECT_*_FROM_a_p,_a_q_UNION_ALL_SELECT_*_FROM_a_p,_a_q (0.06s)"
+    ],
+    "log": "/var/tmp/fdb-upgrade-recovery/runtime/alias-case-mutant-aligned-row-preservation.log",
+    "sha256": "b2641746799575f031298475fb67068184ab94d436d2eadf414a5441b94e28bb"
+  }
+]

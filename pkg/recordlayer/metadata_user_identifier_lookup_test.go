@@ -44,7 +44,7 @@ func renameRecordTypes(src *RecordMetaData, rename map[string]string) (*RecordMe
 	}
 	// The union addresses record types by the `_TypeName` FIELD-NAME convention,
 	// which takes precedence over the field's type reference in
-	// setRecordsWithUnionName -- so renaming only the message makes the lookup of
+	// setRecords -- so renaming only the message makes the lookup of
 	// the old name miss and the type is dropped entirely rather than renamed.
 	for _, msg := range p.GetRecords().GetMessageType() {
 		for _, f := range msg.GetField() {
@@ -71,7 +71,7 @@ func renameRecordTypes(src *RecordMetaData, rename map[string]string) (*RecordMe
 	}
 	// Indexes reference their record types BY NAME in a parallel list, so a
 	// rename that stops here produces metadata that will not build at all --
-	// "unknown record type %q referenced by index %q" -- the moment the renamed
+	// "Unknown record type <name>" -- the moment the renamed
 	// type owns one. Silent for every caller whose fixture has no index, which
 	// is why it went unnoticed.
 	for _, idx := range p.GetIndexes() {

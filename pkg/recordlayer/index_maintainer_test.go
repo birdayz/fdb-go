@@ -125,37 +125,78 @@ var _ = Describe("indexMaintainer internals", func() {
 		})
 	})
 
-	Describe("indexKeyContainsNull", func() {
-		It("returns false for empty tuple", func() {
-			Expect(indexKeyContainsNull(tuple.Tuple{})).To(BeFalse())
+	Describe("keyContainsNonUniqueNull", func() {
+		// Every arm of appendNonUniqueNullColumns, each with the Java class
+		// whose null result it transcribes.
+		standinNull := FieldWithNullStandin("a", FanTypeNone, NullStandinNull)
+		standinUnique := FieldWithNullStandin("b", FanTypeNone, NullStandinNullUnique)
+		standinNotNull := FieldWithNullStandin("c", FanTypeNone, NullStandinNotNull)
+
+		It("reads a field's column from its NullStandin", func() {
+			Expect(nonUniqueNullColumns(standinNull)).To(Equal([]bool{true}))
+			Expect(nonUniqueNullColumns(standinUnique)).To(Equal([]bool{false}))
+			Expect(nonUniqueNullColumns(standinNotNull)).To(Equal([]bool{false}))
+			Expect(nonUniqueNullColumns(Field("x"))).To(Equal([]bool{true}), "Key.Expressions.field defaults to NULL")
 		})
 
-		It("returns false when no element is nil", func() {
-			Expect(indexKeyContainsNull(tuple.Tuple{int64(1), "hello", int64(2)})).To(BeFalse())
+		It("reads a nesting's columns from its child, not its parent", func() {
+			nested := &NestingKeyExpression{
+				parentField: "p", fanType: FanTypeNone,
+				child: Concat(standinUnique, standinNull), parentNullStandin: NullStandinNull,
+			}
+			Expect(nonUniqueNullColumns(nested)).To(Equal([]bool{false, true}))
 		})
 
-		It("returns true when all elements are nil", func() {
-			Expect(indexKeyContainsNull(tuple.Tuple{nil, nil})).To(BeTrue())
+		It("concatenates a Then's and a grouping's children in column order", func() {
+			then := Concat(standinNull, standinUnique, standinNotNull)
+			Expect(nonUniqueNullColumns(then)).To(Equal([]bool{true, false, false}))
+			Expect(nonUniqueNullColumns(GroupBy(standinUnique, standinNull))).To(Equal([]bool{true, false}))
+			Expect(nonUniqueNullColumns(KeyWithValue(then, 1))).To(Equal([]bool{true, false, false}))
+			Expect(nonUniqueNullColumns(Dimensions(then, 1, 2))).To(Equal([]bool{true, false, false}))
 		})
 
-		It("returns true when first element is nil", func() {
-			Expect(indexKeyContainsNull(tuple.Tuple{nil, int64(1)})).To(BeTrue())
+		It("counts Key.Evaluated.NULL leaves as non-unique", func() {
+			Expect(nonUniqueNullColumns(Literal(nil))).To(Equal([]bool{true}))
+			Expect(nonUniqueNullColumns(VersionKey())).To(Equal([]bool{true}))
+			Expect(nonUniqueNullColumns(RecordTypeKey())).To(Equal([]bool{true}))
 		})
 
-		It("returns true when last element is nil", func() {
-			Expect(indexKeyContainsNull(tuple.Tuple{int64(1), nil})).To(BeTrue())
+		It("reads a function's column from the function", func() {
+			Expect(nonUniqueNullColumns(FunctionExpr(CollateFuncJRE, Field("s")))).To(Equal([]bool{true}))
+			Expect(nonUniqueNullColumns(FunctionExpr(CollateFuncICU, Field("s")))).To(Equal([]bool{true}))
+			Expect(nonUniqueNullColumns(CardinalityExpr(FieldConcatenate("arr")))).To(Equal([]bool{true}))
+			Expect(nonUniqueNullColumns(FunctionExpr("add", Concat(Field("x"), Field("y"))))).To(Equal([]bool{false}),
+				"LongArithmethicFunctionKeyExpression returns Key.Evaluated.scalar(null)")
 		})
 
-		It("returns true when middle element is nil", func() {
-			Expect(indexKeyContainsNull(tuple.Tuple{int64(1), nil, int64(3)})).To(BeTrue())
+		It("reads a user function's null from its registry entry", func() {
+			const name = "key_contains_non_unique_null_user_fn"
+			eval := func(_ *FDBStoredRecord[proto.Message], _ proto.Message, _ [][]any) ([][]any, error) {
+				return [][]any{{nil}}, nil
+			}
+			RegisterFunction(name, eval)
+			Expect(nonUniqueNullColumns(FunctionExpr(name, Field("x")))).To(Equal([]bool{false}))
+			RegisterFunctionSpec(name, FunctionSpec{Evaluator: eval, MinArguments: 1, MaxArguments: 1, ColumnSize: 1, NullIsNonUnique: true})
+			Expect(nonUniqueNullColumns(FunctionExpr(name, Field("x")))).To(Equal([]bool{true}))
+			RegisterFunction(name, eval)
+			Expect(nonUniqueNullColumns(FunctionExpr(name, Field("x")))).To(Equal([]bool{false}))
 		})
 
-		It("returns false for single non-nil element", func() {
-			Expect(indexKeyContainsNull(tuple.Tuple{"value"})).To(BeFalse())
+		It("never counts a list or split column", func() {
+			Expect(nonUniqueNullColumns(ListExpr(standinNull, standinNull))).To(Equal([]bool{false, false}))
+			Expect(nonUniqueNullColumns(Split(FanOut("r"), 2))).To(Equal([]bool{false, false}))
+			Expect(nonUniqueNullColumns(EmptyKey())).To(BeEmpty())
 		})
 
-		It("returns true for single nil element", func() {
-			Expect(indexKeyContainsNull(tuple.Tuple{nil})).To(BeTrue())
+		It("tests only the null columns, against the expression's standins", func() {
+			then := Concat(standinNull, standinUnique, standinNotNull)
+			Expect(keyContainsNonUniqueNull(then, tuple.Tuple{})).To(BeFalse())
+			Expect(keyContainsNonUniqueNull(then, tuple.Tuple{int64(1), "s", int64(2)})).To(BeFalse())
+			Expect(keyContainsNonUniqueNull(then, tuple.Tuple{nil, "s", int64(2)})).To(BeTrue())
+			Expect(keyContainsNonUniqueNull(then, tuple.Tuple{int64(1), nil, nil})).To(BeFalse())
+			Expect(keyContainsNonUniqueNull(then, tuple.Tuple{nil, nil, nil})).To(BeTrue())
+			// A key-with-value index entry's key is the leading columns only.
+			Expect(keyContainsNonUniqueNull(KeyWithValue(Concat(standinUnique, standinNull), 1), tuple.Tuple{nil})).To(BeFalse())
 		})
 	})
 

@@ -42,8 +42,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/antlr4-go/antlr/v4"
-
 	recordlayer "fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/protoname"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -561,8 +559,8 @@ func projectionOutputNames(sq *selectQuery) []string {
 	// source in the built body, so a name list drawn from these slots has the
 	// wrong width for a mixed star (`SELECT a.*, b.y`) and the exact derivation
 	// declines it. The body's own labels are the authority for such a list.
-	for _, qualifier := range sq.projStarQualifiers {
-		if qualifier != "" {
+	for _, col := range sq.projCols {
+		if col.star {
 			return nil
 		}
 	}
@@ -1863,6 +1861,7 @@ func unnestVirtualScopeSourceWithElement(j joinClause, element *semantic.Column)
 		}
 		if atAlias == "" && elemCol.Type == "RECORD" && !elemCol.IsArray {
 			elemCol.Ephemeral = true
+			elemCol.UnqualifiedOutput = true
 			cols = append(cols, elemCol)
 			cols = append(cols, elemCol.StructFields...)
 		} else {
@@ -2194,7 +2193,7 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op logical.Logica
 	//     LogicalProject). For JOINs this is wrong — it must project
 	//     only the qualifier's columns. Expand into explicit projCols.
 	//  2. projStarQualifiers slots — `SELECT a.*, b.label` mixed.
-	//     Handled by expandQualifiedStars (rewrites star slots in-place).
+	//     Handled by expandProjectionStars (rewrites star slots in-place).
 	needRebuild := false
 	if sq.projQualifier != "" && sq.projCols == nil {
 		normalizeSoleQualifiedStar(sq)
@@ -2205,8 +2204,8 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op logical.Logica
 	} else if expanded {
 		needRebuild = true
 	}
-	if hasAnyQualifiedStar(sq) {
-		if starErr := expandQualifiedStars(sq, md, schemaName, queryCTEScopes); starErr != nil {
+	if hasProjectionStar(sq) {
+		if starErr := expandProjectionStars(sq, md, schemaName, queryCTEScopes); starErr != nil {
 			return nil, starErr
 		}
 		needRebuild = true
@@ -2385,20 +2384,6 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op logical.Logica
 	// ORDER BY: Java's ExpressionVisitor.visitOrderByExpression walks each
 	// ORDER BY expression through the expression visitor. Do the same —
 	// the resolver detects ambiguous/undefined column references.
-	// Build a set of projection aliases for ORDER BY resolution.
-	projAliasSet := make(map[string]bool)
-	if sq.projAliases != nil {
-		for _, a := range sq.projAliases {
-			if a != "" {
-				projAliasSet[strings.ToUpper(a)] = true
-			}
-		}
-	}
-	for _, ac := range sq.aggCols {
-		if ac.outName != "" {
-			projAliasSet[strings.ToUpper(ac.outName)] = true
-		}
-	}
 
 	for _, ob := range sq.orderBy {
 		if ob.rawExpr != nil {
@@ -2425,28 +2410,25 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op logical.Logica
 	}
 	if resolver != nil {
 		for _, ob := range sq.orderBy {
+			// Java resolves visible output aliases before consulting source scope,
+			// including when the source has zero or one column with that name.
+			if bare, matches := orderByOutputAliasBinding(ob.rawExpr, sq, resolver); bare && matches > 0 {
+				if matches > 1 {
+					name, _, _, _ := splitColumnRef(ob.rawExpr)
+					return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn, "Ambiguous alias %s", name)
+				}
+				continue
+			}
 			if ob.rawExpr != nil {
 				if _, walkErr := resolver.WalkExpression(ob.rawExpr); walkErr != nil {
 					var ambigErr *semantic.AmbiguousColumnError
 					if errors.As(walkErr, &ambigErr) {
-						// Output-alias precedence, mirrored from the visitor
-						// path's arm (review-caught: this twin was missed, so
-						// the SAME query 42702'd inside a subquery while the
-						// top level answered): a BARE key binding exactly ONE
-						// output alias wins over FROM-scope ambiguity.
-						if bare, n := orderByOutputAliasBinding(ob.rawExpr, ob.colName, sq); bare && n == 1 {
-							continue
-						}
 						// Java's exact text, from the reference as written (M5).
 						return nil, api.NewErrorf(api.ErrCodeAmbiguousColumn,
 							"Ambiguous reference %s", ambigErr.Reference())
 					}
 					var notFoundErr *semantic.ColumnNotFoundError
 					if errors.As(walkErr, &notFoundErr) {
-						// Check if the ORDER BY name is a SELECT alias.
-						if projAliasSet[strings.ToUpper(ob.colName)] {
-							continue
-						}
 						// The ORDER BY rawExpr may reference a GROUP BY
 						// alias (`ORDER BY z` where `GROUP BY x.col1 AS
 						// z`). classifySelectElements rewrites ob.colName
@@ -2471,7 +2453,7 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op logical.Logica
 
 	if resolver != nil {
 		for _, gb := range sq.groupBy {
-			if gb.expr != nil {
+			if gb.expr != nil || gb.bound != nil {
 				continue
 			}
 			if gb.bare != "" {
@@ -2513,7 +2495,7 @@ func buildLogicalPlanForSelectWithCTECatalog_postBuildUnfolded(op logical.Logica
 			}
 		}
 		for _, ac := range sq.aggCols {
-			if ac.groupCol == "" || ac.groupColBare == "" || exprKeyDisplays[ac.groupCol] {
+			if ac.groupCol == "" || ac.groupColBare == "" || ac.groupColValue != nil || exprKeyDisplays[ac.groupCol] {
 				continue
 			}
 			if err := resolveColumnRefStructural(resolver, ac.groupColBare, ac.groupColQualifier, ac.groupColQualified, ac.groupColSegs); err != nil {
@@ -3152,39 +3134,55 @@ func hiddenColumnSet(hidden []string) map[string]struct{} {
 // output columns bind the name (a presence-only check let duplicate aliases
 // K, K bypass 42702 and silently sort by whichever the alias map kept last,
 // review-caught). The precedence applies only when bareIdent && matches==1.
-func orderByOutputAliasBinding(rawExpr antlrgen.IExpressionContext, colName string, sq *selectQuery) (bareIdent bool, matches int) {
-	if colName == "" || !isBareIdentifierExpr(rawExpr) {
+func orderByOutputAliasBinding(rawExpr antlrgen.IExpressionContext, sq *selectQuery, resolver *expr.Resolver) (bareIdent bool, matches int) {
+	_, _, _, segments := splitColumnRef(rawExpr)
+	if len(segments) != 1 {
 		return false, 0
 	}
-	upper := strings.ToUpper(colName)
-	for _, a := range sq.projAliases {
-		if a != "" && strings.ToUpper(a) == upper {
-			matches++
-		}
-	}
-	for _, ac := range sq.aggCols {
-		if ac.outName != "" && strings.ToUpper(ac.outName) == upper {
-			matches++
-		}
-	}
+	_, matches = selectOutputAliasPosition(rawExpr, orderByOutputAliasNames(sq, resolver))
 	return true, matches
 }
 
-// isBareIdentifierExpr reports whether the expression is exactly a
-// single-segment column reference — descending only single-child wrapper
-// nodes to the atom (typed nodes, never text).
-func isBareIdentifierExpr(e antlrgen.IExpressionContext) bool {
-	var n antlr.Tree = e
-	for n != nil {
-		if c, ok := n.(*antlrgen.FullColumnNameExpressionAtomContext); ok {
-			return len(c.FullColumnName().FullId().AllUid()) == 1
-		}
-		if n.GetChildCount() != 1 {
-			return false
-		}
-		n = n.GetChild(0)
+// orderByOutputAliasNames preserves SQL identifier qualification, not result
+// labels. Named sources qualify inherited attributes; unnamed sources do not.
+// Grouped pull-up clears qualifiers from its visible output expressions.
+func orderByOutputAliasNames(sq *selectQuery, resolver *expr.Resolver) []string {
+	if sq.postSortSQLNames != nil {
+		return sq.postSortSQLNames
 	}
-	return false
+	if sq.countStar || len(sq.aggCols) > 0 {
+		var names []string
+		for _, ac := range visibleAggregateOutputColumns(sq.aggCols, sq.countStar, sq.countStarAlias) {
+			names = append(names, aggregateOutputSQLName(ac))
+		}
+		return names
+	}
+	names := make([]string, len(sq.selectSlots))
+	for i, slot := range sq.selectSlots {
+		if slot.column != nil {
+			if slot.column.sqlUnqualified {
+				names[i] = slot.column.bare
+			}
+			continue
+		}
+		selected, authored := slot.element.(*antlrgen.SelectExpressionElementContext)
+		if !authored {
+			continue
+		}
+		if slot.alias != "" {
+			names[i] = slot.alias
+			continue
+		}
+		name, qualifier, qualified, segments := splitColumnRef(selected.Expression())
+		if len(segments) == 0 || resolver == nil || resolver.Scope() == nil {
+			continue
+		}
+		column, source, nested, err := resolver.Scope().ResolvePathNested(colRefIdentifiers(name, qualifier, qualified, segments))
+		if err == nil && len(nested) == 0 && (source.UnqualifiedOutput || column.UnqualifiedOutput) {
+			names[i] = column.Id.Name()
+		}
+	}
+	return names
 }
 
 // resolveColumnRefStructural resolves a column reference from its
@@ -4154,6 +4152,11 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 	keyValues := make([]values.Value, len(agg.GroupKeys))
 	filled := false
 	for i := range agg.GroupKeys {
+		if agg.GroupKeys[i].Value != nil {
+			keyValues[i] = agg.GroupKeys[i].Value
+			filled = true
+			continue
+		}
 		if i < len(sq.groupBy) && sq.groupBy[i].expr != nil {
 			v, err := resolver.WalkExpressionForProjection(sq.groupBy[i].expr)
 			if err != nil {
@@ -4327,7 +4330,29 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 			}
 		}
 	}
-	return groupByOutputConstructionPullUp(agg)
+	if err := groupByOutputConstructionPullUp(agg); err != nil {
+		return err
+	}
+	// Expanded attributes already have source identity. Validate that identity
+	// against the resolved grouping values; a same-named key of another source
+	// cannot make the attribute composable above the aggregate.
+	for _, ac := range sq.aggCols {
+		if ac.groupColValue == nil || !ac.visible {
+			continue
+		}
+		grouped := false
+		for _, key := range agg.GroupKeys {
+			if key.Value != nil && groupKeysPullUpEqual(ac.groupColValue, key.Value) {
+				grouped = true
+				break
+			}
+		}
+		if !grouped {
+			return api.NewErrorf(api.ErrCodeGroupingError,
+				"column %q must appear in the GROUP BY clause or be used in an aggregate function", ac.groupCol)
+		}
+	}
+	return nil
 }
 
 // groupByOutputConstructionPullUp is Java's group-by OUTPUT construction guard,
@@ -5053,7 +5078,7 @@ func validateGroupByProjection(sq *selectQuery, md *recordlayer.RecordMetaData) 
 			if ob.pos > 0 || ob.rawExpr == nil {
 				continue
 			}
-			if bare, n := orderByOutputAliasBinding(ob.rawExpr, ob.colName, sq); bare && n == 1 {
+			if bare, n := orderByOutputAliasBinding(ob.rawExpr, sq, nil); bare && n == 1 {
 				continue
 			}
 			for _, ref := range harvestBareColumnRefsOutsideSubqueries(ob.rawExpr) {
@@ -5837,7 +5862,7 @@ func (v *PlanVisitor) buildLogicalPlanForUnion(setQ *antlrgen.SetQueryContext, a
 	}
 	if len(lifted.sortKeys) > 0 {
 		liftedSort := &logical.LogicalSort{Keys: lifted.sortKeys}
-		if err := validateUnionOrderByColumns(liftedSort, inputs[0]); err != nil {
+		if err := validateUnionOrderByColumns(liftedSort, inputs[0], lifted.orderBy, md, &v.cteProducers); err != nil {
 			return nil, err
 		}
 	}
@@ -5856,6 +5881,7 @@ func (v *PlanVisitor) buildLogicalPlanForUnion(setQ *antlrgen.SetQueryContext, a
 // combined result.
 type unionLiftedClauses struct {
 	sortKeys []logical.SortKey
+	orderBy  []orderByClause
 	limit    int64 // <0 means no limit
 	offset   int64
 }
@@ -5905,7 +5931,27 @@ func (v *PlanVisitor) buildUnionRightBranchStrippingOrderBy(body antlrgen.IQuery
 		op, err := v.visitUnionBranch(body)
 		return op, unionLiftedClauses{limit: -1}, err
 	}
-	sq, err := extractFromSimpleTable(simpleTable)
+	// Classify against the same exact source scope as an ordinary SELECT.
+	// Positional ORDER over stars needs its visible width before clauses lift.
+	fs, err := parseFromSource(simpleTable)
+	if err != nil {
+		return nil, unionLiftedClauses{limit: -1}, err
+	}
+	fs.enclosingScope = v.enclosingScope
+	v.assignDerivedSourceBindings(fs)
+	if err := v.prepareDerivedSourceBodies(fs); err != nil {
+		return nil, unionLiftedClauses{limit: -1}, err
+	}
+	var expandStar starExpander
+	if simpleTable.GroupByClause() != nil || hasPositionalOrderBy(simpleTable) || hasMixedSelectStar(simpleTable) {
+		expandStar = starExpanderFor(fs, v.md, v.schemaName, v.cteScopes)
+	}
+	cls, err := classifySelectElements(simpleTable, expandStar)
+	if err != nil {
+		return nil, unionLiftedClauses{limit: -1}, err
+	}
+	sq := selectQueryFromClassification(cls, fs)
+	sq.limit, sq.offset, err = parseLimitClause(simpleTable)
 	if err != nil {
 		return nil, unionLiftedClauses{limit: -1}, err
 	}
@@ -5915,6 +5961,7 @@ func (v *PlanVisitor) buildUnionRightBranchStrippingOrderBy(body antlrgen.IQuery
 
 	// Save and strip ORDER BY.
 	if len(sq.orderBy) > 0 {
+		lifted.orderBy = append([]orderByClause(nil), sq.orderBy...)
 		for _, ob := range sq.orderBy {
 			e := ob.colName
 			if e == "" && ob.rawExpr != nil {
@@ -6015,23 +6062,6 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 		return nil
 	}
 
-	// Build alias→column mapping from projections.
-	aliasToCol := make(map[string]string)
-	aliasToIdx := make(map[string]int)
-	if sq.projAliases != nil && sq.projCols != nil {
-		for i, a := range sq.projAliases {
-			if a != "" && i < len(sq.projCols) {
-				aliasToCol[strings.ToUpper(a)] = sq.projCols[i].name
-				aliasToIdx[strings.ToUpper(a)] = i
-			}
-		}
-	}
-	for _, ac := range sq.aggCols {
-		if ac.outName != "" && ac.groupCol != "" {
-			aliasToCol[strings.ToUpper(ac.outName)] = ac.groupCol
-		}
-	}
-
 	// Resolve ORDER BY alias → underlying column or Value.
 	// SQL standard (and Java): ORDER BY resolves to SELECT-list output
 	// column names first, then table columns. Aliases take precedence.
@@ -6105,18 +6135,10 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 				colToIdx[key] = i
 			}
 		}
-		for i, alias := range proj.Aliases {
-			if alias == "" {
-				continue
-			}
-			key := strings.ToUpper(alias)
-			if _, dup := aliasToIdx[key]; !dup {
-				aliasToIdx[key] = i
-			}
-		}
 	}
-	// POSITIONAL keys first, by ORDINAL — never by text. A positional key
-	// is an ordinal into THIS select's output list; when the select's own
+	// Selected output slots first, by ORDINAL — never by text. Both a numeric
+	// ORDER key and a resolved SELECT alias address THIS select's output list.
+	// When the select's own
 	// projection sits ABOVE the sort (the plain-select shape), the ordinal
 	// resolves to that projection's item: the resolved item Value when the
 	// catalog pass populated it (typed — immune to items whose rendered
@@ -6127,10 +6149,24 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 	// aggregate reshaping strip below the sort, or a union), Pos survives
 	// untouched — those inputs ARE select-list carriers and the
 	// translator's Pos bake against them is the correct binding.
-	positionalKey := make([]bool, len(sort.Keys))
-	positionalBound := make([]bool, len(sort.Keys))
+	if len(sort.Keys) != len(sq.orderBy) {
+		return api.NewError(api.ErrCodeInternalError, "ORDER BY binding lost its parsed key positions")
+	}
+	resolver := buildProjectionResolverWithCTEScopes(sq, md, schemaName, cteScopes)
+	aliasNames := orderByOutputAliasNames(sq, resolver)
 	for i := range sort.Keys {
-		positionalKey[i] = sort.Keys[i].Pos > 0
+		if sq.orderBy[i].pos == 0 {
+			if pos, matches := selectOutputAliasPosition(sq.orderBy[i].rawExpr, aliasNames); matches == 1 {
+				sort.Keys[i].Pos = pos
+			}
+		}
+	}
+	positionalKey := make([]bool, len(sort.Keys))
+	outputBound := make([]bool, len(sort.Keys))
+	for i := range sort.Keys {
+		// A selected slot is not evidence that the SQL used numeric syntax.
+		// Named-only duplicate checking follows semantic resolution below.
+		positionalKey[i] = sq.orderBy[i].pos > 0
 	}
 	if proj != nil && sortOwnedBySelect(proj, sort) {
 		for i := range sort.Keys {
@@ -6140,7 +6176,7 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 			}
 			if proj.ProjectedValues != nil && pos-1 < len(proj.ProjectedValues) && proj.ProjectedValues[pos-1] != nil {
 				sort.Keys[i].Value = proj.ProjectedValues[pos-1]
-				positionalBound[i] = true
+				outputBound[i] = true
 				if len(proj.AggregateOutputOrdinals) == len(proj.Projections) {
 					sort.Keys[i].AggregateOutputValueExact = true
 				}
@@ -6152,33 +6188,17 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 	}
 
 	for i := range sort.Keys {
-		// A successfully resolved ORDER BY ordinal is the SQL output-slot
+		// A successfully resolved output slot is the SQL binding
 		// authority. Its Expr is retained only for diagnostics; feeding that text
 		// through the alias/column maps below can select another slot when a
 		// computed SELECT item is omitted from sq.projCols (for example SELECT
 		// score+0 AS id, id AS y ... ORDER BY 2). Never let a later text match
 		// overwrite the exact projected Value copied by ordinal above.
-		if positionalBound[i] {
+		if outputBound[i] || sort.Keys[i].Pos > 0 {
 			continue
 		}
 		upper := strings.ToUpper(sort.Keys[i].Expr)
-		// Output aliases bind BARE one-segment identifiers only
-		// (SortKey.BareRef): a qualified key's Expr is already
-		// qualifier-stripped and an aggregate key's Expr is its canonical
-		// rendering, so without the flag `ORDER BY d.x` / `ORDER BY
-		// SUM(s.score)` would bind a same-spelled SELECT alias and
-		// silently mis-sort.
-		if real, ok := aliasToCol[upper]; ok && sort.Keys[i].BareRef {
-			sort.Keys[i].Expr = real
-		}
-		if idx, ok := aliasToIdx[upper]; ok && proj != nil && sort.Keys[i].BareRef {
-			if idx < len(proj.ProjectedValues) && proj.ProjectedValues[idx] != nil {
-				sort.Keys[i].Value = proj.ProjectedValues[idx]
-				if len(proj.AggregateOutputOrdinals) == len(proj.Projections) {
-					sort.Keys[i].AggregateOutputValueExact = true
-				}
-			}
-		} else if idx, ok := colToIdx[upper]; ok && proj != nil {
+		if idx, ok := colToIdx[upper]; ok && proj != nil {
 			if idx < len(proj.ProjectedValues) && proj.ProjectedValues[idx] != nil {
 				// ORDER BY resolves in the SELECT output namespace before the
 				// input namespace. Keep the projection's exact Value INSTANCE as
@@ -6237,7 +6257,6 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 		}
 	}
 
-	resolver := buildProjectionResolverWithCTEScopes(sq, md, schemaName, cteScopes)
 	if resolver == nil {
 		return nil
 	}
@@ -6249,7 +6268,7 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 		// numeric literal itself and would overwrite ORDER BY 2 with constant
 		// 2. Likewise, a prior alias/project/group-key mapping is already the
 		// authoritative SQL output binding.
-		if positionalKey[i] || sort.Keys[i].HasAggregateOutputOrdinal ||
+		if positionalKey[i] || sort.Keys[i].Pos > 0 || sort.Keys[i].HasAggregateOutputOrdinal ||
 			sort.Keys[i].AggregateOutputValueExact ||
 			(!exactAggregateBoundary && sort.Keys[i].Value != nil) {
 			continue
@@ -6312,6 +6331,78 @@ func upgradeSortKeyValues(op logical.LogicalOperator, sq *selectQuery, md *recor
 		// (the FieldValue carries its Child correlation), so the executor's ValueExpr
 		// evaluates the qualified reference per row and the sort sorts for real.
 		sort.Keys[i].Value = v
+	}
+	if err := validateNamedSortColumns(sq); err != nil {
+		return err
+	}
+	return validatePositionalSortColumns(sort, sq, positionalKey)
+}
+
+// validateNamedSortColumns runs after semantic resolution, as Java's
+// validateOrderByColumns does. An ambiguous or undefined alias must fail lookup
+// before a repeated spelling can be diagnosed as a duplicate ORDER BY key.
+func validateNamedSortColumns(sq *selectQuery) error {
+	for i, current := range sq.orderBy {
+		if current.pos != 0 || current.rawExpr == nil {
+			continue
+		}
+		name, err := columnNameFromExpr(current.rawExpr, "ORDER BY expression")
+		if err != nil {
+			continue
+		}
+		_, _, _, segments := splitColumnRef(current.rawExpr)
+		for _, previous := range sq.orderBy[:i] {
+			if previous.pos != 0 || previous.rawExpr == nil {
+				continue
+			}
+			previousName, err := columnNameFromExpr(previous.rawExpr, "ORDER BY expression")
+			_, _, _, previousSegments := splitColumnRef(previous.rawExpr)
+			if err == nil && previousName == name &&
+				slices.Equal(previousSegments, segments) {
+				return api.NewErrorf(api.ErrCodeColumnAlreadyExists,
+					"duplicate column %q in ORDER BY", name)
+			}
+		}
+	}
+	return nil
+}
+
+// validatePositionalSortColumns compares direct column references only after
+// their source/output bindings are known. A label cannot distinguish two source
+// attributes, and an expression value is not a named-column duplicate in Java.
+func validatePositionalSortColumns(sort *logical.LogicalSort, sq *selectQuery, positional []bool) error {
+	if len(sort.Keys) != len(sq.orderBy) {
+		return api.NewError(api.ErrCodeInternalError, "ORDER BY binding lost its parsed key positions")
+	}
+	isColumn := func(i int) bool {
+		ob := sq.orderBy[i]
+		if !positional[i] {
+			return ob.bare != ""
+		}
+		if ob.pos < 1 || ob.pos > len(sq.selectSlots) {
+			return false
+		}
+		slot := sq.selectSlots[ob.pos-1]
+		if slot.column != nil {
+			return true
+		}
+		if selected, ok := slot.element.(*antlrgen.SelectExpressionElementContext); ok {
+			bare, _, _, _ := splitColumnRef(selected.Expression())
+			return bare != ""
+		}
+		return false
+	}
+	for i := range sort.Keys {
+		for j := 0; j < i; j++ {
+			if !(positional[i] || positional[j]) || !isColumn(i) || !isColumn(j) {
+				continue
+			}
+			a, b := sort.Keys[i].Value, sort.Keys[j].Value
+			if a != nil && b != nil && groupKeysPullUpEqual(a, b) {
+				return api.NewErrorf(api.ErrCodeColumnAlreadyExists,
+					"duplicate column %q in ORDER BY", sq.orderBy[i].colName)
+			}
+		}
 	}
 	return nil
 }
@@ -6858,19 +6949,19 @@ func buildOuterPlanOnDerived(sq *selectQuery, innerOp logical.LogicalOperator) l
 	return buildSelectShell(op, sq, strings.ToUpper(sq.tableName)+".")
 }
 
-func hasAnyQualifiedStar(sq *selectQuery) bool {
-	if sq == nil || sq.projStarQualifiers == nil {
+func hasProjectionStar(sq *selectQuery) bool {
+	if sq == nil {
 		return false
 	}
-	for _, q := range sq.projStarQualifiers {
-		if q != "" {
+	for _, col := range sq.projCols {
+		if col.star {
 			return true
 		}
 	}
 	return false
 }
 
-// expandQualifiedStars replaces qualified-star projection slots (a.*)
+// expandProjectionStars replaces typed star projection slots (* or a.*)
 // with explicit column names from the matching source table. Modifies
 // sq.projCols, sq.projAliases, sq.projExprs, sq.projStarQualifiers in place.
 //
@@ -6881,15 +6972,17 @@ func hasAnyQualifiedStar(sq *selectQuery) bool {
 // query degrades to an UNQUALIFIED star → returns the ENTIRE FlatMap row (outer
 // columns included) instead of just the unnest source's columns (silent-wrong).
 // RFC-142.
-func expandQualifiedStars(sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource) error {
-	if sq == nil || !hasAnyQualifiedStar(sq) {
+func expandProjectionStars(sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource) error {
+	if sq == nil || !hasProjectionStar(sq) {
 		return nil
 	}
 	resolver, err := buildSelectScopeChecked(sq, md, schemaName, cteScopes)
 	if err != nil {
 		return err
 	}
-	var newCols []projCol
+	// A successful empty expansion is an explicit zero-column projection,
+	// not the nil marker that elides SELECT *.
+	newCols := make([]projCol, 0, len(sq.projCols))
 	var newAliases, newQuals []string
 	var newExprs []antlrgen.IExpressionContext
 	for i, col := range sq.projCols {
@@ -6897,7 +6990,7 @@ func expandQualifiedStars(sq *selectQuery, md *recordlayer.RecordMetaData, schem
 		if i < len(sq.projStarQualifiers) {
 			qual = sq.projStarQualifiers[i]
 		}
-		if qual == "" {
+		if !col.star {
 			newCols = append(newCols, col)
 			alias := ""
 			if i < len(sq.projAliases) {
@@ -6923,6 +7016,30 @@ func expandQualifiedStars(sq *selectQuery, md *recordlayer.RecordMetaData, schem
 			newQuals = append(newQuals, "")
 		}
 	}
+	// Keep the output-slot contract in lockstep with the projection expansion.
+	// Parse-only shells retained star placeholders before the exact scope existed.
+	var slots []selectOutputSlot
+	for _, slot := range sq.selectSlots {
+		qualifier, star := "", false
+		switch element := slot.element.(type) {
+		case *antlrgen.SelectStarElementContext:
+			star = true
+		case *antlrgen.SelectQualifierStarElementContext:
+			qualifier, star = functions.NormalizeIdentifier(element.Uid().GetText()), true
+		}
+		if !star {
+			slots = append(slots, slot)
+			continue
+		}
+		columns, err := starColumnsFromScopeChecked(resolver, qualifier)
+		if err != nil {
+			return err
+		}
+		for _, column := range columns {
+			slots = append(slots, selectOutputSlot{column: &column, name: column.name, alias: column.bare})
+		}
+	}
+	sq.selectSlots = slots
 	sq.projCols, sq.projAliases, sq.projExprs, sq.projStarQualifiers = newCols, newAliases, newExprs, newQuals
 	return nil
 }
@@ -7112,11 +7229,8 @@ func starColumnsFromScopeChecked(resolver *expr.Resolver, qualifier string) ([]p
 			if err != nil {
 				return nil, err
 			}
-			columns = append(columns, projCol{bound: bound, name: source.Alias.Name() + "." + name, bare: name, qualifier: source.Alias.Name(), qualified: true, segs: []string{source.Alias.Name(), name}})
+			columns = append(columns, projCol{bound: bound, sqlUnqualified: source.UnqualifiedOutput || column.UnqualifiedOutput, name: source.Alias.Name() + "." + name, bare: name, qualifier: source.Alias.Name(), qualified: true, segs: []string{source.Alias.Name(), name}})
 		}
-	}
-	if len(columns) == 0 {
-		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "star source publishes no visible attributes")
 	}
 	return columns, nil
 }
@@ -7126,8 +7240,8 @@ func starColumnsFromScopeChecked(resolver *expr.Resolver, qualifier string) ([]p
 // first expansion that actually asks for it.
 //
 // The laziness is the point. visitSimpleTableBody runs for every SELECT, while
-// the expander is consulted only by the star-under-GROUP-BY branch of the
-// classifier — a small minority of queries. Building the FROM-only scope
+// the expander is consulted for stars with GROUP BY, positional ORDER BY,
+// or mixed projection slots. Building the FROM-only scope
 // eagerly put a second full scope construction on the hot path of every query
 // to pay for a branch most never reach.
 //
@@ -7178,7 +7292,7 @@ func buildFromOnlySelectScope(fs *fromSource, md *recordlayer.RecordMetaData, sc
 // as a mixed projection. Both forms must use the visible source's carried row,
 // including derived/CTE outputs, rather than interpreting its alias as a table.
 func normalizeSoleQualifiedStar(sq *selectQuery) {
-	sq.projCols = []projCol{{name: "*", bare: "*"}}
+	sq.projCols = []projCol{{star: true, name: "*", bare: "*"}}
 	sq.projAliases = []string{""}
 	sq.projExprs = []antlrgen.IExpressionContext{nil}
 	sq.projStarQualifiers = []string{sq.projQualifier}
@@ -7228,44 +7342,26 @@ func countProjectionColumns(op logical.LogicalOperator) int {
 	return -1
 }
 
-func validateUnionOrderByColumns(sort *logical.LogicalSort, leftBranch logical.LogicalOperator) error {
-	leftProj := findProjection(leftBranch)
-	if leftProj == nil {
-		return nil
+func validateUnionOrderByColumns(sort *logical.LogicalSort, leftBranch logical.LogicalOperator, authored []orderByClause, md *recordlayer.RecordMetaData, ctes *logical.CTERegistry) error {
+	// Output labels are a property of the branch, not of an optional project.
+	// The same contract covers scans, joins, CTEs and explicit projections.
+	labels, err := query.ExactLogicalOutputLabels(leftBranch, md, ctes)
+	if err != nil {
+		return err
 	}
-	// UNION publishes the LEFT branch's output row. Resolve every accepted
-	// output spelling to that row's exact ordinal while the projection still
-	// carries the SQL output contract; the Cascades translator must never turn
-	// the spelling back into a field identity. First occurrence preserves the
-	// prior first-match behaviour for duplicate output labels.
-	leftOrdinals := make(map[string]int, len(leftProj.Projections)*2)
-	register := func(name string, ordinal int) {
-		if name == "" {
-			return
+	leftOrdinals := make(map[string]int, len(labels))
+	matches := make(map[string]int, len(labels))
+	for i, label := range labels {
+		if label == "" {
+			continue
 		}
-		key := strings.ToUpper(name)
+		key := label
+		matches[key]++
 		if _, exists := leftOrdinals[key]; !exists {
-			leftOrdinals[key] = ordinal
+			leftOrdinals[key] = i
 		}
 	}
-	for i, col := range leftProj.Projections {
-		register(col, i)
-		// The bare form comes from the RESOLVED channel: a childless
-		// FieldValue's Field IS the bare column (the same structural truth
-		// the upgrade passes bind), never a last-dot split of the rendering
-		// — a delimited identifier containing a literal dot is one name.
-		if i < len(leftProj.ProjectedValues) {
-			if fv, ok := values.AsFieldValue(leftProj.ProjectedValues[i]); ok {
-				register(fv.DisplayName(), i)
-			}
-		}
-		if i < len(leftProj.Aliases) && leftProj.Aliases[i] != "" {
-			register(leftProj.Aliases[i], i)
-		}
-		if i < len(leftProj.ProjectionRefs) && leftProj.ProjectionRefs[i].Present {
-			register(leftProj.ProjectionRefs[i].Bare, i)
-		}
-	}
+
 	for i := range sort.Keys {
 		k := &sort.Keys[i]
 		if k.Expr == "" {
@@ -7280,18 +7376,29 @@ func validateUnionOrderByColumns(sort *logical.LogicalSort, leftBranch logical.L
 		if k.Pos > 0 {
 			continue
 		}
-		upper := strings.ToUpper(k.Expr)
-		bareName := upper
+		bareName := k.Expr
 		if k.Bare != "" {
 			// Structured bare segment — never a last-dot split of the
 			// rendering (a delimited identifier may contain a literal dot).
-			bareName = strings.ToUpper(k.Bare)
+			bareName = k.Bare
 		}
-		ordinal, found := leftOrdinals[upper]
-		if !found {
-			ordinal, found = leftOrdinals[bareName]
+		count := matches[bareName]
+		ordinal := leftOrdinals[bareName]
+		if count == 0 {
+			// Record metadata can publish raw protobuf field names rather
+			// than SQL-normalized labels. Retain that relaxed lookup only
+			// after exact identity fails: quoted x and X are distinct slots.
+			for label, n := range matches {
+				if strings.EqualFold(label, bareName) {
+					count += n
+					ordinal = leftOrdinals[label]
+				}
+			}
 		}
-		if !found {
+		if count > 1 {
+			return api.NewErrorf(api.ErrCodeAmbiguousColumn, "Ambiguous reference %s", bareName)
+		}
+		if count == 0 {
 			return api.NewErrorf(api.ErrCodeUndefinedColumn,
 				"column %q not found in UNION result columns", k.Expr)
 		}
@@ -7299,7 +7406,7 @@ func validateUnionOrderByColumns(sort *logical.LogicalSort, leftBranch logical.L
 		// no longer a name consumer after this validation point.
 		k.Pos = ordinal + 1
 	}
-	return nil
+	return validateNamedSortColumns(&selectQuery{selectClassification: selectClassification{orderBy: authored}})
 }
 
 func validateUnionColumnTypes(inputs []logical.LogicalOperator, md *recordlayer.RecordMetaData) error {
@@ -7463,7 +7570,7 @@ func buildLogicalPlanForUnionWithCatalog(
 	}
 	if len(lifted.sortKeys) > 0 {
 		liftedSort := &logical.LogicalSort{Keys: lifted.sortKeys}
-		if err := validateUnionOrderByColumns(liftedSort, inputs[0]); err != nil {
+		if err := validateUnionOrderByColumns(liftedSort, inputs[0], lifted.orderBy, md, nil); err != nil {
 			return nil, err
 		}
 	}

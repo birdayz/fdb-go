@@ -2,6 +2,9 @@ package recordlayer
 
 import (
 	"errors"
+	"slices"
+	"strings"
+	"testing"
 
 	"fdb.dev/gen"
 	. "github.com/onsi/ginkgo/v2"
@@ -43,6 +46,160 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 		return md
 	}
 
+	Describe("ignored index options", func() {
+		withOptions := func(version int, options map[string]string) *RecordMetaData {
+			return buildMetaData(version, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("price_idx", Field("price"))
+				idx.AddedVersion, idx.LastModifiedVersion = 1, 1
+				idx.Options = options
+				b.AddIndex("Order", idx)
+			})
+		}
+
+		It("copies configuration at every boundary and preserves all flags", func() {
+			names := []string{"z", "a", "z"}
+			b := NewMetaDataEvolutionValidator().SetIgnoredIndexOptions(names).
+				SetAllowNoVersionChange(true).SetAllowIndexRebuilds(true).
+				SetAllowUnsplitToSplit(true).SetAllowOlderFormerIndexAddedVersion(true).
+				SetAllowMissingFormerIndexNames(true).SetDisallowTypeRenames(true).
+				SetAllowNoSinceVersion(true).SetAllowFieldRenames(true).
+				SetAllowDeprecatedFieldRenames(true).SetAllowUndeprecatingFields(true).
+				SetAllowLiteralCarrierWidening(true)
+			names[0] = "mutated"
+			Expect(b.GetIgnoredIndexOptions()).To(Equal([]string{"a", "z"}))
+			v := b.Build()
+			b.GetIgnoredIndexOptions()[0] = "mutated"
+			v.GetIgnoredIndexOptions()[0] = "mutated"
+			Expect(v.GetIgnoredIndexOptions()).To(Equal([]string{"a", "z"}))
+			copy := v.AsBuilder()
+			Expect(copy.Build()).To(Equal(v))
+			delete(b.v.ignoredIndexOptions, "a")
+			delete(copy.v.ignoredIndexOptions, "z")
+			Expect(v.GetIgnoredIndexOptions()).To(Equal([]string{"a", "z"}))
+			Expect(copy.GetIgnoredIndexOptions()).To(Equal([]string{"a"}))
+			Expect(b.GetIgnoredIndexOptions()).To(Equal([]string{"z"}))
+			Expect(b.SetIgnoredIndexOptions(nil).Build().GetIgnoredIndexOptions()).To(BeEmpty())
+			Expect(DefaultMetaDataEvolutionValidator().GetIgnoredIndexOptions()).To(BeEmpty())
+		})
+
+		for _, pair := range [][2]map[string]string{
+			{nil, {"applicationTag": "new"}},
+			{{"applicationTag": "old"}, nil},
+			{{"applicationTag": "old"}, {"applicationTag": "new"}},
+			{nil, {IndexOptionUnique: "true"}},
+		} {
+			It("ignores only configured additions, removals and changes", func() {
+				old, new := withOptions(1, pair[0]), withOptions(2, pair[1])
+				Expect(DefaultMetaDataEvolutionValidator().Validate(old, new)).To(HaveOccurred())
+				v := NewMetaDataEvolutionValidator().SetIgnoredIndexOptions([]string{"applicationTag", IndexOptionUnique}).Build()
+				Expect(v.Validate(old, new)).To(Succeed())
+				new.GetIndex("price_idx").Options = map[string]string{"ApplicationTag": "different case"}
+				Expect(v.Validate(old, new)).To(MatchError(ContainSubstring("ApplicationTag")))
+			})
+		}
+
+		It("validates only the supplied mutable option set", func() {
+			old := NewIndex("text", Field("price"))
+			new := NewIndex("text", Field("price"))
+			old.Type, new.Type = IndexTypeText, IndexTypeText
+			new.Options = map[string]string{IndexOptionTextOmitPositions: "true", "applicationTag": "new"}
+			Expect(ValidateChangedIndexOptions(old, new, nil)).To(Succeed())
+			changed := map[string]bool{IndexOptionTextOmitPositions: true, IndexOptionAllowedForQuery: true}
+			Expect(ValidateChangedIndexOptions(old, new, changed)).To(Succeed())
+			Expect(changed).To(Equal(map[string]bool{IndexOptionAllowedForQuery: true}))
+			Expect(ValidateChangedIndexOptions(old, new, map[string]bool{"applicationTag": true})).To(HaveOccurred())
+			// Supplied names need not be actual differences: the base validator
+			// rejects unknown names even if both values are absent.
+			Expect(ValidateChangedIndexOptions(old, new, map[string]bool{"absent": true})).To(HaveOccurred())
+		})
+
+		It("compares resolved tokenizer names including the implicit default", func() {
+			for _, pair := range [][2]map[string]string{
+				{nil, {IndexOptionTextTokenizerName: DefaultTextTokenizerName}},
+				{{IndexOptionTextTokenizerName: DefaultTextTokenizerName}, nil},
+				{{IndexOptionTextTokenizerName: DefaultTextTokenizerName}, {IndexOptionTextTokenizerName: DefaultTextTokenizerName}},
+			} {
+				old, new := textIndexWithOptions(pair[0]), textIndexWithOptions(pair[1])
+				changed := map[string]bool{IndexOptionTextTokenizerName: true}
+				Expect(ValidateChangedIndexOptions(old, new, changed)).To(Succeed())
+				Expect(changed).To(BeEmpty())
+			}
+			old, new := textIndexWithOptions(nil), textIndexWithOptions(map[string]string{IndexOptionTextTokenizerName: "unregistered_ignored_options_test"})
+			Expect(ValidateChangedIndexOptions(old, new, map[string]bool{IndexOptionTextTokenizerName: true})).To(MatchError(ContainSubstring("unrecognized text tokenizer")))
+			Expect(ValidateChangedIndexOptions(new, old, map[string]bool{IndexOptionTextTokenizerName: true})).To(MatchError(ContainSubstring("unrecognized text tokenizer")))
+			Expect(ValidateChangedIndexOptions(old, new, nil)).To(Succeed())
+		})
+
+		It("does not weaken unrelated structural checks", func() {
+			v := NewMetaDataEvolutionValidator().SetIgnoredIndexOptions([]string{"applicationTag"}).Build()
+			old := withOptions(1, nil)
+			for _, change := range []func(*Index){
+				func(idx *Index) { idx.Type = IndexTypeRank },
+				func(idx *Index) { idx.RootExpression = Field("order_id") },
+				func(idx *Index) { idx.AddedVersion++ },
+				func(idx *Index) { idx.LastModifiedVersion++ },
+				func(idx *Index) { idx.Options[IndexOptionUnique] = "true" },
+			} {
+				new := withOptions(2, map[string]string{"applicationTag": "new"})
+				change(new.GetIndex("price_idx"))
+				Expect(v.Validate(old, new)).To(HaveOccurred())
+			}
+		})
+	})
+
+	Describe("literal carrier widening", func() {
+		// An index over price whose root carries the literal lit, at the key column
+		// (asColumn) or inside the long-arithmetic function add(price, lit).
+		withLiteral := func(version int, lit any, asColumn bool) *RecordMetaData {
+			return buildMetaData(version, func(b *RecordMetaDataBuilder) {
+				var root KeyExpression = FunctionExpr("add", Concat(Field("price"), Literal(lit)))
+				if asColumn {
+					root = Concat(Field("price"), Literal(lit))
+				}
+				idx := NewIndex("lit_idx", root)
+				idx.AddedVersion, idx.LastModifiedVersion = 1, 1
+				b.AddIndex("Order", idx)
+			})
+		}
+		widening := NewMetaDataEvolutionValidator().SetAllowLiteralCarrierWidening(true).Build()
+
+		for _, asColumn := range []bool{false, true} {
+			It("admits an int_value/long_value change of equal value only with the option", func() {
+				old, new := withLiteral(1, int64(10000), asColumn), withLiteral(2, int32(10000), asColumn)
+				Expect(DefaultMetaDataEvolutionValidator().Validate(old, new)).To(MatchError(ContainSubstring("key expression changed")),
+					"Java's validator compares literals by proto equality")
+				Expect(widening.Validate(old, new)).To(Succeed(), "the tuple encodes an integer by value, not by width")
+				Expect(widening.Validate(old, withLiteral(2, int32(10001), asColumn))).To(MatchError(ContainSubstring("key expression changed")))
+				// One way only: a rebuild that widens an int_value to a long_value is an
+				// index change, because it stores a key the target cannot plan.
+				Expect(widening.Validate(withLiteral(1, int32(10000), asColumn), withLiteral(2, int64(10000), asColumn))).
+					To(MatchError(ContainSubstring("key expression changed")))
+			})
+		}
+
+		It("admits a value-preserving float/double change inside a long-arithmetic function only", func() {
+			old, new := withLiteral(1, float64(1.5), false), withLiteral(2, float32(1.5), false)
+			Expect(DefaultMetaDataEvolutionValidator().Validate(old, new)).To(HaveOccurred())
+			Expect(widening.Validate(old, new)).To(Succeed(), "add() reads the literal through nullableLong: a long either way")
+			Expect(widening.Validate(withLiteral(1, float32(1.5), false), withLiteral(2, float64(1.5), false))).
+				To(MatchError(ContainSubstring("key expression changed")), "one way only: float_value to double_value is an index change")
+			Expect(widening.Validate(withLiteral(1, float64(1.1), false), withLiteral(2, float32(1.1), false))).
+				To(MatchError(ContainSubstring("key expression changed")), "1.1f widens to a different double")
+			Expect(widening.Validate(withLiteral(1, float64(1.5), true), withLiteral(2, float32(1.5), true))).
+				To(MatchError(ContainSubstring("key expression changed")), "a key-column FLOAT and DOUBLE encode with different type codes")
+		})
+
+		It("does not relax anything but the literal carrier", func() {
+			old := withLiteral(1, int64(7), false)
+			changed := buildMetaData(2, func(b *RecordMetaDataBuilder) {
+				idx := NewIndex("lit_idx", FunctionExpr("mul", Concat(Field("price"), Literal(int32(7)))))
+				idx.AddedVersion, idx.LastModifiedVersion = 1, 1
+				b.AddIndex("Order", idx)
+			})
+			Expect(widening.Validate(old, changed)).To(MatchError(ContainSubstring("key expression changed")))
+		})
+	})
+
 	Describe("version validation", func() {
 		It("rejects same version", func() {
 			old := buildMetaData(1, nil)
@@ -61,6 +218,17 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			err := ValidateEvolution(old, new)
 			var evolErr *MetaDataEvolutionError
 			Expect(errors.As(err, &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(ContainSubstring("does not have newer version"))
+		})
+
+		It("rejects an older version even when an unchanged version is allowed", func() {
+			old := buildMetaData(5, nil)
+			new := buildMetaData(3, nil)
+
+			v := NewMetaDataEvolutionValidator().SetAllowNoVersionChange(true).Build()
+			err := v.Validate(old, new)
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue(), "Java refuses a downgrade whatever allowNoVersionChange says (MetaDataEvolutionValidator.java:154)")
 			Expect(evolErr.Message).To(ContainSubstring("does not have newer version"))
 		})
 
@@ -240,7 +408,7 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			err := v.Validate(old, new)
 			var evolErr *MetaDataEvolutionError
 			Expect(errors.As(err, &evolErr)).To(BeTrue())
-			Expect(evolErr.Message).To(ContainSubstring("type changed"))
+			Expect(evolErr.Message).To(HavePrefix("index type changed"))
 		})
 
 		It("rejects index key expression change", func() {
@@ -260,7 +428,7 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			err := v.Validate(old, new)
 			var evolErr *MetaDataEvolutionError
 			Expect(errors.As(err, &evolErr)).To(BeTrue())
-			Expect(evolErr.Message).To(ContainSubstring("key expression changed"))
+			Expect(evolErr.Message).To(HavePrefix("index key expression changed"))
 		})
 
 		It("accepts new index with proper version", func() {
@@ -322,10 +490,12 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			new, err := builder2.Build()
 			Expect(err).NotTo(HaveOccurred())
 
+			// Java tests a decrease before it tests a change, so a decrease is
+			// reported as one (MetaDataEvolutionValidator.java:640-651).
 			err = ValidateEvolution(old, new)
 			var evolErr *MetaDataEvolutionError
 			Expect(errors.As(err, &evolErr)).To(BeTrue())
-			Expect(evolErr.Message).To(ContainSubstring("last modified version"))
+			Expect(evolErr.Message).To(HavePrefix("old index has last-modified version newer than new index"))
 		})
 
 		It("allows index rebuild when configured", func() {
@@ -376,7 +546,7 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			err = ValidateEvolution(old, new)
 			var evolErr *MetaDataEvolutionError
 			Expect(errors.As(err, &evolErr)).To(BeTrue())
-			Expect(evolErr.Message).To(ContainSubstring("changes primary key component positions"))
+			Expect(evolErr.Message).To(HavePrefix("new index changes primary key component positions"))
 		})
 
 		It("rejects adding primary key component positions", func() {
@@ -404,7 +574,7 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			err = ValidateEvolution(old, new)
 			var evolErr *MetaDataEvolutionError
 			Expect(errors.As(err, &evolErr)).To(BeTrue())
-			Expect(evolErr.Message).To(ContainSubstring("adds primary key component positions"))
+			Expect(evolErr.Message).To(HavePrefix("new index adds primary key component positions"))
 		})
 
 		It("accepts unchanged primary key component positions", func() {
@@ -571,9 +741,9 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		It("getUnionDescriptor returns the UnionDescriptor message", func() {
+		It("GetUnionDescriptor returns the UnionDescriptor message", func() {
 			md := buildMetaData(1, nil)
-			union := getUnionDescriptor(md)
+			union := md.GetUnionDescriptor()
 			Expect(union).NotTo(BeNil())
 			Expect(string(union.FullName())).To(ContainSubstring("UnionDescriptor"))
 
@@ -588,27 +758,26 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			}
 		})
 
-		It("getUnionDescriptor returns nil for metadata with nil file descriptor", func() {
+		It("GetUnionDescriptor returns nil for metadata with nil file descriptor", func() {
 			// Build a metadata with nil fileDescriptor to test the nil guard
 			md := &RecordMetaData{}
-			union := getUnionDescriptor(md)
+			union := md.GetUnionDescriptor()
 			Expect(union).To(BeNil())
 		})
 
-		It("validateUnion skips when either union is nil", func() {
-			// If old has no file descriptor, validateUnion returns nil (skip)
-			old := &RecordMetaData{version: 1}
-			new := buildMetaData(2, nil)
-
+		It("validateUnion refuses meta-data that was never built", func() {
+			// Every built RecordMetaData has a union; a zero value does not, and
+			// is refused rather than dereferenced.
 			v := DefaultMetaDataEvolutionValidator()
-			err := v.validateUnion(old, new)
-			Expect(err).NotTo(HaveOccurred())
-
-			// Same for new having no file descriptor
-			old2 := buildMetaData(1, nil)
-			new2 := &RecordMetaData{version: 2}
-			err = v.validateUnion(old2, new2)
-			Expect(err).NotTo(HaveOccurred())
+			for _, pair := range [][2]*RecordMetaData{
+				{{version: 1}, buildMetaData(2, nil)},
+				{buildMetaData(1, nil), {version: 2}},
+				{{version: 1}, {version: 2}},
+			} {
+				var evolErr *MetaDataEvolutionError
+				Expect(errors.As(v.validateUnion(pair[0], pair[1]), &evolErr)).To(BeTrue())
+				Expect(evolErr.Message).To(HavePrefix("meta-data has no union descriptor"))
+			}
 		})
 	})
 
@@ -834,24 +1003,6 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			Expect(errors.As(err, &evolErr)).To(BeTrue())
 			Expect(evolErr.Message).To(ContainSubstring("removed from meta-data"))
 		})
-
-		It("accepts rename when type key matches in new metadata", func() {
-			old := buildMetaData(1, nil)
-			oldRT := old.GetRecordType("TypedRecord")
-			oldTypeKey := oldRT.GetRecordTypeKey()
-
-			// Build new metadata, rename "TypedRecord" to "RenamedRecord" but keep same type key
-			new := buildMetaData(2, nil)
-			renamedRT := new.recordTypes["TypedRecord"]
-			delete(new.recordTypes, "TypedRecord")
-			renamedRT.Name = "RenamedRecord"
-			renamedRT.explicitRecordTypeKey = oldTypeKey
-			new.recordTypes["RenamedRecord"] = renamedRT
-
-			// Default validator allows renames
-			err := ValidateEvolution(old, new)
-			Expect(err).NotTo(HaveOccurred())
-		})
 	})
 
 	Describe("new record type SinceVersion validation", func() {
@@ -1013,13 +1164,20 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			Expect(evolErr.Message).To(ContainSubstring("differs from prior version"))
 		})
 
-		It("allows former index name change when allowMissingFormerIndexNames is true", func() {
+		// allowMissingFormerIndexNames governs only a former index that replaces
+		// an index; a former index kept from the old meta-data must keep its
+		// name regardless (MetaDataEvolutionValidator.java:612-622). The
+		// conformance spec "Subspace-key pairing in meta-data evolution" checks
+		// this shape against Java.
+		It("refuses a former index name change even when allowMissingFormerIndexNames is true", func() {
 			old := buildWithFormerIndex(3, 1, 2, "price_idx")
 			new := buildWithFormerIndex(5, 1, 2, "renamed_idx")
 
 			v := NewMetaDataEvolutionValidator().SetAllowMissingFormerIndexNames(true).Build()
 			err := v.Validate(old, new)
-			Expect(err).NotTo(HaveOccurred())
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(err, &evolErr)).To(BeTrue(), "error: %v", err)
+			Expect(evolErr.Message).To(HavePrefix("name of former index differs from prior version"))
 		})
 	})
 
@@ -1067,7 +1225,7 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			err := ValidateEvolution(old, new)
 			var evolErr *MetaDataEvolutionError
 			Expect(errors.As(err, &evolErr)).To(BeTrue())
-			Expect(evolErr.Message).To(ContainSubstring("added version newer than old index"))
+			Expect(evolErr.Message).To(HavePrefix("former index added after old index"))
 		})
 
 		It("rejects when former index AddedVersion != old index AddedVersion and !allowOlderFormerIndexAddedVersion", func() {
@@ -1089,7 +1247,7 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			err := ValidateEvolution(old, new)
 			var evolErr *MetaDataEvolutionError
 			Expect(errors.As(err, &evolErr)).To(BeTrue())
-			Expect(evolErr.Message).To(ContainSubstring("added version different from old index"))
+			Expect(evolErr.Message).To(HavePrefix("former index reports added version older than replacing index"))
 		})
 
 		It("allows older former index AddedVersion when configured", func() {
@@ -1207,15 +1365,25 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 	})
 
 	Describe("message descriptor validation with synthetic protos", func() {
-		// Helper to build a synthetic proto2 file descriptor with a single message
-		// and a UnionDescriptor. Returns the file descriptor.
+		// Helper to build a synthetic proto2 file descriptor with the given
+		// messages and a UnionDescriptor whose one field holds the first. Returns
+		// the file descriptor.
 		buildSyntheticFile := func(fileName, pkgName string, msgs []*descriptorpb.DescriptorProto, enums []*descriptorpb.EnumDescriptorProto) protoreflect.FileDescriptor {
 			syntax := "proto2"
+			union := &descriptorpb.DescriptorProto{
+				Name: proto.String("UnionDescriptor"),
+				Field: []*descriptorpb.FieldDescriptorProto{{
+					Name: proto.String("_" + msgs[0].GetName()), Number: proto.Int32(1),
+					Type:     descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
+					TypeName: proto.String("." + pkgName + "." + msgs[0].GetName()),
+					Label:    descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+				}},
+			}
 			fdp := &descriptorpb.FileDescriptorProto{
 				Name:        &fileName,
 				Package:     &pkgName,
 				Syntax:      &syntax,
-				MessageType: msgs,
+				MessageType: append(slices.Clone(msgs), union),
 				EnumType:    enums,
 			}
 			fd, err := protodesc.NewFile(fdp, nil)
@@ -1245,8 +1413,9 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 		buildSyntheticMD := func(version int, fd protoreflect.FileDescriptor) *RecordMetaData {
 			msg := fd.Messages().Get(0) // First message
 			return &RecordMetaData{
-				version:        version,
-				fileDescriptor: fd,
+				version:         version,
+				fileDescriptor:  fd,
+				unionDescriptor: fd.Messages().ByName("UnionDescriptor"),
 				recordTypes: map[string]*RecordType{
 					string(msg.Name()): {
 						Name:                  string(msg.Name()),
@@ -1324,7 +1493,31 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			err := ValidateEvolution(old, new)
 			var evolErr *MetaDataEvolutionError
 			Expect(errors.As(err, &evolErr)).To(BeTrue())
-			Expect(evolErr.Message).To(ContainSubstring("is no longer"))
+			// Java's order: optional to repeated keeps no label check (only a
+			// required or repeated field losing its label is one), and fails on
+			// the field's presence (MetaDataEvolutionValidator.java:306-315).
+			Expect(evolErr.Message).To(HavePrefix("field changed whether default values are stored if set explicitly"))
+		})
+
+		It("admits an optional field made required, as Java does, and refuses the label losses Java refuses", func() {
+			label := func(l descriptorpb.FieldDescriptorProto_Label, file string) *RecordMetaData {
+				fd := buildSyntheticFile(file, "test", []*descriptorpb.DescriptorProto{
+					makeMessage("TestMsg", []*descriptorpb.FieldDescriptorProto{
+						makeField("id", 1, descriptorpb.FieldDescriptorProto_TYPE_INT64, descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL),
+						makeField("v", 2, descriptorpb.FieldDescriptorProto_TYPE_INT64, l),
+					}),
+				}, nil)
+				return buildSyntheticMD(map[string]int{"old.proto": 1, "new.proto": 2}[file], fd)
+			}
+			optional := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL
+			required := descriptorpb.FieldDescriptorProto_LABEL_REQUIRED
+			repeated := descriptorpb.FieldDescriptorProto_LABEL_REPEATED
+			Expect(ValidateEvolution(label(optional, "old.proto"), label(required, "new.proto"))).To(Succeed())
+			var evolErr *MetaDataEvolutionError
+			Expect(errors.As(ValidateEvolution(label(required, "old.proto"), label(optional, "new.proto")), &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(HavePrefix("required field is no longer required"))
+			Expect(errors.As(ValidateEvolution(label(repeated, "old.proto"), label(optional, "new.proto")), &evolErr)).To(BeTrue())
+			Expect(evolErr.Message).To(HavePrefix("repeated field is no longer repeated"))
 		})
 
 		It("rejects unsafe type change (string to int64)", func() {
@@ -1346,7 +1539,7 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			err := ValidateEvolution(old, new)
 			var evolErr *MetaDataEvolutionError
 			Expect(errors.As(err, &evolErr)).To(BeTrue())
-			Expect(evolErr.Message).To(ContainSubstring("type changed in message"))
+			Expect(evolErr.Message).To(HavePrefix("field type changed"))
 		})
 
 		It("allows safe type promotion (int32 to int64)", func() {
@@ -1390,7 +1583,7 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			var evolErr *MetaDataEvolutionError
 			Expect(errors.As(err, &evolErr)).To(BeTrue())
 			Expect(evolErr.Message).To(ContainSubstring("required field"))
-			Expect(evolErr.Message).To(ContainSubstring("added to message"))
+			Expect(evolErr.Message).To(HavePrefix("required field added to record type"))
 		})
 
 		It("allows new optional field added", func() {
@@ -1493,6 +1686,15 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 					makeMessage("TestMsg", []*descriptorpb.FieldDescriptorProto{
 						makeField("id", 1, descriptorpb.FieldDescriptorProto_TYPE_INT64, descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL),
 					}),
+					{
+						Name: proto.String("UnionDescriptor"),
+						Field: []*descriptorpb.FieldDescriptorProto{{
+							Name: proto.String("_TestMsg"), Number: proto.Int32(1),
+							Type:     descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
+							TypeName: proto.String(".test.TestMsg"),
+							Label:    descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+						}},
+					},
 				},
 			}
 			oldFD, err := protodesc.NewFile(fdp1, nil)
@@ -1506,6 +1708,15 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 					makeMessage("TestMsg", []*descriptorpb.FieldDescriptorProto{
 						makeField("id", 1, descriptorpb.FieldDescriptorProto_TYPE_INT64, descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL),
 					}),
+					{
+						Name: proto.String("UnionDescriptor"),
+						Field: []*descriptorpb.FieldDescriptorProto{{
+							Name: proto.String("_TestMsg"), Number: proto.Int32(1),
+							Type:     descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
+							TypeName: proto.String(".test.TestMsg"),
+							Label:    descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+						}},
+					},
 				},
 			}
 			newFD, err := protodesc.NewFile(fdp2, nil)
@@ -1627,7 +1838,7 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			err := v.Validate(old, new)
 			var evolErr *MetaDataEvolutionError
 			Expect(errors.As(err, &evolErr)).To(BeTrue())
-			Expect(evolErr.Message).To(ContainSubstring("does not match required"))
+			Expect(evolErr.Message).To(HavePrefix("record type primary key does not match required"))
 		})
 
 		It("still rejects a disallowed type change across an allowed rename", func() {
@@ -1646,7 +1857,7 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			err := v.Validate(buildSyntheticMD(1, oldFD), buildSyntheticMD(2, newFD))
 			var evolErr *MetaDataEvolutionError
 			Expect(errors.As(err, &evolErr)).To(BeTrue())
-			Expect(evolErr.Message).To(ContainSubstring("type changed in message"))
+			Expect(evolErr.Message).To(HavePrefix("field type changed"))
 		})
 	})
 
@@ -1728,7 +1939,7 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			_, err := renameFields(Field("a"), oldDesc, newDesc)
 			var evolErr *MetaDataEvolutionError
 			Expect(errors.As(err, &evolErr)).To(BeTrue())
-			Expect(evolErr.Message).To(ContainSubstring("not found in target descriptor"))
+			Expect(evolErr.Message).To(HavePrefix("field not found in target descriptor"))
 		})
 
 		// --- Per-node-type coverage (ports Java RenameFieldsVisitorTest shapes) -----
@@ -1822,7 +2033,7 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			_, err := renameFields(Field("not_in_source"), oldDesc, newDesc)
 			var evolErr *MetaDataEvolutionError
 			Expect(errors.As(err, &evolErr)).To(BeTrue())
-			Expect(evolErr.Message).To(ContainSubstring("not found in source descriptor"))
+			Expect(evolErr.Message).To(HavePrefix("field not found in source descriptor"))
 		})
 
 		It("errors when nesting into a non-message (scalar) parent field", func() {
@@ -1833,16 +2044,18 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			_, err := renameFields(Nest("a", Field("x")), oldDesc, newDesc)
 			var evolErr *MetaDataEvolutionError
 			Expect(errors.As(err, &evolErr)).To(BeTrue())
-			Expect(evolErr.Message).To(ContainSubstring("is not of message type"))
+			Expect(evolErr.Message).To(HavePrefix("parent field is not of message type"))
 		})
 
 		It("errors on an unsupported key-expression type", func() {
 			// Any KeyExpression type the switch does not handle hits the default arm.
 			oldDesc, newDesc := abDesc()
 			_, err := renameFields(unsupportedKeyExpr{}, oldDesc, newDesc)
-			var evolErr *MetaDataEvolutionError
-			Expect(errors.As(err, &evolErr)).To(BeTrue())
-			Expect(evolErr.Message).To(ContainSubstring("not supported"))
+			// Java raises RecordCoreArgumentException here, not a
+			// MetaDataException (RenameFieldsVisitor.java:149, :214).
+			var argErr *RecordCoreArgumentError
+			Expect(errors.As(err, &argErr)).To(BeTrue())
+			Expect(argErr.Message).To(HavePrefix("field renaming not supported for expression"))
 		})
 
 		// --- Depth-≥2 nested re-derivation (ports Java renameMiddleRecord / renameMergedRecord /
@@ -1853,12 +2066,14 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 		// two independently-built files). These close that axis. --------------------------------
 
 		It("rewrites a leaf field at nesting depth 2 (re-derives the descriptor at each level)", func() {
-			oldD := buildFile("o.proto",
+			oldD := buildFile(
+				"o.proto",
 				msg("Outer", messageField("middle", 1, ".test.Middle"), strField("top", 2)),
 				msg("Middle", messageField("inner", 1, ".test.Inner"), strField("mid", 2)),
 				msg("Inner", strField("foo", 1), strField("bar", 2)),
 			).Messages().Get(0)
-			newD := buildFile("n.proto",
+			newD := buildFile(
+				"n.proto",
 				msg("Outer", messageField("middle", 1, ".test.Middle"), strField("top", 2)),
 				msg("Middle", messageField("inner", 1, ".test.Inner"), strField("mid", 2)),
 				msg("Inner", strField("foo_z", 1), strField("bar", 2)),
@@ -1869,12 +2084,14 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 		})
 
 		It("rewrites a mid-chain parent field while leaving the deeper leaf intact", func() {
-			oldD := buildFile("o.proto",
+			oldD := buildFile(
+				"o.proto",
 				msg("Outer", messageField("middle", 1, ".test.Middle"), strField("top", 2)),
 				msg("Middle", messageField("inner", 1, ".test.Inner"), strField("mid", 2)),
 				msg("Inner", strField("foo", 1), strField("bar", 2)),
 			).Messages().Get(0)
-			newD := buildFile("n.proto",
+			newD := buildFile(
+				"n.proto",
 				msg("Outer", messageField("middle", 1, ".test.Middle"), strField("top", 2)),
 				msg("Middle", messageField("inner_2b", 1, ".test.Inner"), strField("mid", 2)),
 				msg("Inner", strField("foo", 1), strField("bar", 2)),
@@ -1887,12 +2104,14 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 		It("follows the descriptor type, not the field name, when the same name lives in two types", func() {
 			// A.val and B.val share the name "val"; only A.val is renamed. A name-keyed
 			// implementation would also rename b.val — this pins per-parent re-derivation.
-			oldD := buildFile("o.proto",
+			oldD := buildFile(
+				"o.proto",
 				msg("Top", messageField("a", 1, ".test.A"), messageField("b", 2, ".test.B")),
 				msg("A", strField("val", 1)),
 				msg("B", strField("val", 1)),
 			).Messages().Get(0)
-			newD := buildFile("n.proto",
+			newD := buildFile(
+				"n.proto",
 				msg("Top", messageField("a", 1, ".test.A"), messageField("b", 2, ".test.B")),
 				msg("A", strField("val_a", 1)),
 				msg("B", strField("val", 1)),
@@ -1904,11 +2123,13 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 
 		It("rewrites every path that reaches a shared nested descriptor (merged-record shape)", func() {
 			// Both a and b point at the same Nested type; one nested rename rewrites both paths.
-			oldD := buildFile("o.proto",
+			oldD := buildFile(
+				"o.proto",
 				msg("My", messageField("a", 1, ".test.Nested"), messageField("b", 2, ".test.Nested")),
 				msg("Nested", strField("x", 1), strField("y", 2)),
 			).Messages().Get(0)
-			newD := buildFile("n.proto",
+			newD := buildFile(
+				"n.proto",
 				msg("My", messageField("a", 1, ".test.Nested"), messageField("b", 2, ".test.Nested")),
 				msg("Nested", strField("x_2", 1), strField("y", 2)),
 			).Messages().Get(0)
@@ -1924,12 +2145,14 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			// NestedA's number 1) and b.x must become b.q (via NestedB's number 2): same name,
 			// different result, because the rename strictly follows (source type → number →
 			// target type by number) at each parent independently.
-			oldD := buildFile("o.proto",
+			oldD := buildFile(
+				"o.proto",
 				msg("My", messageField("a", 1, ".test.NestedA"), messageField("b", 2, ".test.NestedB")),
 				msg("NestedA", strField("x", 1), strField("y", 2)),
 				msg("NestedB", strField("y", 1), strField("x", 2)),
 			).Messages().Get(0)
-			newD := buildFile("n.proto",
+			newD := buildFile(
+				"n.proto",
 				msg("My", messageField("a", 1, ".test.OneTrueNested"), messageField("b", 2, ".test.OneTrueNested")),
 				msg("OneTrueNested", strField("p", 1), strField("q", 2)),
 			).Messages().Get(0)
@@ -1977,12 +2200,14 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			// re-derives through a REPEATED message descriptor and preserves e.fanType
 			// (rename_fields_visitor.go). A dropped fan type would yield Nest (None) and fail
 			// proto.Equal.
-			oldD := buildFile("o.proto",
+			oldD := buildFile(
+				"o.proto",
 				msg("Outer", repeatedMessageField("groups", 1, ".test.Group")),
 				msg("Group", messageField("inner", 1, ".test.Inner")),
 				msg("Inner", strField("foo", 1), strField("bar", 2)),
 			).Messages().Get(0)
-			newD := buildFile("n.proto",
+			newD := buildFile(
+				"n.proto",
 				msg("Outer", repeatedMessageField("groups_v2", 1, ".test.Group")),
 				msg("Group", messageField("inner", 1, ".test.Inner")),
 				msg("Inner", strField("foo_z", 1), strField("bar", 2)),
@@ -2012,7 +2237,7 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			err := ValidateEvolution(old, new)
 			var evolErr *MetaDataEvolutionError
 			Expect(errors.As(err, &evolErr)).To(BeTrue())
-			Expect(evolErr.Message).To(ContainSubstring("no longer covers record type"))
+			Expect(evolErr.Message).To(HavePrefix("new index removes record type"))
 		})
 
 		It("rejects index adding old record type without sinceVersion", func() {
@@ -2031,7 +2256,7 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			err := ValidateEvolution(old, new)
 			var evolErr *MetaDataEvolutionError
 			Expect(errors.As(err, &evolErr)).To(BeTrue())
-			Expect(evolErr.Message).To(ContainSubstring("covers new record type"))
+			Expect(evolErr.Message).To(HavePrefix("new index adds record type that is not newer than old meta-data"))
 		})
 
 		It("allows index keeping same record types", func() {
@@ -2049,13 +2274,13 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		It("allows index adding type with SinceVersion=0 when allowNoSinceVersion is true", func() {
+		It("requires newer index scope even when allowNoSinceVersion is true", func() {
 			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
 				b.AddIndex("Order", NewIndex("idx_price", Field("price")))
 			})
 
-			// Customer has SinceVersion=0 (default). Without allowNoSinceVersion,
-			// this would fail because 0 <= old.Version()==1.
+			// The general allowance for unversioned types does not make an
+			// existing index complete for records it previously did not cover.
 			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
 				idx := NewIndex("idx_price", Field("price"))
 				b.AddMultiTypeIndex([]string{"Order", "Customer"}, idx)
@@ -2064,8 +2289,10 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			validator := NewMetaDataEvolutionValidator().
 				SetAllowNoSinceVersion(true).
 				Build()
-			err := validator.Validate(old, new)
-			Expect(err).NotTo(HaveOccurred())
+			Expect(validator.Validate(old, new)).To(MatchError(HavePrefix("new index adds record type that is not newer than old meta-data")))
+			// Scope is checked before expression compatibility, as in Java.
+			new.GetIndex("idx_price").RootExpression = Literal(int64(1))
+			Expect(validator.Validate(old, new)).To(MatchError(HavePrefix("new index adds record type that is not newer than old meta-data")))
 		})
 	})
 
@@ -2102,7 +2329,7 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			err := ValidateEvolution(old, new)
 			var evolErr *MetaDataEvolutionError
 			Expect(errors.As(err, &evolErr)).To(BeTrue())
-			Expect(evolErr.Message).To(ContainSubstring("made unique"))
+			Expect(evolErr.Message).To(HavePrefix("index adds uniqueness constraint"))
 		})
 
 		It("rejects unknown option changes", func() {
@@ -2204,13 +2431,13 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 		// TEXT index option validation
 		It("allows TEXT aggressiveConflictRanges change", func() {
 			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
-				idx := NewIndex("idx_text", Field("price"))
+				idx := NewIndex("idx_text", Nest("flower", Field("type")))
 				idx.Type = IndexTypeText
 				b.AddIndex("Order", idx)
 			})
 
 			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
-				idx := NewIndex("idx_text", Field("price"))
+				idx := NewIndex("idx_text", Nest("flower", Field("type")))
 				idx.Type = IndexTypeText
 				idx.Options = map[string]string{IndexOptionTextAddAggressiveConflictRanges: "true"}
 				b.AddIndex("Order", idx)
@@ -2222,13 +2449,13 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 
 		It("allows TEXT omitPositions change", func() {
 			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
-				idx := NewIndex("idx_text", Field("price"))
+				idx := NewIndex("idx_text", Nest("flower", Field("type")))
 				idx.Type = IndexTypeText
 				b.AddIndex("Order", idx)
 			})
 
 			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
-				idx := NewIndex("idx_text", Field("price"))
+				idx := NewIndex("idx_text", Nest("flower", Field("type")))
 				idx.Type = IndexTypeText
 				idx.Options = map[string]string{IndexOptionTextOmitPositions: "true"}
 				b.AddIndex("Order", idx)
@@ -2248,14 +2475,14 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			registerTestTokenizers()
 
 			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
-				idx := NewIndex("idx_text", Field("price"))
+				idx := NewIndex("idx_text", Nest("flower", Field("type")))
 				idx.Type = IndexTypeText
 				idx.Options = map[string]string{IndexOptionTextTokenizerName: englishTestTokenizer.name}
 				b.AddIndex("Order", idx)
 			})
 
 			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
-				idx := NewIndex("idx_text", Field("price"))
+				idx := NewIndex("idx_text", Nest("flower", Field("type")))
 				idx.Type = IndexTypeText
 				idx.Options = map[string]string{IndexOptionTextTokenizerName: frenchTestTokenizer.name}
 				b.AddIndex("Order", idx)
@@ -2275,14 +2502,14 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			registerTestTokenizers()
 
 			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
-				idx := NewIndex("idx_text", Field("price"))
+				idx := NewIndex("idx_text", Nest("flower", Field("type")))
 				idx.Type = IndexTypeText
 				idx.Options = map[string]string{IndexOptionTextTokenizerName: englishTestTokenizer.name, IndexOptionTextTokenizerVersion: "1"}
 				b.AddIndex("Order", idx)
 			})
 
 			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
-				idx := NewIndex("idx_text", Field("price"))
+				idx := NewIndex("idx_text", Nest("flower", Field("type")))
 				idx.Type = IndexTypeText
 				idx.Options = map[string]string{IndexOptionTextTokenizerName: englishTestTokenizer.name, IndexOptionTextTokenizerVersion: "2"}
 				b.AddIndex("Order", idx)
@@ -2296,14 +2523,14 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			registerTestTokenizers()
 
 			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
-				idx := NewIndex("idx_text", Field("price"))
+				idx := NewIndex("idx_text", Nest("flower", Field("type")))
 				idx.Type = IndexTypeText
 				idx.Options = map[string]string{IndexOptionTextTokenizerName: englishTestTokenizer.name, IndexOptionTextTokenizerVersion: "3"}
 				b.AddIndex("Order", idx)
 			})
 
 			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
-				idx := NewIndex("idx_text", Field("price"))
+				idx := NewIndex("idx_text", Nest("flower", Field("type")))
 				idx.Type = IndexTypeText
 				idx.Options = map[string]string{IndexOptionTextTokenizerName: englishTestTokenizer.name, IndexOptionTextTokenizerVersion: "1"}
 				b.AddIndex("Order", idx)
@@ -2318,14 +2545,14 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 		// RANK index option validation
 		It("rejects RANK nLevels change", func() {
 			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
-				idx := NewIndex("idx_rank", Field("price"))
+				idx := NewIndex("idx_rank", Ungrouped(Field("price")))
 				idx.Type = IndexTypeRank
 				idx.Options = map[string]string{IndexOptionRankNLevels: "6"}
 				b.AddIndex("Order", idx)
 			})
 
 			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
-				idx := NewIndex("idx_rank", Field("price"))
+				idx := NewIndex("idx_rank", Ungrouped(Field("price")))
 				idx.Type = IndexTypeRank
 				idx.Options = map[string]string{IndexOptionRankNLevels: "8"}
 				b.AddIndex("Order", idx)
@@ -2339,14 +2566,14 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 
 		It("allows RANK nLevels cosmetic change (absent to default)", func() {
 			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
-				idx := NewIndex("idx_rank", Field("price"))
+				idx := NewIndex("idx_rank", Ungrouped(Field("price")))
 				idx.Type = IndexTypeRank
 				// no nLevels option — uses default 6
 				b.AddIndex("Order", idx)
 			})
 
 			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
-				idx := NewIndex("idx_rank", Field("price"))
+				idx := NewIndex("idx_rank", Ungrouped(Field("price")))
 				idx.Type = IndexTypeRank
 				idx.Options = map[string]string{IndexOptionRankNLevels: "6"} // explicit default
 				b.AddIndex("Order", idx)
@@ -2358,13 +2585,13 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 
 		It("rejects RANK countDuplicates change", func() {
 			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
-				idx := NewIndex("idx_rank", Field("price"))
+				idx := NewIndex("idx_rank", Ungrouped(Field("price")))
 				idx.Type = IndexTypeRank
 				b.AddIndex("Order", idx)
 			})
 
 			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
-				idx := NewIndex("idx_rank", Field("price"))
+				idx := NewIndex("idx_rank", Ungrouped(Field("price")))
 				idx.Type = IndexTypeRank
 				idx.Options = map[string]string{IndexOptionRankCountDuplicates: "true"}
 				b.AddIndex("Order", idx)
@@ -2373,20 +2600,22 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			err := ValidateEvolution(old, new)
 			var evolErr *MetaDataEvolutionError
 			Expect(errors.As(err, &evolErr)).To(BeTrue())
-			Expect(evolErr.Message).To(ContainSubstring("rank count duplicates"))
+			Expect(evolErr.Message).To(HavePrefix("rank count duplicate changed"))
 		})
 
 		// PERMUTED_MIN/MAX option validation
 		It("rejects PERMUTED_MIN permutedSize change", func() {
+			// A grouping with two grouping columns, which both sizes fit, as
+			// Java's validator requires.
 			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
-				idx := NewIndex("idx_pm", Field("price"))
+				idx := NewIndex("idx_pm", GroupBy(Field("order_id"), Field("price"), Field("quantity")))
 				idx.Type = IndexTypePermutedMin
 				idx.Options = map[string]string{IndexOptionPermutedSize: "1"}
 				b.AddIndex("Order", idx)
 			})
 
 			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
-				idx := NewIndex("idx_pm", Field("price"))
+				idx := NewIndex("idx_pm", GroupBy(Field("order_id"), Field("price"), Field("quantity")))
 				idx.Type = IndexTypePermutedMin
 				idx.Options = map[string]string{IndexOptionPermutedSize: "2"}
 				b.AddIndex("Order", idx)
@@ -2517,14 +2746,14 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 		// MULTIDIMENSIONAL (R-tree) option validation
 		It("rejects R-tree structural option change (maxM)", func() {
 			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
-				idx := NewIndex("idx_md", Field("price"))
+				idx := NewIndex("idx_md", Dimensions(Concat(Field("coord_x"), Field("coord_y")), 0, 2))
 				idx.Type = IndexTypeMultidimensional
 				idx.Options = map[string]string{IndexOptionRTreeMaxM: "4"}
 				b.AddIndex("Order", idx)
 			})
 
 			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
-				idx := NewIndex("idx_md", Field("price"))
+				idx := NewIndex("idx_md", Dimensions(Concat(Field("coord_x"), Field("coord_y")), 0, 2))
 				idx.Type = IndexTypeMultidimensional
 				idx.Options = map[string]string{IndexOptionRTreeMaxM: "8"}
 				b.AddIndex("Order", idx)
@@ -2533,19 +2762,54 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			err := ValidateEvolution(old, new)
 			var evolErr *MetaDataEvolutionError
 			Expect(errors.As(err, &evolErr)).To(BeTrue())
-			Expect(evolErr.Message).To(ContainSubstring("R-tree option"))
+			Expect(evolErr.Message).To(HavePrefix("rtree minM changed"))
+		})
+
+		// Java compares the EFFECTIVE configuration of each option family
+		// (RankIndexMaintainerFactory.java:75-100,
+		// MultidimensionalIndexMaintainerFactory.java:143-193,
+		// VectorIndexOptionsHelper.java:120-147), so an option set to its
+		// default where it was unspecified is no change; Go compared the raw
+		// strings and refused each.
+		It("admits an option set to its default where it was unspecified, per index type", func() {
+			for _, c := range []struct {
+				typ    string
+				root   KeyExpression
+				option string
+				value  string
+			}{
+				{IndexTypeRank, Ungrouped(Field("price")), IndexOptionRankCountDuplicates, "false"},
+				{IndexTypeRank, Ungrouped(Field("price")), IndexOptionRankNLevels, "6"},
+				{IndexTypeMultidimensional, Dimensions(Concat(Field("coord_x"), Field("coord_y")), 0, 2), IndexOptionRTreeMinM, "16"},
+				{IndexTypeMultidimensional, Dimensions(Concat(Field("coord_x"), Field("coord_y")), 0, 2), IndexOptionRTreeStoreHilbertValues, "true"},
+			} {
+				old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
+					idx := NewIndex("idx_opt", c.root)
+					idx.Type = c.typ
+					b.AddIndex("Order", idx)
+				})
+				oldIdx := old.GetIndex("idx_opt")
+				new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
+					idx := NewIndex("idx_opt", c.root)
+					idx.Type = c.typ
+					idx.AddedVersion, idx.LastModifiedVersion = oldIdx.AddedVersion, oldIdx.LastModifiedVersion
+					idx.Options = map[string]string{c.option: c.value}
+					b.AddIndex("Order", idx)
+				})
+				Expect(ValidateEvolution(old, new)).To(Succeed(), "%s %s=%s", c.typ, c.option, c.value)
+			}
 		})
 
 		It("rejects R-tree splitS change", func() {
 			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
-				idx := NewIndex("idx_md", Field("price"))
+				idx := NewIndex("idx_md", Dimensions(Concat(Field("coord_x"), Field("coord_y")), 0, 2))
 				idx.Type = IndexTypeMultidimensional
 				idx.Options = map[string]string{IndexOptionRTreeSplitS: "2"}
 				b.AddIndex("Order", idx)
 			})
 
 			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
-				idx := NewIndex("idx_md", Field("price"))
+				idx := NewIndex("idx_md", Dimensions(Concat(Field("coord_x"), Field("coord_y")), 0, 2))
 				idx.Type = IndexTypeMultidimensional
 				idx.Options = map[string]string{IndexOptionRTreeSplitS: "4"}
 				b.AddIndex("Order", idx)
@@ -2554,19 +2818,19 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			err := ValidateEvolution(old, new)
 			var evolErr *MetaDataEvolutionError
 			Expect(errors.As(err, &evolErr)).To(BeTrue())
-			Expect(evolErr.Message).To(ContainSubstring("R-tree option"))
+			Expect(evolErr.Message).To(HavePrefix("rtree splitS changed"))
 		})
 
 		// Atomic mutation indexes (COUNT, SUM, etc.) use base validation
 		It("rejects clearWhenZero change for COUNT index via base validator", func() {
 			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
-				idx := NewIndex("idx_count", Ungrouped(Field("price")))
+				idx := NewIndex("idx_count", GroupAll(Field("price")))
 				idx.Type = IndexTypeCount
 				b.AddIndex("Order", idx)
 			})
 
 			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
-				idx := NewIndex("idx_count", Ungrouped(Field("price")))
+				idx := NewIndex("idx_count", GroupAll(Field("price")))
 				idx.Type = IndexTypeCount
 				idx.Options = map[string]string{IndexOptionClearWhenZero: "true"}
 				b.AddIndex("Order", idx)
@@ -2610,3 +2874,208 @@ func (unsupportedKeyExpr) Evaluate(*FDBStoredRecord[proto.Message], proto.Messag
 func (unsupportedKeyExpr) FieldNames() []string                { return nil }
 func (unsupportedKeyExpr) ColumnSize() int                     { return 0 }
 func (unsupportedKeyExpr) ToKeyExpression() *gen.KeyExpression { return nil }
+
+// TestVectorOptionsComparedByEffectiveValue pins validateVectorIndexOptions to
+// Java's disallowChange (VectorIndexOptionsHelper.java:120-147): an option set
+// to its default where it was unspecified is no change, a changed value is
+// refused with Java's message, and an unrecognized metric name is not taken
+// for the default metric the lenient parser falls back to.
+func TestVectorOptionsComparedByEffectiveValue(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name     string
+		old, new map[string]string
+		option   string
+		refused  bool
+	}{
+		{"M set to its default", map[string]string{}, map[string]string{IndexOptionHNSWM: "16"}, IndexOptionHNSWM, false},
+		{"M changed", map[string]string{}, map[string]string{IndexOptionHNSWM: "8"}, IndexOptionHNSWM, true},
+		{"metric set to its default", map[string]string{}, map[string]string{IndexOptionVectorMetric: "EUCLIDEAN_METRIC"}, IndexOptionVectorMetric, false},
+		{"metric changed", map[string]string{}, map[string]string{IndexOptionVectorMetric: "COSINE_METRIC"}, IndexOptionVectorMetric, true},
+		{"an unrecognized metric beside the default", map[string]string{}, map[string]string{IndexOptionVectorMetric: "COSINE"}, IndexOptionVectorMetric, true},
+		{"RaBitQ extra bits set to their default", map[string]string{}, map[string]string{IndexOptionHNSWRaBitQNumExBits: "4"}, IndexOptionHNSWRaBitQNumExBits, false},
+	} {
+		oldIdx := &Index{Name: "v", Type: IndexTypeVector, Options: c.old}
+		newIdx := &Index{Name: "v", Type: IndexTypeVector, Options: c.new}
+		changed := map[string]bool{c.option: true}
+		err := validateVectorIndexOptions(oldIdx, newIdx, changed)
+		var evolErr *MetaDataEvolutionError
+		switch {
+		case c.refused && (!errors.As(err, &evolErr) || !strings.HasPrefix(evolErr.Message, "attempted to change immutable vector index option")):
+			t.Errorf("%s: %v, want Java's refusal", c.name, err)
+		case !c.refused && (err != nil || changed[c.option]):
+			t.Errorf("%s: %v (still changed: %t), want admitted and handled", c.name, err, changed[c.option])
+		}
+	}
+}
+
+// TestRecordTypeViolationsNamedInNameOrder pins that validateRecordTypes walks
+// the record types by name: with two types' since versions changed, the message
+// names the first by name on every run, where a map walk names either.
+func TestRecordTypeViolationsNamedInNameOrder(t *testing.T) {
+	t.Parallel()
+	b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+	b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+	b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+	b.SetVersion(3)
+	old, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := old.ToProto()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Version = proto.Int32(4)
+	for _, rt := range p.RecordTypes {
+		if rt.GetName() == "Customer" || rt.GetName() == "TypedRecord" {
+			rt.SinceVersion = proto.Int32(2)
+		}
+	}
+	newMD, err := RecordMetaDataFromProto(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 32 {
+		var evolErr *MetaDataEvolutionError
+		if err := ValidateEvolution(old, newMD); !errors.As(err, &evolErr) ||
+			!strings.HasPrefix(evolErr.Message, `record type since version changed (record type="Customer"`) {
+			t.Fatalf("%v, want Customer named first", err)
+		}
+	}
+}
+
+// TestTypeRenameNamedInUnionOrder pins getTypeRenames to Java's walk of the
+// old union's fields in declaration order (MetaDataEvolutionValidator.java:
+// 354-377): with renames disallowed and two types renamed, the refusal names
+// the first renamed type in union order (Order, field 1), not the first by
+// name (Customer) or whichever a map yields.
+func TestTypeRenameNamedInUnionOrder(t *testing.T) {
+	t.Parallel()
+	b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+	b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+	b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+	b.SetVersion(3)
+	old, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := old.ToProto()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Version = proto.Int32(4)
+	renamed := map[string]string{"Order": "Purchase", "Customer": "Buyer"}
+	pkg := "." + p.GetRecords().GetPackage() + "."
+	for _, m := range p.GetRecords().GetMessageType() {
+		if to, ok := renamed[m.GetName()]; ok {
+			m.Name = proto.String(to)
+		}
+		for _, f := range m.GetField() {
+			if to, ok := renamed[strings.TrimPrefix(f.GetTypeName(), pkg)]; ok {
+				f.TypeName = proto.String(pkg + to)
+			}
+		}
+	}
+	for _, rt := range p.GetRecordTypes() {
+		if to, ok := renamed[rt.GetName()]; ok {
+			rt.Name = proto.String(to)
+		}
+	}
+	newMD, err := RecordMetaDataFromProto(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := NewMetaDataEvolutionValidator().Build().Validate(old, newMD); err != nil {
+		t.Fatalf("renames allowed: %v", err)
+	}
+	for range 32 {
+		var evolErr *MetaDataEvolutionError
+		err := NewMetaDataEvolutionValidator().SetDisallowTypeRenames(true).Build().Validate(old, newMD)
+		if !errors.As(err, &evolErr) || !strings.HasPrefix(evolErr.Message, `record type name changed (old="Order", new="Purchase")`) {
+			t.Fatalf("%v, want the Order rename named first", err)
+		}
+	}
+}
+
+// TestChangedIndexOptionsNamedInNameOrder pins the base option walk: of two
+// changed options neither validator admits, the first by name is reported,
+// on every run.
+func TestChangedIndexOptionsNamedInNameOrder(t *testing.T) {
+	t.Parallel()
+	oldIdx := &Index{Name: "v", Type: IndexTypeValue, Options: map[string]string{}}
+	newIdx := &Index{Name: "v", Type: IndexTypeValue, Options: map[string]string{"zeta": "1", "alpha": "1", "mid": "1"}}
+	for range 32 {
+		changed := map[string]bool{"zeta": true, "alpha": true, "mid": true}
+		var evolErr *MetaDataEvolutionError
+		if err := ValidateChangedIndexOptions(oldIdx, newIdx, changed); !errors.As(err, &evolErr) ||
+			!strings.HasPrefix(evolErr.Message, `index option changed (index="v", option="alpha"`) {
+			t.Fatalf("%v, want alpha named", err)
+		}
+	}
+}
+
+// TestIndexRecordTypeViolationNamedInNameOrder pins the walk of an index's
+// record types (RecordTypesForIndex, in name order): an index that gains two
+// record types neither of which is newer than the old meta-data names the
+// first by name, on every run.
+func TestIndexRecordTypeViolationNamedInNameOrder(t *testing.T) {
+	t.Parallel()
+	build := func(types []string, version int) *RecordMetaData {
+		b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+		idx := NewIndex("multi", Field("price"))
+		idx.LastModifiedVersion, idx.AddedVersion = 1, 1
+		b.AddMultiTypeIndex(types, idx)
+		b.SetVersion(version)
+		md, err := b.Build()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return md
+	}
+	old := build([]string{"Order"}, 3)
+	newMD := build([]string{"TypedRecord", "Order", "Customer"}, 4)
+	for range 32 {
+		var evolErr *MetaDataEvolutionError
+		err := NewMetaDataEvolutionValidator().Build().Validate(old, newMD)
+		if !errors.As(err, &evolErr) || !strings.HasPrefix(evolErr.Message, `new index adds record type that is not newer than old meta-data (index="multi", record type="Customer"`) {
+			t.Fatalf("%v, want Customer named first", err)
+		}
+	}
+}
+
+// TestTextTokenizerVersionIsParsedAsJavaParsesIt pins getTextTokenizerVersion
+// to TextIndexMaintainer.getIndexTokenizerVersion: absent is version 0, and a
+// present value, the empty string included, goes through Integer.parseInt,
+// whose refusal is a MetaDataException.
+func TestTextTokenizerVersionIsParsedAsJavaParsesIt(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		options map[string]string
+		want    int
+		refused bool
+	}{
+		{nil, 0, false},
+		{map[string]string{IndexOptionTextTokenizerVersion: "0"}, 0, false},
+		{map[string]string{IndexOptionTextTokenizerVersion: "+2"}, 2, false},
+		{map[string]string{IndexOptionTextTokenizerVersion: ""}, 0, true},
+		{map[string]string{IndexOptionTextTokenizerVersion: " 1"}, 0, true},
+	} {
+		got, err := getTextTokenizerVersion(&Index{Name: "t", Options: c.options})
+		var mdErr *MetaDataError
+		if c.refused {
+			if !errors.As(err, &mdErr) || !strings.HasPrefix(mdErr.Message, "tokenizer version could not be parsed as int") {
+				t.Errorf("%v: %v, want Java's refusal", c.options, err)
+			}
+			continue
+		}
+		if err != nil || got != c.want {
+			t.Errorf("%v: %d, %v; want %d", c.options, got, err, c.want)
+		}
+	}
+}

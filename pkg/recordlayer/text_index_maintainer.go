@@ -2,7 +2,6 @@ package recordlayer
 
 import (
 	"fmt"
-	"strconv"
 
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -74,24 +73,28 @@ func getTextTokenizer(index *Index) (TextTokenizer, error) {
 }
 
 // getTextTokenizerVersion gets the tokenizer version from index options.
+// Matches Java's TextIndexMaintainer.getIndexTokenizerVersion
+// (TextIndexMaintainer.java:179-192): an absent option is GLOBAL_MIN_VERSION,
+// and a present one, the empty string included, is Integer.parseInt'd, a
+// value it refuses a MetaDataException.
 func getTextTokenizerVersion(index *Index) (int, error) {
-	versionStr := index.Options[IndexOptionTextTokenizerVersion]
-	if versionStr == "" {
+	versionStr, ok := index.Options[IndexOptionTextTokenizerVersion]
+	if !ok {
 		return 0, nil // GLOBAL_MIN_VERSION
 	}
-	v, err := strconv.Atoi(versionStr)
+	v, err := javaParseInt(versionStr)
 	if err != nil {
-		return 0, fmt.Errorf("tokenizer version could not be parsed as int: %q", versionStr)
+		return 0, &MetaDataError{Message: fmt.Sprintf("tokenizer version could not be parsed as int (index=%q, %s=%q)", index.Name, IndexOptionTextTokenizerVersion, versionStr)}
 	}
-	return v, nil
+	return int(v), nil
 }
 
 func getTextAggressiveConflictRanges(index *Index) bool {
-	return index.Options[IndexOptionTextAddAggressiveConflictRanges] == "true"
+	return index.GetBooleanOption(IndexOptionTextAddAggressiveConflictRanges, false)
 }
 
 func getTextOmitPositions(index *Index) bool {
-	return index.Options[IndexOptionTextOmitPositions] == "true"
+	return index.GetBooleanOption(IndexOptionTextOmitPositions, false)
 }
 
 // textFieldPosition returns the position of the text field in the index expression.

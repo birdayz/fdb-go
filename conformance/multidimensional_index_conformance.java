@@ -267,4 +267,99 @@ class MultidimensionalIndexSteps extends ConformanceBase {
             return result;
         });
     }
+
+    // Meta-data handed over as serialized RecordMetaDataProto.MetaData, so a
+    // spec can set the R-tree options (storage layout, Hilbert values, the
+    // node slot index) the fixed meta-data above leaves at their defaults.
+    private static RecordMetaData metaDataFromProto(byte[] protoBytes) throws com.google.protobuf.InvalidProtocolBufferException {
+        var registry = com.google.protobuf.ExtensionRegistry.newInstance();
+        com.apple.foundationdb.record.RecordMetaDataOptionsProto.registerAllExtensions(registry);
+        return RecordMetaData.build(com.apple.foundationdb.record.RecordMetaDataProto.MetaData.parseFrom(protoBytes, registry));
+    }
+
+    private static FDBRecordStore openWithMetaData(FDBRecordContext context, byte[] subspace, RecordMetaData metadata) {
+        return FDBRecordStore.newBuilder()
+            .setMetaDataProvider(metadata)
+            .setContext(context)
+            .setSubspace(new Subspace(subspace))
+            .setUserVersionChecker(ALWAYS_READABLE_CHECKER)
+            .createOrOpen();
+    }
+
+    /** Save orders [{orderId, coordX, coordY}] into a store of the given meta-data. */
+    @ConformanceStep("mdOptionsSaveOrders")
+    public void mdOptionsSaveOrders(String clusterFile, byte[] subspace, String tenantName, byte[] protoBytes, String ordersJson)
+            throws com.google.protobuf.InvalidProtocolBufferException {
+        RecordMetaData metadata = metaDataFromProto(protoBytes);
+        com.google.gson.Gson gson = new com.google.gson.GsonBuilder()
+            .setObjectToNumberStrategy(com.google.gson.ToNumberPolicy.LONG_OR_DOUBLE)
+            .create();
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> orderList = gson.fromJson(ordersJson, List.class);
+        // The meta-data's descriptors are built from the proto, so a record is
+        // re-parsed against them rather than saved as the generated Order.
+        var descriptor = metadata.getRecordType("Order").getDescriptor();
+        runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = openWithMetaData(context, subspace, metadata);
+            for (Map<String, Object> o : orderList) {
+                Order order = Order.newBuilder()
+                    .setOrderId(((Number) o.get("orderId")).longValue())
+                    .setCoordX(((Number) o.get("coordX")).longValue())
+                    .setCoordY(((Number) o.get("coordY")).longValue())
+                    .build();
+                try {
+                    store.saveRecord(com.google.protobuf.DynamicMessage.parseFrom(descriptor, order.toByteArray()));
+                } catch (com.google.protobuf.InvalidProtocolBufferException e) {
+                    throw new IllegalStateException(e);
+                }
+            }
+            return null;
+        });
+    }
+
+    /** Delete orders by id from a store of the given meta-data; returns how many existed. */
+    @ConformanceStep("mdOptionsDeleteOrders")
+    public long mdOptionsDeleteOrders(String clusterFile, byte[] subspace, String tenantName, byte[] protoBytes, String orderIdsJson)
+            throws com.google.protobuf.InvalidProtocolBufferException {
+        RecordMetaData metadata = metaDataFromProto(protoBytes);
+        com.google.gson.Gson gson = new com.google.gson.GsonBuilder()
+            .setObjectToNumberStrategy(com.google.gson.ToNumberPolicy.LONG_OR_DOUBLE)
+            .create();
+        @SuppressWarnings("unchecked")
+        List<Number> ids = gson.fromJson(orderIdsJson, List.class);
+        return runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = openWithMetaData(context, subspace, metadata);
+            long deleted = 0;
+            for (Number id : ids) {
+                if (store.deleteRecord(Tuple.from(id.longValue()))) {
+                    deleted++;
+                }
+            }
+            return deleted;
+        });
+    }
+
+    /** Scan the whole multidimensional index of the given meta-data: [{key, primaryKey}]. */
+    @ConformanceStep("mdOptionsScan")
+    public List<Map<String, Object>> mdOptionsScan(String clusterFile, byte[] subspace, String tenantName, byte[] protoBytes)
+            throws com.google.protobuf.InvalidProtocolBufferException {
+        RecordMetaData metadata = metaDataFromProto(protoBytes);
+        return runInContext(clusterFile, tenantName, context -> {
+            FDBRecordStore store = openWithMetaData(context, subspace, metadata);
+            Index index = metadata.getIndex("order_coord_md");
+            MultidimensionalIndexScanBounds scanBounds = new MultidimensionalIndexScanBounds(
+                TupleRange.ALL,
+                MultidimensionalIndexScanBounds.SpatialPredicate.TAUTOLOGY,
+                TupleRange.ALL);
+            List<IndexEntry> entries = store.scanIndex(index, scanBounds, null, ScanProperties.FORWARD_SCAN).asList().join();
+            List<Map<String, Object>> result = new ArrayList<>();
+            for (IndexEntry entry : entries) {
+                Map<String, Object> map = new HashMap<>();
+                map.put("key", new ArrayList<>(entry.getKey().getItems()));
+                map.put("primaryKey", new ArrayList<>(entry.getPrimaryKey().getItems()));
+                result.add(map);
+            }
+            return result;
+        });
+    }
 }

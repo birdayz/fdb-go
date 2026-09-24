@@ -1,0 +1,322 @@
+# WS-J oracle mutation evidence
+
+## Pin guard: shape:nested_then_top digest replaced by 000000000000 (grep -c confirmed 1 before run)
+[FAILED] Java outcome for shape:nested_then_top moved
+Executed 1 out of 1 test: 1 fails locally.
+
+## Set guard: pin "shape:top_then_nested" deleted (grep -c confirmed 0 before run)
+[FAILED] the set of runs must equal the set of pinned Java outcomes
+Executed 1 out of 1 test: 1 fails locally.
+
+## Trie fix: prefix check moved back AFTER the length check (grep -c confirmed), go test -run TestIndexDDLFieldTrie
+--- FAIL nested_then_top, nested_covering, nested_desc, deep_nesting_shared; PASS the other 7 shapes and the 0A000 rejection test
+restored; Bazel //pkg/relational/core/embedded:embedded_test --test.run=TestIndexDDLFieldTrie: 13 PASS lines (2 tests + 11 subtests)
+## census floor 360 -> 359: present 1
+## census exit=3
+• [FAILED] [0.328 seconds]
+[FAILED] Expected
+Ran 1 of 23 Specs in 5.787 seconds
+##   restored
+## unsplittable pin: vector-engine-preference removed: present 0 (0 = mutated)
+## unsplittable exit=3
+• [FAILED] [9.793 seconds]
+[FAILED] the templates Go's grammar cannot split moved: a newly parseable template needs pins for its derived runs
+Ran 1 of 23 Specs in 15.378 seconds
+##   restored
+## digest template-name scrub off: present 1
+## digest exit=3
+• [FAILED] [9.627 seconds]
+[FAILED] Java outcome for arrays-cardinality.yamsql:27{index:"tab2_index"} moved
+Ran 1 of 23 Specs in 15.179 seconds
+##   restored
+## canonical anonymous-run ordering off: present 1
+## anonrun exit=3
+• [FAILED] [9.809 seconds]
+[FAILED] Java outcome for valid-identifiers.yamsql:23{index:"foo.tableA.idx"} moved
+Ran 1 of 23 Specs in 15.387 seconds
+##   restored
+
+# v3 mutations (each applied by a scripted edit, presence counted with grep -c before the run, the file restored and its md5 re-checked after; all under Bazel, --nocache_test_results)
+
+## F12 M1: indexToProto ranges the Options map again (grep -c 'for k := range idx.Options {' = 1), //pkg/recordlayer:recordlayer_test + //pkg/relational/core/embedded:embedded_test --test.run=TestIndexOptionOrder
+--- FAIL: TestIndexOptionOrder_PermutedIndexStoresUniqueFirst (0.02s)
+--- FAIL: TestIndexOptionOrder_SetOptionOrderIsStored (0.00s)
+--- FAIL: TestIndexOptionOrder_FromProtoKeepsStoredOrder (0.00s)
+--- PASS: TestIndexOptionOrder_FromProtoRefusesDuplicateKey (0.00s)
+--- FAIL: TestIndexOptionOrder_ResetKeepsPositionAndDirectWritesSortLast (0.00s)
+--- FAIL: TestIndexOptionOrder_ConstructorOptionsLead (0.00s)
+## F12 M2: the DDL builder sets unique AFTER the generator options (grep -c = 1), embedded_test --test.run=TestIndexOptionOrder
+    index_option_order_test.go:44: index MX stores options [permutedSize unique], want [unique permutedSize]
+--- FAIL: TestIndexOptionOrder_PermutedIndexStoresUniqueFirst (0.01s)
+## F12 baseline (restored): 6 PASS
+6
+
+## Class ratchet M-c1: wsjRemoveCompanions gives no version back ('if false && (s < v' present 1), WS-J index-definition oracle
+WSJ-TALLY map[both-accept-equal:161 both-accept-index-diverge:7 both-accept-metadata-diverge:181 both-reject:20 java-accept-go-reject:101]
+"aggregate-empty-table.yamsql:21: both-accept-companion -> both-accept-index-diverge",
+"composite-aggregates.yamsql:24: both-accept-companion -> both-accept-index-diverge",
+"documentation-queries/index-documentation-queries.yamsql:5{index:idx_sales_by_category}: both-accept-companion -> both-accept-metadata-diverge",
+"sql-functions.yamsql:23{-views-functions}: both-accept-companion -> both-accept-index-diverge",
+## Class ratchet M-c2: isGroupExistenceCompanionOf always refuses ('return false, "mutated"' present 1)
+WSJ-TALLY map[both-accept-equal:161 both-accept-index-diverge:31 both-accept-metadata-diverge:157 both-reject:20 java-accept-go-reject:101]
+runs listed as moved to index-diverge in the failure message: 27 (the tally moves 157+31 against 180+4+4: 23 companion-carrying metadata-diverge runs and the 4 companion runs)
+## Class ratchet M-c3: F12 reverted in indexToProto (present 1)
+WSJ-TALLY map[both-accept-companion:4 both-accept-equal:161 both-accept-index-diverge:7 both-accept-metadata-diverge:177 both-reject:20 java-accept-go-reject:101]
+"aggregate-index-tests.yamsql:21{index:mv9}: both-accept-metadata-diverge -> both-accept-index-diverge",
+"index-ddl-aggregates-only.yamsql:29{-views-functions}: both-accept-metadata-diverge -> both-accept-index-diverge",
+"index-ddl-aggregates-only.yamsql:29{index:idx_mv_cat_max_region}: both-accept-metadata-diverge -> both-accept-index-diverge",
+
+## Production-path pin: literalKeyCarrier keeps int64 for an INT literal ('return v, nil' present 1), //pkg/relational/sqldriver:sqldriver_test --test.run=TestFDB_IndexDefinitionProductionPathStoresTargetShapes$
+index_definition_production_fdb_test.go:79: DPLUS stores root
+index_definition_production_fdb_test.go:79: BUCKET stores root
+--- FAIL: TestFDB_IndexDefinitionProductionPathStoresTargetShapes (0.03s)
+## F2b float arm: nullableLong's float64 case removed (grep -c 'case float64:' = 0), sqldriver_test --test.run=TestFDB_ArithmeticIndex_NonIntegerOperandTruncatesLikeJava$
+arithmetic_index_operand_fdb_test.go:108: insert FAILED; the target accepts it (getNullableLong takes any Number): evaluate index "ARITH_D" for new record: Invalid type in value: function add argument 0 expected java.lang.Number, got float6
+--- FAIL: TestFDB_ArithmeticIndex_NonIntegerOperandTruncatesLikeJava (0.02s)
+
+## Design v4 mutations (driver /var/tmp/fdb-upgrade-recovery/wsj4-mut.py: each replacement asserted to occur exactly once, its presence
+## counted after applying it, the target run uncached under Bazel, the file restored from its backup and cmp-verified;
+## exit 3 is "tests failed", as opposed to exit 1 "build failed", so every mutation below compiled)
+## widen-long-int-refused: pkg/recordlayer/metadata_evolution_validator.go
+##   replaced: case oldField == "long_value" && newField == "int_value":
+##   with:     case false: // MUTATION widen-long-int-refused
+##   presence 1; //pkg/recordlayer:recordlayer_test --test_arg=-test.run=TestRecordLayer --test_arg=--ginkgo.focus=literal carrier widening; exit 3; log /var/tmp/fdb-upgrade-recovery/wsj4-mut-widen-long-int-refused.log
+      [FAILED] the tuple encodes an integer by value, not by width
+      [FAILED] the tuple encodes an integer by value, not by width
+## widen-gate-removed: pkg/recordlayer/metadata_evolution_validator.go
+##   replaced: case inLongArith && oldField == "double_value" && newField == "float_value":
+##   with:     case oldField == "double_value" && newField == "float_value": // MUTATION widen-gate-removed
+##   presence 1; //pkg/recordlayer:recordlayer_test --test_arg=-test.run=TestRecordLayer --test_arg=--ginkgo.focus=literal carrier widening; exit 3; log /var/tmp/fdb-upgrade-recovery/wsj4-mut-widen-gate-removed.log
+      [FAILED] a key-column FLOAT and DOUBLE encode with different type codes
+## widen-reverse-accepted: pkg/recordlayer/metadata_evolution_validator.go
+##   replaced: case oldField == "long_value" && newField == "int_value":
+##   with:     case (oldField == "long_value" && newField == "int_value") || (oldField == "int_value" && newField == "long_value"): // MUTATION widen-reverse-accepted
+##   presence 1; //pkg/recordlayer:recordlayer_test --test_arg=-test.run=TestRecordLayer --test_arg=--ginkgo.focus=literal carrier widening; exit 3; log /var/tmp/fdb-upgrade-recovery/wsj4-mut-widen-reverse-accepted.log
+      [FAILED] Expected an error, got nil
+      [FAILED] Expected an error, got nil
+## rebind-option-dropped: pkg/relational/core/catalog/fdb_store_catalog.go
+##   replaced: SetAllowLiteralCarrierWidening(true).Build()
+##   with:     SetAllowLiteralCarrierWidening(false).Build() // MUTATION rebind-option-dropped
+##   presence 1; //pkg/relational/core/catalog:catalog_test --test_arg=-test.run=TestFDB_SchemaRebindAcceptsLiteralCarrierWidening$ --test_arg=-test.v; exit 3; log /var/tmp/fdb-upgrade-recovery/wsj4-mut-rebind-option-dropped.log
+      fdb_catalog_test.go:897:
+## cli-flag-unwired: cmd/frl/internal/cmd/meta.go
+##   replaced: SetAllowLiteralCarrierWidening(allowLiteralWidening).
+##   with:     SetAllowLiteralCarrierWidening(false && allowLiteralWidening). // MUTATION cli-flag-unwired
+##   presence 1; //cmd/frl/internal/cmd:cmd_test --test_arg=-test.run=TestMetaEvolveCheck_LiteralCarrierWidening$ --test_arg=-test.v; exit 3; log /var/tmp/fdb-upgrade-recovery/wsj4-mut-cli-flag-unwired.log
+      meta_test.go:477: with the flag: incompatible evolution: index "lit_idx" key expression changed
+## union-name-unchecked: pkg/recordlayer/metadata.go
+##   replaced: if string(union.Name()) != unionName {
+##   with:     if false && string(union.Name()) != unionName { // MUTATION union-name-unchecked
+##   presence 1; //pkg/recordlayer:recordlayer_test --test_arg=-test.run=TestSetRecordsWithUnionNameRefusesAnotherUnion$ --test_arg=-test.v; exit 3; log /var/tmp/fdb-upgrade-recovery/wsj4-mut-union-name-unchecked.log
+      metadata_validate_records_test.go:287: SetRecordsWithUnionName(T) = Union field id is not a message, want the found-union refusal
+## build-joins-faults: pkg/recordlayer/metadata.go
+##   replaced: return nil, b.buildErrors[0]
+##   with:     return nil, fmt.Errorf("%w", b.buildErrors[0]) // MUTATION build-joins-faults
+##   presence 1; //pkg/recordlayer:recordlayer_test --test_arg=-test.run=TestValidateRecordsMatchesJava$ --test_arg=-test.v; exit 3; log /var/tmp/fdb-upgrade-recovery/wsj4-mut-build-joins-faults.log
+      metadata_validate_records_test.go:193: want the MetaDataError "Only one union descriptor is allowed" itself, got *fmt.wrapError: Only one union descriptor is allowed
+      metadata_validate_records_test.go:193: want the MetaDataError "Field u in message vr.T has illegal unsigned type FIXED64" itself, got *fmt.wrapError: Field u in message vr.T has illegal unsigned type FIXED64
+## row-reader-unsigned: pkg/recordlayer/query/plan/cascades/values/values.go
+##   replaced: return int64(int32(uint32(v.Uint()))) //nolint:gosec
+##   with:     return int64(v.Uint()) //nolint:gosec // MUTATION row-reader-unsigned
+##   presence 1; //pkg/recordlayer/query/executor:executor_test --test_arg=-test.run=TestScalarProtoToGo_Uint32Kinds$ --test_arg=-test.v; exit 3; log /var/tmp/fdb-upgrade-recovery/wsj4-mut-row-reader-unsigned.log
+      executor_test.go:3842: got 4294967295 (int64), want int64(-1)
+      executor_test.go:3842: got 4294967295 (int64), want int64(-1)
+## carrier-go-int: pkg/relational/core/query/ddl/generator.go
+##   replaced: 	case int:\n		return int64(x), true, nil\n	case int32:
+##   with:     	case int32: // MUTATION carrier-go-int
+##   presence 1; //pkg/relational/core/query/ddl:ddl_test --test_arg=-test.run=TestLiteralKeyCarrier$ --test_arg=-test.v; exit 3; log /var/tmp/fdb-upgrade-recovery/wsj4-mut-carrier-go-int.log
+      literal_key_carrier_test.go:54: literalKeyCarrier(-2147483648 INT NULL) = -2147483648 (int), want -2147483648 (int32)
+      literal_key_carrier_test.go:54: literalKeyCarrier(2147483647 INT NULL) = 2147483647 (int), want 2147483647 (int32)
+## class-name-dynamic: pkg/recordlayer/long_arithmetic_function.go
+##   replaced: if _, dynamic := m.(*dynamicpb.Message); dynamic {
+##   with:     if _, dynamic := m.(*dynamicpb.Message); dynamic && false { // MUTATION class-name-dynamic
+##   presence 1; //pkg/recordlayer:recordlayer_test --test_arg=-test.run=TestJavaTupleValueClassName$ --test_arg=-test.v; exit 3; log /var/tmp/fdb-upgrade-recovery/wsj4-mut-class-name-dynamic.log
+      long_arithmetic_function_test.go:899: javaTupleValueClassName(*dynamicpb.Message) = "com.apple.foundationdb.record.Index", want "com.google.protobuf.DynamicMessage"
+## go-digest-pin: conformance/testdata/rfc257/wsj_go_classes.json
+##   replaced: "aggregate-empty-table.yamsql:21{index:t2_i1}": "both-accept-metadata-diverge OK 1aa18f060aa2"
+##   with:     "aggregate-empty-table.yamsql:21{index:t2_i1}": "both-accept-metadata-diverge OK 000000000000"
+##   presence 1; //conformance:rfc257_oracle_test --test_arg=--ginkgo.focus=WS-J index-definition fidelity oracle --test_arg=--ginkgo.v; exit 3; log /var/tmp/fdb-upgrade-recovery/wsj4-mut-go-digest-pin.log
+      WSJ-GO-BUILT-TWICE 354
+      [FAILED] run classes or Go outcomes moved from their pins
+## double-build-floor: conformance/ws_j_index_fidelity_conformance_test.go
+##   replaced: 				goBuiltTwice++\n
+##   with:     				// MUTATION double-build-floor\n
+##   presence 1; //conformance:rfc257_oracle_test --test_arg=--ginkgo.focus=WS-J index-definition fidelity oracle --test_arg=--ginkgo.v; exit 3; log /var/tmp/fdb-upgrade-recovery/wsj4-mut-double-build-floor.log
+      WSJ-GO-BUILT-TWICE 0
+      [FAILED] the double-build determinism check ran over the accepted runs
+## The v3 validator and rebind mutation logs (/var/tmp wsj3-val-mut1/2, wsj3-rebind-mut), which recorded no mutation text or
+## presence count, are superseded by widen-long-int-refused, widen-gate-removed and rebind-option-dropped above, run on the
+## v4 code with both recorded.
+
+## v5 (design v5), each applied by /var/tmp/fdb-upgrade-recovery/wsj5-mut.py, which asserts the original text occurs exactly once, records the
+## presence count of the MUTATION marker, runs the named target uncached, restores the file from its .bak and cmp-verifies it
+## (restored=True for all nine). A first run of five of them did not build (a gofumpt nit in a test file, nogo): those were
+## re-run after the file was formatted, and only the re-runs are recorded here.
+## union-name-unchecked: pkg/recordlayer/metadata.go
+##   replaced: if wantUnion != "" && string(union.Name()) != wantUnion {
+##   with:     if false && wantUnion != "" && ... // MUTATION union-name-unchecked
+##   presence 1; test TestSetRecordsWithUnionNameRefusesAnotherUnion; log /var/tmp/fdb-upgrade-recovery/wsj5-mut-union-name-unchecked.log; red: metadata_validate_records_test.go:287: SetRecordsWithUnionName(T) = record type "T" has no primary key set, want the found-union refusal
+## load-order-records-late: pkg/recordlayer/metadata_proto.go
+##   replaced: if len(builder.buildErrors) > 0 { return nil, builder.buildErrors[0] } (after setRecords)
+##   with:     if false && len(builder.buildErrors) > 0 { // MUTATION load-order-records-late
+##   presence 1; test TestStoredMetaDataLoadsInJavasOrder; log /var/tmp/fdb-upgrade-recovery/wsj5-mut-load-order-records-late.log; red: metadata_validate_records_test.go:459: RecordMetaDataFromProto = Unknown record type Nope (*recordlayer.MetaDataError), want the MetaDataError "Union field x is not a message"
+## unknown-type-message: pkg/recordlayer/metadata_proto.go
+##   replaced: &MetaDataError{Message: "Unknown record type " + rtNames[0]}
+##   with:     the pre-v5 message "unknown record type %q referenced by index %q" // MUTATION unknown-type-message
+##   presence 1; test TestStoredMetaDataLoadsInJavasOrder; log /var/tmp/fdb-upgrade-recovery/wsj5-mut-unknown-type-message.log; red: metadata_validate_records_test.go:459: RecordMetaDataFromProto = unknown record type "Nope" referenced by index "I" (*recordlayer.MetaDataError), want the MetaDataError "Unknown record type Nope"
+## ambiguous-union-unrefused: pkg/recordlayer/metadata_proto.go
+##   replaced: if err := refuseAmbiguousLegacyUnion(...); err != nil {
+##   with:     ...; false && err != nil { // MUTATION ambiguous-union-unrefused
+##   presence 1; test TestStoredMetaDataWithAnAmbiguousLegacyUnionIsRefused; log /var/tmp/fdb-upgrade-recovery/wsj5-mut-ambiguous-union-unrefused.log; red: metadata_validate_records_test.go:398: RecordMetaDataFromProto = <nil> (<nil>), want AmbiguousLegacyUnionError{UnionDescriptor, Envelope}
+## carrier-unknown-pair: pkg/relational/core/query/ddl/generator.go
+##   replaced: return nil, noLiteralKeyCarrier(c) (the final fall-through)
+##   with:     return c.Value, nil // MUTATION carrier-unknown-pair
+##   presence 1; test TestLiteralKeyCarrierRefusesUnknownPairs; log /var/tmp/fdb-upgrade-recovery/wsj5-mut-carrier-unknown-pair.log; red: literal_key_carrier_test.go:144: literalKeyCarrier(1 int64 FLOAT NULL) = 1, want an error
+## dup-message-order: pkg/recordlayer/errors.go
+##   replaced: "...: %s=%s and %s=%s", e.Key, e.Second, e.Key, e.First
+##   with:     e.Key, e.First, e.Key, e.Second // MUTATION dup-message-order
+##   presence 1; test the JVM spec "WS-J duplicate index option"; log /var/tmp/fdb-upgrade-recovery/wsj5-mut-dup-message-order.log; red: [FAILED] Go's loader matches the target for go_pin_input
+## int-edge-pin-dropped: conformance/ws_j_index_fidelity_conformance_test.go
+##   replaced: the wsjNonIntGoPins entry for SELECT i + 1 FROM T ORDER BY i + 1
+##   with:     // MUTATION int-edge-pin-dropped
+##   presence 1; test the JVM spec "WS-J long arithmetic key functions over non-integer operands"; log /var/tmp/fdb-upgrade-recovery/wsj5-mut-int-edge-pin-dropped.log; red: [FAILED] in [It] - conformance/ws_j_index_fidelity_conformance_test.go:2007 @ 09/23/26 21:53:44.267
+## f12-reverted: pkg/recordlayer/index.go
+##   replaced: for _, k := range idx.optionOrder { (OptionKeys)
+##   with:     for _, k := range []string(nil) { // MUTATION f12-reverted
+##   presence 1; test the WS-J index-definition fidelity oracle; log /var/tmp/fdb-upgrade-recovery/wsj5-mut-f12-reverted.log; red: [FAILED] in [It] - conformance/ws_j_index_fidelity_conformance_test.go:1224 @ 09/23/26 21:51:56.085
+## f12-reverted, the digest measure: 20 of the 475 pinned (class, Go outcome) pairs of that run moved (it ran before the four
+##   top_* shapes were added; they are both-reject, with no stored options for the order to move); 19 of them moved CLASS
+##   (14 metadata-diverge, 3 equal and 2 companion runs became index-diverge) and 1 moved only its digest inside an
+##   unchanged class (documentation-queries/index-documentation-queries.yamsql:5, index-diverge in both), the change the
+##   class alone would not have seen; the list is /var/tmp/fdb-upgrade-recovery/wsj5-f12-moved.txt.
+## float-arm-rounds: pkg/recordlayer/long_arithmetic_function.go
+##   replaced: return javaDoubleToLong(float64(x)), true, nil (nullableLong's float32 arm)
+##   with:     return int64(math.Round(float64(x))), true, nil // MUTATION float-arm-rounds
+##   presence 1; test the JVM spec "WS-J F2b index entries written by both engines" (v5: FLOAT column entries compared
+##   across engines); log /var/tmp/fdb-upgrade-recovery/wsj5-mut-float-arm-rounds.log; red: [FAILED] the Go-written ARITH_F
+##   entry of f=-1.5 has the target's value and raw bytes
+## The v5 oracle additions measured before the evidence passes: four top_* shapes (wsj5-topshapes*.log, pins added to
+##   wsj_java_pins.json and wsj_go_classes.json: 479 runs), the INT-edge ordered projection (wsj5-intedge.log), and the
+##   FLOAT columns of the F2b spec (wsj5-f2bfloat.log).
+
+## v6 (design v6), each applied by an inline edit that asserted the original text occurs exactly once, the MUTATION marker's
+## presence counted (1 each), the named test run, and the file restored from a copy and cmp-verified
+## (/var/tmp/fdb-upgrade-recovery/metadata_proto.go.wsj6-final, metadata.go.wsj6, generator.go.wsj6).
+## wsj6-field-type: pkg/recordlayer/metadata_proto.go
+##   replaced: if messageUsedAsFieldType(fd.Messages(), legacy.FullName()) {
+##   with:     if false && messageUsedAsFieldType(...) { // MUTATION wsj6-field-type
+##   red: TestStoredMetaDataWithAnAmbiguousLegacyUnionIsRefused/UnionDescriptor_as_a_union_field's_type and /..._as_a_nested_field's_type
+##   (/var/tmp/fdb-upgrade-recovery/wsj6-mut-a-unit.txt); and the JVM spec "WS-J a table or struct named UnionDescriptor", both
+##   Its (Ran 2 of 34, 0 Passed | 2 Failed; wsj6-mut-a-ud.log).
+## wsj6-recordtype-continue: pkg/recordlayer/metadata_proto.go
+##   replaced: the refusal of a RecordType entry naming no record type
+##   with:     continue // MUTATION wsj6-recordtype-continue (v5's behaviour)
+##   red: TestStoredMetaDataLoadsInJavasOrder/a_record_type_entry_naming_no_record_type (wsj6-mut-c-unit.txt).
+## wsj6-all-indexes-first: pkg/recordlayer/metadata_proto.go
+##   inserted before the per-index loop: a loop reading every index with indexFromProto first (v5's order) // MUTATION
+##   red: TestStoredMetaDataLoadsInJavasOrder/an_unknown_record_type_on_an_index_with_a_repeated_option and
+##   /an_unknown_record_type_before_a_repeated_option_on_the_next_index (wsj6-mut-b2-unit.txt). A weaker first attempt
+##   (reading only the SAME index before its record types, wsj6-index-first) reddened only the first of the two
+##   (wsj6-mut-b-unit.txt), which is why the v5 order itself was re-created.
+## wsj6-empty-union-name: pkg/recordlayer/metadata.go
+##   replaced: if unionName == "" {   with: if false && unionName == "" { // MUTATION wsj6-empty-union-name
+##   red: TestSetRecordsWithUnionNameRefusesAnotherUnion (metadata_validate_records_test.go:297, wsj6-mut-empty-name.txt).
+## wsj6-untyped-carried: pkg/relational/core/query/ddl/generator.go
+##   replaced: if c.Typ == nil { return nil, noLiteralKeyCarrier(c) }
+##   with:     if c.Typ == nil { return c.Value, nil // MUTATION wsj6-untyped-carried }  (only the untyped arm's body; the
+##             typed arms below it are unchanged, as the log's diff shows)
+##   red: TestLiteralKeyCarrierRefusesUnknownPairs/a_value_with_no_static_type (wsj6-mut-untyped.txt).
+
+## v7 (design v7), each applied by perl with a presence count of the MUTANT marker (1 in each named file), gofumpt'd so nogo
+## builds it, run, and the file restored from a copy and cmp-verified (/var/tmp/fdb-upgrade-recovery/wsj7/*.good).
+## wm1-any-message: pkg/recordlayer/metadata_proto.go
+##   replaced: the exemption "reachable from the found union" (reachableThroughFields(found, ...))
+##   with:     reachable from ANY top-level message but the legacy one (v6's any-field rule, re-created)  // MUTANT
+##   red: TestStoredMetaDataWithAnAmbiguousLegacyUnionIsRefused/UnionDescriptor_as_the_type_of_a_message_the_union_does_not_reach
+##   and /a_legacy_UnionDescriptor_held_by_an_envelope_message (wsj7/wm1-any-message.log); and the JVM spec "Java refuses the
+##   same records descriptors", its two v7 shapes (Ran 31 of 1556, 29 Passed | 2 Failed; wsj7/wm1-vr.log). The self-holding
+##   union stays refused under it, since the legacy message's own fields are excluded.
+## wm2-exempt-nothing: pkg/recordlayer/metadata_proto.go
+##   replaced: if found != nil && reachableThroughFields(...) {   with: if found != nil && false && ... { // MUTANT
+##   red: the two data-message cases of TestStoredMetaDataWithAnAmbiguousLegacyUnionIsRefused (wsj7/wm2-exempt-nothing.log),
+##   and the JVM spec "WS-J a table or struct named UnionDescriptor", both Its, each reporting BOTH halves (the target's
+##   template through Go's catalog, and Go's driver-built template at CREATE SCHEMA) refused with the (d) error
+##   (Ran 2 of 34, 0 Passed | 2 Failed; wsj7/wm2-ud.log).
+## wm3-loader-only: pkg/recordlayer/metadata.go and metadata_proto.go
+##   replaced: the Build-time check disabled (&& false // MUTANT) and v6's loader-only call restored after Build (// MUTANT)
+##   red: five cases of TestStoredMetaDataWithAnAmbiguousLegacyUnionIsRefused, each on its SetRecords path
+##   (wsj7/wm3-loader-only.log).
+## wm4-check-first: pkg/recordlayer/metadata.go
+##   inserted: the (d) check at the top of Build, before the target's checks // MUTANT
+##   red: TestAmbiguousLegacyUnionRefusalComesAfterTheTargetsFaults (wsj7/wm4-check-first.log).
+## f2b-signflip: pkg/recordlayer/long_arithmetic_function.go
+##   replaced: case f <= -9223372036854775808.0: return math.MinInt64   with: ... return math.MaxInt64 // MUTANT
+##   red: "WS-J F2b index entries written by both engines" [It] stores the saturated operand itself where the sum cannot
+##   overflow; its first It stays green, as the review predicted (Ran 2 of 35, 1 Passed | 1 Failed; wsj7/f2b-mut-signflip.log).
+
+## v8 (design v8), each applied by perl with a presence count of the MUTANT marker (1 in each named file; the log records
+## the count, the perl expression and the applied diff), gofumpt'd so nogo builds it, run, and the file restored from a copy
+## and cmp-verified. Driver /var/tmp/fdb-upgrade-recovery/wsj8mut/{run.sh,all.sh}; logs wsj8mut/wm8-*.log (full output
+## wm8-*.full.log). Unit runs: go test ./pkg/recordlayer -run 'TestStoredMetaDataWithAnAmbiguousLegacyUnionIsRefused|
+## TestAmbiguousLegacyUnionRefusalComesAfterTheTargetsFaults'. Oracle runs: //conformance:rfc257_oracle_test with the focus named.
+## wm8-1-union-never-named (metadata.go, unionNamed = false): ten shapes of the (d) table red, on their SetRecordsWithUnionName path.
+## wm8-2-union-always-named (unionNamed = true): ten shapes on their SetRecords path, and the faults test.
+## wm8-3-underscore-falls-through (the `_X` arm's continue removed): the unresolved `_Nope` shape.
+## wm8-4-nothing-framed-refused (len(framed) == 0 no longer loads): the four framed-nothing shapes.
+## wm8-5-message-arm-dropped: the self-holding, STRUCT-column and both table-typed-column shapes.
+## wm8-6-underscore-arm-dropped: six `_T` shapes and the faults test.
+## wm8-7-check-first (the (d) check at the top of Build): the faults test, and the three stored-replay shapes.
+## wm8-8-no-replay (the stored path refuses whatever framed): the three shapes only the replay loads.
+## wm8-9-replay-pk-arm: the STRUCT-column and self-holding shapes (a framed type with no stored primary key).
+## wm8-10-replay-index-arm: the indexed table-typed-column shape.
+## wm8-11-loader-not-replayed (loadedFromProto = false): the three replay shapes on the loader path.
+## wm8-12-code-path-replayed (SetRecords replays too): the three replay shapes on the SetRecords path.
+## wm8-13-store-unchecked (serializeTemplate's (d) check off): "WS-J a column typed by a table", the two refused Its
+##   (Ran 5 of 51, 3 Passed | 2 Failed): Go's driver stores the template.
+## wm8-14-load-code-xx000 (deserializeTemplate's 0A000 mapping off): the same two Its (the target-stored load is XX000).
+##   A first attempt deleted the errors.As call and failed to BUILD; it was re-expressed as `&& false` and re-run.
+## wm8-15-value-expression-ignored and wm8-16-added-version-default (the loader's two Java readings off): "WS-J stored
+##   index protos read as Java reads them" (Ran 1 of 51, 0 Passed | 1 Failed each).
+
+## v9 (design v9). The v8 unit mutations re-run UNDER BAZEL (v8 ran them with go test), renamed wm9-1 to wm9-12 with the
+## v8 perl expressions verbatim, and three new ones for the v9 pins. Each applied by perl with a presence count of the MUTANT
+## marker (1 in each named file; the log records the count, the expression and the applied diff), gofumpt'd so nogo builds
+## it, run, and the file restored from a copy and cmp-verified ("restored" in every log; after the batch the three mutated
+## files hold 0 MUTANT lines and equal their copies). Driver /var/tmp/fdb-upgrade-recovery/wsj9mut/{run.sh,all.sh}; logs
+## wsj9mut/wm9-*.log (full output wm9-*.full.log). Unit runs: bazelisk test //pkg/recordlayer:recordlayer_test
+## --nocache_test_results --test_arg=-test.run='^(TestStoredMetaDataWithAnAmbiguousLegacyUnionIsRefused|
+## TestAmbiguousLegacyUnionRefusalComesAfterTheTargetsFaults)$'; each log shows both "=== RUN" lines and "Executed 1 out of 1
+## test: 1 fails locally". The unmutated baseline of the same command (wm9-0-baseline.full.log): both "=== RUN" lines, both
+## "--- PASS", "Executed 1 out of 1 test: 1 test passes".
+## wm9-1-union-never-named: ten (d) subtests red, on their SetRecordsWithUnionName path.
+## wm9-2-union-always-named: ten subtests, and the faults test on its two (d) arms (metadata_validate_records_test.go:607, 612).
+## wm9-3-underscore-falls-through: the unresolved `_X` subtest.
+## wm9-4-nothing-framed-refused: the four framed-nothing subtests.
+## wm9-5-message-arm-dropped: four subtests (self-holding, STRUCT column, both table-typed columns).
+## wm9-6-underscore-arm-dropped: six `_T` subtests, and the faults test on its two (d) arms.
+## wm9-7-check-first: the faults test on ALL SIX fault arms (:579, 583, 588 on SetRecords; :595, 598, 602 on the loader), each
+##   reporting the (d) error where the target's fault was due (v8's Fatalf stopped at the first; the arms now use t.Errorf),
+##   and the three stored-replay subtests.
+## wm9-8-no-replay: the three subtests only the replay loads. wm9-9-replay-pk-arm: the STRUCT-column and self-holding subtests.
+## wm9-10-replay-index-arm: the indexed table-typed-column subtest. wm9-11-loader-not-replayed and wm9-12-code-path-replayed:
+##   the three replay subtests, on the loader and the SetRecords path respectively.
+## wm9-17-unique-option-dropped (metadata_proto.go: the index_type arm's unique option not set, `&& false // MUTANT`):
+##   "WS-J stored index protos read as Java reads them" red on "index_type UNIQUE with a value expression: options"
+##   (WSJIX options java={unique=true} go=map[]; Ran 1 of 51, 0 Passed | 1 Failed). v8's spec did not compare options.
+## wm9-18-go-bitand-refused (ddl/generator.go: bitFunctionName's BITAND arm returns ("", false)): "WS-J bit and bitmap index keys
+##   over an operand with no lane" red on the five bitand shapes, each "[FAILED] Go's outcome for bitand_<type> on this tree"
+##   (Ran 10 of 51, 5 Passed | 5 Failed): the goNow pin catches a change in Go's outcome, which v8 only printed.
+## wm9-19-union-message-old (metadata_proto.go: AmbiguousLegacyUnionError's remedy text back to "migrate it"): the JVM spec
+##   "Java refuses the same records descriptors" red on its five Go-refused shapes (Ran 35 of 1560, 30 Passed | 5 Failed).
+
+## v10 (design v10). Applied, run and restored as the v9 block describes (marker count 1 in each log with the perl expression and
+## the applied diff; "restored" in each; the two mutated files equal their copies afterwards). Driver
+## /var/tmp/fdb-upgrade-recovery/wsj10mut/{run.sh,all.sh}; logs wsj10mut/wm10-*.log and *.full.log; the unmutated baseline of the unit
+## run, wm10-0-baseline.full.log, passes.
+## wm10-1-empty-key-is-absent (metadata_proto.go: the loader's `p.SubspaceKey != nil` back to `len(p.SubspaceKey) > 0`, so a present
+##   empty key falls back to the index's name): TestStoredIndexSubspaceKeyIsReadAsJavaReadsIt/present_and_empty red under Bazel.
+## wm10-2-null-item-kept (the null-item refusal off): TestStoredIndexSubspaceKeyIsReadAsJavaReadsIt/a_null_item red.
+## wm10-3-oracle-empty-key-is-absent (wm10-1's mutation, run through the JVM spec): "WS-J stored index protos read as Java reads them"
+##   [It] refuses each malformed stored subspace key as Java does, red (Ran 2 of 56, 1 Passed | 1 Failed).
+## wm10-4-sql-remedy-unmarked (builder.go: LegacyUnionTemplateError no longer marks the (d) error SQLTemplate): "WS-J a column typed by a
+##   table", its four refused shapes red (Ran 7 of 56, 3 Passed | 4 Failed), on the SQL remedy and the marked error.

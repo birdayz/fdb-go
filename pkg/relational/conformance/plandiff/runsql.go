@@ -41,6 +41,15 @@ type Column struct {
 type RowSet struct {
 	Columns []Column `json:"columns"`
 	Rows    [][]any  `json:"rows"`
+	// Nullability is each column's declared nullability ("NOT NULL", "NULL" or
+	// "UNKNOWN"), parallel to Columns: JDBC ResultSetMetaData.isNullable on the
+	// Java side, database/sql ColumnType.Nullable on the Go side. Kept out of
+	// Column so structural comparisons of Columns are unchanged.
+	Nullability []string `json:"nullability,omitempty"`
+	// UpdateCount is the count a DML statement reported before its follow-up
+	// query ran (JDBC executeUpdate on the Java side, database/sql
+	// RowsAffected on the Go side); nil for a plain query.
+	UpdateCount *int64 `json:"updateCount,omitempty"`
 }
 
 // RunResult is one engine's output for one Query. Either Err is non-nil
@@ -51,6 +60,10 @@ type RunResult struct {
 	Engine string
 	Rows   RowSet
 	Err    error
+	// PlanCache is how the engine's plan cache took part in planning this
+	// execution ("hit", "miss", "skip"), where the runner can observe it; empty
+	// otherwise. Only the Go sequence runner sets it.
+	PlanCache string
 }
 
 // Runner produces a RunResult for a Query. Implementations must be safe

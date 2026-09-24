@@ -1,0 +1,56 @@
+**NAK.** Tree `4b8b8c15a3b65ce74c1856f8175ff2d3e7883c8d`; `ws-d-design.md` SHA256 `81fdd5f9c7a4d15222c0ad47c7056494f108e7e6bc3f689b788adbe2126809a8`, recomputed with `git show TREE:path | sha256sum`.
+
+The review is complete and read-only. I read the four v3 NAKs, the full v4 design, the v3→v4 diff (only `TODO.md` and `rfcs/` changed), and the research README. I did not re-read the three research reports; I checked claims against the Java source and Go tree objects instead. No tests, probes or edits.
+
+One caveat: `fdb-record-layer/` resolves as a git toplevel, not a plain checkout, and I did not check which commit it is at. I did not run javap or jshell, so the VectorId formula is checked only against JDK record semantics.
+
+### P1 — Nothing in the design makes admission run before writes, and Go's store writes first
+- **The claim.** Admission "runs before buffering record/index writes" (design:120-125). The access-info read that decides "trained" "happens before buffering" (:135-139). Refusals leave stores byte-for-byte unchanged even when the caller catches and commits (:204-206, :189-191).
+- **Go's order says otherwise:**
+  - Record bytes are written before any maintainer runs: `store.go:691` (`saveWithSplit`) before `:759`, and `:445` (`deleteSplit`) before `:488`.
+  - Maintainers then run one index at a time (`store.go:1049/1061/1095`), so an earlier index's writes are already buffered when a vector index refuses.
+  - A search for `guardiann|unknown engine|vectorEngine` in `vector_index_maintainer.go` and `store.go` finds 0 hits. The positive control (`withPrefixWriteLock|func `) finds 40, so nothing exists to reuse.
+- **Some checks need reads, so they cannot be decided from config:** whether the index is trained (GuardiANN delete), "sampling is active" (:149), and the sliding window's read phase (:179-183).
+- **Needed:**
+  - A store-level admission pass across all of a record's maintainers, before any record I/O. It must cover save, batch save, delete, queue enqueue (`store.go:1170-1175`), replay, and all build ranges.
+  - The window delegating its whole-effect admission through that pass.
+  - A stated rule for time-of-check/time-of-use under same-context concurrency: training or window changes between admit and apply. Either a typed backstop at apply, with the byte-unchanged claim scoped accordingly, or an explicit lock span.
+
+### P2
+1. **Go does not filter unchanged entries, and the design assumes it does (:160-162).**
+   - Java drops entries common to the old and new record in `StandardIndexMaintainer.java:217-227`. The design cites `VectorIndexMaintainer.java:357-363`, which only skips NULL vectors.
+   - Go's `vectorIndexMaintainer.Update` (`vector_index_maintainer.go:314-334`) deletes and re-inserts unconditionally, and `updateOneIndex` (`store.go:1158-1180`) does not filter either.
+   - Today, every HNSW record update already rewrites graph bytes that Java never touches. Under v4, every update would hit the GuardiANN insert row.
+   - Port `commonKeys`, and pin "non-vector update leaves partition bytes unchanged" against the JVM.
+   - The unchanged vector *does* reach the engine through queue replay (Java `updateFromQueue` :453-468) and the window (Java :375-391). So every in-window update and every queued update of an insert-refusing index is refused, and the fixture list omits both.
+2. **Refused queue entries stall the build permanently (:162-164).**
+   - Admission applies only at replay, but Go enqueues without it.
+   - The iterator retries every error (`throttled_retrying_iterator.go:88-92`), so a refused entry fails 100 times, then every re-run fails on the same key. That is the drain-stall family v4 fixes elsewhere.
+   - Admit at enqueue as well. Because the capability error is Go-only, classify it as terminal in the iterator; no Java parity is at stake.
+3. **Capacity step 1 misreads the iterator and adds a third limit schedule (:404-418).**
+   - The queue iterator never consults `shouldLessenWork`. It already retries capacity errors with `max(1, scanned*9/10)`, where `scanned` includes the failing entry (`:92`, `:183`; Java `ThrottledRetryingIterator.java:206,295,343-345`).
+   - The build throttle uses `oneToNineFactor`, capped at `scanned-1` (`indexing_throttle.go:82-96`).
+   - v4's `0.9*consumed` rule is a third schedule, and in the iterator it replaces Java's own behaviour.
+   - Keep the iterator's retry as is and add only the step-2 hook at limit 1. The build's capacity branch should reuse `decreaseLimit(recordsProcessed)`; `buildRange` already returns the count before the failure (`online_indexer.go:1524`). Share only step 2 and the termination predicate.
+   - "This alone resolves the common case" holds for builds, which merge after each committed range. It does not hold for queue replay, where the committed split task stays unexecuted until the drain ends.
+
+### P3
+- **Divergence (d) at :201 contradicts :170-172.** Java's `mergeIndexes` is `whenAll` (`IndexingBase.java:1089-1096`), so attempting every target is parity. The real divergence is Go's current stop-at-first (`indexing_merger.go:172-176`).
+- **Targeted merge lease owner (:419-428).** Java's lease owner is the merge session id, stable across re-invocations (`VectorIndexMaintainer.java:544-551`, `VectorIndexMergeLock.java:49`). Require the build's per-index session id; otherwise the build's own claim-without-drain lease reads as "live foreign" and recovery returns a spurious capacity error.
+- **Trained GuardiANN with unsupported extra bits.**
+  - Java commits training without constructing the quantizer (`guardiann/Insert.java:461-497`).
+  - The delete row (:152) then refuses record deletes, so :131-134's "Go … deletes it" overclaims for GuardiANN. Extra bits is not a mutable repair knob either. State this and add a fixture.
+  - Encoded bytes under unsupported bits more plausibly come from a newer Java writer than from corruption, so report a capability error, not a corruption error.
+- **Regression (3) (:90-92).** Under the "widen the hold" mutation it hangs on a `sync.RWMutex` that cannot be cancelled. Require a watchdog deadline so the mutation run fails with attribution rather than a package timeout.
+- **Lock order (:77-78).** The window holds its `swSubspace` write lock across the delegate write (`sliding_window_index_maintainer.go:264-270`). State window→partition as the only nesting order.
+- **Catch-and-commit fixture (:316-324).** "A later engine insert of that PK" cannot happen through the record API: once P2-1 is fixed, re-saving the same vector is filtered. The record stays unindexed, exactly as in Java; say the improvement is engine-level only.
+- **Shared reconcile/Collapse helper (:524).** `CollapseTask` rebuilds stats from identity (`:239-290`), so its max can fall, while reconcile keeps max(stored, recomputed). The helper must take stats and states as inputs. Also add a Go golden for the terminal rule's post-reconcile task draws.
+
+### Checked and correct
+- **Search-only lock hold:** Java materializes the whole page before `AsyncLockCursor` (`VectorIndexMaintainer.java:225-259`), so holding the lock only for the search changes no scan result. Releasing through a single `defer` rules out double release. The Go context is documented goroutine-safe (`database.go:618-622`).
+- **All-minted cause set:** harmless. `ReassignTask` only matches cause ids against the candidates it finds (`:570-573`), and a non-empty set forces neighbour reassigns (`Primitives.java:1222-1226`).
+- **Two-pass recomputation:** stats updates come only from each primary's home (`SplitMergeTask.java:621-651`).
+- **Throw site and lone-cluster shape:** `SplitMergeTask.java:333-397`.
+- **Hard-cap reordering is sound:** the check follows the tag-5 write (`guardiann/Insert.java:287-293,331-337`).
+- **VectorId:** a record over `(Tuple, UUID)`, placed in a `HashMap` at `Primitives.java:1541`; consistent with the stated formula.
+- **Preserved boundaries hold.**

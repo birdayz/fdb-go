@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"slices"
 
+	"fdb.dev/gen"
+	"google.golang.org/protobuf/types/known/anypb"
+
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -32,6 +35,8 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 	// wrapping RecordsWhereDeleter.run().
 	store.stateMu.RLock()
 	defer store.stateMu.RUnlock()
+	store.indexStateView.maintenance.RLock()
+	defer store.indexStateView.maintenance.RUnlock()
 
 	tx := store.context.Transaction()
 
@@ -50,7 +55,11 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 	var actions []indexAction
 
 	for _, idx := range store.metaData.GetAllIndexes() {
-		if store.getIndexStateLocked(idx.Name).IsDisabled() {
+		state, err := store.readIndexState(idx.Name)
+		if err != nil {
+			return err
+		}
+		if state.IsDisabled() {
 			continue
 		}
 
@@ -263,6 +272,20 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 		maintainer, mErr := store.getIndexMaintainer(action.index)
 		if mErr != nil {
 			return mErr
+		}
+		state, err := store.readIndexState(action.index.Name)
+		if err != nil {
+			return err
+		}
+		if state.IsWriteOnlyWithQueue() {
+			data, err := anypb.New(&gen.DeleteWhere{Prefix: action.prefix.Pack()})
+			if err != nil {
+				return err
+			}
+			if err := store.enqueuePendingIndexWrite(action.index, &gen.PendingWritesQueueEntry{Operation: gen.PendingWritesQueueEntry_DELETE_WHERE.Enum(), Data: data}); err != nil {
+				return err
+			}
+			continue
 		}
 		if err := maintainer.DeleteWhere(action.prefix); err != nil {
 			return err

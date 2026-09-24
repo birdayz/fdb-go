@@ -1,0 +1,1726 @@
+{
+  "scope": "Eight sequential 1M real-FDB samples (four per tree), plus existing planner-only shape benchmarks (three 200-iteration observations per shape per tree). Not a claim of universal performance equivalence.",
+  "baseline_commit": "e48f5b4965543cd4d99b5578356059e12d969c7c",
+  "current_tree": "232ee085f61b4ad5b8568a87b74cd5e2db328b71",
+  "compiler": "Go 1.26.6 on both trees",
+  "same_filesystem": "/dev/nvme0n1p2, 7% used at start",
+  "full_scan_count_every_sample": 1000000,
+  "per_sample_run_pass": 24,
+  "rows": {
+    "PK lookup id=0": {
+      "rows": 1,
+      "baseline_ms": [
+        9.609783,
+        8.426611,
+        42.515727,
+        8.497027
+      ],
+      "current_ms": [
+        8.15221,
+        8.746357,
+        8.605334,
+        8.18012
+      ],
+      "median_ratio": 0.9270243626569231
+    },
+    "PK lookup id=N/2": {
+      "rows": 1,
+      "baseline_ms": [
+        8.374402,
+        9.325274,
+        15.476551,
+        9.022753
+      ],
+      "current_ms": [
+        8.249325,
+        8.796331,
+        9.132353,
+        8.285369
+      ],
+      "median_ratio": 0.9309829334783515
+    },
+    "PK lookup id=N-1": {
+      "rows": 1,
+      "baseline_ms": [
+        7.300166,
+        6.243804,
+        14.527393,
+        6.628758
+      ],
+      "current_ms": [
+        6.460494,
+        6.342321,
+        5.574892,
+        6.420396
+      ],
+      "median_ratio": 0.9162744372788595
+    },
+    "idx_customer eq": {
+      "rows": 8,
+      "baseline_ms": [
+        7.230594,
+        6.962726,
+        29.360745,
+        7.090061
+      ],
+      "current_ms": [
+        6.668839,
+        7.095618,
+        7.413356,
+        7.234648
+      ],
+      "median_ratio": 1.0006711285203085
+    },
+    "idx_amount range >9000": {
+      "rows": 100017,
+      "baseline_ms": [
+        276.922835,
+        208.837094,
+        268.869596,
+        295.348608
+      ],
+      "current_ms": [
+        193.906491,
+        260.369822,
+        272.29094,
+        203.070437
+      ],
+      "median_ratio": 0.8491144850632784
+    },
+    "idx_status count pending": {
+      "rows": 1,
+      "baseline_ms": [
+        377.135598,
+        459.918061,
+        336.86351,
+        403.415788
+      ],
+      "current_ms": [
+        437.776035,
+        451.85993,
+        362.784244,
+        445.023269
+      ],
+      "median_ratio": 1.1309944736937536
+    },
+    "full scan filter amount>5000": {
+      "rows": 1,
+      "baseline_ms": [
+        895.229437,
+        810.734886,
+        803.303023,
+        625.982527
+      ],
+      "current_ms": [
+        789.156769,
+        838.572161,
+        906.872763,
+        856.366263
+      ],
+      "median_ratio": 1.0501230575495732
+    },
+    "GROUP BY status": {
+      "rows": 4,
+      "baseline_ms": [
+        13.092985,
+        6.256608,
+        6.072148,
+        6.088274
+      ],
+      "current_ms": [
+        14.131463,
+        20.230241,
+        6.661832,
+        6.352327
+      ],
+      "median_ratio": 1.6843656342766176
+    },
+    "GROUP BY status COUNT only": {
+      "rows": 4,
+      "baseline_ms": [
+        11.715064,
+        6.005381,
+        5.410645,
+        6.229001
+      ],
+      "current_ms": [
+        22.205916,
+        20.582318,
+        5.661888,
+        5.767909
+      ],
+      "median_ratio": 2.1537848826364914
+    },
+    "SUM by status (aggregate index)": {
+      "rows": 4,
+      "baseline_ms": [
+        22.43958,
+        5.717185,
+        5.94117,
+        6.802347
+      ],
+      "current_ms": [
+        21.864478,
+        17.46978,
+        5.671465,
+        6.02207
+      ],
+      "median_ratio": 1.8434353718836016
+    },
+    "GROUP BY customer HAVING": {
+      "rows": 47271,
+      "baseline_ms": [
+        665.425327,
+        596.412124,
+        600.004228,
+        600.691624
+      ],
+      "current_ms": [
+        670.712558,
+        609.581089,
+        608.477734,
+        610.076483
+      ],
+      "median_ratio": 1.015792275761106
+    },
+    "JOIN 10 orders x customers": {
+      "rows": 10,
+      "baseline_ms": [
+        20.586278,
+        20.741811,
+        23.338751,
+        23.456257
+      ],
+      "current_ms": [
+        40.257748,
+        20.861708,
+        21.161233,
+        20.710753
+      ],
+      "median_ratio": 0.9533213528448209
+    },
+    "ORDER BY PK (full)": {
+      "rows": 1000000,
+      "baseline_ms": [
+        7263.969953,
+        7641.523019,
+        4032.5374319999996,
+        7505.830408999999
+      ],
+      "current_ms": [
+        4032.570467,
+        3971.481557,
+        4033.162367,
+        3997.124801
+      ],
+      "median_ratio": 0.5436563170250385
+    },
+    "ORDER BY PK + index filter": {
+      "rows": 8,
+      "baseline_ms": [
+        9.658155,
+        10.905308,
+        9.679244,
+        9.194058
+      ],
+      "current_ms": [
+        9.0122,
+        9.586629,
+        9.889718,
+        9.783568
+      ],
+      "median_ratio": 1.001696091599496
+    },
+    "scan all rows ordered": {
+      "rows": 1000000,
+      "baseline_ms": [
+        3812.735896,
+        3829.767225,
+        3832.858897,
+        3814.660075
+      ],
+      "current_ms": [
+        3821.741392,
+        7421.932496,
+        3798.569121,
+        3771.584185
+      ],
+      "median_ratio": 0.9968451806716772
+    },
+    "scan all rows wide": {
+      "rows": 1000000,
+      "baseline_ms": [
+        4108.02138,
+        4089.4560139999994,
+        4121.397940999999,
+        4053.4073470000003
+      ],
+      "current_ms": [
+        4096.272706,
+        4048.6658660000003,
+        4070.3775029999997,
+        4051.8419870000002
+      ],
+      "median_ratio": 0.990819382551139
+    },
+    "IN-list 5 values": {
+      "rows": 46,
+      "baseline_ms": [
+        20.605203,
+        23.258972,
+        23.244483,
+        23.638934
+      ],
+      "current_ms": [
+        20.200255,
+        19.141287,
+        20.126132,
+        20.532495
+      ],
+      "median_ratio": 0.8671696973913012
+    },
+    "PK needle id=999999": {
+      "rows": 1,
+      "baseline_ms": [
+        6.095202,
+        5.89355,
+        6.353912,
+        6.330383
+      ],
+      "current_ms": [
+        6.35273,
+        5.878181,
+        6.595947,
+        5.898386
+      ],
+      "median_ratio": 0.9859588904667265
+    },
+    "PK+filter needle id=500000": {
+      "rows": 1,
+      "baseline_ms": [
+        8.111324,
+        6.876593,
+        8.279762,
+        7.086726
+      ],
+      "current_ms": [
+        8.349785,
+        7.378695,
+        7.789538,
+        8.432076
+      ],
+      "median_ratio": 1.0619338007178554
+    },
+    "full scan sparse filter": {
+      "rows": 97,
+      "baseline_ms": [
+        3522.3525539999996,
+        3543.591279,
+        3566.703684,
+        3562.641442
+      ],
+      "current_ms": [
+        3514.363362,
+        3495.022412,
+        3506.0008319999997,
+        3490.783016
+      ],
+      "median_ratio": 0.9851947605530719
+    },
+    "UPDATE by index": {
+      "rows": 8,
+      "baseline_ms": [
+        9.925432,
+        10.411994,
+        10.160387,
+        10.077522
+      ],
+      "current_ms": [
+        10.869381,
+        10.770703,
+        9.402665,
+        9.452611
+      ],
+      "median_ratio": 0.9992788286576443
+    },
+    "DELETE single row": {
+      "rows": 1,
+      "baseline_ms": [
+        7.1175,
+        7.768644,
+        7.203932,
+        7.554672
+      ],
+      "current_ms": [
+        8.075826,
+        7.154871,
+        7.119559,
+        7.113689
+      ],
+      "median_ratio": 0.9671937806583873
+    }
+  },
+  "planner_benchmarks": {
+    "BenchmarkPlanStressShape_PKLookup-24": {
+      "baseline": [
+        {
+          "ns": 1530571,
+          "bytes": 807599,
+          "allocs": 11256
+        },
+        {
+          "ns": 1544439,
+          "bytes": 807234,
+          "allocs": 11254
+        },
+        {
+          "ns": 1526832,
+          "bytes": 807097,
+          "allocs": 11253
+        }
+      ],
+      "current": [
+        {
+          "ns": 1560840,
+          "bytes": 808409,
+          "allocs": 11258
+        },
+        {
+          "ns": 1513238,
+          "bytes": 807908,
+          "allocs": 11256
+        },
+        {
+          "ns": 1531184,
+          "bytes": 807807,
+          "allocs": 11255
+        }
+      ],
+      "median_ratio": 1.0004005041255846
+    },
+    "BenchmarkPlanStressShape_IdxCustomerEq-24": {
+      "baseline": [
+        {
+          "ns": 2294919,
+          "bytes": 1216404,
+          "allocs": 18504
+        },
+        {
+          "ns": 2302215,
+          "bytes": 1216320,
+          "allocs": 18503
+        },
+        {
+          "ns": 2322206,
+          "bytes": 1216285,
+          "allocs": 18503
+        }
+      ],
+      "current": [
+        {
+          "ns": 2331932,
+          "bytes": 1216898,
+          "allocs": 18486
+        },
+        {
+          "ns": 2293918,
+          "bytes": 1216833,
+          "allocs": 18486
+        },
+        {
+          "ns": 2287695,
+          "bytes": 1216801,
+          "allocs": 18486
+        }
+      ],
+      "median_ratio": 0.9963960794278554
+    },
+    "BenchmarkPlanStressShape_IdxAmountRange-24": {
+      "baseline": [
+        {
+          "ns": 2487610,
+          "bytes": 1336957,
+          "allocs": 20402
+        },
+        {
+          "ns": 2453183,
+          "bytes": 1336916,
+          "allocs": 20402
+        },
+        {
+          "ns": 2400960,
+          "bytes": 1336874,
+          "allocs": 20402
+        }
+      ],
+      "current": [
+        {
+          "ns": 2406131,
+          "bytes": 1337556,
+          "allocs": 20395
+        },
+        {
+          "ns": 2442360,
+          "bytes": 1337495,
+          "allocs": 20395
+        },
+        {
+          "ns": 2412622,
+          "bytes": 1337519,
+          "allocs": 20395
+        }
+      ],
+      "median_ratio": 0.9834659705370533
+    },
+    "BenchmarkPlanStressShape_GroupByStatus-24": {
+      "baseline": [
+        {
+          "ns": 1743662,
+          "bytes": 901935,
+          "allocs": 14155
+        },
+        {
+          "ns": 1810290,
+          "bytes": 902226,
+          "allocs": 14156
+        },
+        {
+          "ns": 1795927,
+          "bytes": 902275,
+          "allocs": 14155
+        }
+      ],
+      "current": [
+        {
+          "ns": 1727294,
+          "bytes": 902674,
+          "allocs": 14154
+        },
+        {
+          "ns": 1805076,
+          "bytes": 903030,
+          "allocs": 14155
+        },
+        {
+          "ns": 1819291,
+          "bytes": 903038,
+          "allocs": 14155
+        }
+      ],
+      "median_ratio": 1.0050943050580563
+    },
+    "BenchmarkPlanStressShape_SumByStatus-24": {
+      "baseline": [
+        {
+          "ns": 1673894,
+          "bytes": 828206,
+          "allocs": 12956
+        },
+        {
+          "ns": 1687749,
+          "bytes": 828122,
+          "allocs": 12956
+        },
+        {
+          "ns": 1685645,
+          "bytes": 828110,
+          "allocs": 12956
+        }
+      ],
+      "current": [
+        {
+          "ns": 1676849,
+          "bytes": 828969,
+          "allocs": 12955
+        },
+        {
+          "ns": 1654424,
+          "bytes": 828882,
+          "allocs": 12955
+        },
+        {
+          "ns": 1666658,
+          "bytes": 828852,
+          "allocs": 12955
+        }
+      ],
+      "median_ratio": 0.9887360624568043
+    },
+    "BenchmarkPlanStressShape_InList-24": {
+      "baseline": [
+        {
+          "ns": 10680199,
+          "bytes": 6899859,
+          "allocs": 95904
+        },
+        {
+          "ns": 10739828,
+          "bytes": 6899631,
+          "allocs": 95904
+        },
+        {
+          "ns": 10706566,
+          "bytes": 6899410,
+          "allocs": 95903
+        }
+      ],
+      "current": [
+        {
+          "ns": 10742867,
+          "bytes": 6900507,
+          "allocs": 95888
+        },
+        {
+          "ns": 10742095,
+          "bytes": 6900186,
+          "allocs": 95887
+        },
+        {
+          "ns": 10566020,
+          "bytes": 6899961,
+          "allocs": 95887
+        }
+      ],
+      "median_ratio": 1.0033184309516234
+    }
+  },
+  "samples": [
+    {
+      "side": "baseline",
+      "sample": 1,
+      "commit": "e48f5b4965543cd4d99b5578356059e12d969c7c",
+      "tree": "600a5fa8517be7c6911cb6e68e8c93a39c81c823",
+      "command": [
+        "bazelisk",
+        "test",
+        "//pkg/relational/sqldriver/stress:stress_test",
+        "--nocache_test_results",
+        "--test_output=all",
+        "--test_arg=--test.run=^TestFDB_Stress_1M$",
+        "--test_arg=--test.v",
+        "--build_event_json_file=/var/tmp/fdb-upgrade-recovery/runtime/stress-baseline-1-bep.jsonl"
+      ],
+      "started": 1789925906.3051448,
+      "elapsed": 282.31298327445984,
+      "load_start": [
+        8.8837890625,
+        20.4794921875,
+        23.90673828125
+      ],
+      "load_end": [
+        6.84130859375,
+        14.91943359375,
+        20.958984375
+      ],
+      "exit": 0,
+      "frozen_files": 6186,
+      "changed": [],
+      "compiler": "/home/birdy/projects/fdb-java-upgrade-baseline/bazel-bin/pkg/relational/sqldriver/stress/stress_test_/stress_test: go1.26.6",
+      "runs": {
+        "TestFDB_Stress_1M": 1,
+        "TestFDB_Stress_1M/pk_lookup_first": 1,
+        "TestFDB_Stress_1M/pk_lookup_middle": 1,
+        "TestFDB_Stress_1M/pk_lookup_last": 1,
+        "TestFDB_Stress_1M/index_customer_eq": 1,
+        "TestFDB_Stress_1M/index_amount_range": 1,
+        "TestFDB_Stress_1M/index_status_count": 1,
+        "TestFDB_Stress_1M/full_scan_count": 1,
+        "TestFDB_Stress_1M/full_scan_filter": 1,
+        "TestFDB_Stress_1M/group_by_status": 1,
+        "TestFDB_Stress_1M/group_by_status_count_only": 1,
+        "TestFDB_Stress_1M/sum_by_status": 1,
+        "TestFDB_Stress_1M/group_by_customer_having": 1,
+        "TestFDB_Stress_1M/join_10_outer": 1,
+        "TestFDB_Stress_1M/order_by_pk_full": 1,
+        "TestFDB_Stress_1M/order_by_pk_index_filter": 1,
+        "TestFDB_Stress_1M/scan_all_narrow": 1,
+        "TestFDB_Stress_1M/scan_all_wide": 1,
+        "TestFDB_Stress_1M/in_list": 1,
+        "TestFDB_Stress_1M/needle_in_haystack_pk": 1,
+        "TestFDB_Stress_1M/needle_in_haystack_filter": 1,
+        "TestFDB_Stress_1M/full_scan_sparse_filter": 1,
+        "TestFDB_Stress_1M/update_by_index": 1,
+        "TestFDB_Stress_1M/delete_single_row": 1
+      },
+      "passes": {
+        "TestFDB_Stress_1M": 1,
+        "TestFDB_Stress_1M/pk_lookup_first": 1,
+        "TestFDB_Stress_1M/pk_lookup_middle": 1,
+        "TestFDB_Stress_1M/pk_lookup_last": 1,
+        "TestFDB_Stress_1M/index_customer_eq": 1,
+        "TestFDB_Stress_1M/index_amount_range": 1,
+        "TestFDB_Stress_1M/index_status_count": 1,
+        "TestFDB_Stress_1M/full_scan_count": 1,
+        "TestFDB_Stress_1M/full_scan_filter": 1,
+        "TestFDB_Stress_1M/group_by_status": 1,
+        "TestFDB_Stress_1M/group_by_status_count_only": 1,
+        "TestFDB_Stress_1M/sum_by_status": 1,
+        "TestFDB_Stress_1M/group_by_customer_having": 1,
+        "TestFDB_Stress_1M/join_10_outer": 1,
+        "TestFDB_Stress_1M/order_by_pk_full": 1,
+        "TestFDB_Stress_1M/order_by_pk_index_filter": 1,
+        "TestFDB_Stress_1M/scan_all_narrow": 1,
+        "TestFDB_Stress_1M/scan_all_wide": 1,
+        "TestFDB_Stress_1M/in_list": 1,
+        "TestFDB_Stress_1M/needle_in_haystack_pk": 1,
+        "TestFDB_Stress_1M/needle_in_haystack_filter": 1,
+        "TestFDB_Stress_1M/full_scan_sparse_filter": 1,
+        "TestFDB_Stress_1M/update_by_index": 1,
+        "TestFDB_Stress_1M/delete_single_row": 1
+      },
+      "summaries": [
+        {
+          "totalRunCount": 1,
+          "passed": [
+            {
+              "uri": "file:///home/birdy/.cache/bazel/_bazel_birdy/a308e9dcbbad971371891b7298062fea/execroot/_main/bazel-out/k8-fastbuild/testlogs/pkg/relational/sqldriver/stress/stress_test/test.log"
+            }
+          ],
+          "overallStatus": "PASSED",
+          "firstStartTimeMillis": "1789925986226",
+          "lastStopTimeMillis": "1789926188262",
+          "totalRunDurationMillis": "202036",
+          "runCount": 1,
+          "totalRunDuration": "202.036s",
+          "firstStartTime": "2026-09-20T17:39:46.226Z",
+          "lastStopTime": "2026-09-20T17:43:08.262Z",
+          "attemptCount": 1
+        }
+      ],
+      "log_sha256": "dc9066373a5e71ac240db70cf21d0fbd02dd5284b8c498051046bf098383908e"
+    },
+    {
+      "side": "baseline",
+      "sample": 2,
+      "commit": "e48f5b4965543cd4d99b5578356059e12d969c7c",
+      "tree": "600a5fa8517be7c6911cb6e68e8c93a39c81c823",
+      "command": [
+        "bazelisk",
+        "test",
+        "//pkg/relational/sqldriver/stress:stress_test",
+        "--nocache_test_results",
+        "--test_output=all",
+        "--test_arg=--test.run=^TestFDB_Stress_1M$",
+        "--test_arg=--test.v",
+        "--build_event_json_file=/var/tmp/fdb-upgrade-recovery/runtime/stress-baseline-2-bep.jsonl"
+      ],
+      "started": 1789926188.6188176,
+      "elapsed": 194.9921133518219,
+      "load_start": [
+        6.84130859375,
+        14.91943359375,
+        20.958984375
+      ],
+      "load_end": [
+        5.83154296875,
+        10.6494140625,
+        18.12841796875
+      ],
+      "exit": 0,
+      "frozen_files": 6186,
+      "changed": [],
+      "compiler": "/home/birdy/projects/fdb-java-upgrade-baseline/bazel-bin/pkg/relational/sqldriver/stress/stress_test_/stress_test: go1.26.6",
+      "runs": {
+        "TestFDB_Stress_1M": 1,
+        "TestFDB_Stress_1M/pk_lookup_first": 1,
+        "TestFDB_Stress_1M/pk_lookup_middle": 1,
+        "TestFDB_Stress_1M/pk_lookup_last": 1,
+        "TestFDB_Stress_1M/index_customer_eq": 1,
+        "TestFDB_Stress_1M/index_amount_range": 1,
+        "TestFDB_Stress_1M/index_status_count": 1,
+        "TestFDB_Stress_1M/full_scan_count": 1,
+        "TestFDB_Stress_1M/full_scan_filter": 1,
+        "TestFDB_Stress_1M/group_by_status": 1,
+        "TestFDB_Stress_1M/group_by_status_count_only": 1,
+        "TestFDB_Stress_1M/sum_by_status": 1,
+        "TestFDB_Stress_1M/group_by_customer_having": 1,
+        "TestFDB_Stress_1M/join_10_outer": 1,
+        "TestFDB_Stress_1M/order_by_pk_full": 1,
+        "TestFDB_Stress_1M/order_by_pk_index_filter": 1,
+        "TestFDB_Stress_1M/scan_all_narrow": 1,
+        "TestFDB_Stress_1M/scan_all_wide": 1,
+        "TestFDB_Stress_1M/in_list": 1,
+        "TestFDB_Stress_1M/needle_in_haystack_pk": 1,
+        "TestFDB_Stress_1M/needle_in_haystack_filter": 1,
+        "TestFDB_Stress_1M/full_scan_sparse_filter": 1,
+        "TestFDB_Stress_1M/update_by_index": 1,
+        "TestFDB_Stress_1M/delete_single_row": 1
+      },
+      "passes": {
+        "TestFDB_Stress_1M": 1,
+        "TestFDB_Stress_1M/pk_lookup_first": 1,
+        "TestFDB_Stress_1M/pk_lookup_middle": 1,
+        "TestFDB_Stress_1M/pk_lookup_last": 1,
+        "TestFDB_Stress_1M/index_customer_eq": 1,
+        "TestFDB_Stress_1M/index_amount_range": 1,
+        "TestFDB_Stress_1M/index_status_count": 1,
+        "TestFDB_Stress_1M/full_scan_count": 1,
+        "TestFDB_Stress_1M/full_scan_filter": 1,
+        "TestFDB_Stress_1M/group_by_status": 1,
+        "TestFDB_Stress_1M/group_by_status_count_only": 1,
+        "TestFDB_Stress_1M/sum_by_status": 1,
+        "TestFDB_Stress_1M/group_by_customer_having": 1,
+        "TestFDB_Stress_1M/join_10_outer": 1,
+        "TestFDB_Stress_1M/order_by_pk_full": 1,
+        "TestFDB_Stress_1M/order_by_pk_index_filter": 1,
+        "TestFDB_Stress_1M/scan_all_narrow": 1,
+        "TestFDB_Stress_1M/scan_all_wide": 1,
+        "TestFDB_Stress_1M/in_list": 1,
+        "TestFDB_Stress_1M/needle_in_haystack_pk": 1,
+        "TestFDB_Stress_1M/needle_in_haystack_filter": 1,
+        "TestFDB_Stress_1M/full_scan_sparse_filter": 1,
+        "TestFDB_Stress_1M/update_by_index": 1,
+        "TestFDB_Stress_1M/delete_single_row": 1
+      },
+      "summaries": [
+        {
+          "totalRunCount": 1,
+          "passed": [
+            {
+              "uri": "file:///home/birdy/.cache/bazel/_bazel_birdy/a308e9dcbbad971371891b7298062fea/execroot/_main/bazel-out/k8-fastbuild/testlogs/pkg/relational/sqldriver/stress/stress_test/test.log"
+            }
+          ],
+          "overallStatus": "PASSED",
+          "firstStartTimeMillis": "1789926189338",
+          "lastStopTimeMillis": "1789926383330",
+          "totalRunDurationMillis": "193992",
+          "runCount": 1,
+          "totalRunDuration": "193.992s",
+          "firstStartTime": "2026-09-20T17:43:09.338Z",
+          "lastStopTime": "2026-09-20T17:46:23.330Z",
+          "attemptCount": 1
+        }
+      ],
+      "log_sha256": "c5aafd5f95b673f761482a19b126b5f061405711a8d75d11054c4860deb9585a"
+    },
+    {
+      "side": "current",
+      "sample": 1,
+      "commit": "71ccd8cf8b3fd0dbafe283e91171818e36af555e",
+      "tree": "232ee085f61b4ad5b8568a87b74cd5e2db328b71",
+      "command": [
+        "bazelisk",
+        "test",
+        "//pkg/relational/sqldriver/stress:stress_test",
+        "--nocache_test_results",
+        "--test_output=all",
+        "--test_arg=--test.run=^TestFDB_Stress_1M$",
+        "--test_arg=--test.v",
+        "--build_event_json_file=/var/tmp/fdb-upgrade-recovery/runtime/stress-current-1-bep.jsonl"
+      ],
+      "started": 1789926383.8360505,
+      "elapsed": 201.3849241733551,
+      "load_start": [
+        5.83154296875,
+        10.6494140625,
+        18.12841796875
+      ],
+      "load_end": [
+        6.00390625,
+        8.33642578125,
+        15.7490234375
+      ],
+      "exit": 0,
+      "frozen_files": 6286,
+      "changed": [],
+      "compiler": "/home/birdy/projects/fdb-go/bazel-bin/pkg/relational/sqldriver/stress/stress_test_/stress_test: go1.26.6",
+      "runs": {
+        "TestFDB_Stress_1M": 1,
+        "TestFDB_Stress_1M/pk_lookup_first": 1,
+        "TestFDB_Stress_1M/pk_lookup_middle": 1,
+        "TestFDB_Stress_1M/pk_lookup_last": 1,
+        "TestFDB_Stress_1M/index_customer_eq": 1,
+        "TestFDB_Stress_1M/index_amount_range": 1,
+        "TestFDB_Stress_1M/index_status_count": 1,
+        "TestFDB_Stress_1M/full_scan_count": 1,
+        "TestFDB_Stress_1M/full_scan_filter": 1,
+        "TestFDB_Stress_1M/group_by_status": 1,
+        "TestFDB_Stress_1M/group_by_status_count_only": 1,
+        "TestFDB_Stress_1M/sum_by_status": 1,
+        "TestFDB_Stress_1M/group_by_customer_having": 1,
+        "TestFDB_Stress_1M/join_10_outer": 1,
+        "TestFDB_Stress_1M/order_by_pk_full": 1,
+        "TestFDB_Stress_1M/order_by_pk_index_filter": 1,
+        "TestFDB_Stress_1M/scan_all_narrow": 1,
+        "TestFDB_Stress_1M/scan_all_wide": 1,
+        "TestFDB_Stress_1M/in_list": 1,
+        "TestFDB_Stress_1M/needle_in_haystack_pk": 1,
+        "TestFDB_Stress_1M/needle_in_haystack_filter": 1,
+        "TestFDB_Stress_1M/full_scan_sparse_filter": 1,
+        "TestFDB_Stress_1M/update_by_index": 1,
+        "TestFDB_Stress_1M/delete_single_row": 1
+      },
+      "passes": {
+        "TestFDB_Stress_1M": 1,
+        "TestFDB_Stress_1M/pk_lookup_first": 1,
+        "TestFDB_Stress_1M/pk_lookup_middle": 1,
+        "TestFDB_Stress_1M/pk_lookup_last": 1,
+        "TestFDB_Stress_1M/index_customer_eq": 1,
+        "TestFDB_Stress_1M/index_amount_range": 1,
+        "TestFDB_Stress_1M/index_status_count": 1,
+        "TestFDB_Stress_1M/full_scan_count": 1,
+        "TestFDB_Stress_1M/full_scan_filter": 1,
+        "TestFDB_Stress_1M/group_by_status": 1,
+        "TestFDB_Stress_1M/group_by_status_count_only": 1,
+        "TestFDB_Stress_1M/sum_by_status": 1,
+        "TestFDB_Stress_1M/group_by_customer_having": 1,
+        "TestFDB_Stress_1M/join_10_outer": 1,
+        "TestFDB_Stress_1M/order_by_pk_full": 1,
+        "TestFDB_Stress_1M/order_by_pk_index_filter": 1,
+        "TestFDB_Stress_1M/scan_all_narrow": 1,
+        "TestFDB_Stress_1M/scan_all_wide": 1,
+        "TestFDB_Stress_1M/in_list": 1,
+        "TestFDB_Stress_1M/needle_in_haystack_pk": 1,
+        "TestFDB_Stress_1M/needle_in_haystack_filter": 1,
+        "TestFDB_Stress_1M/full_scan_sparse_filter": 1,
+        "TestFDB_Stress_1M/update_by_index": 1,
+        "TestFDB_Stress_1M/delete_single_row": 1
+      },
+      "summaries": [
+        {
+          "totalRunCount": 1,
+          "passed": [
+            {
+              "uri": "file:///home/birdy/.cache/bazel/_bazel_birdy/cf0955a431539502aaf740b39f444075/execroot/_main/bazel-out/k8-fastbuild/testlogs/pkg/relational/sqldriver/stress/stress_test/test.log"
+            }
+          ],
+          "overallStatus": "PASSED",
+          "firstStartTimeMillis": "1789926393890",
+          "lastStopTimeMillis": "1789926584939",
+          "totalRunDurationMillis": "191049",
+          "runCount": 1,
+          "totalRunDuration": "191.049s",
+          "firstStartTime": "2026-09-20T17:46:33.890Z",
+          "lastStopTime": "2026-09-20T17:49:44.939Z",
+          "attemptCount": 1
+        }
+      ],
+      "log_sha256": "2fbd6ebd273abbbd6f098c65685d59b559ae65610ba3b540afcc5233e6b25bc1"
+    },
+    {
+      "side": "current",
+      "sample": 2,
+      "commit": "71ccd8cf8b3fd0dbafe283e91171818e36af555e",
+      "tree": "232ee085f61b4ad5b8568a87b74cd5e2db328b71",
+      "command": [
+        "bazelisk",
+        "test",
+        "//pkg/relational/sqldriver/stress:stress_test",
+        "--nocache_test_results",
+        "--test_output=all",
+        "--test_arg=--test.run=^TestFDB_Stress_1M$",
+        "--test_arg=--test.v",
+        "--build_event_json_file=/var/tmp/fdb-upgrade-recovery/runtime/stress-current-2-bep.jsonl"
+      ],
+      "started": 1789926585.2216482,
+      "elapsed": 194.71976137161255,
+      "load_start": [
+        6.00390625,
+        8.33642578125,
+        15.7490234375
+      ],
+      "load_end": [
+        5.880859375,
+        7.21826171875,
+        13.89794921875
+      ],
+      "exit": 0,
+      "frozen_files": 6286,
+      "changed": [],
+      "compiler": "/home/birdy/projects/fdb-go/bazel-bin/pkg/relational/sqldriver/stress/stress_test_/stress_test: go1.26.6",
+      "runs": {
+        "TestFDB_Stress_1M": 1,
+        "TestFDB_Stress_1M/pk_lookup_first": 1,
+        "TestFDB_Stress_1M/pk_lookup_middle": 1,
+        "TestFDB_Stress_1M/pk_lookup_last": 1,
+        "TestFDB_Stress_1M/index_customer_eq": 1,
+        "TestFDB_Stress_1M/index_amount_range": 1,
+        "TestFDB_Stress_1M/index_status_count": 1,
+        "TestFDB_Stress_1M/full_scan_count": 1,
+        "TestFDB_Stress_1M/full_scan_filter": 1,
+        "TestFDB_Stress_1M/group_by_status": 1,
+        "TestFDB_Stress_1M/group_by_status_count_only": 1,
+        "TestFDB_Stress_1M/sum_by_status": 1,
+        "TestFDB_Stress_1M/group_by_customer_having": 1,
+        "TestFDB_Stress_1M/join_10_outer": 1,
+        "TestFDB_Stress_1M/order_by_pk_full": 1,
+        "TestFDB_Stress_1M/order_by_pk_index_filter": 1,
+        "TestFDB_Stress_1M/scan_all_narrow": 1,
+        "TestFDB_Stress_1M/scan_all_wide": 1,
+        "TestFDB_Stress_1M/in_list": 1,
+        "TestFDB_Stress_1M/needle_in_haystack_pk": 1,
+        "TestFDB_Stress_1M/needle_in_haystack_filter": 1,
+        "TestFDB_Stress_1M/full_scan_sparse_filter": 1,
+        "TestFDB_Stress_1M/update_by_index": 1,
+        "TestFDB_Stress_1M/delete_single_row": 1
+      },
+      "passes": {
+        "TestFDB_Stress_1M": 1,
+        "TestFDB_Stress_1M/pk_lookup_first": 1,
+        "TestFDB_Stress_1M/pk_lookup_middle": 1,
+        "TestFDB_Stress_1M/pk_lookup_last": 1,
+        "TestFDB_Stress_1M/index_customer_eq": 1,
+        "TestFDB_Stress_1M/index_amount_range": 1,
+        "TestFDB_Stress_1M/index_status_count": 1,
+        "TestFDB_Stress_1M/full_scan_count": 1,
+        "TestFDB_Stress_1M/full_scan_filter": 1,
+        "TestFDB_Stress_1M/group_by_status": 1,
+        "TestFDB_Stress_1M/group_by_status_count_only": 1,
+        "TestFDB_Stress_1M/sum_by_status": 1,
+        "TestFDB_Stress_1M/group_by_customer_having": 1,
+        "TestFDB_Stress_1M/join_10_outer": 1,
+        "TestFDB_Stress_1M/order_by_pk_full": 1,
+        "TestFDB_Stress_1M/order_by_pk_index_filter": 1,
+        "TestFDB_Stress_1M/scan_all_narrow": 1,
+        "TestFDB_Stress_1M/scan_all_wide": 1,
+        "TestFDB_Stress_1M/in_list": 1,
+        "TestFDB_Stress_1M/needle_in_haystack_pk": 1,
+        "TestFDB_Stress_1M/needle_in_haystack_filter": 1,
+        "TestFDB_Stress_1M/full_scan_sparse_filter": 1,
+        "TestFDB_Stress_1M/update_by_index": 1,
+        "TestFDB_Stress_1M/delete_single_row": 1
+      },
+      "summaries": [
+        {
+          "totalRunCount": 1,
+          "passed": [
+            {
+              "uri": "file:///home/birdy/.cache/bazel/_bazel_birdy/cf0955a431539502aaf740b39f444075/execroot/_main/bazel-out/k8-fastbuild/testlogs/pkg/relational/sqldriver/stress/stress_test/test.log"
+            }
+          ],
+          "overallStatus": "PASSED",
+          "firstStartTimeMillis": "1789926585356",
+          "lastStopTimeMillis": "1789926779681",
+          "totalRunDurationMillis": "194325",
+          "runCount": 1,
+          "totalRunDuration": "194.325s",
+          "firstStartTime": "2026-09-20T17:49:45.356Z",
+          "lastStopTime": "2026-09-20T17:52:59.681Z",
+          "attemptCount": 1
+        }
+      ],
+      "log_sha256": "2163ba537ca7f71f8d9428ea3485840b2d8614f856b6bbeb5d8570e724606a03"
+    },
+    {
+      "side": "baseline",
+      "sample": 3,
+      "commit": "e48f5b4965543cd4d99b5578356059e12d969c7c",
+      "tree": "600a5fa8517be7c6911cb6e68e8c93a39c81c823",
+      "command": [
+        "bazelisk",
+        "test",
+        "//pkg/relational/sqldriver/stress:stress_test",
+        "--nocache_test_results",
+        "--test_output=all",
+        "--test_arg=--test.run=^TestFDB_Stress_1M$",
+        "--test_arg=--test.v",
+        "--build_event_json_file=/var/tmp/fdb-upgrade-recovery/runtime/stress-baseline-3-bep.jsonl"
+      ],
+      "started": 1789926947.6789267,
+      "elapsed": 191.53607559204102,
+      "load_start": [
+        5.29052734375,
+        6.572265625,
+        12.52978515625
+      ],
+      "load_end": [
+        6.822265625,
+        7.19140625,
+        11.69482421875
+      ],
+      "exit": 0,
+      "frozen_files": 6186,
+      "changed": [],
+      "compiler": "/home/birdy/projects/fdb-java-upgrade-baseline/bazel-bin/pkg/relational/sqldriver/stress/stress_test_/stress_test: go1.26.6",
+      "runs": {
+        "TestFDB_Stress_1M": 1,
+        "TestFDB_Stress_1M/pk_lookup_first": 1,
+        "TestFDB_Stress_1M/pk_lookup_middle": 1,
+        "TestFDB_Stress_1M/pk_lookup_last": 1,
+        "TestFDB_Stress_1M/index_customer_eq": 1,
+        "TestFDB_Stress_1M/index_amount_range": 1,
+        "TestFDB_Stress_1M/index_status_count": 1,
+        "TestFDB_Stress_1M/full_scan_count": 1,
+        "TestFDB_Stress_1M/full_scan_filter": 1,
+        "TestFDB_Stress_1M/group_by_status": 1,
+        "TestFDB_Stress_1M/group_by_status_count_only": 1,
+        "TestFDB_Stress_1M/sum_by_status": 1,
+        "TestFDB_Stress_1M/group_by_customer_having": 1,
+        "TestFDB_Stress_1M/join_10_outer": 1,
+        "TestFDB_Stress_1M/order_by_pk_full": 1,
+        "TestFDB_Stress_1M/order_by_pk_index_filter": 1,
+        "TestFDB_Stress_1M/scan_all_narrow": 1,
+        "TestFDB_Stress_1M/scan_all_wide": 1,
+        "TestFDB_Stress_1M/in_list": 1,
+        "TestFDB_Stress_1M/needle_in_haystack_pk": 1,
+        "TestFDB_Stress_1M/needle_in_haystack_filter": 1,
+        "TestFDB_Stress_1M/full_scan_sparse_filter": 1,
+        "TestFDB_Stress_1M/update_by_index": 1,
+        "TestFDB_Stress_1M/delete_single_row": 1
+      },
+      "passes": {
+        "TestFDB_Stress_1M": 1,
+        "TestFDB_Stress_1M/pk_lookup_first": 1,
+        "TestFDB_Stress_1M/pk_lookup_middle": 1,
+        "TestFDB_Stress_1M/pk_lookup_last": 1,
+        "TestFDB_Stress_1M/index_customer_eq": 1,
+        "TestFDB_Stress_1M/index_amount_range": 1,
+        "TestFDB_Stress_1M/index_status_count": 1,
+        "TestFDB_Stress_1M/full_scan_count": 1,
+        "TestFDB_Stress_1M/full_scan_filter": 1,
+        "TestFDB_Stress_1M/group_by_status": 1,
+        "TestFDB_Stress_1M/group_by_status_count_only": 1,
+        "TestFDB_Stress_1M/sum_by_status": 1,
+        "TestFDB_Stress_1M/group_by_customer_having": 1,
+        "TestFDB_Stress_1M/join_10_outer": 1,
+        "TestFDB_Stress_1M/order_by_pk_full": 1,
+        "TestFDB_Stress_1M/order_by_pk_index_filter": 1,
+        "TestFDB_Stress_1M/scan_all_narrow": 1,
+        "TestFDB_Stress_1M/scan_all_wide": 1,
+        "TestFDB_Stress_1M/in_list": 1,
+        "TestFDB_Stress_1M/needle_in_haystack_pk": 1,
+        "TestFDB_Stress_1M/needle_in_haystack_filter": 1,
+        "TestFDB_Stress_1M/full_scan_sparse_filter": 1,
+        "TestFDB_Stress_1M/update_by_index": 1,
+        "TestFDB_Stress_1M/delete_single_row": 1
+      },
+      "summaries": [
+        {
+          "totalRunCount": 1,
+          "passed": [
+            {
+              "uri": "file:///home/birdy/.cache/bazel/_bazel_birdy/a308e9dcbbad971371891b7298062fea/execroot/_main/bazel-out/k8-fastbuild/testlogs/pkg/relational/sqldriver/stress/stress_test/test.log"
+            }
+          ],
+          "overallStatus": "PASSED",
+          "firstStartTimeMillis": "1789926948134",
+          "lastStopTimeMillis": "1789927138941",
+          "totalRunDurationMillis": "190807",
+          "runCount": 1,
+          "totalRunDuration": "190.807s",
+          "firstStartTime": "2026-09-20T17:55:48.134Z",
+          "lastStopTime": "2026-09-20T17:58:58.941Z",
+          "attemptCount": 1
+        }
+      ],
+      "log_sha256": "583fb84f59011b5a3b4a96a45aee116ad230d32744a2a2ad290dd27ad7f17771"
+    },
+    {
+      "side": "baseline",
+      "sample": 4,
+      "commit": "e48f5b4965543cd4d99b5578356059e12d969c7c",
+      "tree": "600a5fa8517be7c6911cb6e68e8c93a39c81c823",
+      "command": [
+        "bazelisk",
+        "test",
+        "//pkg/relational/sqldriver/stress:stress_test",
+        "--nocache_test_results",
+        "--test_output=all",
+        "--test_arg=--test.run=^TestFDB_Stress_1M$",
+        "--test_arg=--test.v",
+        "--build_event_json_file=/var/tmp/fdb-upgrade-recovery/runtime/stress-baseline-4-bep.jsonl"
+      ],
+      "started": 1789927139.216012,
+      "elapsed": 194.1663203239441,
+      "load_start": [
+        6.822265625,
+        7.19140625,
+        11.69482421875
+      ],
+      "load_end": [
+        6.27587890625,
+        7.01025390625,
+        10.77783203125
+      ],
+      "exit": 0,
+      "frozen_files": 6186,
+      "changed": [],
+      "compiler": "/home/birdy/projects/fdb-java-upgrade-baseline/bazel-bin/pkg/relational/sqldriver/stress/stress_test_/stress_test: go1.26.6",
+      "runs": {
+        "TestFDB_Stress_1M": 1,
+        "TestFDB_Stress_1M/pk_lookup_first": 1,
+        "TestFDB_Stress_1M/pk_lookup_middle": 1,
+        "TestFDB_Stress_1M/pk_lookup_last": 1,
+        "TestFDB_Stress_1M/index_customer_eq": 1,
+        "TestFDB_Stress_1M/index_amount_range": 1,
+        "TestFDB_Stress_1M/index_status_count": 1,
+        "TestFDB_Stress_1M/full_scan_count": 1,
+        "TestFDB_Stress_1M/full_scan_filter": 1,
+        "TestFDB_Stress_1M/group_by_status": 1,
+        "TestFDB_Stress_1M/group_by_status_count_only": 1,
+        "TestFDB_Stress_1M/sum_by_status": 1,
+        "TestFDB_Stress_1M/group_by_customer_having": 1,
+        "TestFDB_Stress_1M/join_10_outer": 1,
+        "TestFDB_Stress_1M/order_by_pk_full": 1,
+        "TestFDB_Stress_1M/order_by_pk_index_filter": 1,
+        "TestFDB_Stress_1M/scan_all_narrow": 1,
+        "TestFDB_Stress_1M/scan_all_wide": 1,
+        "TestFDB_Stress_1M/in_list": 1,
+        "TestFDB_Stress_1M/needle_in_haystack_pk": 1,
+        "TestFDB_Stress_1M/needle_in_haystack_filter": 1,
+        "TestFDB_Stress_1M/full_scan_sparse_filter": 1,
+        "TestFDB_Stress_1M/update_by_index": 1,
+        "TestFDB_Stress_1M/delete_single_row": 1
+      },
+      "passes": {
+        "TestFDB_Stress_1M": 1,
+        "TestFDB_Stress_1M/pk_lookup_first": 1,
+        "TestFDB_Stress_1M/pk_lookup_middle": 1,
+        "TestFDB_Stress_1M/pk_lookup_last": 1,
+        "TestFDB_Stress_1M/index_customer_eq": 1,
+        "TestFDB_Stress_1M/index_amount_range": 1,
+        "TestFDB_Stress_1M/index_status_count": 1,
+        "TestFDB_Stress_1M/full_scan_count": 1,
+        "TestFDB_Stress_1M/full_scan_filter": 1,
+        "TestFDB_Stress_1M/group_by_status": 1,
+        "TestFDB_Stress_1M/group_by_status_count_only": 1,
+        "TestFDB_Stress_1M/sum_by_status": 1,
+        "TestFDB_Stress_1M/group_by_customer_having": 1,
+        "TestFDB_Stress_1M/join_10_outer": 1,
+        "TestFDB_Stress_1M/order_by_pk_full": 1,
+        "TestFDB_Stress_1M/order_by_pk_index_filter": 1,
+        "TestFDB_Stress_1M/scan_all_narrow": 1,
+        "TestFDB_Stress_1M/scan_all_wide": 1,
+        "TestFDB_Stress_1M/in_list": 1,
+        "TestFDB_Stress_1M/needle_in_haystack_pk": 1,
+        "TestFDB_Stress_1M/needle_in_haystack_filter": 1,
+        "TestFDB_Stress_1M/full_scan_sparse_filter": 1,
+        "TestFDB_Stress_1M/update_by_index": 1,
+        "TestFDB_Stress_1M/delete_single_row": 1
+      },
+      "summaries": [
+        {
+          "totalRunCount": 1,
+          "passed": [
+            {
+              "uri": "file:///home/birdy/.cache/bazel/_bazel_birdy/a308e9dcbbad971371891b7298062fea/execroot/_main/bazel-out/k8-fastbuild/testlogs/pkg/relational/sqldriver/stress/stress_test/test.log"
+            }
+          ],
+          "overallStatus": "PASSED",
+          "firstStartTimeMillis": "1789927139380",
+          "lastStopTimeMillis": "1789927333116",
+          "totalRunDurationMillis": "193736",
+          "runCount": 1,
+          "totalRunDuration": "193.736s",
+          "firstStartTime": "2026-09-20T17:58:59.380Z",
+          "lastStopTime": "2026-09-20T18:02:13.116Z",
+          "attemptCount": 1
+        }
+      ],
+      "log_sha256": "707f1b8e3736f774a79c840df8503df3b218aecdde1124c23e487ec7c46791da"
+    },
+    {
+      "side": "current",
+      "sample": 3,
+      "commit": "71ccd8cf8b3fd0dbafe283e91171818e36af555e",
+      "tree": "232ee085f61b4ad5b8568a87b74cd5e2db328b71",
+      "command": [
+        "bazelisk",
+        "test",
+        "//pkg/relational/sqldriver/stress:stress_test",
+        "--nocache_test_results",
+        "--test_output=all",
+        "--test_arg=--test.run=^TestFDB_Stress_1M$",
+        "--test_arg=--test.v",
+        "--build_event_json_file=/var/tmp/fdb-upgrade-recovery/runtime/stress-current-3-bep.jsonl"
+      ],
+      "started": 1789927333.6115425,
+      "elapsed": 190.94055485725403,
+      "load_start": [
+        6.27587890625,
+        7.01025390625,
+        10.77783203125
+      ],
+      "load_end": [
+        6.58984375,
+        7.318359375,
+        10.22607421875
+      ],
+      "exit": 0,
+      "frozen_files": 6286,
+      "changed": [],
+      "compiler": "/home/birdy/projects/fdb-go/bazel-bin/pkg/relational/sqldriver/stress/stress_test_/stress_test: go1.26.6",
+      "runs": {
+        "TestFDB_Stress_1M": 1,
+        "TestFDB_Stress_1M/pk_lookup_first": 1,
+        "TestFDB_Stress_1M/pk_lookup_middle": 1,
+        "TestFDB_Stress_1M/pk_lookup_last": 1,
+        "TestFDB_Stress_1M/index_customer_eq": 1,
+        "TestFDB_Stress_1M/index_amount_range": 1,
+        "TestFDB_Stress_1M/index_status_count": 1,
+        "TestFDB_Stress_1M/full_scan_count": 1,
+        "TestFDB_Stress_1M/full_scan_filter": 1,
+        "TestFDB_Stress_1M/group_by_status": 1,
+        "TestFDB_Stress_1M/group_by_status_count_only": 1,
+        "TestFDB_Stress_1M/sum_by_status": 1,
+        "TestFDB_Stress_1M/group_by_customer_having": 1,
+        "TestFDB_Stress_1M/join_10_outer": 1,
+        "TestFDB_Stress_1M/order_by_pk_full": 1,
+        "TestFDB_Stress_1M/order_by_pk_index_filter": 1,
+        "TestFDB_Stress_1M/scan_all_narrow": 1,
+        "TestFDB_Stress_1M/scan_all_wide": 1,
+        "TestFDB_Stress_1M/in_list": 1,
+        "TestFDB_Stress_1M/needle_in_haystack_pk": 1,
+        "TestFDB_Stress_1M/needle_in_haystack_filter": 1,
+        "TestFDB_Stress_1M/full_scan_sparse_filter": 1,
+        "TestFDB_Stress_1M/update_by_index": 1,
+        "TestFDB_Stress_1M/delete_single_row": 1
+      },
+      "passes": {
+        "TestFDB_Stress_1M": 1,
+        "TestFDB_Stress_1M/pk_lookup_first": 1,
+        "TestFDB_Stress_1M/pk_lookup_middle": 1,
+        "TestFDB_Stress_1M/pk_lookup_last": 1,
+        "TestFDB_Stress_1M/index_customer_eq": 1,
+        "TestFDB_Stress_1M/index_amount_range": 1,
+        "TestFDB_Stress_1M/index_status_count": 1,
+        "TestFDB_Stress_1M/full_scan_count": 1,
+        "TestFDB_Stress_1M/full_scan_filter": 1,
+        "TestFDB_Stress_1M/group_by_status": 1,
+        "TestFDB_Stress_1M/group_by_status_count_only": 1,
+        "TestFDB_Stress_1M/sum_by_status": 1,
+        "TestFDB_Stress_1M/group_by_customer_having": 1,
+        "TestFDB_Stress_1M/join_10_outer": 1,
+        "TestFDB_Stress_1M/order_by_pk_full": 1,
+        "TestFDB_Stress_1M/order_by_pk_index_filter": 1,
+        "TestFDB_Stress_1M/scan_all_narrow": 1,
+        "TestFDB_Stress_1M/scan_all_wide": 1,
+        "TestFDB_Stress_1M/in_list": 1,
+        "TestFDB_Stress_1M/needle_in_haystack_pk": 1,
+        "TestFDB_Stress_1M/needle_in_haystack_filter": 1,
+        "TestFDB_Stress_1M/full_scan_sparse_filter": 1,
+        "TestFDB_Stress_1M/update_by_index": 1,
+        "TestFDB_Stress_1M/delete_single_row": 1
+      },
+      "summaries": [
+        {
+          "totalRunCount": 1,
+          "passed": [
+            {
+              "uri": "file:///home/birdy/.cache/bazel/_bazel_birdy/cf0955a431539502aaf740b39f444075/execroot/_main/bazel-out/k8-fastbuild/testlogs/pkg/relational/sqldriver/stress/stress_test/test.log"
+            }
+          ],
+          "overallStatus": "PASSED",
+          "firstStartTimeMillis": "1789927333942",
+          "lastStopTimeMillis": "1789927524291",
+          "totalRunDurationMillis": "190349",
+          "runCount": 1,
+          "totalRunDuration": "190.349s",
+          "firstStartTime": "2026-09-20T18:02:13.942Z",
+          "lastStopTime": "2026-09-20T18:05:24.291Z",
+          "attemptCount": 1
+        }
+      ],
+      "log_sha256": "753c6b36ed6a5d941c294b9c23136fbcfbe09a45850deaccfc0c4e394c7d18d8"
+    },
+    {
+      "side": "current",
+      "sample": 4,
+      "commit": "71ccd8cf8b3fd0dbafe283e91171818e36af555e",
+      "tree": "232ee085f61b4ad5b8568a87b74cd5e2db328b71",
+      "command": [
+        "bazelisk",
+        "test",
+        "//pkg/relational/sqldriver/stress:stress_test",
+        "--nocache_test_results",
+        "--test_output=all",
+        "--test_arg=--test.run=^TestFDB_Stress_1M$",
+        "--test_arg=--test.v",
+        "--build_event_json_file=/var/tmp/fdb-upgrade-recovery/runtime/stress-current-4-bep.jsonl"
+      ],
+      "started": 1789927524.552807,
+      "elapsed": 190.03956413269043,
+      "load_start": [
+        6.58984375,
+        7.318359375,
+        10.22607421875
+      ],
+      "load_end": [
+        5.00634765625,
+        6.47607421875,
+        9.369140625
+      ],
+      "exit": 0,
+      "frozen_files": 6286,
+      "changed": [],
+      "compiler": "/home/birdy/projects/fdb-go/bazel-bin/pkg/relational/sqldriver/stress/stress_test_/stress_test: go1.26.6",
+      "runs": {
+        "TestFDB_Stress_1M": 1,
+        "TestFDB_Stress_1M/pk_lookup_first": 1,
+        "TestFDB_Stress_1M/pk_lookup_middle": 1,
+        "TestFDB_Stress_1M/pk_lookup_last": 1,
+        "TestFDB_Stress_1M/index_customer_eq": 1,
+        "TestFDB_Stress_1M/index_amount_range": 1,
+        "TestFDB_Stress_1M/index_status_count": 1,
+        "TestFDB_Stress_1M/full_scan_count": 1,
+        "TestFDB_Stress_1M/full_scan_filter": 1,
+        "TestFDB_Stress_1M/group_by_status": 1,
+        "TestFDB_Stress_1M/group_by_status_count_only": 1,
+        "TestFDB_Stress_1M/sum_by_status": 1,
+        "TestFDB_Stress_1M/group_by_customer_having": 1,
+        "TestFDB_Stress_1M/join_10_outer": 1,
+        "TestFDB_Stress_1M/order_by_pk_full": 1,
+        "TestFDB_Stress_1M/order_by_pk_index_filter": 1,
+        "TestFDB_Stress_1M/scan_all_narrow": 1,
+        "TestFDB_Stress_1M/scan_all_wide": 1,
+        "TestFDB_Stress_1M/in_list": 1,
+        "TestFDB_Stress_1M/needle_in_haystack_pk": 1,
+        "TestFDB_Stress_1M/needle_in_haystack_filter": 1,
+        "TestFDB_Stress_1M/full_scan_sparse_filter": 1,
+        "TestFDB_Stress_1M/update_by_index": 1,
+        "TestFDB_Stress_1M/delete_single_row": 1
+      },
+      "passes": {
+        "TestFDB_Stress_1M": 1,
+        "TestFDB_Stress_1M/pk_lookup_first": 1,
+        "TestFDB_Stress_1M/pk_lookup_middle": 1,
+        "TestFDB_Stress_1M/pk_lookup_last": 1,
+        "TestFDB_Stress_1M/index_customer_eq": 1,
+        "TestFDB_Stress_1M/index_amount_range": 1,
+        "TestFDB_Stress_1M/index_status_count": 1,
+        "TestFDB_Stress_1M/full_scan_count": 1,
+        "TestFDB_Stress_1M/full_scan_filter": 1,
+        "TestFDB_Stress_1M/group_by_status": 1,
+        "TestFDB_Stress_1M/group_by_status_count_only": 1,
+        "TestFDB_Stress_1M/sum_by_status": 1,
+        "TestFDB_Stress_1M/group_by_customer_having": 1,
+        "TestFDB_Stress_1M/join_10_outer": 1,
+        "TestFDB_Stress_1M/order_by_pk_full": 1,
+        "TestFDB_Stress_1M/order_by_pk_index_filter": 1,
+        "TestFDB_Stress_1M/scan_all_narrow": 1,
+        "TestFDB_Stress_1M/scan_all_wide": 1,
+        "TestFDB_Stress_1M/in_list": 1,
+        "TestFDB_Stress_1M/needle_in_haystack_pk": 1,
+        "TestFDB_Stress_1M/needle_in_haystack_filter": 1,
+        "TestFDB_Stress_1M/full_scan_sparse_filter": 1,
+        "TestFDB_Stress_1M/update_by_index": 1,
+        "TestFDB_Stress_1M/delete_single_row": 1
+      },
+      "summaries": [
+        {
+          "totalRunCount": 1,
+          "passed": [
+            {
+              "uri": "file:///home/birdy/.cache/bazel/_bazel_birdy/cf0955a431539502aaf740b39f444075/execroot/_main/bazel-out/k8-fastbuild/testlogs/pkg/relational/sqldriver/stress/stress_test/test.log"
+            }
+          ],
+          "overallStatus": "PASSED",
+          "firstStartTimeMillis": "1789927524702",
+          "lastStopTimeMillis": "1789927714334",
+          "totalRunDurationMillis": "189632",
+          "runCount": 1,
+          "totalRunDuration": "189.632s",
+          "firstStartTime": "2026-09-20T18:05:24.702Z",
+          "lastStopTime": "2026-09-20T18:08:34.334Z",
+          "attemptCount": 1
+        }
+      ],
+      "log_sha256": "1ea1f487f8b23d42b54cdc551b0a4010b1d977de05f736f300961bdf6ced6c21"
+    }
+  ],
+  "profile_commands": [
+    {
+      "side": "baseline",
+      "command": [
+        "bazelisk",
+        "test",
+        "//pkg/relational/core/embedded:embedded_test",
+        "--nocache_test_results",
+        "--test_output=all",
+        "--test_arg=-test.run=^$",
+        "--test_arg=-test.bench=^BenchmarkPlanStressShape_",
+        "--test_arg=-test.benchtime=200x",
+        "--test_arg=-test.count=3",
+        "--test_arg=-test.benchmem",
+        "--test_arg=-test.cpuprofile=/var/tmp/fdb-upgrade-recovery/runtime/plan-shape-baseline.cpu",
+        "--test_arg=-test.memprofile=/var/tmp/fdb-upgrade-recovery/runtime/plan-shape-baseline.mem",
+        "--sandbox_writable_path=/var/tmp/fdb-upgrade-recovery/runtime"
+      ],
+      "exit": 0,
+      "rows": [
+        [
+          "BenchmarkPlanStressShape_PKLookup-24",
+          "1530571",
+          "807599",
+          "11256"
+        ],
+        [
+          "BenchmarkPlanStressShape_PKLookup-24",
+          "1544439",
+          "807234",
+          "11254"
+        ],
+        [
+          "BenchmarkPlanStressShape_PKLookup-24",
+          "1526832",
+          "807097",
+          "11253"
+        ],
+        [
+          "BenchmarkPlanStressShape_IdxCustomerEq-24",
+          "2294919",
+          "1216404",
+          "18504"
+        ],
+        [
+          "BenchmarkPlanStressShape_IdxCustomerEq-24",
+          "2302215",
+          "1216320",
+          "18503"
+        ],
+        [
+          "BenchmarkPlanStressShape_IdxCustomerEq-24",
+          "2322206",
+          "1216285",
+          "18503"
+        ],
+        [
+          "BenchmarkPlanStressShape_IdxAmountRange-24",
+          "2487610",
+          "1336957",
+          "20402"
+        ],
+        [
+          "BenchmarkPlanStressShape_IdxAmountRange-24",
+          "2453183",
+          "1336916",
+          "20402"
+        ],
+        [
+          "BenchmarkPlanStressShape_IdxAmountRange-24",
+          "2400960",
+          "1336874",
+          "20402"
+        ],
+        [
+          "BenchmarkPlanStressShape_GroupByStatus-24",
+          "1743662",
+          "901935",
+          "14155"
+        ],
+        [
+          "BenchmarkPlanStressShape_GroupByStatus-24",
+          "1810290",
+          "902226",
+          "14156"
+        ],
+        [
+          "BenchmarkPlanStressShape_GroupByStatus-24",
+          "1795927",
+          "902275",
+          "14155"
+        ],
+        [
+          "BenchmarkPlanStressShape_SumByStatus-24",
+          "1673894",
+          "828206",
+          "12956"
+        ],
+        [
+          "BenchmarkPlanStressShape_SumByStatus-24",
+          "1687749",
+          "828122",
+          "12956"
+        ],
+        [
+          "BenchmarkPlanStressShape_SumByStatus-24",
+          "1685645",
+          "828110",
+          "12956"
+        ],
+        [
+          "BenchmarkPlanStressShape_InList-24",
+          "10680199",
+          "6899859",
+          "95904"
+        ],
+        [
+          "BenchmarkPlanStressShape_InList-24",
+          "10739828",
+          "6899631",
+          "95904"
+        ],
+        [
+          "BenchmarkPlanStressShape_InList-24",
+          "10706566",
+          "6899410",
+          "95903"
+        ]
+      ],
+      "load_start": [
+        4.77197265625,
+        6.53271484375,
+        13.068359375
+      ],
+      "load_end": [
+        6.990234375,
+        6.97119140625,
+        13.10888671875
+      ]
+    },
+    {
+      "side": "current",
+      "command": [
+        "bazelisk",
+        "test",
+        "//pkg/relational/core/embedded:embedded_test",
+        "--nocache_test_results",
+        "--test_output=all",
+        "--test_arg=-test.run=^$",
+        "--test_arg=-test.bench=^BenchmarkPlanStressShape_",
+        "--test_arg=-test.benchtime=200x",
+        "--test_arg=-test.count=3",
+        "--test_arg=-test.benchmem",
+        "--test_arg=-test.cpuprofile=/var/tmp/fdb-upgrade-recovery/runtime/plan-shape-current.cpu",
+        "--test_arg=-test.memprofile=/var/tmp/fdb-upgrade-recovery/runtime/plan-shape-current.mem",
+        "--sandbox_writable_path=/var/tmp/fdb-upgrade-recovery/runtime"
+      ],
+      "exit": 0,
+      "rows": [
+        [
+          "BenchmarkPlanStressShape_PKLookup-24",
+          "1560840",
+          "808409",
+          "11258"
+        ],
+        [
+          "BenchmarkPlanStressShape_PKLookup-24",
+          "1513238",
+          "807908",
+          "11256"
+        ],
+        [
+          "BenchmarkPlanStressShape_PKLookup-24",
+          "1531184",
+          "807807",
+          "11255"
+        ],
+        [
+          "BenchmarkPlanStressShape_IdxCustomerEq-24",
+          "2331932",
+          "1216898",
+          "18486"
+        ],
+        [
+          "BenchmarkPlanStressShape_IdxCustomerEq-24",
+          "2293918",
+          "1216833",
+          "18486"
+        ],
+        [
+          "BenchmarkPlanStressShape_IdxCustomerEq-24",
+          "2287695",
+          "1216801",
+          "18486"
+        ],
+        [
+          "BenchmarkPlanStressShape_IdxAmountRange-24",
+          "2406131",
+          "1337556",
+          "20395"
+        ],
+        [
+          "BenchmarkPlanStressShape_IdxAmountRange-24",
+          "2442360",
+          "1337495",
+          "20395"
+        ],
+        [
+          "BenchmarkPlanStressShape_IdxAmountRange-24",
+          "2412622",
+          "1337519",
+          "20395"
+        ],
+        [
+          "BenchmarkPlanStressShape_GroupByStatus-24",
+          "1727294",
+          "902674",
+          "14154"
+        ],
+        [
+          "BenchmarkPlanStressShape_GroupByStatus-24",
+          "1805076",
+          "903030",
+          "14155"
+        ],
+        [
+          "BenchmarkPlanStressShape_GroupByStatus-24",
+          "1819291",
+          "903038",
+          "14155"
+        ],
+        [
+          "BenchmarkPlanStressShape_SumByStatus-24",
+          "1676849",
+          "828969",
+          "12955"
+        ],
+        [
+          "BenchmarkPlanStressShape_SumByStatus-24",
+          "1654424",
+          "828882",
+          "12955"
+        ],
+        [
+          "BenchmarkPlanStressShape_SumByStatus-24",
+          "1666658",
+          "828852",
+          "12955"
+        ],
+        [
+          "BenchmarkPlanStressShape_InList-24",
+          "10742867",
+          "6900507",
+          "95888"
+        ],
+        [
+          "BenchmarkPlanStressShape_InList-24",
+          "10742095",
+          "6900186",
+          "95887"
+        ],
+        [
+          "BenchmarkPlanStressShape_InList-24",
+          "10566020",
+          "6899961",
+          "95887"
+        ]
+      ],
+      "load_start": [
+        6.990234375,
+        6.97119140625,
+        13.10888671875
+      ],
+      "load_end": [
+        8.08349609375,
+        7.1904296875,
+        13.08056640625
+      ]
+    }
+  ],
+  "interpretation": "Initial GROUP/SUM wall-clock increases did not persist in samples 3-4 of either tree; all 11 logged EXPLAIN lines match and planner benchmark medians remain close. All samples are retained, including the slow first/second identical million-row scan occurrences. No broad speedup or zero-regression claim is inferred from these noisy samples.",
+  "artifacts": {
+    "stress-baseline-1-bep.jsonl": "57e68a26f2b4e350373d84de8920a43229b7e77a019bda0e2ef9fc6f2d43d8d8",
+    "stress-baseline-1.log": "dc9066373a5e71ac240db70cf21d0fbd02dd5284b8c498051046bf098383908e",
+    "stress-baseline-2-bep.jsonl": "06085333777931d44d35de1075c5bf2b001dd6ba813ec2071eac6bba9189d374",
+    "stress-baseline-2.log": "c5aafd5f95b673f761482a19b126b5f061405711a8d75d11054c4860deb9585a",
+    "stress-baseline-3-bep.jsonl": "72d530034d0bd66e4141b606df772b21725138688a7df2fb2c67d0c77c99bb53",
+    "stress-baseline-3.log": "583fb84f59011b5a3b4a96a45aee116ad230d32744a2a2ad290dd27ad7f17771",
+    "stress-baseline-4-bep.jsonl": "fe29702206e24893b7490c292512d9a03022779638ad49aa1fafe38fb3641b57",
+    "stress-baseline-4.log": "707f1b8e3736f774a79c840df8503df3b218aecdde1124c23e487ec7c46791da",
+    "stress-baseline-freeze.json": "053276948a485c23506afce87317c3c8edc31ed1639652715ee9c789946b7e26",
+    "stress-baseline-plans.txt": "7e2d8cf034465ed9e1d6d6d55a42b7c1feda02bd2663f03b6f7adeb901758322",
+    "stress-current-1-bep.jsonl": "a960c723e866ee24ecd30570c9a3552b1f479aa51094f94c3015aeddc940dac4",
+    "stress-current-1.log": "2fbd6ebd273abbbd6f098c65685d59b559ae65610ba3b540afcc5233e6b25bc1",
+    "stress-current-2-bep.jsonl": "647c3cde99556acf93b1d7501bf5a8c4c953d7e56a7070ab659e3fe546c243e8",
+    "stress-current-2.log": "2163ba537ca7f71f8d9428ea3485840b2d8614f856b6bbeb5d8570e724606a03",
+    "stress-current-3-bep.jsonl": "110c066941d98af4200f3320f111dd821283d96e5b15a36a431ac5458eaccc05",
+    "stress-current-3.log": "753c6b36ed6a5d941c294b9c23136fbcfbe09a45850deaccfc0c4e394c7d18d8",
+    "stress-current-4-bep.jsonl": "4a21a465b7e15a61e7dd84d718147336800dd3af8d5ae8c1a53f49b09e49cddd",
+    "stress-current-4.log": "1ea1f487f8b23d42b54cdc551b0a4010b1d977de05f736f300961bdf6ced6c21",
+    "stress-current-freeze.json": "c26d00f8382cc95984531edcd7103b7ec0b54db4cc6e5a64495b31b0ef91e296",
+    "stress-current-plans.txt": "7e2d8cf034465ed9e1d6d6d55a42b7c1feda02bd2663f03b6f7adeb901758322",
+    "stress-samples.json": "4cfe6ee50c7e6959bf6ca34aea059ab7864ccc2578f1efb0cd629df3e632fa1b",
+    "stress-samples.py": "80458f8366fc78142dce279095d493e78fa14bb6a2f4467bb88f1753c8d4a6b1"
+  }
+}

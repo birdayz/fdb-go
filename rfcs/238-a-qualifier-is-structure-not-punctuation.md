@@ -896,7 +896,7 @@ construction, and `UpdateExpression.java:100-105` correlates the transforms to
 the SOURCE quantifier only. Go's coupling is its own, originating at
 `buildLogicalPlanForQueryWithCTECatalog` where `buildSelectScope` takes the bare table name
 as the alias. "Rebase the transforms onto the new identifier" would preserve
-that divergence while working around it. INSERT has no such coupling: `executor.go:3973`
+that divergence while working around it. INSERT has no such coupling: `executor.go:3987`
 resolves ITS target through the tolerant `GetRecordType` -- an INSERT-only
 path, not the general tolerance an earlier draft read it as.
 

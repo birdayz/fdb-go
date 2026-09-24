@@ -167,7 +167,7 @@ func verifyRankIndexes(ctx context.Context, store *recordlayer.FDBRecordStore, m
 			}
 		}
 
-		countDuplicates := idx.Options[recordlayer.IndexOptionRankCountDuplicates] == "true"
+		countDuplicates := idx.GetBooleanOption(recordlayer.IndexOptionRankCountDuplicates, false)
 
 		type scoreInfo struct {
 			score tuple.Tuple

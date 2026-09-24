@@ -1,0 +1,57 @@
+**NAK.** Tree `1390a2feec185fc510f4b17c679bd1ae307951af`; design SHA256 `2686aaeba1ad9eac4a4959ab771abaec6b7dea48f3a86ffc2d0651bee205b349` (I recomputed it with `git show TREE:path | sha256sum`).
+
+The review is complete and read-only. I read all prior verdicts, the full v3 design and its diff from v2, the research README and all three reports, RFC094, SPANN §3.2.1–3.2.3 and SPFresh §3.2–3.4 and §4.2. Since WS-C, the only changes outside `rfcs/` and `TODO.md` are none. `pdftotext` isn't installed, so I read the papers directly.
+
+**Correct as stated**
+- **Java lock model:**
+  - Scans hold a read lock for the cursor's lifetime (`VectorIndexMaintainer.java:225-234`).
+  - Continuation replay takes no lock and runs no search (`:208-223`).
+  - Writes use `doWithWriteLock` (`:390`); `deleteWhere` takes no lock (`:495-508`).
+  - Waiters queue in FIFO order (`LockRegistry.java:51-53`).
+- **RNG split and KMeans:** `RandomHelpers.forEach` splits the RNG per item (`:213-214`), and Java already skips candidates after the split (`SplitMergeTask.java:514-516`). `fromEstimator` runs before the k==1 shortcut (`KMeans.java:135-152`).
+- **Queue/build citations:** `IndexingBase.java:1069-1071`, `IndexDeferredMaintenanceControl.java:40` and `IndexingThrottle.java:65-71,150` say what the design claims.
+- **Oracle pins:** fdb-java 7.1.26 and remotejdk_21 are confirmed (`libs.versions.toml:33`, `classpath.json`, `.bazelrc:11`).
+- **RNG claim for dropped clusters:** dropping a zero-primary new cluster skips no task draw. It is a cause, so it is never reassigned, and it adds no primaries, so it never splits (`Primitives.java:1161-1163,1223`).
+- **Paper check passes; SPFresh/LIRE are untouched.**
+  - `spfreshIndexMaintainer` embeds `standardIndexMaintainer` (`spfresh_index_maintainer.go:30-31`). It therefore inherits the queue refusal (`index_maintainer_queue.go:12`), the no-op `MergeIndex` (`index_deferred_maintenance.go:248`) and the maintenance gate (`store.go:1007-1015`).
+  - `spfresh*.go` has 0 hits for the lock, merge-signal or queue APIs. Positive control: the same glob finds `standardIndexMaintainer`.
+  - v3's per-batch maintenance in fact restores the SPFresh §4.2 feed-forward property for GuardiANN.
+
+**P1 — The new admission table breaks for vector indexes wrapped in a sliding window.**
+- Java wraps any VECTOR index, including GuardiANN (`SlidingWindowIndexMaintainerFactory.java:92`).
+- A record delete re-elects an overflow entry by inserting into the delegate: Java `SlidingWindowIndexMaintainer.java:667-681,769-798`, Go `sliding_window_index_maintainer.go:719-822`.
+- Under design:120-122, deletes are admitted and inserts are refused. So Go cannot remove data from a Java-created, maintenance-incapable windowed index, which contradicts design:115-116.
+- The refusal would also fire after the window bookkeeping and the delegate delete, breaking "refused before any record/index write".
+- The engine-guard list (design:69-72) omits wrapped indexes too.
+- **Needed:** rows for wrapped indexes; the gate placed at the sliding-window boundary; an explicit decision on re-election into an incapable delegate; JVM and Go fixtures.
+
+**P1 — Lock waits cannot honour the operation context with the named registry.**
+- Design:55-57 promises context-aware waits "at database.go". But `lockRegistry` is a bare `sync.RWMutex` with no context (`database.go:1370-1409`).
+- The maintainer write path receives no context either (`vector_index_maintainer.go:314`, `index_maintainer_queue.go:80-101`).
+- Today, `SearchKNN` holds its lock only for the search (`vector_index_maintainer.go:1139-1141`). With v3's cursor-lifetime hold, any unclosed Go cursor becomes an uninterruptible hang for later same-prefix writes in that context.
+- **Needed:** a replacement primitive (context-aware, FIFO); context plumbing into the maintainer; the blast radius on the ten other call sites across eight files in `pkg/`; guaranteed `Close` on every executor exit (LIMIT, error, continuation) with a leak test.
+
+**P1 — Dropping every new cluster also removes the reassign trigger** (design:399-401).
+- Neighbour reassigns fire only when `!causeClusterIds.isEmpty()` (`Primitives.java:1222-1226`).
+- With an empty cause set, the dissolved core's underreplicated primaries get no repair until a neighbour exceeds 50. That loses closure replication (SPANN §3.2.2) and the post-merge reassignment LIRE requires (SPFresh §3.2–3.3).
+- **Needed:** keep a non-empty cause set (e.g. the dissolved core IDs), or explicitly enqueue reassigns for the receiving neighbours. Skip the bounce when its target set is empty.
+
+**P2 — Replicas are kept or dropped inconsistently.**
+- **Occlusion by a dropped cluster** (design:396-397): replica selection already rejected other candidates because of the dropped cluster (`SplitMergeTask.java:656-670,728`). The owners keep their PRIMARY role with a replica set the rule would not produce in the final topology, and nothing repairs it.
+  - **Needed:** choose homes first, then select replicas among the surviving clusters; or mark those owners underreplicated.
+- **Surviving empty neighbour:** under v3, an existing empty neighbour survives holding replicas. Java still writes replica deltas on that path (`Primitives.java:1254-1259`), so "counts … unchanged" (design:402-403) is wrong.
+  - The empty-merge-core rule (design:421-425) would then reset those counts or delete replica rows without repairing their owners.
+  - **Needed:** define "empty" as zero primaries and state what happens to its replicas.
+
+**P2 — Capacity recovery step 1 doesn't exist for build ranges.**
+- Go's throttle refuses to retry non-lessen-work errors (`indexing_throttle.go:69-75`), and that refusal is pinned by `indexing_throttle_test.go:199`.
+- **Needed:** specify the new arm for the typed capacity error and update that pinned test for the new expected behaviour.
+- Java also merges after every committed range (`IndexingBase.java:1063-1072`). Only a single range attempt that crosses the hard cap strands it, so the JVM fixture should pin that exact shape.
+
+**P2 — The recovery's stop condition is ambiguous** (design:321-330).
+- The merger loops until a no-work result (`indexing_merger.go:20-67,90`). That result comes from a 16-prefix window with random claiming (design:293-294), so it cannot prove the blocked prefix has no work.
+- **Needed:** decide "actionable work" by point-reading the blocked prefix's count and lease.
+
+**P3**
+- **In-place reconcile** (design:417-419): state the `maxEver` result, the distance estimator and the coordinate system.
+- **HNSW RaBitQ extra bits 9–15** (design:129-131): "once RaBitQ training would activate" must be decided before the record write, because Go saves the record before index maintenance.

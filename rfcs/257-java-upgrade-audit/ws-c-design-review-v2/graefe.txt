@@ -1,0 +1,30 @@
+**ACK — WS-C design authorization only.** I read the current design in full, compared the frozen design and preceding Graefe NAK, and inspected parent WS-C and relevant Java/Go source through the architecture, lifecycle, state, and transaction-boundary lens.
+
+Java checkout matches `fdacd162a9c8acfadc49082b89185c823ab8ae4a`; inspected Go integration paths match accepted tree `48b50548b11a53bd1452a627689c440535a3d093`. Published HEAD remains `71ccd8cf8b3fd0dbafe283e91171818e36af555e`.
+
+Exact `sha256sum` of [ws-c-design.md](/home/birdy/projects/fdb-go/rfcs/257-java-upgrade-audit/ws-c-design.md):
+
+`9d7c8e3f60c8c21169782b03ab654e7828aa6a5b30585442234491511c755454`
+
+All five previous required corrections are resolved **at design level**:
+
+1. **Buffered-mutation guard:** inspecting the shared context registry closes the same-context/multiple-handle gap. [AddVersionMutation](/home/birdy/projects/fdb-go/pkg/recordlayer/database.go:920) stages writes outside FDB visibility; context-aware clears remove them. Checking surviving mutations before serializable emptiness is sound.
+
+2. **Heartbeat migration:** mandatory quiescence/fencing, rejection of every legacy or malformed key, and administrative cleanup before admitting UUID-only builders establish a workable boundary. [Old Go ignores UUID keys](/home/birdy/projects/fdb-go/pkg/recordlayer/indexing_heartbeat.go:113); [Java requires UUID keys](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexing/IndexingHeartbeat.java:201). Dual-reading alone would remain insufficient.
+
+3. **Direct queued setter:** format, capability, and version-column guards are an explicit, justified safety deviation from [Java’s bare setter](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/FDBRecordStore.java:3780). Invalid direct requests must remain mutation-free.
+
+4. **Split-resource contracts:** the specified lookahead byte recharge, single scan charge, continuation position, exhaustion precedence, and assembly failure match [SplitHelper](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/SplitHelper.java:1005) and [CursorLimitManager](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/cursors/CursorLimitManager.java:134). Exact-boundary row termination matches [RowLimitedCursor](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/cursors/RowLimitedCursor.java:56). Preserving existing Go record accounting is necessary.
+
+5. **Closeout/retries:** the corrected parent agrees with [Java closeout](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/IndexingBase.java:379): drain first, then atomically check/transition/clean. One drain retry owner and 100 retries—101 consecutive failed attempts—including permanent errors match [the iterator](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/runners/throttled/ThrottledRetryingIterator.java:268).
+
+The additional dispositions also hold:
+
+- Snapshot-record conflicts, ownership-loss aborts, committed continuations, per-target liveness, bounded terminal cleanup preserving the original error, and cancellation of captured deletion hooks address the inspected integration hazards.
+- Fresh mixed-capability builds versus rejected mixed resumed states match [Java’s follower-state equality](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/IndexingBase.java:230).
+- Sliding filtering is correctly scoped: direct queued callbacks preserve serialized decisions; [indirect eviction loads current records](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/SlidingWindowIndexMaintainer.java:705).
+- SPFresh remains unsupported for this queue, with its existing lifecycle preserved and scoped review outstanding. GuardiANN belongs to WS-D; Lucene remains unresolved. The mandatory vector merge heartbeat callback is explicitly a safety deviation: [Java’s merger supplies it](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/IndexingMerger.java:98), but the vector merge path does not consume it.
+
+**Required design corrections: none.** No new actionable design defect found within this scope. The retained expanded log establishes two selected specs: 15 envelope cases and three skip values. Implementation, additional oracle, mutation, race, backend, and milestone-review gates remain outstanding. This ACK does not approve an implementation or the whole upgrade.
+
+No edits, tests, git mutations, publication, or delegation occurred. Available session metadata does not let me attest `gpt-6-astra/xhigh`; I made no model substitution.

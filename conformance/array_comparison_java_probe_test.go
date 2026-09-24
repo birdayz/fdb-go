@@ -2,27 +2,12 @@
 
 package conformance_test
 
-// Measures Java's live behaviour (tag 4.12.11.0 conformance server) for
-// ARRAY comparison shapes the upstream yaml corpus does NOT cover, and
-// asserts Go matches it outcome-for-outcome. The corpus
-// (arrays-operators.yamsql) pins the constant matrix; the shapes here are
-// the ones a Go reader could plausibly get wrong ANOTHER way:
-//
-//   - a stored ARRAY column compared against an array literal (element
-//     nullability differs from the corpus's CAST shapes: Java types both
-//     the column element and the literal element NOT NULL —
-//     Type.fromObject's `primitiveType(typeCode, false)` and the DDL's
-//     `elementType.withNullable(false)` — so the types match and the
-//     comparison is accepted);
-//   - literals whose element nullability DIFFERS ([1, NULL] vs [1, 2]:
-//     the NULL element folds the left element type nullable while the
-//     right stays NOT NULL — does Java's modulo-nullability check strip
-//     only the OUTER nullability and reject, or accept?);
-//   - element NULLs inside equal-shaped arrays (compareListEquals treats
-//     both-NULL elements as EQUAL — two-valued, no UNKNOWN propagation).
-//
-// Go must produce the same outcome class per probe: same rows on success,
-// same SQLSTATE on error. A divergence fails this test.
+// Pins target-Java ARRAY comparisons and the preserved Go nullable-array read
+// extension. Non-null arrays share outcomes. Java rejects NULL elements with
+// 0A000 before comparison (AbstractArrayConstructorValue.LightArrayConstructorValue
+// eval); Go retains equal-shaped nullable-array comparison and rejects unequal
+// element nullability. These extension cases assert each engine independently,
+// not cross-engine agreement or persisted NULL-element support.
 
 import (
 	"context"
@@ -39,7 +24,7 @@ import (
 )
 
 var _ = Describe("ArrayComparisonJavaProbe", func() {
-	It("Go matches Java's live outcome for array comparison shapes", func() {
+	It("pins shared array comparisons and the Go nullable-array read extension", func() {
 		ctx := context.Background()
 		tenantName := fmt.Sprintf("arraycmp_%s", uuid.New().String())
 		env, err := SetupTenantEnvironment(ctx, sharedContainer, tenantName)
@@ -59,25 +44,15 @@ var _ = Describe("ArrayComparisonJavaProbe", func() {
 			"INSERT INTO T_AC VALUES (1, [1]), (2, [1, 2])",
 		}
 
-		// expect encodes the probe's cross-engine relation:
-		//   "match"      — Go's outcome class must equal Java's (rows on
-		//                  success; both-error probes additionally require
-		//                  Java's message to be the shared 42804 wording,
-		//                  since the server channel carries no SQLSTATE).
-		//   "java_npe"   — MEASURED upstream Java bug: a NULL element
-		//                  inside a compared array literal throws a raw
-		//                  NullPointerException. Go answers TRUE — what
-		//                  Java's own compareListEquals (both-NULL
-		//                  elements EQUAL) specifies. The pin holds while
-		//                  Java still NPEs and Go still answers TRUE; if
-		//                  Java is fixed upstream this probe fails so the
-		//                  divergence gets re-measured and re-pinned.
+		// The NULL-element cases intentionally preserve the approved Go read
+		// extension. Java's explicit rejection replaces its earlier raw NPE;
+		// it does not authorize removing Go's successful read semantics.
 		probes := []struct{ name, sql, expect string }{
 			{"col_eq_literal", "SELECT id FROM T_AC WHERE arr = [1]", "match"},
 			{"col_eq_two_elem", "SELECT id FROM T_AC WHERE arr = [1, 2]", "match"},
-			{"lit_nullable_vs_notnull", "SELECT [1, NULL] = [1, 2] FROM T_AC WHERE id = 1", "match"},
-			{"lit_nullable_vs_nullable", "SELECT [1, NULL] = [1, NULL] FROM T_AC WHERE id = 1", "java_npe"},
-			{"lit_null_elem_eq", "SELECT [NULL] = [NULL] FROM T_AC WHERE id = 1", "java_npe"},
+			{"lit_nullable_vs_notnull", "SELECT [1, NULL] = [1, 2] FROM T_AC WHERE id = 1", "nullable_type_mismatch"},
+			{"lit_nullable_vs_nullable", "SELECT [1, NULL] = [1, NULL] FROM T_AC WHERE id = 1", "nullable_read"},
+			{"lit_null_elem_eq", "SELECT [NULL] = [NULL] FROM T_AC WHERE id = 1", "nullable_read"},
 			{"lit_eq_same", "SELECT [1] = [1] FROM T_AC WHERE id = 1", "match"},
 			{"lit_size_mismatch", "SELECT [1] = [1, 2] FROM T_AC WHERE id = 1", "match"},
 			{"col_eq_bigint_literal_cast", "SELECT id FROM T_AC WHERE arr = CAST([1] AS BIGINT ARRAY)", "match"},
@@ -126,12 +101,20 @@ var _ = Describe("ArrayComparisonJavaProbe", func() {
 			fmt.Fprintf(GinkgoWriter, "PROBE %s\n  %s\n  %s\n  sql: %s\n",
 				p.name, render("JAVA", jr), render("GO  ", gr), p.sql)
 			switch p.expect {
-			case "java_npe":
-				if jr.Err == nil || !strings.Contains(errMsg(jr), "NullPointerException") {
-					diverge(p.name, jr, gr, "pinned Java NPE no longer reproduces — re-measure and re-pin")
+			case "nullable_read", "nullable_type_mismatch":
+				var je *plandiff.JavaError
+				if !errors.As(jr.Err, &je) || je.ExceptionClass != "RelationalException" || je.SQLState != "0A000" || je.Message != "An ARRAY value cannot have NULL elements" {
+					diverge(p.name, jr, gr, "Java NULL-element rejection changed")
 				}
-				if gr.Err != nil || fmt.Sprintf("%v", gr.Rows.Rows) != "[[true]]" {
-					diverge(p.name, jr, gr, "Go no longer answers TRUE for the NULL-element equality")
+				if p.expect == "nullable_read" {
+					if gr.Err != nil || fmt.Sprintf("%v", gr.Rows.Rows) != "[[true]]" {
+						diverge(p.name, jr, gr, "Go no longer answers TRUE for the NULL-element equality")
+					}
+				} else {
+					var ge *api.Error
+					if !errors.As(gr.Err, &ge) || string(ge.Code) != "42804" || ge.Message != "The operands of a comparison operator are not compatible." {
+						diverge(p.name, jr, gr, "Go element-nullability admission changed")
+					}
 				}
 			case "match":
 				switch {
@@ -140,9 +123,9 @@ var _ = Describe("ArrayComparisonJavaProbe", func() {
 						diverge(p.name, jr, gr, "row mismatch")
 					}
 				case jr.Err != nil && gr.Err != nil:
-					// The server channel carries no SQLSTATE; the shared
-					// wording is the strongest cross-engine assertion left.
-					if !strings.Contains(errMsg(gr), errMsg(jr)) {
+					var je *plandiff.JavaError
+					var ge *api.Error
+					if !errors.As(jr.Err, &je) || !errors.As(gr.Err, &ge) || je.SQLState == "" || je.SQLState != string(ge.Code) || !strings.Contains(errMsg(gr), errMsg(jr)) {
 						diverge(p.name, jr, gr, "error wording mismatch")
 					}
 				default:

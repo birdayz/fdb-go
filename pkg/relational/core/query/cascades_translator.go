@@ -692,6 +692,8 @@ func scalarTypeForKind(fd protoreflect.FieldDescriptor) values.Type {
 // load-bearing for name-based resolution.
 func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Field {
 	switch o := op.(type) {
+	case *logical.LogicalSingleton:
+		return []values.Field{}
 	case *logical.LogicalInlineValues:
 		exact, err := ExactLogicalResultType(o, t.md)
 		if err != nil {
@@ -789,7 +791,7 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 		return fields
 	case *logical.LogicalProject:
 		if len(o.Projections) == 0 {
-			return nil
+			return []values.Field{}
 		}
 		// A machinery projection can be positional: aggregate/output-strip
 		// projections deliberately leave ProjectedValues nil and state their
@@ -913,9 +915,11 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 // for an underivable shape.
 func (t *cascadesTranslator) derivedOutputColumns(op logical.LogicalOperator) []values.Field {
 	switch o := op.(type) {
+	case *logical.LogicalSingleton:
+		return []values.Field{}
 	case *logical.LogicalProject:
 		if len(o.Projections) == 0 {
-			return nil
+			return []values.Field{}
 		}
 		// Prefer the projection's exact whole-object authority. In particular,
 		// machinery projections may carry InputOrdinals with intentionally nil
@@ -2255,6 +2259,8 @@ func (t *cascadesTranslator) translateOp(op logical.LogicalOperator) expressions
 		}
 	}
 	switch o := op.(type) {
+	case *logical.LogicalSingleton:
+		return t.translateSingleton()
 	case *logical.LogicalInlineValues:
 		return t.translateInlineValues(o)
 	case *logical.LogicalScan:
@@ -2432,6 +2438,28 @@ func (t *cascadesTranslator) translateScan(s *logical.LogicalScan) expressions.R
 }
 
 func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressions.RelationalExpression {
+	// Recursive terms were bound against the seed declaration. Predicates must
+	// read the same common row as projections and the temporary scan, including
+	// nullability widening caused by the recursive expression.
+	if len(t.recursiveCTEConsumerRows) != 0 && f.Predicate != nil {
+		var normalizeErr error
+		pred := mapPredicateValues(f.Predicate, func(value values.Value) values.Value {
+			if normalizeErr != nil {
+				return value
+			}
+			var normalized values.Value
+			normalized, normalizeErr = t.normalizeRecursiveCTEConsumerValue(value)
+			return normalized
+		})
+		if normalizeErr != nil {
+			t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
+				"recursive CTE predicate cannot adopt its common output row: %v", normalizeErr))
+			return nil
+		}
+		copy := *f
+		copy.Predicate = pred
+		f = &copy
+	}
 	// Fold a WHERE-EXISTS whose post-pagination cardinality is known before any
 	// routing. The front-end proves the inner either empty or non-empty (notably:
 	// a non-grouped aggregate emits one row before LIMIT/OFFSET), so both EXISTS
@@ -5741,12 +5769,27 @@ func commonUnionResultRow(records []*values.RecordType) (*values.RecordType, boo
 		fields[ordinal] = values.Field{Name: name, Ordinal: ordinal, FieldType: common}
 	}
 	commonRow := &values.RecordType{Fields: fields}
+	aligned := true
 	for _, record := range records {
 		if !record.Equals(commonRow) {
-			return commonRow, true, nil
+			aligned = false
+			break
 		}
 	}
-	return commonRow, false, nil
+	if aligned {
+		return commonRow, false, nil
+	}
+	// The normalization projection uses unique physical field names. Derive
+	// the same private row contract here; repeated SQL labels remain in
+	// ExactLogicalOutputLabels and are never replaced by these datum keys.
+	names := make([]string, len(fields))
+	for i, field := range fields {
+		names[i] = field.Name
+	}
+	for i, name := range values.DedupFieldNames(names) {
+		fields[i].Name = name
+	}
+	return commonRow, true, nil
 }
 
 // normalizeUnionLeg re-emits one branch by exact ordinal under the UNION's
@@ -5797,11 +5840,7 @@ func (t *cascadesTranslator) normalizeUnionLeg(
 }
 
 // exactUnionSlotValue injects the implicit promotion to a UNION column's
-// maximum type. PromoteValue deliberately preserves a NOT NULL child's
-// nullability. When another leg makes the common column nullable, a fixed-arm
-// PickValue with an unreachable typed-NULL alternative states that exact
-// common CASE result without changing the selected value or using CAST
-// semantics.
+// maximum type, including the target's nullability (PromoteValue.getResultType).
 func exactUnionSlotValue(value values.Value, target values.Type) (values.Value, error) {
 	if value == nil || target == nil {
 		return nil, fmt.Errorf("source Value or target type is nil")
@@ -5811,20 +5850,9 @@ func exactUnionSlotValue(value values.Value, target values.Type) (values.Value, 
 		if maximum := values.MaximumType(result.Type(), target); maximum == nil || !maximum.Equals(target) {
 			return nil, fmt.Errorf("source type %s is not promotable to %s", result.Type(), target)
 		}
-		result = values.NewPromoteValue(result, target)
+		return values.NewPromoteValueChecked(result, target)
 	}
-	if result.Type().Equals(target) {
-		return result, nil
-	}
-	if !target.IsNullable() || result.Type().IsNullable() ||
-		!values.WithNullability(result.Type(), true).Equals(target) {
-		return nil, fmt.Errorf("promotion produced %s instead of %s", result.Type(), target)
-	}
-	return values.NewPickValue(
-		values.LiteralValue(int64(0)),
-		[]values.Value{result, values.NewNullValue(target)},
-		target,
-	), nil
+	return result, nil
 }
 
 // gatheredSeedBake carries the positional-bake context for a gathered ordinal-seed
@@ -9157,7 +9185,7 @@ func extractOutputColumns(op logical.LogicalOperator) []string {
 // multiple times.
 func cteBodyWidthIsExact(op logical.LogicalOperator) bool {
 	switch o := op.(type) {
-	case *logical.LogicalProject:
+	case *logical.LogicalProject, *logical.LogicalSingleton:
 		return true
 	case *logical.LogicalDistinct:
 		return cteBodyWidthIsExact(o.Input)
@@ -9197,8 +9225,7 @@ func validateCTEAliasAritiesInGraph(op logical.LogicalOperator, producers map[*l
 	}
 	if c, ok := op.(*logical.LogicalCTE); ok {
 		if len(c.ColumnAliases()) > 0 && !c.Recursive() {
-			if origCols := extractOutputColumns(c.Body()); len(origCols) > 0 &&
-				len(origCols) != len(c.ColumnAliases()) && cteBodyWidthIsExact(c.Body()) {
+			if origCols := extractOutputColumns(c.Body()); len(origCols) != len(c.ColumnAliases()) && cteBodyWidthIsExact(c.Body()) {
 				return api.NewErrorf(api.ErrCodeInvalidColumnReference,
 					"cte query has %d column(s), however %d aliases defined",
 					len(origCols), len(c.ColumnAliases()))

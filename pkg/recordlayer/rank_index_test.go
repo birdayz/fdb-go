@@ -156,7 +156,7 @@ var _ = Describe("RankedSet", func() {
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			sub := ks.Sub("rs")
 			config := rankedSetConfig{
-				HashFunction:    jdkArrayHash,
+				HashFunction:    pureHash(jdkArrayHash),
 				NLevels:         rankedSetDefaultLevels,
 				CountDuplicates: true,
 			}
@@ -298,7 +298,7 @@ var _ = Describe("RankedSet", func() {
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			sub := ks.Sub("rs")
 			config := rankedSetConfig{
-				HashFunction: crcHash,
+				HashFunction: pureHash(crcHash),
 				NLevels:      rankedSetDefaultLevels,
 			}
 			rs := newRankedSet(sub, config)

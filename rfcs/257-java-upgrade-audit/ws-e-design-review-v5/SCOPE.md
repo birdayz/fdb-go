@@ -1,0 +1,3 @@
+# WS-E design gate v5
+
+TREE `c9fd46b8655f19cb0b897f5d272f311121626463`; design SHA256 `478dc077b98af12d13987f7e9d95cf93798d7276ebd6e46f3d91d35f96267358` (1726 lines). Answers the three v4 NAKs. Oracle: six Describes, 333 pins, two uncached runs equal (ws-e-oracle/evidence-run.txt), mutations M1-M4 plus the harness-teardown and withTeardown mutations (evidence-mutations.txt). `just test` of this tree: first run 7 of 94 executed, 93 pass, docscheck failed on a misplaced doc comment (conformance_test 1419/1538 with 119 inherited skips; rfc257_oracle_test 30/30); after moving the comment, 2 of 94 executed, 94/94 pass. Lenses: Graefe, Torvalds, storage/wire.

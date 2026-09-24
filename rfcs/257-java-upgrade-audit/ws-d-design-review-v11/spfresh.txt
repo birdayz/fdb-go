@@ -1,0 +1,82 @@
+**NAK** on the RFC-257 WS-D design v11.
+
+- **Tree:** `01b0669d8d12e6eb84eebfa31f160cfed853e5d5`.
+- **Design:** `ws-d-design.md` SHA256 `6a1dd51dc89cef8f155caf924982f17cc2ba0b5346367668f4e253cbb79205ec`, 1489 lines, recomputed from the blob.
+- **Java:** `fdacd162`.
+- **Read:** all four v10 NAKs, the full v11 design and its diff from v10, the oracle README and evidence, the run logs, RFC-094, and the Java and Go sources cited below.
+- **Not done:** the paper PDFs cannot be rendered here (no pdftoppm), so paper citations go through RFC-094 and the spfresh-reviewer skill's map. Nothing was run or edited.
+
+The GuardiANN peel itself is sound. What blocks the ACK is the new phase D-0: it bounds retries for every record-layer transaction, and the design never looks at what that does to SPFresh or to the chaos harness.
+
+## P2-1: D-0 changes SPFresh's LIRE lifecycle and the design does not say so
+- **SPFresh runs every step through `Run`.** Split, NPA, merge, coarse split, GC, refine, sweeper, rebalancer and the build all go through `FDBDatabase.Run` via `spfreshRun` (`spfresh_util.go:11-16`; 39 non-test call sites by `git grep -c`). D-0 caps all of them at 10 attempts (design 847-863).
+- **RFC-094 assumes the losing side keeps retrying.** Its conflict table and lifecycle say "the later one retries" and "whichever loses retries" (094:102, 104, 320, 356).
+- **The build depends on that retry.** Its serializable assignment scan is fenced against concurrent deletes by retrying, and it has no lessen-work throttle (`spfresh_index_maintainer.go:845-871`).
+- **What changes under D-0:**
+  - A split whose posting read keeps conflicting now fails after 10 attempts. The rebalancer records it as a task error and fails the pass (`spfresh_rebalancer.go:215-225, 268`).
+  - `RebalanceSPFreshIndex` returns an error instead of draining to quiescence (`:428-431`).
+  - A contended build batch fails outright.
+- **Safety plausibly holds; liveness changes.** Leases and the SEALED resume make each lifecycle restartable (094:309-325). But the posting-length bound of SPFresh §3 (LIRE split) and SPANN §3.2, as mapped in RFC-094 §6, now depends on the sweep cadence instead of the transaction's own retry loop.
+- **No Java parity pins the value 10.** SPFresh is Go-only, so the bound needs a justification in RFC-094.
+- **The design claims SPFresh is preserved** (60-61, 1485-1486), yet D-0 never names it. D-0's gate is the relational 1M stress (1020-1022), not SPFresh churn or recall over an update stream (SPFresh §5.2).
+- **Needed:** either give `spfreshRun` a declared attempt policy of its own, or adopt the bound in RFC-094 §2/§6. Either way add:
+  - fixtures: a contended split that completes across passes, a build under concurrent deletes, and `RebalanceSPFreshIndex`'s quiescence contract;
+  - the SPFresh concurrency stress (094:532-533) and the churn soak, run before and after D-0.
+
+## P2-2: D-0's mechanism silently switches off chaos fault injection
+- **The design routes `Run` through the runner's loop.** Design 847-852 says `Run` shares `RunWithRetry`'s loop with a fresh transaction per attempt. TODO.md:6995 says the same: create a transaction and commit it "INSTEAD OF delegating straight to `d.transactor.Transact`".
+- **That loop never reaches the chaos transactor.**
+  - `runOnce` opens its transaction with `CreateWritableTransaction` (`runner.go:283`).
+  - For a chaos database that returns the real handle, `d.db.CreateTransaction()` (`database.go:536-539`).
+  - So `ChaosTransactor.TransactCtx` (`chaos/fault.go:143-214`) is never called.
+- **Every chaos scenario would pass with zero faults injected.** That includes SPFresh rebalance, refine and sweep through `s.chaosDB` (`chaos/spfresh_driver.go:19, 25, 34`).
+- **Needed:**
+  - Specify how each attempt goes through the injected Transactor: a single-attempt call the chaos and backend transactors implement, or a per-attempt retry limit inside `Transact`.
+  - Add a guard that each faulting scenario's fault log is non-empty.
+  - Cover the libfdb_c backend path (`database.go:199-211`).
+
+## P3
+1. **The balance claim contradicts the pinned evidence (1215-1217).**
+   - The design says the smaller child is "0.33 to 0.49 on every measured shape". The unsampled spread shape at d=4096, seed 1 selects [1726 274], which is 0.137 (`evidence-run.txt:349`).
+   - The withdrawal rationale (1356-1358) quotes only the tight rows. On that spread row the sampled fit is better balanced: 0.341 (`:357`).
+   - Admission refuses that shape, so production is unaffected.
+   - The admitted high-d corner (n = 1001-1024 up to about d = 4440, including the d=2048 fixture's own shape) has no balance measurement. Correct the sentence, then measure the corner or declare it unmeasured.
+2. **W is not the worst-case work.**
+   - It leaves out kMeansMaxIterations × (kMeansMaxRestarts + 1). The defaults are 8 and 3 (`Config.java:182-183`), set per index and immutable (`GuardiannVectorIndexEngine.java:345-346, 435-438`).
+   - A first refit runs at about 7e-8 s per unit, not 4.3e-8: 568-604 ms for 8.2e6 units at d=4096 (`wsd-gen-1.log:328`, `wsd-gen-2.log:42, 44`).
+   - So "at most about 1.7 s" (1143-1145, 1320) is closer to 3 s at the bound, and only at default knobs.
+   - Include the knob product in W, or declare the calibration and quote the worst measured rate.
+3. **"The online indexer's runner" does not exist in Go (863-865).** Go's OnlineIndexer has no runner field or MaxAttempts; the only mention is a comment (`online_indexer.go:1315`). Name the object that bounds the merger and how a builder sets it, or say that point (1) already bounds `oi.db.Run`.
+4. **The 1007 fixture cannot be built as written (872-875).**
+   - ChaosTransactor never hands a retryable error back to its caller. Each fault is simulated as a successful commit followed by a re-execution (`fault.go:199-211`).
+   - `InjectOnce` fires only once (`:123-129`).
+   - The fixture needs a new fault that returns the error on every attempt.
+5. **One full-suite run cannot find every test that relies on unbounded retries (865-867).** It is a single sample and misses contention and chaos-seed dependence. Require a census of concurrent-writer tests plus `--runs_per_test` on them.
+6. **Nit (1136):** n = 1001 is admitted only up to d = 4440, not 4444, because 9 × 1001 × 4441 = 40,008,969 > 4 × 10^7.
+
+## Paper and lifecycle lens (verified)
+- **SPFresh code is untouched.** The diff from `f0cb295` over the SPFresh files and `pkg/rabitq` is empty; the same command over `pkg/` from v10 lists the four heartbeat files as a positive control.
+- **Inherited behaviour holds.** SPFresh overrides only `Update` and `UpdateWhileWriteOnly`. It inherits the queue refusal (`index_maintainer_queue.go:12`) and the no-op `MergeIndex` (`index_deferred_maintenance.go:246`).
+- **The peel stays separate from LIRE.** It keeps nearest-centroid ownership and is not shared with the LIRE 2-means split.
+- **Every v10 finding is addressed:**
+  - unsampled refits are restored;
+  - the peel RNG split is taken once at the Go rule's entry;
+  - the Step 2 population now reads "absent, n<k or INVALID" (1228-1229);
+  - the citations are fixed (:223, :505-507, :349);
+  - the merge neighbour metadata is added to the skip's snapshot reads (403-404);
+  - 2101 is classified for every owner;
+  - the fixture volumes (3.1 MB, 4.1 MB, W = 8.2 × 10^7) are arithmetically right.
+- **D-0's Java facts check out:** `FDBDatabase.java:856-864`, `FDBDatabaseRunnerImpl.java:191-207`, `FDBDatabaseFactory.java:90-92`, and `IndexingMerger.java:78, 82-86, 125-128, 189-203, 246-258`. `VectorIndexMaintainer.java:536` sets `LastStep.MERGE`, so the quota-halving path the design describes is real. Go's `handleFailure` matches Java.
+- **The heartbeat fix matches Java** (`IndexingHeartbeat.java:148, 201-203`).
+- **The evidence is bound to this tree.** The oracle ran 25 of 25 specs in two uncached runs (both logs checked). The `just test` tree `1cf1b5e` differs from this one only by the README.
+
+## Measured vs still hypothesis
+- **Measured:**
+  - oracle items 1-20 and 22-25, including item 23's 16 rows across two identical runs;
+  - Java's ClassCastException on a versionstamp key and its (UUID, x) reading.
+- **Checked against source only:** D-0's Java facts, the merger's quota path, and SPFresh's restartability under bounded attempts.
+- **Still hypothesis:**
+  - every Go mechanism, including D-0 and its reach;
+  - balance and cost in the admitted high-d corner;
+  - cost under non-default KMeans knobs;
+  - item 21 and the REMAINING list.

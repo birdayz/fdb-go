@@ -1,0 +1,9 @@
+# Reviewer session transcripts and whole-tree evidence freezes stay local: they
+# run to hundreds of megabytes. The durable record of a review is its prompt and
+# its verdict (*.prompt, *.txt / *.md), which are committed.
+*.log
+*.jsonl
+*freeze*.json
+*.pprof
+*.cpu
+*.gz

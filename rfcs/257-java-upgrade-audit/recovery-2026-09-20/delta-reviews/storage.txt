@@ -1,0 +1,38 @@
+**NAK — WS-A + WS-E1 implementation code** at tree `9f8d0f63cc15aa364dd237a62650a4bf73e5babe`.
+
+I read all four prior reports, the complete delta from rejected tree `a8940de29c3726e44d5e14779f321b732e11be88`, surrounding frozen source, and Java reference `fdacd162a9c8acfadc49082b89185c823ab8ae4a`. Milestone base remains `71ccd8cf8b3fd0dbafe283e91171818e36af555e`.
+
+**One P2 interaction remains: positional ORDER BY conflates distinct expanded slots with identical labels.**
+
+For a one-column table `t(id)`, consider:
+
+```sql
+SELECT * FROM t a, t b ORDER BY 1, 2 DESC
+```
+
+Expansion creates distinct bound `A.ID` and `B.ID` slots, but assigns both the alias `ID` at [select_parser.go:945](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/select_parser.go:945). Positional resolution prefers that alias at [select_helpers.go:100](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/select_helpers.go:100). Consequently, [select_parser.go:1325](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/select_parser.go:1325) classifies the second position as a duplicate and returns **42701**, although the positions address different source values.
+
+The visitor independently repeats this label-based deduplication and would discard the second key at [plan_visitor.go:1640](/home/birdy/projects/fdb-go/pkg/relational/core/embedded/plan_visitor.go:1640). Thus fixing only the parser is insufficient.
+
+**Required fix:** carry slot/source identity through positional duplicate detection in both paths; output labels cannot identify positional keys. Retain a multirow regression with duplicate star labels and independently varying sort keys, plus genuine duplicate-key controls. This concerns the approved Go positional-sorting extension; Java’s measured refusal does not establish correct Go ordering. This finding is source-derived, not a newly executed reproduction.
+
+The other reviewed fixes close their reported defects:
+
+- RaBitQ’s explicit conversions enforce separately rounded products through reductions, quantization, sweep and final error-factor doubling. The actual Java comparison supports exact architecture-specific NaN bytes. Java’s scalar-backend requirement does **not** establish universal NaN-sign identity across architectures.
+- Array reconstruction guards nil and typed-nil result types before method calls.
+- Descriptor registration validates wrapper closure transactionally; failed lookup preserves repository contents and descriptor identity.
+- NoFrom children own their deadlines. DUEC subdivision remains restricted to definite window aborts, retains affected-row/population assertions, and introduces no product retry relaxation.
+
+I reconciled artifact hashes, all **6,286 verified-tree** and **6,288 final-tree** regular-file hashes, and the documentation-only difference between those trees. Raw evidence confirms **93 uncached targets passed**, **40,605 RUN = 40,600 PASS + 5 existing skips**, and **14 uncached race targets with 21,059 RUN/PASS**. Java conformance reports **1,357/1,476**, with 119 existing filtered cases. Both subsequent `just test` results reconcile.
+
+The eight sequential 1M samples and six planner benchmarks satisfy the previously pending comparison evidence. All 11 EXPLAIN lines match. The retained timing outliers and planner median ratios support the documented limited conclusions, not universal performance parity.
+
+Separate unmet gates:
+
+- Correct the positional identity defect and retain regression/verification evidence; milestone implementation approval remains withheld.
+- Historical executor startup-timeout causation remains unavailable from recovered artifacts; the CLI networking repair is separate.
+- Fresh GitHub authentication and owner publication authorization remain absent.
+
+Approved nullable-array/raw/scalar/sorting extensions and the legacy RaBitQ deployment requirements remain intact; FDB C++ stays **7.3.77**. This does not approve WS-B–WS-K, overall upgrade completion, publication or merge. Historical design/security ACKs retain their original scope.
+
+No edits, tests/builds, agents, worktrees, Git-state changes or GitHub contact were performed.

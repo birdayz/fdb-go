@@ -121,8 +121,11 @@ func ScalarCodeForProtoKind(fd protoreflect.FieldDescriptor) (TypeCode, bool) {
 		return TypeCodeString, true
 	case protoreflect.BytesKind:
 		return TypeCodeBytes, true
-	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind,
-		protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
+		// Type.TypeCode.fromProtobufFieldDescriptor (Type.java:909-914): INT, the
+		// value read as protobuf-java's signed Integer (ProtoScalarKindToRowValue).
+		return TypeCodeInt, true
+	case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
 		return TypeCodeLong, true
 	case protoreflect.EnumKind:
 		if protoEnumHasNumberAlias(fd.Enum()) {

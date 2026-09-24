@@ -1,0 +1,145 @@
+{
+  "scope": "Six compiled semantic mutants; recursive main-scope publication has a separate revert proof. Each source restored byte-for-byte. Green restoration/full verification recorded separately.",
+  "discarded_attempt": {
+    "mutation": "declared-empty-row",
+    "reason": "nogo rejected unformatted inserted code; no tests ran, no mutation credit",
+    "log": "/var/tmp/query-grind-cast/java-upgrade/fromless-mutant-declared-empty-row-build-failure.log"
+  },
+  "mutations": [
+    {
+      "mutation": "singleton-multiplicity",
+      "file": "pkg/relational/core/query/inline_values_translation.go",
+      "restored_sha256": "5e04eb8bcf2bd910e8750c4053f6b590c49eab5bc14ff0aff715f47861308500",
+      "old": "&values.ConstantValue{Value: true, Typ: values.NotNullBoolean},",
+      "new": "&values.ConstantValue{Value: true, Typ: values.NotNullBoolean},\n\t\t&values.ConstantValue{Value: false, Typ: values.NotNullBoolean},",
+      "command": [
+        "bazelisk",
+        "test",
+        "//pkg/relational/sqldriver:sqldriver_test",
+        "--nocache_test_results",
+        "--test_output=all",
+        "--test_arg=-test.run=^TestFDB_NoFromSelectProbe$/(select_constant|empty_row|empty_cross_multiplicity)$"
+      ],
+      "exit": 3,
+      "log": "/var/tmp/query-grind-cast/java-upgrade/fromless-mutant-singleton-multiplicity.log",
+      "log_sha256": "40385c072af8f960c193cbd8588a310359604ef7f9bf0fe7be38e8b6e1a38ae7",
+      "failures": [
+        "--- FAIL: TestFDB_NoFromSelectProbe (0.04s)",
+        "    --- FAIL: TestFDB_NoFromSelectProbe/select_constant (0.01s)",
+        "    --- FAIL: TestFDB_NoFromSelectProbe/empty_cross_multiplicity (0.01s)",
+        "    --- FAIL: TestFDB_NoFromSelectProbe/empty_row (0.02s)"
+      ]
+    },
+    {
+      "mutation": "singleton-private-column",
+      "file": "pkg/relational/core/query/inline_values_translation.go",
+      "restored_sha256": "5e04eb8bcf2bd910e8750c4053f6b590c49eab5bc14ff0aff715f47861308500",
+      "old": "expressions.NewLogicalProjectionExpression(nil, inner)",
+      "new": "expressions.NewLogicalProjectionExpression([]values.Value{&values.ConstantValue{Value: true, Typ: values.NotNullBoolean}}, inner)",
+      "command": [
+        "bazelisk",
+        "test",
+        "//pkg/relational/sqldriver:sqldriver_test",
+        "--nocache_test_results",
+        "--test_output=all",
+        "--test_arg=-test.run=^TestFDB_NoFromSelectProbe$/(empty_row|empty_derived)$"
+      ],
+      "exit": 3,
+      "log": "/var/tmp/query-grind-cast/java-upgrade/fromless-mutant-singleton-private-column.log",
+      "log_sha256": "2011c42bc1538899c5573c9cee82350f387f4f5e937a753e2f4e734a3b4e20f2",
+      "failures": [
+        "--- FAIL: TestFDB_NoFromSelectProbe (0.04s)",
+        "    --- FAIL: TestFDB_NoFromSelectProbe/empty_row (0.01s)"
+      ]
+    },
+    {
+      "mutation": "recursive-predicate-row",
+      "file": "pkg/relational/core/query/cascades_translator.go",
+      "restored_sha256": "cda8a35041d610442b9bcfaa40893a3502e2c6d5055d84082170d8a0c785119e",
+      "old": "if len(t.recursiveCTEConsumerRows) != 0 && f.Predicate != nil {",
+      "new": "if false && len(t.recursiveCTEConsumerRows) != 0 && f.Predicate != nil {",
+      "command": [
+        "bazelisk",
+        "test",
+        "//pkg/relational/sqldriver:sqldriver_test",
+        "--nocache_test_results",
+        "--test_output=all",
+        "--test_arg=-test.run=^TestFDB_NoFromSelectProbe$/recursive$"
+      ],
+      "exit": 3,
+      "log": "/var/tmp/query-grind-cast/java-upgrade/fromless-mutant-recursive-predicate-row.log",
+      "log_sha256": "bcb4a18a1da2dc04b656a75dd45c1aa3d804115b5f76b1fa8b1201f0053d65c0",
+      "failures": [
+        "--- FAIL: TestFDB_NoFromSelectProbe (0.03s)",
+        "    --- FAIL: TestFDB_NoFromSelectProbe/recursive (0.01s)"
+      ]
+    },
+    {
+      "mutation": "declared-empty-row",
+      "file": "pkg/relational/core/query/expr/expr.go",
+      "restored_sha256": "3dfe9600fe6d03219922193575a04ad71c04980677e04d854955cf211423cf70",
+      "old": "\tfields := make([]values.Field, len(cols))",
+      "new": "\tif len(cols) == 0 {\n\t\treturn nil\n\t}\n\tfields := make([]values.Field, len(cols))",
+      "command": [
+        "bazelisk",
+        "test",
+        "//pkg/relational/core/embedded:embedded_test",
+        "--nocache_test_results",
+        "--test_output=all",
+        "--test_arg=-test.run=^TestStarSourceProjectionIdentity$"
+      ],
+      "exit": 3,
+      "log": "/var/tmp/query-grind-cast/java-upgrade/fromless-mutant-declared-empty-row.log",
+      "log_sha256": "dd91bfdd9f462d63c6aa2bfdcd5d8b38d9b533abcb3e310e501bee905d6915bb",
+      "failures": [
+        "--- FAIL: TestStarSourceProjectionIdentity (0.00s)",
+        "    --- FAIL: TestStarSourceProjectionIdentity/empty_row (0.00s)",
+        "    --- FAIL: TestStarSourceProjectionIdentity/declared_empty_row (0.00s)"
+      ]
+    },
+    {
+      "mutation": "join-extra-slot",
+      "file": "pkg/recordlayer/query/plan/cascades/values/ordinal_join_seed.go",
+      "restored_sha256": "8dfc0ccab851562145a48c6b555b6f25f03a1b115bca92645538cdd194c66416",
+      "old": "if slot != len(rc.Fields) {",
+      "new": "if false && slot != len(rc.Fields) {",
+      "command": [
+        "bazelisk",
+        "test",
+        "//pkg/recordlayer/query/plan/cascades/values:values_test",
+        "--nocache_test_results",
+        "--test_output=all",
+        "--test_arg=-test.run=^TestOrdinalJoinSeedDeclaredEmptyLegs$"
+      ],
+      "exit": 3,
+      "log": "/var/tmp/query-grind-cast/java-upgrade/fromless-mutant-join-extra-slot.log",
+      "log_sha256": "40c04e3147e3e1c2f05c568bec8c48571dc4f47814517b2b1815aa4e30d4a9e2",
+      "failures": [
+        "--- FAIL: TestOrdinalJoinSeedDeclaredEmptyLegs (0.00s)",
+        "    --- FAIL: TestOrdinalJoinSeedDeclaredEmptyLegs/extra (0.00s)"
+      ]
+    },
+    {
+      "mutation": "mixed-star-width",
+      "file": "pkg/relational/core/embedded/select_parser.go",
+      "restored_sha256": "44bcc95961cacc5c55417607320b8eec3b2d77c8f5dd2639770e0a0b3512f5bb",
+      "old": "delta := len(expanded) - 1",
+      "new": "delta := 0",
+      "command": [
+        "bazelisk",
+        "test",
+        "//pkg/relational/sqldriver:sqldriver_test",
+        "--nocache_test_results",
+        "--test_output=all",
+        "--test_arg=-test.run=^TestFDB_NoFromSelectProbe$/wide_repeated_star$"
+      ],
+      "exit": 3,
+      "log": "/var/tmp/query-grind-cast/java-upgrade/fromless-mutant-mixed-star-width.log",
+      "log_sha256": "329906b550b01e8d4f7d8ab4fae459920cdc812295ca4e70ef5ea397f4e2cdbb",
+      "failures": [
+        "--- FAIL: TestFDB_NoFromSelectProbe (0.04s)",
+        "    --- FAIL: TestFDB_NoFromSelectProbe/wide_repeated_star (0.01s)"
+      ]
+    }
+  ]
+}

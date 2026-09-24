@@ -218,7 +218,7 @@ func TestSimplifyValue_PromoteFold(t *testing.T) {
 	if cv.Value != float64(3) {
 		t.Fatalf("Value: got %v (%T), want float64(3)", cv.Value, cv.Value)
 	}
-	if cv.Typ != NullableDouble {
+	if !cv.Typ.Equals(NullableDouble) {
 		t.Fatalf("Typ: got %v, want NullableDouble (preserved from PROMOTE target)", cv.Typ)
 	}
 }

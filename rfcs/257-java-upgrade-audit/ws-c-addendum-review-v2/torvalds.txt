@@ -1,0 +1,73 @@
+**NAK: revision 2 is not ready to merge.** Tree `e7f2e4d540c5ae85d402160d2ef21fba7a0ee221`; design SHA256 `57a3347303862f7c880a499b36def6ea3284db613321e047507a0d30cfdf7dbf`, 643 lines. I confirmed the tree object, the hash and the line count.
+
+Java was read from the working checkout under `fdb-record-layer/`, because the policy blocked `git show` on that repo. I could not confirm that checkout is at `fdacd162`. Under the read-only policy I ran nothing, so every finding below comes from reading source unless it says "measured".
+
+## What holds
+- **The catcher matches Java arm by arm** (`OnlineIndexer.java:150-275`):
+  - CONTINUE over BY_RECORDS / MULTI_TARGET / BY_INDEX, and the multi-target failure;
+  - the REBUILD copy (`withIfWriteOnly`);
+  - the requested-policy restore and `ForbidRecordScan`;
+  - the mutual all-readable / some-readable arms;
+  - six runs at most (`attempt > 5`);
+  - the method order (`buildsMutually`, then `buildsByIndex`) and the forced overwrite, which Java's `getIndexer` also applies at `:311-313`.
+- **Other Java matches:**
+  - `expectedIndexStatesOrThrow` classifies states as `IndexingThrottle.java:422-440` does.
+  - `oi.mutual` is used exactly where Java reads `policy.isMutual()` (`IndexingBase.java:317`, `:465`; `OnlineIndexer.java:260`).
+- **Every v1 finding is resolved except those in findings 1 and 9 below:** the catcher, `allowMutual && continued`, the early queue check, admission after the action, the MARK_READABLE spin, `IndexVersion`, the stale text, and the spec gaps.
+- **Measured:**
+  - The md5s of the five files match the gated tree.
+  - `067b01f2` differs from the gated tree only in the design file and reviewer settings.
+  - `justtest.log`: "Executed 43 out of 94 tests: 94 tests pass".
+  - The census summaries match §7.2 (skip 9+1, MARK_READABLE 5, catch 16+1), with a non-zero RUN count for every target.
+  - `loop40.log` has 40 SUCCESS lines. m9 and m16 red as claimed.
+  - A grep of `*.go`/`*.md`, excluding review logs, for the superseded names (`mutualBuildAlreadyReadable`, `checkPreparationHeartbeats`, the old builder messages, "no indexing code reads") finds only design line 465, which correctly says `mutualBuildAlreadyReadable` was replaced.
+
+## Findings, most severe first
+
+1. **Medium: revision 2 adds a store open to `frl index build` that skips the heartbeat check.**
+   - `cmd/frl/internal/cmd/index_write.go:300-314` opens the store with an ordinary `NewStoreBuilder()...Open()` before `BuildIndex`, only to read the state for the message.
+   - That is the same reconciling open that `openStoreWithPreflight` (`online_indexer.go:2132`) guards with `checkOpenHeartbeats`, but without the guard.
+   - With stale stored metadata, the CLI now runs reconciliation (which can rebuild or disable indexes) under live peers. That is exactly the hole 7.2 closes for the indexer. The message also reads a state that can change before the build starts.
+   - This also leaves Torvalds v1 finding 7 (a skip looks the same as an empty build) worked around rather than fixed.
+   - Fix: have the indexer report how the session started, or read the state without reconciling.
+
+2. **Medium: each attempt gets a new heartbeat ID, which Java does not do.**
+   - `buildIndexAttempt` (`:1139`) creates a new UUID on every attempt. The comment and §7.2 justify this as "as each Java attempt builds a new indexer".
+   - But Java's heartbeat key is `IndexingCommon.indexerId` (`IndexingCommon.java:53`), shared by every attempt.
+   - So Go's retries depend on the previous attempt's cleanup succeeding, and that cleanup is best-effort and discards its error (`online_indexer_queue.go:283-287`).
+   - If it fails, the next attempt's exclusive admission (REBUILD, restore, or fallback, `:167`) sees its own leaked key as a live peer and fails with `SynchronizedSessionLockedError`. Java cannot lock itself out this way.
+   - Fix: one indexer ID per `OnlineIndexer`, and correct the Java claim.
+
+3. **Low: the unique-pending CLI message is claimed as pinned but is not tested.** §7.2 says it is pinned in `TestIntegration_IndexSetState_ReadableRequiresBuilt`. That test (`write_integration_test.go:133-141`) pins only the READABLE message. `git grep "without a build"` finds the string only at `index_write.go:55` and `:327`. Measured: in `census-markreadable`, with MARK_READABLE made an error, `frl` stays green.
+
+4. **Low: an undeclared ordering change.**
+   - Go checks heartbeats for all targets (`queue.go:167`) before the queue refusal and stamp checks (`:188`, `online_indexer.go:1499`).
+   - Java runs those checks per index before `updateHeartbeat` (`IndexingBase.java:459-516`).
+   - Now that the catcher consumes `PartlyBuiltError`, this matters. Example: an exclusive build against a live peer holding a MUTUAL_BY_RECORDS stamp returns a lock error in Go and `PartlyBuiltException` in Java.
+   - §7.2 declares only the follower ordering.
+
+5. **Low: the validation arm (`:1077`) also catches Go-only errors.**
+   - Under a BY_INDEX policy it also catches "index state changed during build/follow-up" (`queue.go:498`, `:427`), which have no Java equivalent.
+   - They are treated as an unusable source: the build falls back, then after records were scanned hits `PartlyBuiltError`, and repeats until the attempt limit.
+   - The error finally returned hides the real cause.
+
+6. **Low: a source index missing from the metadata now falls back silently.**
+   - `RecordTypesForIndex` (`metadata.go:1998`) returns no types, so the failure reads "source index has multiple types" and the build falls back to a records scan.
+   - Go also commits a BY_INDEX stamp naming that nonexistent index before validating.
+   - Java's `getSourceIndex` (`IndexingByIndex.java:95-100`) throws `MetaDataException` inside the state transaction, which does not trigger a fallback.
+   - Separately, the "synthetic" message cannot be reached (`IsSynthetic` always returns false, `metadata.go:1902`), so "Java's six messages" is five in practice.
+
+7. **Low: stale error text for `PartlyBuiltError`.** `fleet/build.go:244-250` and `index_write.go:338-342` still say "rerun with the same settings". The mismatches that still reach them are now mostly blocked stamps (measured by the census) or MUTUAL stamps, and that advice fits neither.
+
+8. **Low: the declared divergences are missing from `DIVERGENCES.md`.**
+   - Missing: the clear under a live mutual peer, the open-time quiescence check, the throttle carry-over, and the MARK_READABLE queue refusal.
+   - A grep for catcher / IfMismatchPrevious / MARK_READABLE finds nothing. As a control, its heartbeat section at `:2674` is found.
+
+9. **Nits.**
+   - §7.1 still says the reproducer "reproduced the exact message". The committed spec fails first at the session-outcome check (`:4953`). This is Graefe v1 finding 6.2, still open.
+   - CHANGELOG:
+     - "not scannable" was never refused by `Build()`;
+     - it doesn't say that a target disabled mid-build now raises `RecordCoreStorageError`;
+     - it omits that a session is still blocked when reconciliation will run.
+   - `GetIfMismatchPrevious` accepts unknown values, while `GetStateDesiredAction` rejects them.
+   - `BuildIndex`'s count includes records scanned by failed attempts.

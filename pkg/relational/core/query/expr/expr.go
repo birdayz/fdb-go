@@ -429,8 +429,8 @@ func (e *UnresolvableOrdinalError) Error() string {
 // duplicate field name, and a catalog is not this function's to validate — a
 // degenerate source should decline downstream, not abort resolution.
 //
-// nil when the source declares no column order, which is exactly the condition
-// sourceColumnOrdinal declines on, so the two answers cannot disagree.
+// A declared zero-column table has an exact empty row. nil means there is no
+// table declaration, or the source's flowed whole object is not a record.
 // SourceRowType is the exported view of sourceRowType, for callers outside this
 // package that hold a resolved ScopeSource and need the row it flows — the
 // enclosing-WITH bindings a derived body must be typed against, in particular.
@@ -447,11 +447,8 @@ func sourceRowType(src semantic.ScopeSource) *values.RecordType {
 		return nil
 	}
 	cols := src.Table.Columns()
-	if len(src.FlowedColumns) > 0 {
+	if src.FlowedColumns != nil {
 		cols = src.FlowedColumns
-	}
-	if len(cols) == 0 {
-		return nil
 	}
 	fields := make([]values.Field, len(cols))
 	for i, c := range cols {
@@ -901,6 +898,16 @@ func (r *Resolver) ResolveComparison(op predicates.ComparisonType, left, right v
 	// parameters, internal untyped expressions) keep the runtime path.
 	if lt, rt := left.Type(), right.Type(); lt != nil && rt != nil &&
 		lt.Code() != values.TypeCodeUnknown && rt.Code() != values.TypeCodeUnknown {
+		// NULL and NONE have no common promotion type. Java nevertheless
+		// defines their equality/null-safe operator pairs directly
+		// (RelOpValue.BinaryPhysicalOperator), without promotion.
+		if isNullOrNone(lt) && isNullOrNone(rt) {
+			switch op {
+			case predicates.ComparisonEquals, predicates.ComparisonNotEquals,
+				predicates.ComparisonIsDistinctFrom, predicates.ComparisonNotDistinctFrom:
+				return predicates.NewComparisonPredicate(left, predicates.Comparison{Type: op, Operand: right}), nil
+			}
+		}
 		maximum := values.MaximumType(lt, rt)
 		if maximum == nil {
 			return nil, api.NewErrorf(api.ErrCodeDatatypeMismatch,
@@ -2192,7 +2199,7 @@ func enumColumnType(col semantic.Column) values.Type {
 func (r *Resolver) ResolveConstant(lit any) (values.Value, error) {
 	switch v := lit.(type) {
 	case nil:
-		return values.NewNullValue(values.TypeUnknown), nil
+		return values.NewNullValue(values.NullType), nil
 	case bool:
 		return values.NewBooleanValue(v), nil
 	case int:

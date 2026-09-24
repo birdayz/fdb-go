@@ -1,0 +1,102 @@
+**NAK: RFC-257 WS-E design v11 (Graefe lens)**
+
+- **Tree:** `d6ad3e9c2c5bc3a32c42cf0399c97afade52e098`
+- **Design:** `rfcs/257-java-upgrade-audit/ws-e-design.md`, SHA-256 `2f0cb50a0eb84022aecf712bd3200c15886c56264b45cbfdac2715fc6a621170`, 3516 lines. I recomputed both from `git show`.
+- **Method:** read-only; I ran nothing. I read the three v10 NAKs, the whole v11 design and its diff from v10, the v11 oracle and its evidence, the `wse12-*` prototype records, WS-F v2, and the Java and Go sources cited below.
+- **Java:** I read the `fdb-record-layer/` checkout. `git` inside it was denied, so I could not confirm it is at the 4.14.2.0 tag.
+
+## HIGH
+
+**H1. The RFC-182 second crossing is still unresolved (v10 Graefe M2, Torvalds H2d).**
+- :2595-2604 says "ws-f-design.md v3 prunes that crossing" and "this dependency is explicit in section 8". Neither is true at this tree.
+  - WS-F here is v2. It has 0 lines matching `182|PreservingMembers|no finals`, against 6 for `D7|D12`, the control.
+  - Section 8 never names the crossing. The design's `182` hits are :27, :67 and :2596-2598 only.
+- So `union_leg_type_annulling_fold_where` (22012 where the target returns rows) still depends on a document that does not exist.
+- **Fix:** state the requirement: at `unified_tasks.go:98-108`, only the REWRITING winner crosses. Gate step (4) on it by name, and either cite an accepted WS-F text or take the change into WS-E.
+
+**H2. The NaN declaration in section 8 still states the refuted premise (:3483-3487).**
+- It says "every later comparison residual" and "the rows are equal for every NaN a statement can write".
+- That contradicts 4.1(b)'s binder key filter and the design's own measurement: a SQL division stores `fff8000000000000` (`java_t_d_id3`), which the target's CAST-NaN probe misses.
+- The acceptance list is the contract for what stays different, and a grep for the superseded wording still returns :3484 and :3486.
+
+## MEDIUM
+
+**M1. The NaN write fix covers only CAST.**
+- Go's MIN and MAX return `math.NaN()` (`0x7ff8000000000001`) for any NaN operand (`streaming_cursors.go:2157-2168`, through `aggMinMax` :826-843). The target's MIN_D and MAX_D are `Math.min`/`Math.max` (`NumericAggregationValue.java:688, 693`), which return an operand's NaN.
+- So `INSERT … SELECT MIN(d)` writes bits that a Java index probe misses.
+- The claim at :1128-1129, "whatever bits its producer gave it", does not hold for these producers. (SOURCE)
+- **Fix:** list every non-test `math.NaN()` in `executor/` and `values/` (with a positive control), fix each, and add an oracle row.
+
+**M2. The tie-row text overcorrects (:2853-2860).**
+- It says inverting REWRITING's `deepHash` reddens EVERY tie row and inverting PLANNING's `costExprHash` reddens NONE.
+- But the list includes `in_cast_null_join_inner_empty`, a join-nesting tie that 4.1 and TODO.md:4571 place in PLANNING.
+- Section 8 already separates the two classes.
+- **Fix:** split the pins by the phase that decides them, and predict the mutation outcome per row.
+
+**M3. The canonical-text property that 4.3 rests on (:1459-1466) fails through type-merging operators.**
+- CASE is a `PickValue` over unpromoted branches, typed by `CommonValueType`→`MaximumTypeOfMany` (`walk.go:649-661`, `scalar_function_catalog.go:504-545`). IF and IFNULL are typed the same way.
+- So a DATE branch holds date text under a TIMESTAMP type, and comparing it with midnight TIMESTAMP text gives `=` FALSE and `<` TRUE.
+- Item 5 says their typing "does not change here", and the producer list omits them.
+- **Fix:** inject the promotion into those branches, and add them to the producer list and the property test.
+
+**M4. The guard narrowing is general, but its evidence is not.**
+- `len(probeCorr) > 0` (the prototype's `planner.go:1482`) admits ANY compensation whose probe is correlated to one outer alias and whose residual is correlated to another, not only explode shapes.
+- The narrowing is consistent with the stated hazard: `matchBoundPrefixIsCorrelated` gates only PK-intersection candidacy (`planner.go:1194`), and constant-pool aliases are subtracted in both places.
+- But the planned guard tests are classification unit tests. The evidence is the corpus (1 change), seed 17 and the existing suites, and none of them has rows for a probe correlated to o1 with a residual correlated to o2.
+- **Fix:** add FDB row tests of that non-explode three-way join (both nestings, with and without ORDER BY, resumed from a continuation), and a rowdiff lane run of join seeds with GUARD against NONE.
+
+**M5. The planning-cost baseline is omitted.**
+- `wse12-proto.out:39-54` records seed 17 at 23,459 tasks on today's tree (NONE), 42,723 for the explode port (BASE) and 44,932 with the full design (GUARD): +92%.
+- The design quotes only +2.8% and +5.2% over BASE and frames 42,723 as the starting point (:816-822, :904).
+- A pin "under the budget" leaves 3.3x headroom.
+- **Fix:** price the design against NONE and pin seed 17 tightly.
+
+**M6. The DATE repair is misdescribed (:1551-1554).**
+- An UPDATE whose CAST fails on one row fails the whole statement; it does not leave that row "as it is".
+- Under the UNIQUE index this section says admits both spellings of a day, the repair raises 23505.
+- Declare both, with a repair that only touches timestamp-text rows.
+
+## LOW
+
+1. Section 0 is stale:
+   - :157 says "ten Describes, 457".
+   - :231-236 says "Ran 10 of 58", "ten source files" and "ten ': OK'".
+   - M11 is missing from the mutation list.
+   - :3403 says "457 rows" and does not say how round v11's 10 pins, including the GO pins that flip at step (6), are accepted.
+2. `evidence-run.txt` says "458 probe blocks". One of them is the teardown line (`dry-run template after its drop: 42F55 …`), so it is 457 probes plus one line.
+3. The Java citation at :805 is still `PartitionSelectRule.java:197-200` (the arm is at :201-205). The RFC-043 comment at `rule_partition_select.go:503-506` must be rewritten with the arm.
+4. ":1611-1615 holds of the code" overclaims. `time.Time` arms remain at `continuation.go:103/153/327` and `proto_value.go:321`, and the comment at `streaming_cursors.go:1775-1781` still relies on ParseTimestamp.
+5. Record traceability for #7:
+   - `wse12-7all-in2.log` (the #7 memo dump) has no recorded configuration, and the README neither lists it nor marks it SUPERSEDED.
+   - `wse12-proto.sh:42` prints only the non-OK md5 lines, with no count.
+6. Multi-binding IN-union size and resume:
+   - The 24/25 product boundary is SOURCE (`RecordQueryInUnionPlan.java:151-153, 331-337`); WS-F measured a single binding only.
+   - Go's `=`-dedup of both zeros can shift the boundary by one.
+   - State the resume check when a differently bound array arrives with a continuation.
+7. :1856 "at planning when its operand is constant" contradicts 5.4's deletion of `tryCastConstant` (:2332-2336).
+8. State whether an IN-subquery explode (the QOV arm, `rule_implement_in_join.go:627-628`) can become a multi-binding IN-union source and so hit the 24 cap that `ws-f-design.md:744-750` requires it never to hit.
+9. Step (6), the wire fix, waits behind (5) and so behind WS-F F-7. State whether it really depends on them.
+10. Add the cross-engine UNIQUE/probe row now, pinned to today's outcome, so that step (6) flips it.
+
+## Verified
+
+- The candidate tree differs from evidence tree `3b1587fa` only in three documents.
+- Every quoted prototype count, plan, corpus diff and suite red matches `wse12-proto.out`.
+- NOGUARD's 54F02 is at `wse12-suites-NOGUARD.log:14189-14191`.
+- The v11 pins match `evidence-run.txt:1256-1265`.
+- Java:
+  - PartitionSelectRule's arm (:201-205).
+  - The IN-union's size check and product (`RecordQueryInUnionPlan.java:151-175`).
+  - The ImplementInUnionRule has no size check at planning (:171, :211).
+  - The relational configuration sets 24 (`PlannerConfiguration.java:161`); Go's default is 0 (`plan_context.go:50-52`), and WS-F 4.2 sets it.
+- Resolved from v10:
+  - Graefe: H1, M3, M4 and L1-L6.
+  - Torvalds: H1 (the promotion sites are named; see M3), H2(a) and (c), M1, M2, M3, L1, L3 and L5.
+  - Storage: H1, M1, M2 and L1-L4.
+
+## Measured vs SOURCE
+
+- **Measured:** the oracle bits, the prototype A/B (ARM against GUARD against NOGUARD), the task counts and the corpus and suite deltas.
+- **SOURCE, still hypotheses:** M1, M3, M4's safety beyond the corpus, the multi-binding 24/25 boundary, and the key filter's continuation behaviour.
+
+This review is complete, and the verdict is NAK.

@@ -1,0 +1,34 @@
+**NAK — WS-C design authorization only.** This is neither implementation acceptance nor a whole-upgrade ACK.
+
+I read the complete current design, frozen v1 design/NAK, parent WS-C, retained oracle evidence, and relevant Java/Go sources. Inspected integration sources match Java `fdacd162a9c8acfadc49082b89185c823ab8ae4a` and accepted Go tree `48b50548b11a53bd1452a627689c440535a3d093`. HEAD remains `71ccd8cf8b3fd0dbafe283e91171818e36af555e`. Session metadata confirms `gpt-6-astra` / `xhigh`. No edits, tests, git mutations, publication, or delegation performed.
+
+Exact [design](/home/birdy/projects/fdb-go/rfcs/257-java-upgrade-audit/ws-c-design.md) SHA256, repeatedly verified with `sha256sum`:
+
+`9d7c8e3f60c8c21169782b03ab654e7828aa6a5b30585442234491511c755454`
+
+**Required correction: make buffered-write protection atomic with enqueue dispatch and the readable transition.**
+
+The revised guard fixes completed enqueue → readable sequences, but leaves an in-flight writer race. [MarkIndexReadable](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state.go:144) validates before [setIndexState](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state.go:523) acquires its write lock. Meanwhile, [writer dispatch](/home/birdy/projects/fdb-go/pkg/recordlayer/store.go:1155) holds a state read lock and selects maintenance from the earlier state.
+
+With completed build ranges:
+
+1. Writer A reads state 4, then pauses before registering queue mutations.
+2. Setter B checks the mutation registry and persisted queue; both are empty.
+3. A registers its enqueue and releases its read lock.
+4. B acquires the write lock and publishes READABLE without repeating validation.
+
+[Commit subsequently flushes buffered mutations](/home/birdy/projects/fdb-go/pkg/recordlayer/database.go:1285). Conflicts within the same transaction cannot prevent this incomplete index. Separate handles also lack a shared lock spanning the sequence. Concurrent context use is explicitly [supported](/home/birdy/projects/fdb-go/pkg/recordlayer/database.go:616).
+
+Specify one context-wide ordering protocol, scoped by store/index, covering authoritative dispatch through enqueue and checked validation through state transition. Define compatible lock ordering and deterministic barrier regressions for one and multiple handles, including READABLE_UNIQUE_PENDING. Merely holding the registry mutex while inspecting it is insufficient.
+
+The previous findings otherwise have sound design dispositions:
+
+- **Buffered mutations:** sequential detection and clear/cancellation bookkeeping are corrected; the concurrency hole above prevents closing finding 1.
+- **Legacy heartbeats:** quiescence, restart fencing, fail-closed legacy-key preflight, administrative cleanup, and UUID-only activation resolve the migration decision. Java [decodes UUID keys before checking age](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexing/IndexingHeartbeat.java:101).
+- **Terminal cleanup:** all exits now attempt bounded, independent cleanup of this session, preserve the original result, and retain lease fallback. This addresses Java’s [terminal cleanup contract](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/IndexingBase.java:171).
+- **Split resources:** fetch-before-check, repeated lookahead-byte accounting, construction-time clock, fail behavior, reason precedence, and exact-row termination match the inspected [unsplitter](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/SplitHelper.java:1005) and limit managers.
+- **Wire/retry:** closed-enum duplicate handling, slashless Any rejection, one retry owner, and 100 retries/101 consecutive attempts now match source and retained evidence. Java’s [retry handler](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/runners/throttled/ThrottledRetryingIterator.java:268) confirms the broad failure policy.
+
+Direct queued-setter guards and vector callback enforcement are correctly identified as safety deviations. The scoped sliding predicate guarantee, SPFresh unsupported capability, WS-D GuardiANN responsibility, fresh mixed eligibility versus mixed-resume rejection, snapshot conflicts, ownership aborts, deletion cleanup, and corrected parent closeout sentence are adequately dispositioned.
+
+The expanded retained run proves **two selected specs: 15 envelope cases and three skips**. Implementation gates remain outstanding. Lucene remains an unresolved backend dependency; generic merger infrastructure does not discharge it.

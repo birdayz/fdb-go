@@ -1,0 +1,87 @@
+**NAK.** I reviewed tree `97d0b9181d02696345e166b12d9ba09b18141c49`. The design SHA256 is `2e97dd6796b4740432364e8d63ab16e4ecb1dcf84aacf1e3fc340bb3bea92400` at 1477 lines; I recomputed both. I ran no tests, probes or edits. A finding is from reading source unless it says **measured**.
+
+Every v7 finding is fixed in substance. The NAK is for one fail-open regression that revision 8 introduced, plus three low findings. All four are the same class as v7's: a claim that Java is matched, where the code matches it only in part.
+
+## Findings, most severe first
+
+**1. Medium (from source): comparing "effective values" through Go's parsers now admits changes that Java and v7 refused.**
+- **Rank hash function.** `rankHashFunctionName` (`metadata_evolution_validator.go:969`) maps every name except "CRC" to "JDK".
+  - Java has four hash functions: JDK, CRC, RANDOM and MURMUR3. It refuses an unknown name (`RankedSetHashFunctions.java:46-58`, `RankedSetIndexHelper.java:64-79`).
+  - So changing the option from unset to "MURMUR3" or "RANDOM" gets "rank hash function changed" from Java. v7 refused it too, by raw string. Revision 8 admits it.
+  - This is the lenient-parser trap that `hnswMetricName` was written to avoid, left unguarded here.
+- **R-tree Hilbert values.** Java reads `rtreeStoreHilbertValues` only when `rtreeStorage` is set, and then reads an absent value as false (`MultiDimensionalIndexHelper.java:62-65`, which tests `rtreeStorage != null`).
+  - With `rtreeStorage` set on both sides, unset to "true" is false→true, so Java refuses it. v7 refused it. `:1132` admits it.
+  - With storage unset, unset to "false" is admitted by Java and refused by Go.
+  - The "admits an option set to its default" spec covers only the case where storage is unset and the value is "true".
+- **Booleans and integers.**
+  - Java's `parseBoolean` ignores case. Go's `== "true"` does not: `:1133`, `parseRankedSetConfig`, and the HNSW booleans. So unset to "TRUE" is refused by Java and admitted by Go.
+  - For integers outside Go's accepted range, Go substitutes the default (`multidimensional_index_maintainer.go:63-77`, the HNSW range checks). Java compares the value it parsed.
+- **Fix:**
+  - Compare the values Java parses:
+    - a name function for the rank hash that keeps an unrecognized name as its text;
+    - Java's R-tree `getConfig`, including the storage-gated read, declared at the site;
+    - `EqualFold` for booleans;
+    - the raw text for any integer Go would clamp.
+  - Add JVM shapes for MURMUR3, for the Hilbert option with storage set, and for "TRUE".
+- **Adjacent (pre-existing, from source):** the index maintainers behind these parsers differ from Java on the wire for the same values:
+  - RANK hashes MURMUR3 and RANDOM as JDK;
+  - the R-tree maintainer ignores BY_SLOT storage and the Hilbert gating.
+  
+  This needs a durable home in DIVERGENCES.md or TODO.md.
+
+**2. Low: a refused nil key has lost Java's program order, and one path loses it entirely.**
+- Revision 8 removed v7's append to `buildErrors` in `addIndexCommon`. `Build` returns `buildErrors[0]` before it asks the indexes (`metadata.go:782-794`). So this sequence:
+  1. `idx.SetSubspaceKey(nil)`
+  2. `AddIndex(idx)`
+  3. `AddIndex(dup)`
+  
+  returns "Index … already defined". Java throws at step 1, and v7 returned the refusal.
+- This contradicts the comment at `:781`: "nothing a later call recorded can mask or reorder it".
+- Two refused indexes are reported in name order, not in the order of the calls.
+- `RemoveIndex` deletes the refused index (`:687`), so `AddIndex; SetSubspaceKey(nil); RemoveIndex; Build` succeeds.
+- That breaks 7.8's claims "refused on every path" and "Java's throw ends the program's sequence of calls".
+- **Fix:** record the refusal in call order (restore the append, and have a set made after `AddIndex` reach its builder). Have `RemoveIndex` carry the error. Pin both sequences.
+
+**3. Low: "walked by name, so the message does not depend on map order" is not true of the whole validator.**
+- **`getTypeRenames`** ranges over the map `pairs` (`:238`). With `disallowTypeRenames` and two renamed types, which rename is named changes from run to run. Java walks the union's fields in declaration order (`MetaDataEvolutionValidator.java:360-368`). That is a flake waiting to happen.
+- **`validateTextIndexOptions`** ranges over `changed` (`:900`).
+- **`validateMessages`** ranges over `old.RecordTypes()` (`:1187`); this is the Go-only unionless path.
+
+**4. Nits.**
+- **The message census.** The census covered only the validator file. `rename_fields_visitor.go:196`, `:202`, `:216` and `:221` still carry Go's text; Java's is "field not found in source descriptor" and "parent field not found" (`RenameFieldsVisitor.java:127-307`). Narrow "every `MetaDataEvolutionError`", or port the messages.
+- **Tokenizer version.** It is re-parsed with the error ignored (`:921-922`) instead of through `getTextTokenizerVersion`, which carries Java's refusal. So "abc"→"1" is admitted, where Java refuses it.
+- **Doc comments moved onto the wrong function in this change.**
+  - `tupleEquivalentValue`'s comment now documents `isNilSubspaceKey` (`subspace_key_identity.go:79-98`). Its "Only nil maps to nil" (`:89`) is now false for typed nils.
+  - `formerIndexNameOrUnknown`'s comment now sits on `formerIndexNameSuffix` (`metadata.go:2270`).
+- **Double normalization.** `isNilSubspaceKey(normalized)` (`index.go:507`) normalizes a second time. `normalized == nil` is enough.
+- **Untyped error.** The absent-root refusal is an untyped `fmt.Errorf` (`key_expression_proto.go:233`), where Java throws `DeserializationException`. The test matches it with `strings.Contains`.
+- **Vector scope.** Java's `disallowChange` covers the legacy option names too (`:162-168`), and it also checks `VECTOR_ENGINE`. Scope the 7.8 citation to "HNSW canonical names; aliases and engine are WS-D".
+- **Stale 7.7 claims.** The 7.7 text at `:1210`/`:1234` and `ws-j-design.md:1555` still carry claims that 7.8 supersedes. 7.7's count was annotated in place; these were not.
+
+## What holds
+
+**Measured:**
+- **Hashes.**
+  - Ten candidate blobs match `ev12/src.sha`: the five code files, three tests, the conformance file, and DIVERGENCES.md/CHANGELOG.md.
+  - `check.txt`: 1135 files OK.
+  - The `.good` line counts equal the candidate's. They are not byte-verified, because hashing under `/var/tmp` was denied.
+- **Mutations and baseline.**
+  - m61–m80: each shows marker count 1, exit 3, the reds as tabled, and "restored". `run-mutations.out` reads ALL-DONE.
+  - Baseline: 462 of 462.
+- **JVM specs.**
+  - `jvm-subspace2`: 36 of 36, with 36 printed lines. Java's whole message is a prefix of Go's on every refusal.
+  - `jvm-md`: 71 of 71.
+- **ev12 runs.**
+  - Focus: 603 of 603, including the merge, label and default specs.
+  - Final `recordlayer_test`: 3708 of 3709, and all six new plain tests pass.
+  - `just test`: 43 of 94 executed, 94 pass. It ran on tree `79499fef`, which differs from the candidate only in review records and `evidence-v12.txt` (`git diff --stat`).
+- **m56.** I read `formerIndexFromProto` in both files; it is identical.
+
+**From source:**
+- `validateIndex`, `validateRecordTypes` and `validateField` follow Java's order, messages and label rule.
+- Roots and primary keys are compared with `keyExpressionEquals`.
+- The index and former-index version messages are Java's.
+- The nil-key paths work: set after `AddIndex`, sticky refusal, typed nil, struct literal, and a nil former-index key.
+- The merge text now says the merge fails.
+- The session code is unchanged since v7.
+- The preserved boundaries are unaffected.

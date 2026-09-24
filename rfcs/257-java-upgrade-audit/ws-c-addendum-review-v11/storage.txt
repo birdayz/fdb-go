@@ -1,0 +1,68 @@
+**NAK.** Tree `9b7856e7c5d5563eb53c8b03b92a5953dac823a1`. I recomputed the design hash: `226f24320b6c5d92f75b2de01d3fe2a6989e910655479d02db4adcbdfbc7b0a9`, 2152 lines, which matches. The review was read-only. A finding is from reading source unless it is marked **measured**.
+
+Every revision-10 finding is resolved except half of storage v10 finding 2. Nothing revision 11 changed breaks what revision 10 fixed. The NAK rests on two Low findings; everything else is a nit.
+
+## Findings, most severe first
+
+**1. Low (wire): Go's key validation is not Java's for two key-expression types, so `Build` accepts meta-data Java's build refuses.** 7.11 and `index_validator.go:34-40` describe the per-index key step as Java's `Index.validate`. It is not, for two types:
+- **`DimensionsKeyExpression`.** Java checks it at `DimensionsKeyExpression.java:89-101`: prefix plus dimensions must fit the columns, and every dimension column must be `INT64`. Go's `key_expression_validate.go:41` only recurses into the whole key.
+- **`CardinalityFunctionKeyExpression`.** It embeds `FunctionKeyExpression`, so the type switch misses it and it falls to "skip validation" (`:50`). Java refuses duplicate-producing arguments and validates the arguments (`CardinalityFunctionKeyExpression.java:156-161`).
+- **Consequences:**
+  - A MULTIDIMENSIONAL index over an `int32` or `sint64` dimension builds in Go and is refused by Java. Go then maintains it: `asInt64` accepts `int32` (`multidimensional_index_maintainer.go:196-199`, `time_window_leaderboard_maintainer.go:1185`). A Go-created store's meta-data is then one Java cannot open.
+  - When prefix plus dimensions is too wide, Go reports the factory's text. Java reports "dimensions declared a prefix size…".
+  - A CARDINALITY over a missing field builds in Go.
+- **Undeclared:** grepping `pkg/`, `DIVERGENCES.md` and `conformance/` for the three Java texts finds 0 hits. In the same run, the positive control "is repeated with FanType.None" was found.
+- **Coverage:** none of the 30 index shapes probes either type.
+- **Fix:** port both `validate` overrides and add JVM shapes for them.
+
+**2. Low (docs, owner ruling): the new Compatibility note is contradicted by the same `[Unreleased]` section, and storage v10 finding 2 is only half fixed.**
+- `CHANGELOG.md:28-32` says nothing migrates, detects or repairs pre-release data. The same section still says:
+  - `:301` — a RANK index "now refuses every write until its option is corrected". This is the sentence storage v10 cited at `:295`: both engines' evolution checks refuse that correction.
+  - `:92-100` — a remedy for unsigned fields, plus a PENDING `MigrateLegacyRecordsFile`.
+  - `:397-398` — "Rolling upgrade" instructions.
+  - `:413-416` — "Rebuild every index stored with a `value_expression` that a pre-upgrade Go build maintained".
+- `Build` still runs `refuseAmbiguousLegacyUnion` (`metadata.go:1292-1303`), which detects pre-upgrade Go framing.
+- The umbrella RFC contradicts itself too: item 8 still lists the legacy-records migration; item 9 says nothing will be built to migrate.
+- 7.11's "its scattered rebuild instructions are withdrawn" is wider than the text.
+- **Fix:** withdraw or reword `:301` here. Point the WS-J residue at WS-J's gate, or scope the note to match.
+- **Also:** `CHANGELOG.md:13-14` calls v0.1.0 a tagged release, so "pre-release Go builds" can be read as excluding it. The owner's ruling covers "old releases". Name v0.1.0 explicitly.
+
+## Nits
+- **DIVERGENCES.md:**
+  - `:3196`'s title still says "two Go-only refusals"; its body says one.
+  - `:3225` names only the FanOut nesting, but `key_expression_validate.go:164` refuses a map nesting of any fan type, including Concatenate, which Java builds.
+  - `index_validator.go:31` cites "A vector index's root is not checked at build", which does not exist (0 hits). The live entry is at `:2088`.
+- **Texts:** `index_validator.go:21-24` says log info is not part of Go's texts. The sliding-window validator's texts in the same sequence still append "(index %s)" (`sliding_window_index_validation.go:59-60, :72-73`).
+- **`firstFault`** walks each index's current root and each type's current primary key (`metadata.go:2250-2263`). A one-child Then that was later replaced is missed, so "every key expression handed to the builder" is too wide.
+- **"As Java's does" (`record_count.go:343`) is too wide.** Java's `getSnapshotRecordCountForRecordType` never reads the count key; it needs a COUNT index (`FDBRecordStore.java:2431-2452`).
+- **Chaos:** `chaos/verify_bitmap.go:54-57` returns no violations when the size is refused, without checking that nothing was written.
+- **Mutation record:**
+  - r22's guard `!idx.IsUnique()` refuses every MAX_EVER_VERSION index, not just those without record versions.
+  - Its row leaves out the targeted spec that its log shows red: "builds without SetStoreRecordVersions, as Java does".
+  - "n17 reddens this test alone" has not been re-measured.
+- **Evidence:**
+  - `groupalias10.log` (run with `--test_output=errors`) and `ev2/rerun.log` show no spec counts, and no command is kept for ev2. So the population of each run comes from source, not from the logs. The `GroupAlias` focus does match `Describe("GroupAliasIdentityJavaProbe")` at `fromless_select_java_probe_test.go:264`.
+
+## Revision-10 findings, checked
+- **Nest and Then shapes: resolved.**
+  - `Nest` is `Concat` (`key_expression.go:520`).
+  - The only Composite struct literal is in `Concat` (`git grep`: 1 hit).
+  - The nested branches are gone.
+  - Java's arity throw is recorded in program order. `GroupBy` carries it. `firstFault` returns Java's text and class.
+  - The loader texts lost their suffixes.
+  - Every production `Concat(xs...)` is guarded for a single child.
+- **Map fields and nesting into a scalar: resolved (measured).** In `wsc-r11-keyval-1` Go was red for lacking the field name; `-4` passes 42/42. The text includes `Order.price`. The "no Go type" claims carry Superseded markers.
+- **Per-index order: resolved.** `validateCurrentAndFormerIndexes` matches `MetaDataValidator.java:103-155` and `IndexValidator.java:48-54`. The VALUE, atomic (`AtomicMutation.java:306-367`), RANK/TWL, BITMAP (`:70-106`), TEXT (`:101-128`), VERSION and MULTIDIMENSIONAL (`:87-141`) validators match their factories.
+- **Bitmap entry size: resolved.** Only the maintainer and the chaos model read it. "٢" is now read as 2. Neither engine writes a byte for a size of zero or below.
+- **Other v10 findings: resolved.** Class-by-value assertions, `AddMultiTypeIndex`, `GetRecordType`, the comments, the sweep by operator, the oracle's shape check and the n3/n7 labels are all done.
+
+## Measured
+- **Source and tree identity.**
+  - Six gate blobs hash to their `ev/src.sha` entries.
+  - `ev` ran on `d3615120`; `ev2` on `98dd04f5`.
+  - `d3615120→98dd04f5` changes only the two test files. `98dd04f5→gate` adds this document plus 13 revision-10 review files, not "this document only".
+- **Mutations.** `run.out` reads ALL-DONE; the tree before and after is `d3615120`. Baselines: 3712/3713 and 36/1678. I read the r1, r4, r5, r7, r11, r18, r20 and r22 logs; each shows marker count 1, bazel exit 3, the tabled red set and "restored".
+- **Evidence runs.** `ev`: conformance 1559/1678; oracle 63/64 (the COUNT case); `just test` 45 of 94 targets executed, 93 passing and 1 failing. `ev2`: 2 of 2 targets executed, both passing. `groupalias10`: 10 of 10 runs passed.
+- **Not verified:** the bytes of the `good/` copies (hashing was denied).
+
+The preserved boundaries are unaffected.

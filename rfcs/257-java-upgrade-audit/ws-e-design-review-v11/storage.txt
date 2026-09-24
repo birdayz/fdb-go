@@ -1,0 +1,105 @@
+**NAK: RFC-257 WS-E design v11 (storage/wire lens)**
+
+- **Tree:** `d6ad3e9c2c5bc3a32c42cf0399c97afade52e098`
+- **Design:** `rfcs/257-java-upgrade-audit/ws-e-design.md`, SHA-256 `2f0cb50a0eb84022aecf712bd3200c15886c56264b45cbfdac2715fc6a621170`, 3516 lines. I recomputed both from `git show`.
+- **Java:** 4.14.2.0 (`fdacd162a`).
+- **Method:** read-only, and I ran nothing. I read the three v10 verdicts, the diff from v10, the full v11 design, the v11 oracle and its evidence, the wse12 prototype records, and the Java and Go sources cited below.
+
+## HIGH
+
+**H1. The NaN change in the binder reaches four kinds of scan, but the design specifies only one.**
+- **What the design says:** :1146-1175 replaces the binder's NaN refusal (scan_range_binding.go:391-396) with two NaN ranges plus a key filter. It then says "the index cursor applies it" (:1166).
+- **Where that refusal actually lives:** in the shared binder, which has four callers:
+  - primary-key scans (executor.go:320);
+  - value-index scans (:444);
+  - vector partition prefixes (:765), which already refuse terminal zero widening because each sign is its own graph;
+  - aggregate-index scans (executor_new_plans.go:104).
+- **Aggregate index over a DOUBLE group column:** every NaN bit pattern is its own group entry. Round v11 measured that SQL writes two patterns (the CAST and the division).
+  - So `WHERE d = ? GROUP BY d` bound to NaN returns one "NaN" group per pattern.
+  - Go's streaming GROUP BY puts every NaN in one group (streaming_cursors.go:268-280).
+  - The answer then depends on which plan was chosen.
+- **Primary-key scan:** the filter has to work on whole records (split chunks, the version suffix) with a primary-key continuation. The design does not specify it.
+- **Vector prefix:** a range of NaNs cannot be opened as exact partitions.
+- **Fix:** state the NaN arm for each caller, and test each.
+  - Aggregate and vector scans: keep the loud refusal, or re-aggregate across the pattern entries.
+  - Primary-key scans: specify the record-level filter.
+
+## MEDIUM
+
+**M1. The declared DATE repair `SET d = CAST(d AS DATE)` (:1552-1555) is wrong in three ways.**
+- **The UPDATE is atomic:** one unreadable row fails the whole statement with 22F3H. The design says such a row is "left as it is", but no row is written.
+- **It destroys data:** it truncates every non-midnight timestamp text. Both the old and the new channel store that text identically (utilities.go:256-263), so the repair removes time-of-day that this change never touched.
+- **It fails in its own declared case:** the design says a UNIQUE index admits one row per spelling of a day. Rewriting the timestamp-text row then collides with the date-text row (23505).
+- **It ignores FDB's limits:** it is one unbatched statement against the 5 s / 10 MB transaction limits.
+- **Fix:** restrict the repair to midnight timestamp text, batch it by key range, have duplicates resolved first, and pin each case with a test.
+
+**M2. Section 8 still carries the NaN premise v11 withdrew (:3483-3486).**
+- **Stale text:** section 8 says the scan runs "with every later comparison residual" and that "the rows are equal for every NaN a statement can write".
+- **Measured contradiction:** `0.0 / 0.0` stores `fff8000000000000` (java_t_d_id3). The target's CAST probe misses that row, and Go's two-range scan returns it. Section 4.1(b) says this itself (:1180-1184).
+- **Other stale copies:**
+  - :157 and :3403 say ten Describes and 457 rows.
+  - :231-233 describe the old evidence file. The regenerated one says eleven Describes, 468 blocks and "Ran 60 of 60".
+  - :805 cites PartitionSelectRule.java `:197-200`; the lines are 201-205.
+
+**M3. The NaN-bits fix covers only the CAST.**
+- **MIN and MAX aggregates:** Go's MIN/MAX over DOUBLE (streaming_cursors.go:827-829, through :2157-2167) return `math.NaN()`, whose bits are `7ff8…01`. Java's MIN_D and MAX_D (NumericAggregationValue.java:688, 693) return the NaN operand itself. So `INSERT … SELECT MAX(d)` writes Go's pattern, and the claim at :1129 is false for Go.
+- **Spellings:**
+  - Go's parser accepts `nan` and `inf` in any case, and refuses `-NaN`.
+  - Java's accepts only `NaN` and `Infinity`, each with an optional sign, plus `d`/`f` suffixes.
+  - So `CAST('-NaN' AS DOUBLE)` is stored by Java and refused by Go, and `CAST('nan' AS DOUBLE)` is the reverse.
+- **Fix:** list every NaN producer on the shared SQL surface, port Java's parse grammar along with the bits, and add oracle rows.
+
+**M4. The multi-binding size refusal is an undeclared user-visible change.**
+- **Java source (not measured):** the target checks only at execution (RecordQueryInUnionPlan.java:151-153), against the product of the source sizes (:331-337). Its planner rule sets no limit (ImplementInUnionRule.java:171-212).
+- **The regression:** with the partition arm, two 5-value IN lists under ORDER BY become one 25-way IN-union, which fails with "too many IN values". Go answers that query today.
+- **What was measured:** WS-F measured only the single-list case (ws-f-design.md:69).
+- **Fix:**
+  - Measure the two-list case in the target.
+  - Add a CHANGELOG entry and a 5×5 pin.
+  - Compute the product with saturation. Java's `int` product wraps, so 65536×65536 = 0 and it returns empty; step (6)'s bound slices make large arrays reachable.
+
+**M5. The narrowed guard admits the shape RFC-150 refused, and no test pins its rows.**
+- **The newly admitted shape:** `O JOIN T ON t.fk = o.id WHERE t.k IN (1, 2)`, with an index on k and none on fk.
+  - The probe is fed by the IN-list explode.
+  - The join key sits in the residual.
+  - That is RFC-150 §8's refused case (rfcs/150…:204-207).
+- **What is tested:** the tests at :906 check only the guard's verdict.
+- **Fix:** add FDB row tests against a full-scan oracle, with two tables and with three (probe tied to one table, residual to another), and amend RFC-150 §8's "that same alias".
+
+**M6. The design says the RFC-182 union-leg dependency is "explicit in section 8" (:2603); it is not.**
+- **Section 8 check:** section 8 (:3354-3400) has 0 matches for 182, union leg or crossing; the control term `F-7` has 2.
+- **The cited document:** the design cites `ws-f-design.md v3`, which is not at this tree. The tree's WS-F is v2 and has 0 matches.
+- **Consequence:** Graefe M2 and Torvalds H2(d) from v10 stay open.
+
+## LOW
+1. **Hash mutation prediction (:2859):** the design predicts that inverting PLANNING's hash reddens no tie row. That cannot hold for `in_cast_null_join_inner_empty`, a join-nesting tie that PLANNING decides.
+2. **"Holds of the code" (:1614) claims more than the code shows.** These `time.Time` sites remain:
+   - continuation.go:153/:327;
+   - proto_value.go:321;
+   - cascades_generator.go:1745, which declares a `time.Time` scan type for values that are text.
+3. **Wrong cross-references:** section 8 (:3387), DIVERGENCES.md:3105-3116 and the v11 oracle's comments cite "4.2" for the NaN fix and the assignment lattice. Section 4.2 is array construction.
+
+## Verified
+- **v10 storage findings:**
+  - Resolved: M2, L1, L2 and L4.
+  - L3: resolved except :805.
+  - H1: specified, but under-scoped (H1 above).
+  - H2: measured and planned, but incomplete (M3 above).
+  - M1: declared, but its repair is defective (M1 above).
+- **Ordering holds:**
+  - After an equality on a float column that can widen, the ordering claim already stops (match_candidate_index.go:917-944).
+  - The merge comparator treats every NaN as one value (coercion.go:26-49).
+- **Prototype records:**
+  - Seed-17 task counts: 23459, 42723, 382371, 43919, 44932 and 49528.
+  - #7 under GUARD plans `bindings=2`.
+  - The corpus diff is 2994 identical and 1 changed.
+  - GUARD's failures are plan pins only (log :2620-2692 and :20018-20026).
+  - NOGUARD hits 54F02 (log :14191).
+- **Oracle v11:**
+  - The pins are as the design states.
+  - The two WS-E oracle sources hash to the tree's blobs.
+  - The oracle ran 60 of 60.
+  - The M11 mutation reddens only java_t_d_id1.
+  - check.txt has 1039 OK lines and no others.
+
+**Measured vs SOURCE:** the oracle bits and the prototype's plans, counts and suite results are measured. H1, M1, M3, the target outcome in M4 and the safety of M5 are SOURCE.

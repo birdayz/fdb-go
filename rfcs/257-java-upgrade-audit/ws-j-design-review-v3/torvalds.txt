@@ -1,0 +1,55 @@
+**NAK.** This covers tree `256afd191053c0f4f5e47b88bdeddbe19597f8fc` and design `rfcs/257-java-upgrade-audit/ws-j-design.md` (tree blob `6ab284e98d27`, 974 lines).
+
+I could not re-check SHA256 `cef3fdcc…`, because the tool policy denied both `sha256sum` and `git hash-object`. I reviewed the blob through `git show TREE:path`. I ran no tests, probes or mutations. Everything below comes from reading source, and a fact is MEASURED only where an artifact exists.
+
+There are no HIGH findings. The NAK rests on four MEDIUM findings, each fixable in a delta. Every v2 NAK item is answered in the design.
+
+**Checked and correct**
+- **Widening arm scope:** it is set only in `validateSchemaRebind`. `literalCarriersEquivalent` (validator :1302) decides the long-arithmetic flag separately for each `Function`. It compares integers by value, admits a float/double change only under long-arithmetic, and compares unknown fields.
+- **Version check:** `validateVersion` :278 is the same condition as Java :154.
+- **Option order:** matches Index.java :131, :253-266, :356-364 and :661-663, and MaterializedViewIndexGenerator :107 and :174. No `Index` copy loses `optionOrder`.
+- **F13 against Java:** messages and order match RecordMetaDataBuilder :316-358 and :635-747, including validation on load. All 13 JVM shapes passed, but only in `/var/tmp/vr-jvm.log`.
+- **Pins and tally:** the 470-run tally reconciles. The spec asserts `discriminating==5`, the long_value pins, the Go non-integer pins and the Go WSJV pins. The companion mutations show the class pins fire.
+
+**MEDIUM**
+1. **The evidence does not tie the results to the landed bytes.**
+   - evidence-v3 hashes only 10 files. Not hashed: `metadata_evolution_validator.go`, `fdb_store_catalog.go`, `key_expression.go`, `index_predicate.go`, `metadata.go`, `metadata_validate_records.go`, `errors.go`, and every new test.
+   - Even so, evidence-v3.txt:697 says "WS-J bytes are identical", and README item 12 says "hashed bytes of the v3 tree".
+   - The widening mutations the design claims (:408), and the F13 JVM run, exist only as `/var/tmp` logs. Those logs do not record the mutation text or a presence count.
+   - `just test` executed only 45 of 94 targets (49 were cached), on a tree that differed in `pkg/simfdb`.
+   - Fix: hash every landed file and test, and commit the mutation evidence.
+2. **The ratchet pins classes, not content.**
+   - Content is pinned for only 165 runs (161 equal + 4 companion).
+   - The 180 metadata-diverge runs already differ in `records`. A new descriptor regression in any of them, such as a changed column type or nullability, leaves the class unchanged.
+   - The 121 reject runs do not pin Go's SQLSTATE.
+   - The oracle catches an F12 regression only by chance: in mutation M-c3, only 3 runs moved.
+   - The "deterministic bytes" claim (§0 :106-108) rests on just two passes.
+   - Fix: pin a Go canonical digest (or Go's rejection code) for each run next to its class, and assert in-process that two Go builds of each body produce identical bytes.
+3. **F13 breaks existing stores without a migration path.**
+   - After this change, v0.1.0-persisted metadata no longer loads if its union is named `UnionDescriptor` without a usage option, or if it has any unsigned field. The stores that use it stop opening.
+   - CHANGELOG lists this under "Changed", but the Compatibility block and any migration steps are missing. Index entries at or above 2³¹ for uint32 fields were written unsigned, so they need a rebuild once the field is retyped.
+   - `SetRecordsWithUnionName` (metadata.go:271) skips `fetchUnionDescriptor`. It therefore builds metadata that this same binary refuses when reloading it (metadata_store.go:79, fdb_template_catalog.go:280).
+   - Fix: refuse any union name that differs from what `fetchUnionDescriptor` finds.
+4. **The widening claims go beyond what the test pins.**
+   - `TestFDB_SchemaRebindAcceptsLiteralCarrierWidening` (fdb_catalog_test.go:848) hand-builds protos and never opens a store.
+   - "The index keeps its versions" holds by construction, and "the store has nothing to rebuild" (design :404-407) is a SOURCE claim.
+   - The path users actually take — rebuild from DDL, then `RepairSchema` — is not exercised.
+   - CHANGELOG says rebinding "is accepted", but that holds only when literal carriers are the sole difference. A template that also holds an F1-affected root is refused ("key expression changed") until §4 lands. That refusal is correct and fails closed, but it should be stated.
+   - `frl meta evolve-check` (meta.go:117-121) has no widening option, so it refuses the exact pair the catalog admits. That contradicts fdb_store_catalog.go:280, which calls it "the same guard".
+
+**LOW**
+- **Superseded claims still present:**
+  - fdb_store_catalog.go:334 says a lower metadata version is legitimate; it is now refused.
+  - meta.go:138 still says "hasn't advanced".
+  - metadata.go:88, :2097 and :2104 describe a nil union.
+  - The `SetRecordsWithUnionName` doc at metadata.go:266-270.
+  - Oracle :1956-1957 cites "section 3.4" where 3.5 is meant.
+  - README item 6 says "11 reads over each", but the driver-stored copy gets only one read.
+  - Design :744-745 says companions are registered right after their owner; builder.go:689 registers them after all of the table's declared indexes.
+  - The design's :686-690 cite points to the index-adds-record-type arm, not to a rule about index versions.
+- **`javaTupleValueClassName`** (long_arithmetic_function.go:211) returns the proto full name for a message. Java logs `getClass().getName()` (Key.java:561). Only 3 of its 9 arms are tested.
+- **Multiple faults are reported differently from Java.** Go joins every fault (metadata.go:343-365, `errors.Join` at :743), and it reports a non-message field after the repeated check. Java throws the first fault in field order.
+- **Signed reads are only partly converted.** values.go:1165 and `functions/proto_value.go` still read uint32 unsigned, so key values and row values disagree.
+- **`literalKeyCarrier`** (generator.go:911-929) passes through any INT carrier that is not `int64`; a Go `int` is stored as `long_value`. No oracle shape covers 2147483647, 2147483648 or -2147483648.
+- **F2b wording:** the F2b spec compares Java's `Tuple.toString` (oracle :2084-2104; the `Hex` field is fetched but unused), while DIVERGENCES says "byte for byte".
+- **Duplicate-option message:** the Guava duplicate-key message is labelled "measured", but the tree has no JVM artifact for it.

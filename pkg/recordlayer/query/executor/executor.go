@@ -821,7 +821,10 @@ func executeVectorIndexScan(
 // presence of a predicate field would kill, at execution, plans the planner is
 // entitled to build and no query can route around.
 func requireReadableQueryIndex(store *recordlayer.FDBRecordStore, idx *recordlayer.Index) error {
-	state := store.GetIndexState(idx.Name)
+	state, err := store.ReadIndexState(idx.Name)
+	if err != nil {
+		return err
+	}
 	if state == recordlayer.IndexStateReadable {
 		if idx.HasFilteringPredicate() {
 			return &FilteredIndexPlanError{IndexName: idx.Name}
@@ -4400,21 +4403,21 @@ func goToProtoScalarValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.
 			return protoreflect.ValueOfInt64(int64(n)), nil
 		}
 	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
+		// An INT column holding a signed Integer in the target (see
+		// functions.ConvertToProtoValue): the INT range, stored as its 32 bits.
 		switch n := v.(type) {
 		case int64:
-			if n < 0 || n > math.MaxUint32 {
+			if n < math.MinInt32 || n > math.MaxInt32 {
 				return protoreflect.Value{}, &NumericRangeOverflowError{Value: n, Column: string(fd.Name()), TypeName: fd.Kind().String()}
 			}
-			return protoreflect.ValueOfUint32(uint32(n)), nil
+			return protoreflect.ValueOfUint32(uint32(int32(n))), nil
 		case uint32:
 			return protoreflect.ValueOfUint32(n), nil
 		}
 	case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+		// A signed Long in the target: every int64 is stored as its 64 bits.
 		switch n := v.(type) {
 		case int64:
-			if n < 0 {
-				return protoreflect.Value{}, &NumericRangeOverflowError{Value: n, Column: string(fd.Name()), TypeName: fd.Kind().String()}
-			}
 			return protoreflect.ValueOfUint64(uint64(n)), nil
 		case uint64:
 			return protoreflect.ValueOfUint64(n), nil

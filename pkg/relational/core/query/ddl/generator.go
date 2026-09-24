@@ -10,6 +10,8 @@
 package ddl
 
 import (
+	"math"
+
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"fdb.dev/gen"
@@ -589,25 +591,7 @@ func generateKeyExpression(vals []values.Value, orderingFns map[values.Value]str
 	if len(components) == 1 {
 		return components[0], nil
 	}
-	return concatFlat(components), nil
-}
-
-// concatFlat concatenates components with Java's ThenKeyExpression
-// constructor semantics: a component that is itself a Then contributes its
-// CHILDREN, not a nested node (ThenKeyExpression.java:264-270 flattens in
-// `add`). Go's recordlayer.Concat stores children verbatim, so without this a
-// trie run followed by a non-field component would serialize as a nested
-// Then proto — a byte shape Java can never produce for the same DDL.
-func concatFlat(components []recordlayer.KeyExpression) recordlayer.KeyExpression {
-	flat := make([]recordlayer.KeyExpression, 0, len(components))
-	for _, c := range components {
-		if then, ok := c.(*recordlayer.CompositeKeyExpression); ok {
-			flat = append(flat, then.SubKeyExpressions()...)
-			continue
-		}
-		flat = append(flat, c)
-	}
-	return recordlayer.Concat(flat...)
+	return recordlayer.Concat(components...), nil
 }
 
 // fieldTrieNode is the Go form of FieldValueTrieNode
@@ -658,15 +642,21 @@ func computeTrieAtDepth(vals []values.Value, start, depth int) (*fieldTrieNode, 
 		if !ok {
 			break
 		}
+		// Java tests the WHOLE path against the prefix — equals, then
+		// isPrefixOf (FieldValueTrieNode.java:212-218) — so the prefix check
+		// comes first. Testing only the path's LENGTH first took a top-level
+		// column that follows a nested one (`s.x, ts`: ts has length 1 under
+		// prefix [S]) for the end of the S subtree, dropping S's children and
+		// rendering field(S) where Java renders concat(field(S).nest(X), TS).
+		if !prefixMatches(vals, start, i, depth) {
+			break
+		}
 		if len(path) == depth {
-			// The path terminates exactly at this prefix.
+			// The path equals the prefix: it terminates here.
 			if depth == 0 {
 				break // a zero-length path cannot occur (FieldPath is non-empty)
 			}
 			return &fieldTrieNode{value: fv}, i + 1, nil
-		}
-		if !prefixMatches(vals, start, i, depth) {
-			break
 		}
 		acc := path[depth]
 		// A duplicate child key = the same nested field path referenced twice
@@ -873,10 +863,146 @@ func valueKeyExpression(v values.Value, res storageNames) (recordlayer.KeyExpres
 		return recordlayer.FunctionExpr(name, argumentExpression(args)), nil
 	case *values.ConstantValue:
 		// LiteralValue → Key.Expressions.value(literal) (:576-577).
-		return recordlayer.Literal(val.Value), nil
+		carrier, err := literalKeyCarrier(val)
+		if err != nil {
+			return nil, err
+		}
+		return recordlayer.Literal(carrier), nil
 	default:
 		return nil, unableToConstruct()
 	}
+}
+
+// literalKeyCarrier returns the Go value whose Value proto matches the one Java
+// stores for the same literal. Java's LiteralValue holds the boxed Java type of
+// the literal's static type, and Key.Expressions.value(Integer) serialises as
+// int_value while value(Long) serialises as long_value. Go's query runtime keeps
+// every integer literal on an int64 carrier and every floating one on float64,
+// whatever its static width, so the carrier has to be narrowed to the static
+// type at this boundary. Without the narrowing Go stored long_value 10000 for
+// the entry size bitmap_bucket_offset injects, and Java then could not plan any
+// query over that table: its encapsulation of the stored (LONG, LONG) function
+// failed where Java's own (LONG, INT) form succeeds.
+//
+// An INT-typed value outside the int32 range cannot be narrowed without changing
+// the stored bytes, and the SQL literal typing never produces one (a literal is
+// INT only when it fits, ParseHelpers.java:96-98), so reaching it is a typing
+// defect upstream: it is refused instead of wrapping silently into the index
+// definition. A FLOAT-typed float64 carries a value already rounded to float32
+// (FLOAT literals are parsed as float32), so the float narrowing is exact.
+//
+// The carrier is decided by the STATIC type, never by the Go kind the value
+// happens to arrive in: an INT- or LONG-typed constant held in any Go integer
+// kind (a platform int, an int32, an unsigned kind) is carried as int32 or int64
+// respectively, so no Go kind can reach the wire as the other width.
+//
+// Every (static type, Go kind) pair is either one of the pairs below or refused:
+// an unrecognised pair (a FLOAT held in an integer kind, a STRING held in
+// anything but a string) would otherwise reach the wire with whatever carrier
+// the Go kind happens to have, the class of defect this function exists to end.
+//
+// A NULL literal is carried as nil whatever its type. A non-NULL value with no
+// static type is refused: the type is what decides the carrier.
+func literalKeyCarrier(c *values.ConstantValue) (any, error) {
+	if c.Value == nil {
+		return nil, nil
+	}
+	if c.Typ == nil {
+		return nil, noLiteralKeyCarrier(c)
+	}
+	switch c.Typ.Code() {
+	case values.TypeCodeInt, values.TypeCodeLong:
+		n, ok, err := literalInteger(c.Value)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, noLiteralKeyCarrier(c)
+		}
+		if c.Typ.Code() == values.TypeCodeLong {
+			return n, nil
+		}
+		if n < math.MinInt32 || n > math.MaxInt32 {
+			return nil, api.NewErrorf(api.ErrCodeInternalError,
+				"INT literal %d in an index definition does not fit in 32 bits", n)
+		}
+		return int32(n), nil
+	case values.TypeCodeFloat:
+		switch v := c.Value.(type) {
+		case float32:
+			return v, nil
+		case float64:
+			return float32(v), nil
+		}
+	case values.TypeCodeDouble:
+		switch v := c.Value.(type) {
+		case float64:
+			return v, nil
+		case float32:
+			return float64(v), nil
+		}
+	case values.TypeCodeString:
+		if v, ok := c.Value.(string); ok {
+			return v, nil
+		}
+	case values.TypeCodeBoolean:
+		if v, ok := c.Value.(bool); ok {
+			return v, nil
+		}
+	case values.TypeCodeBytes:
+		if v, ok := c.Value.([]byte); ok {
+			return v, nil
+		}
+	}
+	return nil, noLiteralKeyCarrier(c)
+}
+
+// noLiteralKeyCarrier is the refusal of a literal whose static type and Go kind
+// are not a pair literalKeyCarrier knows how to carry.
+func noLiteralKeyCarrier(c *values.ConstantValue) error {
+	typ := "no static type"
+	if c.Typ != nil {
+		typ = "type " + c.Typ.String()
+	}
+	return api.NewErrorf(api.ErrCodeInternalError,
+		"literal %v (%T) of %s in an index definition has no key carrier", c.Value, c.Value, typ)
+}
+
+// literalInteger reads an integer constant held in any Go integer kind as an
+// int64. ok is false for a non-integer value, which the caller refuses;
+// an unsigned value beyond int64 cannot be an INT or LONG literal and is refused.
+func literalInteger(v any) (n int64, ok bool, err error) {
+	switch x := v.(type) {
+	case int64:
+		return x, true, nil
+	case int:
+		return int64(x), true, nil
+	case int32:
+		return int64(x), true, nil
+	case int16:
+		return int64(x), true, nil
+	case int8:
+		return int64(x), true, nil
+	case uint8:
+		return int64(x), true, nil
+	case uint16:
+		return int64(x), true, nil
+	case uint32:
+		return int64(x), true, nil
+	case uint:
+		if uint64(x) > math.MaxInt64 {
+			return 0, false, api.NewErrorf(api.ErrCodeInternalError,
+				"integer literal %d in an index definition does not fit in 64 bits", x)
+		}
+		return int64(x), true, nil
+	case uint64:
+		if x > math.MaxInt64 {
+			return 0, false, api.NewErrorf(api.ErrCodeInternalError,
+				"integer literal %d in an index definition does not fit in 64 bits", x)
+		}
+		return int64(x), true, nil
+	}
+	return 0, false, nil
 }
 
 func unableToConstruct() error {
@@ -922,7 +1048,9 @@ func arithmeticFunctionName(op values.ArithmeticOp) (string, error) {
 // bucketing functions are Java ArithmeticValues too
 // (ArithmeticValue.java:374-375), so their key-expression form is the same
 // function(name, concat(args)) lowering — with the walker-injected 10000
-// entry-size literal as the second argument, exactly the proto Java stores.
+// entry-size literal as the second argument. That literal is INT-typed, as in
+// Java (SemanticAnalyzer.java:1115, a LiteralValue<Integer>), so
+// literalKeyCarrier stores it as int_value, exactly the proto Java stores.
 func bitFunctionName(fn string) (string, bool) {
 	switch fn {
 	case "BITAND":

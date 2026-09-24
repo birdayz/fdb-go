@@ -1,0 +1,75 @@
+**NAK.** Tree `eb426a53f814802d5c9ff1f4fca67ee199f4c1cd`; design `ws-j-design.md` SHA256 `1388036404d405a028df761a1055370d267e36dd6fdda6c93cb9b00a058a5814` (hash matches).
+
+I ran nothing; this is a source-and-artifact review. The evidence file's recorded hashes match this tree's oracle (`05d14b9e…`), corpus (`205f5cca…`) and `generator.go` (`d5fb9451…`), so the evidence describes these exact bytes.
+
+**Confirmed correct against Java:**
+- The trie fix matches `FieldValueTrieNode.java:212-218`.
+- The table-move mechanism matches `DdlVisitor.java:559-564`, `RecordMetadataSerializer.java:70,83` and `FileDescriptorSerializer.java:102-112`.
+- `record_types` really is a HashMap (`RecordMetaDataBuilder.java:1473`), and anonymous type names really are random (`ProtoUtils.java:96-98`).
+- All four `SchemaExistsBehavior` contracts and messages, and Java's save order (`RecordLayerStoreCatalog.java:232-269`).
+- The bit/bitmap lane table (`ArithmeticValue.java:500-522`).
+
+## High
+
+1. **The oracle calls wire divergences "equal", and the design's tally repeats it.** The spec sets `both-accept-equal` from the per-index comparison only (`ws_j_index_fidelity_conformance_test.go:754`); metadata-level differences never demote a row. Of the 62 "equal" rows in the evidence:
+   - 44 are byte-identical;
+   - 3 are equal only after canonicalization;
+   - 15 still differ after canonicalization. These include `union.yamsql`, whose union field numbers and record-type keys differ (the F3 wire claim itself), and `isolation-level-snapshot.yamsql:30`, which carries a companion and a version shift.
+
+   Counted with `git grep -c` on the evidence file: 44 / 3 / 15. Positive control: 74 both-accept rows = 62 + 12. Section 0's "62 byte-identical" is false. The class must include the canonical-metadata result.
+
+2. **The query oracle pins nothing.** Its only assertion, `Expect(n).To(Equal(len(probes)))` (`:891`), cannot fail. A Java runner failure is rendered as an "ERROR" line and still passes. Section 0 and the spec comment (`:833`) both say it "pins" result types. F4's measured Java facts need a pin map with set equality, as the index half has.
+
+3. **No upgrade path for templates Go has already stored.** F3 (type keys and union numbers), moving companions last (index versions) and F2 (literal bytes) all change what Go emits for DDL it already persisted. Go's evolution validator refuses record-type-key changes (`metadata_evolution_validator.go:335-343`) and derives type identity from union field numbers (`:208`). So resubmitting an existing template followed by `RepairSchema` or `fleet.Migrate` fails for every tenant whose template has an index on a table other than the last declared. The umbrella says "do not rewrite persisted index definitions indiscriminately." The design must pick a policy and test the old-Go → new-Go path.
+
+4. **The harvest is incomplete.** `harvest.py:17` doesn't match `CREATE VECTOR INDEX` (`RelationalParser.g4:174`). Six files are missing: semantic-search, semantic-search-advanced-metrics, sliding-window-semantic-search, guardiann-semantic-search, vector-mixed-version-metadata, and documentation-queries/window-function. The corpus's only vector file is vector-engine-preference.
+   - The population guard of 75 (`:633`) came from the same regex, so it cannot see the gap.
+   - The README's control `grep -rli 'create (unique )?index'` is basic regex: `?` and `(` are literal, so as written it cannot return 71 files. Record the command actually run.
+
+## Medium
+
+5. **About half the corpus's index definitions are never compared.** A rejected template hides all of its indexes. The derived cut removes views and functions but not the indexes that depend on them, nor the unnest indexes Go rejects. That hides roughly 150 definitions: aggregate-index-tests 23, index-ddl 28, values-only 28, aggregates-only 26, and others.
+   - `LEGACY_EXTREMUM_EVER` (aggregate-index-tests:39-40, index-ddl:82-89) appears in no both-accept row.
+   - The umbrella names "legacy versus tuple extrema storage"; the design has no section for it.
+   - Cut the dependent index clauses too, or add shapes.
+
+6. **The enum predicate fix (#4624, audit W9) is missing.** `enum-distinct-from-function.yamsql:26-28` says the bug also reproduces in `CREATE INDEX … WHERE`. No shape covers an enum comparison in an index predicate, and the derived run strips exactly the functions that carry the contract.
+
+7. **Undeclared canonicalization.** `wsjCanonical` sorts `message_type` by name (`:245`), which hides descriptor message order — something F3 says it ports.
+   - Java emits only the types each table's closure reaches, in table-visit order (`FileDescriptorSerializer.java:118-140`). A schema template never stores auxiliary types.
+   - So section 5's "registered BEFORE structs and tables" says nothing about emission order, and unreferenced enums are never emitted.
+   - Fix: rename anonymous types in place without sorting, and state the reachability rule.
+
+8. **CREATE SCHEMA ordering.** Go creates the record store before `SaveSchema` (`create_schema.go:63`). Java saves the row with `ERROR` first, then turns `RecordStoreAlreadyExistsException` into 42F06 "Schema <x> already exists" (`RecordLayerCreateSchemaConstantAction.java:90-104`). Deleting Go's pre-check without reordering makes a duplicate CREATE SCHEMA fail on store creation first.
+
+9. **The unnest change (3.3) is incomplete.** An annotated accessor can be a nesting parent: measured `unnest_derived` is `nest(C FAN_OUT…)`. Go renders parents with `recordlayer.Nest(name,…)`, which is SCALAR (`generator.go:773`). Java converts parents and leaves the same way (`ValueToKeyExpressionVisitor.java:323,362`).
+   - The claim that plain and annotated accessors are "never compared" is also false for prefix checks. `FieldPath.isPrefixOf` uses asymmetric equals (`FieldValue.java:676-685` vs `QuantifierValues.java:186-194`), and Go's `prefixMatches` must specify which side is which.
+
+10. **Existence-policy details:**
+   - Under UPGRADE, the name-change and version arms of `validateSchemaRebind` (`fdb_store_catalog.go:336`) become dead code with a different error code. Delete them, and drop its second `LoadSchema`.
+   - "Go today: repair always writes" is wrong: Go already refuses lower versions.
+   - Java fails when the existing row's template version is gone (`:480-489`); Go tolerates it. Decide which.
+   - The in-memory catalog checks the template before the database (`store_catalog.go:85`), contrary to Java.
+   - Test ordering: "a concurrent writer commits" only discriminates if the no-op save commits first. Also assert directly that a no-op save writes nothing. The concurrent-Initialize test must start from an already-initialized catalog, since a first-ever init legitimately conflicts.
+
+11. **The trie fix is pinned only by unit tests on the tooling builder.** The pins use `BuildSchemaTemplateFromDDL`. They need an FDB/yamsql test through `execCreateSchemaTemplate` with an EXPLAIN assertion. All "Go" facts in the design were measured on that non-production builder (F8); label them so.
+
+12. **F2's "unaffected" claim is unscoped.** `embedded/key_component_types.go:124-137` reads stored literal width. Bitmap-aggregate matching must keep its EXPLAIN pin before and after the change.
+
+## Low
+
+- **Counts:**
+  - F5 and 7.2 omit `documentation-queries/subqueries-documentation-queries.yamsql:2` (Go 42F00), so it is 5 corpus rows, not 4.
+  - `scoped-keyset{-views-functions}` is already byte-equal.
+  - "17 corpus templates" is 16 templates plus 1 derived run.
+- **Oracle scope:** the Java digest (`:374`) excludes versions, `subspace_key` and metadata-level fields, so F3's Java-side facts are recorded, not pinned.
+  - Derived runs are gated on Go rejecting the template (`:785`), so Go outcomes are covertly pinned.
+- **Unaddressed Java behaviour:**
+  - `BITMAP_BUCKET_NUMBER` lanes (`ArithmeticValue.java:518-519`) aren't mentioned; confirm whether SQL can reach them.
+  - There is no section for quantifier resolution with `simplify` (`QuantifierValues.java:79-81`) and no constant-folding shape.
+  - The audit's "UNKNONW" typo fix isn't mentioned.
+- **Wording and citations:**
+  - Table moves should happen after all index generation (Java `:559`), since Go reruns `Build()` for each index.
+  - Companions are registered after the owner table's indexes, not directly after the owner.
+  - The version bump is `RecordMetaDataBuilder.java:1103-1104`.
+  - `walk.go:1116` cites stale SemanticAnalyzer lines; they are now `:106/1114-1115`.

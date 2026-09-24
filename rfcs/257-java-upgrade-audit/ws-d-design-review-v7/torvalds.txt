@@ -1,0 +1,89 @@
+**NAK.** I reviewed tree `65d33289a2d6a410884ef98945557d3ff6a6ff21` and design `ws-d-design.md`. Its SHA256 `21279344492055e04a6c81caef2c6ed3c7c0692df635050b98999420bf253a48` matches when recomputed with `git show TREE:path | sha256sum`. Java is at `fdacd162`.
+
+**What I checked:**
+- All four v6 verdicts, the full v7 design and its diff from v6, the oracle README, `evidence-run.txt` and `evidence-mutations.txt`.
+- The oracle source: the new Java probe code and the Go spec diff.
+- The lease-default code and its test.
+- The cited Java and Go source.
+- All four oracle source hashes match `evidence-run.txt:4-7`. The Go file has 13 `It` specs, matching "Ran 13 of 1536". The Java probe is built through `glob(["*.java"])` (`conformance/BUILD.bazel:20`).
+- I ran nothing and edited nothing.
+
+## P2-1: The inline bound's collapse-window case is analysed wrongly (design 883-918, 367-370)
+
+- **The window is real, and the design's list of flag writers is correct.** `CollapseTask.java:415-424` clears COLLAPSE without re-arming. The paired bounce is a separate high-priority task with a random id (`AbstractDeferredTask.java:275-288`), and it re-arms only an idle cluster (`BounceTask.java:294-307`).
+- **"Succeeds on retry once the bounce has run" (902-903) is false when the refused insert's own inline task is the collapse.**
+  - The refusal aborts the transaction, which rolls the collapse back.
+  - The next insert runs the same collapse and is refused again.
+  - Where every insert routes to that cluster, inserts are refused until a delete or MergeIndexes commits the collapse. That covers lone-cluster partitions, which is every measured shape.
+  - The target accepts all of these inserts, because it has no inline cap (`Insert.java:334-338`).
+  - More generally, any refusal after the inline task rolls that task back, so inserts can never advance the queue in such a partition.
+- **It is reachable by an operator.** `primaryClusterHardMax` is mutable (`GuardiannVectorIndexEngine.java:97`) and can go as low as max+1 (`Config.java:200`) on a live index that has a backlog.
+- **The error is not poisoned.** The bound raises the capacity error, which never poisons (194-196, 522-525). In this case the error is Go-only, so catch-and-commit leaves the record unindexed where the target would have indexed it. That conflicts with the design's own rule that Go-only refusals poison (191-194).
+- **No fixture covers this case.** Lines 919-923 cover only the reconcile-residue case.
+- **Needed:**
+  - Either make the bound unable to fire while the paired bounce is pending, or prove this case unreachable.
+  - Correct the recovery claim.
+  - Decide whether this refusal poisons.
+  - Add fixtures for both cases, plus a non-firing guard that includes a collapse.
+
+## P2-2: The inline-delete skip (d) fires where the target's inline delete succeeds (268-276, 363-365)
+
+- **The predicate is too broad.** It keys on task kind plus knob value alone, so it also skips:
+  - obsolete and false-alarm tasks that the target consumes (item 13; `shrink=ok drain=1` at `evidence-run.txt:78`);
+  - because SPLIT_MERGE covers both directions, every live split under `mergeNumNearestClusters<1`. The target's inline deletes succeed there (`deletes=[ok*27,]`, `evidence-run.txt:140`).
+- **So two statements are false:** the declared population "where the target's inline delete fails" (364-365), and "everything else … matches Java" (373-374).
+- **This is a second copy of the predicate** in all but name, which 212-213 disclaims.
+- **"Removal always remains possible" (274) is also false** in two cases:
+  - `deleteConcurrency<1` fails the delete itself (231, parity);
+  - a trained bits-9 index with a live head task throws at the quantizer, and the skip does not cover it.
+- **Needed:**
+  - Put each task's no-op exits and its split/merge/neighbour determination in ONE read-only function, called by both `runTask` and the skip. The skip then fires only where the consumer would refuse. Alternatively, declare the real population and pin it with a fixture.
+  - Limit 274's guarantee to deleteWhere, clear, disable and drop.
+
+## P3
+
+1. **Tag-5 order contradicts itself.** Lines 509-510 and (j) at 371-372 put the tag-5 write after the cap check "in deferred mode", but the (h) bound sits "before the tag-5 write" in inline mode too (890-891).
+2. **A v6 sentence is now stale** (380-381): "Every admitted metric must pass forced split/merge". v7 admits DOT_PRODUCT and EUCLIDEAN_SQUARE (223, 288), and neither can ever split. Limit the sentence to Euclidean and cosine, and pin the other two failing at the consumer.
+3. **Two claims are source-only but unlisted.** `reassignNumNeighboringClusters<0` is marked source-only (230), yet it is declared permanent under (c) (244-247) and missing from REMAINING (757-764). The same applies to "obsolete task consumed under trained bits-9, as in the target" (307-309).
+4. **The peel measurements transfer less than the design implies.**
+   - The probe's refits use `SplittableRandom(seed+1+r)` (`peelWithSeed`), not the Go derivation (825-826). So "5 of 8" transfers only as a sample; 60/40 takes 3-5 refits depending on seed.
+   - "About four times … one k=2 and one k=3 fit" (824-825) is off: a lone cluster has no 2→3 candidate (`SplitMergeTask.java:339-355`), so the extra cost is roughly 8×.
+5. **No full-suite run is recorded for the lease-default change**, which alters admission for every default-configured Go indexer. I found no test that depends on the old default: `online_indexer_session_test.go:606-607` checks the fixed 30 s cleanup budget (`online_indexer_queue.go:194`), and the follow-up competitors pass explicit 30 s leases.
+6. **Path nit (264):** the file is `provider/foundationdb/IndexingBase.java`, not under an `indexing/` directory. The line numbers 1085-1096 match.
+
+## Verified correct
+
+- **Consumer points and no-op exits** are as stated:
+  - `SplitMergeTask` 169-187, 227/232-236, 430/435-437, 397 and 909;
+  - `CollapseTask` 144-158, 171 and 180-182;
+  - `ReassignTask` 199-210, 241, 248-257 and 322-327;
+  - `BounceTask:130` and `Delete` 110-135 / 170-176.
+- **Task execution:** `executeSingleDeferredTask` removes the task, then runs it (1016-1032).
+- **The livelock rows really are one mechanism.** `findNearestClustersMetadata` always includes the target cluster (`Primitives.java:1481-1483`), so an empty neighbour list arises only from the degenerate knobs.
+- **Lease sizing:** staleness is judged by the checker's own lease (`IndexingHeartbeat.java:106-107`), and Java's default is 10 s (`OnlineIndexOperationConfig.java:61`). The Go citations (:297, :321, :337, :362, :385) match the tree.
+- **Replay and the identity guard are reconciled** (`VectorIndexMaintainer.java:123, 208-223`; `VectorIndexEngineKind.java:57`).
+- **Also correct:** the claim-race loser now waits, the relieved read is a post-commit snapshot, the merge-lease row is carved out of the byte-for-byte check, and enqueue is on the poison list.
+- **Superseded watcher text was corrected in place** (`rfcs/242:3096`, TODO). The remaining grep hits are historical freeze JSONs and one past-tense entry.
+- **v6 findings:** all are closed except where noted above.
+
+## Measured vs still hypothesis
+
+- **Measured (items 1-14):**
+  - the hash formula;
+  - both split stalls;
+  - queue stranding;
+  - deferred backpressure;
+  - the knob consumer map;
+  - 14 inline scenarios, including deletes;
+  - the record-layer autoMerge path;
+  - obsolete-task consumption;
+  - the target on seven non-identical shapes in both modes;
+  - the pure-Java peel at eight seeds.
+- **Still hypothesis:**
+  - the REMAINING list;
+  - `reassignNumNeighboringClusters<0`;
+  - obsolete tasks under trained bits-9;
+  - the step-2 population beyond identical masses (">8 refits, none measured");
+  - refit counts under Go's RNG;
+  - the inline bound's collapse-window case;
+  - every Go-only mechanism, none of which is implemented yet.

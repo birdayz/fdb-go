@@ -1,0 +1,49 @@
+**NAK** for reviewed Git tree **`c59322c012c53500679e7f345360fac6706468b9`**.
+
+I completed the NAK→reviewed code/build/test delta review using `git diff`, consulted the milestone base→tree integration, approved design, parent RFC257 WS-B, previous actual verdicts, relevant full Go implementations, and tagged Java source at `fdacd162a9c8acfadc49082b89185c823ab8ae4a`. One new correctness regression blocks acceptance.
+
+**[P1] Former-index cleanup can leave the shared transactional state stale, causing an unbuilt index to become READABLE.**
+
+At [index_state.go:472](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state.go:472), `setIndexState` updates the shared view only when the calling store has already attached to it. However, opening a new handle loads its local state without attaching, then performs former-index cleanup at [store_builder.go:386](/home/birdy/projects/fdb-go/pkg/recordlayer/store_builder.go:386). That cleanup calls `setIndexState(formerName, READABLE)` at [index_state.go:724](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state.go:724).
+
+Consequently, it clears the persisted state key while leaving another handle’s existing context view unchanged. Later attachment at [store.go:178](/home/birdy/projects/fdb-go/pkg/recordlayer/store.go:178) reuses that stale view.
+
+A concrete, sequential sequence using ordinary APIs:
+
+1. Start with a nonempty store containing DISABLED index `I`. Open metadata v1 and read `I`’s state, establishing the context view.
+2. In the same context, open v2 that drops `I`. Former-index cleanup clears its persisted state key, but the shared view still contains DISABLED.
+3. Open v3 that adds `I` again with a **different subspace key**, using a rebuild policy returning DISABLED. These are valid successive metadata evolutions.
+4. `MarkIndexDisabled` reads the stale DISABLED value and takes its [unchanged-state return](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state.go:254). It never writes the new index’s DISABLED state.
+5. Commit. A fresh context sees the absent state key as READABLE, although the new index was never built over the existing records. Queries can silently omit records.
+
+This requires neither concurrent goroutines nor raw transaction writes. The existing former-index test initializes and mutates the **same handle**, so it misses the unbound-handle path.
+
+**Required fix:** attach the context’s authoritative state view before metadata reconciliation can mutate state, and make former-index cleanup update it consistently with persisted mutations. Preserve lock ordering. Add a real-FDB drop/readd regression checking the shared view, raw state key, and cold reopen; the unbuilt index must remain DISABLED and unavailable to queries. This finding is source-derived; I did not execute a reproducer.
+
+The previous NAK findings have these dispositions:
+
+- **Missed operational gates — addressed.** Functions, direct vector APIs, executor, bulk deletion, online indexer, and SPFresh now use error-returning transactional state checks. Positive execution, stale-handle, cancellation, and refused-selection conflict coverage materially improves the original matrix. Filtered routes retain their checks, and snapshot data access retains a separate serializable state conflict.
+- **Lazy initialization bypass — addressed.** State transitions initialize the full header/state before mutation. Retained tests cover independently warmed cache invalidation, persisted record-update locks, and malformed-header failure without state writes.
+- **Obsolete retirement metadata — addressed.** Deferred retirement resolves the highest successfully opened metadata version; an older handle cannot restore a canceled replacement relationship. Deletion still cancels retirement.
+- **Multi-type TEXT validation — addressed.** Descriptor validation includes multi-type associations, with valid, numeric, repeated, and missing-body cases and retained Java comparison.
+- **Published cache-entry race — addressed.** `shared` is initialized before publication; hit and merge paths no longer rewrite published entries. Concurrent warmed-cache opens have instrumented coverage.
+- **Missing deletion acceptance cases — addressed.** Coverage now includes creation and cacheability races, both commit orders, unknown header fields, and actual versioned saves followed by deletion, including cold absence checks.
+
+All five WS-B sections remain accounted for. Sliding replay/delegate routing preserves the exact-entry check and size-one correction. Header-aware deletion/cache handling has no additional blocker found. Retirement’s previous authority defect is corrected, but the shared-state lifecycle regression above prevents acceptance. Ignored-option handling and union descriptor/tag identity remain coherent. Rank bounds preserve declared-score slicing, absolute ranks, nullable values, continuations, snapshot preloads, and serializable actual rank reads.
+
+**Performance does not independently justify a NAK on this evidence.** The fresh sequential measurements against `e48f5b4965543cd4d99b5578356059e12d969c7c` show:
+
+| Population | Baseline seconds, n=2 | Reviewed source seconds, n=2 | Mean ratio |
+|---|---:|---:|---:|
+| Orders | 144.129 / 144.355 | 146.944 / 147.171 | 1.0195× |
+| Customers | 6.442 / 6.498 | 6.835 / 6.815 | 1.0548× |
+
+Moving liveness validation to the record-update boundary removes redundant dispatch futures while retaining all-disabled cancellation checks. The earlier severe slowdown has been substantially reduced. The residual remains measurable: approximately **1.95% for orders and 5.48% for customers**. Two sequential samples with differing background load cannot establish its cause or general performance equivalence.
+
+I also checked the query results: all four runs contain 24 RUN/PASS entries, identical 22 query row-count measurements and 11 EXPLAIN outputs, and zero reported retries. Large scan timings remain comparable; individual query timings vary enough that population averages should not imply uniform behavior.
+
+The retained verification supports **93/93 uncached targets**, **14/14 instrumented race targets**, recordlayer **3399/3400**, conformance **1391/1510**, and four applied, compiled mutation kills. The evidence hashes reconcile, and final booking after source tree `c7f9e5f9f14340d7452abc65ac8eb701493ca3ea` introduces no Go/build/test source changes. Those results do not cover the lifecycle composition identified above.
+
+Approved raw, nullable-array, scalar, and sorting extensions remain preserved. The intentional correction of Java’s retirement-after-delete resurrection must remain. Queue/state4/format15 remain disabled; WS-C–K are outside this verdict.
+
+No edits, tests/builds, Git mutations, GitHub requests, publication actions, or delegation were performed. Published HEAD remains `71ccd8cf8b3fd0dbafe283e91171818e36af555e`.

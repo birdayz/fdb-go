@@ -1,0 +1,35 @@
+**NAK — WS-C design authorization only.** One concurrency gap remains in the buffered-mutation correction.
+
+Read the full current design, frozen v1 design and NAK, parent WS-C, relevant Java at `fdacd162a9c8acfadc49082b89185c823ab8ae4a`, and Go integration paths. Inspected Go lifecycle files match accepted tree `48b50548b11a53bd1452a627689c440535a3d093`; published HEAD remains `71ccd8cf8b3fd0dbafe283e91171818e36af555e`.
+
+Exact current design SHA256, verified with `sha256sum`:
+
+```text
+9d7c8e3f60c8c21169782b03ab654e7828aa6a5b30585442234491511c755454
+```
+
+**Required correction: serialize checked readability with in-flight enqueues sharing the context.** The [design’s registry check](/home/birdy/projects/fdb-go/rfcs/257-java-upgrade-audit/ws-c-design.md:242) handles completed enqueues, but does not specify atomicity between validation and state publication.
+
+The current [readable setter validates before changing state](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state.go:144); only [the eventual state write acquires `stateMu`](/home/birdy/projects/fdb-go/pkg/recordlayer/index_state.go:523). Meanwhile, [maintenance holds its read lock](/home/birdy/projects/fdb-go/pkg/recordlayer/store.go:1011). A permitted interleaving is:
+
+1. Writer observes state 4, then pauses before registering queue mutations.
+2. Readable validation finds both registry and persisted queue empty.
+3. Writer registers its mutations and releases the read lock.
+4. Setter publishes READABLE; commit flushes the unapplied queue entries.
+
+FDB conflict ranges cannot resolve operations within the same transaction. Separate store handles make a handle-local lock insufficient; [same-context concurrency is supported](/home/birdy/projects/fdb-go/pkg/recordlayer/database.go:618).
+
+Specify context-shared ordering spanning writer state-read→enqueue registration and readable validation→state publication, reusing existing context lock infrastructure. Define acquisition order and deterministic same-handle/cross-handle regression schedules. **Do not hold `versionMu` while waiting for `stateMu`**: maintenance takes the opposite order. This is a source-derived counterexample, not an executed test.
+
+Previous findings:
+
+- **Buffered mutations:** sequential enqueue→checked-readable and enqueue→clear are addressed; concurrency remains open above.
+- **Heartbeat migration:** quiescence, restart fencing, rejection of every legacy/malformed key, and explicit administrative cleanup resolve the protocol decision. This fits [old Go’s string-only reader](/home/birdy/projects/fdb-go/pkg/recordlayer/indexing_heartbeat.go:113) and [Java’s UUID decoder](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexing/IndexingHeartbeat.java:201).
+- **Sliding replay:** the narrowed direct-callback guarantee is correct. [Promotion still loads current records and calls ordinary delegates](/home/birdy/projects/fdb-go/pkg/recordlayer/sliding_window_index_maintainer.go:760); preserving window→delegate lock order is appropriate.
+- **Cursor contracts:** scan charging, repeated lookahead-byte charging, construction-time anchoring, reason precedence, fail mode and exact row limits match [the unsplitter](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/SplitHelper.java:1005). The expanded retained run covers 15 envelopes plus three skips; the newly retained [split run](/home/birdy/projects/fdb-go/rfcs/257-java-upgrade-audit/ws-c-research/queue-oracles-split.log:46) adds eight cases across three selected specs.
+- **Retries/cleanup:** 101 consecutive failing attempts, permanent-error retries, cancellation, one drain retry owner, pre-snapshot registration and bounded independent terminal cleanup are concrete. [Java’s failure handler](/home/birdy/projects/fdb-go/fdb-record-layer/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/runners/throttled/ThrottledRetryingIterator.java:268) supports that budget.
+- **Backends:** SPFresh refusal, synchronous HNSW, WS-D GuardiANN ownership and unresolved Lucene requirements are explicit. Universal heartbeat callback consumption is correctly identified as a safety departure from tagged vector merging.
+
+Direct queued-setter eligibility, fresh-mixed versus resumed-mixed states, snapshot record conflicts, stamp/block revalidation, ownership-loss aborts, scoped overflow/deletion hooks and the corrected parent closeout sentence have appropriate design dispositions.
+
+Implementation, race, interoperability and backend acceptance gates remain outstanding. No implementation or whole-upgrade ACK. No edits, tests, git mutations, publication or delegation occurred. Session model/effort identity is not exposed to me; I cannot certify `gpt-6-astra/xhigh`.

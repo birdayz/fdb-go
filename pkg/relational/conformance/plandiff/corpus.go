@@ -999,20 +999,15 @@ func SeedRunCorpus() []RunQuery {
 			Query:          "SELECT id FROM T_OFF ORDER BY id LIMIT 2 OFFSET 1",
 		},
 		{
-			// FROM-less SELECT (CTE base case form) — Java rejects
-			// universally per QueryVisitor.visitSimpleTable's
-			// Assert.notNullUnchecked(fromClause) gate, including
-			// inside CTE bodies.
-			Name:           "fromless_in_cte_base_rejected",
+			// Java 4.14.2.0 supplies a singleton source inside a CTE too.
+			Name:           "fromless_in_cte_base",
 			SchemaTemplate: "CREATE TABLE T_FLC (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_FLC VALUES (1, 1)"},
 			Query:          "WITH base AS (SELECT 1 AS n) SELECT n FROM base",
 		},
 		{
-			// FROM-less SELECT (standalone) — companion pin to
-			// fromless_in_cte_base_rejected. Same Java site, same
-			// message, different syntactic context.
-			Name:           "fromless_standalone_rejected",
+			// Standalone singleton source, through the same query shell.
+			Name:           "fromless_standalone",
 			SchemaTemplate: "CREATE TABLE T_FL (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_FL VALUES (1, 1)"},
 			Query:          "SELECT 1 + 1",
@@ -1081,18 +1076,8 @@ func SeedRunCorpus() []RunQuery {
 		// LIMIT-using yamsql + sqldriver tests; defer to a dedicated
 		// cleanup shift. Probed against live Java — rejection
 		// confirmed.
-		// NOTE: `SELECT 1+1` (FROM-less SELECT for constant projection)
-		// is a known one-sided divergence: Java rejects standalone
-		// FROM-less SELECT with UnableToPlan (CLAUDE.md gotcha
-		// "SELECT <expr> without FROM is unsupported by the planner")
-		// but ACCEPTS the same form inside CTE base cases like
-		// `WITH RECURSIVE counter(n) AS (SELECT 1 AS n UNION ALL ...)`.
-		// Go's embedded engine accepts both contexts uniformly.
-		// Aligning Go to reject standalone FROM-less SELECT while
-		// continuing to accept the CTE base case requires context-
-		// aware parsing (separate parseSelectQuery entry points or a
-		// flag) — deferred as a separate large-scope conformance
-		// task. Probed against live Java.
+		// FROM-less constant projection is shared with Java 4.14.2.0;
+		// the standalone and CTE cases above pin its singleton source.
 		// NOTE: `col IN (SELECT ...)` is rejected by BOTH engines — no
 		// divergence. Java's `ExpressionVisitor.visitInPredicate`
 		// asserts `inList().queryExpressionBody() == null` with
@@ -6922,7 +6907,7 @@ func SeedRunCorpus() []RunQuery {
 		{
 			// Recursive CTE counting depth via SELECT n+1 FROM c WHERE n < 10.
 			// Base case must come from a real table (Java rejects standalone
-			// FROM-less SELECT but accepts inside CTE base; we pull the seed
+			// FROM-less SELECT in older releases; this specimen pulls the seed
 			// from a single-row table to stay portable).
 			Name:           "recursive_cte_depth_counter",
 			SchemaTemplate: "CREATE TABLE T_RC1 (id BIGINT, PRIMARY KEY (id))",
@@ -18227,18 +18212,17 @@ func SeedRunCorpus() []RunQuery {
 				" SELECT * FROM r",
 		},
 		{
-			// Positional ORDER BY over a star SELECT: BOTH engines reject
-			// (live-classified — Java cannot plan it either); Go's message
-			// names the actual problem, Java's is the generic planner
-			// decline. Message drift, not a capability gap.
+			// Java treats the numeric sort expression as a literal and cannot
+			// plan this ordering. Go's positional-ordering extension addresses
+			// the expanded visible SELECT slots, including a sole star.
 			Name:           "order_by_position_over_star",
 			SchemaTemplate: "CREATE TABLE T_OBP_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_OBP_01 VALUES (2, 20), (1, 10)"},
 			Query:          "SELECT * FROM T_OBP_01 ORDER BY 1",
 			Divergence: &Divergence{
-				Reason:          "Both engines reject positional ORDER BY over a star SELECT (live-verified: Java 'Cascades planner could not plan query'); Go's 22023 names the empty positional SELECT list. Cosmetic message drift.",
-				Direction:       DivergenceBothErrorMessagesDrift,
-				GoErrorContains: "ORDER BY position 1 is out of range",
+				Reason:         "Java cannot plan this literal sort expression; Go's positional-ordering extension resolves position 1 against the expanded star.",
+				Direction:      DivergenceJavaErrorsGoCorrect,
+				GoExpectedRows: [][]any{{float64(1), float64(10)}, {float64(2), float64(20)}},
 			},
 		},
 		{

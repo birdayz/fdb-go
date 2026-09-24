@@ -731,6 +731,14 @@ CREATE INDEX max_price_by_cat AS SELECT MAX(price) FROM ORDERS GROUP BY category
 			"modeled for a nonzero permutation — missing/misordered rows), got candidate %v", got)
 	}
 
+	// The size is read with Integer.parseInt, as Java's
+	// AggregateIndexMatchCandidate reads it: an Arabic-Indic zero is size 0, so
+	// the index is a candidate (strconv.Atoi refused it and declined).
+	idx.Options[recordlayer.IndexOptionPermutedSize] = "\u0660"
+	if got := tryAggregateIndexCandidate(idx, md); got == nil {
+		t.Fatal("permutedSize \"\\u0660\" is 0 to Integer.parseInt and must produce a candidate")
+	}
+
 	// A malformed permutedSize (unparseable) must also decline, not default open.
 	idx.Options[recordlayer.IndexOptionPermutedSize] = "not-a-number"
 	if got := tryAggregateIndexCandidate(idx, md); got != nil {
@@ -827,7 +835,7 @@ CREATE INDEX total_count AS SELECT COUNT(*) FROM ORDERS
 	t.Logf("no-group-by plan: %s", plan)
 }
 
-func TestPlanHarness_AggregateIndexDDL_ParseError_NoAggregate(t *testing.T) {
+func TestPlanHarness_GroupingOnlyIndexDDL(t *testing.T) {
 	t.Parallel()
 	schema := `
 CREATE TABLE ORDERS (
@@ -837,11 +845,16 @@ CREATE TABLE ORDERS (
 )
 CREATE INDEX bad_idx AS SELECT status FROM ORDERS GROUP BY status
 `
-	_, err := PlanQueryForTest("SELECT 1", schema, nil)
-	if err == nil {
-		t.Fatal("expected error for index DDL without aggregate function")
+	plan, err := PlanQueryForTest("SELECT 1", schema, nil)
+	if err != nil || !strings.Contains(plan, "Explode") {
+		t.Fatalf("singleton over grouping-only index schema: plan=%s error=%v", plan, err)
 	}
-	t.Logf("got expected error: %v", err)
+	// With no aggregate call Java emits a VALUE index over the grouping key.
+	// Exercise that index, not merely the unrelated SELECT's admission.
+	indexed, err := PlanQueryForTest("SELECT status FROM orders WHERE status = 'pending'", schema, nil)
+	if err != nil || !strings.Contains(indexed, "IndexScan(BAD_IDX") {
+		t.Fatalf("grouping-only index is not usable: plan=%s error=%v", indexed, err)
+	}
 }
 
 func TestPlanHarness_AggregateIndexDDL_ParseError_NoFrom(t *testing.T) {
@@ -2342,5 +2355,29 @@ ORDER BY id`,
 					cost, reversedCost, tc.cardinality)
 			}
 		})
+	}
+}
+
+// TestPlanHarness_ConstantExpressionComparandIsSargable pins that a comparand
+// written as a constant expression (`id = 1 + 2`) binds a scan range like the
+// literal it denotes. The target keeps such a comparand UNFOLDED and still
+// sargable (EXPLAIN `SCAN([IS T, EQUALS promote(@c7 + @c9 AS LONG)])`, RFC-257
+// WS-E oracle rows constant_expression_comparand_explain and
+// constant_expression_range_explain), so deleting the translator's eager
+// predicate folds (ws-e-design.md section 5.4a) must not cost the index. Go's
+// sargability does not depend on the fold: with predicates.SimplifyPredicateValues
+// made the identity, every row below planned exactly as it does here.
+func TestPlanHarness_ConstantExpressionComparandIsSargable(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ sql, want string }{
+		{"SELECT id, amount FROM orders WHERE id = 1 + 2", "Scan(ORDERS, [=])"},
+		{"SELECT id, amount FROM orders WHERE customer_id = 40 + 2", "IndexScan(IDX_CUSTOMER, [=])"},
+		{"SELECT id, amount FROM orders WHERE amount > 3 - 2", "IndexScan(IDX_AMOUNT, [<>] COVERING)"},
+	} {
+		plan, err := PlanQueryForTest(tc.sql, ordersSchema, nil)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.sql, err)
+		}
+		assertPlanContains(t, plan, tc.want)
 	}
 }

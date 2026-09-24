@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"strconv"
 
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -44,12 +43,10 @@ func newBitmapValueIndexMaintainer(
 	indexSubspace subspace.Subspace,
 	tx fdb.WritableTransaction,
 	store indexStoreContext,
-) *bitmapValueIndexMaintainer {
-	entrySize := int64(bitmapValueDefaultEntrySize)
-	if v, ok := index.Options[IndexOptionBitmapValueEntrySize]; ok {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 && n <= bitmapValueMaxEntrySize {
-			entrySize = n
-		}
+) (*bitmapValueIndexMaintainer, error) {
+	entrySize, err := BitmapValueEntrySizeOption(index)
+	if err != nil {
+		return nil, err
 	}
 	return &bitmapValueIndexMaintainer{
 		index:         index,
@@ -58,7 +55,36 @@ func newBitmapValueIndexMaintainer(
 		store:         store,
 		entrySize:     entrySize,
 		unique:        index.IsUnique(),
+	}, nil
+}
+
+// BitmapValueEntrySizeOption is the entry size Java's BitmapValueIndexMaintainer
+// constructor reads (BitmapValueIndexMaintainer.java:100-105): absent is
+// 10000; present is Integer.parseInt'd, whose refusal is a NumberFormatError;
+// above 250000 is refused with RecordCoreArgumentException "entry size option
+// is too large". The size places every bit (the key's offset and the value's
+// length), so a size read differently from Java's writes bytes Java does not.
+//
+// Go-only: a size of zero or below is refused here, where the index is used.
+// Java accepts it and fails at the first write with a JDK exception (a
+// division by zero, or a negative array size); Go would panic there.
+// DIVERGENCES.md, "A bitmap index's entry size is read as Java reads it".
+func BitmapValueEntrySizeOption(index *Index) (int64, error) {
+	v, ok := index.Options[IndexOptionBitmapValueEntrySize]
+	if !ok {
+		return bitmapValueDefaultEntrySize, nil
 	}
+	n, err := javaParseInt(v)
+	if err != nil {
+		return 0, err
+	}
+	if n > bitmapValueMaxEntrySize {
+		return 0, &RecordCoreArgumentError{Message: "entry size option is too large", IndexName: index.Name}
+	}
+	if n <= 0 {
+		return 0, &RecordCoreArgumentError{Message: "entry size option must be positive", IndexName: index.Name}
+	}
+	return int64(n), nil
 }
 
 // floorMod computes the floor modulus matching Java's Math.floorMod.
@@ -128,7 +154,15 @@ func (m *bitmapValueIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecor
 		}
 	}
 
-	isWriteOnly := m.store != nil && m.store.isIndexWriteOnly(m.index)
+	state := IndexStateReadable
+	if m.store != nil {
+		var err error
+		state, err = m.store.readIndexState(m.index.Name)
+		if err != nil {
+			return err
+		}
+	}
+	isWriteOnly := state.IsWriteOnly()
 
 	// Remove old entries.
 	for _, e := range oldEntries {

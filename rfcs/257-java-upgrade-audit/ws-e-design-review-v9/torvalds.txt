@@ -1,0 +1,83 @@
+**NAK: RFC-257 WS-E design v9 (Torvalds lens)**
+
+- **Tree:** `1cf2b55d3598fca1645cd2f684b6c7b8d7529937`
+- **Design:** `rfcs/257-java-upgrade-audit/ws-e-design.md`, SHA-256 `d76887b8ee7e04e559d699ce19bb2e614792ff3f4ee3de0ec10a9e35eec86e14`, 3163 lines. I recomputed both from `git show`.
+- **Method:** read-only. I read the three v8 verdicts, the full v9 design and its diff from v8, the oracle, the evidence files and logs, the prototype log, and the Java 4.14.2.0 and Go sources cited below. I ran nothing.
+
+**v8 findings resolved**
+- The census now covers `Eval(nil)`: one code line, found by a search that also found a known-present line in the same file.
+- The NULL comparand, the lane's rule by role, IN admitted only with uncorrelated items, error timing and the saturation wording (checked).
+- The TIMESTAMP-to-DATE edge is assignment-only; `compilePromotion` gains its arms.
+- XXXXX, `exists_with_aggregate#6`, the stale label and the GROUP BY log citation.
+- The IN-union plan side and the explode rule's single name.
+- The rescue claim no longer names non-unique indexes.
+- Teardown: `errors.Is(err, context.Canceled)` at `go_runner_test.go:432`; the Bazel log shows 3 RUN and 3 PASS.
+- The store-open comment.
+
+Four v8 findings are only partly resolved, below: the prune class (H1), `nested_ins` (H2), the canonicalization site (M4) and "one parser" (L1).
+
+## HIGH
+
+**H1. Provenance is lost when the memo deduplicates a yield (5.4(c)).**
+- `Reference.Insert` returns false for a yield equal to an existing member (`reference.go:643-690`, fast path at `:655-657`). So a provenance field on the yield vanishes whenever two sources simplify to the same member.
+- Go keeps `FilterDropTruePredicatesRule` and `FilterDedupPredicatesRule` in REWRITING (`default_rules.go:43-44`). From S1 `[id=5, X, X]` (or `[id=5, TRUE, X]`), with X = `COALESCE(1/0,5) IS NULL`, they derive S2 `[id=5, X]`.
+- simp(S1) and simp(S2) are the same `[FALSE]` filter over the same quantifier. The second yield deduplicates, so S2 forms no class and crosses into PLANNING unpruned.
+- PLANNING's cardinality rung then picks S2's primary-key probe and raises 22012, where the target answers no rows. This is the rescue the prune exists to remove. (SOURCE)
+- **Fix:** record provenance as a group-level relation at yield time, dedup hits included, and make a class the connected component. Pin both rows above.
+
+**H2. The nested-IN mechanism is a hypothesis that the only measurement contradicts (4.1(b)).**
+- The prototype removed the same partition guard (`PROBE_PARTITION`, `fdb-explode-probe/.../rule_partition_binary_select.go:104`) with the NLJ sibling guard intact. It planned `FlatMap(outer=Fetch(InJoin(IDX_A)), inner=PredicatesFilter(Explode))` (`wse8-explode-suites.log:15018-15020`).
+- The guard fires only on an explode leg that is not correlated to the other leg (`rule_implement_nested_loop_join.go:122-135`). A PredicatesFilter over the explode is correlated, so "the sibling guard is what keeps the FlatMap from winning" is false.
+- Java's `PartitionBinarySelectRule` matches exactly two quantifiers (`PartitionBinarySelectRule.java:96-97`).
+- Java's `ImplementInJoinRule` and `ImplementInUnionRule` each consume ONE predicate-free select holding every explode, and nest or union them in a single firing (`ImplementInJoinRule.java:114-164`, `ImplementInUnionRule.java:99-163`).
+- v9 gives the two shapes two different derivations and does not label either SOURCE.
+- **Fix:** trace the prototype to find whether the target-shaped member was built or lost on cost, then state the Java derivation.
+
+## MEDIUM
+
+**M1. "Lands after D3" understates the dependency.**
+- The chain needs WS-F D1 (progress) and D4 (the conditional task), and WS-F D12's cleanups. WS-F lands D12 only at its step 7, behind a test-only option (`ws-f-design.md:316-321, 349-360`).
+- D12 removes the standalone `DecorrelateValuesRule` (`default_rules.go:159`). While it stays, the chain's decorrelate yield deduplicates, which is not progress (WS-F 2.1), so the simplification fires beside the decorrelated member anyway.
+- `OptionalRewritingRuleNames` (`:425-431`) would return the wrapper's name, not the two inner names, so `DISABLE_PLANNER_REWRITING` would not disable the chain.
+- WS-F v2 is itself NAK'd.
+
+**M2. Duplicate mechanism with WS-F's physical prune.**
+- WS-F ports Java's physical prune, deletes the designated final and makes `Verify(finals==1)` an invariant (`ws-f-design.md:183-196`).
+- WS-E never mentions this and gives its boundary prune no retirement condition. Once one final per group holds, every class is a singleton and the prune-disabled unit test can no longer observe anything.
+
+**M3. The NaN mapping is incomplete.**
+- For a runtime float probe, the planner claims 1 seek at a terminal coordinate and 2 point seeks otherwise (`physical_equality_shape.go:416-429`). The two NaN blocks are not adjacent, and a non-terminal NaN coordinate cannot be followed by later comparisons.
+  - Example: `IDX(f, g)` with `f IN (NaN) AND g IN (1)`, the `nested_ins` shape over DOUBLE columns.
+- Not addressed:
+  - `UnsupportedKnownNaN` (`:389-392`).
+  - `EqualityPinsSinglePhysicalKeyOnColumn`'s `n != 0`, which is true for a NaN constant (`ordering.go:534-537`).
+  - Reuse of the existing NaN-block builder (`scan_range_binding.go:832-852`).
+- "(values.CompareFloat64's total order)" is wrong. That order collapses every NaN above +Inf (`coercion.go:33-40`); the tuple order differs (`scan_range_binding.go:820-824`).
+- The target's index probes one packed NaN, so returning payload NaNs through the index goes beyond the target. Declare it as an extension. (SOURCE)
+
+**M4. The converters cannot see the column type.**
+- Both write converters dispatch on the proto kind (`proto_value.go:317-323`, `executor.go:4459-4463`).
+- DATE and TIMESTAMP are plain `TYPE_STRING` fields (`builder.go:1019-1022`), and "the SQL type is not recoverable from the proto descriptor" (`proto_types.go:73-77`).
+- **Fix:** name how the SQL type reaches both converters, for array elements, struct fields and after a schema load.
+
+**M5. The GREATEST/LEAST property contradicts itself.**
+- A stored TIMESTAMP may hold non-canonical text, and same-type promotion passes it through unchanged (`promote_prepared.go:372-374`).
+- So "agree with the instant order" over generated RFC 3339 or garbage text fails by construction.
+
+## LOW
+
+1. **"One parser" still has three siblings.** The date-part arm adds a time-only layout (`values.go:3352`). `functions.ParseTimestamp` has five layouts including fractional seconds and does not trim (`time.go:24-37`); its callers are `comparisons.go:645/687/701` and `compare.go:95/103`. `CastValue` (`cast.go:198-221`) is dead code. So "readable everywhere or nowhere" overclaims. The day a zoned RFC 3339 text maps to in a DATE column is also unstated.
+2. **Unmeasured rescue claims.** The UNIQUE rescue is measured only in the target. Go's cardinality win without the prune, which the planned unit test asserts, is SOURCE, and so is the union leg taking the `AdvanceStagePreservingMembers` crossing.
+3. **The lane's 22007 has no SQL producer.** By the design's own argument every uncorrelated TIMESTAMP producer yields canonical text, so the pinned empty-input test must name its producer, or the arm is dead code.
+4. **The dedup rule needs the composite and lane cases.** "cmpAny returning 0" is ok=false for composites (`comparisons.go:739`); state `=` including `deepValueEqual`, and the lane's `=` for temporal items.
+5. **The rule registry keeps one of two same-named instances.** It skips the second instance (`default_rules.go:486-494`); say so.
+6. **The evidence's zero is not paired with a count.** `notok 0` counts only lines that are not OK (`wse10-evidence.sh:13,16`), and an unreadable checksum file also gives 0. Assert 10 OK lines too.
+
+**Checked and correct**
+- All 10 source hashes match the tree blobs.
+- 27 probes and 27 pins, 445 in all.
+- Both runs "Ran 9 of 57 Specs".
+- M9 reddens exactly one row, and the check collects every mismatch.
+- The GO lines match the design's statements.
+
+**Measured vs SOURCE:** the prototype FlatMap, the counts, hashes and logs are measured. H1, M1, M3's composite case and M4 are derived from source.

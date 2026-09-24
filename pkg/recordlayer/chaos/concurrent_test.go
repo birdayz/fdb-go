@@ -110,7 +110,7 @@ func buildConcurrentKitchenSinkMetadata() *recordlayer.RecordMetaData {
 		recordlayer.GroupAll(recordlayer.Field("price"))))
 	builder.AddIndex("Order", recordlayer.NewSumIndex("conc_ks_sum",
 		recordlayer.Ungrouped(recordlayer.Field("price"))))
-	builder.AddIndex("Order", recordlayer.NewRankIndex("conc_ks_rank", recordlayer.Field("price")))
+	builder.AddIndex("Order", recordlayer.NewRankIndex("conc_ks_rank", recordlayer.Ungrouped(recordlayer.Field("price"))))
 	builder.AddIndex("Order", recordlayer.NewVersionIndex("conc_ks_version",
 		recordlayer.VersionKey()))
 	builder.AddIndex("Order", recordlayer.NewIndex("conc_ks_covering",
