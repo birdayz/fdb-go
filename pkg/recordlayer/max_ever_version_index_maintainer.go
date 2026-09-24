@@ -135,11 +135,7 @@ type versionEntry struct {
 // For incomplete versionstamps, PackWithVersionstamp is used to include the
 // versionstamp offset bytes required by SET_VERSIONSTAMPED_VALUE.
 func (m *maxEverVersionIndexMaintainer) evaluateEntries(record *FDBStoredRecord[proto.Message]) ([]versionEntry, error) {
-	if m.index.Predicate != nil && !m.index.Predicate(record.Record) {
-		return nil, nil
-	}
-
-	tuples, err := m.index.RootExpression.Evaluate(record, record.Record)
+	tuples, err := maintainedKeyTuples(m.store, m.index, record, indexValuesFor(m.store, m.index, record))
 	if err != nil {
 		return nil, err
 	}

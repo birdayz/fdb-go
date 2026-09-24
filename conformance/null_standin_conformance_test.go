@@ -73,6 +73,31 @@ func nsRecords(syntax string) *descriptorpb.FileDescriptorProto {
 	}
 }
 
+// dumpIndexKVs is every key-value pair of a store's INDEX and
+// INDEX_SECONDARY_SPACE keyspaces (2 and 3), as hex relative to the store
+// subspace, in key order: the Go side of saveRecordsAndDumpIndexesJava.
+func dumpIndexKVs(ctx context.Context, db *recordlayer.FDBDatabase, ss subspace.Subspace) ([][]string, error) {
+	out, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		var out [][]string
+		for _, space := range []int64{2, 3} {
+			begin, end := ss.Sub(space).FDBRangeKeys()
+			kvs, err := rtx.Transaction().GetRange(fdb.KeyRange{Begin: begin, End: end}, fdb.RangeOptions{}).GetSliceWithError()
+			if err != nil {
+				return nil, err
+			}
+			for _, kv := range kvs {
+				out = append(out, []string{hex.EncodeToString(kv.Key[len(ss.Bytes()):]), hex.EncodeToString(kv.Value)})
+			}
+		}
+		return out, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	kvs, _ := out.([][]string)
+	return kvs, nil
+}
+
 func nsField(name string, fan gen.Field_FanType, ni gen.Field_NullInterpretation) *gen.Field {
 	return &gen.Field{FieldName: proto.String(name), FanType: fan.Enum(), NullInterpretation: ni.Enum()}
 }
@@ -111,6 +136,9 @@ type nsCase struct {
 	records   []nsRec
 	// javaVerdicts is the measured Java outcome of each save.
 	javaVerdicts []string
+	// filter is the stores' IndexMaintenanceFilter: "" for NORMAL, or
+	// "NO_NULLS".
+	filter string
 }
 
 func nsMetaData(c nsCase) *gen.MetaData {
@@ -252,6 +280,58 @@ var _ = Describe("RFC-257 NullStandin: absent fields, unique indexes and COUNT_N
 			records:      []nsRec{{id: 1, a: i64(0)}, {id: 2}},
 			javaVerdicts: []string{"ok", nsViolation},
 		},
+		// IndexMaintenanceFilter.NO_NULLS: an entry whose key holds a
+		// NullStandin.NULL is not maintained, in every maintainer.
+		{
+			name: "NO_NULLS: a VALUE entry of a NULL field is not maintained, through inserts, updates and deletes", syntax: "proto2", indexType: "value", filter: "NO_NULLS",
+			root:         nsScalar("a", nsNull),
+			records:      []nsRec{{id: 1}, {id: 1, a: i64(5)}, {id: 2, a: i64(6)}, {id: 2}, {id: 3}},
+			javaVerdicts: []string{"ok", "ok", "ok", "ok", "ok"},
+		},
+		{
+			name: "NO_NULLS: a NULL_UNIQUE null is maintained", syntax: "proto2", indexType: "value", filter: "NO_NULLS",
+			root:         nsThen(nsScalar("a", nsNullUnique), nsScalar("b", nsNull)),
+			records:      []nsRec{{id: 1, b: i64(1)}, {id: 2, a: i64(1)}, {id: 3}},
+			javaVerdicts: []string{"ok", "ok", "ok"},
+		},
+		{
+			name: "NO_NULLS: a COUNT's whole key is filtered, a null grouping column included", syntax: "proto2", indexType: "count", filter: "NO_NULLS",
+			root: &gen.KeyExpression{Grouping: &gen.Grouping{
+				WholeKey: nsScalar("c", nsNull), GroupedCount: proto.Int32(0),
+			}},
+			records:      []nsRec{{id: 1}, {id: 2, c: str("x")}, {id: 3, c: str("x")}, {id: 2}},
+			javaVerdicts: []string{"ok", "ok", "ok", "ok"},
+		},
+		{
+			name: "NORMAL: a COUNT counts a null grouping column", syntax: "proto2", indexType: "count",
+			root: &gen.KeyExpression{Grouping: &gen.Grouping{
+				WholeKey: nsScalar("c", nsNull), GroupedCount: proto.Int32(0),
+			}},
+			records:      []nsRec{{id: 1}, {id: 2, c: str("x")}},
+			javaVerdicts: []string{"ok", "ok"},
+		},
+		{
+			name: "NO_NULLS: a SUM entry with a null grouping column is not maintained", syntax: "proto2", indexType: "sum", filter: "NO_NULLS",
+			root: &gen.KeyExpression{Grouping: &gen.Grouping{
+				WholeKey: nsThen(nsScalar("c", nsNull), nsScalar("b", nsNull)), GroupedCount: proto.Int32(1),
+			}},
+			records:      []nsRec{{id: 1, b: i64(4)}, {id: 2, c: str("x"), b: i64(5)}, {id: 3, c: str("x"), b: i64(6)}},
+			javaVerdicts: []string{"ok", "ok", "ok"},
+		},
+		{
+			name: "NO_NULLS: a TEXT entry of a null field is not maintained, its tokenizer version is", syntax: "proto2", indexType: "text", filter: "NO_NULLS",
+			root:         nsScalar("c", nsNull),
+			records:      []nsRec{{id: 1}, {id: 2, c: str("hello world")}, {id: 2}},
+			javaVerdicts: []string{"ok", "ok", "ok"},
+		},
+		{
+			name: "NO_NULLS: a RANK entry with a null grouping column is not maintained", syntax: "proto2", indexType: "rank", filter: "NO_NULLS",
+			root: &gen.KeyExpression{Grouping: &gen.Grouping{
+				WholeKey: nsThen(nsScalar("c", nsNull), nsScalar("b", nsNull)), GroupedCount: proto.Int32(1),
+			}},
+			records:      []nsRec{{id: 1, b: i64(4)}, {id: 2, c: str("x"), b: i64(5)}, {id: 3, c: str("x")}},
+			javaVerdicts: []string{"ok", "ok", "ok"},
+		},
 	}
 
 	// Java's FieldKeyExpression.equals does not compare the standin
@@ -310,7 +390,7 @@ var _ = Describe("RFC-257 NullStandin: absent fields, unique indexes and COUNT_N
 			}
 			Expect(NewJavaInvoker().InvokeAs(ctx, "saveRecordsAndDumpIndexesJava", map[string]any{
 				"clusterFile": clusterFile, "subspace": BytesToIntArray(javaSS.Bytes()),
-				"metaData": BytesToIntArray(mdBytes), "recordTypeName": "Rec", "records": recordArgs,
+				"metaData": BytesToIntArray(mdBytes), "recordTypeName": "Rec", "records": recordArgs, "filter": c.filter,
 			}, &java)).To(Succeed())
 			Expect(java.Verdicts).To(Equal(c.javaVerdicts), "Java's verdicts moved")
 
@@ -321,7 +401,11 @@ var _ = Describe("RFC-257 NullStandin: absent fields, unique indexes and COUNT_N
 				msg := dynamicpb.NewMessage(desc)
 				Expect(proto.Unmarshal(rb, msg)).To(Succeed())
 				_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
-					store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(goSS).CreateOrOpen()
+					builder := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(goSS)
+					if c.filter == "NO_NULLS" {
+						builder.SetIndexMaintenanceFilter(recordlayer.IndexMaintenanceFilterNoNulls)
+					}
+					store, err := builder.CreateOrOpen()
 					if err != nil {
 						return nil, err
 					}
@@ -340,18 +424,7 @@ var _ = Describe("RFC-257 NullStandin: absent fields, unique indexes and COUNT_N
 			}
 			Expect(goVerdicts).To(Equal(java.Verdicts))
 
-			goKVs, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
-				begin, end := goSS.Sub(int64(2)).FDBRangeKeys()
-				kvs, err := rtx.Transaction().GetRange(fdb.KeyRange{Begin: begin, End: end}, fdb.RangeOptions{}).GetSliceWithError()
-				if err != nil {
-					return nil, err
-				}
-				out := make([][]string, 0, len(kvs))
-				for _, kv := range kvs {
-					out = append(out, []string{hex.EncodeToString(kv.Key[len(goSS.Bytes()):]), hex.EncodeToString(kv.Value)})
-				}
-				return out, nil
-			})
+			goKVs, err := dumpIndexKVs(ctx, db, goSS)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(java.KVs).NotTo(BeEmpty())
 			Expect(goKVs).To(Equal(java.KVs))

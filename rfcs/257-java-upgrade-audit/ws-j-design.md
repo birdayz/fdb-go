@@ -2332,12 +2332,28 @@ Java's "Index ... already defined").
     the unique checks (`index_maintainer.go`, `rank_index_maintainer.go`) and COUNT_NOT_NULL's
     grouped columns (`evaluateGroupingKeysNotNull`, `AtomicMutation.java:165-171`).
   - `IndexMaintenanceFilter.NO_NULLS` (`IndexMaintenanceFilter.java:45-56`) is the target's third
-    reader, and Go has no host for it: Go has no `IndexMaintenanceFilter` at all (the store
-    builder option, `IndexMaintenanceUtils.getFilterTypeForRecord`, and its readers in
-    `StandardIndexMaintainer`, `VectorIndexMaintainer`, `SlidingWindowIndexMaintainer` and the
-    scrubber). `keyContainsNonUniqueNull` is the predicate NO_NULLS needs; the filter is a Java
-    store API Go lacks, found here and raised with the owner (TODO.md, the WS-J NullStandin
-    block).
+    reader, and Go had no `IndexMaintenanceFilter` at all. It is ported (owner, 2026-09-25: "port
+    it"): the store option (`StoreBuilder.SetIndexMaintenanceFilter`, carried by `AsBuilder`,
+    `CopyBuilder` and the online indexer's `SetIndexMaintenanceFilter`, as Java carries it on the
+    record-store builder), `IndexMaintenanceUtils.getFilterTypeForRecord` (`indexValuesFor`: the
+    predicate, then the filter) and `StandardIndexMaintainer.filteredIndexEntries` in every
+    maintainer's update path (standard, bitmap, version, text, the atomic family, max-ever-version,
+    rank, leaderboard, multidimensional, vector, permuted), the vector pending-queue serialization,
+    and the sliding window's refusal of SOME ("filtering type SOME is not supported"). A
+    maintainer's fast path, which evaluates no entry list, runs only for ALL. The TEXT maintainer
+    now applies the index predicate too, which Java's `filteredIndexEntries` does and Go's text
+    evaluation did not. Found beside it: Java's non-idempotent `updateWhileWriteOnly` dispatches on
+    the build stamp (`StandardIndexMaintainer.java:255-328`), a BY_INDEX build's range set holding
+    source-index entry keys (read through the source's `filteredIndexEntries`), where Go checked the
+    primary key for every build; and `isIndexIdempotent` called BITMAP_VALUE, MULTIDIMENSIONAL,
+    VECTOR and TIME_WINDOW_LEADERBOARD non-idempotent, where Java's are idempotent (the leaderboard
+    unless it counts duplicates). Both are ported. Pins: conformance "RFC-257 NullStandin"'s NO_NULLS
+    cases (VALUE through inserts, updates and deletes; a NULL_UNIQUE null kept; COUNT's whole key;
+    SUM; TEXT, whose tokenizer version is written for a filtered record; RANK, ranked set included:
+    the dump now covers keyspace 3), each byte-equal to the JVM; `recordlayer_test`
+    "IndexMaintenanceFilter" (SOME's entry arguments, NONE and ALL, the atomic family with the fast
+    paths bypassed, the sliding window, the online indexer) and "A non-idempotent index under a
+    BY_INDEX build", red on `426da82a5`; `TestIsIndexIdempotent`, red on `426da82a5`.
   - Correction to v16: `keyExpressionEquals` does NOT compare the standin, because the target's
     `FieldKeyExpression.equals` does not (`FieldKeyExpression.java:406-410`) and
     `NestingKeyExpression.equals` compares the parent with it. An index whose field changes only its

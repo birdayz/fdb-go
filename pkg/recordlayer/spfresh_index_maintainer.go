@@ -219,7 +219,7 @@ func (m *spfreshIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[pr
 	}
 
 	if oldRecord != nil {
-		entries, eerr := m.evaluateIndex(oldRecord)
+		entries, eerr := m.filteredIndexEntries(oldRecord)
 		if eerr != nil {
 			return fmt.Errorf("evaluate spfresh index %q for old record: %w", m.index.Name, eerr)
 		}
@@ -238,7 +238,7 @@ func (m *spfreshIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[pr
 	}
 
 	if newRecord != nil {
-		entries, eerr := m.evaluateIndex(newRecord)
+		entries, eerr := m.filteredIndexEntries(newRecord)
 		if eerr != nil {
 			return fmt.Errorf("evaluate spfresh index %q for new record: %w", m.index.Name, eerr)
 		}
@@ -305,7 +305,7 @@ func (m *spfreshIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBS
 	}
 
 	if oldRecord != nil {
-		entries, eerr := m.evaluateIndex(oldRecord)
+		entries, eerr := m.filteredIndexEntries(oldRecord)
 		if eerr != nil {
 			return fmt.Errorf("evaluate spfresh index %q for old record: %w", m.index.Name, eerr)
 		}
@@ -334,7 +334,7 @@ func (m *spfreshIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBS
 	}
 
 	if newRecord != nil {
-		entries, eerr := m.evaluateIndex(newRecord)
+		entries, eerr := m.filteredIndexEntries(newRecord)
 		if eerr != nil {
 			return fmt.Errorf("evaluate spfresh index %q for new record: %w", m.index.Name, eerr)
 		}
@@ -897,7 +897,7 @@ func spfreshScanRecordRange(
 					break
 				}
 				rec := result.GetValue()
-				entries, eerr := evaluator.evaluateIndex(rec)
+				entries, eerr := evaluator.filteredIndexEntries(rec)
 				if eerr != nil {
 					return eerr
 				}

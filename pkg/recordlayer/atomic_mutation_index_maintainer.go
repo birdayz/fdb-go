@@ -60,7 +60,7 @@ func (m *atomicMutationIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRe
 
 	// Evaluate old record entries (skip if delete is no-op).
 	if oldRecord != nil && !m.mutation.deleteIsNoOp() {
-		entries, err := m.mutation.evaluateEntries(oldRecord)
+		entries, err := m.mutation.evaluateEntries(m.store, oldRecord)
 		if err != nil {
 			return fmt.Errorf("evaluate %s index %q for old record: %w", m.index.Type, m.index.Name, err)
 		}
@@ -69,7 +69,7 @@ func (m *atomicMutationIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRe
 
 	// Evaluate new record entries.
 	if newRecord != nil {
-		entries, err := m.mutation.evaluateEntries(newRecord)
+		entries, err := m.mutation.evaluateEntries(m.store, newRecord)
 		if err != nil {
 			return fmt.Errorf("evaluate %s index %q for new record: %w", m.index.Type, m.index.Name, err)
 		}
@@ -126,8 +126,11 @@ func (m *atomicMutationIndexMaintainer) clearIfZero(fdbKey fdb.Key) {
 // []atomicMutationEntry or make(tuple.Tuple). Returns (true, nil) on success,
 // (false, nil) to fall through to the standard path.
 func (m *atomicMutationIndexMaintainer) updateInsertOnly(newRecord *FDBStoredRecord[proto.Message]) (bool, error) {
-	if m.index.Predicate != nil && !m.index.Predicate(newRecord.Record) {
-		return true, nil // predicate skipped
+	switch indexValuesFor(m.store, m.index, newRecord) {
+	case IndexValuesNone:
+		return true, nil // not maintained: the predicate or the filter refused it
+	case IndexValuesSome:
+		return false, nil // entries filtered one by one: the standard path
 	}
 
 	// Try zero-alloc path: evaluate grouping key fields directly via ScalarEvaluator,

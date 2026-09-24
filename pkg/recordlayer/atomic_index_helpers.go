@@ -22,18 +22,20 @@ func indexGroupingCount(expr KeyExpression) int {
 // evaluateGroupingKeys extracts the grouping key tuple(s) from a record.
 // For a GroupingKeyExpression, takes only the leading grouping columns.
 // For other expressions, uses all columns as the grouping key.
-// Checks the index predicate first (sparse/filtered indexes).
+// maintained is indexValuesFor's verdict on the record (the index predicate
+// and the store's maintenance filter).
 // Used by COUNT, COUNT_NOT_NULL, and COUNT_UPDATES maintainers.
-func evaluateGroupingKeys(index *Index, record *FDBStoredRecord[proto.Message]) ([]tuple.Tuple, error) {
-	if index.Predicate != nil && !index.Predicate(record.Record) {
+func evaluateGroupingKeys(store indexStoreContext, index *Index, record *FDBStoredRecord[proto.Message], maintained IndexValues) ([]tuple.Tuple, error) {
+	if maintained == IndexValuesNone {
 		return nil, nil
 	}
 
 	groupingCount := indexGroupingCount(index.RootExpression)
 
-	// Fast path: use EvaluateFlat to avoid [][]any alloc.
+	// Fast path: use EvaluateFlat to avoid [][]any alloc. It evaluates no
+	// entry list, so it runs only when every entry is maintained.
 	// Falls through on error (e.g. fan-out repeated fields).
-	if fe, ok := index.RootExpression.(FlatEvaluator); ok {
+	if fe, ok := index.RootExpression.(FlatEvaluator); ok && maintained == IndexValuesAll {
 		values, err := fe.EvaluateFlat(record, record.Record)
 		if err == nil {
 			// Convert []any to tuple.Tuple (same underlying type)
@@ -46,7 +48,7 @@ func evaluateGroupingKeys(index *Index, record *FDBStoredRecord[proto.Message]) 
 		// Fall through to standard Evaluate
 	}
 
-	tuples, err := index.RootExpression.Evaluate(record, record.Record)
+	tuples, err := maintainedKeyTuples(store, index, record, maintained)
 	if err != nil {
 		return nil, err
 	}
@@ -72,11 +74,16 @@ func evaluateGroupingKeys(index *Index, record *FDBStoredRecord[proto.Message]) 
 	return result, nil
 }
 
-// updateWhileWriteOnlyNonIdempotent implements the common UpdateWhileWriteOnly
-// pattern for non-idempotent atomic indexes (COUNT, SUM, COUNT_NOT_NULL, COUNT_UPDATES).
-// Checks if the record's primary key is in the already-built range before delegating
-// to the actual Update function.
-// Matches Java's StandardIndexMaintainer.updateWriteOnlyByRecords().
+// updateWhileWriteOnlyNonIdempotent is Java's
+// StandardIndexMaintainer.updateWhileWriteOnly for a non-idempotent index
+// (StandardIndexMaintainer.java:255-328): a record is applied to an index under
+// construction only where the build has already covered it, and what the build
+// covers is the stamp's method's. With no stamp (the build has not started, or
+// a by-records build that wrote none) or a by-records stamp, the range set
+// holds primary keys (updateWriteOnlyByRecords). A BY_INDEX build's range set
+// holds its source index's entry keys, so each record's key in that index
+// decides (updateWriteOnlyByIndex). Used by the atomic indexes that are not
+// idempotent, and by RANK and TIME_WINDOW_LEADERBOARD counting duplicates.
 func updateWhileWriteOnlyNonIdempotent(
 	oldRecord, newRecord *FDBStoredRecord[proto.Message],
 	index *Index,
@@ -84,28 +91,88 @@ func updateWhileWriteOnlyNonIdempotent(
 	indexTypeName string,
 	updateFunc func(*FDBStoredRecord[proto.Message], *FDBStoredRecord[proto.Message]) error,
 ) error {
-	var primaryKey tuple.Tuple
-	if oldRecord != nil {
-		primaryKey = oldRecord.PrimaryKey
-	} else if newRecord != nil {
-		primaryKey = newRecord.PrimaryKey
-	} else {
+	if oldRecord == nil && newRecord == nil {
 		return nil
 	}
-
 	if store == nil {
 		return updateFunc(oldRecord, newRecord)
 	}
-
-	inRange, err := store.isKeyInIndexBuildRange(index, primaryKey)
+	inRange := func(key tuple.Tuple) (bool, error) {
+		in, err := store.isKeyInIndexBuildRange(index, key)
+		if err != nil {
+			return false, fmt.Errorf("check index build range for %s index %q: %w", indexTypeName, index.Name, err)
+		}
+		return in, nil
+	}
+	source, err := store.writeOnlyBuildSource(index)
 	if err != nil {
-		return fmt.Errorf("check index build range for %s index %q: %w", indexTypeName, index.Name, err)
+		return err
+	}
+	if source == nil {
+		// updateWriteOnlyByRecords (:283-289).
+		var primaryKey tuple.Tuple
+		if oldRecord != nil {
+			primaryKey = oldRecord.PrimaryKey
+		} else {
+			primaryKey = newRecord.PrimaryKey
+		}
+		in, err := inRange(primaryKey)
+		if err != nil || !in {
+			return err
+		}
+		return updateFunc(oldRecord, newRecord)
 	}
 
-	if !inRange {
+	// updateWriteOnlyByIndex (:291-328).
+	oldKey, err := store.sourceIndexEntryKey(source, oldRecord)
+	if err != nil {
+		return err
+	}
+	newKey, err := store.sourceIndexEntryKey(source, newRecord)
+	if err != nil {
+		return err
+	}
+	if oldKey != nil && newKey != nil {
+		if tuplesEqual(oldKey, newKey) {
+			in, err := inRange(oldKey)
+			if err != nil || !in {
+				return err
+			}
+			return updateFunc(oldRecord, newRecord)
+		}
+		// The two keys are checked before either update, as Java checks
+		// them concurrently; an update does not move the range set.
+		oldIn, err := inRange(oldKey)
+		if err != nil {
+			return err
+		}
+		newIn, err := inRange(newKey)
+		if err != nil {
+			return err
+		}
+		if oldIn {
+			if err := updateFunc(oldRecord, nil); err != nil {
+				return err
+			}
+		}
+		if newIn {
+			return updateFunc(nil, newRecord)
+		}
 		return nil
 	}
-
+	entryKey := oldKey
+	if entryKey == nil {
+		entryKey = newKey
+	}
+	if entryKey == nil {
+		// Both records are excluded from the source index by its predicate or
+		// the store's maintenance filter, so from this index too.
+		return nil
+	}
+	in, err := inRange(entryKey)
+	if err != nil || !in {
+		return err
+	}
 	return updateFunc(oldRecord, newRecord)
 }
 
@@ -131,12 +198,8 @@ func updateWhileWriteOnlyNonIdempotent(
 // proto structurally: a structural walk cannot see fan-out (a repeated field
 // with no elements yields zero tuples, not a null one) and cannot tell a
 // grouping column from a grouped one.
-func evaluateGroupingKeysNotNull(index *Index, record *FDBStoredRecord[proto.Message]) ([]tuple.Tuple, error) {
-	if index.Predicate != nil && !index.Predicate(record.Record) {
-		return nil, nil
-	}
-
-	tuples, err := index.RootExpression.Evaluate(record, record.Record)
+func evaluateGroupingKeysNotNull(store indexStoreContext, index *Index, record *FDBStoredRecord[proto.Message], maintained IndexValues) ([]tuple.Tuple, error) {
+	tuples, err := maintainedKeyTuples(store, index, record, maintained)
 	if err != nil {
 		return nil, err
 	}

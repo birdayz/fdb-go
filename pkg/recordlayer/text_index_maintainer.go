@@ -203,8 +203,16 @@ func (m *textIndexMaintainer) updateStandard(oldRecord, newRecord *FDBStoredReco
 	// Then use the standard removeCommonEntries for correct full-key comparison.
 	// Matches Java: TextIndexMaintainer.update() calls super.update() which uses
 	// StandardIndexMaintainer.commonKeys() on IndexEntry objects (all columns compared).
+	// Java's StandardIndexMaintainer.update reads each record's entries through
+	// filteredIndexEntries: the index's predicate and the store's maintenance
+	// filter decide which are maintained, while the tokenizer version is
+	// written and cleared by Update whatever they decide.
 	evalEntries := func(record *FDBStoredRecord[proto.Message]) ([]indexEntry, [][]any, error) {
 		if record == nil {
+			return nil, nil, nil
+		}
+		maintained := indexValuesFor(m.store, m.index, record)
+		if maintained == IndexValuesNone {
 			return nil, nil, nil
 		}
 		tuples, err := m.index.RootExpression.Evaluate(record, record.Record)
@@ -218,6 +226,10 @@ func (m *textIndexMaintainer) updateStandard(oldRecord, newRecord *FDBStoredReco
 				key[j] = v
 			}
 			entries[i] = indexEntry{key: key, primaryKey: record.PrimaryKey}
+		}
+		if maintained == IndexValuesSome {
+			entries = keepMaintainedEntries(m.store, m.index, record, maintained, entries)
+			return entries, indexEntriesToRaw(entries), nil
 		}
 		return entries, tuples, nil
 	}

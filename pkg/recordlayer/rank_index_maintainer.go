@@ -113,14 +113,14 @@ func (m *rankIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto
 	var oldEntries, newEntries []indexEntry
 
 	if oldRecord != nil {
-		entries, err := m.evaluateIndex(oldRecord)
+		entries, err := m.filteredIndexEntries(oldRecord)
 		if err != nil {
 			return fmt.Errorf("evaluate index %q for old record: %w", m.index.Name, err)
 		}
 		oldEntries = entries
 	}
 	if newRecord != nil {
-		entries, err := m.evaluateIndex(newRecord)
+		entries, err := m.filteredIndexEntries(newRecord)
 		if err != nil {
 			return fmt.Errorf("evaluate index %q for new record: %w", m.index.Name, err)
 		}
@@ -192,25 +192,9 @@ func (m *rankIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBStor
 	if !m.rankedSetConfig.CountDuplicates {
 		return m.Update(oldRecord, newRecord) // idempotent
 	}
-	// Non-idempotent: check range set before updating.
-	// Use oldRecord's PK when available (for deletes), fall back to newRecord.
-	// Matches Java's rankIndexMaintainer.updateWriteOnlyByRecords().
-	var checkRecord *FDBStoredRecord[proto.Message]
-	if oldRecord != nil {
-		checkRecord = oldRecord
-	} else {
-		checkRecord = newRecord
-	}
-	if checkRecord != nil && m.store != nil {
-		inRange, err := m.store.isKeyInIndexBuildRange(m.index, checkRecord.PrimaryKey)
-		if err != nil {
-			return err
-		}
-		if !inRange {
-			return nil // PK not yet built — skip
-		}
-	}
-	return m.Update(oldRecord, newRecord)
+	// Non-idempotent: only where the build has covered the record, as Java's
+	// StandardIndexMaintainer.updateWhileWriteOnly decides it.
+	return updateWhileWriteOnlyNonIdempotent(oldRecord, newRecord, m.index, m.store, m.index.Type, m.Update)
 }
 
 // Scan scans the primary B-tree (BY_VALUE).

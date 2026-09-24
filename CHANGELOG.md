@@ -399,6 +399,18 @@ assets carry (`RELEASE.md` §Versioning).
   `RegisterNonUniqueNullFunction`. The interpretation is written back unchanged (Go rewrote
   `NOT_NULL` as `NOT_UNIQUE`) and, as in Java, is not part of an index's definition to the
   evolution validator. New API: `NullStandin`, `FieldWithNullStandin`.
+- **`IndexMaintenanceFilter` is ported** (Java's store option): `StoreBuilder.SetIndexMaintenanceFilter`
+  with `IndexMaintenanceFilterNormal` (the default) and `IndexMaintenanceFilterNoNulls`, or a filter
+  of your own, decides per index and record which entries every maintainer writes; the online
+  indexer takes it with `OnlineIndexerBuilder.SetIndexMaintenanceFilter`. A TEXT index now honours
+  its predicate, as Java's does. The index entries written under `NO_NULLS` equal Java's for VALUE,
+  COUNT, SUM, TEXT and RANK indexes (conformance "RFC-257 NullStandin").
+- **A non-idempotent index under a build from a source index is maintained as Java maintains it**:
+  a write during a BY_INDEX build of a COUNT, SUM, or duplicate-counting RANK or leaderboard index
+  applies where the record's source-index key is built, where Go checked its primary key against
+  that range set and miscounted. BITMAP_VALUE, MULTIDIMENSIONAL, VECTOR and non-counting
+  TIME_WINDOW_LEADERBOARD indexes are idempotent to the online indexer, as in Java (snapshot scans,
+  no per-record read conflicts).
 - **A proto3 field at its default value is absent**, as protobuf-java's `hasField` reports it, to
   key evaluation (index and primary-key bytes hold null, not the zero value) and to a query's field
   reads (`MessageHelpers.getFieldOnMessage`); an unset proto2 field declaring an explicit default

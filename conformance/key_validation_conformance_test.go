@@ -4,13 +4,11 @@ package conformance_test
 
 import (
 	"context"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
 
 	"fdb.dev/gen"
-	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -268,18 +266,7 @@ var _ = Describe("Map and group key expressions are maintained as Java maintains
 				})
 				Expect(err).NotTo(HaveOccurred())
 			}
-			goKVs, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
-				begin, end := goSS.Sub(int64(2)).FDBRangeKeys()
-				kvs, err := rtx.Transaction().GetRange(fdb.KeyRange{Begin: begin, End: end}, fdb.RangeOptions{}).GetSliceWithError()
-				if err != nil {
-					return nil, err
-				}
-				out := make([][]string, 0, len(kvs))
-				for _, kv := range kvs {
-					out = append(out, []string{hex.EncodeToString(kv.Key[len(goSS.Bytes()):]), hex.EncodeToString(kv.Value)})
-				}
-				return out, nil
-			})
+			goKVs, err := dumpIndexKVs(ctx, db, goSS)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(goKVs).To(Equal(java.KVs))
 		})

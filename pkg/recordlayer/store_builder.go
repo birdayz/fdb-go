@@ -1172,6 +1172,7 @@ type StoreBuilder struct {
 	cachedSSKeys              *storeSubspaceKeys       // cached from getCachedSubspaceKeys; avoids sync.Map lookup per Open
 	assumeAllIndexesReadable  bool                     // pre-populate empty indexStates so ensureStoreStateLoaded is a no-op
 	formatVersion             *int32                   // nil = not pinned; see SetFormatVersion
+	maintenanceFilter         IndexMaintenanceFilter   // nil = IndexMaintenanceFilterNormal
 }
 
 // NewStoreBuilder creates a new store builder
@@ -1262,10 +1263,25 @@ func (b *StoreBuilder) SetDatabase(db *FDBDatabase) *StoreBuilder {
 	return b
 }
 
+// SetIndexMaintenanceFilter sets the store's IndexMaintenanceFilter, Java's
+// FDBRecordStore.Builder.setIndexMaintenanceFilter: which index entries of each
+// record the store's indexes maintain. Nil is IndexMaintenanceFilterNormal.
+func (b *StoreBuilder) SetIndexMaintenanceFilter(filter IndexMaintenanceFilter) *StoreBuilder {
+	b.maintenanceFilter = filter
+	return b
+}
+
+// GetIndexMaintenanceFilter is Java's FDBRecordStore.Builder.getIndexMaintenanceFilter.
+func (b *StoreBuilder) GetIndexMaintenanceFilter() IndexMaintenanceFilter {
+	if b.maintenanceFilter == nil {
+		return IndexMaintenanceFilterNormal
+	}
+	return b.maintenanceFilter
+}
+
 // SetSkipPossiblyRebuild disables automatic index rebuild checks during Open/CreateOrOpen.
 // When set, the store will not call checkPossiblyRebuild even if the metadata version changed.
 // This is used by OnlineIndexer which manages index states independently.
-// Matches Java's IndexMaintenanceFilter.NONE behavior.
 func (b *StoreBuilder) SetSkipPossiblyRebuild(skip bool) *StoreBuilder {
 	b.skipPossiblyRebuild = skip
 	return b
@@ -1316,6 +1332,7 @@ func (b *StoreBuilder) newStore() *FDBRecordStore {
 		storeStateCache:    b.resolveCache(),
 
 		targetFormatVersion: b.effectiveFormatVersion(),
+		maintenanceFilter:   b.maintenanceFilter,
 	}
 	if b.assumeAllIndexesReadable {
 		store.indexStates = make(map[string]IndexState)

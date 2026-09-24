@@ -15036,8 +15036,14 @@ Landed on this tree (ws-j-design.md 4d, the `NullStandin` bullet, which also cor
 - Pins: conformance "RFC-257 NullStandin" and "RFC-257 a query reads a field as Java's
   getFieldOnMessage" (live JVM), unit pins in `key_expression_null_standin_test.go`,
   `index_maintainer_test.go` and `proto_field_reads_value_test.go`; red on the WS-C r11 tree.
-- OWNER QUESTION, open: Java's third standin reader is `IndexMaintenanceFilter.NO_NULLS`, and Go
-  has no `IndexMaintenanceFilter` at all (the store-builder option and its readers in the standard,
-  vector and sliding-window maintainers and the scrubber). `keyContainsNonUniqueNull` is the
-  predicate it needs. Whether the filter port joins WS-J or stands alone is asked of the owner
-  (ws-j-design.md 4d names it).
+- `IndexMaintenanceFilter` (Java's third standin reader, `NO_NULLS`): the owner answered "port it"
+  (2026-09-25); ported with the BY_INDEX write-only dispatch and `isIndexIdempotent` found beside
+  it (ws-j-design.md 4d, the `NullStandin` bullet; booked below).
+
+### RFC-257 WS-J: IndexMaintenanceFilter ported (booked 2026-09-25)
+
+LANDED (ws-j-design.md 4d): the store option and its readers in every maintainer, the online
+indexer's and the store builders' copies of it; the BY_INDEX write-only dispatch of non-idempotent
+indexes (Java's `updateWhileWriteOnly`, :255-328); `isIndexIdempotent` as Java's maintainers answer
+it. Pinned against the JVM (NO_NULLS, maintainer by maintainer) and by Go specs red on `426da82a5`.
+

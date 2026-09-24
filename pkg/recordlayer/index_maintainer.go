@@ -168,6 +168,15 @@ type indexStoreContext interface {
 	// (COUNT) during WRITE_ONLY to avoid double-counting.
 	// Matches Java's standardIndexMaintainer.addedRangeWithKey().
 	isKeyInIndexBuildRange(index *Index, primaryKey tuple.Tuple) (bool, error)
+	// writeOnlyBuildSource is the source index of the BY_INDEX build of an
+	// index under construction, from its indexing type stamp, or nil when the
+	// build is by records or has no stamp (Java's updateWhileWriteOnly
+	// dispatch, StandardIndexMaintainer.java:260-280).
+	writeOnlyBuildSource(index *Index) (*Index, error)
+	// sourceIndexEntryKey is Java's evaluateSingletonIndexKey
+	// (StandardIndexMaintainer.java:331-345): the record's one entry key in
+	// the source index, with its primary key, or nil when the record has none.
+	sourceIndexEntryKey(source *Index, record *FDBStoredRecord[proto.Message]) (tuple.Tuple, error)
 
 	// AcquireWriteLock acquires an exclusive lock for the given subspace key.
 	// Used by tree-structured indexes (HNSW, R-tree) to serialize mutations.
@@ -186,6 +195,10 @@ type indexStoreContext interface {
 	// Vector-index maintainers (HNSW, R-tree) draw node-ID and sample-key nonces
 	// through Env().Read so a simulation run reproduces the persisted bytes.
 	Env() *dst.Env
+
+	// indexMaintenanceFilter is the store's IndexMaintenanceFilter, Java's
+	// IndexMaintainerState.filter.
+	indexMaintenanceFilter() IndexMaintenanceFilter
 }
 
 // standardIndexMaintainer handles VALUE index maintenance.
@@ -238,7 +251,7 @@ func (m *standardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 	// common-entry filtering, and old-entries loop.
 	if oldRecord == nil && newRecord != nil {
 		_, isKWV := m.index.RootExpression.(*KeyWithValueExpression)
-		if !isKWV && (m.index.Predicate == nil || m.index.Predicate(newRecord.Record)) {
+		if !isKWV && indexValuesFor(m.store, m.index, newRecord) == IndexValuesAll {
 			// Int64 fast path: avoids any boxing alloc for integer fields.
 			if ie, ok := m.index.RootExpression.(Int64Evaluator); ok {
 				val, ok, err := ie.EvaluateInt64(newRecord, newRecord.Record)
@@ -297,7 +310,7 @@ func (m *standardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 	var newEntries []indexEntry
 
 	if oldRecord != nil {
-		entries, err := m.evaluateIndex(oldRecord)
+		entries, err := m.filteredIndexEntries(oldRecord)
 		if err != nil {
 			return fmt.Errorf("evaluate index %q for old record: %w", m.index.Name, err)
 		}
@@ -305,7 +318,7 @@ func (m *standardIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[p
 	}
 
 	if newRecord != nil {
-		entries, err := m.evaluateIndex(newRecord)
+		entries, err := m.filteredIndexEntries(newRecord)
 		if err != nil {
 			return fmt.Errorf("evaluate index %q for new record: %w", m.index.Name, err)
 		}
@@ -504,6 +517,26 @@ type indexEntry struct {
 	key        tuple.Tuple
 	primaryKey tuple.Tuple
 	value      tuple.Tuple // Non-nil for KeyWithValueExpression covering indexes
+}
+
+// filteredIndexEntries is Java's StandardIndexMaintainer.filteredIndexEntries
+// (:348-384): nil for a nil record or one the index does not maintain
+// (indexValuesFor), otherwise its evaluated entries, only those the store's
+// filter admits under IndexValuesSome. Every maintainer's update path reads a
+// record's entries through it, as Java's StandardIndexMaintainer.update does.
+func (m *standardIndexMaintainer) filteredIndexEntries(record *FDBStoredRecord[proto.Message]) ([]indexEntry, error) {
+	if record == nil {
+		return nil, nil
+	}
+	values := indexValuesFor(m.store, m.index, record)
+	if values == IndexValuesNone {
+		return nil, nil
+	}
+	entries, err := m.evaluateIndex(record)
+	if err != nil {
+		return nil, err
+	}
+	return keepMaintainedEntries(m.store, m.index, record, values, entries), nil
 }
 
 // evaluateIndex evaluates the index expression against a record to produce index entries.

@@ -1085,13 +1085,20 @@ class MetaDataStoreSteps extends ConformanceBase {
      * meta-data proto, and report each save's verdict ("ok", or the root
      * exception's full class name: a unique index's violation surfaces at
      * commit), then every index key-value pair the saves wrote (the store's
-     * INDEX keyspace, 2), as hex relative to the store subspace. Records are
-     * serialized messages of recordTypeName.
+     * INDEX and INDEX_SECONDARY_SPACE keyspaces, 2 and 3), as hex relative to
+     * the store subspace. Records are
+     * serialized messages of recordTypeName. The store's IndexMaintenanceFilter
+     * is filter's.
      */
     @ConformanceStep("saveRecordsAndDumpIndexesJava")
     public Map<String, Object> saveRecordsAndDumpIndexesJava(String clusterFile, byte[] subspace, byte[] metaData,
-                                                             String recordTypeName, byte[][] records)
+                                                             String recordTypeName, byte[][] records, String filter)
             throws InvalidProtocolBufferException {
+        // filter: absent or "NORMAL" is IndexMaintenanceFilter.NORMAL, "NO_NULLS" its NO_NULLS.
+        final com.apple.foundationdb.record.provider.foundationdb.IndexMaintenanceFilter maintenanceFilter =
+                "NO_NULLS".equals(filter)
+                ? com.apple.foundationdb.record.provider.foundationdb.IndexMaintenanceFilter.NO_NULLS
+                : com.apple.foundationdb.record.provider.foundationdb.IndexMaintenanceFilter.NORMAL;
         final RecordMetaData md = RecordMetaData.build(RecordMetaDataProto.MetaData.parseFrom(metaData, EXTENSION_REGISTRY));
         final Descriptors.Descriptor descriptor = md.getRecordType(recordTypeName).getDescriptor();
         final Subspace ss = new Subspace(subspace);
@@ -1101,6 +1108,7 @@ class MetaDataStoreSteps extends ConformanceBase {
             try {
                 runInContext(clusterFile, null, context -> {
                     FDBRecordStore.newBuilder().setMetaDataProvider(md).setContext(context).setSubspace(ss)
+                            .setIndexMaintenanceFilter(maintenanceFilter)
                             .setUserVersionChecker(ALWAYS_READABLE_CHECKER).createOrOpen().saveRecord(msg);
                     return null;
                 });
@@ -1117,10 +1125,12 @@ class MetaDataStoreSteps extends ConformanceBase {
         final List<List<String>> kvs = runInContext(clusterFile, null, context -> {
             final byte[] prefix = ss.getKey();
             final List<List<String>> out = new ArrayList<>();
-            for (com.apple.foundationdb.KeyValue kv : context.ensureActive().getRange(ss.range(Tuple.from(2L))).asList().join()) {
-                final byte[] rel = java.util.Arrays.copyOfRange(kv.getKey(), prefix.length, kv.getKey().length);
-                out.add(List.of(java.util.HexFormat.of().formatHex(rel),
-                        java.util.HexFormat.of().formatHex(kv.getValue())));
+            for (long space : new long[] {2L, 3L}) {
+                for (com.apple.foundationdb.KeyValue kv : context.ensureActive().getRange(ss.range(Tuple.from(space))).asList().join()) {
+                    final byte[] rel = java.util.Arrays.copyOfRange(kv.getKey(), prefix.length, kv.getKey().length);
+                    out.add(List.of(java.util.HexFormat.of().formatHex(rel),
+                            java.util.HexFormat.of().formatHex(kv.getValue())));
+                }
             }
             return out;
         });

@@ -210,7 +210,7 @@ func (m *permutedMinMaxIndexMaintainer) updatePermutedForInsert(
 	record *FDBStoredRecord[proto.Message],
 	groupPrefixSize, totalSize, permutePosition int,
 ) error {
-	entries, err := m.evaluateIndex(record)
+	entries, err := m.filteredIndexEntries(record)
 	if err != nil {
 		return fmt.Errorf("evaluate index %q for record (permuted insert): %w", m.index.Name, err)
 	}
@@ -256,7 +256,7 @@ func (m *permutedMinMaxIndexMaintainer) updatePermutedForRemove(
 	record *FDBStoredRecord[proto.Message],
 	groupPrefixSize, totalSize, permutePosition int,
 ) error {
-	entries, err := m.evaluateIndex(record)
+	entries, err := m.filteredIndexEntries(record)
 	if err != nil {
 		return fmt.Errorf("evaluate index %q for record (permuted remove): %w", m.index.Name, err)
 	}

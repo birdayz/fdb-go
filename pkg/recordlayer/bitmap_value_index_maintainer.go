@@ -98,10 +98,11 @@ func bitmapByteSize(entrySize int64) int {
 	return int((entrySize + 7) / 8)
 }
 
-// evaluateIndex evaluates the index expression to produce index entries.
-// Reuses the standard evaluateIndex from standardIndexMaintainer.
-func (m *bitmapValueIndexMaintainer) evaluateIndex(record *FDBStoredRecord[proto.Message]) ([]indexEntry, error) {
-	if m.index.Predicate != nil && !m.index.Predicate(record.Record) {
+// filteredIndexEntries is Java's StandardIndexMaintainer.filteredIndexEntries
+// over the bitmap index's evaluated entries (see standardIndexMaintainer's).
+func (m *bitmapValueIndexMaintainer) filteredIndexEntries(record *FDBStoredRecord[proto.Message]) ([]indexEntry, error) {
+	values := indexValuesFor(m.store, m.index, record)
+	if values == IndexValuesNone {
 		return nil, nil
 	}
 	tuples, err := m.index.RootExpression.Evaluate(record, record.Record)
@@ -116,7 +117,7 @@ func (m *bitmapValueIndexMaintainer) evaluateIndex(record *FDBStoredRecord[proto
 		}
 		entries[i] = indexEntry{key: key, primaryKey: record.PrimaryKey}
 	}
-	return entries, nil
+	return keepMaintainedEntries(m.store, m.index, record, values, entries), nil
 }
 
 // groupPrefixSize returns the number of leading grouping (GROUP BY) columns.
@@ -130,7 +131,7 @@ func (m *bitmapValueIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecor
 	var oldEntries, newEntries []indexEntry
 
 	if oldRecord != nil {
-		entries, err := m.evaluateIndex(oldRecord)
+		entries, err := m.filteredIndexEntries(oldRecord)
 		if err != nil {
 			return fmt.Errorf("evaluate bitmap_value index %q for old record: %w", m.index.Name, err)
 		}
@@ -138,7 +139,7 @@ func (m *bitmapValueIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecor
 	}
 
 	if newRecord != nil {
-		entries, err := m.evaluateIndex(newRecord)
+		entries, err := m.filteredIndexEntries(newRecord)
 		if err != nil {
 			return fmt.Errorf("evaluate bitmap_value index %q for new record: %w", m.index.Name, err)
 		}

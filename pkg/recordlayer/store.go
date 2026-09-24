@@ -132,13 +132,16 @@ func (e *StaleMetaDataVersionError) Error() string {
 // This is the main struct for storing and retrieving records.
 type FDBRecordStore struct {
 	deferredMaintenance IndexDeferredMaintenanceControl
-	context             *FDBRecordContext
-	metaData            *RecordMetaData
-	subspace            subspace.Subspace
-	recordsSubspace     subspace.Subspace     // Cached subspace.Sub(RecordKey) — avoids alloc per method call
-	storeHeader         *gen.DataStoreInfo    // Cached store header, loaded on Open/Create or lazily
-	indexStates         map[string]IndexState // Cached index states, loaded on Open/Create or lazily
-	indexRebuildPolicy  IndexRebuildPolicy    // Policy for rebuilding indexes on metadata version change
+	// maintenanceFilter is Java's FDBRecordStore.indexMaintenanceFilter; nil
+	// is IndexMaintenanceFilterNormal.
+	maintenanceFilter  IndexMaintenanceFilter
+	context            *FDBRecordContext
+	metaData           *RecordMetaData
+	subspace           subspace.Subspace
+	recordsSubspace    subspace.Subspace     // Cached subspace.Sub(RecordKey) — avoids alloc per method call
+	storeHeader        *gen.DataStoreInfo    // Cached store header, loaded on Open/Create or lazily
+	indexStates        map[string]IndexState // Cached index states, loaded on Open/Create or lazily
+	indexRebuildPolicy IndexRebuildPolicy    // Policy for rebuilding indexes on metadata version change
 	// targetFormatVersion is the format version this store opens AT — the
 	// ceiling maybeUpgradeFormatVersion upgrades toward, not necessarily the
 	// newest the binary knows. 0 means formatVersionDefault.
@@ -226,6 +229,7 @@ func (store *FDBRecordStore) AsBuilder() *StoreBuilder {
 		subspace:           store.subspace,
 		indexRebuildPolicy: store.indexRebuildPolicy,
 		storeStateCache:    store.storeStateCache,
+		maintenanceFilter:  store.maintenanceFilter,
 	}
 }
 
@@ -240,6 +244,7 @@ func (store *FDBRecordStore) CopyBuilder(newContext *FDBRecordContext) *StoreBui
 		subspace:           store.subspace,
 		indexRebuildPolicy: store.indexRebuildPolicy,
 		storeStateCache:    store.storeStateCache,
+		maintenanceFilter:  store.maintenanceFilter,
 	}
 }
 
@@ -2282,4 +2287,16 @@ func (store *FDBRecordStore) deserializeRecord(data []byte, recordType *RecordTy
 		return msg, nil
 	}
 	return nil, fmt.Errorf("union descriptor does not contain %s record", recordType.Name)
+}
+
+// GetIndexMaintenanceFilter is Java's FDBRecordStore.getIndexMaintenanceFilter.
+func (store *FDBRecordStore) GetIndexMaintenanceFilter() IndexMaintenanceFilter {
+	return store.indexMaintenanceFilter()
+}
+
+func (store *FDBRecordStore) indexMaintenanceFilter() IndexMaintenanceFilter {
+	if store == nil || store.maintenanceFilter == nil {
+		return IndexMaintenanceFilterNormal
+	}
+	return store.maintenanceFilter
 }

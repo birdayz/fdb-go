@@ -277,7 +277,15 @@ func (m *slidingWindowIndexMaintainer) updateLocked(oldRecord, newRecord *FDBSto
 	if writeOnly {
 		update = m.delegate.UpdateWhileWriteOnly
 	}
-	if oldRecord != nil && m.shouldMaintain(oldRecord) {
+	maintainOld, err := m.shouldMaintain(oldRecord)
+	if err != nil {
+		return err
+	}
+	maintainNew, err := m.shouldMaintain(newRecord)
+	if err != nil {
+		return err
+	}
+	if maintainOld {
 		key, err := m.entryKeyOf(oldRecord)
 		if err != nil {
 			return err
@@ -286,7 +294,7 @@ func (m *slidingWindowIndexMaintainer) updateLocked(oldRecord, newRecord *FDBSto
 			return err
 		}
 	}
-	if newRecord != nil && m.shouldMaintain(newRecord) {
+	if maintainNew {
 		key, err := m.entryKeyOf(newRecord)
 		if err != nil {
 			return err
@@ -298,17 +306,28 @@ func (m *slidingWindowIndexMaintainer) updateLocked(oldRecord, newRecord *FDBSto
 	return nil
 }
 
-// shouldMaintain is the per-record gate — Java's
-// IndexMaintenanceUtils.getFilterTypeForRecord == ALL branch (:377-390).
-//
-// Go has no IndexMaintenanceFilter framework; the equivalent per-record gate is
-// the compiled Index.Predicate, which for a row-number window index accepts
-// every record by construction (see rowNumberWindowPredicateFromProto). It is
-// still consulted rather than assumed, because the window arm may sit inside a
-// conjunction with genuinely filtering arms — `AND(price > 10, rowWindow)` is a
-// legal shape, and then only the qualifying records may enter the window.
-func (m *slidingWindowIndexMaintainer) shouldMaintain(record *FDBStoredRecord[proto.Message]) bool {
-	return m.index.Predicate == nil || m.index.Predicate(record.Record)
+// shouldMaintain is Java's shouldMaintain (SlidingWindowIndexMaintainer.java:
+// 449-456): a nil record is not maintained, and otherwise
+// IndexMaintenanceUtils.getFilterTypeForRecord decides (indexValuesFor: the
+// index's predicate, then the store's maintenance filter), IndexValuesAll
+// maintaining the record and IndexValuesSome refused. The predicate of a
+// row-number window index accepts every record by construction (see
+// rowNumberWindowPredicateFromProto), but it is consulted rather than assumed,
+// because the window arm may sit inside a conjunction with genuinely filtering
+// arms — `AND(price > 10, rowWindow)` is a legal shape, and then only the
+// qualifying records may enter the window.
+func (m *slidingWindowIndexMaintainer) shouldMaintain(record *FDBStoredRecord[proto.Message]) (bool, error) {
+	if record == nil {
+		return false, nil
+	}
+	switch indexValuesFor(m.store, m.index, record) {
+	case IndexValuesSome:
+		return false, &RecordCoreError{Message: "filtering type SOME is not supported", IndexName: m.index.Name}
+	case IndexValuesNone:
+		return false, nil
+	default:
+		return true, nil
+	}
 }
 
 // UpdateWhileWriteOnly maintains the window during an online index build.

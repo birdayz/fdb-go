@@ -148,14 +148,14 @@ func (m *multidimensionalIndexMaintainer) Update(oldRecord, newRecord *FDBStored
 	var oldEntries, newEntries []indexEntry
 
 	if oldRecord != nil {
-		entries, err := m.evaluateIndex(oldRecord)
+		entries, err := m.filteredIndexEntries(oldRecord)
 		if err != nil {
 			return fmt.Errorf("evaluate index %q for old record: %w", m.index.Name, err)
 		}
 		oldEntries = entries
 	}
 	if newRecord != nil {
-		entries, err := m.evaluateIndex(newRecord)
+		entries, err := m.filteredIndexEntries(newRecord)
 		if err != nil {
 			return fmt.Errorf("evaluate index %q for new record: %w", m.index.Name, err)
 		}

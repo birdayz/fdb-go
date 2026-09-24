@@ -27,7 +27,7 @@ func (m *vectorIndexMaintainer) SerializePendingWriteQueue(oldRecord, newRecord 
 		if record == nil {
 			continue
 		}
-		evaluated, err := m.evaluateIndex(record)
+		evaluated, err := m.filteredIndexEntries(record)
 		if err != nil {
 			return nil, err
 		}
@@ -125,7 +125,15 @@ func (m *slidingWindowIndexMaintainer) queuedEntryKey(packed []byte) (slidingWin
 
 func (m *slidingWindowIndexMaintainer) SerializePendingWriteQueue(oldRecord, newRecord *FDBStoredRecord[proto.Message]) (*anypb.Any, error) {
 	entry := &gen.SlidingWindowQueueEntry{}
-	if oldRecord != nil && m.shouldMaintain(oldRecord) {
+	maintainOld, err := m.shouldMaintain(oldRecord)
+	if err != nil {
+		return nil, err
+	}
+	maintainNew, err := m.shouldMaintain(newRecord)
+	if err != nil {
+		return nil, err
+	}
+	if maintainOld {
 		key, err := m.entryKeyOf(oldRecord)
 		if err != nil {
 			return nil, err
@@ -136,7 +144,7 @@ func (m *slidingWindowIndexMaintainer) SerializePendingWriteQueue(oldRecord, new
 			return nil, err
 		}
 	}
-	if newRecord != nil && m.shouldMaintain(newRecord) {
+	if maintainNew {
 		key, err := m.entryKeyOf(newRecord)
 		if err != nil {
 			return nil, err

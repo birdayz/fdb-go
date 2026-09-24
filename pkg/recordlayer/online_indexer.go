@@ -410,6 +410,11 @@ type OnlineIndexer struct {
 	// record-store builder rather than as a separate indexer field.
 	formatVersion *int32
 
+	// maintenanceFilter is the IndexMaintenanceFilter every store this indexer
+	// opens uses, so the build maintains the entries the store's writes do.
+	// Java carries it on the shared record-store builder too.
+	maintenanceFilter IndexMaintenanceFilter
+
 	// progressLogIntervalMillis throttles the per-range "Indexer: Built Range"
 	// progress log (see maybeLogBuildProgress). Matches Java
 	// OnlineIndexOperationConfig.progressLogIntervalMillis:
@@ -552,6 +557,14 @@ func NewOnlineIndexerBuilder() *OnlineIndexerBuilder {
 // caller's record-store builder (IndexingCommon.getRecordStoreBuilder).
 func (b *OnlineIndexerBuilder) SetFormatVersion(version int32) *OnlineIndexerBuilder {
 	b.indexer.formatVersion = &version
+	return b
+}
+
+// SetIndexMaintenanceFilter sets the IndexMaintenanceFilter of the stores the
+// indexer opens, mirroring StoreBuilder.SetIndexMaintenanceFilter; Java reads it
+// off the caller's record-store builder (IndexingCommon.getRecordStoreBuilder).
+func (b *OnlineIndexerBuilder) SetIndexMaintenanceFilter(filter IndexMaintenanceFilter) *OnlineIndexerBuilder {
+	b.indexer.maintenanceFilter = filter
 	return b
 }
 
@@ -2220,16 +2233,26 @@ func isIndexIdempotent(index *Index) bool {
 		IndexTypeMinEverTuple, IndexTypeMaxEverTuple,
 		IndexTypeMaxEverVersion, IndexTypeVersion,
 		IndexTypePermutedMin, IndexTypePermutedMax,
-		IndexTypeText:
+		IndexTypeText, IndexTypeBitmapValue, IndexTypeMultidimensional,
+		IndexTypeVector:
+		// StandardIndexMaintainer.isIdempotent's true, which these do not
+		// override (StandardIndexMaintainer.java:736-738), and the atomic
+		// mutations AtomicMutation.isIdempotent calls idempotent. A windowed
+		// VECTOR index is its delegate's (SlidingWindowIndexMaintainer.java:364).
 		return true
-	case IndexTypeRank:
-		// RANK is idempotent only when !CountDuplicates.
-		// Matches Java's RankIndexMaintainer.isIdempotent().
+	case IndexTypeRank, IndexTypeTimeWindowLeaderboard:
+		// RankIndexMaintainer.isIdempotent and
+		// TimeWindowLeaderboardIndexMaintainer.isIdempotent: not when
+		// duplicates are counted.
 		return !index.GetBooleanOption(IndexOptionRankCountDuplicates, false)
 	case IndexTypeCount, IndexTypeCountNotNull, IndexTypeCountUpdates, IndexTypeSum:
 		return false
 	default:
-		return false // conservative default
+		// A type Go does not maintain has no maintainer, and Java no
+		// isIdempotent to ask. Go's own vector_spfresh index is built as
+		// non-idempotent (its generations are reconciled by
+		// spfreshIndexMaintainer.UpdateWhileWriteOnly).
+		return false
 	}
 }
 
@@ -2303,6 +2326,7 @@ func (oi *OnlineIndexer) openStoreWithPreflight(rtx *FDBRecordContext, preflight
 	if oi.formatVersion != nil {
 		sb = sb.SetFormatVersion(*oi.formatVersion)
 	}
+	sb = sb.SetIndexMaintenanceFilter(oi.maintenanceFilter)
 	return sb.openWithPreflight(preflight)
 }
 

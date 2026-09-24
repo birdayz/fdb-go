@@ -316,7 +316,7 @@ func (m *vectorIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[pro
 		if record == nil {
 			continue
 		}
-		entries, err := m.evaluateIndex(record)
+		entries, err := m.filteredIndexEntries(record)
 		if err != nil {
 			which := "old"
 			if i == 1 {
