@@ -15114,3 +15114,15 @@ map entries written whatever their value (proto3 zeros); "byte for byte" scoped 
 oneof field order declared and pinned against the JVM; repeated elements matched along a longest
 common subsequence; the dry run over the stored record; a per-walk reach for foreign descriptors.
 NEXT: the revision-16 gate (`ws-c-addendum-review-v16/`).
+
+### RFC-257 WS-J merge unit — revised by design v17 (booked 2026-09-25)
+
+Amends every "RFC-257 WS-J merge unit" block above (booked 2026-09-23 through the v16 revision).
+Withdrawn from them, under the owner's pre-release ruling (ws-j-design.md 4e): the (d) refusal as
+landed (it was deleted in v16), the migration as step 3 and its PENDING CHANGELOG entry, the F11
+constraint that a migration re-frames pre-upgrade tenants, "F13's refusal without its migration" and
+the pre-F1/pre-F2 rebinding hazards as the unit's rationale, and the WIDENED carry class with both
+literal-carrier arms (removed in `8e515423b`). The unit still gates the tree's merge on steps 1 to 3:
+the landed fixes change what a template built from DDL stores, and without the carry rule a new
+version of an existing template renumbers its record types. Step 3 is restated in 4e ("Step 3,
+restated"); the design v17 gate is `ws-j-design-review-v17/`.

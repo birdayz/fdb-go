@@ -1,6 +1,22 @@
 # RFC-257 WS-J design — catalog existence policies and index-definition fidelity
 
-Status: design v16, for Graefe + Torvalds + storage review. v16 applies the owner's ruling of
+Status: design v17, for Graefe + Torvalds + storage review. v17 answers the three v16 NAKs
+(`ws-j-design-review-v16/`) in a new section 4e, whose decisions supersede the v16 sentences
+marked [v17 → 4e] at their sites:
+- the owner's ruling applied to the carry rule as well as to framing: WIDENED and both landed
+  literal-carrier arms withdrawn (a literal's carrier is part of the key, as Java reads it),
+  section 4's tests re-based on templates Java or this build wrote, the merge unit restated;
+- what has landed and what step 3 still owes, stated with evidence, and the 3.6 debt landed
+  (field and fan-type refusals, the RecordCoreException hierarchy, Java's
+  MetaDataProtoDeserializationException, "More than one value encoded in value");
+- Java's `deleteTemplate(name, version)`, which the design had called Go-only, and the
+  `v′ <= latest` refusal step 3 moves into `CreateTemplate`, which closes the re-issue a Java
+  delete below the latest leaves;
+- the evidence v16 claimed and did not hold (red logs for step 1, section 2's other two
+  sequences, the hooked interleaving test), and the smaller corrections.
+v16's text is kept at `/var/tmp/fdb-upgrade-recovery/ws-j-design.v16-final.md`.
+
+v16 applies the owner's ruling of
 2026-09-24 that data written by pre-release Go builds is not supported, and answers v15's
 Graefe NAK (`ws-j-design-review-v15/graefe.txt`; the v15 Torvalds and storage lenses were stopped
 when the ruling made their subject moot). Section 4d is rewritten, and its decisions supersede
@@ -664,7 +680,7 @@ absent and failed on its own, and one after binds the NEW version legitimately. 
 the guard's range read serializes against is a concurrent DROP SCHEMA of a bound schema
 (its index entry is deleted inside the range): a refused write commits nothing, so that pair
 never conflicts; a guard whose read predates the drop refuses once, naming the schema the drop
-removes, and its retry is accepted (v16 said "conflicts once", which no refused write can do).
+removes, and its retry is accepted (v15 said "conflicts once", which no refused write can do).
 The pair that DOES conflict is `DeleteTemplateVersion(t, v)` against a SaveSchema binding
 (t, v): the delete reads the binding range the bind writes, the bind reads the template row
 the delete removes, so whichever commits second gets not_committed and its retry sees the
@@ -1053,7 +1069,8 @@ a raw write of its catalog rows, its literals asserted `long_value` as that buil
 them, not rewritten; v2
 from the same DDL through `fleet.SaveTemplate`, RepairSchema, rows written before and
 read after; the validator runs up to its one-way carrier arm and admits it there),
-and it lands with section 4. The option:
+and it lands with section 4 [v17 → 4e: withdrawn with WIDENED; a literal's carrier is part of the
+key, as Java's validator reads it, and the option, both arms and test 5 are gone]. The option:
 `MetaDataEvolutionValidatorBuilder.SetAllowLiteralCarrierWidening`, set by
 `validateSchemaRebind` (one-way, below) and by the restore of section 2 (in its symmetric
 form, `SetAllowLiteralCarrierEitherWay`, v14), and by nothing else, so the ported core
@@ -1225,7 +1242,7 @@ pair wins and that no schema is left bound to a version that is not stored; a te
 set, which is stated at the constructor. `DeleteTemplateVersion` is refused there while a
 held schema names (t, v), as the FDB catalog refuses it (v10 refused it in the FDB
 catalog only, so the in-memory catalog could strand a schema the guard then froze, with
-no in-memory restore to undo it), and `CreateTemplate` of a fresh template runs the (d)
+no in-memory restore to undo it), and [v16 → 4d: no (d) refusal remains] `CreateTemplate` of a fresh template runs the (d)
 refusal the FDB catalog's `serializeTemplate` runs (v10's in-memory `CreateTemplate`
 stored a (d) template and then refused every new version of it). v9 exempted the
 in-memory catalog on the ground that its rows hold template OBJECTS, so re-issuing (t, v)
@@ -1295,7 +1312,7 @@ reverse move, the rebind without the option, and the CLI flag unwired. The same 
 even when an unchanged version is allowed (Java :154; Go accepted the downgrade, after
 which every store open failed on stale metadata).
 
-Rolling upgrade (CHANGELOG): a Go node from before F2b refuses to maintain an index
+[v17 → 4e: pre-release, withdrawn.] Rolling upgrade (CHANGELOG): a Go node from before F2b refuses to maintain an index
 over an `int_value` literal ("must be int64"), so every writer is upgraded before a
 template with a literal-bearing index is created or rebound.
 
@@ -1655,7 +1672,9 @@ are added.]
 
 v13 ported one of Java's `KeyExpression.DeserializationException` throws, the absent
 root, and the v13 gates found the rest of the port partial. So a stored key expression
-Java refuses at load still loads in Go and fails later, or reads under a default. Step 3
+Java refuses at load still loads in Go and fails later, or reads under a default. [v17 → 4e: landed
+in `8e515423b`; a fan type outside the enum is parsed into the unknown fields by both engines and
+is the missing fan type, not "Invalid fan type N".] Step 3
 completes it, in `key_expression_proto.go`, `errors.go` and `metadata_proto.go`:
 - A `Field` (and a `Nesting`'s parent, which is a Field) without `field_name` is refused
   with "Serialized Field is missing field name", and one without `fan_type` with
@@ -2008,7 +2027,8 @@ arm of that message),
 
 Under this rule a Go-built new version never changes a key that stored data depends
 on, and the validator (with the options above) admits it; the validator stays as the
-guard for templates built any other way. FDB tests, one per case, each through
+guard for templates built any other way. [v17 → 4e: tests 1, 3, 5 and 10 re-based on templates
+Java or this build wrote; WIDENED withdrawn.] FDB tests, one per case, each through
 `fleet.SaveTemplate` + `RepairSchema` and `fleet.Migrate`, rows written before the rebind
 read back by table after it:
 1. v1 stored with the OLD Go numbering (built by the pre-port builder, whose output the
@@ -2144,6 +2164,9 @@ record-layer programmatic `NewIndex` with a caller-supplied map (no order to pre
 emits it sorted, where Java's programmatic Index copies the caller's map order.
 
 ## 4c. Records-file validation (F13): scope, what stops loading, and the migration
+
+[v16 → 4d, v17 → 4e: the (d) refusal, its 0A000 mapping and the migration are gone; Go reads
+every records file as the target reads it. The paragraphs below that describe them are history.]
 
 Landed locally, each arm Java's (RecordMetaDataBuilder.java:316-358, 635-747):
 - the union is found only as `fetchUnionDescriptor` finds it (a message with
@@ -2293,7 +2316,7 @@ metadata with it false. With it true, Java reads:
   have: K; adding on f") and a repeated field ("Primary key cannot be set on a repeated field")
   (`protoFieldOptions`, :910-957).
 
-Go reads none of them: a Go program over a records file that carries them builds other metadata
+[v17 → 4e: landed on `a33336527`, with a JVM spec.] Go reads none of them: a Go program over a records file that carries them builds other metadata
 than a Java program over the same file, and, since the record type key is part of every key, keys
 its records elsewhere. Step 3 ports all of them, with Java's texts, into `setRecords` (not the
 loader), each pinned against the JVM's in-code build of the same file. What they change for Go's
@@ -2309,7 +2332,8 @@ Java's "Index ... already defined").
   target's `RecordCoreException`, whose text is pinned against the JVM.
 - `get_versionstamp_incarnation` is a key function in Go only: the target has it as a SQL function
   (`IncarnationValue.java:171`) and not in its key-function registry, so a Go index over it is
-  metadata the target refuses to load ("Function not defined"). `Build` refuses a key function Go
+  metadata the target refuses to load ("Function not defined") [v17 → 4e: `Build` refuses a name
+  no registry holds; a function an application registers is admitted]. `Build` refuses a key function Go
   registers that the target's core registry lacks, so Go never stores metadata the target cannot
   load. The SQL path is measured at the step against the target's DDL for the same statement.
 - Only a Nesting's child can be absent in stored bytes: Grouping, Dimensions, KeyWithValue, Split
@@ -2344,7 +2368,7 @@ Java's "Index ... already defined").
     `CardinalityFunctionKeyExpression.java:148`): the arithmetic functions return
     `Key.Evaluated.scalar(null)` (`LongArithmethicFunctionKeyExpression.java:98`), a null that
     collides. A Go function whose Java twin returns `Key.Evaluated.NULL` registers with
-    `RegisterNonUniqueNullFunction`. `keyContainsNonUniqueNull` replaces `indexKeyContainsNull` at
+    `RegisterNonUniqueNullFunction` [v17 → 4e: `FunctionSpec.NullIsNonUnique`]. `keyContainsNonUniqueNull` replaces `indexKeyContainsNull` at
     the unique checks (`index_maintainer.go`, `rank_index_maintainer.go`) and COUNT_NOT_NULL's
     grouped columns (`evaluateGroupingKeysNotNull`, `AtomicMutation.java:165-171`).
   - `IndexMaintenanceFilter.NO_NULLS` (`IndexMaintenanceFilter.java:45-56`) is the target's third
@@ -2370,7 +2394,7 @@ Java's "Index ... already defined").
     "IndexMaintenanceFilter" (SOME's entry arguments, NONE and ALL, the atomic family with the fast
     paths bypassed, the sliding window, the online indexer) and "A non-idempotent index under a
     BY_INDEX build", red on `426da82a5`; `TestIsIndexIdempotent`, red on `426da82a5`.
-  - Correction to v16: `keyExpressionEquals` does NOT compare the standin, because the target's
+  - Correction to v15: `keyExpressionEquals` does NOT compare the standin, because the target's
     `FieldKeyExpression.equals` does not (`FieldKeyExpression.java:406-410`) and
     `NestingKeyExpression.equals` compares the parent with it. An index whose field changes only its
     null interpretation is the same index to the evolution validator in both engines (measured:
@@ -2404,6 +2428,139 @@ Java's "Index ... already defined").
   nullability code.
 - "Go refuses on load only what the target also refuses" holds with 9 (u)'s exception (an index
   over a synthetic record type), which the sentence now names.
+
+## 4e. v17: the ruling applied to the carry rule, landed versus owed, and Java's `deleteTemplate`
+
+v17 answers the v16 gate (`ws-j-design-review-v16/`): Torvalds NAK (H-1, M-1 to M-5, Lows), Graefe
+NAK (M1 to M3, L1 to L6) and storage NAK (H1, M1 to M3, Lows). The code half landed in `8e515423b`;
+this section records its decisions and restates what step 3 owes.
+
+**1. The ruling applied to the carry rule (Graefe M1, storage H1, Torvalds H-1).** Every population a
+WIDENED index, the rebind's widening arm or the restore's symmetric arm served was a template an
+earlier Go build stored with `long_value` literals, which the ruling makes unsupported. And Java reads
+a `long_value` against an `int_value` literal as a CHANGED key (`LiteralKeyExpression` compares the
+value object; `MetaDataEvolutionValidator.java:717-722`), so the arms were Go-only admissions too.
+Withdrawn, and removed in `8e515423b`:
+- WIDENED: `ClassifyIndexCarry` has two classes, EQUIVALENT and CHANGED, and compares the roots Java
+  reads by proto equality. A carrier change is CHANGED and rebuilt, and so is a change of a field's
+  `null_interpretation`, which Java's validator does not compare (`FieldKeyExpression.equals`) but
+  which changes what the index's readers do with a null (`TestClassifyIndexCarry_RootByProtoEquality`
+  pins both, and that the validator's key equality ignores the standin as Java's does);
+- `SetAllowLiteralCarrierWidening`, `SetAllowSymmetricLiteralCarrierWidening` (v16 wrote
+  `SetAllowLiteralCarrierEitherWay`), `literalCarriersEquivalent`, the rebind's arm, the restore's
+  arm and `frl meta evolve-check --allow-literal-carrier-widening`. The rebind and the restore
+  refuse a carrier change as "index key expression changed" (`TestFDB_SchemaRebindRefusesALiteral
+  CarrierChange`, `TestFDB_Restore_RefusesALiteralCarrierChange`, the validator's "a literal's
+  carrier" spec, `TestMetaEvolveCheck_LiteralCarrierIsPartOfTheKey`);
+- 3.2's rolling-upgrade note and 9 (e).
+
+9 (m) stays as a READ-SIDE extension only: a stored `long_value` bitmap key (Java library code
+building `value(10000L)`) is declined as a candidate and the table's other queries answered, where
+the target fails them all; a new version that restates the key from DDL changes it, and the carry
+rebuilds it (DIVERGENCES.md, "A stored function key with no lane").
+
+Section 4's tests re-based on templates Java or this build wrote:
+1. v1 stored by the TARGET's DDL (the JVM saves the template through its catalog), v2 from Go's DDL
+   adding an index on the first table: the record-type keys and union numbers are the stored ones
+   (F3's order plus the carry), the new index built on open.
+2. unchanged.
+3. v2 CHANGES an index (its key columns, `(a)` to `(a, b)`): last-modified above the stored metadata
+   version, rebuilt inline under the threshold and left DISABLED above it.
+4. unchanged.
+5. v1 stored by Java LIBRARY code with a `long_value` bitmap entry size (a raw write of the rows the
+   JVM built), v2 from Go's DDL: the index is CHANGED (its root now `int_value`), rebuilt on open,
+   and the target plans the bitmap reads over v2. The WIDENED assertions are gone.
+6. to 9. unchanged.
+10. v1 stored by the target's DDL, v2 from Go's DDL with the same options: EQUIVALENT (F12 made the
+   option order the target's), no rebuild, READABLE above the 200-record threshold; a sparse index's
+   predicate bytes compared between the target's v1 and Go's rebuild; v2 changing only an option the
+   validator ignores: CHANGED.
+11. unchanged.
+Acceptance item 5 of section 7 (Go's old numbering) is replaced by test 1's target-numbered v1.
+
+The merge unit's gate, restated: the landed fixes change what a template built from DDL stores (F1's
+roots, F2's widths, F3's order, F12's option order), and a new version of an existing template made
+without the carry rule would renumber its record types and rebuild or re-key its indexes against
+rows stored under the old numbering; the version guard keeps a re-issued version from rebinding
+schemas. So steps 1 to 3 still land before the tree merges. "F13's refusal without its migration"
+and the pre-F1 and pre-F2 rebinding hazards are withdrawn from the unit's rationale.
+
+**2. Landed and owed, with evidence (Torvalds H-1, Graefe M2, storage M1).**
+Landed:
+- `SetRecords`'s extension options (`metadata_extension_options.go`, `a33336527`): the conformance
+  spec "SetRecords reads the records file's extension options", 7 rows against the JVM's in-code
+  build, since `8e515423b` including a `since_version`, a record type key with two values and two
+  record types of one name ("There is already a record type named Rec").
+- The key-function registry, `FunctionSpec` with its bounds, column size and `NullIsNonUnique`;
+  `get_versionstamp_incarnation` out of the core registry; `Build`'s "Function not defined" for a
+  name no registry holds (an application's registration is admitted, as Java's ServiceLoader
+  admits it); arity by the argument's column size (`a33336527`; "WS-J function registry").
+- `NullStandin` with its three readers and `IndexMaintenanceFilter` (4d; `9ba005539`).
+- The absent-child refusals (4d).
+- In `8e515423b`: a `Field` without its name or fan type refused with Java's texts, a `Nesting`
+  reading its parent first; `KeyExpressionDeserializationError` a `RecordCoreError`;
+  `MetaDataProtoDeserializationError` ("Error converting from protobuf", a `MetaDataError` with the
+  cause) around index roots, primary keys, the record-count key and the subspace-counter faults;
+  `valueFromProto`'s "More than one value encoded in value" at its three read sites. JVM specs "RFC-257
+  a key expression Java cannot deserialize is refused as Java refuses it" (5 key expressions alone,
+  5 meta-data protos, a new partial-parse verdict step) and the extension-options rows.
+- Go's four untyped load refusals are declared (DIVERGENCES.md, "Four key-expression shapes Java
+  loads and Go refuses on load"); v16 said they were declared and they were not.
+Owed by step 3 (below): F3's order with companions last, the carry route, the re-added-name refusal,
+the no-lane refusal and the DDL clause's XX000, and section 4's tests.
+
+**3. Java's `deleteTemplate(name, version)` (Torvalds M-1, Graefe L1).** Java has it
+(`SchemaTemplateCatalog.java:112`, `RecordLayerStoreSchemaTemplateCatalog.java:317-325`); section 2,
+9 (s), DIVERGENCES and the catalog's comment called `DeleteTemplateVersion` Go-only. They are
+corrected: it is Java's call, with Java's text ("Could not delete unknown schema template t"), and
+Go's refusal of a bound version is the divergence. A Java delete of a bound version below the latest
+leaves a binding the guard (which reads from latest + 1) does not see, and a library
+`CreateTemplate(t, v′ <= latest)` would re-issue it; step 3's `v′ <= latest` refusal inside
+`CreateTemplate` closes that, and step 3 pins both sequences: a raw delete of a bound (t, 2) below a
+stored (t, 3), then `CreateTemplate(t, 2)`, refused; and DROP, `Restore(t, 3)`, `CreateTemplate(t, 2)`
+while (t, 2) is bound, refused. The duplicate refusal carries Java's text too ("Schema template
+already exists: t").
+
+**4. Evidence v16 claimed (Torvalds M-4, M-5, Graefe L2, storage M2).**
+- Section 2's three guard sequences: the second and third are pinned in `8e515423b`
+  (`TestFDB_Restore_GuardSequences`), each ending with every bound schema opened and read back.
+- The hooked interleaving test: `TestInMemory_VersionGuard_BindAndDeleteSerialize` holds a
+  `SaveSchema` (and a `RepairSchema`) between its checks and its bind (`beforeBind`), starts a
+  `DeleteTemplateVersion` of the version it binds, asserts the delete has not returned, releases the
+  bind, and asserts the delete is refused naming the schema, under `-race`. The helpers are named as
+  1.2's convention says: `firstBindingHeld` (the caller holds `c.mu`), `boundTemplateTakingTC` (the
+  caller holds `c.mu`; the template catalog's read takes `tc.mu`). The exported template-catalog
+  reads under `c.mu` are `…TakingTC` reads (lock order `c.mu`, then `tc.mu`); v13's "never an
+  exported method" is withdrawn.
+- Red logs for step 1's tests: `evidence/wsj-step1-red`, the guard, delete and gone-version tests on
+  `9ba005539`'s tree (the adapters its TREE note names; the restore tests call functions that tree
+  lacks, and are red by construction).
+- A VECTOR column's options in check (iv) are compared by the relational validator's type equality,
+  which the enum row pins; a VECTOR row is owed by step 3's tests.
+
+**5. Smaller corrections.**
+- The guard fails closed over a `TEMPLATES_VALUE_INDEX` that is not READABLE (storage Low):
+  `TestFDB_VersionGuard_FailsClosedOverAnUnreadableIndex`.
+- After commit_unknown_result the restore reads whether its bytes are stored before its listing
+  (Torvalds Low), which a change since (the binding dropped) would refuse: a subtest of
+  `TestFDB_Restore_ConcurrentWrites`.
+- The guard's message is `template_bindings.go`'s: "schema template t version v cannot be created:
+  schemas are still bound to its dropped version w (db/schema)"; section 2's wording is history.
+- `CreateTemplate`'s comment ("Matches Java's createTemplate exactly") is rewritten by step 3 with
+  the refusals it adds.
+- H2's ghost entries and the metadata an earlier Go build rewrote to NOT_UNIQUE are pre-release data.
+- CREATE SCHEMA over a gone version returns XX000 where Java returns 42F55: step 4's existence
+  policies, which follow step 3.
+
+**Step 3, restated.** In both catalogs' `CreateTemplate`, in this order: the exact-duplicate refusal
+(DUPLICATE_SCHEMA_TEMPLATE), the `v′ <= latest` refusal (INVALID_SCHEMA_TEMPLATE), the relational
+validator over the stored latest (moved from `SaveSchemaTemplateConstantAction`), the version guard,
+the carry over `LoadTemplateProto`'s bytes (`ClassifyIndexCarry`: EQUIVALENT carried as stored,
+CHANGED rebuilt above the stored metadata version, NEW above it, a vanished index a FormerIndex, the
+re-added-name refusal), the lane check over NEW and CHANGED indexes, and the evolution validator with
+`allowIndexRebuilds`; an unexported writer; `fleet.SaveTemplate` returning the template as stored;
+F3's order with companions last (`MoveIndexedTablesToEnd`); the DDL clause's XX000 for a lane-less
+key; section 4's tests as re-based above and the two `deleteTemplate` sequences of item 3.
 
 ## 5. Enum DDL (F6, F10)
 
@@ -2536,7 +2693,7 @@ THE MERGE UNIT is the landed fixes (3.1, 3.2, 4b, 4c's validation and its load-o
 fix, with their production-path pins) together with steps 1 to 3 below, and nothing
 smaller: those three steps close every interim hazard the landed fixes open (F1's
 corrected roots and 3.2's carriers rebound without the carry rule, a re-issued
-version, F13's refusal without its migration), so no commit that carries a landed fix
+version, F13's refusal without its migration [v17 → 4e: withdrawn; the unit's gate restated]), so no commit that carries a landed fix
 without steps 1 to 3 is a release candidate, which is what keeps the interim states
 named in 3.1, 3.2 and 4c off master. Steps 4 to 9 open no interim hazard of their own
 (each changes behaviour only where it lands, behind its own tests), so they need not land
@@ -2602,7 +2759,7 @@ reaches master before then. Within the unit and after it:
 2. 3.4 unify the front ends (no behaviour change; oracle unchanged). STATUS: landed (3.4).
 3. 4 metadata order, companions last, and the carry rule (the EQUIVALENT definition over
    the raw catalog bytes, the re-added-name refusal (the former-index-key arm it relies on
-   is ported already, WS-C 7.7), `allowIndexRebuilds`) with its FDB tests, the widening arm's end-to-end test 5 among
+   is ported already, WS-C 7.7), `allowIndexRebuilds`) with its FDB tests [v17 → 4e: step 3 restated there], the widening arm's end-to-end test 5 among
    them (the 184 F3 runs become equal or companion runs); the no-lane refusal on the build
    path (both catalogs' `CreateTemplate`, over NEW and CHANGED indexes; a WIDENED index is
    carried with its bytes and not re-checked, since no widening removes a lane, and the
@@ -2647,7 +2804,7 @@ reaches master before then. Within the unit and after it:
   its options decided (section 4).
 - (d) New template versions from DDL (Go extension) carry the stored numbering; Java has
   no such path.
-- (e) A literal whose carrier changed and whose value did not is an unchanged index on
+- (e) [withdrawn in v17, 4e: a literal's carrier is part of the key on every path, as Java reads it.] A literal whose carrier changed and whose value did not is an unchanged index on
   the relational rebind path only (3.2); the core validator keeps Java's refusal.
 - (f) Overflow SQLSTATE 22003 vs the target's unmapped XXXXX (shared with WS-E); the
   enum-predicate rejection's XX000 vs XXXXX (F10).
@@ -2666,7 +2823,7 @@ reaches master before then. Within the unit and after it:
   WS-D/WS-K's (4b).
 - (l) The ported evolution validator's messages carry names and versions inline where
   Java carries log keys (section 4).
-- (m) A stored function key with no lane (a pre-F2 `long_value` bitmap entry size): Go
+- (m) [narrowed in v17, 4e: a read-side extension for a `long_value` key Java library code wrote; no carry treats it as unchanged.] A stored function key with no lane (a pre-F2 `long_value` bitmap entry size): Go
   declines that index as a candidate and answers the query; the target fails every
   query of the table (3.5, DIVERGENCES.md, four pinned target rows). A stored template
   holding one of the eight no-lane DDL shapes Go stores today (a bit or bitmap key over
@@ -2686,7 +2843,7 @@ reaches master before then. Within the unit and after it:
   where Java logs its generated class, which the Go copy of the descriptor cannot name
   (3.2).
 - (r) [withdrawn in v16, 4d: Go reads shape (d) as the target reads it, on every path.]
-- (s) `DeleteTemplateVersion` is refused while a schema binds the version (section 2), in
+- (s) [corrected in v17, 4e: `DeleteTemplateVersion` is Java's `deleteTemplate(name, version)`, which deletes a bound version; Go's refusal is the divergence.] `DeleteTemplateVersion` is refused while a schema binds the version (section 2), in
   both catalogs;
   the Go-only API has no Java counterpart, and DROP SCHEMA TEMPLATE keeps the target's
   behaviour. `RestoreTemplateVersion` reads headers through the Go keyspace the caller
