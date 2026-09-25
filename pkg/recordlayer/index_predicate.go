@@ -312,8 +312,10 @@ func resolveFieldPath(msg proto.Message, path []string) (any, bool) {
 		}
 		isLast := i == len(path)-1
 		if !isLast {
-			// Navigate into sub-message
-			if fd.Kind() != protoreflect.MessageKind {
+			// Navigate into a sub-message, a group included: Java's FieldValue
+			// reads a group as the message it is (protobuf-java's MESSAGE java
+			// type), as key expressions do (isMessageField).
+			if !isMessageField(fd) {
 				return nil, false
 			}
 			if !m.Has(fd) {

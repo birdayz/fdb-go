@@ -3,6 +3,11 @@ package recordlayer
 import (
 	"testing"
 
+	"google.golang.org/protobuf/reflect/protodesc"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/descriptorpb"
+	"google.golang.org/protobuf/types/dynamicpb"
+
 	gen "fdb.dev/gen"
 	"google.golang.org/protobuf/proto"
 )
@@ -1807,5 +1812,52 @@ func TestRowNumberWindowPlacementFollowsArmOrder(t *testing.T) {
 		AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{windowArm(), trueArm}},
 	}); err != nil {
 		t.Errorf("a window on a pure conjunctive path must be accepted: %v", err)
+	}
+}
+
+// A value predicate's field path steps into a group as into a message, as Java's
+// FieldValue does (protobuf-java's MESSAGE java type covers a group).
+func TestValuePredicateReadsAGroupsField(t *testing.T) {
+	t.Parallel()
+	optional := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum()
+	fd, err := protodesc.NewFile(&descriptorpb.FileDescriptorProto{
+		Name:    proto.String("predicate_group.proto"),
+		Package: proto.String("predgroup"),
+		Syntax:  proto.String("proto2"),
+		MessageType: []*descriptorpb.DescriptorProto{{
+			Name: proto.String("Rec"),
+			Field: []*descriptorpb.FieldDescriptorProto{
+				{Name: proto.String("g"), Number: proto.Int32(1), Label: optional, Type: descriptorpb.FieldDescriptorProto_TYPE_GROUP.Enum(), TypeName: proto.String(".predgroup.Rec.G")},
+			},
+			NestedType: []*descriptorpb.DescriptorProto{{
+				Name:  proto.String("G"),
+				Field: []*descriptorpb.FieldDescriptorProto{{Name: proto.String("x"), Number: proto.Int32(1), Label: optional, Type: descriptorpb.FieldDescriptorProto_TYPE_INT64.Enum()}},
+			}},
+		}},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := fd.Messages().ByName("Rec")
+	gField := rec.Fields().ByName("g")
+	msg := dynamicpb.NewMessage(rec)
+	g := dynamicpb.NewMessage(gField.Message())
+	g.Set(gField.Message().Fields().ByName("x"), protoreflect.ValueOfInt64(7))
+	msg.Set(gField, protoreflect.ValueOfMessage(g))
+
+	pred, err := predicateFromProto(&gen.Predicate{ValuePredicate: &gen.ValuePredicate{
+		Value: []string{"g", "x"},
+		Comparison: &gen.Comparison{SimpleComparison: &gen.SimpleComparison{
+			Type: gen.ComparisonType_EQUALS.Enum(), Operand: &gen.Value{LongValue: proto.Int64(7)},
+		}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pred(msg) {
+		t.Fatal("g.x = 7 must satisfy g.x EQUALS 7")
+	}
+	if pred(dynamicpb.NewMessage(rec)) {
+		t.Fatal("a record without g must not satisfy g.x EQUALS 7")
 	}
 }

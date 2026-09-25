@@ -1967,11 +1967,13 @@ program order both ways.
   (com.apple.foundationdb.record.Order.price)". It is Go's `UnsupportedOperationError`. 7.10 said
   Go had no type for the class; it had one (`errors.go`). The divergence entry, the CHANGELOG
   sentence and 7.10's are corrected.
-- One key Java builds is refused, declared in DIVERGENCES.md ("A proto map field is not fanned out
-  in a key expression"): a nesting that fans out a map's entries, after every check Java makes,
-  because Go's evaluator reads a field as repeated only when it is a list and would read the map as
-  one message (and panic).
-- MEASURED: the conformance spec "Key validation at build, as Java builds" gives six shapes to both
+- [Superseded → 7.12: the refusal is gone and the entries are fanned out; 7.13 corrects the order
+  they are visited in.] One key Java builds is refused, declared in DIVERGENCES.md ("A proto map
+  field is not fanned out in a key expression"): a nesting that fans out a map's entries, after
+  every check Java makes, because Go's evaluator reads a field as repeated only when it is a list
+  and would read the map as one message (and panic).
+- MEASURED [Superseded → 7.13: the spec holds 8 shapes at revision 13]: the conformance spec "Key
+  validation at build, as Java builds" gives six shapes to both
   loaders (`buildMetaDataAnyVerdict`, a new JVM step reporting any exception with its full class
   name, since the two `InvalidExpressionException`s share a simple name) and requires the same
   class and the same whole text, or Java valid and Go's declared refusal.
@@ -2014,7 +2016,9 @@ per Java check (`validateGrouping`, `validateNotGrouping`, `validateNotVersion`,
   comment named Java's validator for it.
 - Two declared, in DIVERGENCES.md: Go does not refuse an index type it does not maintain ("Build
   does not refuse an index type Go does not maintain"), since a Java store may hold a module's index
-  (Lucene); and the VECTOR validator's structural half is not ported. The owner's ruling removes
+  (Lucene); and the VECTOR validator's structural half is not ported [Superseded → 7.12's
+  documentation paragraph: a plain VECTOR index runs neither half at `Build`; the option half runs
+  only for a windowed one]. The owner's ruling removes
   the reason that entry was open, so it is WS-D's, beside the rest of the vector index's alignment,
   and the entry says so.
 
@@ -2220,7 +2224,8 @@ with the dimensions key's text (the shape "dimensions wider than their key" meas
 Go refused a nesting over a map field (declared in DIVERGENCES.md); the refusal is gone and the
 evaluator fans the entries out as Java does, each entry the entry message protobuf-java reads
 (key = 1, value = 2), visited in key order where Java visits the message's order (each entry
-yields its own index entries, so no stored byte depends on it). A proto2 group is a message to key
+yields its own index entries, so no stored byte depends on it) [Superseded → 7.13: wrong; two
+entries can write one key, and the last write stays]. A proto2 group is a message to key
 validation and to the evaluator, as protobuf-java's MESSAGE java type says; Go refused a nesting
 into one. The DIVERGENCES entry "A proto map field is not fanned out in a key expression" is
 deleted. MEASURED: "Key validation at build, as Java builds" builds a map fan-out and a group
@@ -2249,7 +2254,10 @@ different fields differ. The R-tree conformance spec checks the tree's shape in 
 only the two with a node slot index. The WS-J residue the reviews list (the literal-carrier
 widening a rebind admits for templates an earlier Go build stored) is withdrawn with WS-J's code.
 
-VERIFIED (Bazel, test cache on, logs under `/var/tmp/fdb-upgrade-recovery/`):
+VERIFIED (Bazel, test cache on, logs under `/var/tmp/fdb-upgrade-recovery/`) [Superseded → 7.13:
+the two green logs hold Bazel summaries only, so the spec counts below are not shown by them, and
+neither names its tree; "15 JVM shapes" lists 12, the other 3 being the per-type count's modes
+named separately]:
 - `wsc12-rl.txt`: `recordlayer_test` ("Ran 3712 of 3713", all passed), `chaos_test`, and the
   `pkg/recordlayer/query/...` and `pkg/relational/core/...` targets: 27 of 27 pass.
 - `wsc12-conf.txt`: `conformance_test` "Ran 1632 of 1751", 1632 passed; `rfc257_oracle_test` 64 of
@@ -2275,3 +2283,146 @@ chaos multidimensional tests built dimensions over `price` and `quantity`, `int3
 dimensions key refuses; they now use `coord_x` and `coord_y` (`int64`), and a prefix over
 `quantity` keeps it.
 
+
+### 7.13 Revision 13: map entries in the record's wire order, one per-type count, and the evidence that names its tree
+
+Revision 12's three NAKs (`ws-c-addendum-review-v12/`, commit `426da82a5`) find every revision-11
+finding resolved and raise one Medium each from Torvalds and storage, and Lows. Revision 13 lands on
+the migration branch on top of `51c3f90eb`. The 7.11 and 7.12 sentences it changes are marked
+[Superseded → 7.12] or [Superseded → 7.13].
+
+**Map entries are indexed in the order the record's bytes hold them (storage 1, Medium).** 7.12 said
+the order of a map's entries changes no stored byte. It does: two entries can write one key, and the
+last write stays (a covering VALUE index whose key two entries share, a TEXT group two entries share
+a token in). Java reads a stored record as a DynamicMessage, which keeps a map field as the entry
+list in parse order, and a record Java saves from a generated message is serialized in the map's
+own order, so in Java a record's entries are always visited in its bytes' order. Go now does the
+same (`record_wire_map_order.go`):
+- a record Go decodes from stored bytes keeps them (`recordWire`, only for a type that reaches a
+  map field), and `evaluateMap` reads its entries back from them in wire order, a key written twice
+  included, each entry with its key and value set as the Go map holds them;
+- a record Go saves is evaluated in key order, and `serializeUnion` now writes a type that reaches a
+  map with the deterministic marshal, which sorts map entries the same way; vtproto's `MarshalVT`,
+  which a generated type with a map would take, writes Go's random map order;
+- a decoded message changed after it was loaded (its map no longer what its bytes hold) is
+  evaluated in key order, as a message about to be saved.
+Every site that builds an `FDBStoredRecord` from stored bytes carries the wire (the three cursor
+arms, `LoadRecord`, the old record of `SaveRecord`, `DeleteRecord` and the batch save).
+MEASURED, the JVM spec "Map entries are maintained in the record's wire order, as Java maintains
+them": raw records with entries out of key order, a key written twice and an entry with no value;
+Java saves them with a covering index `KeyWithValue(NestFanOut(m, Concat(value, key)), 1)`; Go builds
+the index online over the records Java wrote and over the raw bytes themselves. Java keeps both
+entries of the twice-written key, stores the last entry's value for the shared key (`a`, not `b`),
+and reads the missing value as 0; Go's two builds equal Java's six key-value pairs. Red on
+`51c3f90eb` (5 pairs, `b` stored); unit pins in `record_wire_map_order_test.go` (wire order,
+duplicates, each kind of change to a loaded map, a map inside a repeated message, a missing value,
+the sorted write, and a panicking `MarshalVT` the serializer must not call).
+
+**One port of the per-type count, and its CLI caller (torvalds 1 and 2, graefe 2, storage 2).**
+`snapshotRecordCountForRecordType(name, filter)` is Java's `getSnapshotRecordCountForRecordType(name,
+filter)` (FDBRecordStore.java:2431-2453), the one port: the public method passes Java's `TRUE` filter
+and raises "Require a COUNT index on X", and the index-rebuild count passes the
+being-built-index filter and falls through, as Java's catch does (FDBRecordStore.java:5071-5075).
+The rebuild copy, which declined a record type key that is not an integer, is deleted. That decline
+was not only there: `singleRecordTypeWithPrefixKey`, the rebuild's emptiness probe, its per-index
+record range and the online indexer's build preset (`computeRecordsRange`) all gave up on a string
+or bytes type key, which reaches the record keys verbatim (`recordTypeKeyOf`), where Java orders the
+key tuples with `Tuple.compareTo`, the packed bytes' order. All four now take any type key, and the
+preset's range-set bytes for such a key are Java's. `recordTypeKeyInt64` is gone. Pinned:
+`RebuildRecordCountSelection` "counts a string-keyed record type from a COUNT index grouped by
+record type" and "scopes the probe to a string-keyed record type's range", and
+`TestComputeRecordsRange`'s string-key arm, each red on `51c3f90eb`. `frl record count --type`
+reads a record count key that is the record type key at the type's key, as Java's
+`getSnapshotRecordCount(recordType(), value)`, and otherwise the per-type method; a
+`RecordCoreError` gets advice naming the missing index, and the dead "recordCountKey is nil" string
+match is gone. Integration tests count by a type count key and by a COUNT index, and pin the refusal
+over an ungrouped count key (the first two red on `51c3f90eb`). An unknown record type is Java's
+`MetaDataError` "Unknown record type X" everywhere Go reported one (`unknownRecordTypeError`,
+`SaveRecord`, the batch save, the aggregate functions); the unreachable Java-text branch in the
+per-type count is gone.
+
+**The dimensions validator (torvalds 4).** The loop guards a negative position, which panicked (a
+negative `prefix_size` is valid proto). The comment and 7.12 misdescribed Java: the validated field
+list has no entry for a literal or version column, so the fields after one take its place in both
+engines, and Java throws only for a position outside the list; the dead `fields[i] == nil` check is
+gone. Three JVM rows: dimensions after a literal read the next fields (both build), dimensions
+past the fields and a negative prefix (Java's `IndexOutOfBoundsException`, Go's declared INT64
+refusal). `TestValidateDimensionsPositionsIndexTheFieldList` red on `51c3f90eb` for the negative
+prefix.
+
+**The VECTOR option text (graefe 3, torvalds nit a).** The refusal is Java's
+`MetaDataException("incorrect index options", cause)`: the message alone, the parse failure as the
+cause, which `MetaDataError` now carries (`Cause`, `Unwrap`), a `NumberFormatError` for a value that
+does not parse. The windowed-vector specs compare the whole message and the cause's class; the
+sliding-window texts ("delegate has multiple types", "does not support unique indexes") are compared
+whole; "need to specify the number of dimensions" gets a spec. The synthetic-record-types arm cannot
+fire (Go models no synthetic type, its comment says so) and has no test. DIVERGENCES' VECTOR entry
+states the text and that the option list is Go's until WS-D ports Java's engine-aware parse.
+
+**Documentation (graefe 1, torvalds 3, storage 3).** The CHANGELOG no longer lists the map refusal,
+counts 50 shapes in "Index validation at build" (at this revision), and gains entries for the map
+and group keys and their wire order, the dimensions and CARDINALITY validation, the per-type count's
+COUNT index (a behaviour change), non-integer type keys, the Java texts, and index predicates over a
+group. 7.11's map refusal, its "six shapes" and its VECTOR sentence are marked; 7.12's order claim
+and its VERIFIED block are marked.
+
+**Nits.**
+- The per-type count spec asserts Java's class, `com.apple.foundationdb.record.RecordCoreException`.
+- `SetPrimaryKey`'s `builder != nil` guard is gone: every `RecordTypeBuilder` is built with one.
+- "negative and boundary coordinates" uses int64's extremes (the dimensions are INT64) and keeps
+  int32's as ordinary values.
+- `TestTranslatePrimaryKeyToValues` requires the `id` side to translate before comparing.
+- The umbrella RFC's one-branch ruling is dated 2026-09-24; item 9 records the owner's evidence
+  direction (red→green and Java-versus-Go, mutation only for values that move together).
+- The planner leaves a map fan-out index out of matching; no Go query reaches that match: Java
+  matches it only for a `QueryComponent` that reads the map (`mapMatches`), Go's query surface is SQL
+  alone, and neither engine's relational types have a map (`DataType.Code`). Measured over `pkg` and
+  `cmd` Go files: `type QueryComponent`, `MapMatches` and `mapMatches` have no hit; the control
+  `RecordQueryPlan` has hits. Stated at `proto_field_type.go`'s map arm.
+- An index predicate's field path now steps into a group (`resolveFieldPath`, torvalds nit g, which
+  was real): Java's `FieldValue` reads a group as a message. Pinned by
+  `TestValuePredicateReadsAGroupsField` and a row of "Map and group key expressions are maintained
+  as Java maintains them".
+- `wsc12-pt.txt`, a red development log of the per-type count, is moved to `dev/`; it was never
+  evidence.
+
+**Revision 11's evidence nits.**
+- The GroupAlias probe: rerun ten times with each run's log kept
+  (`evidence/wsc13-groupalias10/run_N_of_10-test.log`): every run "Ran 1 of 1763 Specs", 1 passed.
+- `ev2/` recorded its tree before the run only. It is not recoverable; revision 13's evidence
+  records the tree each run used, and replaces it.
+- "the mutation reddens this test alone" (n17, 7.11) is withdrawn, not re-measured: under the
+  owner's evidence direction no mutation is run for it, and nothing rests on the sentence (the test
+  is red on the tree before its fix, as 7.10 recorded).
+
+**Evidence.** `/var/tmp/fdb-upgrade-recovery/save-evidence.sh` refuses a Bazel run that executed no
+test (cached, or failed to build) and saves the console and each test log with `TREE`: the HEAD, the
+index tree (`git write-tree`) and the sha256 of the working tree's difference from the index. The red
+runs are on the frozen copy `fdb-wsc10`, reset to `51c3f90eb`'s tree (`4262fab36`) plus the changed
+test files.
+
+VERIFIED (Bazel, test cache on; `evidence/<name>/` under `/var/tmp/fdb-upgrade-recovery/`, each with
+`console.txt`, the test logs and `TREE`):
+- `wsc13-rl-green`, index tree `4262fab36` plus working diff `fe3f95ab…`: `//pkg/recordlayer/...`,
+  `//cmd/frl/...` and `//pkg/relational/core/...`, "Executed 24 out of 34 tests: 34 tests pass";
+  `recordlayer_test` "Ran 3724 of 3725 Specs", 3724 passed, 1 skipped.
+- `wsc13-conf-green`, the same tree and diff: `conformance_test` "Ran 1644 of 1763 Specs", 1644
+  passed (the 119 skipped are the suite's own filters); `rfc257_oracle_test` 64 of 64.
+  Only `DIVERGENCES.md` and this document changed while these two ran, and neither is an input of
+  those targets.
+- `wsc13-mapwire-green` and `wsc13-mapwire-red`: the wire-order spec, green here (Java's six pairs,
+  printed) and red on `51c3f90eb`'s tree.
+- `wsc13-rl-red` (`recordlayer_test` on `51c3f90eb`'s tree with the changed test files, "Ran 3724 of
+  3725", 7 specs and 2 unit tests red): the two string-keyed rebuild specs, the unknown-type texts
+  (three specs), the two windowed-vector option specs, `TestComputeRecordsRange`'s string key and
+  `TestValidateDimensionsPositionsIndexTheFieldList`'s negative prefix.
+- `wsc13-frl-green` and `wsc13-frl-red`: the record-count tests, 8 of 8 here; on `51c3f90eb`'s tree
+  the two new count tests fail ("Require a COUNT index on Order"; the unwrapped Customer refusal).
+- `wsc13-conf-red` and `wsc13-conf-red-dims` (`conformance_test` on `51c3f90eb`'s tree with the
+  changed spec files): red, the group-predicate row, the wire-order spec and the negative dimensions
+  prefix, which panics there (`index out of range [-1]`); green on both, the rows whose behaviour
+  predates this revision (dimensions after a literal, and past the fields, where Java's text is
+  "Index 1 out of bounds for length 1").
+- `wsc13-groupalias10`: above.
+- No mutation was run. The paired comparisons this revision adds are Go against Java (the wire-order
+  and predicate specs), each side written by its own engine.

@@ -15055,3 +15055,13 @@ texts; FDB and in-memory tests red on `9ba005539`. OPEN in this unit: `fleet.Res
 (lands with step 3, whose section-4 classification is its carry-compatibility check), then steps 2
 and 3 of section 8. The DIVERGENCES entries for the guard and the delete refusal now say so.
 
+### RFC-257 WS-C revision 13 (booked 2026-09-25)
+
+LANDED (ws-c-design.md 7.13), folding the v12 gate's three NAKs (`ws-c-addendum-review-v12/`): map
+entries indexed in the record's wire order (Java's DynamicMessage order) and records holding a map
+written in key order; one port of the per-type count, with `frl record count --type` converted and
+non-integer record-type keys handled as Java's `Tuple.compareTo` orders them; the dimensions
+validator's negative position; Java's bare "incorrect index options" with its cause; index predicates
+through groups; CHANGELOG and design corrections; evidence saved with the tree it ran on. NEXT: the
+WS-C revision-13 delta gate (`ws-c-addendum-review-v13/`).
+

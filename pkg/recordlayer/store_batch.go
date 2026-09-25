@@ -74,7 +74,7 @@ func (store *FDBRecordStore) SaveRecordBatch(
 		recordTypeName := string(record.ProtoReflect().Descriptor().Name())
 		recordType := store.metaData.GetRecordType(recordTypeName)
 		if recordType == nil {
-			return nil, &MetaDataError{Message: fmt.Sprintf("unknown record type: %s", recordTypeName)}
+			return nil, unknownRecordTypeError(recordTypeName)
 		}
 		if recordType.PrimaryKey == nil {
 			return nil, &MetaDataError{Message: fmt.Sprintf("no primary key for: %s", recordTypeName)}
@@ -251,7 +251,7 @@ func (store *FDBRecordStore) SaveRecordBatch(
 		// Secondary indexes
 		var oldRecord *FDBStoredRecord[proto.Message]
 		if oldRecordExists {
-			oldRT, oldMsg, err := store.deserializeAndDiscover(oldValue)
+			oldRT, oldMsg, oldWire, err := store.deserializeAndDiscover(oldValue)
 			if err != nil {
 				return nil, fmt.Errorf("record %d: deserialize old record: %w", i, err)
 			}
@@ -259,6 +259,7 @@ func (store *FDBRecordStore) SaveRecordBatch(
 				PrimaryKey: p.primaryKey,
 				RecordType: oldRT,
 				Record:     oldMsg,
+				wire:       oldWire,
 				Store:      store,
 			}
 			if store.metaData.IsStoreRecordVersions() && store.hasVersionIndex() {

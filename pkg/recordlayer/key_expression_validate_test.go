@@ -784,3 +784,35 @@ func TestValidatedKeyExpressionFields(t *testing.T) {
 		})
 	}
 }
+
+// The dimension positions index the validated field list, which has no entry
+// for a literal or a version: the fields after one take its place, as in Java.
+// A position outside the list, a negative prefix among them, is refused as a
+// column that is not INT64 (Java: IndexOutOfBoundsException), never a panic.
+func TestValidateDimensionsPositionsIndexTheFieldList(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name string
+		expr KeyExpression
+		ok   bool
+	}{
+		{"after a literal", Dimensions(Concat(Literal(int64(7)), Field("coord_x"), Field("coord_y")), 0, 2), true},
+		{"after a version", Dimensions(Concat(VersionKey(), Field("coord_x")), 0, 1), true},
+		{"past the fields", Dimensions(Concat(Field("coord_x"), Literal(int64(7))), 0, 2), false},
+		{"a negative prefix", Dimensions(Concat(Field("coord_x"), Field("coord_y")), -1, 2), false},
+		{"a negative prefix past the start alone", Dimensions(Field("coord_x"), -1, 1), false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateKeyExpression(c.expr, orderDescriptor())
+			if c.ok {
+				requireNoError(t, err)
+				return
+			}
+			var kerr *KeyExpressionError
+			if !errors.As(err, &kerr) || kerr.Message != "the declared dimension columns have to be of type INT64" {
+				t.Fatalf("err = %v, want the INT64 refusal", err)
+			}
+		})
+	}
+}

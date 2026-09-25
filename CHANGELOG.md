@@ -228,8 +228,8 @@ assets carry (`RELEASE.md` §Versioning).
   wrapped Go texts in a `MetaDataError` naming the record type. Two more are Java's
   now: a nesting into a scalar field is protobuf-java's `UnsupportedOperationException`
   (`UnsupportedOperationError`, "This field is not of message type. (<field's full name>)"), and a
-  map field is repeated, as protobuf-java says. Two refusals are Go-only: a primary key with no
-  columns, and a nesting that fans out a proto map's entries. A Then of fewer than two children,
+  map field is repeated, as protobuf-java says. One refusal is Go-only: a primary key with no
+  columns. A Then of fewer than two children,
   which Java refuses where it is built ("Then must have at least 2 children"), is refused by
   `Build` in program order with the builder's other faults, where Go stored a Then neither
   engine's loader reads back. `RecordTypeKey().Nest(x)` is now `Concat(RecordTypeKey(), x)`, the
@@ -313,7 +313,8 @@ assets carry (`RELEASE.md` §Versioning).
   is refused (a VALUE index over a grouping, a RANK index built in code over a plain field, a
   COUNT_NOT_NULL over `GroupAll`, a leaderboard over a plain Then), and a MAX_EVER_VERSION index no
   longer requires record versions, which Java does not. The conformance spec "Index validation at
-  build, as Java builds" gives 30 shapes to both loaders and compares class and text. A Then of
+  build, as Java builds" gives 50 shapes to both loaders (at RFC-257 WS-C revision 13) and compares
+  class and text. A Then of
   fewer than two children and an unknown record type named by `GetRecordType` (which panicked) are
   builder faults in program order; `AddMultiTypeIndex` resolves its record types before it adds the
   index, as a Java caller must.
@@ -417,6 +418,35 @@ assets carry (`RELEASE.md` §Versioning).
   now reads that default in a query, as in Java, where Go read null. Live-JVM comparisons:
   conformance specs "RFC-257 NullStandin" and "RFC-257 a query reads a field as Java's
   getFieldOnMessage".
+- **Map fields and groups in key expressions are Java's** (RFC-257 WS-C): a nesting that fans out a
+  proto map's entries builds and is maintained (Go refused it), each entry the key/value message
+  protobuf-java reads, and a nesting into a proto2 group builds, where Go refused both; a group read
+  as a scalar is refused with Java's text. A record's map entries are indexed in the order its
+  stored bytes hold them, as Java indexes them, so a covering index whose key two entries share
+  stores the last entry's value in both engines, and a key written twice yields both entries; a
+  record type that holds a map is now written with its map entries in key order (the order Go
+  indexes a record it saves), including a generated type whose vtproto marshal would not sort them.
+- **Key validation Java makes at build, Go makes** (RFC-257 WS-C): a MULTIDIMENSIONAL index's
+  dimension columns must be protobuf `int64` ("the declared dimension columns have to be of type
+  INT64"), so meta-data with dimensions over `int32` fields no longer builds; the prefix and
+  dimension sizes must fit the key; and a CARDINALITY key's argument must produce one value and
+  name fields the record has. A negative dimensions prefix, which panicked, is refused.
+- **`GetSnapshotRecordCountForRecordType` counts from a COUNT index, as Java does** (RFC-257 WS-C;
+  a behaviour change): a COUNT index on the type, else a universal COUNT index grouped by record
+  type, else `RecordCoreError` "Require a COUNT index on X". It no longer reads the record count
+  key; read a count key grouped by record type with `GetSnapshotRecordCount(tuple.Tuple{typeKey})`,
+  as Java's `getSnapshotRecordCount` does. `frl record count --type` reads such a count key, then
+  the COUNT indexes, and says which index is missing when there is none.
+- **A record type whose key is not an integer is handled as Java handles it**: the store-open
+  index rebuild counts or probes only that type's records when every new index is on it, and the
+  online indexer's build presets the ranges outside the indexed types, ordering the type keys as
+  Java's `Tuple.compareTo` does; Go treated a string or bytes key as covering the whole store.
+- An unknown record type is refused with Java's text, "Unknown record type X" (`MetaDataError`),
+  by `SaveRecord` and the aggregate functions, and a vector index option that does not parse is
+  Java's `MetaDataError` "incorrect index options", its parse error the cause (`Unwrap`;
+  `MetaDataError` gains `Cause`).
+- An index predicate's field path steps into a proto2 group as into a message, as Java's
+  `FieldValue` does, where Go treated the record as not matching.
 - `KeyExpressionInvalidResultError.ActualType` names the Java class of the offending value, matching
   `ExpectedType` (`com.google.protobuf.DynamicMessage` for a message read through a run-time
   descriptor; a Go-generated message keeps its proto full name).

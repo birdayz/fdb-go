@@ -79,7 +79,11 @@ func TestTranslatePrimaryKeyToValues(t *testing.T) {
 	if !valuesSlicesStructurallyEqual(nestedType1, prefixed) {
 		t.Fatalf("RecordTypeKey().Nest(ID) = %v, want concat(recordType(), ID) = %v", nestedType1, prefixed)
 	}
-	if valuesSlicesStructurallyEqual(nestedType1, TranslatePrimaryKeyToValues(RecordTypeKey().Nest(Field("id")), nil, rowType)) {
+	nestedTypeLower := TranslatePrimaryKeyToValues(RecordTypeKey().Nest(Field("id")), nil, rowType)
+	if len(nestedTypeLower) != 2 {
+		t.Fatalf("RecordTypeKey().Nest(id) = %v, want two values: the comparison below is vacuous against nil", nestedTypeLower)
+	}
+	if valuesSlicesStructurallyEqual(nestedType1, nestedTypeLower) {
 		t.Fatal("RecordTypeKey().Nest over two different fields must not translate alike")
 	}
 	if TranslatePrimaryKeyToValues(RecordTypeKey().Nest(Field("x")), nil, rowType) != nil {

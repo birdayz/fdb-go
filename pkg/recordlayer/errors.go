@@ -93,11 +93,18 @@ func (e *IndexNotBuiltError) Error() string {
 // Matches Java's com.apple.foundationdb.record.metadata.MetaDataException.
 type MetaDataError struct {
 	Message string
+	// Cause is Java's exception cause, when the MetaDataException was built with
+	// one (MetaDataException(message, cause)); Error is the message alone, as
+	// Java's getMessage is.
+	Cause error
 }
 
 func (e *MetaDataError) Error() string {
 	return e.Message
 }
+
+// Unwrap returns the cause, so errors.As reaches it as Java's getCause does.
+func (e *MetaDataError) Unwrap() error { return e.Cause }
 
 // UnknownIndexTypeError is raised when no index maintainer implements an index's
 // type. It is the port of Java's registry miss:
@@ -319,6 +326,13 @@ func (e *KeyExpressionError) Error() string {
 // with several (KeyExpression.java:404-405), a nesting without its parent
 // (NestingKeyExpression.java:69) or a then of fewer than two children
 // (ThenKeyExpression.java:84).
+// unknownRecordTypeError is Java's RecordMetaData.unknownTypeException
+// (RecordMetaData.java:825-827), which getRecordType, getIndexableRecordType and
+// getRecordTypeForDescriptor throw for a name the meta-data does not hold.
+func unknownRecordTypeError(name string) *MetaDataError {
+	return &MetaDataError{Message: "Unknown record type " + name}
+}
+
 type KeyExpressionDeserializationError struct {
 	Message string
 }

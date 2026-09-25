@@ -341,7 +341,7 @@ func (store *FDBRecordStore) LoadRecord(primaryKey tuple.Tuple) (*FDBStoredRecor
 	}
 
 	// Discover which record type is stored by inspecting the UnionDescriptor
-	recordType, protoMessage, err := store.deserializeAndDiscover(value)
+	recordType, protoMessage, wire, err := store.deserializeAndDiscover(value)
 	if err != nil {
 		return nil, &RecordDeserializationError{PrimaryKey: primaryKey, Cause: err}
 	}
@@ -350,6 +350,7 @@ func (store *FDBRecordStore) LoadRecord(primaryKey tuple.Tuple) (*FDBStoredRecor
 		PrimaryKey: primaryKey,
 		RecordType: recordType,
 		Record:     protoMessage,
+		wire:       wire,
 		Store:      store,
 		KeyCount:   sizeInfo.KeyCount,
 		ValueSize:  sizeInfo.ValueSize,
@@ -417,9 +418,10 @@ func (store *FDBRecordStore) DeleteRecord(primaryKey tuple.Tuple) (bool, error) 
 	needDeserialize := store.metaData.GetRecordCountKey() != nil || store.metaData.HasIndexes()
 	var oldRecordType *RecordType
 	var oldMsg proto.Message
+	var oldWire *recordWire
 	if needDeserialize {
 		var deserErr error
-		oldRecordType, oldMsg, deserErr = store.deserializeAndDiscover(value)
+		oldRecordType, oldMsg, oldWire, deserErr = store.deserializeAndDiscover(value)
 		if deserErr != nil {
 			return false, &RecordDeserializationError{PrimaryKey: primaryKey, Cause: deserErr}
 		}
@@ -487,6 +489,7 @@ func (store *FDBRecordStore) DeleteRecord(primaryKey tuple.Tuple) (bool, error) 
 			PrimaryKey: primaryKey,
 			RecordType: oldRecordType,
 			Record:     oldMsg,
+			wire:       oldWire,
 			Version:    oldRecordVersion,
 			Store:      store,
 		}
@@ -563,7 +566,7 @@ func (store *FDBRecordStore) saveRecordInternal(
 	recordTypeName := string(record.ProtoReflect().Descriptor().Name())
 	recordType := store.metaData.GetRecordType(recordTypeName)
 	if recordType == nil {
-		return nil, &MetaDataError{Message: fmt.Sprintf("unknown record type: %s", recordTypeName)}
+		return nil, unknownRecordTypeError(recordTypeName)
 	}
 
 	if recordType.PrimaryKey == nil {
@@ -611,6 +614,7 @@ func (store *FDBRecordStore) saveRecordInternal(
 	// (avoids deserializing the same old record twice).
 	var cachedOldRT *RecordType
 	var cachedOldMsg proto.Message
+	var cachedOldWire *recordWire
 
 	// Perform existence checks
 	if existenceCheck != RecordExistenceCheckNone {
@@ -629,7 +633,7 @@ func (store *FDBRecordStore) saveRecordInternal(
 		}
 
 		if existenceCheck.ErrorIfTypeChanged() && oldRecordExists {
-			oldRT, oldMsg, deserErr := store.deserializeAndDiscover(oldValue)
+			oldRT, oldMsg, oldWire, deserErr := store.deserializeAndDiscover(oldValue)
 			if deserErr != nil {
 				// Propagate deserialization error. Java's loadExistingRecord()
 				// deserializes before the type check — if deser fails, error propagates.
@@ -647,6 +651,7 @@ func (store *FDBRecordStore) saveRecordInternal(
 			// Cache for index update reuse.
 			cachedOldRT = oldRT
 			cachedOldMsg = oldMsg
+			cachedOldWire = oldWire
 		}
 	}
 
@@ -744,11 +749,11 @@ func (store *FDBRecordStore) saveRecordInternal(
 	if store.metaData.HasIndexes() {
 		var oldStoredRecord *FDBStoredRecord[proto.Message]
 		if oldRecordExists {
-			oldRT, oldMsg := cachedOldRT, cachedOldMsg
+			oldRT, oldMsg, oldWire := cachedOldRT, cachedOldMsg, cachedOldWire
 			if oldRT == nil {
 				// Not cached (type check didn't run) — deserialize now.
 				var deserErr error
-				oldRT, oldMsg, deserErr = store.deserializeAndDiscover(oldValue)
+				oldRT, oldMsg, oldWire, deserErr = store.deserializeAndDiscover(oldValue)
 				if deserErr != nil {
 					return nil, &RecordDeserializationError{PrimaryKey: primaryKey, Cause: deserErr}
 				}
@@ -757,6 +762,7 @@ func (store *FDBRecordStore) saveRecordInternal(
 				PrimaryKey: primaryKey,
 				RecordType: oldRT,
 				Record:     oldMsg,
+				wire:       oldWire,
 				Version:    oldRecordVersion,
 				Store:      store,
 			}
@@ -1567,6 +1573,10 @@ type FDBStoredRecord[M proto.Message] struct {
 
 	// Whether the record is split across multiple keys
 	Split bool
+
+	// wire is the stored bytes the record was decoded from, for a type that
+	// reaches a map field (record_wire_map_order.go); nil otherwise.
+	wire *recordWire
 }
 
 // HasVersion returns whether this stored record has a version.
@@ -2143,6 +2153,22 @@ func serializeUnion(record proto.Message, recordType *RecordType) ([]byte, error
 		return nil, fmt.Errorf("no union field number for record type: %s", recordType.Name)
 	}
 
+	// A type that reaches a map field is written with the deterministic
+	// marshal, which puts map entries in key order: the order Go evaluates the
+	// record's map entries in when it maintains its indexes, so its bytes hold
+	// them in the order its index entries were made from, as Java's do
+	// (record_wire_map_order.go). vtproto's MarshalVT writes a map in Go's random
+	// iteration order.
+	if messageReachesMap(record.ProtoReflect().Descriptor()) {
+		innerBytes, err := proto.MarshalOptions{Deterministic: true}.Marshal(record)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]byte, 0, 10+len(innerBytes))
+		out = protowire.AppendTag(out, recordType.unionFieldNumber, protowire.BytesType)
+		return protowire.AppendBytes(out, innerBytes), nil
+	}
+
 	// Fast path: if SizeVT is available, compute size first and allocate once.
 	// This avoids the intermediate MarshalVT allocation.
 	type sizer interface {
@@ -2206,29 +2232,31 @@ func serializeUnion(record proto.Message, recordType *RecordType) ([]byte, error
 
 // deserializeAndDiscover reads the union wire format tag to discover the record type,
 // then unmarshals the inner bytes directly into the concrete message type.
-// Skips allocating/parsing a full UnionDescriptor.
-func (store *FDBRecordStore) deserializeAndDiscover(data []byte) (*RecordType, proto.Message, error) {
+// Skips allocating/parsing a full UnionDescriptor. The returned wire keeps the
+// inner bytes when the type reaches a map field (record_wire_map_order.go); a
+// FDBStoredRecord built from the message carries it.
+func (store *FDBRecordStore) deserializeAndDiscover(data []byte) (*RecordType, proto.Message, *recordWire, error) {
 	// Scan fields to find the one matching a known record type.
 	// Skips unknown fields for forward compatibility (e.g. newer proto versions).
 	remaining := data
 	for len(remaining) > 0 {
 		fieldNum, wireType, n := protowire.ConsumeTag(remaining)
 		if n < 0 {
-			return nil, nil, fmt.Errorf("failed to read union tag")
+			return nil, nil, nil, fmt.Errorf("failed to read union tag")
 		}
 		remaining = remaining[n:]
 		if wireType != protowire.BytesType {
 			// Skip non-length-delimited fields
 			skip := protowire.ConsumeFieldValue(fieldNum, wireType, remaining)
 			if skip < 0 {
-				return nil, nil, fmt.Errorf("failed to skip field %d", fieldNum)
+				return nil, nil, nil, fmt.Errorf("failed to skip field %d", fieldNum)
 			}
 			remaining = remaining[skip:]
 			continue
 		}
 		innerBytes, m := protowire.ConsumeBytes(remaining)
 		if m < 0 {
-			return nil, nil, fmt.Errorf("failed to read field %d bytes", fieldNum)
+			return nil, nil, nil, fmt.Errorf("failed to read field %d bytes", fieldNum)
 		}
 		rt := store.metaData.fieldNumberToRecordType[fieldNum]
 		if rt == nil {
@@ -2239,14 +2267,14 @@ func (store *FDBRecordStore) deserializeAndDiscover(data []byte) (*RecordType, p
 		msg := rt.newMessage()
 		if vu, ok := msg.(interface{ UnmarshalVT([]byte) error }); ok {
 			if err := vu.UnmarshalVT(innerBytes); err != nil {
-				return nil, nil, fmt.Errorf("failed to unmarshal %s: %w", rt.Name, err)
+				return nil, nil, nil, fmt.Errorf("failed to unmarshal %s: %w", rt.Name, err)
 			}
 		} else if err := proto.Unmarshal(innerBytes, msg); err != nil {
-			return nil, nil, fmt.Errorf("failed to unmarshal %s: %w", rt.Name, err)
+			return nil, nil, nil, fmt.Errorf("failed to unmarshal %s: %w", rt.Name, err)
 		}
-		return rt, msg, nil
+		return rt, msg, newRecordWire(msg.ProtoReflect().Descriptor(), innerBytes), nil
 	}
-	return nil, nil, fmt.Errorf("union descriptor does not contain any known record type")
+	return nil, nil, nil, fmt.Errorf("union descriptor does not contain any known record type")
 }
 
 // deserializeRecord unmarshals the inner bytes of a union-wrapped record directly

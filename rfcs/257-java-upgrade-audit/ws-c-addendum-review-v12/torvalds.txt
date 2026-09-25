@@ -1,0 +1,90 @@
+**NAK.** I reviewed commit `426da82a5` with design SHA256 `7a2aa8d568263469055b4cc7edf6a18f583a1bbf4c29eab120e1dcf8e9477d54`, 2277 lines. I recomputed both and they match. The review was read-only.
+
+The tool policy refused `git diff` and `git grep`, so I read the delta with `git show`, Read and Grep. The working tree has moved on to `9ba005539`. That commit does not touch `metadata.go`, `key_expression*.go`, `record_count.go`, `store_builder.go` or `DIVERGENCES.md`, so a Grep on those files reads the candidate's bytes. I read `CHANGELOG.md` and the conformance tests from the commit object. A finding comes from reading source unless it is marked **measured**.
+
+## Findings, most severe first
+
+**1. Medium: the one non-test caller of `GetSnapshotRecordCountForRecordType` was not converted.**
+- `cmd/frl/internal/cmd/record_count.go:26-32` and `:89` still say that per-type counts need a `RecordTypeKeyExpression` count key.
+- With exactly that setup, `frl record count --type Order` now returns `RecordCoreError` "Require a COUNT index on Order".
+  - The `AggregateFunctionNotSupportedError` arm (`:66`) does not catch it.
+  - The `"recordCountKey is nil"` string check (`:71`) can no longer fire on this path.
+- No test covers it: the only `count --type` test is the typo at `integration_test.go:769`.
+- **Fix:** read the count key's group as Java's `getSnapshotRecordCount(recordType(), value)` does, then fall back to the COUNT-index method. Correct the help text and pin it with a test.
+
+**2. Low: there are now two ports of Java's `getSnapshotRecordCountForRecordType`, and they disagree.**
+- The new one is `record_count.go:344-389`. The existing one is `snapshotRecordCountForRecordType` with `evaluateCountIndex` (`store_builder.go:920-993`).
+- They differ on a record type key that is not an integer:
+  - the rebuild copy declines it (`:934-937`);
+  - the new copy reads it, as Java's `getRecordTypeKeyTuple()` does.
+- Java has one implementation, and the no-filter overload passes `TRUE` (`FDBRecordStoreBase.java:1856-1859`). The public method should wrap the filtered one.
+- `record_count.go:358-361` is dead code: an unknown type is already refused by the first lookup. That refusal carries Go's text `unknown record type "X"`, not Java's "Unknown record type X" (`RecordMetaData.java:826`).
+
+**3. Low: the documentation does not match revision 12's own changes.**
+- At the commit, `CHANGELOG.md:231-232` still lists "a nesting that fans out a proto map's entries" as a Go-only refusal. This revision removed that refusal.
+- `:316` still says "30 shapes"; the spec now has 47.
+- No CHANGELOG entry covers these changes:
+  - a MULTIDIMENSIONAL index over a dimension that is not INT64 is now refused;
+  - CARDINALITY arguments are now validated;
+  - map fan-out and group nesting now build and are maintained;
+  - `GetSnapshotRecordCountForRecordType` now needs a COUNT index, a break in public API behaviour.
+- **Measured:** "fans out a proto map" has 1 hit, `CHANGELOG.md:232`. "Require a", "COUNT index" and "INT64" have 0 hits in the commit's CHANGELOG. The control "proto2" has 1 hit (`:404`).
+- 7.12 says it marks every 7.11 sentence it changes. Design `:1970-1977` (the map refusal and "six shapes") and `:2017` (VECTOR) are not marked.
+
+**4. Low: `validateDimensionsKeyExpression` panics on a negative prefix.**
+- The loop at `key_expression_validate.go:227-228` guards `i >= len(fields)` but not `i < 0`.
+- `Dimensions()` (`dimensions_key_expression.go:19-25`) and `dimensionsFromProto` (`key_expression_proto.go:252`) accept any value.
+- So `prefix_size: -1` indexes `fields[-1]`: a runtime panic in `Build` and `RecordMetaDataFromProto`, where Java throws `IndexOutOfBoundsException`. Unmeasured.
+- The comment at the site and 7.12 misdescribe Java.
+  - Java's field list has no entry for a version or literal column, so the fields after one shift into its place. `Dimensions(Concat(VersionKey(), Field("coord_x")), 0, 1)` reads `coord_x` and builds in both engines.
+  - Java throws only past the end of the list. No `validate` returns a null element, so the NPE claim and Go's `fields[i] == nil` check are dead.
+
+**5. Low (evidence): 7.12's spec counts are not in the logs it cites.**
+- **Measured:** `wsc12-rl.txt` and `wsc12-conf.txt` hold only Bazel summaries: "Executed 2 out of 27 tests: 27 tests pass" and "Executed 2 out of 2 tests: 2 tests pass".
+- The pattern `Ran \d+ of` has 0 hits in both. The controls hit `wsc12-red-rl.txt:1556` and `wsc12-a.txt:352`.
+- So "Ran 3712 of 3713", "Ran 1632 of 1751" and "64 of 64" are not shown. Neither log records which tree it ran on.
+- The JVM output for the map and group specs appears only in `imf-conf1.txt`, a later log that 7.12 does not cite.
+- "15 JVM shapes" lists 12 cases. The 15 red in `wsc12-red-conf.txt:554-555` also include the three count modes, which 7.12 lists separately.
+- 7.12 does not answer three v11 evidence nits:
+  - `groupalias10.log` has no "Ran" line;
+  - `ev2/` has no after-tree record;
+  - "n17 reddens this test alone" was never re-measured, and `:2086-2088` is unchanged.
+
+## Nits
+
+- **a. Text pins.** 7.12's "the tests compare the whole text" does not hold for the sliding-window and vector texts.
+  - **Measured:** the only pins use `ContainSubstring` (`sliding_window_index_test.go:1726`, `:1840`). "need to specify the number of dimensions" and "…on synthetic record types" have 0 test hits. None of the four went red on `a33336527`.
+  - The commit message says the "vector option texts" are bare, but `bad()` (`vector_index_validation.go:32-35`) still adds Go's suffix to Java's "incorrect index options".
+- **b. Count spec.** The per-type count spec captures `java.Class` but never asserts it. "RecordCoreException in both" rests on a printed line (`wsc12-a.txt:58`).
+- **c. Dead guard.** The `rtb.builder != nil` check in `SetPrimaryKey` (`metadata.go:1318`) is dead: all three constructors set `builder`.
+- **d. Boundary test.** "negative and boundary coordinates" (`multidimensional_index_test.go:1956`) still uses the int32 extremes after the fields became int64.
+- **e. Translation test.** The new "must not translate alike" comparison in `TestTranslatePrimaryKeyToValues` does not check that the `id` side is non-nil.
+- **f. Ruling date.** Umbrella RFC item 8 cites an owner ruling dated "2026-09-25"; the commit is dated 2026-09-24 23:01 +0200.
+- **g. Groups in predicates.** `resolveFieldPath` (`index_predicate.go:316`) still does not step into a group. This is outside 7.12's stated scope, and unmeasured.
+
+## Revision-11 findings, checked
+
+**Resolved:**
+- **The Then arity fault.** `handedKeys` is walked. **Measured:** the three new subtests are red on the old tree (`wsc12-red-rl.txt:7351-7354`).
+- **TEXT texts.** They are bare, and 3 JVM shapes plus 3 Go tests are red on the old tree.
+- **Documentation under the ruling.** `rankNLevels`, "Rolling upgrade" and `value_expression` are withdrawn, and v0.1.0 is named. Item 8 is fixed. The DIVERGENCES VECTOR entry and the "one Go-only refusal" title are fixed.
+- **Nits.** The dangling reference in `index_validator.go` is fixed. The r17 and r22 rows and the gate-tree sentence are marked superseded.
+- **The rest.** The primary-key translation rewrite is done. The chaos bitmap check is red then green (`:10221`). The R-tree shape check now runs in every arm. Groups are now messages.
+- **Storage 1 (Dimensions and Cardinality)** is ported and matches Java (`:89-101`, `:156-161`), apart from finding 4.
+
+**Partly resolved:**
+- **The per-type count.** It is ported, but see findings 1 and 2.
+- **Stale claims.** Several remain (finding 3).
+- **Evidence nits.** Three are unanswered (finding 5).
+
+Nothing revision 12 changed undoes a revision-11 fix. Map fields are still repeated, a nesting into a scalar still returns `UnsupportedOperationError`, and the per-index order and the bitmap entry size read are unchanged. The preserved boundaries are unaffected.
+
+## Measured
+
+- **JVM.** In `wsc12-a.txt`, "Ran 56", 56 passed. The three PERTYPECOUNT lines match the claim.
+- **Red on `a33336527`.**
+  - `wsc12-red-conf.txt`: 15 of 60 fail.
+  - `wsc12-red-rl.txt`: `recordlayer_test` has 4 Ginkgo failures, and the three new subtests and the tokenizer-version test fail. `chaos_test` fails `TestBitmapRefusedEntrySizeHoldsNoEntry`.
+- **Pre-commit hook.** `commit2.txt` reads "Executed 30 out of 94 tests: 94 tests pass".
+- **Test conversions.** 23 `It` blocks in the multidimensional test were converted, matching "Twenty-three".
+- **Not verified:** which tree the green logs ran on, and whether `just test` includes `//conformance`.

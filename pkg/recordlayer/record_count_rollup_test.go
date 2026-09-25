@@ -351,6 +351,7 @@ var _ = Describe("RecordCountRollup", func() {
 					TupleRangeAll, IsolationLevelSnapshot)
 				Expect(errors.As(err, new(*MetaDataError))).To(BeTrue(),
 					"an unknown record type is Java's getIndexableRecordType throw, not an empty candidate list: %v", err)
+				Expect(err).To(MatchError("Unknown record type NoSuchType"))
 
 				return nil, nil
 			})

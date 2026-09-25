@@ -1,0 +1,59 @@
+**NAK.** I reviewed commit `426da82a5c8ca0bdedf8e3f26151ba5430d5ed0a`. The design's SHA256 is `7a2aa8d568263469055b4cc7edf6a18f583a1bbf4c29eab120e1dcf8e9477d54`, which I recomputed from the committed blob and which matches. The review was read-only. HEAD has since moved to `9ba005539`, so I checked that the five core blobs are identical there, or read the file from the commit. A finding is from reading source unless marked **measured**.
+
+Every revision-11 finding is fixed in the code, and nothing revision 12 changed undoes a revision-11 fix. The NAK rests on four Low findings. Three are claims that are now stale or wider than the code, one of them in an in-repo caller; the fourth is an evidence gap.
+
+## Findings, most severe first
+
+**1. Low: the CHANGELOG contradicts the code and leaves out this revision's behaviour changes.**
+- At the commit, `CHANGELOG.md:231-232` still says "Two refusals are Go-only: a primary key with no columns, and a nesting that fans out a proto map's entries." Revision 12 removed that refusal and deleted its DIVERGENCES entry. **Measured:** grepping for "fans out a proto map" finds one hit, this line.
+- `:316` still says "30 shapes"; the spec now has 47.
+- There is no entry for the changes users will hit:
+  - the per-type count now needs a COUNT index;
+  - an index whose dimensions are not int64 no longer builds;
+  - CARDINALITY is validated;
+  - map fan-outs and group nestings now build and are maintained.
+- 7.11 `:1970-1973` still says the map key is refused, with no Superseded mark, although 7.12 `:2164` says every changed 7.11 sentence is marked. The same is true of `:2015-2017` ("structural half is not ported").
+
+**2. Low: the `frl` CLI, the only production caller of the per-type count, now documents the wrong requirement.**
+- `cmd/frl/internal/cmd/record_count.go:30-32` and `:89` say `--type` "requires RecordTypeKeyExpression count key". The error advice at `:67` and `:72` says the same.
+- With that setup, the call now returns `RecordCoreError` "Require a COUNT index on X". The `AggregateFunctionNotSupportedError` check at `:66` does not catch it, and the "recordCountKey is nil" check at `:71` can no longer fire.
+- No frl test counts one type successfully; `integration_test.go:765` tests only a misspelled type name.
+
+**3. Low: one validator text in the per-index sequence is still not Java's bare text.**
+- `vector_index_validation.go:32-36` returns "incorrect index options: vector index %q option %s has value %q, which does not parse; …". Java's text is "incorrect index options" (`VectorIndexMaintainerFactory.java:109`).
+- It runs inside `validateIndex` for windowed indexes, the same sequence as the texts 7.12 fixed.
+- The commit message says "vector option texts are Java's bare messages", and `index_validator.go:21-24` says Java's log info "is not part of Go's". Both claims are wider than the code.
+- The tests only check a substring (`sliding_window_index_test.go:1669`, `:1684`).
+- **Fix:** use the bare text and compare the whole text, or declare the difference under the WS-D VECTOR entry and narrow both claims.
+
+**4. Low (evidence): the spec counts in VERIFIED are not in the logs it cites.**
+- **Measured:**
+  - `wsc12-rl.txt:26` reads "Executed 2 out of 27 tests: 27 tests pass", with 25 cached and no "Ran" line.
+  - `wsc12-conf.txt:29` reads "Executed 2 out of 2 tests", with no spec counts.
+  - No file under `/var/tmp/fdb-upgrade-recovery/` contains "Ran 1632 of 1751".
+  - Among the `wsc12*` logs, "Ran 3712 of 3713 Specs" appears only in the red run on the old tree.
+- Neither green log records which tree it ran on.
+- 7.12 `:2264` says "15 JVM shapes" but lists 12. **Measured:** the 15 failures in `wsc12-red-conf.txt:522-551` are those 12 plus the three per-type modes, which the same sentence lists separately.
+
+## Nits
+- **Unknown record type text.** An unknown type in `GetSnapshotRecordCountForRecordType` returns Go's text, `unknown record type "X"` (`aggregate_function.go:159`); Java's is "Unknown record type X" (`RecordMetaData.java:826`). The branch that writes Java's text (`record_count.go:360-362`) is unreachable, because the first lookup fails first.
+- **Planner and map indexes** (from source). The planner leaves a map fan-out index out of matching (`index_expansion.go:506-508`; maps are `UnknownType` at `proto_field_type.go:55`), where Java plans with it. This only affects reads (the query falls back to a scan), but it became reachable now that such an index builds, and it is not declared.
+- **Ruling date.** Umbrella RFC item 8 dates a ruling "2026-09-25" in a commit dated 2026-09-24 23:01 +0200.
+- **Unanswered v11 evidence nits:**
+  - `groupalias10`'s spec count;
+  - `ev2`'s record of the tree after the run;
+  - "n17 reddens this test alone".
+- **Weak test check.** `primary_key_translation_test.go:82` would pass without checking anything if the `Nest(Field("id"))` translation returned nil.
+
+## Revision-11 findings, checked (resolved)
+- **Builder program order.** `handedKeys` records every key passed to `SetPrimaryKey` (placeholder types included) or `SetRecordCountKey` at hand-over (`metadata.go:457`, `:1318-1320`). `firstFault` walks those keys too (`:2239-2241`). **Measured:** the three new shapes are red on `a33336527` and green here.
+- **Dimensions and Cardinality validators.** They match `DimensionsKeyExpression.java:89-101` (same order, compressed field list, exact `INT64`) and `CardinalityFunctionKeyExpression.java:156-161`, and the class is `KeyExpressionError`. Java's IndexOutOfBounds/NullPointer case is declared at the call site.
+- **Per-type count.** It matches `FDBRecordStore.java:2431-2453` and `IndexFunctionHelper.java:105-123,178-189,297-301`: `count(by)` is `GroupAll(by)`, only READABLE indexes, the TRUE filter, the fewest columns wins. **Measured** in all three modes on the JVM, including the class RecordCoreException.
+- **Groups and maps.** A group counts as a message (MESSAGE java type). Map entries are fanned out (entry fields 1 and 2). **Measured:** the stored index key-value pairs are equal across both engines.
+- **Texts.** The TEXT tokenizer, sliding-window and dimension-count texts are now Java's.
+- **Docs and small fixes.** The `rankNLevels` line, the rolling-upgrade advice and the `value_expression` rebuild instruction are withdrawn. v0.1.0 is named. Item 8 is fixed. The DIVERGENCES title, the VECTOR entries and the dangling reference are fixed. The chaos bitmap check now looks at the index. The primary-key translation test and the R-tree shape check are fixed. The r17/r22 rows are marked superseded.
+
+## Graefe lens
+- **Aligned with Java:** `Build`'s program order over every key handed to the builder, the ported key validators, and the per-type count's index choice.
+- **Undeclared Go-only behaviour:** finding 3, the unknown-type text, and the planner excluding map fan-out indexes.
+- **Preserved boundaries:** unaffected.

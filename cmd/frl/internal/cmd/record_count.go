@@ -4,10 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/spf13/cobra"
 
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 )
 
@@ -27,9 +27,12 @@ func newRecordCountCmd() *cobra.Command {
 			"--type). The store-wide count reads the metadata's " +
 			"record_count_key when there is one, and otherwise falls back " +
 			"to a universal COUNT index; without either, the record layer " +
-			"has nothing to read and this command errors out. Per-type " +
-			"counts require the metadata's count key to be a " +
-			"RecordTypeKeyExpression.\n\n" +
+			"has nothing to read and this command errors out. A per-type " +
+			"count reads the record_count_key when it is the record type " +
+			"key (RecordTypeKeyExpression), and otherwise a COUNT index on " +
+			"that type or a universal COUNT index grouped by record type, " +
+			"as the Java record layer's getSnapshotRecordCountForRecordType " +
+			"does.\n\n" +
 			"--output / -o: 'text' (default, bare integer) or 'json' " +
 			"({count, record_type}). record_type is empty for store-wide counts.",
 		Args: cobra.NoArgs,
@@ -45,15 +48,12 @@ func newRecordCountCmd() *cobra.Command {
 				func(store *recordlayer.FDBRecordStore) (int64, error) {
 					if recordType != "" {
 						// Up-front type validation so a typo surfaces as
-						// "not found — available: A, B, C" instead of
-						// whatever internal error the record layer returns
-						// (which varies between "unknown record type" and
-						// "requires RecordTypeKeyExpression" depending on
-						// whether the count_key shape is wrong too).
+						// "not found — available: A, B, C" instead of the
+						// record layer's "Unknown record type X".
 						if err := validateRecordType(store.GetRecordMetaData(), recordType); err != nil {
 							return 0, err
 						}
-						return store.GetSnapshotRecordCountForRecordType(recordType)
+						return recordTypeCount(store, recordType)
 					}
 					return store.GetRecordCount()
 				})
@@ -64,12 +64,12 @@ func newRecordCountCmd() *cobra.Command {
 				// diagnosis — the actionable message names both sources.
 				// Matched on the error TYPE, not its wording.
 				if errors.As(err, new(*recordlayer.AggregateFunctionNotSupportedError)) {
-					return fmt.Errorf("record counting is not enabled for this store — add a record_count_key to the metadata (RecordMetaDataBuilder.SetRecordCountKey) or a universal COUNT index, and redeploy; per-type counts additionally need a RecordTypeKeyExpression count key")
+					return fmt.Errorf("record counting is not enabled for this store — add a record_count_key to the metadata (RecordMetaDataBuilder.SetRecordCountKey) or a universal COUNT index, and redeploy")
 				}
-				// The per-type path still rejects a missing count key up front,
-				// and its internal wording tells an operator nothing actionable.
-				if strings.Contains(err.Error(), "recordCountKey is nil") {
-					return fmt.Errorf("record counting is not enabled for this store — add a record_count_key to the metadata (RecordMetaDataBuilder.SetRecordCountKey) and redeploy; per-type counts additionally need a RecordTypeKeyExpression count key")
+				// The per-type count found no index to read: Java's
+				// RecordCoreException "Require a COUNT index on X".
+				if recordType != "" && errors.As(err, new(*recordlayer.RecordCoreError)) {
+					return fmt.Errorf("counting %s records needs a COUNT index on %s, a universal COUNT index grouped by record type, or a record_count_key that is the record type key: %w", recordType, recordType, err)
 				}
 				return err
 			}
@@ -86,7 +86,7 @@ func newRecordCountCmd() *cobra.Command {
 		},
 	}
 	addr.register(c, true)
-	c.Flags().StringVar(&recordType, "type", "", "count only this record type (requires RecordTypeKeyExpression count key)")
+	c.Flags().StringVar(&recordType, "type", "", "count only this record type (from a record-type count key or a COUNT index)")
 	c.Flags().StringVarP(&outputFmt, "output", "o", "text", "output format: text or json")
 	return c
 }
@@ -96,4 +96,16 @@ func newRecordCountCmd() *cobra.Command {
 type recordCountResult struct {
 	Count      int64  `json:"count"`
 	RecordType string `json:"record_type"`
+}
+
+// recordTypeCount is a record type's count. A record_count_key that IS the record
+// type key keeps one counter per type, read at the type's key as Java's
+// getSnapshotRecordCount(recordType(), value) reads it; otherwise the count comes
+// from a COUNT index, as Java's getSnapshotRecordCountForRecordType takes it.
+func recordTypeCount(store *recordlayer.FDBRecordStore, recordType string) (int64, error) {
+	md := store.GetRecordMetaData()
+	if _, byType := md.GetRecordCountKey().(*recordlayer.RecordTypeKeyExpression); byType {
+		return store.GetSnapshotRecordCount(tuple.Tuple{md.GetRecordType(recordType).GetRecordTypeKey()})
+	}
+	return store.GetSnapshotRecordCountForRecordType(recordType)
 }

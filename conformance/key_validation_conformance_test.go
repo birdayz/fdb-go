@@ -9,12 +9,14 @@ import (
 	"time"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
@@ -197,11 +199,19 @@ var _ = Describe("Key validation at build, as Java builds", func() {
 // transaction each, and the index key-value pairs written are equal.
 var _ = Describe("Map and group key expressions are maintained as Java maintains them", func() {
 	for _, c := range []struct {
-		name string
-		root recordlayer.KeyExpression
+		name      string
+		root      recordlayer.KeyExpression
+		predicate *gen.Predicate
 	}{
-		{"a map's entries fanned out", recordlayer.NestFanOut("m", recordlayer.Concat(recordlayer.Field("key"), recordlayer.Field("value")))},
-		{"a group nested into", recordlayer.Nest("g", recordlayer.Field("x"))},
+		{"a map's entries fanned out", recordlayer.NestFanOut("m", recordlayer.Concat(recordlayer.Field("key"), recordlayer.Field("value"))), nil},
+		{"a group nested into", recordlayer.Nest("g", recordlayer.Field("x")), nil},
+		// An index predicate's field path steps into a group as into a message.
+		{"a predicate over a group's field", recordlayer.Field("id"), &gen.Predicate{ValuePredicate: &gen.ValuePredicate{
+			Value: []string{"g", "x"},
+			Comparison: &gen.Comparison{SimpleComparison: &gen.SimpleComparison{
+				Type: gen.ComparisonType_EQUALS.Enum(), Operand: &gen.Value{LongValue: proto.Int64(7)},
+			}},
+		}}},
 	} {
 		It(c.name, func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -209,6 +219,7 @@ var _ = Describe("Map and group key expressions are maintained as Java maintains
 			clusterFile, err := sharedContainer.ClusterFile(ctx)
 			Expect(err).NotTo(HaveOccurred())
 			mdProto := mapMetaData(c.root)
+			mdProto.Indexes[0].Predicate = c.predicate
 			md, err := recordlayer.RecordMetaDataFromProto(proto.Clone(mdProto).(*gen.MetaData))
 			Expect(err).NotTo(HaveOccurred())
 			desc := md.GetRecordType("MapRec").Descriptor
@@ -271,6 +282,124 @@ var _ = Describe("Map and group key expressions are maintained as Java maintains
 			Expect(goKVs).To(Equal(java.KVs))
 		})
 	}
+})
+
+// A record's map entries are maintained in the order its bytes hold them, as
+// Java maintains them (record_wire_map_order.go). The root is a covering index
+// whose key two entries can share, so the stored value is the last entry's:
+// the order is visible in the bytes. The records are raw bytes: entries out of
+// key order, a key written twice, and an entry with no value. Java saves them
+// with the index (a DynamicMessage keeps the bytes' order); Go builds the index
+// online over the same records, once as Java wrote them and once as the raw
+// bytes themselves, and the index key-value pairs of all three are equal.
+var _ = Describe("Map entries are maintained in the record's wire order, as Java maintains them", func() {
+	It("a covering index two entries write one key of", func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		clusterFile, err := sharedContainer.ClusterFile(ctx)
+		Expect(err).NotTo(HaveOccurred())
+
+		root := recordlayer.KeyWithValue(recordlayer.NestFanOut("m", recordlayer.Concat(recordlayer.Field("value"), recordlayer.Field("key"))), 1)
+		withIndex := mapMetaData(root)
+		withIndex.Version = proto.Int32(2)
+		withIndex.Indexes[0].AddedVersion = proto.Int32(2)
+		withIndex.Indexes[0].LastModifiedVersion = proto.Int32(2)
+		without := proto.Clone(withIndex).(*gen.MetaData)
+		without.Indexes = nil
+		without.Version = proto.Int32(1)
+
+		type entry struct {
+			key      string
+			value    int64
+			hasValue bool
+		}
+		record := func(id int64, entries ...entry) []byte {
+			b := protowire.AppendTag(nil, 1, protowire.VarintType)
+			b = protowire.AppendVarint(b, uint64(id))
+			for _, e := range entries {
+				body := protowire.AppendTag(nil, 1, protowire.BytesType)
+				body = protowire.AppendString(body, e.key)
+				if e.hasValue {
+					body = protowire.AppendTag(body, 2, protowire.VarintType)
+					body = protowire.AppendVarint(body, uint64(e.value))
+				}
+				b = protowire.AppendTag(b, 2, protowire.BytesType)
+				b = protowire.AppendBytes(b, body)
+			}
+			return b
+		}
+		records := [][]byte{
+			record(1, entry{"b", 5, true}, entry{"a", 5, true}),
+			record(2, entry{"x", 1, true}, entry{"y", 2, true}, entry{"x", 3, true}),
+			record(3, entry{"k", 0, false}, entry{"j", 2, true}),
+		}
+		recordArgs := make([][]int, len(records))
+		for i, r := range records {
+			recordArgs[i] = BytesToIntArray(r)
+		}
+		save := func(ss subspace.Subspace, md *gen.MetaData) [][]string {
+			mdBytes, err := proto.Marshal(md)
+			Expect(err).NotTo(HaveOccurred())
+			var java struct {
+				Verdicts []string   `json:"verdicts"`
+				KVs      [][]string `json:"kvs"`
+			}
+			Expect(NewJavaInvoker().InvokeAs(ctx, "saveRecordsAndDumpIndexesJava", map[string]any{
+				"clusterFile": clusterFile, "subspace": BytesToIntArray(ss.Bytes()),
+				"metaData": BytesToIntArray(mdBytes), "recordTypeName": "MapRec", "records": recordArgs,
+			}, &java)).To(Succeed())
+			Expect(java.Verdicts).To(Equal([]string{"ok", "ok", "ok"}))
+			return java.KVs
+		}
+		javaKVs := save(subspace.Sub(tuple.Tuple{"mapwire_java", uuid.NewString()}...), withIndex)
+		GinkgoWriter.Printf("MAPWIRE java kvs=%v\n", javaKVs)
+		// Six entries: the two of record 1 share one key.
+		Expect(javaKVs).To(HaveLen(6))
+
+		md, err := recordlayer.RecordMetaDataFromProto(proto.Clone(withIndex).(*gen.MetaData))
+		Expect(err).NotTo(HaveOccurred())
+		db := recordlayer.NewFDBDatabase(sharedDB)
+		build := func(ss subspace.Subspace) [][]string {
+			indexer, err := recordlayer.NewOnlineIndexerBuilder().
+				SetDatabase(db).SetMetaData(md).SetIndex(md.GetIndex("idx")).SetSubspace(ss).Build()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = indexer.BuildIndex(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			kvs, err := dumpIndexKVs(ctx, db, ss)
+			Expect(err).NotTo(HaveOccurred())
+			return kvs
+		}
+
+		// Records Java wrote, indexed by Go.
+		asJavaWrote := subspace.Sub(tuple.Tuple{"mapwire_go", uuid.NewString()}...)
+		Expect(save(asJavaWrote, without)).To(BeEmpty())
+		Expect(build(asJavaWrote)).To(Equal(javaKVs))
+
+		// The raw bytes themselves, indexed by Go: every stored record value is
+		// replaced by the union-wrapped raw bytes Java parsed.
+		raw := subspace.Sub(tuple.Tuple{"mapwire_raw", uuid.NewString()}...)
+		Expect(save(raw, without)).To(BeEmpty())
+		_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			begin, end := raw.Sub(int64(recordlayer.RecordKey)).FDBRangeKeys()
+			kvs, err := rtx.Transaction().GetRange(fdb.KeyRange{Begin: begin, End: end}, fdb.RangeOptions{}).GetSliceWithError()
+			if err != nil {
+				return nil, err
+			}
+			Expect(kvs).To(HaveLen(len(records)))
+			for _, kv := range kvs {
+				t, err := raw.Unpack(kv.Key)
+				if err != nil {
+					return nil, err
+				}
+				id := t[1].(int64)
+				union := protowire.AppendTag(nil, 1, protowire.BytesType)
+				rtx.Transaction().Set(kv.Key, protowire.AppendBytes(union, records[id-1]))
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(build(raw)).To(Equal(javaKVs))
+	})
 })
 
 // validatorIndex is one serialized index for indexValidationMetaData.
@@ -343,6 +472,9 @@ var _ = Describe("Index validation at build, as Java builds", func() {
 	const (
 		keyInvalid = "com.apple.foundationdb.record.metadata.expressions.KeyExpression$InvalidExpressionException"
 		metaData   = "com.apple.foundationdb.record.metadata.MetaDataException"
+		// outOfBounds marks a row where Java throws an IndexOutOfBoundsException
+		// and Go its declared refusal (see the rows).
+		outOfBounds = "IndexOutOfBoundsException"
 	)
 	grouped := func(groupedField string, groupBy ...string) recordlayer.KeyExpression {
 		keys := make([]recordlayer.KeyExpression, len(groupBy))
@@ -570,6 +702,29 @@ var _ = Describe("Index validation at build, as Java builds", func() {
 			nil,
 			keyInvalid, "dimensions key expression must cover exactly all key parts in index",
 		},
+		// The dimension positions index the validated field list, which has no
+		// entry for a literal: the fields after one take its place in both
+		// engines. A position outside the list is Java's unguarded List.get,
+		// an IndexOutOfBoundsException, and Go's declared INT64 refusal
+		// (key_expression_validate.go, validateDimensionsKeyExpression).
+		{
+			"dimensions after a literal read the next fields", false,
+			[]validatorIndex{{name: "a", recordType: "Order", typ: "multidimensional", root: recordlayer.Dimensions(recordlayer.Concat(recordlayer.Literal(int64(7)), recordlayer.Field("coord_x"), recordlayer.Field("coord_y")), 0, 2)}},
+			nil,
+			"", "",
+		},
+		{
+			"dimensions past the fields", false,
+			[]validatorIndex{{name: "a", recordType: "Order", typ: "multidimensional", root: recordlayer.Dimensions(recordlayer.Concat(recordlayer.Field("coord_x"), recordlayer.Literal(int64(7))), 0, 2)}},
+			nil,
+			outOfBounds, "",
+		},
+		{
+			"a negative dimensions prefix", false,
+			[]validatorIndex{{name: "a", recordType: "Order", typ: "multidimensional", root: recordlayer.Dimensions(recordlayer.Concat(recordlayer.Field("coord_x"), recordlayer.Field("coord_y")), -1, 2)}},
+			nil,
+			outOfBounds, "",
+		},
 		// CARDINALITY's argument.
 		{
 			"a cardinality over a fanned-out field", false,
@@ -657,6 +812,16 @@ var _ = Describe("Index validation at build, as Java builds", func() {
 				return
 			}
 			Expect(java.Valid).To(BeFalse())
+			if c.class == outOfBounds {
+				// Java's unguarded List.get: the class is the JDK's or Guava's
+				// IndexOutOfBoundsException, whose text is the list's own; Go's
+				// verdict is the declared INT64 refusal.
+				Expect(java.Class).To(HaveSuffix("IndexOutOfBoundsException"))
+				var e *recordlayer.KeyExpressionError
+				Expect(errors.As(goErr, &e)).To(BeTrue(), "Go: %T %v", goErr, goErr)
+				Expect(e.Message).To(Equal("the declared dimension columns have to be of type INT64"))
+				return
+			}
 			Expect(java.Class).To(Equal(c.class))
 			Expect(java.Error).To(Equal(c.text))
 			var goMessage string

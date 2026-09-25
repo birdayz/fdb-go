@@ -1666,8 +1666,23 @@ var _ = Describe("SlidingWindowIndex validation", func() {
 		_, err := builder.Build()
 		Expect(err).To(HaveOccurred(),
 			"a windowed vector index must be validated as a vector index too")
-		Expect(err.Error()).To(ContainSubstring("incorrect index options"))
-		Expect(err.Error()).To(ContainSubstring("hnswM"))
+		Expect(err).To(MatchError("incorrect index options"), "Java's MetaDataException message, whole")
+		var mdErr *MetaDataError
+		Expect(errors.As(err, &mdErr)).To(BeTrue())
+		var nfe *NumberFormatError
+		Expect(errors.As(err, &nfe)).To(BeTrue(), "the cause is Integer.parseInt's NumberFormatException")
+		Expect(nfe.Error()).To(Equal(`For input string: "not-a-number"`))
+	})
+
+	It("refuses a wrapped vector index without its dimension count, with Java's text", func() {
+		idx := newWindowedVectorIndex("sw_no_dims", 2, gen.RowNumberWindowPredicate_ASC)
+		delete(idx.Options, IndexOptionVectorNumDimensions)
+		builder := baseMetaData()
+		builder.AddIndex("Order", idx)
+		_, err := builder.Build()
+		var mdErr *MetaDataError
+		Expect(errors.As(err, &mdErr)).To(BeTrue(), "%T %v", err, err)
+		Expect(mdErr.Message).To(Equal("need to specify the number of dimensions"))
 	})
 
 	It("runs the wrapped vector index's metric validation", func() {
@@ -1680,8 +1695,10 @@ var _ = Describe("SlidingWindowIndex validation", func() {
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		_, err := builder.Build()
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("incorrect index options"))
+		Expect(err).To(MatchError("incorrect index options"), "Java's MetaDataException message, whole")
+		var iae *IllegalArgumentError
+		Expect(errors.As(err, &iae)).To(BeTrue(), "the cause names the option")
+		Expect(iae.Message).To(ContainSubstring("COSIGN_METRIC"))
 	})
 
 	It("accepts a windowed vector index whose options are all well-formed", func() {
@@ -1703,7 +1720,9 @@ var _ = Describe("SlidingWindowIndex validation", func() {
 		builder.AddIndex("Order", idx)
 		_, err := builder.Build()
 		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("sliding window index does not support unique indexes"))
+		var mdErr *MetaDataError
+		Expect(errors.As(err, &mdErr)).To(BeTrue(), "%T %v", err, err)
+		Expect(mdErr.Message).To(Equal("sliding window index does not support unique indexes"), "Java's text, whole")
 	})
 
 	It("refuses a sliding window index spanning multiple record types", func() {
@@ -1723,7 +1742,9 @@ var _ = Describe("SlidingWindowIndex validation", func() {
 		builder.AddUniversalIndex(idx)
 		_, err := builder.Build()
 		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("sliding window index delegate has multiple types"))
+		var mdErr *MetaDataError
+		Expect(errors.As(err, &mdErr)).To(BeTrue(), "%T %v", err, err)
+		Expect(mdErr.Message).To(Equal("sliding window index delegate has multiple types"), "Java's text, whole")
 	})
 
 	It("refuses a row-number window nested under a disjunction", func() {

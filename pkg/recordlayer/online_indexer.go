@@ -995,29 +995,9 @@ func (oi *OnlineIndexer) computeRecordsRange() (begin, end []byte, ok bool) {
 		if !rt.PrimaryKeyHasRecordTypePrefix() || rt.IsSynthetic() {
 			return nil, nil, false
 		}
-		// Give up for non-integer record-type keys. The bound below is a single
-		// contiguous [low, high] derived by ORDERING the keys, which only means
-		// anything for integers; a string or bytes key is a perfectly valid key
-		// (GetRecordTypeKey passes it through to the key bytes, as Java's
-		// TupleTypeUtil does) whose range this simply declines to compute. Giving
-		// up returns ok=false, which widens the scan to the whole records space —
-		// conservative in the safe direction, never a scan too narrow.
-		//
-		// GetRecordTypeKey has already widened every narrower integer to int64,
-		// so the int and int32 arms below cannot fire today; they are kept as a
-		// cheap total switch rather than an assumption about that normalization.
-		var keyInt int64
-		switch k := rt.GetRecordTypeKey().(type) {
-		case int:
-			keyInt = int64(k)
-		case int32:
-			keyInt = int64(k)
-		case int64:
-			keyInt = k
-		default:
-			return nil, nil, false
-		}
-		prefix := tuple.Tuple{keyInt}.Pack()
+		// Java's Tuple.compareTo is the order of the packed bytes, for a type
+		// key of any tuple type.
+		prefix := tuple.Tuple{rt.GetRecordTypeKey()}.Pack()
 		switch {
 		case lowBytes == nil:
 			lowBytes, highBytes = prefix, prefix

@@ -210,11 +210,17 @@ func notMessageTypeText(fd protoreflect.FieldDescriptor) string {
 
 // validateDimensionsKeyExpression is DimensionsKeyExpression.validate
 // (DimensionsKeyExpression.java:89-101): the prefix and the dimensions fit the
-// whole key's columns, and each dimension column's field is of protobuf type
-// int64 exactly. Java reads the validated field list by column position
-// unguarded, so a dimension column that reads no field (a version or a
-// literal) throws IndexOutOfBoundsException or NullPointerException there; Go
-// reports it as a column that is not INT64.
+// whole key's columns, and the fields at positions prefix through prefix +
+// dimensions - 1 of the validated field list are of protobuf type int64
+// exactly. The field list is indexed by position in it, not by key column: a
+// column that reads no field (a version or a literal) has no entry, so the
+// fields after it take its place, in both engines, and
+// Dimensions(Concat(Literal(7), Field("coord_x")), 0, 1) reads coord_x.
+// Java reads the list unguarded, so a position outside it (a negative prefix,
+// or dimensions past the last field) throws IndexOutOfBoundsException; Go
+// reports that position as a column that is not INT64 (the RFC-257 WS-C
+// conformance rows "a negative dimensions prefix" and "dimensions past the
+// fields" pin both engines' verdicts).
 func validateDimensionsKeyExpression(d *DimensionsKeyExpression, desc protoreflect.MessageDescriptor) ([]protoreflect.FieldDescriptor, error) {
 	if d.PrefixSize+d.DimensionsSize > d.WholeKey.ColumnSize() {
 		return nil, &KeyExpressionError{Message: "dimensions declared a prefix size and number of dimensions " +
@@ -225,7 +231,7 @@ func validateDimensionsKeyExpression(d *DimensionsKeyExpression, desc protorefle
 		return nil, err
 	}
 	for i := d.PrefixSize; i < d.PrefixSize+d.DimensionsSize; i++ {
-		if i >= len(fields) || fields[i] == nil || fields[i].Kind() != protoreflect.Int64Kind {
+		if i < 0 || i >= len(fields) || fields[i].Kind() != protoreflect.Int64Kind {
 			return nil, &KeyExpressionError{Message: "the declared dimension columns have to be of type INT64"}
 		}
 	}

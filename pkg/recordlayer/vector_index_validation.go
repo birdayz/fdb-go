@@ -28,12 +28,18 @@ import (
 // both of those shapes today, in 36 test sites. Reversing that is a behaviour
 // change across the vector surface rather than a validation gap, so it is
 // recorded in DIVERGENCES.md rather than closed here.
+//
+// The refusal is Java's MetaDataException("incorrect index options", cause): the
+// message alone, and the cause behind it (Unwrap), a NumberFormatError for a value
+// that does not parse as Java's Integer.parseInt or Double.parseDouble parses it,
+// and an IllegalArgumentError naming the option otherwise.
 func validateVectorIndexOptionsAtBuild(idx *Index) error {
-	bad := func(opt, val string) error {
-		return &MetaDataError{Message: fmt.Sprintf(
-			"incorrect index options: vector index %q option %s has value %q, which does "+
-				"not parse; Java refuses this metadata rather than substituting a default",
-			idx.Name, opt, val)}
+	bad := func(opt, val string, parse bool) error {
+		var cause error = &IllegalArgumentError{Message: fmt.Sprintf("vector index %s option %s has value %q", idx.Name, opt, val)}
+		if parse {
+			cause = &NumberFormatError{Input: val}
+		}
+		return &MetaDataError{Message: "incorrect index options", Cause: cause}
 	}
 
 	// Java's getConfig REQUIRES the dimension count and parses it unguarded, so
@@ -44,7 +50,7 @@ func validateVectorIndexOptionsAtBuild(idx *Index) error {
 	}
 	n, err := strconv.Atoi(dims)
 	if err != nil || n <= 0 {
-		return bad(IndexOptionVectorNumDimensions, dims)
+		return bad(IndexOptionVectorNumDimensions, dims, err != nil)
 	}
 
 	for _, opt := range []string{
@@ -64,7 +70,7 @@ func validateVectorIndexOptionsAtBuild(idx *Index) error {
 			continue
 		}
 		if _, err := strconv.Atoi(v); err != nil {
-			return bad(opt, v)
+			return bad(opt, v, true)
 		}
 	}
 
@@ -77,7 +83,7 @@ func validateVectorIndexOptionsAtBuild(idx *Index) error {
 			continue
 		}
 		if _, err := strconv.ParseFloat(v, 64); err != nil {
-			return bad(opt, v)
+			return bad(opt, v, true)
 		}
 	}
 
@@ -92,7 +98,7 @@ func validateVectorIndexOptionsAtBuild(idx *Index) error {
 			"EUCLIDEAN_SQUARE_METRIC",
 			"EUCLIDEAN_METRIC", "euclidean":
 		default:
-			return bad(IndexOptionVectorMetric, v)
+			return bad(IndexOptionVectorMetric, v, false)
 		}
 	}
 	return nil

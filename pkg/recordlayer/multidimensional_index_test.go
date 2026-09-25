@@ -1944,7 +1944,8 @@ var _ = Describe("MultidimensionalIndex", func() {
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			Expect(err).NotTo(HaveOccurred())
 
-			// Save records with extreme coordinates.
+			// Save records with extreme coordinates: the dimensions are INT64,
+			// so the extremes are int64's; int32's are ordinary values.
 			type testCase struct {
 				id       int64
 				price    int64
@@ -1953,8 +1954,9 @@ var _ = Describe("MultidimensionalIndex", func() {
 			cases := []testCase{
 				{1, -100, -200},
 				{2, 0, 0},
-				{3, math.MaxInt32, math.MinInt32},
+				{3, math.MaxInt64, math.MinInt64},
 				{4, 1, -1},
+				{5, math.MaxInt32, math.MinInt32},
 			}
 
 			for _, tc := range cases {
@@ -1966,10 +1968,10 @@ var _ = Describe("MultidimensionalIndex", func() {
 				Expect(err).NotTo(HaveOccurred())
 			}
 
-			// Scan — all 4 entries must be present.
+			// Scan — all 5 entries must be present.
 			entries, err := AsList(ctx, store.ScanIndex(mdIdx, TupleRangeAll, nil, ForwardScan()))
 			Expect(err).NotTo(HaveOccurred())
-			Expect(entries).To(HaveLen(4))
+			Expect(entries).To(HaveLen(5))
 
 			type coordPair struct{ x, y int64 }
 			found := make(map[coordPair]bool)
@@ -1990,7 +1992,7 @@ var _ = Describe("MultidimensionalIndex", func() {
 
 			entries, err = AsList(ctx, store.ScanIndex(mdIdx, TupleRangeAll, nil, ForwardScan()))
 			Expect(err).NotTo(HaveOccurred())
-			Expect(entries).To(HaveLen(3))
+			Expect(entries).To(HaveLen(4))
 
 			found = make(map[coordPair]bool)
 			for _, e := range entries {
@@ -1998,7 +2000,8 @@ var _ = Describe("MultidimensionalIndex", func() {
 				y := e.Key[1].(int64)
 				found[coordPair{x, y}] = true
 			}
-			Expect(found).NotTo(HaveKey(coordPair{int64(math.MaxInt32), int64(math.MinInt32)}))
+			Expect(found).NotTo(HaveKey(coordPair{math.MaxInt64, math.MinInt64}))
+			Expect(found).To(HaveKey(coordPair{math.MaxInt32, math.MinInt32}))
 			Expect(found).To(HaveKey(coordPair{-100, -200}))
 			Expect(found).To(HaveKey(coordPair{0, 0}))
 			Expect(found).To(HaveKey(coordPair{1, -1}))

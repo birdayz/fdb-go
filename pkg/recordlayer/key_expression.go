@@ -4,14 +4,12 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
-	"sort"
 	"sync"
 	"sync/atomic"
 
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
-	"google.golang.org/protobuf/types/dynamicpb"
 )
 
 // fieldDescCache is an atomically-swapped cache entry for FieldKeyExpression.
@@ -968,32 +966,29 @@ func (n *NestingKeyExpression) evaluateRepeated(record *FDBStoredRecord[proto.Me
 
 // evaluateMap fans out a map field's entries, as Java does: protobuf-java
 // reads a map as the repeated entry messages (key = 1, value = 2) it is on the
-// wire, and NestingKeyExpression evaluates the child over each. Java visits
-// them in the order the message holds them; a Go map has none, so the entries
-// are visited in key order. Each entry yields its own index entries, so the
-// order changes no stored byte.
+// wire, and NestingKeyExpression evaluates the child over each, in the order
+// the record's bytes hold them (record_wire_map_order.go): a record decoded
+// from stored bytes in wire order, and one Go is saving in key order, which is
+// the order it is written in.
 func (n *NestingKeyExpression) evaluateMap(record *FDBStoredRecord[proto.Message], m protoreflect.Message, fd protoreflect.FieldDescriptor) ([][]any, error) {
 	if n.fanType != FanTypeFanOut {
 		return nil, &KeyExpressionError{Message: fmt.Sprintf("field %s is repeated, must use NestFanOut", n.parentField)}
 	}
-	entries := m.Get(fd).Map()
-	if entries.Len() == 0 {
-		return nil, nil
+	mp := m.Get(fd).Map()
+	var entries []protoreflect.Message
+	inWireOrder := false
+	if record != nil {
+		entries, inWireOrder = record.wire.mapEntries(record.Record, m, fd)
 	}
-	keys := make([]protoreflect.MapKey, 0, entries.Len())
-	entries.Range(func(k protoreflect.MapKey, _ protoreflect.Value) bool {
-		keys = append(keys, k)
-		return true
-	})
-	sort.Slice(keys, func(i, j int) bool { return mapKeyLess(keys[i], keys[j]) })
-	entryDesc := fd.Message()
-	keyField, valueField := entryDesc.Fields().ByNumber(1), entryDesc.Fields().ByNumber(2)
+	if !inWireOrder {
+		if mp.Len() == 0 {
+			return nil, nil
+		}
+		entries = sortedMapEntries(mp, fd)
+	}
 	var result [][]any
-	for _, k := range keys {
-		entry := dynamicpb.NewMessage(entryDesc)
-		entry.Set(keyField, k.Value())
-		entry.Set(valueField, entries.Get(k))
-		childTuples, err := n.child.Evaluate(record, entry)
+	for _, entry := range entries {
+		childTuples, err := n.child.Evaluate(record, entry.Interface())
 		if err != nil {
 			return nil, err
 		}

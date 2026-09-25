@@ -131,7 +131,7 @@ func BenchmarkDeserializeAndDiscover_Small(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_, _, err := store.deserializeAndDiscover(testUnionData)
+		_, _, _, err := store.deserializeAndDiscover(testUnionData)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -146,7 +146,7 @@ func BenchmarkDeserializeAndDiscover_Large(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_, _, err := store.deserializeAndDiscover(testUnionDataLarge)
+		_, _, _, err := store.deserializeAndDiscover(testUnionDataLarge)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -282,7 +282,7 @@ func TestDeserializeWithUnknownFields(t *testing.T) {
 	dataWithUnknown := append(unknownField, testUnionData...)
 
 	// deserializeAndDiscover must skip the unknown field and find the Order
-	rt, msg, err := store.deserializeAndDiscover(dataWithUnknown)
+	rt, msg, _, err := store.deserializeAndDiscover(dataWithUnknown)
 	if err != nil {
 		t.Fatalf("deserializeAndDiscover with unknown field: %v", err)
 	}

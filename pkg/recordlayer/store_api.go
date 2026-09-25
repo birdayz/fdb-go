@@ -306,7 +306,7 @@ func (store *FDBRecordStore) DryRunSaveRecord(
 	recordTypeName := string(record.ProtoReflect().Descriptor().Name())
 	recordType := store.metaData.GetRecordType(recordTypeName)
 	if recordType == nil {
-		return nil, &MetaDataError{Message: fmt.Sprintf("unknown record type: %s", recordTypeName)}
+		return nil, unknownRecordTypeError(recordTypeName)
 	}
 
 	if recordType.PrimaryKey == nil {
@@ -364,7 +364,7 @@ func (store *FDBRecordStore) DryRunSaveRecord(
 	}
 
 	if existenceCheck.ErrorIfTypeChanged() && oldRecordExists {
-		_, oldMsg, deserErr := store.deserializeAndDiscover(oldValue)
+		_, oldMsg, _, deserErr := store.deserializeAndDiscover(oldValue)
 		if deserErr != nil {
 			return nil, &RecordDeserializationError{PrimaryKey: primaryKey, Cause: deserErr}
 		}

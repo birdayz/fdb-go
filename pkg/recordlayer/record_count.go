@@ -335,36 +335,57 @@ func (store *FDBRecordStore) GetRecordCount() (int64, error) {
 }
 
 // GetSnapshotRecordCountForRecordType is Java's getSnapshotRecordCountForRecordType
-// (FDBRecordStore.java:2431-2453): a record type's count from a COUNT index,
-// never from the record count key. A COUNT index on the type alone answers
-// first, then a universal COUNT index grouped by record type, read at the
-// type's key; with neither it is Java's RecordCoreException "Require a COUNT
-// index on X". A record count key grouped by record type is read with
-// GetSnapshotRecordCount(tuple.Tuple{typeKey}), as Java's getSnapshotRecordCount.
+// (FDBRecordStoreBase.java:1856-1860): the filtered method with Java's
+// IndexQueryabilityFilter.TRUE. A record type's count comes from a COUNT index,
+// never from the record count key; with no index that answers it is Java's
+// RecordCoreException "Require a COUNT index on X". A record count key grouped by
+// record type is read with GetSnapshotRecordCount(tuple.Tuple{typeKey}), as Java's
+// getSnapshotRecordCount reads it.
 func (store *FDBRecordStore) GetSnapshotRecordCountForRecordType(recordTypeName string) (int64, error) {
-	ctx := store.context.ctx
-	onType := NewCountAggregateFunction(GroupAll(EmptyKey()))
-	idx, err := store.findIndexForAggregateFunction(onType, []string{recordTypeName}, nil)
-	if err == nil {
-		return store.countFromIndex(ctx, onType, idx, TupleRangeAll)
-	}
-	var unsupported *AggregateFunctionNotSupportedError
-	if !errors.As(err, &unsupported) {
+	count, found, err := store.snapshotRecordCountForRecordType(recordTypeName, nil)
+	if err != nil {
 		return 0, err
+	}
+	if !found {
+		return 0, &RecordCoreError{Message: "Require a COUNT index on " + recordTypeName}
+	}
+	return count, nil
+}
+
+// snapshotRecordCountForRecordType is Java's
+// getSnapshotRecordCountForRecordType(name, filter) (FDBRecordStore.java:2431-2453),
+// the one port of it: a COUNT index on the type alone answers first (the type's own
+// indexes, IndexFunctionHelper.java:178-189, so a multi-type index, which also counts
+// other types, cannot), then a universal COUNT index grouped by record type, read at
+// the type's key tuple, whatever its type. filter is Java's IndexQueryabilityFilter
+// (nil admits every index). found=false is Java's terminal "Require a COUNT index"
+// throw, which the public method raises and the index-rebuild count swallows
+// (FDBRecordStore.java:5071-5075). An unknown type is Java's getIndexableRecordType
+// throw from the first lookup, and a failed read is returned: Java's catch sees only
+// the synchronous throw of index selection, and a read fails on the future.
+func (store *FDBRecordStore) snapshotRecordCountForRecordType(recordTypeName string, filter func(*Index) bool) (int64, bool, error) {
+	ctx := store.context.ctx
+	var unsupported *AggregateFunctionNotSupportedError
+	onType := NewCountAggregateFunction(GroupAll(EmptyKey()))
+	idx, err := store.findIndexForAggregateFunction(onType, []string{recordTypeName}, filter)
+	if err == nil {
+		count, err := store.countFromIndex(ctx, onType, idx, TupleRangeAll)
+		return count, err == nil, err
+	}
+	if !errors.As(err, &unsupported) {
+		return 0, false, err
 	}
 	byType := NewCountAggregateFunction(GroupAll(RecordTypeKey()))
-	idx, err = store.findIndexForAggregateFunction(byType, nil, nil)
-	if err == nil {
-		rt := store.metaData.GetRecordType(recordTypeName)
-		if rt == nil {
-			return 0, &MetaDataError{Message: "Unknown record type " + recordTypeName}
+	idx, err = store.findIndexForAggregateFunction(byType, nil, filter)
+	if err != nil {
+		if errors.As(err, &unsupported) {
+			return 0, false, nil
 		}
-		return store.countFromIndex(ctx, byType, idx, TupleRangeAllOf(tuple.Tuple{rt.GetRecordTypeKey()}))
+		return 0, false, err
 	}
-	if !errors.As(err, &unsupported) {
-		return 0, err
-	}
-	return 0, &RecordCoreError{Message: "Require a COUNT index on " + recordTypeName}
+	rt := store.metaData.GetRecordType(recordTypeName)
+	count, err := store.countFromIndex(ctx, byType, idx, TupleRangeAllOf(tuple.Tuple{rt.GetRecordTypeKey()}))
+	return count, err == nil, err
 }
 
 // countFromIndex evaluates a COUNT aggregate on idx over scanRange at

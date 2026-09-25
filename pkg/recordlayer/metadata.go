@@ -1315,9 +1315,7 @@ type RecordTypeBuilder struct {
 // SetPrimaryKey sets the primary key expression for this record type
 func (rtb *RecordTypeBuilder) SetPrimaryKey(keyExpr KeyExpression) *RecordTypeBuilder {
 	rtb.recordType.PrimaryKey = keyExpr
-	if rtb.builder != nil {
-		rtb.builder.handedKeys = append(rtb.builder.handedKeys, keyExpr)
-	}
+	rtb.builder.handedKeys = append(rtb.builder.handedKeys, keyExpr)
 	return rtb
 }
 

@@ -222,6 +222,80 @@ var _ = Describe("RebuildRecordCountSelection", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	// (b-string) The same scoping for a record type whose key is a string. Java
+	// resolves singleRecordTypeWithPrefixKey for a type key of any tuple type and
+	// reads its range at getRecordTypeKeyTuple() (FDBRecordStore.java:4909-4929,
+	// :5071-5098); a string key reaches the record keys verbatim, so Order's
+	// records occupy the "order-key" range. Two paths reach the answer: the
+	// per-type count from a universal COUNT index grouped by record type (5 Orders
+	// among 201 Customers), and, with no such index, the probe scoped to Order's
+	// range. Either way the index is built inline; a Go that declines a
+	// non-integer key counts or probes the whole store and leaves it DISABLED.
+	for _, withCountByType := range []bool{true, false} {
+		name := "scopes the probe to a string-keyed record type's range"
+		orders := 0
+		if withCountByType {
+			name = "counts a string-keyed record type from a COUNT index grouped by record type"
+			orders = 5
+		}
+		It(name, func() {
+			ks := specSubspace()
+			build := func(withPriceIndex bool) *RecordMetaData {
+				builder := prefixedMetaData()
+				builder.GetRecordType("Order").SetRecordTypeKey("order-key")
+				if withCountByType {
+					builder.AddUniversalIndex(NewCountIndex("count_by_type", GroupAll(RecordTypeKey())))
+				}
+				if withPriceIndex {
+					builder.AddIndex("Order", NewIndex("Order$price", Field("price")))
+				}
+				md, err := builder.Build()
+				Expect(err).NotTo(HaveOccurred())
+				return md
+			}
+			md1 := build(false)
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, sErr := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md1).SetSubspace(ks).CreateOrOpen()
+				if sErr != nil {
+					return nil, sErr
+				}
+				for i := int64(1); i <= 201; i++ {
+					if _, sErr = store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(i)}); sErr != nil {
+						return nil, sErr
+					}
+				}
+				for i := int64(1); i <= int64(orders); i++ {
+					if _, sErr = store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(i))}); sErr != nil {
+						return nil, sErr
+					}
+				}
+				if withCountByType {
+					count, cErr := store.GetSnapshotRecordCountForRecordType("Order")
+					Expect(cErr).NotTo(HaveOccurred())
+					Expect(count).To(Equal(int64(orders)), "the grouped COUNT index read at the string key")
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			md2 := build(true)
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, sErr := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md2).SetSubspace(ks).CreateOrOpen()
+				if sErr != nil {
+					return nil, sErr
+				}
+				Expect(store.GetIndexState("Order$price")).To(Equal(IndexStateReadable),
+					"the new index is on Order alone, whose key is the string \"order-key\"; "+
+						"Java counts or probes only that key's records, which are few. DISABLED "+
+						"means the non-integer key made Go count the whole store.")
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	}
+
 	// (b-control) Type-scoping must NARROW the probe, never defeat it.
 	//
 	// Same store, but the new index is on Customer — the type that HOLDS the 201

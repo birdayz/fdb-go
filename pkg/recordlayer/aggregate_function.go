@@ -156,7 +156,7 @@ func indexesForRecordTypes(metaData *RecordMetaData, recordTypeNames []string) (
 	if len(recordTypeNames) == 1 {
 		rt := metaData.GetRecordType(recordTypeNames[0])
 		if rt == nil {
-			return nil, &MetaDataError{Message: fmt.Sprintf("unknown record type %q", recordTypeNames[0])}
+			return nil, unknownRecordTypeError(recordTypeNames[0])
 		}
 		return rt.GetIndexes(), nil
 	}
@@ -166,7 +166,7 @@ func indexesForRecordTypes(metaData *RecordMetaData, recordTypeNames []string) (
 	for _, name := range recordTypeNames {
 		rt := metaData.GetRecordType(name)
 		if rt == nil {
-			return nil, &MetaDataError{Message: fmt.Sprintf("unknown record type %q", name)}
+			return nil, unknownRecordTypeError(name)
 		}
 		if first == nil {
 			first = rt

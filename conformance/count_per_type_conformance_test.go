@@ -78,6 +78,8 @@ var _ = Describe("RFC-257 a record type's count comes from a COUNT index, as Jav
 				return nil, err
 			})
 			if c.javaError != "" {
+				// Java's RecordCoreException, whose Go class is RecordCoreError.
+				Expect(java.Class).To(Equal("com.apple.foundationdb.record.RecordCoreException"))
 				var rc *recordlayer.RecordCoreError
 				Expect(errors.As(goErr, &rc)).To(BeTrue(), "%v", goErr)
 				Expect(rc.Message).To(Equal(java.Error))

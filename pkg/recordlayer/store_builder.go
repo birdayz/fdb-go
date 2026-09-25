@@ -152,29 +152,26 @@ func (store *FDBRecordStore) RebuildIndex(index *Index) error {
 // singleRecordTypeWithPrefixKey answers a different question (do ALL the indexes being
 // built agree on one type) that only the shared record-count probe needs.
 func (store *FDBRecordStore) indexedRecordTypesRange(index *Index) (low, high tuple.Tuple, ok bool) {
-	var lowKey, highKey int64
-	found := false
+	var lowBytes, highBytes []byte
 	for _, recordType := range store.metaData.RecordTypesForIndex(index) {
 		if !recordType.PrimaryKeyHasRecordTypePrefix() || recordType.IsSynthetic() {
 			return nil, nil, false
 		}
-		typeKey, isInt := recordTypeKeyInt64(recordType)
-		if !isInt {
-			return nil, nil, false
+		// Java's Tuple.compareTo is the order of the packed bytes, for a type
+		// key of any tuple type.
+		prefix := tuple.Tuple{recordType.GetRecordTypeKey()}
+		packed := prefix.Pack()
+		if low == nil || bytes.Compare(packed, lowBytes) < 0 {
+			low, lowBytes = prefix, packed
 		}
-		switch {
-		case !found:
-			lowKey, highKey, found = typeKey, typeKey, true
-		case typeKey < lowKey:
-			lowKey = typeKey
-		case typeKey > highKey:
-			highKey = typeKey
+		if high == nil || bytes.Compare(packed, highBytes) > 0 {
+			high, highBytes = prefix, packed
 		}
 	}
-	if !found {
+	if low == nil {
 		return nil, nil, false
 	}
-	return tuple.Tuple{lowKey}, tuple.Tuple{highKey}, true
+	return low, high, true
 }
 
 // validateFormatVersion checks that the stored format version is supported.
@@ -710,11 +707,7 @@ func (store *FDBRecordStore) recordsSubspaceEmpty() (bool, error) {
 func (store *FDBRecordStore) recordsRangeEmpty(recordType *RecordType) (bool, error) {
 	recSub := store.subspace.Sub(RecordKey)
 	if recordType != nil {
-		typeKey, ok := recordTypeKeyInt64(recordType)
-		if !ok {
-			return false, fmt.Errorf("record type %q has no integer record type key", recordType.Name)
-		}
-		recSub = recSub.Sub(typeKey)
+		recSub = recSub.Sub(recordType.GetRecordTypeKey())
 	}
 	begin, end := recSub.FDBRangeKeys()
 	kvs, err := store.context.Transaction().
@@ -724,33 +717,6 @@ func (store *FDBRecordStore) recordsRangeEmpty(recordType *RecordType) (bool, er
 		return false, err
 	}
 	return len(kvs) == 0, nil
-}
-
-// recordTypeKeyInt64 returns the record type key as the int64 the tuple encoder
-// actually writes into primary keys, and ok=false when the type key is not an
-// integer.
-//
-// A non-integer key is not a wrongness, just a shape this bound cannot express:
-// the callers compare and order these as int64 to derive a contiguous range, so
-// every caller treats "not an integer" as "this type's records are not
-// addressable as a range" and falls back to the unscoped behaviour. That is
-// conservative in the safe direction — a wider scan, never a narrower one.
-// Same restriction, same reason, as OnlineIndexer.computeRecordsRange.
-//
-// String and bytes keys DO reach the key bytes (GetRecordTypeKey passes them
-// through, as Java's TupleTypeUtil does), so records under such a key really do
-// occupy a contiguous range; this simply declines to compute it.
-func recordTypeKeyInt64(recordType *RecordType) (int64, bool) {
-	switch k := recordType.GetRecordTypeKey().(type) {
-	case int:
-		return int64(k), true
-	case int32:
-		return int64(k), true
-	case int64:
-		return k, true
-	default:
-		return 0, false
-	}
 }
 
 // singleRecordTypeWithPrefixKey returns the one record type all the indexes being
@@ -797,11 +763,6 @@ func (store *FDBRecordStore) singleRecordTypeWithPrefixKey(indexes []*Index) *Re
 			}
 			recordType = type1
 		} else if type1 != recordType {
-			return nil
-		}
-	}
-	if recordType != nil {
-		if _, ok := recordTypeKeyInt64(recordType); !ok {
 			return nil
 		}
 	}
@@ -859,7 +820,9 @@ func (store *FDBRecordStore) getRecordCountForRebuildPolicy(indexesToBuild []*In
 	}
 
 	if singleRecordType != nil {
-		count, ok, err := store.snapshotRecordCountForRecordType(singleRecordType, excluded)
+		count, ok, err := store.snapshotRecordCountForRecordType(singleRecordType.Name, func(index *Index) bool {
+			return !excluded[index.Name]
+		})
 		if err != nil {
 			return 0, err
 		}
@@ -910,33 +873,6 @@ func (store *FDBRecordStore) snapshotTotalRecordCount(excluded map[string]bool) 
 	// grouping is a prefix of it, and rolling it up sums every group.
 	fn := NewCountAggregateFunction(GroupAll(EmptyKey()))
 	return store.evaluateCountIndex(fn, nil, TupleRangeAll, excluded)
-}
-
-// snapshotRecordCountForRecordType is Java's
-// getSnapshotRecordCountForRecordType(name, filter) (FDBRecordStore.java:2326-2348):
-// a COUNT index on JUST that record type first, then a COUNT index grouped by record
-// type restricted to that type's key. ok=false is Java's terminal
-// "Require a COUNT index on <type>" throw, which the caller swallows.
-func (store *FDBRecordStore) snapshotRecordCountForRecordType(recordType *RecordType, excluded map[string]bool) (int64, bool, error) {
-	// A COUNT index on this record type. Java looks at
-	// getIndexableRecordType(name).getIndexes() — the type's OWN indexes, not the
-	// multi-type ones, which by definition also cover other types and so cannot count
-	// this type alone.
-	fn := NewCountAggregateFunction(GroupAll(EmptyKey()))
-	count, ok, err := store.evaluateCountIndex(fn, []string{recordType.Name}, TupleRangeAll, excluded)
-	if err != nil || ok {
-		return count, ok, err
-	}
-
-	// A universal COUNT index grouped by record type. In Java's words: "In fact, any
-	// COUNT index by record type that applied to this record type would work, no
-	// matter what other types it applied to."
-	typeKey, hasTypeKey := recordTypeKeyInt64(recordType)
-	if !hasTypeKey {
-		return 0, false, nil
-	}
-	fn = NewCountAggregateFunction(GroupAll(RecordTypeKey()))
-	return store.evaluateCountIndex(fn, nil, TupleRangeAllOf(tuple.Tuple{typeKey}), excluded)
 }
 
 // evaluateCountIndex evaluates fn over scanRange using the index that
