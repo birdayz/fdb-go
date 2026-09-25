@@ -68,7 +68,10 @@ type restoreOptions struct {
 	batch        int
 	afterListing func()
 	beforeCommit func()
-	attempts     int
+	// afterCommit, when set, replaces a successful commit's result: a test
+	// makes a landed commit report commit_unknown_result through it.
+	afterCommit func() error
+	attempts    int
 }
 
 func errRestore(code api.ErrorCode, name string, version int, format string, args ...any) error {
@@ -100,6 +103,15 @@ func (c *RecordLayerStoreCatalog) restoreTemplateVersion(ctx context.Context, db
 	for attempt := 0; attempt < restoreMaxAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+		// After a commit whose result is unknown, a stored row holding exactly
+		// these bytes is this restore's own write: done, before the listing,
+		// which a change made since (the binding dropped, say) would refuse.
+		if maybeCommitted {
+			stored, err := c.storesExactly(ctx, db, name, version, md)
+			if err != nil || stored {
+				return err
+			}
 		}
 		if err := c.checkBoundStores(ctx, db, ks, name, version, restored.md.Version(), opts.batch); err != nil {
 			return err
@@ -215,6 +227,10 @@ func listBindings(store *recordlayer.FDBRecordStore, name string, version int, a
 	if idx == nil {
 		return nil, api.NewErrorf(api.ErrCodeInternalError, "catalog index %s is missing", IdxTemplatesValue)
 	}
+	if state := store.GetIndexState(IdxTemplatesValue); state != recordlayer.IndexStateReadable {
+		return nil, api.NewErrorf(api.ErrCodeInternalError,
+			"catalog index %s is %v, so the schemas bound to template %s cannot be read", IdxTemplatesValue, state, name)
+	}
 	sub := store.IndexSubspace(idx)
 	versionRange, err := fdb.PrefixRange(sub.Pack(tuple.Tuple{name, int64(version)}))
 	if err != nil {
@@ -308,7 +324,31 @@ func (c *RecordLayerStoreCatalog) restoreInTransaction(ctx context.Context, db *
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
-	return false, rctx.Commit()
+	if err := rctx.Commit(); err != nil || opts.afterCommit == nil {
+		return false, err
+	}
+	return false, opts.afterCommit()
+}
+
+// storesExactly reports, in a transaction that writes nothing, whether (name, version) is
+// stored holding exactly md.
+func (c *RecordLayerStoreCatalog) storesExactly(ctx context.Context, db *recordlayer.FDBDatabase, name string, version int, md []byte) (bool, error) {
+	out, err := db.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		store, err := c.openStore(NewFDBTransaction(rctx))
+		if err != nil {
+			return false, err
+		}
+		existing, err := store.LoadRecord(templateKeyAtVersion(name, version))
+		if err != nil || existing == nil {
+			return false, err
+		}
+		row, ok := existing.Record.(*gen.Templates)
+		return ok && string(row.GetMETA_DATA()) == string(md), nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return out.(bool), nil
 }
 
 // storedTemplateRows reads every stored version of name, one serializable
@@ -383,21 +423,18 @@ func carryCompatible(name string, version int, restored *restoredMetaData, row *
 	}
 	// (i) and (ii): the evolution validator from L to H, with the options the
 	// restore states: an equal metadata version, index rebuilds (an index H
-	// raised is rebuilt by a store bound to L when it next opens), the literal
-	// carriers in either direction (two stored histories, neither a rebuild of
-	// the other), and no record type renamed (two names on one key).
+	// raised is rebuilt by a store bound to L when it next opens), and no record
+	// type renamed (two names on one key).
 	validator := recordlayer.NewMetaDataEvolutionValidator().
 		SetAllowNoVersionChange(true).
 		SetAllowIndexRebuilds(true).
-		SetAllowSymmetricLiteralCarrierWidening(true).
 		SetDisallowTypeRenames(true).
 		Build()
 	if err := validator.Validate(low.md, high.md); err != nil {
 		return refuse("%v", err)
 	}
-	// (iii) every index both define: EQUIVALENT or WIDENED in either order,
-	// unless H raised it above L's metadata version, which a store bound to L
-	// rebuilds on its next open.
+	// (iii) every index both define: EQUIVALENT, unless H raised it above L's
+	// metadata version, which a store bound to L rebuilds on its next open.
 	lowIndexes := map[string]*gen.Index{}
 	for _, ix := range low.proto.GetIndexes() {
 		lowIndexes[ix.GetName()] = ix
@@ -415,9 +452,6 @@ func carryCompatible(name string, version int, restored *restoredMetaData, row *
 			return refuse("index %s: %v", hix.GetName(), err)
 		}
 		if class == recordlayer.IndexChanged {
-			if reverse, _, err := recordlayer.ClassifyIndexCarry(hix, lix); err == nil && reverse != recordlayer.IndexChanged {
-				continue
-			}
 			return refuse("index %s differs in %s", hix.GetName(), field)
 		}
 	}

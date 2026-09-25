@@ -197,15 +197,22 @@ func TestClassifyIndexCarry_ReadAsJavaReadsIt(t *testing.T) {
 	}
 }
 
-// The widening arm is the validator's, one way: a stored long_value read against
-// a rebuilt int_value of the same number is WIDENED; the reverse, and a
-// different number, are CHANGED; a widened root beside another change is CHANGED
-// naming that change.
-func TestClassifyIndexCarry_LiteralCarrierWidening(t *testing.T) {
+// A literal's carrier is part of the key, as Java's validator reads it
+// (LiteralKeyExpression's equals compares the value object): a long_value against
+// an int_value of the same number is CHANGED, either way. So is a root differing
+// only in a field's null_interpretation, which Java's validator does not compare
+// (FieldKeyExpression.equals leaves the standin out) but which changes what the
+// index's readers do with a null: the carry rebuilds it.
+func TestClassifyIndexCarry_RootByProtoEquality(t *testing.T) {
 	t.Parallel()
-	withLiteral := func(lit KeyExpression) *gen.Index {
+	withRoot := func(root KeyExpression) *gen.Index {
 		p := carryBaseIndex()
-		p.RootExpression = Concat(Field("a"), lit).ToKeyExpression()
+		p.RootExpression = root.ToKeyExpression()
+		return p
+	}
+	standin := func(ni gen.Field_NullInterpretation) *gen.Index {
+		p := withRoot(Concat(Field("a"), Field("b")))
+		p.RootExpression.GetThen().GetChild()[1].GetField().NullInterpretation = ni.Enum()
 		return p
 	}
 	for _, c := range []struct {
@@ -214,19 +221,10 @@ func TestClassifyIndexCarry_LiteralCarrierWidening(t *testing.T) {
 		want            IndexCarryClass
 		field           string
 	}{
-		{"long to int", withLiteral(Literal(int64(5))), withLiteral(Literal(int32(5))), IndexWidened, "root_expression"},
-		{"int to long", withLiteral(Literal(int32(5))), withLiteral(Literal(int64(5))), IndexChanged, "root_expression"},
-		{"long to a different int", withLiteral(Literal(int64(5))), withLiteral(Literal(int32(6))), IndexChanged, "root_expression"},
-		{"widened beside a predicate change", withLiteral(Literal(int64(5))), func() *gen.Index {
-			p := withLiteral(Literal(int32(5)))
-			p.Predicate = nil
-			return p
-		}(), IndexChanged, "predicate"},
-		{"widened beside a record-type change", withLiteral(Literal(int64(5))), func() *gen.Index {
-			p := withLiteral(Literal(int32(5)))
-			p.RecordType = []string{"T"}
-			return p
-		}(), IndexChanged, "record_type"},
+		{"long to int", withRoot(Concat(Field("a"), Literal(int64(5)))), withRoot(Concat(Field("a"), Literal(int32(5)))), IndexChanged, "root_expression"},
+		{"int to long", withRoot(Concat(Field("a"), Literal(int32(5)))), withRoot(Concat(Field("a"), Literal(int64(5)))), IndexChanged, "root_expression"},
+		{"the same literal", withRoot(Concat(Field("a"), Literal(int32(5)))), withRoot(Concat(Field("a"), Literal(int32(5)))), IndexEquivalent, ""},
+		{"a null standin", standin(gen.Field_NOT_UNIQUE), standin(gen.Field_NOT_NULL), IndexChanged, "root_expression"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
@@ -235,6 +233,19 @@ func TestClassifyIndexCarry_LiteralCarrierWidening(t *testing.T) {
 			}
 		})
 	}
+	// The standin pair is equal to the evolution validator, as to Java's.
+	if !keyExpressionEquals(mustKey(t, standin(gen.Field_NOT_UNIQUE)), mustKey(t, standin(gen.Field_NOT_NULL))) {
+		t.Fatal("the validator's key equality compares the null standin; Java's does not")
+	}
+}
+
+func mustKey(t *testing.T, p *gen.Index) KeyExpression {
+	t.Helper()
+	k, err := KeyExpressionFromProto(p.GetRootExpression())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return k
 }
 
 // A side that does not load is not classified: an absent root is refused with

@@ -1,6 +1,7 @@
 package recordlayer
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -290,7 +291,7 @@ func RecordMetaDataFromProto(md *gen.MetaData) (*RecordMetaData, error) {
 		}
 		idx, err := indexFromProto(idxProto)
 		if err != nil {
-			return nil, fmt.Errorf("index %s: %w", idxProto.GetName(), err)
+			return nil, protoDeserializationError(fmt.Errorf("index %s: %w", idxProto.GetName(), err))
 		}
 		builder.addIndexCommon(idx)
 		if len(builder.buildErrors) > 0 {
@@ -318,7 +319,7 @@ func RecordMetaDataFromProto(md *gen.MetaData) (*RecordMetaData, error) {
 		if rtProto.PrimaryKey != nil {
 			pk, err := KeyExpressionFromProto(rtProto.PrimaryKey)
 			if err != nil {
-				return nil, fmt.Errorf("record type %s primary key: %w", rtProto.GetName(), err)
+				return nil, protoDeserializationError(fmt.Errorf("record type %s primary key: %w", rtProto.GetName(), err))
 			}
 			rt.PrimaryKey = pk
 		}
@@ -332,7 +333,11 @@ func RecordMetaDataFromProto(md *gen.MetaData) (*RecordMetaData, error) {
 			// The proto carries an int32 for a key written as one, so without
 			// this a round-tripped metadata would compare unequal to the
 			// metadata it came from while encoding to identical bytes.
-			canonical, keyErr := canonicalRecordTypeKey(valueFromProto(rtProto.ExplicitKey))
+			key, keyErr := valueFromProto(rtProto.ExplicitKey)
+			if keyErr != nil {
+				return nil, keyErr
+			}
+			canonical, keyErr := canonicalRecordTypeKey(key)
 			if keyErr != nil {
 				return nil, fmt.Errorf("record type %q: %w", rt.Name, keyErr)
 			}
@@ -362,7 +367,7 @@ func RecordMetaDataFromProto(md *gen.MetaData) (*RecordMetaData, error) {
 	if md.RecordCountKey != nil {
 		ck, err := KeyExpressionFromProto(md.RecordCountKey)
 		if err != nil {
-			return nil, fmt.Errorf("record count key: %w", err)
+			return nil, protoDeserializationError(fmt.Errorf("record count key: %w", err))
 		}
 		builder.recordCountKey = ck
 	}
@@ -389,14 +394,14 @@ func (b *RecordMetaDataBuilder) loadSubspaceKeySettingsFromProto(md *gen.MetaDat
 	hasCounter := md.SubspaceKeyCounter != nil
 	usesCounter := md.GetUsesSubspaceKeyCounter()
 	if hasCounter && !usesCounter {
-		return &MetaDataError{
+		return &MetaDataProtoDeserializationError{Cause: &MetaDataError{
 			Message: "subspaceKeyCounter is set but usesSubspaceKeyCounter is not set in the meta-data proto",
-		}
+		}}
 	}
 	if usesCounter && !hasCounter {
-		return &MetaDataError{
+		return &MetaDataProtoDeserializationError{Cause: &MetaDataError{
 			Message: "usesSubspaceKeyCounter is set but subspaceKeyCounter is not set in the meta-data proto",
-		}
+		}}
 	}
 	if !b.counterBasedSubspaceKeys {
 		// Only read from the proto if the caller has not already enabled it.
@@ -815,34 +820,46 @@ func valueToProto(v any) (*gen.Value, error) {
 	return p, nil
 }
 
-// valueFromProto deserializes a Value proto to a Go value.
-// Matches Java's LiteralKeyExpression.fromProtoValue().
-func valueFromProto(p *gen.Value) any {
+// protoDeserializationError is err as RecordMetaData.build(proto) throws it:
+// a KeyExpressionDeserializationError wrapped in Java's
+// MetaDataProtoDeserializationException, which loadProtoExceptRecords catches
+// around every key expression it reads (RecordMetaDataBuilder.java:210-227,
+// :261-265); any other failure as it is.
+func protoDeserializationError(err error) error {
+	var de *KeyExpressionDeserializationError
+	if errors.As(err, &de) {
+		return &MetaDataProtoDeserializationError{Cause: err}
+	}
+	return err
+}
+
+// valueFromProto deserializes a Value proto to a Go value, as Java's
+// LiteralKeyExpression.fromProtoValue does (LiteralKeyExpression.java:134-173):
+// the one field set, nil when none is, and a RecordCoreError "More than one
+// value encoded in value" when several are.
+func valueFromProto(p *gen.Value) (any, error) {
 	if p == nil {
-		return nil
+		return nil, nil
 	}
-	if p.LongValue != nil {
-		return p.GetLongValue()
+	var value any
+	found := 0
+	set := func(present bool, v any) {
+		if present {
+			found++
+			value = v
+		}
 	}
-	if p.IntValue != nil {
-		return p.GetIntValue()
+	set(p.DoubleValue != nil, p.GetDoubleValue())
+	set(p.FloatValue != nil, p.GetFloatValue())
+	set(p.LongValue != nil, p.GetLongValue())
+	set(p.BoolValue != nil, p.GetBoolValue())
+	set(p.StringValue != nil, p.GetStringValue())
+	set(p.BytesValue != nil, p.BytesValue)
+	set(p.IntValue != nil, p.GetIntValue())
+	if found > 1 {
+		return nil, &RecordCoreError{Message: "More than one value encoded in value"}
 	}
-	if p.DoubleValue != nil {
-		return p.GetDoubleValue()
-	}
-	if p.FloatValue != nil {
-		return p.GetFloatValue()
-	}
-	if p.BoolValue != nil {
-		return p.GetBoolValue()
-	}
-	if p.StringValue != nil {
-		return p.GetStringValue()
-	}
-	if p.BytesValue != nil {
-		return p.BytesValue
-	}
-	return nil
+	return value, nil
 }
 
 // defaultExcludedDependencies matches Java's RecordMetaData.defaultExcludedDependencies.

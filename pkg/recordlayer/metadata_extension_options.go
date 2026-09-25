@@ -43,7 +43,12 @@ func (b *RecordMetaDataBuilder) processRecordTypeOptions(rt *RecordType) {
 			rt.SinceVersion = int(opts.GetSinceVersion())
 		}
 		if opts.RecordTypeKey != nil {
-			(&RecordTypeBuilder{recordType: rt, builder: b}).SetRecordTypeKey(valueFromProto(opts.GetRecordTypeKey()))
+			key, err := valueFromProto(opts.GetRecordTypeKey())
+			if err != nil {
+				b.recordBuildError(err)
+			} else {
+				(&RecordTypeBuilder{recordType: rt, builder: b}).SetRecordTypeKey(key)
+			}
 		}
 	}
 	fields := rt.Descriptor.Fields()

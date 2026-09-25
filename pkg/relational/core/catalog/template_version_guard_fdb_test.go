@@ -111,6 +111,35 @@ func TestFDB_VersionGuard_FreshTemplateRefusedWhileDroppedVersionBound(t *testin
 	mustRun(t, run, func(tx api.Transaction) error { return tc.CreateTemplate(tx, buildVersionedTemplate(t, "g", 1)) })
 }
 
+// The bindings are read from TEMPLATES_VALUE_INDEX, which holds none or only
+// some of them unless it is READABLE: with the index write-only, the guard of a
+// template save and of a version delete fails closed instead of answering "no
+// schema binds it".
+func TestFDB_VersionGuard_FailsClosedOverAnUnreadableIndex(t *testing.T) {
+	t.Parallel()
+	cat, run := newFDBCatalogInSubspace(t)
+	tc := cat.SchemaTemplateCatalog()
+	mustRun(t, run, func(tx api.Transaction) error {
+		if err := tc.CreateTemplate(tx, buildVersionedTemplate(t, "u", 1)); err != nil {
+			return err
+		}
+		return cat.SaveSchema(tx, buildVersionedTemplate(t, "u", 1).GenerateSchema("/db", "s"), true)
+	})
+	mustRun(t, run, func(tx api.Transaction) error {
+		store, err := cat.openStore(tx)
+		if err != nil {
+			return err
+		}
+		_, err = store.MarkIndexWriteOnly(IdxTemplatesValue)
+		return err
+	})
+	const want = "catalog index " + IdxTemplatesValue + " is WRITE_ONLY, so the schemas bound to template u cannot be read"
+	wantAPIError(t, run(func(tx api.Transaction) error { return tc.CreateTemplate(tx, buildVersionedTemplate(t, "u", 2)) }),
+		api.ErrCodeInternalError, want)
+	wantAPIError(t, run(func(tx api.Transaction) error { return tc.DeleteTemplateVersion(tx, "u", 1, true) }),
+		api.ErrCodeInternalError, want)
+}
+
 // A binding of version 0 is a binding: the fresh-template guard reads the
 // whole name, not from version 1.
 func TestFDB_VersionGuard_VersionZeroBindingBlocksFreshTemplate(t *testing.T) {

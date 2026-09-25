@@ -24,6 +24,9 @@ type InMemoryStoreCatalog struct {
 	// Embedded template catalog so we can implement the
 	// SchemaTemplateCatalog() accessor trivially.
 	templates *InMemorySchemaTemplateCatalog
+	// beforeBind, when set, runs in SaveSchema and RepairSchema after their
+	// checks and before the bind, with c.mu held: a test's interleaving hook.
+	beforeBind func()
 }
 
 // NewInMemoryStoreCatalog returns a fresh, empty catalog.
@@ -37,11 +40,12 @@ func NewInMemoryStoreCatalog() *InMemoryStoreCatalog {
 	return c
 }
 
-// firstBindingLocked is the version guard's read (template_bindings.go): the
+// firstBindingHeld is the version guard's read (template_bindings.go): the
 // first schema, in the order of Java's TEMPLATES_VALUE_INDEX (template version,
 // database, schema), bound to templateName at a version from `from` through
-// `through` (a negative bound is none). c.mu must be held.
-func (c *InMemoryStoreCatalog) firstBindingLocked(templateName string, from, through int) *boundSchema {
+// `through` (a negative bound is none). The caller holds c.mu, the only lock
+// its data needs ("…Held").
+func (c *InMemoryStoreCatalog) firstBindingHeld(templateName string, from, through int) *boundSchema {
 	var first *boundSchema
 	for dbID, byName := range c.schemas {
 		for name, s := range byName {
@@ -72,10 +76,12 @@ func bindingLess(a, b boundSchema) bool {
 	return a.schema < b.schema
 }
 
-// boundTemplateLocked is Java's load of a schema row's template
+// boundTemplateTakingTC is Java's load of a schema row's template
 // (parseSchemaTable): the row's (name, version) must be stored, and is
-// refused with Java's text when it is gone. c.mu must be held.
-func (c *InMemoryStoreCatalog) boundTemplateLocked(txn api.Transaction, s api.Schema) error {
+// refused with Java's text when it is gone. The caller holds c.mu and the
+// template catalog's read takes tc.mu ("…TakingTC"; the lock order is c.mu,
+// then tc.mu).
+func (c *InMemoryStoreCatalog) boundTemplateTakingTC(txn api.Transaction, s api.Schema) error {
 	t := s.SchemaTemplate()
 	if t == nil {
 		return nil
@@ -113,7 +119,7 @@ func (c *InMemoryStoreCatalog) LoadSchema(txn api.Transaction, databaseID, schem
 	if !ok {
 		return nil, api.NewErrorf(api.ErrCodeUndefinedSchema, "Schema <%s/%s> does not exist in the catalog!", databaseID, schemaName)
 	}
-	if err := c.boundTemplateLocked(txn, s); err != nil {
+	if err := c.boundTemplateTakingTC(txn, s); err != nil {
 		return nil, err
 	}
 	return s, nil
@@ -148,6 +154,7 @@ func (c *InMemoryStoreCatalog) SaveSchema(txn api.Transaction, dataToWrite api.S
 
 	tmpl := dataToWrite.SchemaTemplate()
 	if tmpl != nil {
+		// Takes tc.mu under c.mu (the lock order).
 		exists, err := c.templates.DoesSchemaTemplateExistAtVersion(txn, tmpl.MetadataName(), tmpl.Version())
 		if err != nil {
 			return err
@@ -162,7 +169,7 @@ func (c *InMemoryStoreCatalog) SaveSchema(txn api.Transaction, dataToWrite api.S
 	// Java's saveSchema loads the existing row with its template, which
 	// fails when the bound version is gone.
 	if existing, ok := c.schemas[dbID][name]; ok {
-		if err := c.boundTemplateLocked(txn, existing); err != nil {
+		if err := c.boundTemplateTakingTC(txn, existing); err != nil {
 			return err
 		}
 	}
@@ -176,6 +183,9 @@ func (c *InMemoryStoreCatalog) SaveSchema(txn api.Transaction, dataToWrite api.S
 	}
 	if c.schemas[dbID] == nil {
 		c.schemas[dbID] = map[string]api.Schema{}
+	}
+	if c.beforeBind != nil {
+		c.beforeBind()
 	}
 	c.schemas[dbID][name] = dataToWrite
 	return nil
@@ -196,12 +206,15 @@ func (c *InMemoryStoreCatalog) RepairSchema(txn api.Transaction, databaseID, sch
 	if !ok {
 		return api.NewErrorf(api.ErrCodeUndefinedSchema, "Schema <%s/%s> does not exist in the catalog!", databaseID, schemaName)
 	}
-	if err := c.boundTemplateLocked(txn, existing); err != nil {
+	if err := c.boundTemplateTakingTC(txn, existing); err != nil {
 		return err
 	}
 	latest, err := c.templates.LoadSchemaTemplate(txn, existing.SchemaTemplate().MetadataName())
 	if err != nil {
 		return err
+	}
+	if c.beforeBind != nil {
+		c.beforeBind()
 	}
 	c.schemas[databaseID][schemaName] = latest.GenerateSchema(databaseID, schemaName)
 	return nil

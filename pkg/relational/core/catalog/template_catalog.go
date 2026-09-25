@@ -41,7 +41,7 @@ func (c *InMemorySchemaTemplateCatalog) firstBinding(templateName string, from, 
 	if c.bindings == nil {
 		return nil
 	}
-	return c.bindings.firstBindingLocked(templateName, from, through)
+	return c.bindings.firstBindingHeld(templateName, from, through)
 }
 
 // NewInMemorySchemaTemplateCatalog returns an empty template catalog.
@@ -148,7 +148,7 @@ func (c *InMemorySchemaTemplateCatalog) CreateTemplate(txn api.Transaction, newT
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if _, ok := c.templates[name][version]; ok {
-		return api.NewErrorf(api.ErrCodeDuplicateSchemaTemplate, "schema template %q version %d already exists", name, version)
+		return api.NewErrorf(api.ErrCodeDuplicateSchemaTemplate, "Schema template already exists: %s", name)
 	}
 	// The version guard: no schema may bind a dropped version above the
 	// latest stored one, every version when none is stored.
@@ -208,7 +208,7 @@ func (c *InMemorySchemaTemplateCatalog) DeleteTemplate(txn api.Transaction, temp
 	defer c.mu.Unlock()
 	if _, ok := c.templates[templateName]; !ok {
 		if throwIfDoesNotExist {
-			return api.NewErrorf(api.ErrCodeUnknownSchemaTemplate, "schema template %q not found", templateName)
+			return api.NewErrorf(api.ErrCodeUnknownSchemaTemplate, "Could not delete unknown schema template %s", templateName)
 		}
 		return nil
 	}
@@ -226,19 +226,13 @@ func (c *InMemorySchemaTemplateCatalog) DeleteTemplateVersion(txn api.Transactio
 	defer c.lockBindings()()
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	byVersion, ok := c.templates[templateName]
-	if !ok {
+	if _, ok := c.templates[templateName][version]; !ok {
 		if throwIfDoesNotExist {
-			return api.NewErrorf(api.ErrCodeUnknownSchemaTemplate, "schema template %q not found", templateName)
+			return api.NewErrorf(api.ErrCodeUnknownSchemaTemplate, "Could not delete unknown schema template %s", templateName)
 		}
 		return nil
 	}
-	if _, ok := byVersion[version]; !ok {
-		if throwIfDoesNotExist {
-			return api.NewErrorf(api.ErrCodeUnknownSchemaTemplate, "schema template %q version %d not found", templateName, version)
-		}
-		return nil
-	}
+	byVersion := c.templates[templateName]
 	if bound := c.firstBinding(templateName, version, version); bound != nil {
 		return errBoundOnDelete(templateName, version, *bound)
 	}

@@ -24,17 +24,11 @@ func init() {
 	registerArithmeticFunctions()
 }
 
-// longArithmeticFunctions names every function registerArithmeticFunctions registers:
-// each reads its operands with nullableLong, so a literal argument's integer width and
-// its float precision never reach a stored entry beyond the long it evaluates to.
-var longArithmeticFunctions = map[string]bool{}
-
 // registerLongArithmetic registers a LongArithmethicFunctionKeyExpression of
 // minArgs..maxArgs arguments (Builder.unaryFunction 1..1, binaryFunction 2..2,
 // bothFunction 1..2, LongArithmethicFunctionKeyExpression.java:162-235), one
 // column (:108-111), whose null is a plain null (:98).
 func registerLongArithmetic(name string, minArgs, maxArgs int, eval FunctionEvaluator) {
-	longArithmeticFunctions[name] = true
 	registerCoreFunction(name, FunctionSpec{Evaluator: eval, MinArguments: minArgs, MaxArguments: maxArgs, ColumnSize: 1})
 }
 

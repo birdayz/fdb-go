@@ -1,0 +1,99 @@
+**NAK** on commit `1c6059b91` (tree `18961bd19`). I recomputed the design file's hash from the commit blob: SHA256 `34ebbcb27e016c0abfab1fff7e18294b3170c70ba91c8201049e222fc2b181c2`, 2643 lines, which matches. The review was read-only. `git diff` and `git grep` were refused, so I read the delta with `git show`. Anything not marked **measured** comes from reading source.
+
+Every v14 finding is resolved or answered, and revision 15 undoes none of revisions 12–14 except finding 1 below. Four Low findings remain, and the first is a regression against the revision's own headline claim.
+
+## Findings, most severe first
+
+**1. Low (from source; a regression against revision 14): a proto3 map entry whose key or value is zero is written without that field.**
+- `canonicalEntry` (`record_wire_map_order.go:642`), used for every unchanged entry (`:616`), marshals the entry as a dynamicpb message.
+- For a proto3 map entry, key and value have no presence, so `dynamicpb.isSet` skips `0`, `""` and `false` (`dynamicpb/dynamic.go:502-518`, v1.36.11). `holdKeyAndValue`'s `Set` of the default does not change that.
+- So Go loads `{"a": 0}` stored as `0a0161 1000` and writes it back without `1000`.
+- Both of the following write both fields:
+  - Go's own map marshal: every new record, and revision 14's re-save.
+  - Java: `DynamicMessage.Builder.buildPartial` puts every map entry's key and value into its FieldSet (`DynamicMessage.java:379-390`, protobuf-java source in Bazel's repo cache).
+- The JVM spec cannot see this, because `MapRec` is proto2 (`key_validation_conformance_test.go:46`), and so is `wireMapFile`.
+- **Fix:** write an entry's key and value unconditionally, as a map marshal does. Add a proto3 map with a zero value and an empty key to the JVM re-save comparison.
+
+**2. Low (claim): "byte for byte" claims more than the code does.**
+- Where the claims are: `CHANGELOG.md:433` says a record Go loads and saves unchanged "is stored byte for byte as Java's own load-then-save stores it"; `DIVERGENCES.md:3214` says "Go's load-then-save writes the same bytes".
+- protobuf-go marshals oneof members after every other field:
+  - generated types: `impl/codec_message.go:177-183`;
+  - dynamicpb, when deterministic: `LegacyFieldOrder`.
+- Java writes fields in number order. `store.go:2218-2224` already disclaims Java-equal bytes.
+- The unit test's own `Rec` shows it: `ha=5` sits in a oneof beside `mh=7` and `tree=8`. With `ha` and `mh` both set, Go writes 7 before 5.
+- Only the proto2, oneof-free `MapRec` is measured.
+- **Fix:** scope both sentences, or declare the oneof order in DIVERGENCES.
+
+**3. Low (from source): elements with equal content can swap their map orders after an insertion or removal.**
+- `elementPriors` first prefers the stored element at the same position (`:527`).
+- Example: stored `[H1{z,y}, H2{y,z}]`, which have equal content, and one new element inserted in front.
+  - Current element 1 claims `H2`'s order, and element 2 then takes `H1`'s.
+  - Go writes `[N, {y,z}, {z,y}]`; Java keeps `[N, {z,y}, {y,z}]`.
+  - A covering index whose key `z` and `y` share then holds `y` in Go and `z` in Java.
+- `DIVERGENCES.md:3222` says an unchanged element "keeps its own order wherever the list moved it". The subtests use only elements of distinct content.
+- **Fix:** match the k-th current occurrence of a content to the k-th stored one, which keeps relative order. Declare the one case that remains ambiguous: equal elements reordered among themselves. Pin the example above.
+
+**4. Low (from source; text): the VECTOR maintainer is not "Java's `parseConfig`".**
+- The claims:
+  - `HNSWConfigOf`'s doc (`vector_index_maintainer.go:138-140`): "Java's HnswVectorIndexEngine.parseConfig".
+  - `DIVERGENCES.md:2120-2123`: "a value both engines accept is the same number … as to Java's HnswVectorIndexEngine".
+- Java reads each option under its `hnsw*` name and then its `vector*` alias (`VectorIndexOptionKeys.java:53-73`, `VectorOptionKey.read:145-152`). `IndexOptions.java:244-248` tells users to create new indexes with the `vector*` names.
+- Go's maintainer and validator read only the `hnsw*` names. For a windowed index with `hnswNumDimensions` set:
+  - `vectorMetric=COSINE_METRIC`: Java uses cosine; Go builds and maintains Euclidean, without saying so.
+  - `vectorMetric=cosine`: Java refuses; Go builds.
+  - `vectorNumDimensions` alone: Go refuses what Java builds.
+- The booleans differ too: `== "true"` (`:187,190,196,207`) against `Boolean::parseBoolean`, which ignores case.
+- WS-D owns the option catalogue (`ws-d-design.md:265-267`). **Fix:** scope both sentences to the `hnsw*` names and integer/double options, and point at WS-D; or read the aliases now and add JVM rows for them.
+
+## Nits
+- These 7.14 sentences are superseded but not marked:
+  - `:2451`, "memoizes nested types for that walk only";
+  - `:2511-2513`, the oneof "last switch".
+- The dry run (`store_api.go:391`) serializes with no prior. Its size preview for a replaced record with a twice-written key therefore differs from the bytes the save writes. Java's dry run serializes exactly what it saves.
+- `wsc15-red-first/TREE` records the next run's file hash, as its own note says. The older-union-field red is therefore tied to test files no hash identifies.
+- `mapReach.reaches` (`:291`) recomputes the whole type closure on every lookup for a descriptor outside the meta-data. This is performance only.
+- The mutation consoles show the effect but not the mutated text.
+
+## v14 findings, checked
+- **Storage 1 / Torvalds 1: resolved.**
+  - `parseHNSWConfig` now reads through `javaParseInt`/`javaParseDouble`; the evolution validator uses it too (`:1001`).
+  - **Measured:** the `VECTOR_CONFIG` rows are equal, and two were red on `5d95cd27c`.
+  - What remains is finding 4.
+- **Storage 2 / Torvalds 2: resolved.**
+  - `storedRecordInner` finds the record as `deserializeAndDiscover` does.
+  - **Measured:** the older-field record's bytes equal Java's re-save in the green log; red-first fails with `{1:[a b],3:[j k]}`.
+- **Storage 3: resolved, except finding 3.**
+- **Storage 4: resolved.**
+  - A pin through both `SaveRecord` and `SaveRecordBatch`.
+  - **Measured:** each mutation reddens it with `z`.
+- **Storage 5 / Torvalds 5 / Graefe 3: resolved.**
+  - This matches FloatingDecimal's grammar (from JDK source).
+  - **Measured:** the `1.2.3` row, the cause's text compared; red on `5d95cd27c`.
+- **Graefe 1: resolved.**
+  - **Measured:** the records' bytes equal Java's re-save (record 2 keeps `x y x`, record 3 writes `k=0`), and both indexes keep six pairs.
+  - The new DIVERGENCES entry is present; what remains is findings 1 and 2.
+- **Graefe 2: resolved.**
+  - The validator accepts only the four `Metric` names, with `Enum.valueOf`'s text.
+  - **Measured:** four rows red on `5d95cd27c`.
+- **Torvalds 3–4 and the path and nested-order nits: resolved.** The paths are gone, and there are nested re-save tests.
+- **Torvalds 6: resolved.**
+  - The green run happened after the commit, on its tree, verbosely.
+  - **Measured:** Java rebuilt the index over Go's re-saved bytes, and it equals Go's.
+- **The remaining nits are resolved:**
+  - `wireTypeFits`, whose test was red on the old tree;
+  - the preset spec's rename;
+  - the test comments;
+  - one reach per meta-data.
+
+## Measured
+- **Green** (`wsc15-green-commit`: HEAD `1c6059b91`, tree `18961bd19`, clean):
+  - conformance: 35 of 1801 specs passed;
+  - recordlayer: 14 of 3727 specs passed;
+  - every new unit subtest shows `--- PASS`;
+  - the `MAPWIRE`, `VECTOR_CONFIG` and `WINDOWED` lines are present.
+- **Hook:** "Executed 44 out of 94 tests: 94 tests pass" (the rest from cache, as the owner directed).
+- **Red** (`5d95cd27c`'s tree `cb1505a80` plus the named adapters):
+  - 8 JVM failures, as 7.15 lists them;
+  - the metric-validation spec and the unit tests.
+- **Mutations:** 2 runs, each "1 fails locally".
+- **Preserved boundaries:** untouched.

@@ -330,7 +330,8 @@ func unknownRecordTypeError(name string) *MetaDataError {
 // KeyExpressionDeserializationError is Java's
 // KeyExpression.DeserializationException (a RecordCoreException): a
 // serialized key expression that cannot be read back, as one with no root or
-// with several (KeyExpression.java:404-405), a nesting without its parent
+// with several (KeyExpression.java:404-405), a field without its name or fan
+// type (FieldKeyExpression.java:122-128), a nesting without its parent
 // (NestingKeyExpression.java:69) or a then of fewer than two children
 // (ThenKeyExpression.java:84).
 type KeyExpressionDeserializationError struct {
@@ -339,6 +340,30 @@ type KeyExpressionDeserializationError struct {
 
 func (e *KeyExpressionDeserializationError) Error() string {
 	return e.Message
+}
+
+// Unwrap reports it as the RecordCoreError Java's exception is, so a caller
+// matching RecordCoreError catches it as `catch (RecordCoreException)` does.
+func (e *KeyExpressionDeserializationError) Unwrap() error {
+	return &RecordCoreError{Message: e.Message}
+}
+
+// MetaDataProtoDeserializationError is Java's
+// RecordMetaDataBuilder.MetaDataProtoDeserializationException, a
+// MetaDataException "Error converting from protobuf" whose cause is the
+// failure: a key expression of the meta-data proto that cannot be read (an
+// index's root, a record type's primary key, the record-count key; a
+// KeyExpressionDeserializationError), or the subspace-key counter settings
+// disagreeing (RecordMetaDataBuilder.java:187-292).
+type MetaDataProtoDeserializationError struct {
+	Cause error
+}
+
+func (e *MetaDataProtoDeserializationError) Error() string { return "Error converting from protobuf" }
+
+// Unwrap reports it as the MetaDataError Java's exception is, and its cause.
+func (e *MetaDataProtoDeserializationError) Unwrap() []error {
+	return []error{&MetaDataError{Message: e.Error(), Cause: e.Cause}, e.Cause}
 }
 
 // UnsupportedOperationError corresponds to Java's UnsupportedOperationException.

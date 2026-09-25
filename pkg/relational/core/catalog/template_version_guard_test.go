@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+	"time"
 
 	"google.golang.org/protobuf/proto"
 
@@ -244,4 +245,71 @@ func TestInMemory_LoadTemplateProto(t *testing.T) {
 	}
 	_, err = c.LoadTemplateProto(tx, "p", 2)
 	wantAPIError(t, err, api.ErrCodeUnknownSchemaTemplate, "SchemaTemplate=p, version=2 is not in catalog")
+}
+
+// The locked sections serialize a bind against a guarded delete: with a
+// SaveSchema (or a RepairSchema) held between its checks and its bind, a
+// DeleteTemplateVersion of the version it binds waits for it, then sees the
+// binding and is refused. Exactly one of each pair wins, and no schema is left
+// bound to a version that is not stored.
+func TestInMemory_VersionGuard_BindAndDeleteSerialize(t *testing.T) {
+	t.Parallel()
+	for _, repair := range []bool{false, true} {
+		t.Run(map[bool]string{false: "SaveSchema", true: "RepairSchema"}[repair], func(t *testing.T) {
+			t.Parallel()
+			c := NewInMemoryStoreCatalog()
+			tx := NewInMemoryTransaction()
+			tc := c.SchemaTemplateCatalog()
+			if err := tc.CreateTemplate(tx, buildTemplateAtVersion(t, "h", 1)); err != nil {
+				t.Fatal(err)
+			}
+			bound := 1
+			if repair {
+				// The schema binds v1; the repair rebinds it to v2, the version
+				// the delete then targets.
+				if err := c.SaveSchema(tx, buildTemplateAtVersion(t, "h", 1).GenerateSchema("/db", "s"), true); err != nil {
+					t.Fatal(err)
+				}
+				if err := tc.CreateTemplate(tx, buildTemplateAtVersion(t, "h", 2)); err != nil {
+					t.Fatal(err)
+				}
+				bound = 2
+			}
+			checked, release := make(chan struct{}), make(chan struct{})
+			c.beforeBind = func() {
+				close(checked)
+				<-release
+			}
+			bindErr := make(chan error, 1)
+			go func() {
+				if repair {
+					bindErr <- c.RepairSchema(tx, "/db", "s")
+				} else {
+					bindErr <- c.SaveSchema(tx, buildTemplateAtVersion(t, "h", 1).GenerateSchema("/db", "s"), true)
+				}
+			}()
+			<-checked
+			deleteErr := make(chan error, 1)
+			go func() { deleteErr <- tc.DeleteTemplateVersion(tx, "h", bound, true) }()
+			select {
+			case err := <-deleteErr:
+				t.Fatalf("the delete returned (%v) while the bind held the catalog", err)
+			case <-time.After(50 * time.Millisecond):
+			}
+			close(release)
+			if err := <-bindErr; err != nil {
+				t.Fatalf("the bind: %v", err)
+			}
+			c.beforeBind = nil
+			wantAPIError(t, <-deleteErr, api.ErrCodeInvalidSchemaTemplate,
+				"schema template h version "+strconv.Itoa(bound)+" cannot be deleted: schemas are still bound to it (/db/s)")
+			s, err := c.LoadSchema(tx, "/db", "s")
+			if err != nil {
+				t.Fatalf("the bound schema does not load: %v", err)
+			}
+			if s.SchemaTemplate().Version() != bound {
+				t.Fatalf("bound to version %d, want %d", s.SchemaTemplate().Version(), bound)
+			}
+		})
+	}
 }

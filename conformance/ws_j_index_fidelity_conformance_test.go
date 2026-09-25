@@ -2793,7 +2793,10 @@ var _ = Describe("WS-J stored index protos read as Java reads them", func() {
 				var rootErr *recordlayer.KeyExpressionDeserializationError
 				Expect(errors.As(r.goErr, &rootErr)).To(BeTrue(), "%s: %v (%T), want Java's DeserializationException", r.name, r.goErr, r.goErr)
 				Expect(rootErr.Message).To(HavePrefix(r.goWant), r.name)
-				Expect(errors.As(r.goErr, &core)).To(BeFalse(), "%s: the root is refused before the key is read", r.name)
+				// The root is refused before the key is read: the only
+				// RecordCoreError in the chain is the root's refusal (Java's
+				// DeserializationException is a RecordCoreException).
+				Expect(errors.As(r.goErr, &core) && core.Message == rootErr.Message).To(BeTrue(), "%s: the root is refused before the key is read", r.name)
 			case "duplicate":
 				Expect(errors.As(r.goErr, &dup)).To(BeTrue(), "%s: %v (%T), want a DuplicateIndexOptionError", r.name, r.goErr, r.goErr)
 				Expect(dup.Error()).To(Equal(r.goWant), r.name)

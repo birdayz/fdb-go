@@ -6,7 +6,6 @@ import (
 	"slices"
 	"strings"
 
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
@@ -32,14 +31,6 @@ type MetaDataEvolutionValidator struct {
 	allowFieldRenames           bool
 	allowDeprecatedFieldRenames bool
 	allowUndeprecatingFields    bool
-
-	// allowLiteralCarrierWidening is Go-only (Java's validator compares literals by
-	// proto equality, LiteralKeyExpression.java:213-214, and has no such option); see
-	// SetAllowLiteralCarrierWidening.
-	allowLiteralCarrierWidening bool
-	// literalCarrierWideningSymmetric admits the carrier moves in either
-	// direction; see SetAllowSymmetricLiteralCarrierWidening.
-	literalCarrierWideningSymmetric bool
 }
 
 // allowsAnyFieldRenames reports whether any field-rename option is enabled, gating the
@@ -76,40 +67,6 @@ func DefaultMetaDataEvolutionValidator() *MetaDataEvolutionValidator {
 
 func (b *MetaDataEvolutionValidatorBuilder) SetAllowNoVersionChange(v bool) *MetaDataEvolutionValidatorBuilder {
 	b.v.allowNoVersionChange = v
-	return b
-}
-
-// SetAllowLiteralCarrierWidening admits an index whose root differs from the old one
-// only in literal CARRIERS that moved ONE way, from the width a Go build before the
-// literal-carrier fix stored to the width the target stores, and that store the same
-// bytes: an old long_value where the new root has an int_value of equal value, at any
-// position (the tuple encodes an integer by value, not by width); and an old
-// double_value where the new root has a float_value of the same value
-// (float64(f) == d), only as an argument of a long-arithmetic key function, which
-// reads it through nullableLong and so stores a long either way. The reverse moves
-// (int_value to long_value, float_value to double_value) and a float/double change at
-// any other position (the tuple type code differs, 0x20 versus 0x21) stay index
-// changes; literalValuesEquivalent is the one place that decides.
-//
-// Go-only and deliberately narrow: it exists for the relational rebind path, where a
-// template Go stored before RFC-257 WS-J F2 carries INT literals as long_value and the
-// same DDL now builds int_value (Java's width); the core validator's default stays
-// Java's proto equality.
-func (b *MetaDataEvolutionValidatorBuilder) SetAllowLiteralCarrierWidening(v bool) *MetaDataEvolutionValidatorBuilder {
-	b.v.allowLiteralCarrierWidening = v
-	return b
-}
-
-// SetAllowSymmetricLiteralCarrierWidening admits an index whose root differs from
-// the old one only in literal carriers that store the same bytes, moved in EITHER
-// direction (literalCarriersEquivalent one way or the other). Go-only, for the
-// template restore (RFC-257 WS-J section 2), which compares two STORED histories,
-// neither of them a rebuild of the other, so the width either one stored is not a
-// direction; the rebind stays one-way (SetAllowLiteralCarrierWidening). It implies
-// that option.
-func (b *MetaDataEvolutionValidatorBuilder) SetAllowSymmetricLiteralCarrierWidening(v bool) *MetaDataEvolutionValidatorBuilder {
-	b.v.allowLiteralCarrierWidening = v
-	b.v.literalCarrierWideningSymmetric = v
 	return b
 }
 
@@ -737,7 +694,7 @@ func (v *MetaDataEvolutionValidator) validateIndex(old *RecordMetaData, oldIdx *
 			expectedExpr = renamed
 		}
 	}
-	if !keyExpressionEquals(newIdx.RootExpression, expectedExpr) && !v.literalCarriersWidened(expectedExpr, newIdx.RootExpression) {
+	if !keyExpressionEquals(newIdx.RootExpression, expectedExpr) {
 		if keyExpressionEquals(oldIdx.RootExpression, expectedExpr) {
 			return &MetaDataEvolutionError{
 				Message: fmt.Sprintf("index key expression changed (index=%q)", name),
@@ -1389,121 +1346,7 @@ func validateProtoSyntax(oldDesc, newDesc protoreflect.MessageDescriptor) error 
 	return nil
 }
 
-// literalCarriersWidened reports whether the options admit old and new as the
-// same root under the literal-carrier arm: one way, or either way when symmetric.
-func (v *MetaDataEvolutionValidator) literalCarriersWidened(old, new KeyExpression) bool {
-	if !v.allowLiteralCarrierWidening {
-		return false
-	}
-	o, n := old.ToKeyExpression().ProtoReflect(), new.ToKeyExpression().ProtoReflect()
-	return literalCarriersEquivalent(o, n, false) ||
-		(v.literalCarrierWideningSymmetric && literalCarriersEquivalent(n, o, false))
-}
-
 // ValidateEvolution is a convenience function using the default (strictest) validator.
 func ValidateEvolution(oldMetaData, newMetaData *RecordMetaData) error {
 	return DefaultMetaDataEvolutionValidator().Validate(oldMetaData, newMetaData)
-}
-
-// literalCarriersEquivalent reports whether a stored (a) and a rebuilt (b) key-expression
-// proto are equal except for literal carriers that moved from the width a Go build
-// before the literal-carrier fix stored to the width the target stores
-// (SetAllowLiteralCarrierWidening; literalValuesEquivalent says which moves count).
-// inLongArith is true below the arguments of a long-arithmetic function.
-func literalCarriersEquivalent(a, b protoreflect.Message, inLongArith bool) bool {
-	if a.Descriptor().FullName() != b.Descriptor().FullName() {
-		return false
-	}
-	if a.Descriptor().Name() == "Value" && a.Descriptor().ParentFile().Package() == keyExpressionProtoPackage {
-		return literalValuesEquivalent(a, b, inLongArith)
-	}
-	fields := a.Descriptor().Fields()
-	for i := 0; i < fields.Len(); i++ {
-		fd := fields.Get(i)
-		if a.Has(fd) != b.Has(fd) {
-			return false
-		}
-		if !a.Has(fd) {
-			continue
-		}
-		childArith := inLongArith
-		if a.Descriptor().Name() == "Function" && fd.Name() == "arguments" {
-			childArith = longArithmeticFunctions[a.Get(a.Descriptor().Fields().ByName("name")).String()]
-		}
-		switch {
-		case fd.IsList():
-			la, lb := a.Get(fd).List(), b.Get(fd).List()
-			if la.Len() != lb.Len() {
-				return false
-			}
-			for j := 0; j < la.Len(); j++ {
-				if fd.Message() != nil {
-					if !literalCarriersEquivalent(la.Get(j).Message(), lb.Get(j).Message(), childArith) {
-						return false
-					}
-				} else if !la.Get(j).Equal(lb.Get(j)) {
-					return false
-				}
-			}
-		case fd.Message() != nil:
-			if !literalCarriersEquivalent(a.Get(fd).Message(), b.Get(fd).Message(), childArith) {
-				return false
-			}
-		default:
-			if !a.Get(fd).Equal(b.Get(fd)) {
-				return false
-			}
-		}
-	}
-	return proto.Equal(unknownFieldsOnly(a), unknownFieldsOnly(b))
-}
-
-// keyExpressionProtoPackage is the package of record_key_expression.proto's Value.
-const keyExpressionProtoPackage = "com.apple.foundationdb.record.expressions"
-
-func unknownFieldsOnly(m protoreflect.Message) proto.Message {
-	out := m.New()
-	out.SetUnknown(m.GetUnknown())
-	return out.Interface()
-}
-
-// literalValuesEquivalent compares a stored (old) literal Value with a rebuilt (new)
-// one under the carrier rule. The rule runs ONE way, from the width a Go build
-// before the literal-carrier fix stored to the width the target stores:
-// long_value -> int_value for the same number (the tuple encodes an integer by
-// value, so the entries are the same bytes), and double_value -> float_value for
-// the same value inside a long-arithmetic function only (the operand is read
-// through nullableLong either way; as a key column a FLOAT and a DOUBLE encode with
-// different type codes). The reverse moves are index changes: a rebuild that turns
-// an int_value into a long_value would store a key the target cannot plan (the
-// bitmap functions have no lane for a LONG entry size).
-func literalValuesEquivalent(old, new protoreflect.Message, inLongArith bool) bool {
-	if proto.Equal(old.Interface(), new.Interface()) {
-		return true
-	}
-	oldField, oldValue, oldOK := literalOnlyField(old)
-	newField, newValue, newOK := literalOnlyField(new)
-	if !oldOK || !newOK {
-		return false
-	}
-	switch {
-	case oldField == "long_value" && newField == "int_value":
-		return oldValue.Int() == newValue.Int()
-	case inLongArith && oldField == "double_value" && newField == "float_value":
-		return oldValue.Float() == newValue.Float()
-	}
-	return false
-}
-
-// literalOnlyField returns the name and value of a Value's only set field.
-func literalOnlyField(m protoreflect.Message) (protoreflect.Name, protoreflect.Value, bool) {
-	var name protoreflect.Name
-	var value protoreflect.Value
-	n := 0
-	m.Range(func(fd protoreflect.FieldDescriptor, val protoreflect.Value) bool {
-		n++
-		name, value = fd.Name(), val
-		return true
-	})
-	return name, value, n == 1
 }

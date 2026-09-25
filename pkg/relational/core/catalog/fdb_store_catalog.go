@@ -346,12 +346,7 @@ func (c *RecordLayerStoreCatalog) validateSchemaRebind(txn api.Transaction, s ap
 			newTmpl.MetadataName(), newTmpl.Version(),
 			oldTmpl.MetadataName(), oldTmpl.Version())
 	}
-	// Literal-carrier widening: a template Go stored before RFC-257 WS-J F2 carries INT
-	// literals as long_value, and the same DDL now builds Java's int_value, which
-	// stores identical bytes; without it every such tenant's rebind is refused as
-	// "key expression changed" (the core validator's default stays Java's equality).
-	validator := recordlayer.NewMetaDataEvolutionValidator().SetAllowNoVersionChange(true).
-		SetAllowLiteralCarrierWidening(true).Build()
+	validator := recordlayer.NewMetaDataEvolutionValidator().SetAllowNoVersionChange(true).Build()
 	if verr := validator.Validate(oldRL.Underlying(), newRL.Underlying()); verr != nil {
 		return api.WrapErrorf(verr, api.ErrCodeInvalidSchemaTemplate,
 			"cannot rebind schema %s/%s from template %s@%d to %s@%d: metadata evolution rejected",

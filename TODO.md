@@ -15090,3 +15090,17 @@ union fields, repeated elements matched by content, no instance paths; the VECTO
 its options with Java's parsers; "multiple points"; Java's four metric names for a windowed vector
 index; one map reach per meta-data; Java reads Go's re-saved bytes. NEXT: the revision-15 gate
 (`ws-c-addendum-review-v15/`).
+
+### RFC-257 WS-J design v17, code half (booked 2026-09-25)
+
+LANDED on the branch, folding the v16 gate's code findings (`ws-j-design-review-v16/`): the
+literal-carrier widening withdrawn under the pre-release ruling (WIDENED, the rebind's and the
+restore's arms, `frl meta evolve-check --allow-literal-carrier-widening`; a carrier change is a
+changed key, as Java reads it); the 3.6 debt (Field name and fan type refusals, the nesting's parent
+first, `KeyExpressionDeserializationError` a `RecordCoreError`, `MetaDataProtoDeserializationError`,
+"More than one value encoded in value"); Java's catalog texts; the guard failing closed over an
+unreadable `TEMPLATES_VALUE_INDEX`; the restore's commit_unknown_result retry reading its bytes
+before its listing; section 2's other two guard sequences; the in-memory lock helpers named as the
+design names them, with a hooked interleaving test; since_version, two same-named record types and a
+two-valued key pinned against the JVM. NEXT: design v17's text (4e: the ruling applied to the carry
+tests, landed versus owed, Java's `deleteTemplate`), then the v17 gate, then step 3.

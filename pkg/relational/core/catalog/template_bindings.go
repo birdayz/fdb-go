@@ -61,10 +61,17 @@ func errTemplateNotInCatalog(name string) error {
 // (from < 0: from the first version; through < 0: through the last), or nil.
 // One serializable range read of limit 1, so its read-conflict range ends
 // just past the entry it returns.
+//
+// An index that is not READABLE (disabled, or being built) holds none or only
+// some of the bindings, so the read fails closed rather than answering "none".
 func firstBinding(store *recordlayer.FDBRecordStore, templateName string, from, through int) (*boundSchema, error) {
 	idx := store.GetRecordMetaData().GetIndex(IdxTemplatesValue)
 	if idx == nil {
 		return nil, api.NewErrorf(api.ErrCodeInternalError, "catalog index %s is missing", IdxTemplatesValue)
+	}
+	if state := store.GetIndexState(IdxTemplatesValue); state != recordlayer.IndexStateReadable {
+		return nil, api.NewErrorf(api.ErrCodeInternalError,
+			"catalog index %s is %v, so the schemas bound to template %s cannot be read", IdxTemplatesValue, state, templateName)
 	}
 	sub := store.IndexSubspace(idx)
 	nameRange, err := fdb.PrefixRange(sub.Pack(tuple.Tuple{templateName}))

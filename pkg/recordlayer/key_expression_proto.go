@@ -151,7 +151,11 @@ func keyExpressionFromProtoDepth(expr *gen.KeyExpression, depth int) (KeyExpress
 
 	if expr.Field != nil {
 		found++
-		root = fieldFromProto(expr.Field)
+		f, err := fieldFromProto(expr.Field)
+		if err != nil {
+			return nil, err
+		}
+		root = f
 	}
 	if expr.Nesting != nil {
 		found++
@@ -187,7 +191,11 @@ func keyExpressionFromProtoDepth(expr *gen.KeyExpression, depth int) (KeyExpress
 	}
 	if expr.Value != nil {
 		found++
-		root = Literal(valueFromProto(expr.Value))
+		v, err := valueFromProto(expr.Value)
+		if err != nil {
+			return nil, err
+		}
+		root = Literal(v)
 	}
 	if expr.KeyWithValue != nil {
 		found++
@@ -252,29 +260,45 @@ func dimensionsFromProto(d *gen.Dimensions, depth int) (*DimensionsKeyExpression
 	return Dimensions(wholeKey, int(d.GetPrefixSize()), int(d.GetDimensionsSize())), nil
 }
 
-// fieldFromProto reconstructs a FieldKeyExpression from a proto Field.
-func fieldFromProto(f *gen.Field) *FieldKeyExpression {
+// fieldFromProto reconstructs a FieldKeyExpression from a proto Field, as
+// Java's FieldKeyExpression(Field) does (FieldKeyExpression.java:122-132): a
+// Field without its name or its fan type, both required fields that only an
+// in-memory proto or a partial parse can lack (an unknown fan type number is
+// parsed into the unknown fields, so it too is a missing fan type), is refused.
+func fieldFromProto(f *gen.Field) (*FieldKeyExpression, error) {
+	if f.FieldName == nil {
+		return nil, &KeyExpressionDeserializationError{Message: "Serialized Field is missing field name"}
+	}
+	if f.FanType == nil {
+		return nil, &KeyExpressionDeserializationError{Message: "Serialized Field is missing fan type"}
+	}
 	return &FieldKeyExpression{
 		fieldName:   f.GetFieldName(),
 		fanType:     fanTypeFromProto(f.GetFanType()),
 		nullStandin: nullStandinFromProto(f.GetNullInterpretation()),
-	}
+	}, nil
 }
 
-// nestingFromProto reconstructs a NestingKeyExpression from a proto Nesting.
+// nestingFromProto reconstructs a NestingKeyExpression from a proto Nesting, as
+// Java's NestingKeyExpression(Nesting) does (NestingKeyExpression.java:67-73):
+// the parent is read first, as a Field, then the child.
 func nestingFromProto(n *gen.Nesting, depth int) (KeyExpression, error) {
 	if n.Parent == nil {
 		return nil, &KeyExpressionDeserializationError{Message: "Serialized Nesting is missing parent"}
+	}
+	parent, err := fieldFromProto(n.Parent)
+	if err != nil {
+		return nil, err
 	}
 	child, err := keyExpressionFromProtoDepth(n.Child, depth)
 	if err != nil {
 		return nil, fmt.Errorf("nesting child: %w", err)
 	}
 	return &NestingKeyExpression{
-		parentField:       n.Parent.GetFieldName(),
-		fanType:           fanTypeFromProto(n.Parent.GetFanType()),
+		parentField:       parent.fieldName,
+		fanType:           parent.fanType,
 		child:             child,
-		parentNullStandin: nullStandinFromProto(n.Parent.GetNullInterpretation()),
+		parentNullStandin: parent.nullStandin,
 	}, nil
 }
 

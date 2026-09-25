@@ -455,11 +455,10 @@ func writeLiteralMetaFile(t *testing.T, version int32, lit any) string {
 	return path
 }
 
-// The flag reproduces the relational rebind's literal-carrier arm: a stored
-// long_value literal rebuilt as int_value with the same number is accepted with
-// it and refused without it (the core validator's default is Java's equality),
-// and only in that direction.
-func TestMetaEvolveCheck_LiteralCarrierWidening(t *testing.T) {
+// A literal's carrier is part of the key, as Java's validator reads it: a
+// long_value literal rebuilt as int_value with the same number is a changed key,
+// in either direction.
+func TestMetaEvolveCheck_LiteralCarrierIsPartOfTheKey(t *testing.T) {
 	t.Parallel()
 	run := func(args ...string) error {
 		c := newMetaEvolveCheckCmd()
@@ -470,14 +469,10 @@ func TestMetaEvolveCheck_LiteralCarrierWidening(t *testing.T) {
 		return c.Execute()
 	}
 	wide, narrow := writeLiteralMetaFile(t, 2, int64(10000)), writeLiteralMetaFile(t, 3, int32(10000))
-	if err := run("--old", wide, "--new", narrow); err == nil || !strings.Contains(err.Error(), "key expression changed") {
-		t.Fatalf("without the flag: %v, want the key-expression refusal", err)
-	}
-	if err := run("--old", wide, "--new", narrow, "--allow-literal-carrier-widening"); err != nil {
-		t.Fatalf("with the flag: %v", err)
-	}
 	wider := writeLiteralMetaFile(t, 4, int64(10000))
-	if err := run("--old", narrow, "--new", wider, "--allow-literal-carrier-widening"); err == nil {
-		t.Fatal("int_value to long_value accepted; the arm runs one way only")
+	for _, pair := range [][2]string{{wide, narrow}, {narrow, wider}} {
+		if err := run("--old", pair[0], "--new", pair[1]); err == nil || !strings.Contains(err.Error(), "key expression changed") {
+			t.Fatalf("%s to %s: %v, want the key-expression refusal", pair[0], pair[1], err)
+		}
 	}
 }

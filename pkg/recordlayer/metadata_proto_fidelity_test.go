@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 
@@ -293,9 +294,15 @@ func TestSubspaceKeyCounterPairValidation(t *testing.T) {
 					"and the missing half decides how future indexes are keyed. want "+
 					"error containing %q", tc.wantErr)
 			}
-			if !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("error %q does not name the problem; want it to contain %q",
-					err.Error(), tc.wantErr)
+			// Java's MetaDataProtoDeserializationException ("Error converting
+			// from protobuf"), whose cause names the problem.
+			var pde *MetaDataProtoDeserializationError
+			if !errors.As(err, &pde) || err.Error() != "Error converting from protobuf" {
+				t.Fatalf("error %v (%T), want Java's MetaDataProtoDeserializationException", err, err)
+			}
+			if !strings.Contains(pde.Cause.Error(), tc.wantErr) {
+				t.Fatalf("cause %q does not name the problem; want it to contain %q",
+					pde.Cause.Error(), tc.wantErr)
 			}
 		})
 	}

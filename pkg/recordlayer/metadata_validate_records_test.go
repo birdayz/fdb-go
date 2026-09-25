@@ -700,6 +700,15 @@ func TestStoredMetaDataLoadsInJavasOrder(t *testing.T) {
 				stored.SubspaceKeyCounter = proto.Int64(3)
 			}
 			_, err := RecordMetaDataFromProto(stored)
+			if tc.badCounter {
+				// Java's MetaDataProtoDeserializationException, whose cause
+				// names the fault (RecordMetaDataBuilder.java:290-295).
+				var pde *MetaDataProtoDeserializationError
+				if !errors.As(err, &pde) {
+					t.Fatalf("RecordMetaDataFromProto = %v (%T), want a MetaDataProtoDeserializationError", err, err)
+				}
+				err = pde.Cause
+			}
 			var me *MetaDataError
 			if !errors.As(err, &me) || me.Message != tc.want {
 				t.Fatalf("RecordMetaDataFromProto = %v (%T), want the MetaDataError %q", err, err, tc.want)

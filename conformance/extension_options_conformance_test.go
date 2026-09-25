@@ -107,6 +107,31 @@ var _ = Describe("SetRecords reads the records file's extension options, as Java
 				{Key: proto.String("k"), Value: proto.String("1")}, {Key: proto.String("k"), Value: proto.String("2")},
 			}}})
 		}, "java.lang.IllegalArgumentException", "Multiple entries with same key: k=2 and k=1"},
+		{"a since_version", func(f *descriptorpb.FileDescriptorProto) {
+			f.MessageType[0].Options = &descriptorpb.MessageOptions{}
+			proto.SetExtension(f.MessageType[0].Options, gen.E_Record, &gen.RecordTypeOptions{
+				SinceVersion: proto.Int32(3), RecordTypeKey: &gen.Value{LongValue: proto.Int64(7)},
+			})
+		}, "", ""},
+		{"a record_type_key with two values", func(f *descriptorpb.FileDescriptorProto) {
+			f.MessageType[0].Options = &descriptorpb.MessageOptions{}
+			proto.SetExtension(f.MessageType[0].Options, gen.E_Record, &gen.RecordTypeOptions{
+				RecordTypeKey: &gen.Value{LongValue: proto.Int64(7), IntValue: proto.Int32(7)},
+			})
+		}, "com.apple.foundationdb.record.RecordCoreException", "More than one value encoded in value"},
+		{"two record types of one name", func(f *descriptorpb.FileDescriptorProto) {
+			f.MessageType = append(f.MessageType, &descriptorpb.DescriptorProto{
+				Name: proto.String("Outer"),
+				NestedType: []*descriptorpb.DescriptorProto{{
+					Name:  proto.String("Rec"),
+					Field: []*descriptorpb.FieldDescriptorProto{{Name: proto.String("id"), Number: proto.Int32(1), Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(), Type: descriptorpb.FieldDescriptorProto_TYPE_INT64.Enum()}},
+				}},
+			})
+			f.MessageType[1].Field = append(f.MessageType[1].Field, &descriptorpb.FieldDescriptorProto{
+				Name: proto.String("_Outer_Rec"), Number: proto.Int32(2), Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+				Type: descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(), TypeName: proto.String(".extopts.Outer.Rec"),
+			})
+		}, "com.apple.foundationdb.record.metadata.MetaDataException", "There is already a record type named Rec"},
 	} {
 		It("builds as Java does: "+c.name, func() {
 			fdp := extensionOptionsRecords(c.mutate)
@@ -136,6 +161,9 @@ var _ = Describe("SetRecords reads the records file's extension options, as Java
 				case "java.lang.IllegalArgumentException":
 					var dup *recordlayer.DuplicateIndexOptionError
 					Expect(errors.As(goErr, &dup)).To(BeTrue(), "Go: %T %v", goErr, goErr)
+				case "com.apple.foundationdb.record.RecordCoreException":
+					var rce *recordlayer.RecordCoreError
+					Expect(errors.As(goErr, &rce)).To(BeTrue(), "Go: %T %v", goErr, goErr)
 				default:
 					var mdErr *recordlayer.MetaDataError
 					Expect(errors.As(goErr, &mdErr)).To(BeTrue(), "Go: %T %v", goErr, goErr)

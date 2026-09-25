@@ -168,7 +168,7 @@ func (c *RecordLayerStoreSchemaTemplateCatalog) CreateTemplate(txn api.Transacti
 	}
 	if existing != nil {
 		return api.NewErrorf(api.ErrCodeDuplicateSchemaTemplate,
-			"schema template %q version %d already exists", rl.MetadataName(), rl.Version())
+			"Schema template already exists: %s", rl.MetadataName())
 	}
 	// The version guard (template_bindings.go): no schema may bind a
 	// dropped version of the template above its latest stored one, every
@@ -264,17 +264,20 @@ func (c *RecordLayerStoreSchemaTemplateCatalog) DeleteTemplate(txn api.Transacti
 	}
 	if !deletedSomething && throwIfDoesNotExist {
 		return api.NewErrorf(api.ErrCodeUnknownSchemaTemplate,
-			"could not delete unknown schema template %s", templateName)
+			"Could not delete unknown schema template %s", templateName)
 	}
 	return nil
 }
 
-// DeleteTemplateVersion removes one exact (name, version).
+// DeleteTemplateVersion removes one exact (name, version): Java's
+// deleteTemplate(txn, name, version, throwIfDoesNotExist)
+// (RecordLayerStoreSchemaTemplateCatalog.java:317-325), with its text.
 //
 // A version a schema binds is not deleted (the version guard,
-// template_bindings.go): deleting it would leave the schema bound to a version
-// the next save may re-issue with other metadata. Java has no such check;
-// DeleteTemplateVersion is Go's API.
+// template_bindings.go), where Java deletes the row regardless: deleting it
+// would leave the schema bound to a version the catalog no longer has, which
+// neither engine then loads, and which a later save could re-issue with other
+// metadata. The refusal is a declared divergence (ws-j-design.md 9 (s)).
 func (c *RecordLayerStoreSchemaTemplateCatalog) DeleteTemplateVersion(txn api.Transaction, templateName string, version int, throwIfDoesNotExist bool) error {
 	store, err := c.openStore(txn)
 	if err != nil {
@@ -299,7 +302,7 @@ func (c *RecordLayerStoreSchemaTemplateCatalog) DeleteTemplateVersion(txn api.Tr
 	}
 	if !deleted && throwIfDoesNotExist {
 		return api.NewErrorf(api.ErrCodeUnknownSchemaTemplate,
-			"could not delete unknown schema template %s version %d", templateName, version)
+			"Could not delete unknown schema template %s", templateName)
 	}
 	return nil
 }

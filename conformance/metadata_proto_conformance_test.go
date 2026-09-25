@@ -1134,6 +1134,12 @@ var _ = Describe("Java refuses the same records descriptors", func() {
 			}
 			Expect(je.ExceptionClass).To(Equal(wantClass))
 			Expect(je.Message).To(Equal(shape.want), "measured Java message")
+			// The step reports Java's root cause, so Go's is compared: under a
+			// MetaDataProtoDeserializationError, its cause (the spec "a key
+			// expression Java cannot deserialize" compares the wrapper).
+			if pde := (*recordlayer.MetaDataProtoDeserializationError)(nil); errors.As(goErr, &pde) {
+				goErr = pde.Cause
+			}
 			var me *recordlayer.MetaDataError
 			Expect(errors.As(goErr, &me)).To(BeTrue(), "Go refuses %s: %v", shape.name, goErr)
 			Expect(me.Message).To(Equal(shape.want))

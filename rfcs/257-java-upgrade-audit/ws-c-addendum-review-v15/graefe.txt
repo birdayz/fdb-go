@@ -1,0 +1,82 @@
+**NAK.** I reviewed commit `1c6059b91`. The design file's SHA256 is `34ebbcb27e016c0abfab1fff7e18294b3170c70ba91c8201049e222fc2b181c2` and it is 2643 lines, both matching. I hashed the working-tree file, because the policy refused `git diff`, `git grep` and `hash-object`. HEAD is `1c6059b91` and the tree was clean apart from the untracked review directory, so that file is the commit's. Everything is from source unless marked **measured**.
+
+Every v14 finding is resolved or answered. Revision 15 undoes no revision-12 to -14 fix. The NAK rests on the lens: revision 15 claims two things more broadly than the code delivers, "byte for byte" and "the same number to both". Both hide Go-only behaviour that is not declared.
+
+## Findings, most severe first
+
+**1. Medium: VECTOR options keep Go's value ranges, not Java's.**
+- **Java.** `parseConfig` finishes with `builder.build`, i.e. `Config`'s compact constructor (`Config.java:93-120`): m in [4,200], mMax in [4,200], mMax0 in [4,300], m ≤ mMax ≤ mMax0, efConstruction in [100,400], efRepair in [m,400], RaBitQ bits in (0,16). The validator reaches it through `VectorIndexEngine.java:198-203`, and `VectorIndexMaintainerFactory.java:106-110` rethrows any failure as "incorrect index options".
+- **Go's validator** only parses the values and checks the metric (`vector_index_validation.go:63-111`).
+- **Go's maintainer** applies its own ranges (`vector_index_maintainer.go:209,214-225`): M in [2,128], RaBitQ bits in [1,8].
+- **Silent, different graph.** `{hnswNumDimensions:3, hnswM:150, hnswMMax:150, hnswMMax0:300, hnswEfRepair:150}` gives m=150 in Java. Go's validator accepts it and Go maintains with m=16. Bits 9–15 behave the same way.
+- **Meta-data Java cannot open.** `hnswEfConstruction=50`, `hnswM=3`, or `hnswM=20` alone (above the default mMax of 16) are refused by Java and built by Go. This is v14 Graefe 2's class, which revision 15 fixed for metric names only.
+- **Which claims are false:**
+  - The `vector_index_maintainer.go:145-146` comment: "a value both accept means the same number to both".
+  - DIVERGENCES `:2120-2122`, same claim.
+  - DIVERGENCES `:2129-2132`, which lists only two remaining differences.
+  - 7.15's heading "The maintainer reads the options as the validator does".
+- **Why the JVM rows miss it:** every accepted value lies inside both ranges (**measured**: m 8, mMax 12, mMax0 24, efConstruction 150).
+- **Fix:**
+  - Port `Config`'s checks into the windowed validator, as `IllegalArgumentError` with Java's texts.
+  - Make `parseHNSWConfig`'s ranges Java's.
+  - Add a `VECTOR_CONFIG` row with m=150, and refusal rows for efConstruction=50 and m>mMax.
+
+**2. Low: "Byte for byte" is not true of the field order.**
+- `rewriteMaps` keeps raw's order (`record_wire_map_order.go:429-488`), and raw is protobuf-go's deterministic marshal (`:659`). That marshal writes real oneof members after all other fields (v1.36.11 `internal/impl/codec_message.go:177-184`, `proto/encode.go:247-253`) and extensions first (`impl/encode.go:159-161`).
+- Java writes known fields in field-number order (`FieldSet.java:613-619`, `Descriptors.java:1790-1796`), then unknown fields sorted by number.
+- The unit-test schema shows the difference: `Rec` has oneof `ha=5`/`hb=6` before `mh=7`/`tree=8` (`record_wire_map_order_test.go:64-71`). Go re-saves `{ha, mh}` as 7 then 5; Java writes 5 then 7.
+- Indexes are unaffected. But the CHANGELOG ("stored byte for byte as Java's own load-then-save"), DIVERGENCES `:3213-3215` and `record_wire_map_order.go:43-45` all claim equal bytes. `store.go:2218-2224` already disclaims this for the non-map path.
+- **Fix:** write known fields in number order in `rewriteMaps`, or narrow the claim and declare the difference. Add a JVM re-save row with the oneof shape.
+
+**3. Low: A proto3 map entry with a zero key or zero value loses it on an unchanged re-save.**
+- `canonicalEntry` (`:642-648`) marshals the entry as a dynamicpb message.
+- For proto3, the key and scalar value have implicit presence (`filedesc/desc.go:369-374`), so dynamicpb skips a zero, `""`, or `false` (`dynamicpb/dynamic.go:494-519`).
+- Java's `DynamicMessage.buildPartial` fills and writes both fields (`DynamicMessage.java:379-390`). That is the source of the proto2 `k=0` measurement. I read this in the protobuf-java copy in the Bazel cache and did not check it is the conformance JVM's version.
+- So `map<string,int64>{"a":0}` is re-saved as `0a0161` where Java writes `0a01611000`. Changed and new keys go through the map coder and keep both fields.
+- **Scope of the measurement:** the "byte for byte" check covers 3 records of one shape — proto2, a top-level `map<string,int64>`, no oneof, no nested map (**measured**). The nested expectations are Go's model of Java.
+- **Fix:** always encode both key and value in `canonicalEntry`. Add proto3 and nested-shape rows to `resaveRecordsJava`.
+
+## Nits
+- **Stale 7.14 text, unmarked:**
+  - `ws-c-design.md:2450-2451` ("memoizes nested types for that walk only") is superseded by "One reach per meta-data".
+  - `:2472` ("pins each case in Go") is the overclaim v14 Torvalds 4 flagged.
+- **Surviving phrase:** `vector_index_validation.go:13` still says "if it scans and is in range", which DIVERGENCES `:2102` changed to "parses".
+- **Mutation evidence:** `wsc15-mutation/` holds consoles only: no diff, no grep of the mutated text, no TREE. The effect is shown (`z` instead of `a`, on a spec green on both trees), so the pin fires; that the mutation was present is not recorded.
+- **Performance only:** `mapReach.reaches` (`:287-292`) rebuilds the reach closure on every lookup whenever the saved message's descriptors are not the meta-data's. An example is a generated message saved under meta-data loaded from proto.
+
+## v14 findings checked
+- **Graefe:**
+  - Finding 1 (key written twice): resolved; both entries kept (**measured**).
+  - Finding 2 (metric names): resolved.
+  - Finding 3 ("multiple points"): resolved; the JDK logic matches, including sign, hex and leading zeros.
+  - Nits: resolved (nested re-save tests; paths gone; reach at Build).
+- **Torvalds:**
+  - Finding 1 (maintainer's parsers): resolved for spellings; ranges are finding 1 above.
+  - Findings 2–5 and both nits: resolved. `wireTypeFits` matches both decoders.
+  - Finding 6 (evidence): resolved. The green run is verbose, after the commit, with tree `18961bd19` = `1c6059b91^{tree}` (**measured**). The MAPWIRE and `VECTOR_CONFIG` lines are present, and Java rebuilt from Go's bytes.
+- **Storage:**
+  - Finding 1 (Medium): resolved for spellings only; see finding 1 above.
+  - Findings 2–5 and nits: resolved.
+
+## Graefe lens
+- **Map order:**
+  - On read: Java's.
+  - On an unchanged save: Java's entry order and index entries (**measured**), apart from findings 2 and 3.
+  - A map the caller changed or built, and a changed element that moved: Go's, declared.
+- **Union fields:** matches `remapUnionField`'s preference (`RecordMetaDataBuilder.java:878-884`), and the stored record is found under any of the type's union fields. Red on the old tree only in `wsc15-red-first`, whose test files are an earlier state; 7.15 says so.
+- **VECTOR:** the parsers and metric names are Java's; the ranges are not (finding 1).
+- **Preserved boundaries:** untouched.
+
+## Measured
+- **Green:**
+  - Conformance: 35 of 1801 specs, 0 failed.
+  - Record layer: 14 of 3727, 0 failed.
+  - Bazel: "Executed 2 out of 2 tests: 2 tests pass".
+  - Go's re-saved records equal Java's hex (all three).
+  - Java's rebuild equals the six pairs.
+- **Hook:** "Executed 44 out of 94 tests: 94 tests pass" (the rest cached).
+- **Red on `cb1505a80` = `5d95cd27c^{tree}`:**
+  - 8 JVM specs: 4 metric rows, `1.2.3`, 2 config rows, and the re-save (record 2's bytes).
+  - The windowed metric spec.
+  - The oneof wrong-wire-type test, `TestJavaParseDouble`, and the nested and repeated-element subtests.
+- **Mutation runs:** both red on `z`, one through `SaveRecord` and one through `SaveRecordBatch`.

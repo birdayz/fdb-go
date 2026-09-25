@@ -241,7 +241,19 @@ class MetaDataProtoSteps extends ConformanceBase {
 
     @ConformanceStep("buildMetaDataAnyVerdict")
     public Map<String, Object> buildMetaDataAnyVerdict(byte[] protoBytes) throws InvalidProtocolBufferException {
-        final var proto = RecordMetaDataProto.MetaData.parseFrom(protoBytes, EXTENSION_REGISTRY);
+        return metaDataVerdict(RecordMetaDataProto.MetaData.parseFrom(protoBytes, EXTENSION_REGISTRY));
+    }
+
+    /**
+     * buildMetaDataAnyVerdict over a PARTIALLY parsed proto (required fields may be missing), the
+     * form a caller's in-memory proto can take: RecordMetaData.build's verdict, with its direct cause.
+     */
+    @ConformanceStep("buildPartialMetaDataAnyVerdict")
+    public Map<String, Object> buildPartialMetaDataAnyVerdict(byte[] protoBytes) throws InvalidProtocolBufferException {
+        return metaDataVerdict(RecordMetaDataProto.MetaData.parser().parsePartialFrom(protoBytes, EXTENSION_REGISTRY));
+    }
+
+    private static Map<String, Object> metaDataVerdict(RecordMetaDataProto.MetaData proto) {
         try {
             RecordMetaData.build(proto);
             return Map.of("valid", true, "error", "", "class", "", "causeClass", "", "causeError", "");

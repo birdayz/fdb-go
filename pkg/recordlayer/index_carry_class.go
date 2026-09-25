@@ -20,11 +20,6 @@ const (
 	// IndexEquivalent: every compared field is equal, so the stored Index
 	// message is carried as it was stored.
 	IndexEquivalent IndexCarryClass = iota
-	// IndexWidened: every compared field is equal except the root, and the
-	// roots differ only in literal carriers that store the same tuple bytes
-	// (literalCarriersEquivalent, the one-way arm the evolution validator runs
-	// under SetAllowLiteralCarrierWidening). The entries are the same bytes.
-	IndexWidened
 	// IndexChanged: any other difference; the index is rebuilt.
 	IndexChanged
 )
@@ -33,8 +28,6 @@ func (c IndexCarryClass) String() string {
 	switch c {
 	case IndexEquivalent:
 		return "EQUIVALENT"
-	case IndexWidened:
-		return "WIDENED"
 	case IndexChanged:
 		return "CHANGED"
 	}
@@ -42,10 +35,8 @@ func (c IndexCarryClass) String() string {
 }
 
 // ClassifyIndexCarry compares a stored Index message with a rebuilt one of the
-// same name and returns its class and, for a class other than EQUIVALENT, the
-// name of the Index field that decides it: root_expression for WIDENED, and for
-// CHANGED the first field (in field-number order) whose difference is not a
-// literal-carrier widening.
+// same name and returns its class and, for CHANGED, the name of the first Index
+// field (in field-number order) that differs.
 //
 // Each side is read as Java's Index(proto) reads it (Index.java:194-235, Go
 // indexFromProto): the deprecated index_type becomes the type and options it
@@ -60,10 +51,14 @@ func (c IndexCarryClass) String() string {
 //   - name, and a field this function does not name, by proto equality;
 //   - index_type and value_expression through the fields they fold into;
 //   - root_expression as the root Java reads (the fold and the grouping wrap
-//     above), and on a difference, under the one-way literal-carrier arm;
-//   - type as Java reads it, options as a map (order-insensitive: an index
-//     stored before the option-order fix differs only in order, which no reader
-//     sees);
+//     above), by proto equality: a literal whose carrier differs (long_value
+//     against int_value) is a changed key, as Java's validator reads it
+//     (MetaDataEvolutionValidator.java:719, LiteralKeyExpression's equals), and
+//     so is a root differing only in a field's null_interpretation, which Java's
+//     validator does not compare (FieldKeyExpression.equals leaves the standin
+//     out, FieldKeyExpression.java:406-410) but which changes what the index's
+//     readers do with a null (NullStandin): such an index is rebuilt;
+//   - type as Java reads it, options as a map, as Java's Index holds them;
 //   - predicate by proto equality, both absent included (a changed WHERE changes
 //     which records the index holds, and no validator compares predicates);
 //   - added_version, last_modified_version and subspace_key not at all: the carry
@@ -102,16 +97,7 @@ func ClassifyIndexCarry(stored, rebuilt *gen.Index) (IndexCarryClass, string, er
 		case "options":
 			equal = maps.Equal(storedIdx.Options, rebuiltIdx.Options)
 		case "root_expression":
-			if proto.Equal(storedRoot, rebuiltRoot) {
-				continue
-			}
-			if literalCarriersEquivalent(storedRoot.ProtoReflect(), rebuiltRoot.ProtoReflect(), false) {
-				if class == IndexEquivalent {
-					class, firstDiff = IndexWidened, string(fd.Name())
-				}
-				continue
-			}
-			equal = false
+			equal = proto.Equal(storedRoot, rebuiltRoot)
 		default:
 			// name, predicate, and any field added after this was written.
 			equal = sameFieldValue(sm, rm, fd)

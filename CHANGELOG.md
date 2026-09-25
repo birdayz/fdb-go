@@ -252,6 +252,16 @@ assets carry (`RELEASE.md` §Versioning).
   text. Go no longer builds or writes such an index either: `Build` refuses an index with no root
   ("Index X has no root expression"; Go-only as a refusal, since Java's constructors take a
   non-null root and its validation fails with a NullPointerException), and so does serializing one.
+  A field without its name or fan type is refused with Java's texts ("Serialized Field is missing
+  field name", "... fan type"; only an in-memory or partially parsed proto lacks them), a nesting
+  reads its parent first, and the error is a `RecordCoreError` too (`errors.As`), as Java's
+  exception is a `RecordCoreException`. Inside a meta-data proto (an index's root, a primary key,
+  the record-count key), and for a subspace-key counter without its flag, `RecordMetaDataFromProto`
+  returns Java's `MetaDataProtoDeserializationException`: `MetaDataProtoDeserializationError`,
+  "Error converting from protobuf", a `MetaDataError` whose cause is the failure (the counter's
+  text was the error itself). A literal `Value` with two values set is Java's `RecordCoreError`
+  "More than one value encoded in value", in a key expression, a record type's explicit key and
+  the `record_type_key` option, where Go took the first.
 - **RANK and TIME_WINDOW_LEADERBOARD ranked sets hash as Java's do.** The `rankHashFunction`
   option names one of Java's four hash functions, `JDK`, `CRC`, `RANDOM` and `MURMUR3` (Guava's
   murmur3_32, seed 0), exactly; an unknown name is refused with Java's
@@ -344,18 +354,12 @@ assets carry (`RELEASE.md` §Versioning).
   - a nested field followed by a top-level column (`ORDER BY s.x, ts`) keeps its nested subtree in the
     root expression, where Go dropped it;
   - a literal is stored with its own width: an INT literal as `int_value` (Go stored `long_value`), a
-    FLOAT literal as `float_value`, and the bitmap entry size as the INT `10000`. Over a template Go
-    stored before this change the target cannot plan any bitmap query (XX000 "unable to encapsulate
-    arithmetic operation due to type mismatch(es)") and serves an arithmetic-index equality by a full
-    index scan. Rebinding such a tenant to a template rebuilt on this version is admitted by the
-    relational rebind validator when the literal's carrier moved from `long_value` to `int_value` (or,
-    inside long arithmetic, `double_value` to `float_value`) without changing its value
-    (`SetAllowLiteralCarrierWidening`, one way only; the core validator still refuses it, as Java's
-    does; `frl meta evolve-check --allow-literal-carrier-widening` reproduces it). The rebuilt template
-    keeps the stored index versions only through the template-version carry rule of RFC-257 WS-J
-    section 4, which ships in the same release: without it a DDL rebuild shifts every index's versions
-    and the rebind is refused. An INT literal outside 32 bits is refused (XX000) instead of wrapping,
-    whatever Go integer kind carries it;
+    FLOAT literal as `float_value`, and the bitmap entry size as the INT `10000`. A literal's carrier
+    is part of its index's key, as Java's evolution validator reads it: a `long_value` against an
+    `int_value` of the same number is a changed key, refused by the rebind and by a template restore,
+    and rebuilt by a new template version (the carry rule, RFC-257 WS-J section 4). Templates an
+    earlier Go build stored are pre-release data (above). An INT literal outside 32 bits is refused
+    (XX000) instead of wrapping, whatever Go integer kind carries it;
   - index options are stored in Java's insertion order (`unique` first, then the type's options), where
     Go wrote them in map iteration order, so the stored bytes varied from build to build.
 - **Long-arithmetic key functions read any numeric operand as Java's `getNullableLong` does**
@@ -480,7 +484,11 @@ assets carry (`RELEASE.md` §Versioning).
   42F59 naming the schema while any schema binds a dropped version of it above the latest one
   stored (every version, for a template stored afresh), and `DeleteTemplateVersion` refuses a
   version a schema binds. The target accepts the first and rebinds those schemas to the new
-  metadata. Both the FDB-backed and the in-memory catalog apply it.
+  metadata, and its `deleteTemplate(name, version)` deletes a bound version. Both the FDB-backed and
+  the in-memory catalog apply it. The FDB catalog reads the bindings from `TEMPLATES_VALUE_INDEX`
+  and refuses (XX000) while that index is not READABLE rather than finding none. A duplicate
+  template and an unknown one to delete are refused with Java's texts ("Schema template already
+  exists: t", "Could not delete unknown schema template t").
 - **`fleet.RestoreTemplateVersion` restores a dropped template version** for the schemas still
   bound to it (RFC-257 WS-J; Java has no restore), from the version's stored MetaData bytes: the
   one way out for a schema whose version DROP SCHEMA TEMPLATE removed. It refuses a stored

@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -63,8 +64,7 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 				SetAllowUnsplitToSplit(true).SetAllowOlderFormerIndexAddedVersion(true).
 				SetAllowMissingFormerIndexNames(true).SetDisallowTypeRenames(true).
 				SetAllowNoSinceVersion(true).SetAllowFieldRenames(true).
-				SetAllowDeprecatedFieldRenames(true).SetAllowUndeprecatingFields(true).
-				SetAllowLiteralCarrierWidening(true)
+				SetAllowDeprecatedFieldRenames(true).SetAllowUndeprecatingFields(true)
 			names[0] = "mutated"
 			Expect(b.GetIgnoredIndexOptions()).To(Equal([]string{"a", "z"}))
 			v := b.Build()
@@ -147,7 +147,7 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 		})
 	})
 
-	Describe("literal carrier widening", func() {
+	Describe("a literal's carrier", func() {
 		// An index over price whose root carries the literal lit, at the key column
 		// (asColumn) or inside the long-arithmetic function add(price, lit).
 		withLiteral := func(version int, lit any, asColumn bool) *RecordMetaData {
@@ -161,57 +161,24 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 				b.AddIndex("Order", idx)
 			})
 		}
-		widening := NewMetaDataEvolutionValidator().SetAllowLiteralCarrierWidening(true).Build()
 
+		// Java compares a literal by its value object (LiteralKeyExpression's
+		// equals), so a Long and an Integer of one number, or a Double and a Float
+		// of one value, are different keys, in either direction and wherever the
+		// literal sits (MetaDataEvolutionValidator.java:719): a changed key, which
+		// the index-rebuild option admits as a rebuild.
 		for _, asColumn := range []bool{false, true} {
-			It("admits an int_value/long_value change of equal value only with the option", func() {
-				old, new := withLiteral(1, int64(10000), asColumn), withLiteral(2, int32(10000), asColumn)
-				Expect(DefaultMetaDataEvolutionValidator().Validate(old, new)).To(MatchError(ContainSubstring("key expression changed")),
-					"Java's validator compares literals by proto equality")
-				Expect(widening.Validate(old, new)).To(Succeed(), "the tuple encodes an integer by value, not by width")
-				Expect(widening.Validate(old, withLiteral(2, int32(10001), asColumn))).To(MatchError(ContainSubstring("key expression changed")))
-				// One way only: a rebuild that widens an int_value to a long_value is an
-				// index change, because it stores a key the target cannot plan.
-				Expect(widening.Validate(withLiteral(1, int32(10000), asColumn), withLiteral(2, int64(10000), asColumn))).
-					To(MatchError(ContainSubstring("key expression changed")))
+			It(fmt.Sprintf("is part of the key (as a key column: %t)", asColumn), func() {
+				rebuilds := NewMetaDataEvolutionValidator().SetAllowIndexRebuilds(true).Build()
+				for _, pair := range [][2]any{{int64(10000), int32(10000)}, {int32(10000), int64(10000)}, {float64(1.5), float32(1.5)}, {float32(1.5), float64(1.5)}} {
+					old, new := withLiteral(1, pair[0], asColumn), withLiteral(2, pair[1], asColumn)
+					Expect(DefaultMetaDataEvolutionValidator().Validate(old, new)).To(MatchError(ContainSubstring("key expression changed")),
+						"%T to %T", pair[0], pair[1])
+					Expect(rebuilds.Validate(old, new)).To(MatchError(ContainSubstring("key expression changed")),
+						"%T to %T: the key changed and the index's last-modified version did not", pair[0], pair[1])
+				}
 			})
 		}
-
-		It("admits a value-preserving float/double change inside a long-arithmetic function only", func() {
-			old, new := withLiteral(1, float64(1.5), false), withLiteral(2, float32(1.5), false)
-			Expect(DefaultMetaDataEvolutionValidator().Validate(old, new)).To(HaveOccurred())
-			Expect(widening.Validate(old, new)).To(Succeed(), "add() reads the literal through nullableLong: a long either way")
-			Expect(widening.Validate(withLiteral(1, float32(1.5), false), withLiteral(2, float64(1.5), false))).
-				To(MatchError(ContainSubstring("key expression changed")), "one way only: float_value to double_value is an index change")
-			Expect(widening.Validate(withLiteral(1, float64(1.1), false), withLiteral(2, float32(1.1), false))).
-				To(MatchError(ContainSubstring("key expression changed")), "1.1f widens to a different double")
-			Expect(widening.Validate(withLiteral(1, float64(1.5), true), withLiteral(2, float32(1.5), true))).
-				To(MatchError(ContainSubstring("key expression changed")), "a key-column FLOAT and DOUBLE encode with different type codes")
-		})
-
-		It("does not relax anything but the literal carrier", func() {
-			old := withLiteral(1, int64(7), false)
-			changed := buildMetaData(2, func(b *RecordMetaDataBuilder) {
-				idx := NewIndex("lit_idx", FunctionExpr("mul", Concat(Field("price"), Literal(int32(7)))))
-				idx.AddedVersion, idx.LastModifiedVersion = 1, 1
-				b.AddIndex("Order", idx)
-			})
-			Expect(widening.Validate(old, changed)).To(MatchError(ContainSubstring("key expression changed")))
-		})
-
-		It("admits the carriers either way only with the symmetric option, and nothing more", func() {
-			symmetric := NewMetaDataEvolutionValidator().SetAllowSymmetricLiteralCarrierWidening(true).Build()
-			for _, asColumn := range []bool{false, true} {
-				Expect(symmetric.Validate(withLiteral(1, int64(10000), asColumn), withLiteral(2, int32(10000), asColumn))).To(Succeed())
-				Expect(symmetric.Validate(withLiteral(1, int32(10000), asColumn), withLiteral(2, int64(10000), asColumn))).To(Succeed(),
-					"a restore compares two stored histories; neither width is a rebuild of the other")
-				Expect(symmetric.Validate(withLiteral(1, int32(10000), asColumn), withLiteral(2, int64(10001), asColumn))).
-					To(MatchError(ContainSubstring("key expression changed")))
-			}
-			Expect(symmetric.Validate(withLiteral(1, float32(1.5), false), withLiteral(2, float64(1.5), false))).To(Succeed())
-			Expect(symmetric.Validate(withLiteral(1, float32(1.5), true), withLiteral(2, float64(1.5), true))).
-				To(MatchError(ContainSubstring("key expression changed")), "a key-column FLOAT and DOUBLE differ in either direction")
-		})
 	})
 
 	Describe("version validation", func() {

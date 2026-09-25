@@ -3,6 +3,7 @@ package catalog
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -379,9 +381,10 @@ func TestFDB_Restore_OneHistory(t *testing.T) {
 	}
 }
 
-// Two histories that differ only in a literal's carrier store the same bytes,
-// and are one history in either order.
-func TestFDB_Restore_LiteralCarrierEitherWay(t *testing.T) {
+// Two histories that differ only in a literal's carrier are two keys, in either
+// order, as Java's evolution validator reads a literal (LiteralKeyExpression's
+// equals compares the value object): the restore is refused and writes nothing.
+func TestFDB_Restore_RefusesALiteralCarrierChange(t *testing.T) {
 	t.Parallel()
 	root := func(lit any) recordlayer.KeyExpression {
 		return recordlayer.Concat(recordlayer.Field("price"), recordlayer.Literal(lit))
@@ -401,8 +404,17 @@ func TestFDB_Restore_LiteralCarrierEitherWay(t *testing.T) {
 			e.bind("/db", "s", 3, v3)
 			e.dropTemplate()
 			e.writeRow(1, demoMetaData(t, 5, withPriceIndex(2, 5, root(c.stored), nil)))
-			if err := e.restore(3, v3, nil); err != nil {
-				t.Fatal(err)
+			err := e.restore(3, v3, nil)
+			var apiErr *api.Error
+			if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeInvalidSchemaTemplate {
+				t.Fatalf("err = %v, want 42F59", err)
+			}
+			const prefix = "schema template r version 3 cannot be restored beside version 1: "
+			if !strings.HasPrefix(apiErr.Message, prefix) || !strings.Contains(apiErr.Message, "index key expression changed") {
+				t.Fatalf("message %q, want %q and the changed key", apiErr.Message, prefix)
+			}
+			if e.storedRow(3) != nil {
+				t.Fatal("a refused restore wrote the row")
 			}
 		})
 	}
@@ -490,6 +502,29 @@ func TestFDB_Restore_ConcurrentWrites(t *testing.T) {
 		}
 	})
 
+	// The restore commits, its result is reported unknown (commit_unknown_result),
+	// and the only binding is dropped before the retry: the retry finds exactly
+	// its bytes stored and is done, before its listing, which would now find no
+	// binding and refuse.
+	t.Run("a landed commit reported unknown, the binding dropped after it", func(t *testing.T) {
+		t.Parallel()
+		e, v3 := setup(t, "a")
+		dropOnce := once(drop(e, "a"))
+		opts := &restoreOptions{batch: restoreHeaderBatch, afterCommit: func() error {
+			dropOnce()
+			return fdb.Error{Code: 1021}
+		}}
+		if err := e.restore(3, v3, opts); err != nil {
+			t.Fatalf("the restore landed and reported %v", err)
+		}
+		if opts.attempts != 1 {
+			t.Fatalf("%d restoring transactions, want 1 (the retry reads its bytes first)", opts.attempts)
+		}
+		if row := e.storedRow(3); row == nil || string(row) != string(v3) {
+			t.Fatal("the restored row is not the restored bytes")
+		}
+	})
+
 	t.Run("a template write of the name before the commit", func(t *testing.T) {
 		t.Parallel()
 		e, v3 := setup(t, "a")
@@ -506,6 +541,58 @@ func TestFDB_Restore_ConcurrentWrites(t *testing.T) {
 // Restore(1), then a new v2, which the dangling (3) binding refuses; Restore(3),
 // then v4, which is accepted: no carried version is ever stored beside a
 // dangling binding above it (WS-J section 2's first sequence).
+// The other two sequences of WS-J section 2: Restore(3), then v4, which the
+// dangling (5) binding refuses; Restore(5), then v6, accepted. And Restore(1),
+// then v5, which the dangling (3) binding refuses, the save skipping the
+// versions between; Restore(3), then v5, accepted. Each ends with every bound
+// schema opened and its rows read back.
+func TestFDB_Restore_GuardSequences(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name             string
+		stored           []int // versions stored, each bound by schema "s<v>", then dropped
+		first, refused   int   // the restore, then the version it refuses
+		dangling         int   // the dangling bound version the refusal names
+		second, accepted int   // the restore of the dangling version, then the version accepted
+	}{
+		{"a restore below two dangling versions", []int{3, 5}, 3, 4, 5, 5, 6},
+		{"a save that skips versions", []int{1, 3}, 1, 5, 3, 3, 5},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			e := newRestoreEnv(t)
+			e.name = "seq"
+			mds := map[int][]byte{}
+			for _, v := range c.stored {
+				mds[v] = demoMetaData(t, 1, nil)
+				e.writeRow(v, mds[v])
+				e.bind("/db", fmt.Sprintf("s%d", v), v, mds[v])
+			}
+			e.dropTemplate()
+			create := func(v int) error {
+				return e.run(func(tx api.Transaction) error {
+					return e.cat.SchemaTemplateCatalog().CreateTemplate(tx, buildVersionedTemplate(t, "seq", v))
+				})
+			}
+			if err := e.restore(c.first, mds[c.first], nil); err != nil {
+				t.Fatal(err)
+			}
+			wantAPIError(t, create(c.refused), api.ErrCodeInvalidSchemaTemplate,
+				fmt.Sprintf("schema template seq version %d cannot be created: schemas are still bound to its dropped version %d (/db/s%d)",
+					c.refused, c.dangling, c.dangling))
+			if err := e.restore(c.second, mds[c.second], nil); err != nil {
+				t.Fatal(err)
+			}
+			if err := create(c.accepted); err != nil {
+				t.Fatal(err)
+			}
+			for _, v := range c.stored {
+				e.readsBack("/db", fmt.Sprintf("s%d", v))
+			}
+		})
+	}
+}
+
 func TestFDB_Restore_GuardSequence(t *testing.T) {
 	t.Parallel()
 	e := newRestoreEnv(t)
