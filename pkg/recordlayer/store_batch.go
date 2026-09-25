@@ -185,7 +185,7 @@ func (store *FDBRecordStore) SaveRecordBatch(
 		oldRecordExists := oldValue != nil
 
 		// Serialize
-		data, err := serializeUnion(p.record, p.recordType)
+		data, err := serializeUnionOver(p.record, p.recordType, oldValue)
 		if err != nil {
 			return nil, &RecordSerializationError{Cause: err}
 		}
@@ -229,12 +229,14 @@ func (store *FDBRecordStore) SaveRecordBatch(
 			PrimaryKey: p.primaryKey,
 			RecordType: p.recordType,
 			Record:     p.record,
-			Version:    savedVersion,
-			Store:      store,
-			KeyCount:   newsizeInfo.KeyCount,
-			KeySize:    newsizeInfo.KeySize,
-			ValueSize:  newsizeInfo.ValueSize,
-			Split:      newsizeInfo.IsSplit,
+			// Its map entries are indexed in the order it was written in.
+			wire:      newRecordWire(p.recordType, unionInner(data, p.recordType.unionFieldNumber)),
+			Version:   savedVersion,
+			Store:     store,
+			KeyCount:  newsizeInfo.KeyCount,
+			KeySize:   newsizeInfo.KeySize,
+			ValueSize: newsizeInfo.ValueSize,
+			Split:     newsizeInfo.IsSplit,
 		}
 		if !oldRecordExists {
 			if countFDBKey != nil {

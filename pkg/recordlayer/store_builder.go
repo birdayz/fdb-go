@@ -677,14 +677,14 @@ func (store *FDBRecordStore) recordsSubspaceEmpty() (bool, error) {
 //
 //	records = scanRecords(TupleRange.allOf(singleRecordTypeWithPrefixKey.getRecordTypeKeyTuple()), null, scanProperties)
 //
-// (FDBRecordStore.java:4872): when every index being built is on one type whose
+// (FDBRecordStore.java:5098): when every index being built is on one type whose
 // records live in a contiguous sub-range, only that sub-range decides whether there
 // is anything to index. Probing the whole store instead reports "non-empty" for
 // records of types the new index will never touch, which routes an index over an
 // empty type to DISABLED where Java builds it inline.
 //
 // Uses a non-snapshot limited range read. This is a DELIBERATE DIVERGENCE, not
-// parity: Java's probe is a SNAPSHOT scan (FDBRecordStore.java:4864-4867 builds
+// parity: Java's probe is a SNAPSHOT scan (FDBRecordStore.java:5089-5092 builds
 // ExecuteProperties with IsolationLevel.SNAPSHOT) and adds no conflict range of its
 // own afterwards, so Java's "the store is empty, build the index inline" decision
 // RACES a concurrent insert — the insert commits, the index is marked READABLE, and
@@ -722,7 +722,7 @@ func (store *FDBRecordStore) recordsRangeEmpty(recordType *RecordType) (bool, er
 // singleRecordTypeWithPrefixKey returns the one record type all the indexes being
 // built are on, when there is exactly one and its primary key is prefixed by the
 // record type key — otherwise nil. Port of Java's
-// FDBRecordStore.singleRecordTypeWithPrefixKey (FDBRecordStore.java:4909-4929):
+// FDBRecordStore.singleRecordTypeWithPrefixKey (FDBRecordStore.java:5137-5155):
 //
 //	RecordType recordType = null;
 //	for (List<RecordType> entry : indexes.values()) {
@@ -771,17 +771,17 @@ func (store *FDBRecordStore) singleRecordTypeWithPrefixKey(indexes []*Index) *Re
 
 // getRecordCountForRebuildPolicy returns the record count the IndexRebuildPolicy
 // decides on. Port of Java's getRecordCountForRebuildIndexes
-// (FDBRecordStore.java:4836-4898), whose selection chain is, in order:
+// (FDBRecordStore.java:5062-5124), whose selection chain is, in order:
 //
 //  1. If all the indexes being built are on ONE record type whose primary key is
 //     record-type-prefixed, a count for JUST that type — from a COUNT index on the
-//     type, or from a COUNT index grouped by record type (FDBRecordStore.java:4842-4849).
+//     type, or from a COUNT index grouped by record type (FDBRecordStore.java:5068-5075).
 //  2. Otherwise, unless the record counts are being rebuilt in this very
 //     transaction, the whole-store count — from the record-count key, or from an
-//     ungrouped/roll-uppable COUNT index (FDBRecordStore.java:4850-4861).
+//     ungrouped/roll-uppable COUNT index (FDBRecordStore.java:5076-5087).
 //  3. Only when neither yields a count: a scan limited to a SINGLE record, reporting
 //     Long.MAX_VALUE the moment the store turns out to be non-empty and 0 only when
-//     it is genuinely empty (FDBRecordStore.java:4862-4897). Scoped to the single
+//     it is genuinely empty (FDBRecordStore.java:5088-5123). Scoped to the single
 //     record type's range when there is one.
 //
 // Steps 1 and 2 are not an optimisation — they change the ANSWER. The probe cannot
@@ -802,7 +802,7 @@ func (store *FDBRecordStore) singleRecordTypeWithPrefixKey(indexes []*Index) *Re
 // The indexes being built are excluded from every count-index lookup: they hold no
 // entries yet and have no index state on disk, so an unbuilt COUNT index would answer
 // 0 for a full store. Java does this with an IndexQueryabilityFilter
-// (FDBRecordStore.java:4839-4841) — "Do this with the new indexes filtered out to
+// (FDBRecordStore.java:5065-5067) — "Do this with the new indexes filtered out to
 // avoid using one of them when evaluating the snapshot record count. At this point we
 // won't have written that any new indexes are disabled".
 //
@@ -885,12 +885,12 @@ func (store *FDBRecordStore) snapshotTotalRecordCount(excluded map[string]bool) 
 // EvaluateAggregateFunction uses; this wrapper only supplies the two things Java's
 // rebuild path supplies that the public entry point does not:
 //
-//   - Java's IndexQueryabilityFilter (FDBRecordStore.java:4841,
+//   - Java's IndexQueryabilityFilter (FDBRecordStore.java:5067,
 //     `index -> !indexes.containsKey(index)`), here `excluded` — the indexes being
 //     built hold no entries yet, so one of them answering the count would report 0
 //     for a full store.
 //   - Java's `catch (RecordCoreException ex)` around the count sources
-//     (FDBRecordStore.java:4845, 4858), here ok=false — "no appropriate index", which
+//     (FDBRecordStore.java:5072, 5084), here ok=false — "no appropriate index", which
 //     the caller swallows to fall through to the next source.
 //
 // A read error is NOT ok=false: only AggregateFunctionNotSupportedError is index

@@ -541,8 +541,9 @@ var _ = Describe("OnlineIndexer", func() {
 			ks := specSubspace()
 
 			// Record-type-prefix PKs so each type's records live in a contiguous
-			// record-type-keyed sub-range. Two Order indexes → a multi-target build (the
-			// preset fires only for multi-target/mutual).
+			// record-type-keyed sub-range. Two Order indexes → a multi-target build (a
+			// single-target records scan presets too, as Java's does: conformance "The
+			// online build presets a string-keyed record type's range as Java does").
 			typedBuilder := func() *RecordMetaDataBuilder {
 				b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 				b.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))

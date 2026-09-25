@@ -2110,12 +2110,17 @@ delegate call Java's `SlidingWindowIndexValidator` ends with —
 `validateVectorIndexOptionsAtBuild` in `vector_index_validation.go`, called from
 `validateIndex` after `validateSlidingWindowIndex` for a windowed index. A plain
 VECTOR index runs no validator half at `Build`: `validateIndexType` has no VECTOR
-arm. Its refusal is Java's: `MetaDataError` "incorrect index options" with the
-parse failure as its cause (`Unwrap`; a `NumberFormatError` for a value Java's
-`Integer.parseInt` or `Double.parseDouble` refuses), and "need to specify the
-number of dimensions" for a missing count. Which options it checks is Go's list,
-not Java's engine-aware parse (`VectorIndexEngine.validate`, with its alias
-conflicts), which is WS-D's port with the rest.
+arm. Its integer and double options parse as Java's `VectorOptionKey` parses them
+(`Integer::parseInt`, `Double::parseDouble`; Go's `javaParseInt` and
+`javaParseDouble`), and its refusal is Java's: `MetaDataError` "incorrect index
+options" with the parse failure as its cause (`Unwrap`, a `NumberFormatError` with
+Java's text), and "need to specify the number of dimensions" for a missing count
+(the JVM specs "A windowed VECTOR index's options parse as Java parses them" and
+"A windowed VECTOR index is validated as Java validates it"). Two differences
+remain until WS-D: a value that parses and is refused (a dimension count below one,
+an unknown metric name) has an `IllegalArgumentError` cause whose text is Go's; and
+which options it checks is Go's list, not Java's engine-aware parse
+(`VectorIndexEngine.validate`, with its alias conflicts).
 
 **What is open, and why it is an owner call rather than a deferral:** applying
 the same validation to PLAIN vector indexes was implemented and MEASURED, and it

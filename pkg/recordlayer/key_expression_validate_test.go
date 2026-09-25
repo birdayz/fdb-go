@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"fdb.dev/gen"
@@ -804,7 +805,17 @@ func TestValidateDimensionsPositionsIndexTheFieldList(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			err := validateKeyExpression(c.expr, orderDescriptor())
+			// A panic fails this test alone rather than the binary: on a tree
+			// where the negative position indexed the list, the rest of a red
+			// run still reports.
+			err := func() (err error) {
+				defer func() {
+					if r := recover(); r != nil {
+						err = fmt.Errorf("panic: %v", r)
+					}
+				}()
+				return validateKeyExpression(c.expr, orderDescriptor())
+			}()
 			if c.ok {
 				requireNoError(t, err)
 				return

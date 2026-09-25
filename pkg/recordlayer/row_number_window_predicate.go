@@ -319,7 +319,9 @@ func validateRowNumberWindowPlacement(p *gen.Predicate) error {
 		return nil
 	}
 	if !rowNumberWindowValidInConjunctivePath(p) {
-		return &MetaDataError{Message: "RowNumberWindowPredicate must not appear under a disjunction (OR)"}
+		// Java's class: a RecordCoreException, not the MetaDataException of the
+		// validator's other arms (IndexPredicate.java:243).
+		return &RecordCoreError{Message: "RowNumberWindowPredicate must not appear under a disjunction (OR)"}
 	}
 	return nil
 }

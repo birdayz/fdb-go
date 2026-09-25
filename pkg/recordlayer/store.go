@@ -665,7 +665,7 @@ func (store *FDBRecordStore) saveRecordInternal(
 	}
 
 	// Serialize directly into union wire format (no UnionDescriptor allocation)
-	data, err := serializeUnion(record, recordType)
+	data, err := serializeUnionOver(record, recordType, oldValue)
 	if err != nil {
 		return nil, &RecordSerializationError{Cause: err}
 	}
@@ -737,12 +737,14 @@ func (store *FDBRecordStore) saveRecordInternal(
 		PrimaryKey: primaryKey,
 		RecordType: recordType,
 		Record:     record,
-		Version:    savedVersion,
-		Store:      store,
-		KeyCount:   newsizeInfo.KeyCount,
-		ValueSize:  newsizeInfo.ValueSize,
-		KeySize:    newsizeInfo.KeySize,
-		Split:      newsizeInfo.IsSplit,
+		// Its map entries are indexed in the order it was written in.
+		wire:      newRecordWire(recordType, unionInner(data, recordType.unionFieldNumber)),
+		Version:   savedVersion,
+		Store:     store,
+		KeyCount:  newsizeInfo.KeyCount,
+		ValueSize: newsizeInfo.ValueSize,
+		KeySize:   newsizeInfo.KeySize,
+		Split:     newsizeInfo.IsSplit,
 	}
 
 	// Update secondary indexes
@@ -2149,18 +2151,21 @@ func (store *FDBRecordStore) AddUniquenessViolationWithExisting(index *Index, in
 // allocating a UnionDescriptor struct. Writes: tag(fieldNum, LEN) + varint(len) + innerBytes.
 // Wire-compatible with Java's UnionDescriptor serialization.
 func serializeUnion(record proto.Message, recordType *RecordType) ([]byte, error) {
+	return serializeUnionOver(record, recordType, nil)
+}
+
+// serializeUnionOver is serializeUnion for a record that replaces the stored
+// record prior (its union bytes; nil for a new record): a type that reaches a
+// map field keeps each map in the order prior stored it (marshalMapRecord,
+// record_wire_map_order.go), and is never written with vtproto's MarshalVT,
+// whose map order is Go's random iteration order.
+func serializeUnionOver(record proto.Message, recordType *RecordType, prior []byte) ([]byte, error) {
 	if recordType.unionFieldNumber == 0 {
 		return nil, fmt.Errorf("no union field number for record type: %s", recordType.Name)
 	}
 
-	// A type that reaches a map field is written with the deterministic
-	// marshal, which puts map entries in key order: the order Go evaluates the
-	// record's map entries in when it maintains its indexes, so its bytes hold
-	// them in the order its index entries were made from, as Java's do
-	// (record_wire_map_order.go). vtproto's MarshalVT writes a map in Go's random
-	// iteration order.
-	if messageReachesMap(record.ProtoReflect().Descriptor()) {
-		innerBytes, err := proto.MarshalOptions{Deterministic: true}.Marshal(record)
+	if recordType.reachesMap {
+		innerBytes, err := marshalMapRecord(record, unionInner(prior, recordType.unionFieldNumber))
 		if err != nil {
 			return nil, err
 		}
@@ -2272,9 +2277,34 @@ func (store *FDBRecordStore) deserializeAndDiscover(data []byte) (*RecordType, p
 		} else if err := proto.Unmarshal(innerBytes, msg); err != nil {
 			return nil, nil, nil, fmt.Errorf("failed to unmarshal %s: %w", rt.Name, err)
 		}
-		return rt, msg, newRecordWire(msg.ProtoReflect().Descriptor(), innerBytes), nil
+		return rt, msg, newRecordWire(rt, innerBytes), nil
 	}
 	return nil, nil, nil, fmt.Errorf("union descriptor does not contain any known record type")
+}
+
+// unionInner is the inner bytes of the union field numbered field in data, nil
+// when data is nil or holds no such field.
+func unionInner(data []byte, field protowire.Number) []byte {
+	for len(data) > 0 {
+		num, typ, n := protowire.ConsumeTag(data)
+		if n < 0 {
+			return nil
+		}
+		data = data[n:]
+		if num == field && typ == protowire.BytesType {
+			inner, m := protowire.ConsumeBytes(data)
+			if m < 0 {
+				return nil
+			}
+			return inner
+		}
+		m := protowire.ConsumeFieldValue(num, typ, data)
+		if m < 0 {
+			return nil
+		}
+		data = data[m:]
+	}
+	return nil
 }
 
 // deserializeRecord unmarshals the inner bytes of a union-wrapped record directly

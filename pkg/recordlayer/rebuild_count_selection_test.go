@@ -107,7 +107,7 @@ var _ = Describe("RebuildRecordCountSelection", func() {
 					"inline and marks it READABLE. DISABLED here means the eligible readable "+
 					"COUNT index was never consulted and the one-record probe — which cannot "+
 					"tell 5 records from 10^9 — reported Long.MAX_VALUE instead "+
-					"(FDBRecordStore.java:4850-4861).")
+					"(FDBRecordStore.java:5076-5087).")
 			// Inline build means BUILT, not merely marked: the index must answer.
 			entries, lErr := AsList(ctx, store.ScanIndex(priceIndex, TupleRangeAll, nil, ForwardScan()))
 			if lErr != nil {
@@ -125,7 +125,7 @@ var _ = Describe("RebuildRecordCountSelection", func() {
 	// index. It holds no entries and has no state on disk, so consulting it would
 	// answer 0 for a store of 201 records and rebuild everything inline. Java
 	// excludes the indexes being built with an IndexQueryabilityFilter
-	// (FDBRecordStore.java:4839-4841).
+	// (FDBRecordStore.java:5065-5067).
 	It("does not count with an index that is itself being built", func() {
 		ks := specSubspace()
 
@@ -171,9 +171,9 @@ var _ = Describe("RebuildRecordCountSelection", func() {
 	// (b) The probe is scoped to the one record type all the new indexes are on.
 	//
 	// 201 Customers, zero Orders, and an evolution that adds an index on Order.
-	// singleRecordTypeWithPrefixKey resolves to Order (FDBRecordStore.java:4909-4929),
+	// singleRecordTypeWithPrefixKey resolves to Order (FDBRecordStore.java:5137-5155),
 	// so the probe runs over Order's record-type-key range only
-	// (FDBRecordStore.java:4872), finds it empty, reports 0 and the index is built
+	// (FDBRecordStore.java:5098), finds it empty, reports 0 and the index is built
 	// over a zero-length range and marked READABLE.
 	//
 	// Probe the whole store instead and a Customer record answers for Orders:
@@ -214,7 +214,7 @@ var _ = Describe("RebuildRecordCountSelection", func() {
 			Expect(store.GetIndexState("Order$price")).To(Equal(IndexStateReadable),
 				"every index being built is on Order, whose primary key is record-type "+
 					"prefixed, and the store holds no Orders at all. Java probes only that "+
-					"type's key range (FDBRecordStore.java:4872) and gets 0. DISABLED here "+
+					"type's key range (FDBRecordStore.java:5098) and gets 0. DISABLED here "+
 					"means the probe still ran over the whole store and let a Customer record "+
 					"decide the fate of an index on Order.")
 			return nil, nil
@@ -224,7 +224,7 @@ var _ = Describe("RebuildRecordCountSelection", func() {
 
 	// (b-string) The same scoping for a record type whose key is a string. Java
 	// resolves singleRecordTypeWithPrefixKey for a type key of any tuple type and
-	// reads its range at getRecordTypeKeyTuple() (FDBRecordStore.java:4909-4929,
+	// reads its range at getRecordTypeKeyTuple() (FDBRecordStore.java:5137-5155,
 	// :5071-5098); a string key reaches the record keys verbatim, so Order's
 	// records occupy the "order-key" range. Two paths reach the answer: the
 	// per-type count from a universal COUNT index grouped by record type (5 Orders
@@ -290,6 +290,11 @@ var _ = Describe("RebuildRecordCountSelection", func() {
 					"the new index is on Order alone, whose key is the string \"order-key\"; "+
 						"Java counts or probes only that key's records, which are few. DISABLED "+
 						"means the non-integer key made Go count the whole store.")
+				// The inline rebuild scanned the string key's range
+				// (indexedRecordTypesRange) and indexed every Order in it.
+				entries, sErr := AsList(ctx, store.ScanIndex(md2.GetIndex("Order$price"), TupleRangeAll, nil, ForwardScan()))
+				Expect(sErr).NotTo(HaveOccurred())
+				Expect(entries).To(HaveLen(orders))
 				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())

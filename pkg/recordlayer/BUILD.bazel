@@ -367,6 +367,7 @@ go_test(
         "record_type_key_prefix_test.go",
         "record_version_test.go",
         "record_version_unit_test.go",
+        "record_wire_map_order_fdb_test.go",
         "record_wire_map_order_test.go",
         "recordlayer_suite_test.go",
         "reverse_scan_test.go",
@@ -497,6 +498,7 @@ go_test(
         "@org_golang_google_protobuf//types/descriptorpb",
         "@org_golang_google_protobuf//types/dynamicpb",
         "@org_golang_google_protobuf//types/known/anypb",
+        "@org_golang_google_protobuf//types/known/structpb",
     ],
 )
 

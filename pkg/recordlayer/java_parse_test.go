@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"errors"
+	"math"
 	"strings"
 	"testing"
 
@@ -348,5 +349,66 @@ func TestRandomRankHashFailsTheWriteOnAFailedRead(t *testing.T) {
 	}()
 	if _, err := rs.Add(nil, []byte("key")); err == nil || !strings.Contains(err.Error(), "entropy exhausted") {
 		t.Fatalf("Add = %v, want the failed read", err)
+	}
+}
+
+// javaParseDouble accepts what Java's Double.parseDouble accepts and refuses
+// the rest with Java's text (FloatingDecimal.readJavaFormatString).
+func TestJavaParseDouble(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		in   string
+		want float64
+	}{
+		{"0.5", 0.5},
+		{" 0.5 ", 0.5},
+		{"\t1\n", 1},
+		{"1.5d", 1.5},
+		{"1.5F", 1.5},
+		{"+2", 2},
+		{"-2.", -2},
+		{".5", 0.5},
+		{"1e3", 1000},
+		{"1E-2", 0.01},
+		{"1e+2", 100},
+		{"0x1.8p1", 3},
+		{"0X10P0d", 16},
+		{"Infinity", math.Inf(1)},
+		{"-Infinity", math.Inf(-1)},
+		{"+Infinity", math.Inf(1)},
+		{"1e400", math.Inf(1)},
+		{"-1e400", math.Inf(-1)},
+		{"1e-400", 0},
+	} {
+		got, err := javaParseDouble(c.in)
+		if err != nil || got != c.want {
+			t.Errorf("javaParseDouble(%q) = %v, %v; want %v", c.in, got, err, c.want)
+		}
+	}
+	for _, in := range []string{"NaN", "-NaN", "+NaN", " NaN "} {
+		if got, err := javaParseDouble(in); err != nil || !math.IsNaN(got) {
+			t.Errorf("javaParseDouble(%q) = %v, %v; want NaN", in, got, err)
+		}
+	}
+	for _, c := range []struct{ in, text string }{
+		{"", "empty String"},
+		{"   ", "empty String"},
+		{"inf", `For input string: "inf"`},
+		{"nan", `For input string: "nan"`},
+		{"infinity", `For input string: "infinity"`},
+		{"1_000", `For input string: "1_000"`},
+		{".", `For input string: "."`},
+		{"1e", `For input string: "1e"`},
+		{"0x1.8", `For input string: "0x1.8"`},
+		{"1.5dd", `For input string: "1.5dd"`},
+		{" x ", `For input string: "x"`},
+		{"１", `For input string: "１"`},
+		{"NaNd", `For input string: "NaNd"`},
+	} {
+		_, err := javaParseDouble(c.in)
+		var nfe *NumberFormatError
+		if !errors.As(err, &nfe) || err.Error() != c.text {
+			t.Errorf("javaParseDouble(%q) err = %v, want NumberFormatError %q", c.in, err, c.text)
+		}
 	}
 }

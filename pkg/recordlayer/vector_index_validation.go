@@ -2,7 +2,6 @@ package recordlayer
 
 import (
 	"fmt"
-	"strconv"
 )
 
 // validateVectorIndexOptionsAtBuild is the option half of Java's VectorIndexValidator
@@ -30,16 +29,19 @@ import (
 // recorded in DIVERGENCES.md rather than closed here.
 //
 // The refusal is Java's MetaDataException("incorrect index options", cause): the
-// message alone, and the cause behind it (Unwrap), a NumberFormatError for a value
-// that does not parse as Java's Integer.parseInt or Double.parseDouble parses it,
-// and an IllegalArgumentError naming the option otherwise.
+// message alone, and the cause behind it (Unwrap). The integer and double options
+// parse as Java's VectorOptionKey parses them (Integer::parseInt,
+// Double::parseDouble; javaParseInt, javaParseDouble), a value either refuses a
+// NumberFormatError with Java's text; a value that parses and is refused (a
+// dimension count below one, a metric name no Metric constant has) is an
+// IllegalArgumentError whose text is Go's own, naming the option and value.
 func validateVectorIndexOptionsAtBuild(idx *Index) error {
-	bad := func(opt, val string, parse bool) error {
-		var cause error = &IllegalArgumentError{Message: fmt.Sprintf("vector index %s option %s has value %q", idx.Name, opt, val)}
-		if parse {
-			cause = &NumberFormatError{Input: val}
-		}
-		return &MetaDataError{Message: "incorrect index options", Cause: cause}
+	// A value that parses and is refused: Java's IllegalArgumentException, whose
+	// text is Go's own (the option and value), under Java's message.
+	bad := func(opt, val string) error {
+		return &MetaDataError{Message: "incorrect index options", Cause: &IllegalArgumentError{
+			Message: fmt.Sprintf("vector index %s option %s has value %q", idx.Name, opt, val),
+		}}
 	}
 
 	// Java's getConfig REQUIRES the dimension count and parses it unguarded, so
@@ -48,9 +50,12 @@ func validateVectorIndexOptionsAtBuild(idx *Index) error {
 	if !ok {
 		return &MetaDataError{Message: "need to specify the number of dimensions"}
 	}
-	n, err := strconv.Atoi(dims)
-	if err != nil || n <= 0 {
-		return bad(IndexOptionVectorNumDimensions, dims, err != nil)
+	n, err := javaParseInt(dims)
+	if err != nil {
+		return &MetaDataError{Message: "incorrect index options", Cause: err}
+	}
+	if n <= 0 {
+		return bad(IndexOptionVectorNumDimensions, dims)
 	}
 
 	for _, opt := range []string{
@@ -69,8 +74,8 @@ func validateVectorIndexOptionsAtBuild(idx *Index) error {
 		if !present {
 			continue
 		}
-		if _, err := strconv.Atoi(v); err != nil {
-			return bad(opt, v, true)
+		if _, err := javaParseInt(v); err != nil {
+			return &MetaDataError{Message: "incorrect index options", Cause: err}
 		}
 	}
 
@@ -82,8 +87,8 @@ func validateVectorIndexOptionsAtBuild(idx *Index) error {
 		if !present {
 			continue
 		}
-		if _, err := strconv.ParseFloat(v, 64); err != nil {
-			return bad(opt, v, true)
+		if _, err := javaParseDouble(v); err != nil {
+			return &MetaDataError{Message: "incorrect index options", Cause: err}
 		}
 	}
 
@@ -98,7 +103,7 @@ func validateVectorIndexOptionsAtBuild(idx *Index) error {
 			"EUCLIDEAN_SQUARE_METRIC",
 			"EUCLIDEAN_METRIC", "euclidean":
 		default:
-			return bad(IndexOptionVectorMetric, v, false)
+			return bad(IndexOptionVectorMetric, v)
 		}
 	}
 	return nil

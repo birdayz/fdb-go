@@ -4,6 +4,7 @@ package conformance_test
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
@@ -319,7 +320,7 @@ func expectMaintainedAsJava(label string, root recordlayer.KeyExpression, predic
 // online over the same records, once as Java wrote them and once as the raw
 // bytes themselves, and the index key-value pairs of all three are equal.
 var _ = Describe("Map entries are maintained in the record's wire order, as Java maintains them", func() {
-	It("a covering index two entries write one key of", func() {
+	It("a covering index two entries write one key of, and a Go re-save of what Java wrote", func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		clusterFile, err := sharedContainer.ClusterFile(ctx)
@@ -425,6 +426,90 @@ var _ = Describe("Map entries are maintained in the record's wire order, as Java
 		})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(build(raw)).To(Equal(javaKVs))
+
+		// Go loads each record Java wrote and saves it unchanged: every map keeps
+		// the order Java stored (Java's load-then-save keeps it), so the index is
+		// untouched, except the key written twice, which a Go map holds once, in
+		// its first position with its last value, so that record's first x
+		// entry, (1, 2), goes. The maintained index then equals a build over the
+		// re-saved bytes.
+		javaSS := subspace.Sub(tuple.Tuple{"mapwire_resave", uuid.NewString()}...)
+		Expect(save(javaSS, withIndex)).To(Equal(javaKVs))
+		storedKeys := func(ss subspace.Subspace) map[int64][]string {
+			out := map[int64][]string{}
+			_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				begin, end := ss.Sub(int64(recordlayer.RecordKey)).FDBRangeKeys()
+				kvs, err := rtx.Transaction().GetRange(fdb.KeyRange{Begin: begin, End: end}, fdb.RangeOptions{}).GetSliceWithError()
+				if err != nil {
+					return nil, err
+				}
+				for _, kv := range kvs {
+					t, err := ss.Unpack(kv.Key)
+					if err != nil {
+						return nil, err
+					}
+					_, _, n := protowire.ConsumeTag(kv.Value)
+					inner, _ := protowire.ConsumeBytes(kv.Value[n:])
+					for len(inner) > 0 {
+						num, typ, k := protowire.ConsumeTag(inner)
+						size := protowire.ConsumeFieldValue(num, typ, inner[k:])
+						if num == 2 {
+							entry, _ := protowire.ConsumeBytes(inner[k : k+size])
+							_, _, tk := protowire.ConsumeTag(entry)
+							key, _ := protowire.ConsumeString(entry[tk:])
+							out[t[1].(int64)] = append(out[t[1].(int64)], key)
+						}
+						inner = inner[k+size:]
+					}
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			return out
+		}
+		Expect(storedKeys(javaSS)).To(Equal(map[int64][]string{1: {"b", "a"}, 2: {"x", "y", "x"}, 3: {"k", "j"}}))
+		for id := int64(1); id <= 3; id++ {
+			_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(javaSS).Open()
+				if err != nil {
+					return nil, err
+				}
+				rec, err := store.LoadRecord(tuple.Tuple{id})
+				if err != nil {
+					return nil, err
+				}
+				_, err = store.SaveRecord(rec.Record)
+				return nil, err
+			})
+			Expect(err).NotTo(HaveOccurred())
+		}
+		Expect(storedKeys(javaSS)).To(Equal(map[int64][]string{1: {"b", "a"}, 2: {"x", "y"}, 3: {"k", "j"}}))
+		var want [][]string
+		for _, kv := range javaKVs {
+			if kv[0] != "1502026964780015011502" { // (1, 2): the first of the twice-written x
+				want = append(want, kv)
+			}
+		}
+		Expect(want).To(HaveLen(5))
+		maintained, err := dumpIndexKVs(ctx, db, javaSS)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(maintained).To(Equal(want))
+
+		rebuilt := subspace.Sub(tuple.Tuple{"mapwire_rebuilt", uuid.NewString()}...)
+		Expect(save(rebuilt, without)).To(BeEmpty())
+		_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			begin, end := javaSS.Sub(int64(recordlayer.RecordKey)).FDBRangeKeys()
+			kvs, err := rtx.Transaction().GetRange(fdb.KeyRange{Begin: begin, End: end}, fdb.RangeOptions{}).GetSliceWithError()
+			if err != nil {
+				return nil, err
+			}
+			for _, kv := range kvs {
+				rtx.Transaction().Set(fdb.Key(append(append([]byte(nil), rebuilt.Bytes()...), kv.Key[len(javaSS.Bytes()):]...)), kv.Value)
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(build(rebuilt)).To(Equal(maintained))
 	})
 })
 
@@ -862,6 +947,241 @@ var _ = Describe("Index validation at build, as Java builds", func() {
 				goMessage = e.Message
 			}
 			Expect(goMessage).To(Equal(java.Error))
+		})
+	}
+})
+
+// A windowed VECTOR index's integer and double options parse as Java's
+// VectorOptionKey parses them, Integer::parseInt and Double::parseDouble
+// (VectorOptionKey.java:213, :220): each row edits one option of a windowed
+// index Java builds (the sliding-window conformance shape) and requires the
+// same verdict from both loaders, a refusal being Java's MetaDataException
+// "incorrect index options", whose cause Go carries (Unwrap).
+var _ = Describe("A windowed VECTOR index's options parse as Java parses them", func() {
+	windowed := func(option, value string) *gen.MetaData {
+		return windowedEdited(func(ix *gen.Index) {
+			set := false
+			for _, o := range ix.Options {
+				if o.GetKey() == option {
+					o.Value, set = proto.String(value), true
+				}
+			}
+			if !set {
+				ix.Options = append(ix.Options, &gen.Index_Option{Key: proto.String(option), Value: proto.String(value)})
+			}
+		})
+	}
+	for _, c := range []struct{ option, value string }{
+		{recordlayer.IndexOptionHNSWM, "16"},
+		{recordlayer.IndexOptionHNSWM, "2147483648"},
+		{recordlayer.IndexOptionHNSWM, "１６"},
+		{recordlayer.IndexOptionHNSWM, "+16"},
+		{recordlayer.IndexOptionHNSWM, "0x10"},
+		{recordlayer.IndexOptionHNSWM, " 16"},
+		{recordlayer.IndexOptionHNSWSampleVectorStatsProbability, "0.5"},
+		{recordlayer.IndexOptionHNSWSampleVectorStatsProbability, "0.5d"},
+		{recordlayer.IndexOptionHNSWSampleVectorStatsProbability, " 0.5 "},
+		{recordlayer.IndexOptionHNSWSampleVectorStatsProbability, ".5"},
+		{recordlayer.IndexOptionHNSWSampleVectorStatsProbability, "inf"},
+		{recordlayer.IndexOptionHNSWSampleVectorStatsProbability, "nan"},
+		{recordlayer.IndexOptionHNSWSampleVectorStatsProbability, "1_0"},
+	} {
+		It(fmt.Sprintf("%s=%q", c.option, c.value), func() {
+			expectWindowedVerdictAsJava(fmt.Sprintf("%s=%q", c.option, c.value), windowed(c.option, c.value))
+		})
+	}
+})
+
+// The sliding-window validator's arms, whole text and class on both engines:
+// Java's MetaDataException for each of its own arms and for the vector
+// validator's missing dimension count, and IndexPredicate's RecordCoreException
+// for a window under a disjunction.
+var _ = Describe("A windowed VECTOR index is validated as Java validates it", func() {
+	window := func() *gen.Predicate {
+		return &gen.Predicate{RowNumberWindowPredicate: &gen.RowNumberWindowPredicate{
+			OrderingField: []string{"price"}, Size: proto.Int32(3), Direction: gen.RowNumberWindowPredicate_ASC.Enum(),
+		}}
+	}
+	for _, c := range []struct {
+		name string
+		edit func(*gen.Index)
+	}{
+		{"a unique windowed index", func(ix *gen.Index) {
+			ix.Options = append(ix.Options, &gen.Index_Option{Key: proto.String("unique"), Value: proto.String("true")})
+		}},
+		{"a window under a disjunction alone (not decorated, so not refused)", func(ix *gen.Index) {
+			ix.Predicate = &gen.Predicate{OrPredicate: &gen.OrPredicate{Children: []*gen.Predicate{
+				window(), {ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}},
+			}}}
+		}},
+		// The decoration gate finds a window through AND only, so the placement
+		// check sees a window under an OR only beside a decorating one.
+		{"a window beside a window under a disjunction", func(ix *gen.Index) {
+			ix.Predicate = &gen.Predicate{AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{
+				window(), {OrPredicate: &gen.OrPredicate{Children: []*gen.Predicate{
+					{ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}}, window(),
+				}}},
+			}}}
+		}},
+		{"a window under a conjunction", func(ix *gen.Index) {
+			ix.Predicate = &gen.Predicate{AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{
+				window(), {ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}},
+			}}}
+		}},
+		{"a windowed index over two record types", func(ix *gen.Index) {
+			ix.RecordType = []string{"Order", "Customer"}
+		}},
+		{"a windowed index without its dimension count", func(ix *gen.Index) {
+			var kept []*gen.Index_Option
+			for _, o := range ix.Options {
+				if o.GetKey() != recordlayer.IndexOptionVectorNumDimensions {
+					kept = append(kept, o)
+				}
+			}
+			ix.Options = kept
+		}},
+	} {
+		It(c.name, func() { expectWindowedVerdictAsJava(c.name, windowedEdited(c.edit)) })
+	}
+})
+
+// windowedEdited is the demo meta-data with a windowed VECTOR index "w" on
+// Order that Java builds (the sliding-window conformance shape), its Index
+// message edited by edit.
+func windowedEdited(edit func(*gen.Index)) *gen.MetaData {
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+	idx := recordlayer.NewVectorIndex("w", recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 3)
+	idx.SetOption(recordlayer.IndexOptionVectorMetric, "EUCLIDEAN_SQUARE_METRIC")
+	Expect(idx.SetPredicateProto(&gen.Predicate{RowNumberWindowPredicate: &gen.RowNumberWindowPredicate{
+		OrderingField: []string{"price"}, Size: proto.Int32(3), Direction: gen.RowNumberWindowPredicate_ASC.Enum(),
+	}})).To(Succeed())
+	builder.AddIndex("Order", idx)
+	md, err := builder.Build()
+	Expect(err).NotTo(HaveOccurred())
+	p, err := md.ToProto()
+	Expect(err).NotTo(HaveOccurred())
+	for _, ix := range p.GetIndexes() {
+		if ix.GetName() == "w" {
+			edit(ix)
+		}
+	}
+	return p
+}
+
+// expectWindowedVerdictAsJava loads p in both engines and requires the same
+// verdict, and for a refusal Java's class (as its Go error type) and whole text.
+func expectWindowedVerdictAsJava(label string, p *gen.MetaData) {
+	var java javaAnyVerdict
+	Expect(NewJavaInvoker().InvokeAs(context.Background(), "buildMetaDataAnyVerdict", map[string]any{
+		"protoBytes": bytesToInts(marshalMetaData(p)),
+	}, &java)).To(Succeed())
+	_, goErr := recordlayer.RecordMetaDataFromProto(proto.Clone(p).(*gen.MetaData))
+	fmt.Fprintf(GinkgoWriter, "WINDOWED %s java=%t %s %q go=%T %v\n", label, java.Valid, java.Class, java.Error, goErr, goErr)
+	Expect(goErr == nil).To(Equal(java.Valid), "Java: %t %s %q; Go: %v", java.Valid, java.Class, java.Error, goErr)
+	if java.Valid {
+		return
+	}
+	var goMessage string
+	switch java.Class {
+	case "com.apple.foundationdb.record.metadata.MetaDataException":
+		var e *recordlayer.MetaDataError
+		Expect(errors.As(goErr, &e)).To(BeTrue(), "Go: %T %v", goErr, goErr)
+		goMessage = e.Message
+	case "com.apple.foundationdb.record.RecordCoreException":
+		var e *recordlayer.RecordCoreError
+		Expect(errors.As(goErr, &e)).To(BeTrue(), "Go: %T %v", goErr, goErr)
+		goMessage = e.Message
+	default:
+		Fail("unexpected Java class " + java.Class)
+	}
+	Expect(goMessage).To(Equal(java.Error))
+}
+
+// The online build's records-range preset for a record type whose key is a
+// string, as Java writes it: both engines save the same records under the same
+// meta-data (Order keyed "order-key", Customer by its union field, both primary
+// keys led by the record type key), mark the index on Order disabled, build it
+// without marking it readable, and the index's range-set key-value pairs are
+// equal. Java orders record type key tuples with Tuple.compareTo
+// (IndexingCommon.computeRecordsRange); Go gave up on a non-integer key and
+// built over the whole records space.
+var _ = Describe("The online build presets a string-keyed record type's range as Java does", func() {
+	for _, orderKey := range []any{"order-key", nil} {
+		It(fmt.Sprintf("writes the range set Java writes, Order keyed %v", orderKey), func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			clusterFile, err := sharedContainer.ClusterFile(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Concat(recordlayer.RecordTypeKey(), recordlayer.Field("order_id")))
+			if orderKey != nil {
+				builder.GetRecordType("Order").SetRecordTypeKey(orderKey)
+			}
+			builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Concat(recordlayer.RecordTypeKey(), recordlayer.Field("customer_id")))
+			builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Concat(recordlayer.RecordTypeKey(), recordlayer.Field("id")))
+			builder.AddIndex("Order", recordlayer.NewIndex("Order$price", recordlayer.Field("price")))
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+			p, err := md.ToProto()
+			Expect(err).NotTo(HaveOccurred())
+			mdBytes, err := proto.Marshal(p)
+			Expect(err).NotTo(HaveOccurred())
+
+			javaSS := subspace.Sub(tuple.Tuple{"preset_java", uuid.NewString()}...)
+			var java struct {
+				KVs [][]string `json:"kvs"`
+			}
+			Expect(NewJavaInvoker().InvokeAs(ctx, "buildIndexDumpRangeSetJava", map[string]any{
+				"clusterFile": clusterFile, "subspace": BytesToIntArray(javaSS.Bytes()),
+				"metaData": BytesToIntArray(mdBytes), "indexName": "Order$price",
+			}, &java)).To(Succeed())
+			GinkgoWriter.Printf("PRESET java kvs=%v\n", java.KVs)
+			Expect(java.KVs).NotTo(BeEmpty())
+
+			db := recordlayer.NewFDBDatabase(sharedDB)
+			goSS := subspace.Sub(tuple.Tuple{"preset_go", uuid.NewString()}...)
+			_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(goSS).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				for i := int64(1); i <= 3; i++ {
+					if _, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Price: proto.Int32(int32(10 * i))}); err != nil {
+						return nil, err
+					}
+				}
+				for i := int64(101); i <= 102; i++ {
+					if _, err := store.SaveRecord(&gen.Customer{CustomerId: proto.Int64(i)}); err != nil {
+						return nil, err
+					}
+				}
+				_, err = store.MarkIndexDisabled("Order$price")
+				return nil, err
+			})
+			Expect(err).NotTo(HaveOccurred())
+			indexer, err := recordlayer.NewOnlineIndexerBuilder().
+				SetDatabase(db).SetMetaData(md).SetIndex(md.GetIndex("Order$price")).SetSubspace(goSS).SetMarkReadable(false).Build()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = indexer.BuildIndex(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			goKVs, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				begin, end := goSS.Sub(int64(recordlayer.IndexRangeSpaceKey), "Order$price").FDBRangeKeys()
+				kvs, err := rtx.Transaction().GetRange(fdb.KeyRange{Begin: begin, End: end}, fdb.RangeOptions{}).GetSliceWithError()
+				if err != nil {
+					return nil, err
+				}
+				var out [][]string
+				for _, kv := range kvs {
+					out = append(out, []string{hex.EncodeToString(kv.Key[len(goSS.Bytes()):]), hex.EncodeToString(kv.Value)})
+				}
+				return out, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(goKVs).To(Equal(java.KVs))
 		})
 	}
 })

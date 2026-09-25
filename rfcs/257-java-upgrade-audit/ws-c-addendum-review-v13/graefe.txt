@@ -1,0 +1,63 @@
+**NAK.** I reviewed commit `ba357754d7bbfd79455c10d66d08be6d1157ab78`. The design's SHA256 is `0aa1505fca3652078a8d2bd24b61c8cd2dfd703b853ca17d3a2b000eeba104c1`, 2428 lines; I recomputed both from the commit object and they match. The review was read-only. The policy refused `git diff`, so I read the delta with `git show`. HEAD is still `ba357754d`. Anything not marked **measured** comes from reading source.
+
+Every v12 finding is resolved or answered, and nothing revision 13 changed undoes a revision-12 fix. The NAK rests on one new Medium.
+
+## Findings, most severe first
+
+**1. Medium (from source, not measured): a global cache that never shrinks, on every save and every read.**
+- `mapReach` (`record_wire_map_order.go:217-227`) is a `sync.Map` keyed by descriptor identity. It stores true and false results alike.
+- It is consulted for every record type on every save (`store.go:2162`) and every decode (`store.go:2275`, via `newRecordWire` at `:57`).
+- Meta-data built from proto creates fresh descriptors on each load: `metadata.go:1251` builds dynamicpb records from `desc`, and `FDBMetaDataStore` and the relational catalog call `RecordMetaDataFromProto` each time they load. Each load therefore keeps its descriptor graph alive forever.
+- The repo already names this exact problem and bounds its cache for it: `positionalTypeCache` (`query/executor/query_result.go:115-145`).
+- **Fix:** compute the answer once per `RecordType` when the meta-data is built (at the `metadata.go:1251` site) and pass it to `serializeUnion` and `deserializeAndDiscover`. Nested lookups can go uncached, or be cached per `recordWire`.
+
+**2. Low (from source): when Go re-saves a record Java wrote, its map is re-sorted, and a covering value two entries share can then stay stale. Nothing declares this.**
+- Scenario: Java writes a map as `[b→5, a→5]` under `KeyWithValue(NestFanOut(m, Concat(value, key)), 1)`. The stored value for `(5, pk)` is "a", the last entry.
+- Go loads the record and saves it unchanged. The old entries (in wire order) and the new entries (in key order) contain the same pairs, so the common-entry filter (`index_maintainer.go:328-334`, `:820-866`) writes nothing. Java's filter is also order-blind (`StandardIndexMaintainer.java:219-227`).
+- The index keeps "a", but the new bytes are `[a, b]`, which a rebuild in either engine turns into "b".
+- Java's load-then-save keeps the entry order: a DynamicMessage keeps its list order, and a generated map keeps insertion order. So Java would not reach this state from the same operation.
+- The CHANGELOG entry on map fields does not say that a Go save reorders a map Java wrote.
+- **Fix:** declare it in CHANGELOG and DIVERGENCES and pin it with a JVM spec (Java writes, Go loads and saves, both engines rebuild and compare), or make the diff aware of order for shared keys.
+
+**3. Low (from source): the new marshal checks proto2 required fields.**
+- The new branch in `serializeUnion` (`store.go:2163`) calls `proto.Marshal` without `AllowPartial`.
+- A generated type that has a map and leaves a proto2 required field unset is now refused with protobuf-go's error text. Before, vtproto saved it, and types without a map still save it.
+- Java also refuses such a record (`UninitializedMessageException`), so the direction matches Java. But the change is not declared, it depends on whether the type has a map, and the error is not Java's class.
+- The same check on read (`record_wire_map_order.go:141`) makes the whole record fall back to key order without saying so.
+
+**4. Low (docs): some changed sentences are not marked, and one claim is too broad.**
+- 7.13 (`:2291-2292`) says every changed 7.11/7.12 sentence is marked. Two are not:
+  - `:2092`, "the mutation reddens this test alone", which 7.13 withdraws at `:2394`.
+  - `:2209`, "The tests compare the whole text". This is still false: `sliding_window_index_test.go:1861` checks "requires a RowNumberWindowPredicate" with `ContainSubstring`, and the synthetic-types text has no test.
+- `:2299`, "in Java a record's entries are always visited in its bytes' order", holds for the default DynamicMessage serializer. It does not hold for a `TypedRecordSerializer`: a generated parse collapses a key written twice. Narrow the sentence to the default serializer.
+
+## Nits
+- **Doc comment split.** In `errors.go:323-334`, `unknownRecordTypeError` was inserted between `KeyExpressionDeserializationError`'s doc comment and its type. The exported type lost its doc, and the helper's doc now starts with the wrong paragraph.
+- **"Java's text everywhere" is too broad.** The commit message and 7.13 say every unknown-type error now uses Java's text, but `store_typed.go:19` still says "record type '%s' not found in metadata". The CHANGELOG's narrower wording is correct.
+- **Planner comment reasoning.** The comment at `proto_field_type.go:55-61` and 7.13 say Java uses a map index only for `mapMatches` queries. But Java types a map field (`LABEL_REPEATED`) as an array of entry records (`Type.java:453-455`), so `oneOfThem` reaches it too. The conclusion still holds: Go has no `QueryComponent`, and Go SQL gives a map `UnknownType`. Only the wording needs fixing.
+- **Evidence gap.** `wsc13-mapwire-green` has no `console.txt`. Its TREE records an earlier working diff (`11332e39…`, 15 files, no index-tree line) than the final `fe3f95ab…`. On the final tree, the wire-order spec passing shows only in the total spec count, not by name.
+
+## v12 findings checked (measured unless noted)
+- **Storage 1 (map entry order): resolved.**
+  - Java's pairs (the MAPWIRE line): 6 pairs, `(5,1)→"a"`, both `x` entries kept, `k→0`.
+  - On `51c3f90eb`: 5 pairs with "b" stored (`wsc13-mapwire-red/conformance_test-test.log:28-77`).
+  - The measured `k→0` shows Java fills in a missing map value's default. From source, that is `DynamicMessage.Builder.buildPartial`, which Go's `holdKeyAndValue` mirrors.
+- **Torvalds 1 (frl caller): resolved.** frl tests 8 of 8 green; the two new tests red on the old tree.
+- **Torvalds 2 (one port): resolved.** The filter wiring matches `FDBRecordStore.java:2431-2453` and `:5067-5075`, and the dead branch is gone.
+- **Non-integer record-type keys.** The code matches `IndexingCommon.java:214-232` and `:5098` (packed-byte order). Red then green: the string-key arm of `TestComputeRecordsRange` and two `RebuildRecordCountSelection` specs.
+- **Torvalds 4 (negative dimensions prefix): resolved.** The guard is at `key_expression_validate.go:234`. On the old tree the row panicked with `index out of range [-1]`.
+- **CHANGELOG and stale claims: resolved.** I counted 50 rows in the spec at the commit, matching the CHANGELOG. The 7.11 markers are at `:1970`, `:1975` and `:2019`. The map refusal line is gone.
+- **Vector text and whole-text nit: resolved except finding 4.**
+- **Evidence nits:**
+  - `wsc13-rl-green` "Ran 3724 of 3725", all 3724 passed; `wsc13-rl-red`: 7 specs and 2 unit tests red.
+  - `wsc13-conf-green` "Ran 1644 of 1763", all passed; the rfc257 oracle 64 of 64.
+  - GroupAlias: 10 of 10 logs each "Ran 1 of", 1 passed.
+- **Nits b–g, the ruling date, and `wsc12-pt.txt` (moved to `dev/`): resolved.**
+- **Pre-commit hook:** `/tmp/wsc13-commit.log:184` reads "Executed 26 out of 94 tests: 94 tests pass". `just test` runs `//...` minus stress, so it includes `//conformance`, which answers v12's open question.
+
+## Graefe lens
+- **Map order:** matches Java for records either engine wrote and for Go's online build. That is measured for Go's online build over Java-written and raw bytes; the case where Go wrote the record is from source.
+- **Counts:** the per-type count and the index-rebuild count match `FDBRecordStore`, `IndexFunctionHelper` and `IndexingCommon`, including any record-type key ordered as Java's `Tuple.compareTo` orders it.
+- **Validators:** the dimensions validator and the group step in predicate field paths are measured against the JVM.
+- **Go-only behaviour left undeclared:** findings 2 and 3. The planner's map exclusion is declared at its code site.
+- **Preserved boundaries:** untouched.

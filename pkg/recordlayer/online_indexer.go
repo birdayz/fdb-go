@@ -1325,11 +1325,15 @@ func (oi *OnlineIndexer) buildIndexAttempt(ctx context.Context) (int64, IndexBui
 		return n, IndexBuildOutcomeBuilt, err
 	}
 
-	// Multi-target (BY_RECORDS) builds preset the out-of-range gaps as already-built so
-	// the scan skips them (Java IndexingMultiTargetByRecords). Single-target BY_RECORDS
-	// and BY_INDEX do not — matching Java, which only presets in the multi-target/mutual
-	// paths.
-	if oi.isMultiTarget() {
+	// A records-scan build presets the out-of-range gaps as already built so the scan
+	// skips them. Java's records-scan indexer is IndexingMultiTargetByRecords for one
+	// target or several (OnlineIndexer.getIndexer, :302-314: everything that is not
+	// mutual or a single-target BY_INDEX build, a BY_INDEX fallen back to a records scan
+	// included), and it presets (IndexingMultiTargetByRecords.java:120). Go preset only
+	// for several targets, so a single-target build wrote a range set Java does not
+	// (conformance "The online build presets a string-keyed record type's range as Java
+	// does"). A BY_INDEX build does not preset, in either engine.
+	if !oi.buildsByIndex() {
 		if err := oi.maybePresetRecordsRange(ctx); err != nil {
 			return 0, IndexBuildOutcomeNone, fmt.Errorf("preset records range: %w", err)
 		}

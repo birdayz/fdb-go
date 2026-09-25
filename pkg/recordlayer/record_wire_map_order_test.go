@@ -14,8 +14,9 @@ import (
 )
 
 // wireMapFile: Rec { id = 1; map<string, int64> m = 2; repeated Holder h = 3;
-// Loop loop = 4 } with Holder { map<string, int64> hm = 1 } and a recursive
-// Loop { Loop next = 1; int64 v = 2 } that reaches no map.
+// Loop loop = 4; oneof choice { Holder ha = 5; Holder hb = 6 } } with Holder {
+// map<string, int64> hm = 1 } and a recursive Loop { Loop next = 1; int64 v = 2 }
+// that reaches no map.
 func wireMapFile(t *testing.T) protoreflect.FileDescriptor {
 	t.Helper()
 	optional := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum()
@@ -25,6 +26,10 @@ func wireMapFile(t *testing.T) protoreflect.FileDescriptor {
 		if typeName != "" {
 			f.TypeName = proto.String(typeName)
 		}
+		return f
+	}
+	inOneof := func(f *descriptorpb.FieldDescriptorProto) *descriptorpb.FieldDescriptorProto {
+		f.OneofIndex = proto.Int32(0)
 		return f
 	}
 	entry := func(name string) *descriptorpb.DescriptorProto {
@@ -49,7 +54,10 @@ func wireMapFile(t *testing.T) protoreflect.FileDescriptor {
 					field("m", 2, repeated, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, ".wiremap.Rec.MEntry"),
 					field("h", 3, repeated, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, ".wiremap.Holder"),
 					field("loop", 4, optional, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, ".wiremap.Loop"),
+					inOneof(field("ha", 5, optional, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, ".wiremap.Holder")),
+					inOneof(field("hb", 6, optional, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, ".wiremap.Holder")),
 				},
+				OneofDecl:  []*descriptorpb.OneofDescriptorProto{{Name: proto.String("choice")}},
 				NestedType: []*descriptorpb.DescriptorProto{entry("MEntry")},
 			},
 			{
@@ -100,7 +108,7 @@ func decodedRecord(t *testing.T, md protoreflect.MessageDescriptor, raw []byte) 
 	if err := proto.Unmarshal(raw, msg); err != nil {
 		t.Fatal(err)
 	}
-	return &FDBStoredRecord[proto.Message]{Record: msg, wire: newRecordWire(md, raw)}
+	return &FDBStoredRecord[proto.Message]{Record: msg, wire: newRecordWire(testRecordType(md), raw)}
 }
 
 func evaluateTuples(t *testing.T, expr KeyExpression, rec *FDBStoredRecord[proto.Message]) [][]any {
@@ -191,13 +199,14 @@ func TestMapEntriesInNestedMessagesAreEvaluatedInWireOrder(t *testing.T) {
 	if want := [][]any{{"z"}, {"y"}, {"q"}, {"p"}}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("%v, want %v", got, want)
 	}
-	if messageReachesMap(file.Messages().ByName("Loop")) {
+	reach := mapReach{}
+	if reach.reaches(file.Messages().ByName("Loop")) {
 		t.Fatal("Loop reaches no map")
 	}
-	if !messageReachesMap(rec) || !messageReachesMap(file.Messages().ByName("Holder")) {
+	if !reach.reaches(rec) || !reach.reaches(file.Messages().ByName("Holder")) {
 		t.Fatal("Rec and Holder reach a map")
 	}
-	if newRecordWire(file.Messages().ByName("Loop"), raw) != nil {
+	if newRecordWire(testRecordType(file.Messages().ByName("Loop")), raw) != nil {
 		t.Fatal("a type that reaches no map keeps no wire")
 	}
 }
@@ -226,7 +235,7 @@ func TestSerializeUnionWritesMapEntriesInKeyOrder(t *testing.T) {
 	for _, k := range []string{"d", "b", "c", "a", "e"} {
 		m.Set(protoreflect.ValueOfString(k).MapKey(), protoreflect.ValueOfInt64(1))
 	}
-	out, err := serializeUnion(msg, &RecordType{Name: "Rec", Descriptor: rec, unionFieldNumber: 1})
+	out, err := serializeUnion(msg, testRecordType(rec))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +253,7 @@ func TestSerializeUnionWritesMapEntriesInKeyOrder(t *testing.T) {
 	if want := []string{"a", "b", "c", "d", "e"}; !reflect.DeepEqual(keys, want) {
 		t.Fatalf("written keys %v, want %v", keys, want)
 	}
-	again, err := serializeUnion(msg, &RecordType{Name: "Rec", Descriptor: rec, unionFieldNumber: 1})
+	again, err := serializeUnion(msg, testRecordType(rec))
 	if err != nil || !bytes.Equal(out, again) {
 		t.Fatalf("not byte-stable: %v", err)
 	}
@@ -273,7 +282,7 @@ func TestSerializeUnionDoesNotUseVTMarshalForAMapType(t *testing.T) {
 	for _, k := range []string{"b", "a"} {
 		m.Set(protoreflect.ValueOfString(k).MapKey(), protoreflect.ValueOfInt64(1))
 	}
-	rt := &RecordType{Name: "Rec", Descriptor: rec, unionFieldNumber: 1}
+	rt := testRecordType(rec)
 	got, err := serializeUnion(vtMapRecord{msg}, rt)
 	if err != nil {
 		t.Fatal(err)
@@ -281,5 +290,165 @@ func TestSerializeUnionDoesNotUseVTMarshalForAMapType(t *testing.T) {
 	want, err := serializeUnion(msg, rt)
 	if err != nil || !bytes.Equal(got, want) {
 		t.Fatalf("serialized %x, want %x (%v)", got, want, err)
+	}
+}
+
+// testRecordType is a record type over md as Build makes one: union field 1,
+// its map reach computed.
+func testRecordType(md protoreflect.MessageDescriptor) *RecordType {
+	return &RecordType{Name: string(md.Name()), Descriptor: md, unionFieldNumber: 1, reachesMap: mapReach{}.reaches(md)}
+}
+
+// writtenKeys is the map keys of field num in inner, a Rec's bytes, in order,
+// and of the hm field of each Holder element when num is 3.
+func writtenKeys(t *testing.T, inner []byte, num protowire.Number) []string {
+	t.Helper()
+	var keys []string
+	for len(inner) > 0 {
+		n, typ, k := protowire.ConsumeTag(inner)
+		size := protowire.ConsumeFieldValue(n, typ, inner[k:])
+		value := inner[k : k+size]
+		inner = inner[k+size:]
+		if n != num {
+			continue
+		}
+		body, _ := protowire.ConsumeBytes(value)
+		if num == 3 {
+			keys = append(keys, writtenKeys(t, body, 1)...)
+			continue
+		}
+		_, _, tk := protowire.ConsumeTag(body)
+		key, _ := protowire.ConsumeString(body[tk:])
+		keys = append(keys, key)
+	}
+	return keys
+}
+
+// A record that replaces a stored one keeps each map in the stored order: the
+// keys the stored record held first in its order, a key written twice in its
+// first position, the rest after in key order; nested maps too. A new record's
+// maps are in key order.
+func TestSerializeUnionOverKeepsTheStoredMapOrder(t *testing.T) {
+	t.Parallel()
+	file := wireMapFile(t)
+	rec := file.Messages().ByName("Rec")
+	rt := testRecordType(rec)
+	prior := func(entries ...wireEntry) []byte {
+		var raw []byte
+		for _, e := range entries {
+			raw = append(raw, mapEntryBytes(2, e)...)
+		}
+		return protowire.AppendBytes(protowire.AppendTag(nil, 1, protowire.BytesType), raw)
+	}
+	message := func(entries map[string]int64) *dynamicpb.Message {
+		msg := dynamicpb.NewMessage(rec)
+		m := msg.Mutable(rec.Fields().ByName("m")).Map()
+		for k, v := range entries {
+			m.Set(protoreflect.ValueOfString(k).MapKey(), protoreflect.ValueOfInt64(v))
+		}
+		return msg
+	}
+	stored := prior(kv("c", 1), kv("a", 2), kv("b", 3))
+	for _, c := range []struct {
+		name    string
+		prior   []byte
+		entries map[string]int64
+		want    []string
+	}{
+		{"unchanged", stored, map[string]int64{"a": 2, "b": 3, "c": 1}, []string{"c", "a", "b"}},
+		{"a value changed", stored, map[string]int64{"a": 9, "b": 3, "c": 1}, []string{"c", "a", "b"}},
+		{"keys added", stored, map[string]int64{"a": 2, "b": 3, "c": 1, "e": 5, "d": 4}, []string{"c", "a", "b", "d", "e"}},
+		{"a key removed", stored, map[string]int64{"b": 3, "c": 1}, []string{"c", "b"}},
+		{"a key written twice", prior(kv("x", 1), kv("y", 2), kv("x", 3)), map[string]int64{"x": 3, "y": 2}, []string{"x", "y"}},
+		{"a new record", nil, map[string]int64{"b": 1, "a": 2}, []string{"a", "b"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			out, err := serializeUnionOver(message(c.entries), rt, c.prior)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := writtenKeys(t, unionInner(out, 1), 2); !reflect.DeepEqual(got, c.want) {
+				t.Fatalf("written keys %v, want %v", got, c.want)
+			}
+			// The bytes decode to the message, and the saved record is
+			// evaluated in the order it was written.
+			back := decodedRecord(t, rec, unionInner(out, 1))
+			if !proto.Equal(back.Record, message(c.entries)) {
+				t.Fatal("the reordered bytes decode to another message")
+			}
+			var want [][]any
+			for _, k := range c.want {
+				want = append(want, []any{k})
+			}
+			if got := evaluateTuples(t, NestFanOut("m", Field("key")), back); !reflect.DeepEqual(got, want) {
+				t.Fatalf("evaluated %v, want %v", got, want)
+			}
+		})
+	}
+
+	t.Run("a map in a repeated message", func(t *testing.T) {
+		t.Parallel()
+		holder := func(entries ...wireEntry) []byte {
+			var body []byte
+			for _, e := range entries {
+				body = append(body, mapEntryBytes(1, e)...)
+			}
+			return protowire.AppendBytes(protowire.AppendTag(nil, 3, protowire.BytesType), body)
+		}
+		inner := append(holder(kv("z", 1), kv("y", 2)), holder(kv("q", 3), kv("p", 4))...)
+		priorUnion := protowire.AppendBytes(protowire.AppendTag(nil, 1, protowire.BytesType), inner)
+		msg := dynamicpb.NewMessage(rec)
+		if err := proto.Unmarshal(inner, msg); err != nil {
+			t.Fatal(err)
+		}
+		first := msg.Mutable(rec.Fields().ByName("h")).List().Get(0).Message()
+		first.Mutable(first.Descriptor().Fields().ByName("hm")).Map().Set(protoreflect.ValueOfString("a").MapKey(), protoreflect.ValueOfInt64(0))
+		out, err := serializeUnionOver(msg, rt, priorUnion)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := writtenKeys(t, unionInner(out, 1), 3), []string{"z", "y", "a", "q", "p"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("written keys %v, want %v", got, want)
+		}
+	})
+}
+
+// Two members of one oneof in the bytes: the decoder keeps the member written
+// last, from after the last switch, and a later occurrence of it merges; the
+// map entries read back are those of the kept occurrences only, in order.
+func TestMapEntriesOfAOneofMemberAreTheSurvivingOccurrences(t *testing.T) {
+	t.Parallel()
+	rec := wireMapFile(t).Messages().ByName("Rec")
+	member := func(num protowire.Number, entries ...wireEntry) []byte {
+		var body []byte
+		for _, e := range entries {
+			body = append(body, mapEntryBytes(1, e)...)
+		}
+		return protowire.AppendBytes(protowire.AppendTag(nil, num, protowire.BytesType), body)
+	}
+	join := func(parts ...[]byte) []byte {
+		var out []byte
+		for _, p := range parts {
+			out = append(out, p...)
+		}
+		return out
+	}
+	for _, c := range []struct {
+		name string
+		raw  []byte
+		want [][]any
+	}{
+		{"a switch away and back", join(member(5, kv("z", 1)), member(6, kv("y", 2)), member(5, kv("q", 3), kv("p", 4))), [][]any{{"q"}, {"p"}}},
+		{"two occurrences merged", join(member(5, kv("z", 1)), member(5, kv("y", 2))), [][]any{{"z"}, {"y"}}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			decoded := decodedRecord(t, rec, c.raw)
+			got := evaluateTuples(t, NestFanOut("ha", NestFanOut("hm", Field("key"))), decoded)
+			if !reflect.DeepEqual(got, c.want) {
+				t.Fatalf("%v, want %v", got, c.want)
+			}
+		})
 	}
 }

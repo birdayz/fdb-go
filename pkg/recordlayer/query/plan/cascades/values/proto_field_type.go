@@ -53,12 +53,14 @@ func FieldTypeForProtoField(fd protoreflect.FieldDescriptor) Type {
 
 func fieldTypeForProtoField(fd protoreflect.FieldDescriptor, active map[protoreflect.FullName]struct{}) Type {
 	// A map field has no type here, so an index that fans a map's entries out
-	// is left out of matching (index_expansion.go, the FAN_OUT arm). Java plans
-	// with such an index only for a RecordQuery whose QueryComponent reads the
-	// map (Query.field(..).mapMatches); Go's query surface is SQL alone, which
-	// has no map type in either engine (the relational DataType.Code has none),
-	// so no Go query reaches that match. The index is maintained as Java
-	// maintains it (record_wire_map_order.go).
+	// is left out of matching (index_expansion.go, the FAN_OUT arm). Java types
+	// a map field as the array of its entry records it is on the wire
+	// (Type.java:453-455), so a RecordQuery's QueryComponent reaches such an
+	// index (Query.field(..).mapMatches, or oneOfThem over the entries). Go has
+	// no QueryComponent: its query surface is SQL alone, which has no map type
+	// in either engine (the relational DataType.Code has none), so no Go query
+	// reaches that match. The index is maintained as Java maintains it
+	// (record_wire_map_order.go).
 	if fd == nil || fd.IsMap() {
 		return UnknownType
 	}

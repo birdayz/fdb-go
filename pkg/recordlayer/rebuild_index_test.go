@@ -484,7 +484,7 @@ var _ = Describe("RebuildIndex", func() {
 			// The policy is stated explicitly because the DEFAULT one would not
 			// rebuild inline here: with no record-count key the count fallback
 			// reports an unbounded store for any non-empty one (Java's
-			// getRecordCountForRebuildIndexes, FDBRecordStore.java:4862-4884),
+			// getRecordCountForRebuildIndexes, FDBRecordStore.java:5088-5110),
 			// so five records is already "too many". This spec is about the
 			// rebuild MACHINERY, not about which stores the default policy
 			// picks — that is pinned separately.

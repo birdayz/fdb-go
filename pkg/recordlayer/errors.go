@@ -320,12 +320,6 @@ func (e *KeyExpressionError) Error() string {
 	return e.Message
 }
 
-// KeyExpressionDeserializationError is Java's
-// KeyExpression.DeserializationException (a RecordCoreException): a
-// serialized key expression that cannot be read back, as one with no root or
-// with several (KeyExpression.java:404-405), a nesting without its parent
-// (NestingKeyExpression.java:69) or a then of fewer than two children
-// (ThenKeyExpression.java:84).
 // unknownRecordTypeError is Java's RecordMetaData.unknownTypeException
 // (RecordMetaData.java:825-827), which getRecordType, getIndexableRecordType and
 // getRecordTypeForDescriptor throw for a name the meta-data does not hold.
@@ -333,6 +327,12 @@ func unknownRecordTypeError(name string) *MetaDataError {
 	return &MetaDataError{Message: "Unknown record type " + name}
 }
 
+// KeyExpressionDeserializationError is Java's
+// KeyExpression.DeserializationException (a RecordCoreException): a
+// serialized key expression that cannot be read back, as one with no root or
+// with several (KeyExpression.java:404-405), a nesting without its parent
+// (NestingKeyExpression.java:69) or a then of fewer than two children
+// (ThenKeyExpression.java:84).
 type KeyExpressionDeserializationError struct {
 	Message string
 }

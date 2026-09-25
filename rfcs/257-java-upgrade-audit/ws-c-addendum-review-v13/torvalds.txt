@@ -1,0 +1,73 @@
+**NAK** on commit `ba357754d` (tree `a35602def`). I recomputed the design hash from the committed blob: `0aa1505fca3652078a8d2bd24b61c8cd2dfd703b853ca17d3a2b000eeba104c1`, 2428 lines, which matches. The review was read-only. `git diff` and `git grep` were refused, so I read the commit objects with `git show` and searched files the working tree has not changed. A finding comes from reading source unless it is marked **measured**.
+
+Every revision-12 Medium is fixed, with red→green evidence against Java. Nothing revision 13 changed undoes a revision-12 fix. The NAK rests on Low findings: statements wider than the code, a new cache that never shrinks, and gaps in the evidence.
+
+## Findings (all Low, most severe first)
+
+**1. The VECTOR option check does not parse the way the new text says it does.**
+- `vector_index_validation.go:32-35` and the DIVERGENCES VECTOR entry say the parse cause is "a value Java's `Integer.parseInt` or `Double.parseDouble` refuses".
+- The code parses with Go's own functions instead: `strconv.Atoi` (`:51`, `:72`) and `strconv.ParseFloat` (`:85`). The repo already has Java's parser, `javaParseInt` (`java_parse.go:46`), and DIVERGENCES `:3153` describes a port of `parseDouble`.
+- The verdicts then differ from Java's:
+  - `hnswM="2147483648"`: Go builds, Java refuses. Go stores meta-data Java cannot open.
+  - Unicode digits, `"1.5d"`, `" 0.5 "`: Java builds, Go refuses.
+  - `"inf"`, `"nan"`: Go builds, Java refuses.
+- The non-parse cause (`IllegalArgumentError`) carries Go's text, and DIVERGENCES does not say so.
+- **Fix:** use the Java parsers and add JVM rows for these inputs.
+
+**2. A new global cache never shrinks.**
+- `mapReach` (`record_wire_map_order.go:217`) is keyed by descriptor, filled on every save and every decode of every record type, and never cleared.
+- Each entry holds its descriptor, and through it the whole descriptor graph of that meta-data.
+- The same package already bounds the equivalent cache and explains why: descriptors are rebuilt on every schema load (`query_result.go:121-125`, `:216-217`).
+- **Fix:** compute the flag once per `RecordType` when meta-data is built, as `unionFieldNumber` is.
+
+**3. `errors.go:322-333` is inserted in the wrong place.**
+- `unknownRecordTypeError` sits between `KeyExpressionDeserializationError`'s doc comment and the type itself.
+- The exported type has lost its doc, and the helper's comment now opens with the other type's description.
+
+**4. "Unknown record type X … everywhere" is too broad.**
+- `store_typed.go:19` still returns `MetaDataError` "record type '%s' not found in metadata".
+
+**5. Two gaps that no test covers.**
+- **Generated record types.** Every wire-order unit test and the JVM spec decode through `dynamicpb`. No test decodes a generated (vtproto) record type with a map through `LoadRecord` or a cursor, so the pointer-identity lookup for generated messages is never run.
+  - **Measured:** no record-type proto under `proto/` declares a map field.
+- **String-keyed rebuild.** The string-keyed rebuild specs check only `READABLE`. The inline `RebuildIndex` over the new string-key range from `indexedRecordTypesRange` writes 5 entries that nothing checks.
+
+**6. Evidence (measured).**
+- **The green runs are not on the candidate's tree.**
+  - `save-evidence.sh:22` counts lines of `git status --short`. For `ba357754d` that is 41: 38 modified files, 2 new `.go` files and the untracked v12 review directory.
+  - The `rl-green` and `conf-green` TREE files record 42, so at least one path in that tree is not in the commit, and 7.13 does not say which.
+  - `frl-green` (31 entries) and `mapwire-green` (15 entries) are earlier working states.
+- **The only run on the commit's tree is the pre-commit hook.** Its log still exists: `/tmp/wsc13-commit.log:184` "Executed 26 out of 94 tests: 94 tests pass". The log names no target, so it does not show whether `//conformance` was included.
+- **`wsc13-mapwire-green`** has no `console.txt` and no index-tree line, although 7.13 says every evidence directory has both.
+- **The red unit run crashed.** The `rl-red` unit binary panicked at `key_expression_validate.go:228` (log `:8340`), so unit tests that had not yet finished never reported. "2 unit tests red" is a lower bound, and 7.13 does not mention the panic.
+
+## Nits
+- `rebuild_count_selection_test.go:174` and `:227` cite `FDBRecordStore.java:4909-4929` for `singleRecordTypeWithPrefixKey`. At 4.14.2.0 the method is at `:5137-5155`; `:4909` is format-version logging.
+- 7.13 says a Java record's map entries are "always" visited in the order its bytes hold them. That holds for the default `DynamicMessageRecordSerializer`. A serializer that parses into generated messages collapses a key written twice.
+- `collectWireMapEntries` (`:165`) fails when the bytes hold two members of one oneof. The whole record then falls back to key order, while Java keeps the surviving member's entries in wire order. Only raw bytes can produce this.
+- "The preset's range-set bytes for such a key are Java's" is a claim about stored bytes, pinned only against bytes Go computes, not against the JVM. The code matches `IndexingCommon.java:214-232` line for line (source).
+- The typed store's record copies (`store_typed.go:117`, `:240`) drop the wire. This is harmless, since `Evaluate` takes `FDBStoredRecord[proto.Message]`, but it makes "every site … carries the wire" literally too broad.
+
+## Revision-12 findings, checked
+- **Storage 1 (map order), resolved.**
+  - Records decoded from stored bytes are evaluated in wire order; records Go saves are evaluated in key order and written with the deterministic marshal. Go's key order (`mapKeyLess`) is the same order the deterministic marshal writes.
+  - Every place that decodes a record from stored bytes and then evaluates it carries the wire. **Measured:** no `Evaluate(nil, …)` calls in non-test code.
+  - **Measured:** Java's six key-value pairs match (`mapwire-green:22`); red on the old tree (`mapwire-red:97`).
+- **Torvalds 1-2, Graefe 2, Storage 2 (per-type count and frl), resolved.**
+  - There is one port, and it matches `FDBRecordStore.java:2431-2453` and the catch at `:5071-5075`.
+  - The frl help text, error advice and tests are fixed. **Measured:** red on the old tree, then 8 of 8 green.
+- **Torvalds 4 (negative dimensions prefix), resolved.** A negative prefix is refused, and a negative dimension count is already guarded in the maintainer (`multidimensional_index_maintainer.go:434`, `:477`).
+- **CHANGELOG, resolved (measured).** It now counts 50 index-validation shapes and 8 key-validation shapes, and my count of the spec rows gives the same numbers.
+- **Superseded markers, resolved.** 7.11 `:1970-1977` and `:2017`, and 7.12's order claim and VERIFIED block, are marked.
+- **Nits a-g, resolved.** This includes the Java class assert, the dead guard, int64 extremes in the boundary test, the nil check in the translation test, the ruling date, and groups in index predicates.
+- **v11 evidence nits, answered.** **Measured:** the GroupAlias rerun shows "Ran 1 of 1763" in all 10 logs.
+- **Planner and map indexes, answered.** **Measured:** `QueryComponent` and `mapMatches` appear only in a comment; the control `RecordQueryPlan` is found.
+
+## Measured facts
+- `4262fab36` is `51c3f90eb`'s tree.
+- `recordlayer_test` "Ran 3724 of 3725" on the green tree; on the old tree it is red with 7 specs failing.
+- `conformance_test` "Ran 1644 of 1763" green; `rfc257_oracle_test` 64 of 64.
+- `conf-red`: 3 failed, and `conf-red-dims` panics, as 7.13 says.
+- The new unit tests ran under Bazel: their `--- PASS` lines are in `rl-green`.
+
+The preserved boundaries are unaffected.

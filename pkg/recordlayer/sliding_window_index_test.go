@@ -1774,8 +1774,11 @@ var _ = Describe("SlidingWindowIndex validation", func() {
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
 		_, err := builder.Build()
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("must not appear under a disjunction"))
+		// IndexPredicate's RecordCoreException, not the validator's
+		// MetaDataException (IndexPredicate.java:243).
+		var rcErr *RecordCoreError
+		Expect(errors.As(err, &rcErr)).To(BeTrue(), "%T %v", err, err)
+		Expect(rcErr.Message).To(Equal("RowNumberWindowPredicate must not appear under a disjunction (OR)"))
 	})
 
 	It("does not decorate an index whose window is reachable only under an OR", func() {
@@ -1858,7 +1861,9 @@ var _ = Describe("SlidingWindowIndex validation", func() {
 				VectorData: SerializeVector([]float64{1, 2, 3}),
 			})
 			Expect(saveErr).To(HaveOccurred())
-			Expect(saveErr.Error()).To(ContainSubstring("requires a RowNumberWindowPredicate"))
+			var mdErr *MetaDataError
+			Expect(errors.As(saveErr, &mdErr)).To(BeTrue(), "%T %v", saveErr, saveErr)
+			Expect(mdErr.Message).To(Equal("sliding window index requires a RowNumberWindowPredicate"), "Java's text, whole")
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())

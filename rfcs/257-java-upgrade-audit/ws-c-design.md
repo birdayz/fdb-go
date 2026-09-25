@@ -2089,7 +2089,8 @@ children are all of one level.
 - n7's red set also holds `TestKeyValidationTextsAreJavas`, which its log shows red.
 - n17's red was not a failed assertion: the mutated `Add` went on past the failed draw to its nil
   transaction and panicked (`java_parse_test.go:339`), which ended the test binary. The test now
-  recovers that panic and fails with it, so the mutation reddens this test alone.
+  recovers that panic and fails with it, so the mutation reddens this test alone [Superseded →
+  7.13: withdrawn, not re-measured].
 - n3 mutated only `validateRecordType`'s loop; revision 11 adds r20 for the missing-primary-key
   loop.
 - The 10-of-10 rerun of the GroupAlias probe had no retained log, and ev2's list of seven executed
@@ -2206,7 +2207,9 @@ tokenizer" (Go appended ": X"), "tokenizer version could not be parsed as int" (
 index and option), "unknown tokenizer version" (Go appended the tokenizer, version and bounds),
 "sliding window index delegate has multiple types", "sliding window index is on synthetic record
 types", "sliding window index requires a RowNumberWindowPredicate" and "need to specify the number
-of dimensions" (Go appended "(index X)"). The tests compare the whole text.
+of dimensions" (Go appended "(index X)"). The tests compare the whole text [Superseded → 7.14:
+they compared substrings; 7.13 and 7.14 compare every reachable sliding-window text whole, and the
+synthetic-types arm cannot fire].
 
 **The JVM shapes cover every check 7.11 names (graefe 1).** "Index validation at build, as Java
 builds" gains 17 shapes: TEXT's unknown tokenizer, a tokenizer version that is not a number and
@@ -2296,18 +2299,22 @@ the order of a map's entries changes no stored byte. It does: two entries can wr
 last write stays (a covering VALUE index whose key two entries share, a TEXT group two entries share
 a token in). Java reads a stored record as a DynamicMessage, which keeps a map field as the entry
 list in parse order, and a record Java saves from a generated message is serialized in the map's
-own order, so in Java a record's entries are always visited in its bytes' order. Go now does the
+own order, so in Java a record's entries are always visited in its bytes' order [Superseded →
+7.14: under the default serializer; one that parses into generated messages collapses a key
+written twice]. Go now does the
 same (`record_wire_map_order.go`):
 - a record Go decodes from stored bytes keeps them (`recordWire`, only for a type that reaches a
   map field), and `evaluateMap` reads its entries back from them in wire order, a key written twice
   included, each entry with its key and value set as the Go map holds them;
 - a record Go saves is evaluated in key order, and `serializeUnion` now writes a type that reaches a
   map with the deterministic marshal, which sorts map entries the same way; vtproto's `MarshalVT`,
-  which a generated type with a map would take, writes Go's random map order;
+  which a generated type with a map would take, writes Go's random map order [Superseded → 7.14: a
+  save keeps the replaced record's map order, and is evaluated as written];
 - a decoded message changed after it was loaded (its map no longer what its bytes hold) is
   evaluated in key order, as a message about to be saved.
 Every site that builds an `FDBStoredRecord` from stored bytes carries the wire (the three cursor
-arms, `LoadRecord`, the old record of `SaveRecord`, `DeleteRecord` and the batch save).
+arms, `LoadRecord`, the old record of `SaveRecord`, `DeleteRecord` and the batch save) [Superseded
+→ 7.14: and the typed store's copies, which dropped it].
 MEASURED, the JVM spec "Map entries are maintained in the record's wire order, as Java maintains
 them": raw records with entries out of key order, a key written twice and an entry with no value;
 Java saves them with a covering index `KeyWithValue(NestFanOut(m, Concat(value, key)), 1)`; Go builds
@@ -2328,7 +2335,8 @@ was not only there: `singleRecordTypeWithPrefixKey`, the rebuild's emptiness pro
 record range and the online indexer's build preset (`computeRecordsRange`) all gave up on a string
 or bytes type key, which reaches the record keys verbatim (`recordTypeKeyOf`), where Java orders the
 key tuples with `Tuple.compareTo`, the packed bytes' order. All four now take any type key, and the
-preset's range-set bytes for such a key are Java's. `recordTypeKeyInt64` is gone. Pinned:
+preset's range-set bytes for such a key are Java's [Superseded → 7.14: they were not, for any key:
+a single-target build never preset]. `recordTypeKeyInt64` is gone. Pinned:
 `RebuildRecordCountSelection` "counts a string-keyed record type from a COUNT index grouped by
 record type" and "scopes the probe to a string-keyed record type's range", and
 `TestComputeRecordsRange`'s string-key arm, each red on `51c3f90eb`. `frl record count --type`
@@ -2337,7 +2345,8 @@ reads a record count key that is the record type key at the type's key, as Java'
 `RecordCoreError` gets advice naming the missing index, and the dead "recordCountKey is nil" string
 match is gone. Integration tests count by a type count key and by a COUNT index, and pin the refusal
 over an ungrouped count key (the first two red on `51c3f90eb`). An unknown record type is Java's
-`MetaDataError` "Unknown record type X" everywhere Go reported one (`unknownRecordTypeError`,
+`MetaDataError` "Unknown record type X" everywhere Go reported one [Superseded → 7.14: but
+`GetTypedRecordStore`] (`unknownRecordTypeError`,
 `SaveRecord`, the batch save, the aggregate functions); the unreachable Java-text branch in the
 per-type count is gone.
 
@@ -2353,7 +2362,7 @@ prefix.
 **The VECTOR option text (graefe 3, torvalds nit a).** The refusal is Java's
 `MetaDataException("incorrect index options", cause)`: the message alone, the parse failure as the
 cause, which `MetaDataError` now carries (`Cause`, `Unwrap`), a `NumberFormatError` for a value that
-does not parse. The windowed-vector specs compare the whole message and the cause's class; the
+does not parse [Superseded → 7.14: "does not parse" was Go's `strconv`'s grammar, not Java's]. The windowed-vector specs compare the whole message and the cause's class; the
 sliding-window texts ("delegate has multiple types", "does not support unique indexes") are compared
 whole; "need to specify the number of dimensions" gets a spec. The synthetic-record-types arm cannot
 fire (Go models no synthetic type, its comment says so) and has no test. DIVERGENCES' VECTOR entry
@@ -2375,7 +2384,8 @@ and its VERIFIED block are marked.
 - The umbrella RFC's one-branch ruling is dated 2026-09-24; item 9 records the owner's evidence
   direction (red→green and Java-versus-Go, mutation only for values that move together).
 - The planner leaves a map fan-out index out of matching; no Go query reaches that match: Java
-  matches it only for a `QueryComponent` that reads the map (`mapMatches`), Go's query surface is SQL
+  matches it only for a `QueryComponent` that reads the map (`mapMatches`) [Superseded → 7.14: or
+  `oneOfThem` over the entries; Java types a map as its entry array], Go's query surface is SQL
   alone, and neither engine's relational types have a map (`DataType.Code`). Measured over `pkg` and
   `cmd` Go files: `type QueryComponent`, `MapMatches` and `mapMatches` have no hit; the control
   `RecordQueryPlan` has hits. Stated at `proto_field_type.go`'s map arm.
@@ -2426,3 +2436,95 @@ VERIFIED (Bazel, test cache on; `evidence/<name>/` under `/var/tmp/fdb-upgrade-r
 - `wsc13-groupalias10`: above.
 - No mutation was run. The paired comparisons this revision adds are Go against Java (the wire-order
   and predicate specs), each side written by its own engine.
+
+### 7.14 Revision 14: a map's stored order kept across a save, no process-wide cache, Java's option parsers, and the single-target preset
+
+Revision 13's gate (`ws-c-addendum-review-v13/`, commit `ba357754d`) returned two NAKs, Graefe's
+(one Medium) and Torvalds' (all Low); the storage lens did not complete (its session ended with the
+task that ran it), so this revision's gate runs it over revisions 13 and 14 together. Both verdicts
+find every revision-12 finding resolved. Revision 14 lands on the migration branch on top of
+`529753bf6` (WS-J's restore, gated with WS-J); the 7.11 to 7.13 sentences it changes are marked
+[Superseded → 7.14].
+
+**No process-wide cache (graefe 1, Medium; torvalds 2).** Whether a record type can hold a map is
+now a `RecordType` field computed once at `Build` (`reachesMap`), as `unionFieldNumber` is; a walk
+over a record's bytes memoizes nested types for that walk only (`mapReach`, a value, never global).
+The `sync.Map` keyed by descriptor, which kept every loaded meta-data's descriptor graph alive, is
+gone.
+
+**A save keeps the stored map order (graefe 2).** Revision 13 wrote a map Go saved in key order, so
+a record Java wrote, loaded and saved unchanged by Go, was rewritten in another order while its index
+entries (the common-entry filter is order-blind in both engines) kept the old last-writer; a rebuild
+in either engine then stored the other value. Java's load-then-save keeps the order (a
+DynamicMessage keeps its entry list, a generated map keeps insertion order). `serializeUnionOver`
+now writes each map in the order the record it replaces stored it (`marshalMapRecord`: the keys the
+stored record held first, in its order, the rest after in key order, whole entries moved, nested
+maps and maps in repeated elements by their instance path), and the new record is indexed in the
+order written (its `FDBStoredRecord` carries the written bytes). A key written twice is kept once, a
+Go map holding it once, in its first position with its last value, the order Java's generated-message
+parse (a LinkedHashMap) gives it. MEASURED, the wire-order JVM spec gains the re-save: Go loads each
+record Java wrote and saves it; the stored key order is Java's but for the twice-written key, the
+maintained index is Java's six pairs less the dropped `x` entry, and a Go online build over the
+re-saved bytes equals it. Red on `529753bf6` (`{1: [a b], 3: [j k]}` against Java's `[b a]`, `[k j]`).
+`TestSerializeUnionOverKeepsTheStoredMapOrder` pins each case in Go.
+
+**Required fields (graefe 3).** The map arm's marshal makes the required-field check the record's
+path makes without a map: none for a vtproto message (`AllowPartial`), protobuf-go's for a dynamic
+one, as before. The entries' own parse is partial, so a record that decoded is never read back in
+key order for that reason.
+
+**Java's option parsers (torvalds 1).** The windowed VECTOR options parse as Java's
+`VectorOptionKey` parses them (`Integer::parseInt`, `Double::parseDouble`, VectorOptionKey.java:213,
+:220): `javaParseInt` (already ported) and `javaParseDouble` (new, FloatingDecimal's grammar: trimmed
+at U+0020, an optional sign, NaN and Infinity, a hex significand with its binary exponent, ASCII
+decimal digits, an optional f/F/d/D suffix; an out-of-range decimal is an infinity or a zero), each
+refusal a `NumberFormatError` with Java's text. JVM spec "A windowed VECTOR index's options parse as
+Java parses them", 13 rows, both loaders' verdicts and texts equal; red on `529753bf6` for
+`hnswM=2147483648` and `１６`, and `0.5d`, ` 0.5 `, `inf`, `nan`, `1_0` (Go's `strconv` either way).
+DIVERGENCES' VECTOR entry states it and the two differences left for WS-D.
+
+**The sliding-window arms on the JVM (graefe 4, torvalds nit a).** "A windowed VECTOR index is
+validated as Java validates it" gives both loaders a unique windowed index, two record types, a
+missing dimension count, a window under a conjunction, a window under an OR alone (not decorated,
+so both build it) and a window beside one under an OR. The last is IndexPredicate's
+`RecordCoreException` in Java, where Go returned a `MetaDataError`: now `RecordCoreError`, red on
+`529753bf6`. The unit specs compare "requires a RowNumberWindowPredicate" and the disjunction text
+whole.
+
+**The online build's preset (torvalds nit: the preset claim was pinned only against Go).** A JVM
+spec builds an index on Order alone with each engine, record type keys a string and an integer, and
+compares the range sets: they differed for BOTH keys. Java's records-scan indexer is
+`IndexingMultiTargetByRecords` for one target or several (OnlineIndexer.getIndexer, :302-314), and
+it presets (IndexingMultiTargetByRecords.java:120); Go preset only for several targets, so a
+single-target build wrote one range `[00, ff)` where Java writes `[00, end)` and `[end, ff)` (the
+build's requireEmpty insert extends the leading gap, RangeSet.java:268-276). Go now presets for
+every records-scan build; the range sets are equal, red on `529753bf6` for both keys.
+
+**Nits.**
+- `errors.go`: the helper no longer splits `KeyExpressionDeserializationError` from its doc.
+- `GetTypedRecordStore`'s unknown type is Java's text; the typed store's record copies carry the
+  wire.
+- A oneof whose members both occur in a record's bytes: the entries read back are the surviving
+  member's from its last switch on (`oneofSurvivors`), as the decoder keeps them; the record no
+  longer falls back to key order. `TestMapEntriesOfAOneofMemberAreTheSurvivingOccurrences`.
+- A generated record type with a map through the store: google.protobuf.Struct as a record type,
+  its stored bytes out of key order, read through `LoadRecord` and the record cursor, top-level and
+  nested (`record_wire_map_order_fdb_test.go`).
+- The string-keyed rebuild specs count the index entries the inline rebuild wrote.
+- `TestValidateDimensionsPositionsIndexTheFieldList` recovers a panic, so a red run reports every
+  other test (revision 13's red unit run stopped at it: "2 unit tests" was a lower bound).
+- The rebuild files' citations of `FDBRecordStore.java` are 4.14.2.0's lines (5062-5155); they were
+  an older release's.
+- The planner comment and 7.13 name `oneOfThem` beside `mapMatches` (Java types a map as its entry
+  array, Type.java:453-455).
+
+**Evidence.** Revision 13's green runs were on its working tree, not the commit's. Revision 14's are
+run after the commit, on a clean tree (`save-evidence.sh`'s TREE shows HEAD, the index tree and an
+empty working diff), and are listed in the gate's prompt. The red runs are on `fdb-wsc10` at
+`529753bf6`'s tree plus the changed test files (`evidence/wsc14-rl-red`, `wsc14-conf-red`): red,
+the disjunction class spec and `TestGetTypedRecordStore_InvalidType` in `recordlayer_test` ("Ran
+3725 of 3726"), and 11 JVM specs (the re-save, both preset keys, the disjunction row, seven option
+rows); green on both, as expected, the Struct spec, the string-keyed entry counts and the rows whose
+behaviour predates this revision. Functions this revision adds (`serializeUnionOver`,
+`javaParseDouble`, `oneofSurvivors`) have unit tests that cannot compile on the old tree; their
+red is the JVM spec each belongs to, where one exists. No mutation was run.

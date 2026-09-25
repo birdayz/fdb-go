@@ -1139,4 +1139,58 @@ class MetaDataStoreSteps extends ConformanceBase {
         result.put("kvs", kvs);
         return result;
     }
+
+    /**
+     * Saves three Orders and two Customers under metaData (whose record types' primary keys lead
+     * with the record type key), marks indexName disabled, builds it with the OnlineIndexer
+     * without marking it readable, and returns the index's range-set key-value pairs (IndexRangeSpace,
+     * 6) relative to the subspace: the records range the build presets (IndexingCommon
+     * .computeRecordsRange, ordered by Tuple.compareTo for any record type key) and the ranges it
+     * built.
+     */
+    @ConformanceStep("buildIndexDumpRangeSetJava")
+    public Map<String, Object> buildIndexDumpRangeSetJava(String clusterFile, byte[] subspace, byte[] metaData,
+                                                          String indexName) throws InvalidProtocolBufferException {
+        final RecordMetaData md = RecordMetaData.build(RecordMetaDataProto.MetaData.parseFrom(metaData, EXTENSION_REGISTRY));
+        final Subspace ss = new Subspace(subspace);
+        runInContext(clusterFile, null, context -> {
+            final FDBRecordStore store = FDBRecordStore.newBuilder().setMetaDataProvider(md).setContext(context)
+                    .setSubspace(ss).setUserVersionChecker(ALWAYS_READABLE_CHECKER).createOrOpen();
+            // Saved as DynamicMessages of the meta-data's own descriptors, which
+            // a meta-data built from proto does not share with the generated classes.
+            try {
+                for (long i = 1; i <= 3; i++) {
+                    store.saveRecord(DynamicMessage.parseFrom(md.getRecordType("Order").getDescriptor(),
+                            Order.newBuilder().setOrderId(i).setPrice((int) (10 * i)).build().toByteString()));
+                }
+                for (long i = 101; i <= 102; i++) {
+                    store.saveRecord(DynamicMessage.parseFrom(md.getRecordType("Customer").getDescriptor(),
+                            RecordLayerDemo.Customer.newBuilder().setCustomerId(i).build().toByteString()));
+                }
+            } catch (InvalidProtocolBufferException e) {
+                throw new IllegalStateException(e);
+            }
+            store.markIndexDisabled(indexName).join();
+            return null;
+        });
+        try (var indexer = com.apple.foundationdb.record.provider.foundationdb.OnlineIndexer.newBuilder()
+                .setDatabase(createDatabase(clusterFile)).setMetaData(md).setSubspace(ss)
+                .setIndex(indexName).build()) {
+            indexer.buildIndex(false);
+        }
+        final Object subspaceKey = md.getIndex(indexName).getSubspaceKey();
+        final List<List<String>> kvs = runInContext(clusterFile, null, context -> {
+            final byte[] prefix = ss.getKey();
+            final List<List<String>> out = new ArrayList<>();
+            for (com.apple.foundationdb.KeyValue kv : context.ensureActive()
+                    .getRange(ss.range(Tuple.from(6L, subspaceKey))).asList().join()) {
+                final byte[] rel = java.util.Arrays.copyOfRange(kv.getKey(), prefix.length, kv.getKey().length);
+                out.add(List.of(java.util.HexFormat.of().formatHex(rel), java.util.HexFormat.of().formatHex(kv.getValue())));
+            }
+            return out;
+        });
+        final Map<String, Object> result = new HashMap<>();
+        result.put("kvs", kvs);
+        return result;
+    }
 }

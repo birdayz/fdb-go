@@ -422,10 +422,14 @@ assets carry (`RELEASE.md` §Versioning).
   proto map's entries builds and is maintained (Go refused it), each entry the key/value message
   protobuf-java reads, and a nesting into a proto2 group builds, where Go refused both; a group read
   as a scalar is refused with Java's text. A record's map entries are indexed in the order its
-  stored bytes hold them, as Java indexes them, so a covering index whose key two entries share
-  stores the last entry's value in both engines, and a key written twice yields both entries; a
-  record type that holds a map is now written with its map entries in key order (the order Go
-  indexes a record it saves), including a generated type whose vtproto marshal would not sort them.
+  stored bytes hold them, as Java's default serializer (a DynamicMessage) indexes them, so a
+  covering index whose key two entries share stores the last entry's value in both engines, and a
+  key written twice yields both entries. A record type that holds a map is written with each map in
+  the order the record it replaces stored it, new keys after in key order, and a new record's maps in
+  key order, and it is indexed in the order written: a record Java wrote that Go loads and saves
+  unchanged keeps its entries' order and its index entries, except that a key written twice is kept
+  once (a Go map holds it once), in its first position with its last value. vtproto's marshal, which
+  writes a map in Go's random order, is no longer used for such a type.
 - **Key validation Java makes at build, Go makes** (RFC-257 WS-C): a MULTIDIMENSIONAL index's
   dimension columns must be protobuf `int64` ("the declared dimension columns have to be of type
   INT64"), so meta-data with dimensions over `int32` fields no longer builds; the prefix and
@@ -441,10 +445,18 @@ assets carry (`RELEASE.md` §Versioning).
   index rebuild counts or probes only that type's records when every new index is on it, and the
   online indexer's build presets the ranges outside the indexed types, ordering the type keys as
   Java's `Tuple.compareTo` does; Go treated a string or bytes key as covering the whole store.
+- **A single-target online build by records presets the out-of-range gaps, as Java's does**: Java's
+  records-scan indexer is its multi-target one for any number of targets, and Go preset only for
+  several, so an index built alone left a range set Java does not write (one range where Java writes
+  two); the range-set bytes are now Java's (JVM spec, for an integer and a string record type key).
 - An unknown record type is refused with Java's text, "Unknown record type X" (`MetaDataError`),
-  by `SaveRecord` and the aggregate functions, and a vector index option that does not parse is
+  by `SaveRecord`, the aggregate functions and `GetTypedRecordStore` (which said "record type 'X'
+  not found in metadata"). A windowed vector index's integer and double options parse as Java's
+  `Integer.parseInt` and `Double.parseDouble` (Go admitted `hnswM=2147483648`, `inf` and `nan`, and
+  refused Unicode digits, `0.5d` and a padded value, each the other way in Java), and a refusal is
   Java's `MetaDataError` "incorrect index options", its parse error the cause (`Unwrap`;
-  `MetaDataError` gains `Cause`).
+  `MetaDataError` gains `Cause`). A row-number window under a disjunction is Java's
+  `RecordCoreError`, not a `MetaDataError`.
 - A literal key column holding an `int_value` (`Literal(int32(n))`, the width Go's DDL now writes,
   as Java's) is maintained as the integer Java writes; it panicked in the tuple encoder on the
   first save.

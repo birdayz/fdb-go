@@ -15072,3 +15072,11 @@ reads, carry checks (i) to (iv) and retry, and a fix found on the way (an `int_v
 panicked on save). Step 1 of section 8 is complete; NEXT is step 2 (the unified DDL front end), then
 step 3 (metadata order and the carry rule inside `CreateTemplate`).
 
+### RFC-257 WS-C revision 14 (booked 2026-09-25)
+
+LANDED (ws-c-design.md 7.14), folding the v13 gate (Graefe and Torvalds NAKs; storage incomplete):
+per-RecordType map reach (no global cache), a save keeping the stored map order, Java's option
+parsers for windowed VECTOR options, the window-under-OR class, the single-target preset (a range-set
+divergence for every key type, found by the new JVM spec), and nits. NEXT: the revision-14 gate
+(`ws-c-addendum-review-v14/`, storage over revisions 13 and 14).
+
