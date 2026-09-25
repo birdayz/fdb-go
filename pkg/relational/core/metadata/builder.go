@@ -26,11 +26,15 @@ import (
 // for CREATE SCHEMA TEMPLATE DDL: name, version, tables with typed
 // columns and primary keys, and store-level flags.
 type Builder struct {
-	name             string
-	version          int
-	tables           []tableSpec
-	auxTypes         []api.Named // CREATE TYPE AS STRUCT registrations (aux_types.go)
-	errs             []error     // deferred errors from AddIndex
+	name     string
+	version  int
+	tables   []tableSpec
+	auxTypes []api.Named // CREATE TYPE AS STRUCT registrations (aux_types.go)
+	errs     []error     // deferred errors from AddIndex
+	// indexedTables is the table of each index added, in the order added: the
+	// order of a DDL statement's index clauses, which MoveIndexedTablesToEnd
+	// replays as Java's DdlVisitor does.
+	indexedTables    []string
 	intermingleTbls  bool
 	enableLongRows   bool
 	storeRowVersions bool
@@ -198,6 +202,7 @@ func (b *Builder) AddIndex(tableName, indexName string, columns []string, unique
 				return b
 			}
 		}
+		b.indexedTables = append(b.indexedTables, tableName)
 		b.tables[i].indexes = append(b.tables[i].indexes, indexSpec{
 			name:    indexName,
 			columns: columns,
@@ -230,6 +235,7 @@ func (b *Builder) AddGeneratedIndex(tableName, indexName string, rootExpression 
 		if b.tables[i].name != tableName {
 			continue
 		}
+		b.indexedTables = append(b.indexedTables, tableName)
 		b.tables[i].indexes = append(b.tables[i].indexes, indexSpec{
 			name:           indexName,
 			unique:         unique,
@@ -272,6 +278,7 @@ func (b *Builder) AddAggregateIndex(tableName, indexName string, groupColumns []
 				indexName, tableName, aggColumn))
 			return b
 		}
+		b.indexedTables = append(b.indexedTables, tableName)
 		b.tables[i].indexes = append(b.tables[i].indexes, indexSpec{
 			name:      indexName,
 			columns:   groupColumns,
@@ -316,6 +323,7 @@ func (b *Builder) AddCardinalityIndex(tableName, indexName, cardColumn string) *
 				indexName, tableName, head))
 			return b
 		}
+		b.indexedTables = append(b.indexedTables, tableName)
 		b.tables[i].indexes = append(b.tables[i].indexes, indexSpec{
 			name:              indexName,
 			cardinalityColumn: cardColumn,
@@ -357,6 +365,7 @@ func (b *Builder) AddFanOutIndex(tableName, indexName, column string) *Builder {
 				indexName, tableName, column))
 			return b
 		}
+		b.indexedTables = append(b.indexedTables, tableName)
 		b.tables[i].indexes = append(b.tables[i].indexes, indexSpec{
 			name:         indexName,
 			fanOutColumn: column,
@@ -432,6 +441,7 @@ func (b *Builder) AddVectorIndexUsing(method, tableName, indexName, vectorColumn
 				return b
 			}
 		}
+		b.indexedTables = append(b.indexedTables, tableName)
 		b.tables[i].indexes = append(b.tables[i].indexes, indexSpec{
 			name:             indexName,
 			vector:           true,
@@ -445,6 +455,31 @@ func (b *Builder) AddVectorIndexUsing(method, tableName, indexName, vectorColumn
 	}
 	b.errs = append(b.errs, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
 		"vector index %q references unknown table %q", indexName, tableName))
+	return b
+}
+
+// MoveIndexedTablesToEnd is Java's DdlVisitor.visitCreateSchemaTemplateStatement
+// after it has generated every index (:559-564): for each index clause, in
+// clause order, the index's table is extracted and added back
+// (RecordLayerSchemaTemplate.Builder.extractTable then addTable), which MOVES it
+// to the end of the builder's table order. Build numbers union fields, record
+// type keys and descriptor messages in table order and registers each table's
+// indexes in insertion order, so their versions follow: a table no index names
+// keeps its declaration slot ahead of the indexed ones, which end in the order of
+// each one's last index clause. Only the DDL front end calls it; a template
+// built in code keeps the order its caller gave (RFC-257 WS-J section 4, F3).
+func (b *Builder) MoveIndexedTablesToEnd() *Builder {
+	for _, name := range b.indexedTables {
+		for i := range b.tables {
+			if b.tables[i].name != name {
+				continue
+			}
+			tbl := b.tables[i]
+			b.tables = append(append(b.tables[:i:i], b.tables[i+1:]...), tbl)
+			break
+		}
+	}
+	b.indexedTables = nil
 	return b
 }
 
@@ -493,6 +528,7 @@ func (b *Builder) Build() (*RecordLayerSchemaTemplate, error) {
 	// it; the COUNT-index + CardinalitiesProperty replacement is booked in
 	// TODO.md.
 
+	var laterCompanions []func() error
 	for tableIdx, tbl := range b.tables {
 		// Record type names are STORAGE names (Java: the Type.Record storage
 		// name, ProtoUtils.toProtoBufCompliantName of the user name — they
@@ -514,11 +550,12 @@ func (b *Builder) Build() (*RecordLayerSchemaTemplate, error) {
 				"record type %q not found after SetRecords", storageName)
 		}
 		rt := mdBuilder.GetRecordType(storageName)
-		// Explicit record type key = 0-based declaration index, exactly
-		// Java's RecordMetadataSerializer visit(Table):
-		// setRecordTypeKey(recordTypeCounter++). Stored metadata (and the
-		// record-store key prefix for non-intermingled tables), so it must
-		// match byte-for-byte.
+		// Explicit record type key = the table's 0-based position in the
+		// builder's table order, exactly Java's RecordMetadataSerializer
+		// visit(Table): setRecordTypeKey(recordTypeCounter++). For DDL that
+		// order is Java's (MoveIndexedTablesToEnd), not declaration order.
+		// Stored metadata (and the record-store key prefix for
+		// non-intermingled tables), so it must match byte-for-byte.
 		rt.SetRecordTypeKey(int64(tableIdx))
 		// Index key expressions must match the stored descriptor shape: with
 		// the NullableArrayWrapper emitted, any field path through a nullable
@@ -686,10 +723,22 @@ func (b *Builder) Build() (*RecordLayerSchemaTemplate, error) {
 				companions = append(companions, companion)
 			}
 		}
-		for _, rl := range append(tableIndexes, companions...) {
+		for _, rl := range tableIndexes {
 			if rerr := registerIndex(rl); rerr != nil {
 				return nil, rerr
 			}
+		}
+		for _, rl := range companions {
+			laterCompanions = append(laterCompanions, func() error { return registerIndex(rl) })
+		}
+	}
+	// The companions are registered after every declared index of every table,
+	// so each declared index takes the version Java gives it; they take the top
+	// slots and raise only the metadata version, by their count
+	// (DIVERGENCES.md, "RFC-209 group-existence companions").
+	for _, register := range laterCompanions {
+		if rerr := register(); rerr != nil {
+			return nil, rerr
 		}
 	}
 

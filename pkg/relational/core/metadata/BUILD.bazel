@@ -38,6 +38,7 @@ go_test(
         "proto_types_test.go",
         "schema_template_test.go",
         "struct_column_test.go",
+        "table_order_test.go",
     ],
     embed = [":metadata"],
     deps = [

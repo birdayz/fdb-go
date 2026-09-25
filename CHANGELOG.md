@@ -361,7 +361,14 @@ assets carry (`RELEASE.md` §Versioning).
     earlier Go build stored are pre-release data (above). An INT literal outside 32 bits is refused
     (XX000) instead of wrapping, whatever Go integer kind carries it;
   - index options are stored in Java's insertion order (`unique` first, then the type's options), where
-    Go wrote them in map iteration order, so the stored bytes varied from build to build.
+    Go wrote them in map iteration order, so the stored bytes varied from build to build;
+  - a template's tables are numbered in Java's order (its record type keys, union field numbers and
+    descriptor messages) and its index versions assigned in it: Java's `DdlVisitor` moves each table
+    an index clause names to the end of the table order, in clause order, where Go kept declaration
+    order; the RFC-209 group-existence companions take the versions after every declared index. The
+    WS-J oracle's 180 template runs whose metadata differed from the target's now store the target's
+    bytes (or differ only by the companions). A new version of a stored template keeps the stored
+    numbering through the carry rule (RFC-257 WS-J section 4).
 - **Long-arithmetic key functions read any numeric operand as Java's `getNullableLong` does**
   (truncating toward zero, NaN to 0, saturating), where Go refused every non-`int64` operand; the
   index entries equal the target's byte for byte (WS-J F2b spec). Go does not serve a query from such

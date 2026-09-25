@@ -2552,7 +2552,11 @@ already exists: t").
 - CREATE SCHEMA over a gone version returns XX000 where Java returns 42F55: step 4's existence
   policies, which follow step 3.
 
-**Step 3, restated.** In both catalogs' `CreateTemplate`, in this order: the exact-duplicate refusal
+**Step 3, restated.** STATUS: F3's order with companions last has landed (`Builder.MoveIndexedTablesToEnd`,
+called by the DDL front end's `buildSchemaTemplate`; `TestMoveIndexedTablesToEndIsJavasTableOrder`):
+the WS-J oracle's pins moved 187 runs toward the target (157 metadata-diverge and 2 index-diverge runs
+to equal, 23 and 2 to companion, 3 companion digests), none away, and no metadata-diverge run is left.
+The rest is owed. In both catalogs' `CreateTemplate`, in this order: the exact-duplicate refusal
 (DUPLICATE_SCHEMA_TEMPLATE), the `v′ <= latest` refusal (INVALID_SCHEMA_TEMPLATE), the relational
 validator over the stored latest (moved from `SaveSchemaTemplateConstantAction`), the version guard,
 the carry over `LoadTemplateProto`'s bytes (`ClassifyIndexCarry`: EQUIVALENT carried as stored,

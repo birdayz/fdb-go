@@ -3263,3 +3263,16 @@ where the out-of-range count or size is first used. Inside a meta-data proto the
 wrapped in `MetaDataProtoDeserializationError`, since they are not Java's
 `DeserializationException`.
 
+
+### RFC-209 group-existence companions: indexes Java's DDL does not create (RFC-257 WS-J)
+
+A Go-only extension. For an aggregate index whose groups a query needs to enumerate, Go's DDL
+builder registers a companion index the target's `DdlVisitor` does not
+(`pkg/relational/core/metadata/builder.go`, `laterCompanions`). Since RFC-257 WS-J's F3 port the
+companions are registered after every declared index of every table, so each declared index carries
+the version the target gives it and the companions take the top version slots; the template's
+metadata version exceeds the target's by the companion count. A target rebuild of the same DDL
+therefore has the lower metadata version and lacks the companion indexes, which Go reads as index
+removals; the WS-J oracle's companion class compares Go's metadata with the verified companions and
+the version slots they take removed (ws-j-design.md section 0), and its companion runs (29 of 479 at the F3 port)
+pass that comparison. No record or index-entry bytes of a declared index differ.

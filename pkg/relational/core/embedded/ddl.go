@@ -246,6 +246,10 @@ func buildSchemaTemplate(s *antlrgen.CreateSchemaTemplateStatementContext) (*met
 			return nil, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate, "index: %v", err)
 		}
 	}
+	// Java generates every index first and then moves each index's table to the
+	// end, in clause order (DdlVisitor.java:559-564), which decides the record
+	// type keys, union field numbers and index versions the template stores.
+	b.MoveIndexedTablesToEnd()
 
 	return b.Build()
 }
