@@ -16,6 +16,7 @@ import (
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/rabitq"
 	. "github.com/onsi/ginkgo/v2"
@@ -2189,14 +2190,21 @@ var _ = Describe("HNSW with RaBitQ", func() {
 			for i := 0; i < 12; i++ {
 				Expect(graph.Insert(tx, tuple.Tuple{int64(i)}, []float64{float64(i), 1, 2, 3})).To(Succeed())
 			}
-			snapshot := func() []fdb.KeyValue {
-				r, perr := fdb.PrefixRange(graph.storage.dataSubspace.Bytes())
-				Expect(perr).NotTo(HaveOccurred())
-				kvs, gerr := tx.GetRange(r, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}).GetSliceWithError()
-				Expect(gerr).NotTo(HaveOccurred())
-				return kvs
+			// The nodes, the access info and the samples: Java's Insert
+			// returns before sampling too (Insert.java:195-197).
+			snapshot := func() [][]fdb.KeyValue {
+				var out [][]fdb.KeyValue
+				for _, sub := range []subspace.Subspace{graph.storage.dataSubspace, graph.storage.accessSubspace, graph.storage.samplesSubspace} {
+					r, perr := fdb.PrefixRange(sub.Bytes())
+					Expect(perr).NotTo(HaveOccurred())
+					kvs, gerr := tx.GetRange(r, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}).GetSliceWithError()
+					Expect(gerr).NotTo(HaveOccurred())
+					out = append(out, kvs)
+				}
+				return out
 			}
 			before := snapshot()
+			Expect(before[1]).NotTo(BeEmpty(), "the access info is written")
 			Expect(graph.Insert(tx, tuple.Tuple{int64(5)}, []float64{-9, -9, -9, -9})).To(Succeed())
 			Expect(snapshot()).To(Equal(before), "the graph's bytes are unchanged")
 			return nil, nil

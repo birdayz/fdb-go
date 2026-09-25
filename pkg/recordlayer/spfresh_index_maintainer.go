@@ -53,9 +53,9 @@ func newSPFreshIndexMaintainer(
 	rctx *FDBRecordContext,
 	timer *StoreTimer,
 ) (*spfreshIndexMaintainer, error) {
-	config := parseSPFreshConfig(index)
-	if err := ValidateSPFreshConfig(config); err != nil {
-		return nil, fmt.Errorf("spfresh index %q: %w", index.Name, err)
+	config, err := readSPFreshConfig(index)
+	if err != nil {
+		return nil, err
 	}
 	if index.primaryKeyComponentPositions != nil {
 		// The index stores TrimPrimaryKey'd tails; with PK components shared
@@ -1120,9 +1120,9 @@ func buildSPFreshIndex(ctx context.Context, db *FDBDatabase, storeBuilder func(*
 		if index.Type != IndexTypeVectorSPFresh {
 			return fmt.Errorf("spfresh build: index %q has type %q", indexName, index.Type)
 		}
-		config = parseSPFreshConfig(index)
-		if verr := ValidateSPFreshConfig(config); verr != nil {
-			return verr
+		var cerr error
+		if config, cerr = readSPFreshConfig(index); cerr != nil {
+			return cerr
 		}
 		indexSubspace = store.indexSubspace(index)
 		md := store.GetMetaData()

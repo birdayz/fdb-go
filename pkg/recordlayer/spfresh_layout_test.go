@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -202,7 +203,10 @@ func TestParseSPFreshConfig(t *testing.T) {
 			IndexOptionSPFreshSidecar:       "false",
 		},
 	}
-	c := parseSPFreshConfig(idx)
+	c, err := parseSPFreshConfig(idx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if c.NumDimensions != 768 || c.Metric != VectorMetricCosine || c.Lmax != 128 ||
 		c.Alpha != 1.5 || c.Sidecar {
 		t.Fatalf("parse mismatch: %+v", c)
@@ -211,7 +215,7 @@ func TestParseSPFreshConfig(t *testing.T) {
 	// SPFRESH; a silent Euclidean fallback made the planner candidate
 	// advertise squared distances while re-rank returned true L2).
 	idx.Options[IndexOptionSPFreshMetric] = "EUCLIDEAN_SQUARE_METRIC"
-	if c := parseSPFreshConfig(idx); c.Metric != VectorMetricEuclideanSquare {
+	if c, err := parseSPFreshConfig(idx); err != nil || c.Metric != VectorMetricEuclideanSquare {
 		t.Fatalf("EUCLIDEAN_SQUARE_METRIC parsed to %v, want VectorMetricEuclideanSquare", c.Metric)
 	}
 	// Absent options take RFC defaults.
@@ -262,4 +266,38 @@ func FuzzSPFreshPostingPKSpan(f *testing.F) {
 			t.Fatalf("span decodes to %d elements, postingPK gave %d", len(got), len(pk))
 		}
 	})
+}
+
+// An SPFresh option that does not parse, and a metric that is not one of the
+// four Metric names, is refused rather than read as its default: "cosine" was
+// maintained as Euclidean while the planner read it as cosine.
+func TestParseSPFreshConfigRefusesWhatDoesNotParse(t *testing.T) {
+	t.Parallel()
+	for key, v := range map[string]string{
+		IndexOptionSPFreshMetric:          "cosine",
+		IndexOptionSPFreshLmax:            "sixteen",
+		IndexOptionSPFreshAlpha:           "1,5",
+		IndexOptionSPFreshSidecar:         "maybe",
+		IndexOptionSPFreshNumDimensions:   "",
+		IndexOptionSPFreshRaBitQNumExBits: "1.0",
+	} {
+		idx := &Index{Name: "v", Type: IndexTypeVectorSPFresh, Options: map[string]string{
+			IndexOptionSPFreshNumDimensions: "8", key: v,
+		}}
+		if _, err := parseSPFreshConfig(idx); err == nil {
+			t.Errorf("%s=%q parsed", key, v)
+		}
+	}
+	idx := &Index{Name: "v", Type: IndexTypeVectorSPFresh, Options: map[string]string{
+		IndexOptionSPFreshNumDimensions: "8", IndexOptionSPFreshMetric: "cosine",
+	}}
+	var iae *IllegalArgumentError
+	if _, err := parseSPFreshConfig(idx); !errors.As(err, &iae) || iae.Message != "No enum constant com.apple.foundationdb.linear.Metric.cosine" {
+		t.Errorf("metric cosine: %v", err)
+	}
+	if _, err := readSPFreshConfig(&Index{Name: "v", Type: IndexTypeVectorSPFresh, Options: map[string]string{
+		IndexOptionSPFreshNumDimensions: "8", IndexOptionSPFreshRaBitQNumExBits: "0",
+	}}); err == nil {
+		t.Error("readSPFreshConfig admitted 0 extra bits")
+	}
 }

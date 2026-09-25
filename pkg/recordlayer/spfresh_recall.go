@@ -74,7 +74,10 @@ func MeasureSPFreshRecall(ctx context.Context, store *FDBRecordStore, indexName 
 	if idx.Type != IndexTypeVectorSPFresh {
 		return report, fmt.Errorf("spfresh recall: index %q has type %q, not %q", indexName, idx.Type, IndexTypeVectorSPFresh)
 	}
-	config := parseSPFreshConfig(idx)
+	config, err := readSPFreshConfig(idx)
+	if err != nil {
+		return report, err
+	}
 
 	// Which record types this index covers.
 	allowed := map[string]bool{}

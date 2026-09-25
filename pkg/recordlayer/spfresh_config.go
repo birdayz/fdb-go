@@ -262,42 +262,55 @@ func ValidateSPFreshConfig(c SPFreshConfig) error {
 	return nil
 }
 
-// parseSPFreshConfig builds an SPFreshConfig from index options, applying
-// RFC-094 defaults for absent options. Invalid values fall back to defaults
-// (matching parseHNSWConfig's tolerance); ValidateSPFreshConfig is the
-// hard gate and runs at maintainer construction.
-func parseSPFreshConfig(index *Index) SPFreshConfig {
-	config := DefaultSPFreshConfig(0)
+// readSPFreshConfig is the configuration every SPFresh entry point runs with:
+// parseSPFreshConfig, then ValidateSPFreshConfig. The maintainer, the build,
+// the rebalancer, refine, recall, the integrity check and the search wrapper
+// all read through it, so no path runs over a configuration the maintainer
+// would refuse (a 0-bit RaBitQ count reached the encoder's panic through the
+// rebalancer, which parsed without validating).
+func readSPFreshConfig(index *Index) (SPFreshConfig, error) {
+	config, err := parseSPFreshConfig(index)
+	if err != nil {
+		return SPFreshConfig{}, err
+	}
+	if err := ValidateSPFreshConfig(config); err != nil {
+		return SPFreshConfig{}, fmt.Errorf("spfresh index %q: %w", index.Name, err)
+	}
+	return config, nil
+}
 
-	if v, ok := index.Options[IndexOptionSPFreshNumDimensions]; ok {
-		if n, err := strconv.Atoi(v); err == nil {
-			config.NumDimensions = n
+// parseSPFreshConfig builds an SPFreshConfig from index options, applying
+// RFC-094 defaults for absent options. A present option that does not parse,
+// and a metric that is not one of the four Metric names, is refused: a value
+// read as its default would build the index with a configuration the options
+// do not name (a "cosine" metric was maintained as Euclidean while the planner
+// read it as cosine), as the HNSW reader refuses it (readHNSWOptions).
+func parseSPFreshConfig(index *Index) (SPFreshConfig, error) {
+	config := DefaultSPFreshConfig(0)
+	var err error
+	fail := func(key, v string) {
+		if err == nil {
+			err = &MetaDataError{Message: fmt.Sprintf("spfresh index %q: option %s=%q does not parse", index.Name, key, v)}
 		}
 	}
 	if v, ok := index.Options[IndexOptionSPFreshMetric]; ok {
-		switch v {
-		case "EUCLIDEAN_METRIC":
-			config.Metric = VectorMetricEuclidean
-		case "COSINE_METRIC":
-			config.Metric = VectorMetricCosine
-		case "DOT_PRODUCT_METRIC":
-			config.Metric = VectorMetricInnerProduct
-		case "EUCLIDEAN_SQUARE_METRIC":
-			// The DDL accepts it for USING SPFRESH (same metric grammar as
-			// HNSW), so the maintainer must honor it — a silent fall-through
-			// to Euclidean made the candidate advertise squared distances
-			// while re-rank returned true L2. Same kNN ordering; only the
-			// reported distance differs.
-			config.Metric = VectorMetricEuclideanSquare
+		m, merr := spfreshMetricNamed(v)
+		if merr != nil {
+			return SPFreshConfig{}, merr
 		}
+		config.Metric = m
 	}
 	parseInt := func(key string, dst *int) {
 		if v, ok := index.Options[key]; ok {
-			if n, err := strconv.Atoi(v); err == nil {
-				*dst = n
+			n, perr := strconv.Atoi(v)
+			if perr != nil {
+				fail(key, v)
+				return
 			}
+			*dst = n
 		}
 	}
+	parseInt(IndexOptionSPFreshNumDimensions, &config.NumDimensions)
 	parseInt(IndexOptionSPFreshLmax, &config.Lmax)
 	parseInt(IndexOptionSPFreshLminRatio, &config.LminRatio)
 	parseInt(IndexOptionSPFreshCellTarget, &config.CellTarget)
@@ -308,16 +321,35 @@ func parseSPFreshConfig(index *Index) SPFreshConfig {
 	parseInt(IndexOptionSPFreshCooldownSec, &config.CooldownSec)
 	parseInt(IndexOptionSPFreshRaBitQNumExBits, &config.NumExBits)
 	if v, ok := index.Options[IndexOptionSPFreshAlpha]; ok {
-		if f, err := strconv.ParseFloat(v, 64); err == nil {
+		if f, perr := strconv.ParseFloat(v, 64); perr == nil {
 			config.Alpha = f
+		} else {
+			fail(IndexOptionSPFreshAlpha, v)
 		}
 	}
 	if v, ok := index.Options[IndexOptionSPFreshSidecar]; ok {
-		if b, err := strconv.ParseBool(v); err == nil {
+		if b, perr := strconv.ParseBool(v); perr == nil {
 			config.Sidecar = b
+		} else {
+			fail(IndexOptionSPFreshSidecar, v)
 		}
 	}
-	return config
+	if err != nil {
+		return SPFreshConfig{}, err
+	}
+	return config, nil
+}
+
+// spfreshMetricNamed is an SPFresh index's metric option: one of Java's four
+// Metric names (the DDL writes EUCLIDEAN_SQUARE_METRIC too; a fall-through to
+// Euclidean made the candidate advertise squared distances while re-rank
+// returned true L2), refused otherwise with Metric.valueOf's text.
+func spfreshMetricNamed(v string) (VectorMetric, error) {
+	switch v {
+	case "EUCLIDEAN_METRIC", "EUCLIDEAN_SQUARE_METRIC", "COSINE_METRIC", "DOT_PRODUCT_METRIC":
+		return vectorMetricNamed(v), nil
+	}
+	return VectorMetricEuclidean, &IllegalArgumentError{Message: "No enum constant com.apple.foundationdb.linear.Metric." + v}
 }
 
 // spfreshCoarseSampleCap bounds the coarse-k-means training sample in

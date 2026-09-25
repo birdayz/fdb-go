@@ -15152,3 +15152,14 @@ the restore failing closed over an unreadable index; the normative design text s
 withdrawn design. The RFC-257 parity JVM specs moved to `//conformance:rfc257_parity_test`
 (conformance_test used 95% of its CI budget). NEXT: the v18 gate (`ws-j-design-review-v18/`), then
 step 3 (4e "Step 3, restated", with 4f's additions).
+
+### RFC-257 WS-C revision 18 (booked 2026-09-25)
+
+LANDED (ws-c-design.md 7.18), folding the v17 gate's three NAKs (`ws-c-addendum-review-v17/`): the
+vector maintainer skips an entry the old and new record share, as Java's inherited update does (a
+save keeping the vector makes no graph call, and is served under 9 to 15 RaBitQ bits after the
+centroid, JVM-measured); SPFresh reads its configuration strictly through one function at every
+entry point (no path to the encoder's panic; an unknown metric refused); the planner takes a vector
+index's metric from the maintainer's parse (`recordlayer.VectorIndexMetric`; query-engine change,
+for the gate's Graefe lens); Java's unknown-field order within a field and its minimal re-encoding
+measured and declared. NEXT: the revision-18 gate (`ws-c-addendum-review-v18/`).

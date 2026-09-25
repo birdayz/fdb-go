@@ -49,7 +49,11 @@ func SearchSPFreshIndex(store *FDBRecordStore, indexName string, queryVector []f
 	// distance kernel slices centroid vectors to len(queryVector) and would
 	// panic on a longer query. ScanByDistance and the HNSW direct API both
 	// guard this; this wrapper must too.
-	if cfg := parseSPFreshConfig(idx); len(queryVector) != cfg.NumDimensions {
+	cfg, err := readSPFreshConfig(idx)
+	if err != nil {
+		return nil, err
+	}
+	if len(queryVector) != cfg.NumDimensions {
 		return nil, fmt.Errorf("spfresh search: index %q expects %d dimensions, query has %d", indexName, cfg.NumDimensions, len(queryVector))
 	}
 	maintainer, err := store.getIndexMaintainer(idx)
@@ -161,7 +165,10 @@ func SPFreshCheckIntegrity(rtx *FDBRecordContext, store *FDBRecordStore, indexNa
 		return report, fmt.Errorf("spfresh integrity: index %q has type %q, not %q", indexName, idx.Type, IndexTypeVectorSPFresh)
 	}
 
-	config := parseSPFreshConfig(idx)
+	config, err := readSPFreshConfig(idx)
+	if err != nil {
+		return report, err
+	}
 	tx := rtx.Transaction()
 	metaStorage := newSPFreshStorage(store.indexSubspace(idx), 0)
 	gen, err := spfreshReadGenerationSnapshot(tx, metaStorage)

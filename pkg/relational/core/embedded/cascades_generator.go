@@ -3855,25 +3855,23 @@ func tryVectorIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMetaD
 	if kwv, ok := idx.RootExpression.(*recordlayer.KeyWithValueExpression); ok {
 		partitionCount = kwv.SplitPoint()
 	}
-	metricOption, _ := recordlayer.VectorIndexMetricOption(idx)
-	if idx.Type == recordlayer.IndexTypeVectorSPFresh {
-		metricOption = idx.Options[recordlayer.IndexOptionSPFreshMetric]
+	if idx.Type == recordlayer.IndexTypeVectorSPFresh && partitionCount > 0 {
 		// The SPFresh maintainer rejects prefixed (grouped) scans; a
 		// partitioned candidate would plan queries the executor cannot run.
 		// The DDL already rejects PARTITION BY USING SPFRESH — this guards
 		// directly-constructed metadata.
-		if partitionCount > 0 {
-			return nil
-		}
-	}
-	metric, ok := vectorMetricOperator(metricOption)
-	if !ok {
-		// Unrecognized metric (corrupt or newer-version metadata). Don't build
-		// a candidate with a wrong default metric; without the candidate the
-		// QUALIFY distance predicate stays uncompensatable and the query fails
-		// to plan rather than returning wrong-metric results.
 		return nil
 	}
+	parsed, err := recordlayer.VectorIndexMetric(idx)
+	if err != nil {
+		// A metric the maintainer refuses (corrupt or newer-version metadata):
+		// no candidate, so the QUALIFY distance predicate stays
+		// uncompensatable and the query fails to plan rather than returning
+		// wrong-metric results. Java's expansion throws there; the index's
+		// writes fail in both engines.
+		return nil
+	}
+	metric := vectorDistanceOperator(parsed)
 
 	rts := md.RecordTypesForIndex(idx)
 	rtNames := make([]string, len(rts))
@@ -3903,26 +3901,18 @@ func tryVectorIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMetaD
 	).WithPartitionKeyComponentTypes(partitionTypes)
 }
 
-// vectorMetricOperator maps the stored HNSW metric option (Java Metric enum
-// name) to the cascades DistanceOperator used by the distance placeholder. An
-// absent option defaults to Euclidean, matching Java's
-// VectorIndexExpansionVisitor (`getOrDefault(HNSW_METRIC, Config.DEFAULT_METRIC)`
-// where DEFAULT_METRIC == EUCLIDEAN_METRIC). It returns ok=false for an
-// unrecognized non-empty metric: Java throws there; we instead skip the
-// candidate so a corrupt or newer-version metric never silently maps to
-// Euclidean and serves the wrong distance.
-func vectorMetricOperator(name string) (values.DistanceOperator, bool) {
-	switch name {
-	case "", "EUCLIDEAN_METRIC", "euclidean":
-		return values.DistanceEuclidean, true
-	case "EUCLIDEAN_SQUARE_METRIC":
-		return values.DistanceEuclideanSquare, true
-	case "COSINE_METRIC", "cosine":
-		return values.DistanceCosine, true
-	case "DOT_PRODUCT_METRIC", "inner_product":
-		return values.DistanceDotProduct, true
+// vectorDistanceOperator is the distance placeholder's operator for the metric
+// the index is maintained with (recordlayer.VectorIndexMetric).
+func vectorDistanceOperator(m recordlayer.VectorMetric) values.DistanceOperator {
+	switch m {
+	case recordlayer.VectorMetricEuclideanSquare:
+		return values.DistanceEuclideanSquare
+	case recordlayer.VectorMetricCosine:
+		return values.DistanceCosine
+	case recordlayer.VectorMetricInnerProduct:
+		return values.DistanceDotProduct
 	default:
-		return values.DistanceEuclidean, false
+		return values.DistanceEuclidean
 	}
 }
 

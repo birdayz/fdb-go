@@ -622,7 +622,11 @@ func SPFreshDebugTopology(rtx *FDBRecordContext, store *FDBRecordStore, indexNam
 	if err != nil {
 		return fmt.Sprintf("gen err=%v", err)
 	}
-	return spfreshDebugTopology(rtx.Transaction(), newSPFreshStorage(store.indexSubspace(idx), gen), parseSPFreshConfig(idx).Lmax)
+	config, err := readSPFreshConfig(idx)
+	if err != nil {
+		return fmt.Sprintf("config err=%v", err)
+	}
+	return spfreshDebugTopology(rtx.Transaction(), newSPFreshStorage(store.indexSubspace(idx), gen), config.Lmax)
 }
 
 // SPFreshDebugIntegrity samples up to `sample` pks evenly from the index's

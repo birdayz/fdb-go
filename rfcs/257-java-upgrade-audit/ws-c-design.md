@@ -2673,7 +2673,8 @@ IllegalArgumentException of it (a NumberFormatException included) under "incorre
 The maintainer (`parseHNSWConfig`) and the evolution check read with the same reader, so a
 configuration Java refuses fails the maintainer instead of taking a default, and the evolution check
 compares the RaBitQ count, the metric and the switch as parsed (a key covers its alias there too).
-RaBitQ with 9 to 15 bits, which Config admits and Java's `RaBitQuantizer` refuses when the index is
+RaBitQ with 9 to 15 bits, which Config admits and Java's `RaBitQuantizer` refuses [Superseded → 7.17:
+when an operation first quantizes, not "when the index is maintained"] when the index is
 maintained (RaBitQuantizer.java:76), is refused where Go's maintainer makes its quantizer [Superseded
 → 7.17: where Java constructs it, when an operation first quantizes], not
 silently encoded with 4 (`rabitq.NewQuantizer` clamped). A plain VECTOR index keeps two Go forms, the
@@ -2751,9 +2752,11 @@ non-empty graph calls, and `Insert.firstInsert` (Insert.java:274-285) for a metr
 translation-preserving. Revision 16 refused at maintainer construction, which refused every save of
 a Euclidean index that Java serves until its centroid is established. `parseHNSWConfig` now keeps
 the count, and `hnswGraph.raBitQuantizerAdmits` refuses at exactly those points (an
-`IllegalArgumentError`; Java's has no message). `rabitq.NewQuantizer` no longer replaces an
+`IllegalArgumentError`; Java's has no message) [Superseded → 7.18: a save that leaves the vector
+entry unchanged reaches none of them, in either engine]. `rabitq.NewQuantizer` no longer replaces an
 unsupported count by 4 (`rabitq.ValidNumExBits` is the encoder's range); SPFresh's validation, which
-admitted 0 extra bits and then stored 4-bit codes sized as 1-bit ones, now requires 1 to 8. A JVM
+admitted 0 extra bits and then stored 4-bit codes sized as 1-bit ones, now requires 1 to 8
+[Superseded → 7.18: and every SPFresh entry point runs it]. A JVM
 spec, "An HNSW index with more RaBitQ extra bits than the quantizer encodes is refused where Java
 constructs it", saves 16 vectors one per transaction into a Euclidean index at 9 and 15 bits, a
 cosine index at 9 and a control at 8, with statistics sampled on every insert and threshold 11,
@@ -2785,7 +2788,8 @@ its unchanged test compared whole entries, so an entry carrying one was taken fo
 `canonicalEntry` now appends the stored entry's unknown fields, and an entry is unchanged by its key
 and value alone (`TestSerializeUnionOverKeepsAMapEntrysUnknownFields`). The same run measured the
 order: Java writes a message's unknown fields by field number and, within a field, by wire type
-(its `UnknownFieldSet`); Go writes them as stored. Over bytes Java wrote the two agree; over raw
+(its `UnknownFieldSet`) [Superseded → 7.18: varints, fixed32s, fixed64s, then length-delimited, which
+is not numeric wire-type order; measured in 7.18, and each re-encoded minimally]; Go writes them as stored. Over bytes Java wrote the two agree; over raw
 bytes out of that order they are a declared field-order difference beside the oneof one
 (DIVERGENCES' map-order entry), which the spec pins.
 
@@ -2814,3 +2818,73 @@ and the commit's tree.
 the named adapters (`evidence/wsc17-red`). Green: a verbose run of the changed specs after the
 commit, the "HNSW with RaBitQ" and "HNSW Config Validation" Describes included
 (`evidence/wsc17-green-commit`), and the pre-commit hook. Mutation runs: none.
+
+### 7.18 Revision 18: unchanged vector entries skipped; SPFresh read strictly; the planner's metric the maintainer's
+
+Revision 17's gate (`ws-c-addendum-review-v17/`, commit `644d6980e`) returned three NAKs (Graefe:
+one Medium, three Lows, nits; Torvalds: one Medium, two Lows, nits; storage: one Medium, two Lows,
+nits). Every v16 finding is resolved (measured), and revisions 12 to 16 are intact. Revision 18 lands
+on top of `d2e47b8bd` (WS-J design v18's code); the 7.16 and 7.17 sentences it changes are marked
+[Superseded → 7.18].
+
+**An unchanged vector entry makes no graph call (graefe 1, torvalds 1, Medium).** Java's
+`VectorIndexMaintainer` inherits `StandardIndexMaintainer.update`, which removes the entries the old
+and the new record share (key and value, `IndexEntry.equals`) before updating
+(StandardIndexMaintainer.java:209-228). Go's `vectorIndexMaintainer.Update` deleted and re-inserted
+every entry, so a save that changed only another field rewired the node's edges, could move the
+entry point and re-sampled the statistics, and with 9 to 15 extra bits after the centroid it was
+refused where Java serves it; 7.17's "refuses every save" was wider than Java. `Update` now applies
+`removeCommonEntries` (the standard maintainer's port of `commonKeys`) when both records are present.
+Pins: the JVM probe gains "a save of record 1 with its vector unchanged", after the centroid: `ok` in
+both engines at 9, 15 and 8 bits (cosine refuses it as a first save of a record never inserted, in
+both); "leaves the graph as it is when a save keeps the vector" compares the whole index subspace
+across such a save, with a changed-vector save as the control. The present-node pin now snapshots
+the access info and the samples as well as the nodes.
+
+**SPFresh reads its configuration strictly, through one function (graefe 2 and 3, torvalds 2,
+storage 1).** Removing the clamp made a 0-bit SPFresh index, which an earlier build admitted, reach
+the encoder's panic through the rebalancer and refine, which parsed without validating; and
+`parseSPFreshConfig` read an unknown metric ("cosine") as Euclidean while the planner read it as
+cosine. `parseSPFreshConfig` now refuses a value that does not parse and a metric that is not one of
+Java's four names (Metric.valueOf's text), and `readSPFreshConfig` (parse, then
+`ValidateSPFreshConfig`) is the one reader of every entry point: the maintainer, the build, the
+rebalancer, refine, recall, the integrity check, the search wrapper and the debug topology. Pins:
+`TestParseSPFreshConfigRefusesWhatDoesNotParse`, and "every entry point refuses an index
+configuration the maintainer refuses" (a bootstrapped index whose options are then read with 0 bits:
+rebalance, refine, recall and the integrity check each return the refusal). The CHANGELOG tells an
+operator such an index must be dropped and added again.
+
+**The planner's metric is the maintainer's (graefe 2).** `recordlayer.VectorIndexMetric` parses a
+vector index's metric with the maintainer's reader (HNSW: `hnswMetric`, else `vectorMetric`, by
+Metric.valueOf with the plain index's Go forms; SPFresh: `spfreshMetricNamed`) and refuses what the
+maintainer refuses; `tryVectorIndexCandidate` maps the parsed metric to the distance operator
+(`vectorDistanceOperator`), and the planner's own name parser (`vectorMetricOperator`) is deleted.
+A metric the maintainer refuses gives no candidate (an empty HNSW metric was a Euclidean candidate,
+an SPFresh "cosine" a cosine one): `TestVectorPlan_MetricIsTheMaintainers`, each with the unedited
+index as a control. That a vector index under the alias executes with the alias's metric rests on the
+maintainer reading the same key (the JVM spec "options are read as Java reads them" compares the
+metric under its alias with Java's) and on the plan pin; there is no end-to-end query over such an
+index, since DDL cannot write the alias.
+
+**Unknown-field order and encoding, measured (graefe 4, storage 2).** Record 1 of the P3 spec now
+stores field 12 as a length-delimited, a fixed64, a fixed32 and a varint, then field 11, then field 13
+as a varint in a non-minimal two-byte encoding. Measured: Java writes 11, then 12's varint, fixed32,
+fixed64 and length-delimited, then 13 re-encoded minimally; Go writes them as stored. DIVERGENCES'
+map-order entry says so and marks the groups' place as read from protobuf-java's source. The spec
+asserts Java's bytes contain that sequence, so the measurement is checked on every run.
+
+**Superseded text (graefe 4, torvalds 3).** The "VECTOR insert is idempotent (same PK replaces)"
+comments (`vector_index_maintainer.go`, `chaos/chaos_test.go`) and the SPFresh parser's "tolerance"
+comment are rewritten; 7.16's "when the index is maintained" is marked where it starts.
+
+**Nits.** A message-valued map entry's unknown fields are pinned beside the scalar one
+(`TestSerializeUnionOverKeepsAMapEntrysUnknownFields`). `wsc15-red-first`'s TREE now records its
+withdrawal and that the older-union-field arm has a green pin only. `wsc15-mutation/README` was
+written after the runs, from the mutated lines kept then; its counts are a record, not re-measured, and
+nothing in revisions 16 to 18 rests on them. The JVM evolution row names only the class and the
+message prefix; that the refusal names the alias is the unit test's.
+
+**Evidence.** Red: `fdb-wsc10` at `d2e47b8bd`'s tree plus the changed test files and the Java step
+(`evidence/wsc18-red`), and the 32 sliding-window rows of revision 17 on `c1bc5a177`'s tree (the red
+run 7.17 lacked; same evidence directory, its TREE note). Green: a verbose run of the changed specs
+after the commit (`evidence/wsc18-green-commit`) and the pre-commit hook. Mutation runs: none.

@@ -703,7 +703,9 @@ func TestVectorBasicSave(t *testing.T) {
 }
 
 // TestVectorCommitUnknownInsert injects commit-unknown on an insert.
-// VECTOR/HNSW insert is idempotent (same PK replaces), so retry is safe.
+// A retry after a commit that landed finds the record stored and its vector
+// entry unchanged, which the maintainer skips (as Java's
+// StandardIndexMaintainer.update does), so retry is safe.
 func TestVectorCommitUnknownInsert(t *testing.T) {
 	t.Parallel()
 	md := buildVectorMetadata()
@@ -719,8 +721,9 @@ func TestVectorCommitUnknownInsert(t *testing.T) {
 }
 
 // TestVectorCommitUnknownOverwrite injects commit-unknown on an overwrite.
-// First save inserts; second save with same PK + commit-unknown does delete+insert
-// which commits, then retry does delete+insert again — idempotent.
+// First save inserts; the second save of the same PK with a new vector deletes
+// the old node and inserts the new one, and commits; the retry then finds the
+// new vector stored, an unchanged entry, and makes no graph call.
 func TestVectorCommitUnknownOverwrite(t *testing.T) {
 	t.Parallel()
 	md := buildVectorMetadata()

@@ -778,13 +778,31 @@ var _ = Describe("A record re-saved unchanged is written as Java's load-then-sav
 			body = protowire.AppendFixed32(protowire.AppendTag(body, 10, protowire.Fixed32Type), 3)
 			return protowire.AppendBytes(protowire.AppendTag(nil, num, protowire.BytesType), body)
 		}
+		// Record 1's own unknown fields, stored out of Java's order: field 12
+		// as a length-delimited, a fixed64, a fixed32 and a varint, then
+		// field 11, then field 13 as a varint in a two-byte (non-minimal)
+		// encoding of 1.
+		recordUnknown := cat(
+			protowire.AppendBytes(protowire.AppendTag(nil, 12, protowire.BytesType), []byte("z")),
+			protowire.AppendFixed64(protowire.AppendTag(nil, 12, protowire.Fixed64Type), 4),
+			protowire.AppendFixed32(protowire.AppendTag(nil, 12, protowire.Fixed32Type), 3),
+			protowire.AppendVarint(protowire.AppendTag(nil, 12, protowire.VarintType), 2),
+			protowire.AppendVarint(protowire.AppendTag(nil, 11, protowire.VarintType), 1),
+			protowire.AppendTag(nil, 13, protowire.VarintType), []byte{0x81, 0x00})
+		// Java's UnknownFieldSet order for them, as measured: by field number
+		// and, within field 12, varint, fixed32, fixed64, length-delimited;
+		// and the varint re-encoded minimally.
+		javaUnknown := cat(
+			protowire.AppendVarint(protowire.AppendTag(nil, 11, protowire.VarintType), 1),
+			protowire.AppendVarint(protowire.AppendTag(nil, 12, protowire.VarintType), 2),
+			protowire.AppendFixed32(protowire.AppendTag(nil, 12, protowire.Fixed32Type), 3),
+			protowire.AppendFixed64(protowire.AppendTag(nil, 12, protowire.Fixed64Type), 4),
+			protowire.AppendBytes(protowire.AppendTag(nil, 12, protowire.BytesType), []byte("z")),
+			protowire.AppendVarint(protowire.AppendTag(nil, 13, protowire.VarintType), 1))
 		records := [][]byte{
 			cat(id(1), intEntry(3, "b", 0), intEntry(3, "", 5), intEntry(3, "a", 0), keyOnly(3, "c"), valueOnly(3, 7), unknownEntry(3, "u", 3),
 				msgEntry(4, "k", holder("y", "x")), msgEntry(4, "k", holder("x", "y")), msgEntry(4, "j", holder("q", "p")),
-				keyOnly(4, "n"),
-				protowire.AppendVarint(protowire.AppendTag(nil, 12, protowire.VarintType), 2),
-				protowire.AppendVarint(protowire.AppendTag(nil, 11, protowire.VarintType), 1),
-				protowire.AppendFixed32(protowire.AppendTag(nil, 12, protowire.Fixed32Type), 3)),
+				keyOnly(4, "n"), recordUnknown),
 			cat(id(2), protowire.AppendBytes(protowire.AppendTag(nil, 2, protowire.BytesType), holder("z", "y")), intEntry(3, "q", 1), intEntry(3, "p", 2)),
 			// The oneof member stored after the maps.
 			cat(id(3), intEntry(3, "m", 1), msgEntry(4, "h", holder("v")),
@@ -885,7 +903,7 @@ var _ = Describe("A record re-saved unchanged is written as Java's load-then-sav
 				return bytes.Replace(b, j, st, 1)
 			}
 			b = swap(b, "480150025503000000", "500248015503000000")
-			return swap(b, "580160026503000000", "600258016503000000")
+			return swap(b, hex.EncodeToString(javaUnknown), hex.EncodeToString(recordUnknown))
 		}
 		for _, raw := range []bool{false, true} {
 			javaSS := subspace.Sub(tuple.Tuple{"resave_p3_java", uuid.NewString()}...)
@@ -903,9 +921,11 @@ var _ = Describe("A record re-saved unchanged is written as Java's load-then-sav
 			// Both keep the unknown fields, record 1's own and those of its
 			// entry "u". Java writes a message's unknown fields as its
 			// UnknownFieldSet holds them, by field number and, within one
-			// field, varints before fixed32s; Go in the order they are stored.
-			// Over the bytes Java's first save wrote the two orders agree; over
-			// the raw bytes they are the declared difference.
+			// field, varints, fixed32s, fixed64s, then length-delimited, each
+			// re-encoded minimally; Go writes them as stored. Over the bytes
+			// Java's first save wrote the two agree; over the raw bytes they
+			// are the declared difference.
+			Expect(bytes.Count(javaBytes[0], javaUnknown)).To(Equal(1), "raw=%t: Java's unknown-field order and encoding", raw)
 			want := javaBytes[0]
 			if raw {
 				want = storedUnknownOrder(want)

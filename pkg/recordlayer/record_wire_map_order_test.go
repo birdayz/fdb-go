@@ -898,6 +898,28 @@ func TestSerializeUnionOverKeepsAMapEntrysUnknownFields(t *testing.T) {
 	if got, want := unionInner(out, 1), cat(mapEntryBytes(2, kv("x", 5)), mapEntryBytes(2, kv("y", 2))); !bytes.Equal(got, want) {
 		t.Fatalf("x changed: written %x, want %x", got, want)
 	}
+
+	// A message-valued entry (mh, map<string, Holder>) keeps its unknown
+	// fields too, after its key and its value.
+	holderEntry := func(key string, extra []byte) []byte {
+		value := mapEntryBytes(1, kv("h", 1))
+		body := protowire.AppendString(protowire.AppendTag(nil, 1, protowire.BytesType), key)
+		body = protowire.AppendBytes(protowire.AppendTag(body, 2, protowire.BytesType), value)
+		body = append(body, extra...)
+		return protowire.AppendBytes(protowire.AppendTag(nil, 7, protowire.BytesType), body)
+	}
+	storedMh := holderEntry("m", protowire.AppendVarint(protowire.AppendTag(nil, 9, protowire.VarintType), 1))
+	msgMh := dynamicpb.NewMessage(rec)
+	if err := proto.Unmarshal(storedMh, msgMh); err != nil {
+		t.Fatal(err)
+	}
+	out, err = serializeUnionOver(msgMh, rt, storedMh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := unionInner(out, 1); !bytes.Equal(got, storedMh) {
+		t.Fatalf("message-valued entry: written %x, want the stored %x", got, storedMh)
+	}
 }
 
 // appendEntryField writes every scalar kind a map key or value can have as

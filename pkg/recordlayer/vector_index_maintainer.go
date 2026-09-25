@@ -200,12 +200,21 @@ func (m *vectorIndexMaintainer) splitPrefixAndVector(entry indexEntry) (prefix t
 // Primary keys are trimmed via Index.TrimPrimaryKey() before storing in the HNSW
 // graph, matching Java's VectorIndexMaintainer.updateIndexKeys() which calls
 // state.index.trimPrimaryKey(primaryKeyParts) at line 343.
+//
+// An entry the old and the new record both have (key and value equal, Java's
+// IndexEntry.equals) is not applied: Java's VectorIndexMaintainer inherits
+// StandardIndexMaintainer.update, which removes those common entries before
+// updating (StandardIndexMaintainer.java:215-228, skipUpdateForUnchangedKeys),
+// so a save that leaves the vector unchanged makes no graph call. Deleting and
+// re-inserting such a node rewired its edges, could move the entry point and
+// re-sampled the statistics, where Java's graph is untouched.
 func (m *vectorIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+	var entries [2][]indexEntry
 	for i, record := range []*FDBStoredRecord[proto.Message]{oldRecord, newRecord} {
 		if record == nil {
 			continue
 		}
-		entries, err := m.filteredIndexEntries(record)
+		evaluated, err := m.filteredIndexEntries(record)
 		if err != nil {
 			which := "old"
 			if i == 1 {
@@ -213,7 +222,17 @@ func (m *vectorIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[pro
 			}
 			return fmt.Errorf("evaluate vector index %q for %s record: %w", m.index.Name, which, err)
 		}
-		for _, entry := range entries {
+		entries[i] = evaluated
+	}
+	if oldRecord != nil && newRecord != nil {
+		oldEntries, newEntries, err := removeCommonEntries(m.index, entries[0], entries[1])
+		if err != nil {
+			return err
+		}
+		entries[0], entries[1] = oldEntries, newEntries
+	}
+	for i, list := range entries {
+		for _, entry := range list {
 			if err := m.applyIndexEntry(entry, i == 0); err != nil {
 				return err
 			}
@@ -290,8 +309,10 @@ func tupleToVector(t tuple.Tuple) ([]float64, error) {
 	return vec, nil
 }
 
-// UpdateWhileWriteOnly handles updates during WRITE_ONLY state.
-// VECTOR insert is idempotent (same PK replaces).
+// UpdateWhileWriteOnly handles updates during WRITE_ONLY state as Update does:
+// Java's vector index is idempotent (StandardIndexMaintainer.isIdempotent), so
+// a write-only save updates the graph directly, and a build that later meets
+// the indexed record finds its node present and leaves it (hnswGraph.Insert).
 func (m *vectorIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
 	return m.Update(oldRecord, newRecord)
 }

@@ -492,7 +492,8 @@ assets carry (`RELEASE.md` §Versioning).
   than being replaced by a default. RaBitQ with 9 to 15 extra bits, which `Config` admits and Java's
   quantizer refuses, is refused (`IllegalArgumentError`) where Java constructs the quantizer, when an
   operation first quantizes: a Euclidean index accepts saves until its centroid is established,
-  then refuses saves, searches and deletes of present entries; a cosine or dot-product index
+  then refuses saves that change a vector entry, searches and deletes of present entries; a
+  cosine or dot-product index
   refuses its first save (Go stored 4-bit codes before, then refused every save). A row-number
   window under a disjunction is Java's `RecordCoreError`, not a `MetaDataError`.
 - **Stored bytes are read as protobuf-java reads them** (RFC-257 WS-J): a closed (proto2) enum field
@@ -514,6 +515,18 @@ assets carry (`RELEASE.md` §Versioning).
   (schema, record type and field options: a record type's `since_version` and record type key, a
   field's `index` option, which defines an index), so a records file that sets them loads with the
   target's record type keys and indexes; Go ignored them.
+- A save that leaves a record's VECTOR index entry unchanged (another field changed) no longer
+  deletes and re-inserts its graph node: the entry common to the old and the new record is skipped,
+  as Java's `StandardIndexMaintainer.update` skips it, so the graph's edges, entry point and
+  statistics are untouched.
+- An SPFresh index option that does not parse, and an SPFresh metric other than Java's four
+  `Metric` names, are refused instead of read as their default ("cosine" was maintained as
+  Euclidean while the planner read it as cosine), and every SPFresh entry point (the rebalancer,
+  refine, recall, the integrity check) refuses a configuration the maintainer refuses rather than
+  running with it. An SPFresh index an earlier build stored with 0 extra bits must be dropped and
+  added again (the option is immutable under evolution).
+- The planner takes a vector index's metric from the maintainer's own parse, so a metric the
+  maintainer refuses gives no candidate instead of a Euclidean one.
 - An HNSW insert of a key already in the graph leaves the graph as it is, as Java's `Insert` does;
   Go deleted and re-inserted the node (reachable when an index build meets an entry a concurrent
   save indexed), rewiring edges Java leaves alone.

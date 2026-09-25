@@ -35,6 +35,46 @@ var _ = Describe("Index maintainer pending queue", func() {
 		Expect(window.IsPendingWriteQueueAllowed()).To(BeFalse())
 	})
 
+	// A save that leaves a record's vector entry unchanged makes no graph call,
+	// as Java's VectorIndexMaintainer (which inherits
+	// StandardIndexMaintainer.update's removal of entries common to the old
+	// and the new record) makes none: the index's bytes, access info and
+	// samples included, are unchanged. Go deleted and re-inserted the node.
+	It("leaves the graph as it is when a save keeps the vector", func() {
+		index := NewVectorIndex("unchanged_vector", KeyWithValue(Concat(Field("quantity"), Field("price")), 1), 1)
+		builder := baseBuilder()
+		builder.AddIndex("Order", index)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+		_, err = sharedDB.Run(context.Background(), func(rc *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().SetContext(rc).SetMetaDataProvider(md).SetSubspace(specSubspace()).Create()
+			Expect(err).NotTo(HaveOccurred())
+			for i := int64(1); i <= 12; i++ {
+				_, err := store.SaveRecord(&gen.Order{OrderId: proto.Int64(i), Quantity: proto.Int32(1), Price: proto.Int32(int32(i)), CoordX: proto.Int64(0)})
+				Expect(err).NotTo(HaveOccurred())
+			}
+			snapshot := func() []fdb.KeyValue {
+				begin, end := store.IndexSubspace(index).FDBRangeKeys()
+				kvs, err := rc.Transaction().GetRange(fdb.KeyRange{Begin: begin, End: end}, fdb.RangeOptions{}).GetSliceWithError()
+				Expect(err).NotTo(HaveOccurred())
+				return kvs
+			}
+			before := snapshot()
+			Expect(before).NotTo(BeEmpty())
+			// Record 5 again, its (quantity, price) entry unchanged, another
+			// field changed.
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(5), Quantity: proto.Int32(1), Price: proto.Int32(5), CoordX: proto.Int64(99)})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(snapshot()).To(Equal(before), "the graph's bytes are unchanged")
+			// A save that changes the vector does touch the graph: the control.
+			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(5), Quantity: proto.Int32(1), Price: proto.Int32(500), CoordX: proto.Int64(99)})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(snapshot()).NotTo(Equal(before))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("replays captured vector entries without reevaluating records or predicates", func() {
 		index := NewVectorIndex("queued_vector", Concat(Field("price"), Field("quantity")), 2)
 		allow := true

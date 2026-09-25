@@ -1500,7 +1500,10 @@ var _ = Describe("Vector pending entry conformance", func() {
 // accepts saves until its centroid is established (statistics sampled and
 // maintained on every insert, threshold 11) and refuses every save, search and
 // delete after it; a cosine index refuses its first save; a search of the
-// empty index is served. 8 extra bits is the control.
+// empty index is served. A save that leaves a record's vector unchanged makes
+// no graph call in Java (StandardIndexMaintainer.update drops the entry common
+// to the old and the new record), so it is served even after the centroid; Go
+// skips it the same way. 8 extra bits is the control.
 var _ = Describe("An HNSW index with more RaBitQ extra bits than the quantizer encodes is refused where Java constructs it", func() {
 	vectors := make([][]float64, 16)
 	for i := range vectors {
@@ -1529,10 +1532,11 @@ var _ = Describe("An HNSW index with more RaBitQ extra bits than the quantizer e
 			defer func() { Expect(goEnv.Cleanup(ctx)).To(Succeed()) }()
 
 			var java struct {
-				SearchEmpty string   `json:"searchEmpty"`
-				Inserts     []string `json:"inserts"`
-				Search      string   `json:"search"`
-				DeleteFirst string   `json:"deleteFirst"`
+				SearchEmpty           string   `json:"searchEmpty"`
+				Inserts               []string `json:"inserts"`
+				ResaveUnchangedVector string   `json:"resaveUnchangedVector"`
+				Search                string   `json:"search"`
+				DeleteFirst           string   `json:"deleteFirst"`
 			}
 			Expect(NewJavaInvoker().InvokeAs(ctx, "hnswExtraBitsProbe", map[string]any{
 				"clusterFile": javaEnv.ClusterFile, "tenantName": javaEnv.TenantName,
@@ -1584,15 +1588,20 @@ var _ = Describe("An HNSW index with more RaBitQ extra bits than the quantizer e
 					return err
 				}))
 			}
+			goResave := outcome(func(s *recordlayer.FDBRecordStore) error {
+				_, err := s.SaveRecord(&gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(7), VectorData: conformanceSerializeVector(vectors[1])})
+				return err
+			})
 			goSearch := outcome(search)
 			goDelete := outcome(func(s *recordlayer.FDBRecordStore) error {
 				_, err := s.DeleteRecord(tuple.Tuple{int64(0)})
 				return err
 			})
-			fmt.Fprintf(GinkgoWriter, "EXTRA_BITS %s/%d java=%+v go={%s %v %s %s}\n", c.metric, c.bits, java,
-				goSearchEmpty, goInserts, goSearch, goDelete)
+			fmt.Fprintf(GinkgoWriter, "EXTRA_BITS %s/%d java=%+v go={%s %v %s %s %s}\n", c.metric, c.bits, java,
+				goSearchEmpty, goInserts, goResave, goSearch, goDelete)
 			Expect(goSearchEmpty).To(Equal(java.SearchEmpty), "search of the empty index")
 			Expect(goInserts).To(Equal(java.Inserts), "each save")
+			Expect(goResave).To(Equal(java.ResaveUnchangedVector), "a save leaving the vector unchanged")
 			Expect(goSearch).To(Equal(java.Search), "search")
 			Expect(goDelete).To(Equal(java.DeleteFirst), "delete of record 0")
 		})

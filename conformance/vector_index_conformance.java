@@ -464,8 +464,9 @@ class VectorIndexSteps extends ConformanceBase {
     /**
      * An HNSW index with RaBitQ at the given extra-bit count, maintained through
      * the record store: a search of the empty index, then one save per vector,
-     * each in its own transaction, then a search and a delete of record 0,
-     * each reported as "ok" or its root cause's class. Statistics are sampled
+     * each in its own transaction, then a save of record 1 with its vector
+     * unchanged, a search and a delete of record 0, each reported as "ok" or
+     * its root cause's class. Statistics are sampled
      * and maintained on every insert with threshold 11, so a Euclidean index
      * establishes its centroid on a known insert.
      */
@@ -507,6 +508,15 @@ class VectorIndexSteps extends ConformanceBase {
             })));
         }
         result.put("inserts", inserts);
+        // Record 1 saved again with its vector unchanged and another field
+        // changed: its index entry is common to the old and the new record,
+        // so the maintainer makes no graph call.
+        final byte[] firstBytes = serializeVector(vecs[1]);
+        result.put("resaveUnchangedVector", extraBitsOutcome(() -> runInContext(clusterFile, tenantName, context -> {
+            open.apply(context).saveRecord(Order.newBuilder().setOrderId(1L).setPrice(7)
+                .setVectorData(ByteString.copyFrom(firstBytes)).build());
+            return null;
+        })));
         result.put("search", search.apply(vecs[0]));
         result.put("deleteFirst", extraBitsOutcome(() -> runInContext(clusterFile, tenantName, context ->
             open.apply(context).deleteRecord(Tuple.from(0L)))));

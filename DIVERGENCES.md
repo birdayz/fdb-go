@@ -2130,8 +2130,12 @@ the maintainer instead of taking a default. RaBitQ with 9 to 15 extra bits, whic
 `Config` admits and Java's `RaBitQuantizer` refuses, is refused where Java constructs
 the quantizer, when an operation first quantizes (`hnswGraph.raBitQuantizerAdmits`):
 a Euclidean index accepts saves until its centroid is established and then refuses
-every save, search and delete of a present node, a cosine or dot-product index
-refuses its first save, and a search of an empty index is served (the JVM spec "An
+every save that inserts or removes a vector entry, every search and every delete of a
+present node, a cosine or dot-product index refuses its first save, and a save that
+leaves a record's vector entry unchanged is served in both, as it makes no graph call
+(Java's `StandardIndexMaintainer.update` removes the entry common to the old and the
+new record, and Go's `vectorIndexMaintainer.Update` does too; Go deleted and
+re-inserted the node before), and a search of an empty index is served (the JVM spec "An
 HNSW index with more RaBitQ extra bits than the quantizer encodes is refused where
 Java constructs it" compares each operation's outcome). The refusal is an
 `IllegalArgumentError`, Java's class; Guava's `checkArgument` gives Java's no message
@@ -3235,13 +3239,15 @@ re-saved unchanged is written as Java's load-then-save writes it" compare both e
 byte for byte (proto2 and proto3, zero keys and values, entries missing their key or their value,
 a key written twice with message values, maps in map values, entries and records with unknown
 fields, over the bytes Java's save wrote and over raw bytes Java never wrote), and the first
-spec's index is unchanged by either re-save. The bytes differ in FIELD ORDER only, two ways the
-second spec pins: protobuf-go's deterministic marshal writes a oneof member after the other fields
-(and an extension first), where Java writes fields in number order; and a message's unknown fields
-are written in the order they are stored, where Java writes them as its `UnknownFieldSet` holds
-them, by field number and, within one field, varints, fixed32s, fixed64s, length-delimited, groups.
-The two orders of unknown fields agree over any bytes Java wrote, which are in its order already.
-Both engines read either order as the same record.
+spec's index is unchanged by either re-save. The bytes differ in two ways the second spec pins:
+protobuf-go's deterministic marshal writes a oneof member after the other fields (and an extension
+first), where Java writes fields in number order; and a message's unknown fields are written as
+they are stored, where Java writes them as its `UnknownFieldSet` holds them, by field number and,
+within one field, varints, fixed32s, fixed64s, then length-delimited (measured; groups last, from
+protobuf-java's source, not measured), each re-encoded minimally (measured: a varint stored in a
+non-minimal encoding is written minimally by Java and as stored by Go). The two agree over any
+bytes Java wrote, which are in its order and encoding already. Both engines read either as the
+same record.
 
 A Go map holds one value per key and has no insertion order, so where Go's caller CHANGED a map,
 or built the record, the order is Go's: a changed key is written once, in its first stored

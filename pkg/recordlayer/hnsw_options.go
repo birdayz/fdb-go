@@ -1,6 +1,7 @@
 package recordlayer
 
 import (
+	"fmt"
 	"strings"
 
 	"fdb.dev/pkg/rabitq"
@@ -41,14 +42,35 @@ func hnswOptionValue(index *Index, canonical string) (string, bool) {
 	return "", false
 }
 
-// VectorIndexMetricOption is an HNSW VECTOR index's metric option as Java's
-// VectorIndexOptionKeys.METRIC.read finds it: under hnswMetric, else under its
-// alias vectorMetric, and whether either is set. The planner reads a vector
-// index's metric through it (Java's VectorIndexExpansionVisitor reads it
-// through the same key), so the candidate's metric is the one the maintainer
-// builds the graph with.
-func VectorIndexMetricOption(index *Index) (string, bool) {
-	return hnswOptionValue(index, IndexOptionVectorMetric)
+// VectorIndexMetric is the metric a vector index's maintainer builds it with,
+// parsed by the maintainer's own reader: for an HNSW VECTOR index the metric
+// option as Java's VectorIndexOptionKeys.METRIC.read finds it (hnswMetric,
+// else its alias vectorMetric; Euclidean when neither is set) read by
+// Metric.valueOf with the plain index's Go forms (javaMetricName), and for an
+// SPFresh index its spfreshMetric (spfreshMetricNamed). A value the maintainer
+// refuses is an error. The planner reads a vector index's metric through it
+// (Java's VectorIndexExpansionVisitor reads the engine's parsed Metric), so a
+// candidate's metric is always the one the index is maintained with.
+func VectorIndexMetric(index *Index) (VectorMetric, error) {
+	switch index.Type {
+	case IndexTypeVectorSPFresh:
+		v, ok := index.Options[IndexOptionSPFreshMetric]
+		if !ok {
+			return VectorMetricEuclidean, nil
+		}
+		return spfreshMetricNamed(v)
+	case IndexTypeVector:
+		v, ok := hnswOptionValue(index, IndexOptionVectorMetric)
+		if !ok {
+			return VectorMetricEuclidean, nil
+		}
+		name, err := javaMetricName(v, true)
+		if err != nil {
+			return VectorMetricEuclidean, err
+		}
+		return vectorMetricNamed(name), nil
+	}
+	return VectorMetricEuclidean, fmt.Errorf("index %q of type %q is not a vector index", index.Name, index.Type)
 }
 
 // hnswAliasConflict is VectorIndexOptionsHelper.validateNoAliasConflicts, the

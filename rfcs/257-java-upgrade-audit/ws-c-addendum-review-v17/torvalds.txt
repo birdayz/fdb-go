@@ -1,0 +1,67 @@
+**NAK.** Candidate `644d6980e`; revision 17 is `c1bc5a177..8a483e73b`. Design SHA256 `b9ec569478a5459a5feee4c8bb236d144b6e455e9ad9dbd82057a29ce423b7ca`, 2816 lines. I measured both from the committed blob with `git show … | sha256sum` and `wc -l`. Tree `8a483e73b^{tree}` is `5c9c7580e`, which equals the hook's TREE file. Tree `644d6980e^{tree}` is `2b1554135`, which equals the green run's TREE file. `8a483e73b..644d6980e` touches only `ci.yml`, `cmd/frl/go.{mod,sum}` and `infra/`, so it is context only. The review was read-only. "Measured" means I read it in the logs or git objects; everything else is from source.
+
+## Findings, most severe first
+
+**1. Medium (source): the vector maintainer has no unchanged-entry skip, so Go still refuses saves Java serves and still rewires the graph Java leaves alone.**
+- **Java:** `VectorIndexMaintainer extends StandardIndexMaintainer` (VectorIndexMaintainer.java:100) and does not override `update`. `StandardIndexMaintainer.update` removes the entries old and new have in common (StandardIndexMaintainer.java:215-228; `skipUpdateForUnchangedKeys` is true at :209). `IndexEntry.equals` compares key and value (IndexEntry.java:268-270). So a save that changes only fields outside the vector makes no HNSW call.
+- **Go:** `vectorIndexMaintainer.Update` (`vector_index_maintainer.go:203-223`) deletes every old entry and inserts every new one. `removeCommonEntries` exists (`index_maintainer.go:328-335`) but is used only by the standard maintainer. My grep found no skip in the vector maintainer; the control hits in `index_maintainer.go` show the search itself works.
+- **Effect (a):** with 9 to 15 extra bits, after the centroid is set, such a save reaches `Delete` of a present node, and `raBitQuantizerAdmits` (`hnsw.go:888`) refuses it. Java serves it. So these claims are wider than Java:
+  - DIVERGENCES.md:2131-2134, "refuses every save";
+  - CHANGELOG.md:491-495, "refuses saves";
+  - 7.17 :2746-2762.
+
+  The JVM spec only saves new records, so it cannot see this.
+- **Effect (b):** for every VECTOR index at any bit count, such a save deletes and re-inserts the node. That rewires its edges, can move the entry point, and samples the statistics again. This is the same write-side divergence 7.17 :2764-2768 says is fixed ("Go rewired the graph Java leaves untouched"). This half predates revision 17, but it sits under the claim revision 17 makes.
+- **Fix:**
+  - drop common entries in `vectorIndexMaintainer.Update` as Java does;
+  - add a JVM row to `hnswExtraBitsProbe`: after the centroid, re-save record 1 with only a non-vector field changed;
+  - add a unit pin that the graph bytes are unchanged after that save.
+
+**2. Low (source): removing the clamp makes one unvalidated SPFresh path panic.**
+- `rabitq.Quantizer.Encode` builds its encoder with `NewRaBitQuantizer`, which panics outside 1 to 8 (`rabitq.go:66`, `:341`). Before, `NewQuantizer`'s clamp stood in front of that panic.
+- `RebalanceSPFreshIndex` (`spfresh_rebalancer.go:369`) and the refine entry (`spfresh_refine.go:543`) call `parseSPFreshConfig` without `ValidateSPFreshConfig`. From there, split, merge and refine call `newSPFreshQuantizer(config)` and `Encode` (`spfresh_split.go:265`, `:415`, `spfresh_merge.go:40`, `spfresh_refine.go:218`, `:307`).
+- An index bootstrapped before revision 17 with `spfreshRaBitQNumExBits=0` (accepted then) now panics in library code instead of returning an error.
+- The HNSW paths and every test reach `Encode` only with valid counts. I checked every `NewQuantizer`/`NewRaBitQuantizer` call site and every `SPFreshConfig{` literal.
+- The owner's ruling that pre-release Go data is unsupported covers the data, not a panic.
+- **Fix:** validate at both entry points, or make the encode path return an error.
+
+**3. Low (measured): the 32 sliding-window rows moved to Java's semantics have no red run.**
+- The red focus (`'HNSW|RaBitQ|parseHNSWConfig|Map entries of a generated'`) does not match "SlidingWindowIndex replays tracked inserts…". There are 0 hits for `SlidingWindowIndex` in `wsc17-red/`; the control "HNSW Graph Direct" has 20 hits in the same log.
+- The hook note shows the old spec failing on the new code, which is the reverse test.
+- By source, the new assertion (distance ~0 at the stored vector, `sliding_window_index_test.go:1314-1320`) would fail on `c1bc5a177`. That is inferred, not shown.
+
+## Nits
+- "same PK replaces" is now false: `vector_index_maintainer.go:294` and `chaos/chaos_test.go:706`. The grep's control hits were in CHANGELOG and the design.
+- 7.16 :2676 ("refuses when the index is maintained") sits outside the marker, which starts after the next clause.
+- 7.17 says `wsc15-red-first`'s TREE records its withdrawal. The TREE only says the hash is not that run's; it records neither the withdrawal nor the green-only arm.
+- "update (delete then insert) works with RaBitQ" passes on both trees. That is fine as a non-regression test, but it is not a pin.
+
+## Checked and holding
+- **Quantizer gate (source):**
+  - All four construction points are gated: Insert into a non-empty graph (`hnsw.go:391`), `firstInsert` for a metric that is not translation-preserving (`:596`), Delete after its existence check (`:888`), and Search of a non-empty graph (`:1211`).
+  - These match Insert.java:209,284, Delete.java:205-213, Search.java:226-236 and Primitives.java:174-183. Java's centroid transition (Insert.java:355-390) builds no quantizer, and neither does Go's.
+  - Encoding happens only in `nodeVectorBytes`, when `opXform` is set. `opXform` is set after the gate (`:397`, `:610`, `:1219`), or at Delete `:809` with only reads before the gate.
+- **Insert:** both futures resolve (`:364-365`) before any return.
+- **Measured green** (`wsc17-green-commit`, clean tree `2b1554135`):
+  - Conformance ran 89 of 1840 specs and all passed. EXTRA_BITS matches Java per operation in all four rows (log :466/:473/:480/:487).
+  - The restored WINDOWED rows are green (:312-337), including the `RecordCoreException` row (:317).
+  - The MAPWIRE raw re-save is byte-equal (:72). RESAVE_P3 differs only in the declared unknown-field and oneof orders (:344-345).
+  - Record layer ran 199 of 3762 specs and all passed, and the new unit tests pass by name.
+- **Measured red** (`c1bc5a177`'s tree plus the adapters):
+  - 5 Ginkgo specs and 4 unit tests failed; `TestNewQuantizerKeepsItsCount` failed (the clamp); `TestVectorPlan_MetricUnderItsAlias` failed ("did not plan"); 4 of 58 JVM specs failed.
+  - The TREE note correctly says the cell-bound red comes from the adapter. The `ValidNumExBits` and `plan_harness` adapters make nothing red themselves.
+- **Hook:** "Executed 2 out of 94 tests: 94 tests pass". The cache is valid, because the only edit after the failing run was a recordlayer test file.
+
+## v16 findings
+| Finding | Status |
+|---|---|
+| Torvalds 1, Storage 1 (the windowed Describe) | Resolved (measured; identical to `1c6059b91`) |
+| Torvalds 2 (the planner alias) | Resolved: red→green, EXPLAIN-pinned. The query-engine line still needs Graefe's lens |
+| Torvalds 3, Graefe 2, Storage 2 (raw bytes re-saved) | Resolved (measured) |
+| Torvalds 4, Graefe 1, Storage 3 (9–15 bits) | Resolved except finding 1 |
+| Torvalds 5a/5b, Graefe 5, Storage 5 (missing pins) | Resolved; the fullwidth rows separate Java's parser from `Sscanf` |
+| Graefe 3, Storage 4 (entry unknown fields) | Resolved; order measured and declared |
+| Graefe 4 (matching limits) | Declared and pinned |
+| Storage 6 and all nits | Resolved |
+
+Revisions 12 to 16 are intact: the MAPWIRE, WINDOWED, proto3-zero and evolution specs are green. The preserved boundaries are untouched.
