@@ -192,8 +192,11 @@ type RecordType struct {
 	unionFieldNumber protowire.Number
 
 	// reachesMap is whether the record message can hold a map field at any
-	// depth, computed at Build (record_wire_map_order.go).
+	// depth, computed at Build (record_wire_map_order.go), and mapReach the
+	// answer for every message type the meta-data's record types reach, shared
+	// read-only by the walks of its records.
 	reachesMap bool
+	mapReach   mapReach
 
 	// newMessage creates a new empty instance of this record type's proto message.
 	// Pre-computed at Build() time via protoregistry. Returns concrete Go type
@@ -1243,10 +1246,16 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 	// Pre-compute union field numbers and message factories for direct wire
 	// format encoding/decoding (skips UnionDescriptor allocation entirely).
 	fnToRT := make(map[protowire.Number]*RecordType, len(types))
-	reach := mapReach{}
+	var roots []protoreflect.MessageDescriptor
 	for _, rt := range types {
 		if rt.Descriptor != nil {
-			rt.reachesMap = reach.reaches(rt.Descriptor)
+			roots = append(roots, rt.Descriptor)
+		}
+	}
+	reach := newMapReach(roots...)
+	for _, rt := range types {
+		if rt.Descriptor != nil {
+			rt.reachesMap, rt.mapReach = reach.reaches(rt.Descriptor), reach
 		}
 		if rt.UnionFieldDescriptor != nil {
 			rt.unionFieldNumber = rt.UnionFieldDescriptor.Number()

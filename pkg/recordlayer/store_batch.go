@@ -185,7 +185,7 @@ func (store *FDBRecordStore) SaveRecordBatch(
 		oldRecordExists := oldValue != nil
 
 		// Serialize
-		data, err := serializeUnionOver(p.record, p.recordType, oldValue)
+		data, err := serializeUnionOver(p.record, p.recordType, store.storedRecordInner(oldValue, p.recordType))
 		if err != nil {
 			return nil, &RecordSerializationError{Cause: err}
 		}

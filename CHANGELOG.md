@@ -424,11 +424,16 @@ assets carry (`RELEASE.md` §Versioning).
   as a scalar is refused with Java's text. A record's map entries are indexed in the order its
   stored bytes hold them, as Java's default serializer (a DynamicMessage) indexes them, so a
   covering index whose key two entries share stores the last entry's value in both engines, and a
-  key written twice yields both entries. A record type that holds a map is written with each map in
-  the order the record it replaces stored it, new keys after in key order, and a new record's maps in
-  key order, and it is indexed in the order written: a record Java wrote that Go loads and saves
-  unchanged keeps its entries' order and its index entries, except that a key written twice is kept
-  once (a Go map holds it once), in its first position with its last value. vtproto's marshal, which
+  key written twice yields both entries. A record type that holds a map is written with each map as
+  Java's load-then-save of the record it replaces writes it: the stored entries in their order, a key
+  written twice with both its entries while its value is unchanged, each entry with its key and its
+  value (a stored entry without a value is written with the default, as Java writes it); a changed
+  key once, in its first position; new keys after, in key order; a new record's maps in key order.
+  It is indexed in the order written, so a record Java wrote that Go loads and saves unchanged is
+  stored byte for byte as Java's own load-then-save stores it, and neither engine's index changes
+  (JVM spec). The stored entries are read from whichever of the type's union fields holds the stored
+  record, and maps below the top level (in a message, in a map's values, in a repeated field's
+  elements, each matched to the stored element with the same content) are written the same way. vtproto's marshal, which
   writes a map in Go's random order, is no longer used for such a type.
 - **Key validation Java makes at build, Go makes** (RFC-257 WS-C): a MULTIDIMENSIONAL index's
   dimension columns must be protobuf `int64` ("the declared dimension columns have to be of type
@@ -455,8 +460,13 @@ assets carry (`RELEASE.md` §Versioning).
   `Integer.parseInt` and `Double.parseDouble` (Go admitted `hnswM=2147483648`, `inf` and `nan`, and
   refused Unicode digits, `0.5d` and a padded value, each the other way in Java), and a refusal is
   Java's `MetaDataError` "incorrect index options", its parse error the cause (`Unwrap`;
-  `MetaDataError` gains `Cause`). A row-number window under a disjunction is Java's
-  `RecordCoreError`, not a `MetaDataError`.
+  `MetaDataError` gains `Cause`). The VECTOR maintainer reads every integer and double option with
+  the same parsers, so a value both engines accept means the same number to the index as to the
+  validator (the maintainer read `hnswM=８` as its default 16, and Java as 8), and a second decimal
+  point is refused with Java's text, "multiple points". A windowed vector index's metric is one of
+  Java's four `Metric` names; the lower-case aliases Go also read (`cosine`, `inner_product`,
+  `euclidean`) are refused as Java's `Metric.valueOf` refuses them, its "No enum constant" text the
+  cause. A row-number window under a disjunction is Java's `RecordCoreError`, not a `MetaDataError`.
 - A literal key column holding an `int_value` (`Literal(int32(n))`, the width Go's DDL now writes,
   as Java's) is maintained as the integer Java writes; it panicked in the tuple encoder on the
   first save.

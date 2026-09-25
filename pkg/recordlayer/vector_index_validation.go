@@ -32,9 +32,11 @@ import (
 // message alone, and the cause behind it (Unwrap). The integer and double options
 // parse as Java's VectorOptionKey parses them (Integer::parseInt,
 // Double::parseDouble; javaParseInt, javaParseDouble), a value either refuses a
-// NumberFormatError with Java's text; a value that parses and is refused (a
-// dimension count below one, a metric name no Metric constant has) is an
-// IllegalArgumentError whose text is Go's own, naming the option and value.
+// NumberFormatError with Java's text; a metric name is read as Metric::valueOf
+// reads it (VectorOptionKey.java:236), only a Metric constant's name, and any
+// other is Enum.valueOf's IllegalArgumentException with its text; a dimension
+// count below one is an IllegalArgumentError whose text is Go's own, naming the
+// option and value.
 func validateVectorIndexOptionsAtBuild(idx *Index) error {
 	// A value that parses and is refused: Java's IllegalArgumentException, whose
 	// text is Go's own (the option and value), under Java's message.
@@ -92,18 +94,19 @@ func validateVectorIndexOptionsAtBuild(idx *Index) error {
 		}
 	}
 
-	// Java uses Metric.valueOf, which throws on an unknown name rather than
-	// falling back. parseHNSWConfig's default arm maps anything unrecognised to
-	// Euclidean, so without this a misspelled metric silently changes what
-	// "nearest" means for every query the index serves.
+	// Java reads the metric with Metric::valueOf, which knows the four
+	// constants' names and nothing else (not parseHNSWConfig's lower-case
+	// aliases, which a plain VECTOR index still takes: DIVERGENCES.md, VECTOR),
+	// and throws rather than falling back. parseHNSWConfig's default arm maps
+	// anything unrecognised to Euclidean, so without this a misspelled metric
+	// silently changes what "nearest" means for every query the index serves.
 	if v, present := idx.Options[IndexOptionVectorMetric]; present {
 		switch v {
-		case "COSINE_METRIC", "cosine",
-			"DOT_PRODUCT_METRIC", "inner_product",
-			"EUCLIDEAN_SQUARE_METRIC",
-			"EUCLIDEAN_METRIC", "euclidean":
+		case "EUCLIDEAN_METRIC", "EUCLIDEAN_SQUARE_METRIC", "COSINE_METRIC", "DOT_PRODUCT_METRIC":
 		default:
-			return bad(IndexOptionVectorMetric, v)
+			return &MetaDataError{Message: "incorrect index options", Cause: &IllegalArgumentError{
+				Message: "No enum constant com.apple.foundationdb.linear.Metric." + v,
+			}}
 		}
 	}
 	return nil

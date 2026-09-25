@@ -244,10 +244,26 @@ class MetaDataProtoSteps extends ConformanceBase {
         final var proto = RecordMetaDataProto.MetaData.parseFrom(protoBytes, EXTENSION_REGISTRY);
         try {
             RecordMetaData.build(proto);
-            return Map.of("valid", true, "error", "", "class", "");
+            return Map.of("valid", true, "error", "", "class", "", "causeClass", "", "causeError", "");
         } catch (RuntimeException ex) {
-            return Map.of("valid", false, "error", String.valueOf(ex.getMessage()), "class", ex.getClass().getName());
+            // The exception's direct cause, when it has one (MetaDataException("incorrect
+            // index options", cause) carries the parse failure there).
+            final Throwable cause = ex.getCause();
+            return Map.of("valid", false, "error", String.valueOf(ex.getMessage()), "class", ex.getClass().getName(),
+                    "causeClass", cause == null ? "" : cause.getClass().getName(),
+                    "causeError", cause == null ? "" : String.valueOf(cause.getMessage()));
         }
+    }
+
+    /**
+     * Builds meta-data from proto bytes (Java's MetaDataValidator runs) and returns the HNSW
+     * configuration Java reads from the named VECTOR index's options.
+     */
+    @ConformanceStep("vectorIndexConfigJava")
+    public Map<String, Object> vectorIndexConfigJava(byte[] protoBytes, String indexName) throws InvalidProtocolBufferException {
+        final var proto = RecordMetaDataProto.MetaData.parseFrom(protoBytes, EXTENSION_REGISTRY);
+        final RecordMetaData md = RecordMetaData.build(proto);
+        return com.apple.foundationdb.record.provider.foundationdb.indexes.HnswConformanceAccess.config(md.getIndex(indexName));
     }
 
     /**

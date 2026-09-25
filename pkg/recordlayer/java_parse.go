@@ -27,15 +27,17 @@ type NumberFormatError struct {
 	// Input is the value Integer.parseInt or Double.parseDouble refused
 	// (Double.parseDouble's trimmed).
 	Input string
-	// Empty is Double.parseDouble's refusal of a value that trims to nothing.
-	Empty bool
+	// Text, when set, is the exception's own message instead of
+	// forInputString's: Double.parseDouble's "empty String" for a value that
+	// trims to nothing and "multiple points" for a second decimal point in the
+	// significand (FloatingDecimal.readJavaFormatString).
+	Text string
 }
 
-// Error is NumberFormatException.forInputString's text for radix 10, and
-// Double.parseDouble's for an empty value.
+// Error is NumberFormatException.forInputString's text for radix 10, or Text.
 func (e *NumberFormatError) Error() string {
-	if e.Empty {
-		return "empty String"
+	if e.Text != "" {
+		return e.Text
 	}
 	return `For input string: "` + e.Input + `"`
 }
@@ -123,7 +125,7 @@ func javaDecimalDigit(r rune) int {
 func javaParseDouble(s string) (float64, error) {
 	t := strings.TrimFunc(s, func(r rune) bool { return r <= ' ' })
 	if t == "" {
-		return 0, &NumberFormatError{Empty: true}
+		return 0, &NumberFormatError{Text: "empty String"}
 	}
 	refuse := &NumberFormatError{Input: t}
 	body := t
@@ -140,6 +142,18 @@ func javaParseDouble(s string) (float64, error) {
 			return math.Inf(-1), nil
 		}
 		return math.Inf(1), nil
+	}
+	// FloatingDecimal scans the significand's digits and points first, and
+	// throws at a second point before looking at anything after it.
+	if !(len(body) > 1 && body[0] == '0' && (body[1] == 'x' || body[1] == 'X')) {
+		points := 0
+		for i := 0; i < len(body) && (body[i] == '.' || body[i] >= '0' && body[i] <= '9'); i++ {
+			if body[i] == '.' {
+				if points++; points == 2 {
+					return 0, &NumberFormatError{Input: t, Text: "multiple points"}
+				}
+			}
+		}
 	}
 	if n := len(body); n > 0 && strings.ContainsRune("fFdD", rune(body[n-1])) {
 		body = body[:n-1]

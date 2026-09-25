@@ -135,13 +135,37 @@ func newVectorIndexMaintainer(
 	}, nil
 }
 
-// parseHNSWConfig reads HNSW configuration from index options.
+// HNSWConfigOf is the HNSW configuration a VECTOR index's options declare, as
+// the maintainer reads it: Java's HnswVectorIndexEngine.parseConfig.
+func HNSWConfigOf(index *Index) HNSWConfig { return parseHNSWConfig(index) }
+
+// parseHNSWConfig reads HNSW configuration from index options. Each integer and
+// double option is read with Java's parser (VectorOptionKey's Integer::parseInt
+// and Double::parseDouble; javaParseInt, javaParseDouble), the one the build-time
+// validator reads it with (validateVectorIndexOptionsAtBuild), so a value both
+// accept means the same number to both. What is out of a range, or does not
+// parse, falls back to the default here, where Java's builder refuses it: the
+// VECTOR validator's port is WS-D's (DIVERGENCES.md, the VECTOR entry).
 func parseHNSWConfig(index *Index) HNSWConfig {
-	numDims := 128 // default
-	if v, ok := index.Options[IndexOptionVectorNumDimensions]; ok {
-		if n, _ := fmt.Sscanf(v, "%d", &numDims); n != 1 {
-			numDims = 128
+	optInt := func(key string) (int, bool) {
+		v, ok := index.Options[key]
+		if !ok {
+			return 0, false
 		}
+		n, err := javaParseInt(v)
+		return int(n), err == nil
+	}
+	optFloat := func(key string) (float64, bool) {
+		v, ok := index.Options[key]
+		if !ok {
+			return 0, false
+		}
+		f, err := javaParseDouble(v)
+		return f, err == nil
+	}
+	numDims := 128 // default
+	if n, ok := optInt(IndexOptionVectorNumDimensions); ok {
+		numDims = n
 	}
 	config := DefaultHNSWConfig(numDims)
 	if v, ok := index.Options[IndexOptionVectorMetric]; ok {
@@ -165,87 +189,51 @@ func parseHNSWConfig(index *Index) HNSWConfig {
 	if v, ok := index.Options[IndexOptionVectorKeepPrunedConnections]; ok {
 		config.KeepPrunedConnections = v == "true"
 	}
-	if v, ok := index.Options["hnswEfRepair"]; ok {
-		var efRepair int
-		if n, _ := fmt.Sscanf(v, "%d", &efRepair); n == 1 && efRepair >= 0 {
-			config.EfRepair = efRepair
-		}
+	if efRepair, ok := optInt("hnswEfRepair"); ok && efRepair >= 0 {
+		config.EfRepair = efRepair
 	}
 	if v, ok := index.Options["hnswUseInlining"]; ok {
 		config.UseInlining = v == "true"
 	}
-	if v, ok := index.Options[IndexOptionHNSWSampleVectorStatsProbability]; ok {
-		var p float64
-		if n, _ := fmt.Sscanf(v, "%g", &p); n == 1 && p > 0 && p <= 1 {
-			config.SampleVectorStatsProbability = p
-		}
+	if p, ok := optFloat(IndexOptionHNSWSampleVectorStatsProbability); ok && p > 0 && p <= 1 {
+		config.SampleVectorStatsProbability = p
 	}
-	if v, ok := index.Options[IndexOptionHNSWMaintainStatsProbability]; ok {
-		var p float64
-		if n, _ := fmt.Sscanf(v, "%g", &p); n == 1 && p > 0 && p <= 1 {
-			config.MaintainStatsProbability = p
-		}
+	if p, ok := optFloat(IndexOptionHNSWMaintainStatsProbability); ok && p > 0 && p <= 1 {
+		config.MaintainStatsProbability = p
 	}
-	if v, ok := index.Options[IndexOptionHNSWStatsThreshold]; ok {
-		var t int
-		if n, _ := fmt.Sscanf(v, "%d", &t); n == 1 {
-			config.StatsThreshold = t
-		}
+	if t, ok := optInt(IndexOptionHNSWStatsThreshold); ok {
+		config.StatsThreshold = t
 	}
 	if v, ok := index.Options["hnswUseRaBitQ"]; ok && v == "true" {
 		numExBits := 4
-		if v, ok := index.Options["hnswRaBitQNumExBits"]; ok {
-			var n int
-			if cnt, _ := fmt.Sscanf(v, "%d", &n); cnt == 1 && n >= 1 && n <= 8 {
-				numExBits = n
-			}
+		if n, ok := optInt("hnswRaBitQNumExBits"); ok && n >= 1 && n <= 8 {
+			numExBits = n
 		}
 		config.Quantizer = rabitq.NewQuantizer(rabitq.Metric(config.Metric), numExBits)
 	}
-	if v, ok := index.Options[IndexOptionHNSWM]; ok {
-		var m int
-		if n, _ := fmt.Sscanf(v, "%d", &m); n == 1 && m >= 2 && m <= 128 {
-			config.M = m
-		}
+	if m, ok := optInt(IndexOptionHNSWM); ok && m >= 2 && m <= 128 {
+		config.M = m
 	}
-	if v, ok := index.Options[IndexOptionHNSWMMax]; ok {
-		var mMax int
-		if n, _ := fmt.Sscanf(v, "%d", &mMax); n == 1 && mMax >= 2 && mMax <= 256 {
-			config.MMax = mMax
-		}
+	if mMax, ok := optInt(IndexOptionHNSWMMax); ok && mMax >= 2 && mMax <= 256 {
+		config.MMax = mMax
 	}
-	if v, ok := index.Options[IndexOptionHNSWMMax0]; ok {
-		var mMax0 int
-		if n, _ := fmt.Sscanf(v, "%d", &mMax0); n == 1 && mMax0 >= 2 && mMax0 <= 512 {
-			config.MMax0 = mMax0
-		}
+	if mMax0, ok := optInt(IndexOptionHNSWMMax0); ok && mMax0 >= 2 && mMax0 <= 512 {
+		config.MMax0 = mMax0
 	}
-	if v, ok := index.Options[IndexOptionHNSWEfConstruction]; ok {
-		var efConstruction int
-		if n, _ := fmt.Sscanf(v, "%d", &efConstruction); n == 1 && efConstruction >= 1 && efConstruction <= 2000 {
-			config.EfConstruction = efConstruction
-		}
+	if efConstruction, ok := optInt(IndexOptionHNSWEfConstruction); ok && efConstruction >= 1 && efConstruction <= 2000 {
+		config.EfConstruction = efConstruction
 	}
 	// Concurrency limits — stored for Java round-trip compatibility.
 	// Go's synchronous FDB model doesn't use these for concurrency control.
 	// Matches Java's IndexOptions.HNSW_MAX_NUM_CONCURRENT_NODE_FETCHES etc.
-	if v, ok := index.Options[IndexOptionHNSWMaxNumConcurrentNodeFetches]; ok {
-		var n int
-		if cnt, _ := fmt.Sscanf(v, "%d", &n); cnt == 1 && n > 0 && n <= 64 {
-			config.MaxNumConcurrentNodeFetches = n
-		}
+	if n, ok := optInt(IndexOptionHNSWMaxNumConcurrentNodeFetches); ok && n > 0 && n <= 64 {
+		config.MaxNumConcurrentNodeFetches = n
 	}
-	if v, ok := index.Options[IndexOptionHNSWMaxNumConcurrentNeighborhoodFetches]; ok {
-		var n int
-		if cnt, _ := fmt.Sscanf(v, "%d", &n); cnt == 1 && n > 0 && n <= 20 {
-			config.MaxNumConcurrentNeighborhoodFetches = n
-		}
+	if n, ok := optInt(IndexOptionHNSWMaxNumConcurrentNeighborhoodFetches); ok && n > 0 && n <= 20 {
+		config.MaxNumConcurrentNeighborhoodFetches = n
 	}
-	if v, ok := index.Options[IndexOptionHNSWMaxNumConcurrentDeleteFromLayer]; ok {
-		var n int
-		if cnt, _ := fmt.Sscanf(v, "%d", &n); cnt == 1 && n > 0 && n <= 10 {
-			config.MaxNumConcurrentDeleteFromLayer = n
-		}
+	if n, ok := optInt(IndexOptionHNSWMaxNumConcurrentDeleteFromLayer); ok && n > 0 && n <= 10 {
+		config.MaxNumConcurrentDeleteFromLayer = n
 	}
 	return config
 }

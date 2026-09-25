@@ -2099,7 +2099,7 @@ number of dimensions"` when `hnswNumDimensions` is absent.
 
 **Go:** no metadata-time vector validation exists. `parseHNSWConfig`
 (`vector_index_maintainer.go`) is written to be permissive — every option is read
-through an "if it scans and is in range, use it" guard — so a typo'd `hnswM`, an
+through an "if it parses and is in range, use it" guard — so a typo'd `hnswM`, an
 out-of-range `hnswEfConstruction` and an unrecognised `hnswMetric` all fall
 through to a DEFAULT. The index builds, writes, and serves queries, with a graph
 whose connectivity (or whose notion of "nearest") differs from the declaration,
@@ -2116,10 +2116,19 @@ arm. Its integer and double options parse as Java's `VectorOptionKey` parses the
 options" with the parse failure as its cause (`Unwrap`, a `NumberFormatError` with
 Java's text), and "need to specify the number of dimensions" for a missing count
 (the JVM specs "A windowed VECTOR index's options parse as Java parses them" and
-"A windowed VECTOR index is validated as Java validates it"). Two differences
-remain until WS-D: a value that parses and is refused (a dimension count below one,
-an unknown metric name) has an `IllegalArgumentError` cause whose text is Go's; and
-which options it checks is Go's list, not Java's engine-aware parse
+"A windowed VECTOR index is validated as Java validates it"). The maintainer's
+`parseHNSWConfig` reads the options with the same two parsers, so a value both
+engines accept is the same number to the index Go maintains as to Java's
+`HnswVectorIndexEngine` (the JVM spec "A windowed VECTOR index's options are read
+as Java reads them" compares the configuration each engine reads); a value that
+does not parse or is out of range still falls back to a default there, the
+permissive half above. The metric is one of
+the four `Metric` constants' names, as `Metric::valueOf` reads it, and any other
+name, `parseHNSWConfig`'s lower-case aliases included, is refused with
+`Enum.valueOf`'s "No enum constant" text as the cause (JVM rows); a plain VECTOR
+index still takes the aliases, until WS-D. Two differences remain until WS-D: a
+dimension count below one has an `IllegalArgumentError` cause whose text is Go's;
+and which options it checks is Go's list, not Java's engine-aware parse
 (`VectorIndexEngine.validate`, with its alias conflicts).
 
 **What is open, and why it is an owner call rather than a deferral:** applying
@@ -3196,3 +3205,26 @@ key onto the explode-probed leg.
 
 The guard is not removed: it also bounds the search, and without it a nine-conjunct OR
 exhausts the planner's task budget (ws-e-design.md 4.1(b)).
+
+### A map's entry order when Go saves a map Go's caller changed or built (RFC-257 WS-C)
+
+Java's default serializer (`DynamicMessageRecordSerializer`) reads a stored record as a
+DynamicMessage, whose map field is the list of its entries in stored order, a key written twice
+included, and a load-then-save writes that list back, each entry re-encoded with its key and its
+value. Go's load-then-save writes the same bytes: the JVM spec "Map entries are maintained in the
+record's wire order" compares the stored records of both engines' re-saves byte for byte, and both
+indexes are unchanged (`rewriteMaps`, `record_wire_map_order.go`).
+
+A Go map holds one value per key and has no insertion order, so where Go's caller CHANGED a map,
+or built the record, the order is Go's: a changed key is written once, in its first stored
+position; a new key follows the stored ones, in key order; a new record's maps are in key order.
+An element of a repeated message field is matched to the stored element with its content, so an
+unchanged element keeps its own order wherever the list moved it, as Java's does; a changed
+element takes the stored element at its position when no other element took that one, and
+otherwise writes its maps in key order, where Java's keeps its own: a Go message carries no
+identity across a load and a save.
+In Java the order is whatever the caller built, a generated message's map in insertion order (a
+key written twice collapsed to its first position), a DynamicMessage's in list order. The
+difference is not a wire incompatibility: each engine indexes a record from the bytes it wrote,
+and reads the other's bytes as it reads its own. It shows only where two entries of one map write
+one index key, whose value is the last entry's, or share a TEXT token.

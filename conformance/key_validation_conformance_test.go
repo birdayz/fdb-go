@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"fdb.dev/gen"
@@ -427,12 +428,12 @@ var _ = Describe("Map entries are maintained in the record's wire order, as Java
 		Expect(err).NotTo(HaveOccurred())
 		Expect(build(raw)).To(Equal(javaKVs))
 
-		// Go loads each record Java wrote and saves it unchanged: every map keeps
-		// the order Java stored (Java's load-then-save keeps it), so the index is
-		// untouched, except the key written twice, which a Go map holds once, in
-		// its first position with its last value, so that record's first x
-		// entry, (1, 2), goes. The maintained index then equals a build over the
-		// re-saved bytes.
+		// Go loads each record Java wrote and saves it unchanged, and so does
+		// Java: the stored bytes are equal, each map written back in its stored
+		// order, the key written twice with both its entries and the entry
+		// stored without a value with its default, and neither index changes.
+		// The maintained index equals a build over the re-saved bytes, Go's
+		// and Java's.
 		javaSS := subspace.Sub(tuple.Tuple{"mapwire_resave", uuid.NewString()}...)
 		Expect(save(javaSS, withIndex)).To(Equal(javaKVs))
 		storedKeys := func(ss subspace.Subspace) map[int64][]string {
@@ -468,48 +469,155 @@ var _ = Describe("Map entries are maintained in the record's wire order, as Java
 			return out
 		}
 		Expect(storedKeys(javaSS)).To(Equal(map[int64][]string{1: {"b", "a"}, 2: {"x", "y", "x"}, 3: {"k", "j"}}))
-		for id := int64(1); id <= 3; id++ {
+		resave := func(ss subspace.Subspace, md *recordlayer.RecordMetaData) {
+			for id := int64(1); id <= 3; id++ {
+				_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+					store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
+					if err != nil {
+						return nil, err
+					}
+					rec, err := store.LoadRecord(tuple.Tuple{id})
+					if err != nil {
+						return nil, err
+					}
+					_, err = store.SaveRecord(rec.Record)
+					return nil, err
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+		}
+		resave(javaSS, md)
+		// Java's load-then-save of the same records, for its bytes.
+		javaResave := subspace.Sub(tuple.Tuple{"mapwire_javaresave", uuid.NewString()}...)
+		Expect(save(javaResave, withIndex)).To(Equal(javaKVs))
+		mdBytes, err := proto.Marshal(withIndex)
+		Expect(err).NotTo(HaveOccurred())
+		var javaResaved struct {
+			Records [][]string `json:"records"`
+			KVs     [][]string `json:"kvs"`
+		}
+		Expect(NewJavaInvoker().InvokeAs(ctx, "resaveRecordsJava", map[string]any{
+			"clusterFile": clusterFile, "subspace": BytesToIntArray(javaResave.Bytes()),
+			"metaData": BytesToIntArray(mdBytes), "count": len(records),
+		}, &javaResaved)).To(Succeed())
+		recordKVs := func(ss subspace.Subspace) [][]string {
+			var out [][]string
 			_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
-				store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(javaSS).Open()
+				begin, end := ss.Sub(int64(recordlayer.RecordKey)).FDBRangeKeys()
+				kvs, err := rtx.Transaction().GetRange(fdb.KeyRange{Begin: begin, End: end}, fdb.RangeOptions{}).GetSliceWithError()
 				if err != nil {
 					return nil, err
 				}
-				rec, err := store.LoadRecord(tuple.Tuple{id})
+				for _, kv := range kvs {
+					out = append(out, []string{hex.EncodeToString(kv.Key[len(ss.Bytes()):]), hex.EncodeToString(kv.Value)})
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			return out
+		}
+		GinkgoWriter.Printf("MAPWIRE java re-save records=%v kvs=%v\n", javaResaved.Records, javaResaved.KVs)
+		GinkgoWriter.Printf("MAPWIRE go re-save records=%v\n", recordKVs(javaSS))
+		Expect(javaResaved.Records).To(HaveLen(len(records)))
+		Expect(javaResaved.KVs).To(Equal(javaKVs))
+		Expect(recordKVs(javaSS)).To(Equal(javaResaved.Records))
+		resaved := map[int64][]string{1: {"b", "a"}, 2: {"x", "y", "x"}, 3: {"k", "j"}}
+		Expect(storedKeys(javaSS)).To(Equal(resaved))
+		maintained, err := dumpIndexKVs(ctx, db, javaSS)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(maintained).To(Equal(javaKVs))
+
+		// The re-saved bytes, copied under a store Java wrote without the
+		// index: Go builds the index over them, and Java, opening the store
+		// with the index, rebuilds it from them; both equal the maintained one.
+		copyRecords := func(from, to subspace.Subspace) {
+			_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				begin, end := from.Sub(int64(recordlayer.RecordKey)).FDBRangeKeys()
+				kvs, err := rtx.Transaction().GetRange(fdb.KeyRange{Begin: begin, End: end}, fdb.RangeOptions{}).GetSliceWithError()
 				if err != nil {
 					return nil, err
 				}
-				_, err = store.SaveRecord(rec.Record)
-				return nil, err
+				Expect(kvs).To(HaveLen(len(records)))
+				for _, kv := range kvs {
+					rtx.Transaction().Set(fdb.Key(append(append([]byte(nil), to.Bytes()...), kv.Key[len(from.Bytes()):]...)), kv.Value)
+				}
+				return nil, nil
 			})
 			Expect(err).NotTo(HaveOccurred())
 		}
-		Expect(storedKeys(javaSS)).To(Equal(map[int64][]string{1: {"b", "a"}, 2: {"x", "y"}, 3: {"k", "j"}}))
-		var want [][]string
-		for _, kv := range javaKVs {
-			if kv[0] != "1502026964780015011502" { // (1, 2): the first of the twice-written x
-				want = append(want, kv)
-			}
-		}
-		Expect(want).To(HaveLen(5))
-		maintained, err := dumpIndexKVs(ctx, db, javaSS)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(maintained).To(Equal(want))
-
 		rebuilt := subspace.Sub(tuple.Tuple{"mapwire_rebuilt", uuid.NewString()}...)
 		Expect(save(rebuilt, without)).To(BeEmpty())
-		_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
-			begin, end := javaSS.Sub(int64(recordlayer.RecordKey)).FDBRangeKeys()
-			kvs, err := rtx.Transaction().GetRange(fdb.KeyRange{Begin: begin, End: end}, fdb.RangeOptions{}).GetSliceWithError()
-			if err != nil {
-				return nil, err
-			}
-			for _, kv := range kvs {
-				rtx.Transaction().Set(fdb.Key(append(append([]byte(nil), rebuilt.Bytes()...), kv.Key[len(javaSS.Bytes()):]...)), kv.Value)
-			}
-			return nil, nil
-		})
-		Expect(err).NotTo(HaveOccurred())
+		copyRecords(javaSS, rebuilt)
 		Expect(build(rebuilt)).To(Equal(maintained))
+		openJava := func(ss subspace.Subspace, md *gen.MetaData) [][]string {
+			mdBytes, err := proto.Marshal(md)
+			Expect(err).NotTo(HaveOccurred())
+			var java struct {
+				KVs [][]string `json:"kvs"`
+			}
+			Expect(NewJavaInvoker().InvokeAs(ctx, "openStoreAndDumpIndexesJava", map[string]any{
+				"clusterFile": clusterFile, "subspace": BytesToIntArray(ss.Bytes()), "metaData": BytesToIntArray(mdBytes),
+			}, &java)).To(Succeed())
+			return java.KVs
+		}
+		javaRead := subspace.Sub(tuple.Tuple{"mapwire_javaread", uuid.NewString()}...)
+		Expect(save(javaRead, without)).To(BeEmpty())
+		copyRecords(javaSS, javaRead)
+		javaRebuilt := openJava(javaRead, withIndex)
+		GinkgoWriter.Printf("MAPWIRE java rebuild of the go re-save kvs=%v\n", javaRebuilt)
+		Expect(javaRebuilt).To(Equal(maintained))
+
+		// A record stored under the older of its type's two union fields (both
+		// loaders prefer _MapRec, the field named for the type): Go's re-save
+		// finds the stored map order under the field it decoded the record
+		// from, and writes the record under the preferred field.
+		twoFields := func(md *gen.MetaData) *gen.MetaData {
+			c := proto.Clone(md).(*gen.MetaData)
+			for _, m := range c.Records.MessageType {
+				if m.GetName() == "RecordTypeUnion" {
+					m.Field = append(m.Field, &descriptorpb.FieldDescriptorProto{
+						Name: proto.String("MapRec_v0"), Number: proto.Int32(2),
+						Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(), Type: descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
+						TypeName: proto.String(".keyvalidation.MapRec"),
+					})
+				}
+			}
+			return c
+		}
+		unionNumbers := func(ss subspace.Subspace, rewrapAs protowire.Number) []protowire.Number {
+			var out []protowire.Number
+			_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				begin, end := ss.Sub(int64(recordlayer.RecordKey)).FDBRangeKeys()
+				kvs, err := rtx.Transaction().GetRange(fdb.KeyRange{Begin: begin, End: end}, fdb.RangeOptions{}).GetSliceWithError()
+				if err != nil {
+					return nil, err
+				}
+				for _, kv := range kvs {
+					num, _, n := protowire.ConsumeTag(kv.Value)
+					out = append(out, num)
+					if rewrapAs != 0 {
+						inner, _ := protowire.ConsumeBytes(kv.Value[n:])
+						rtx.Transaction().Set(kv.Key, protowire.AppendBytes(protowire.AppendTag(nil, rewrapAs, protowire.BytesType), inner))
+					}
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			return out
+		}
+		older := subspace.Sub(tuple.Tuple{"mapwire_older", uuid.NewString()}...)
+		Expect(save(older, twoFields(withIndex))).To(Equal(javaKVs))
+		Expect(unionNumbers(older, 2)).To(Equal([]protowire.Number{1, 1, 1}))
+		Expect(unionNumbers(older, 0)).To(Equal([]protowire.Number{2, 2, 2}))
+		olderMD, err := recordlayer.RecordMetaDataFromProto(twoFields(withIndex))
+		Expect(err).NotTo(HaveOccurred())
+		resave(older, olderMD)
+		Expect(unionNumbers(older, 0)).To(Equal([]protowire.Number{1, 1, 1}))
+		Expect(recordKVs(older)).To(Equal(javaResaved.Records))
+		Expect(storedKeys(older)).To(Equal(resaved))
+		olderMaintained, err := dumpIndexKVs(ctx, db, older)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(olderMaintained).To(Equal(javaKVs))
 	})
 })
 
@@ -985,9 +1093,68 @@ var _ = Describe("A windowed VECTOR index's options parse as Java parses them", 
 		{recordlayer.IndexOptionHNSWSampleVectorStatsProbability, "inf"},
 		{recordlayer.IndexOptionHNSWSampleVectorStatsProbability, "nan"},
 		{recordlayer.IndexOptionHNSWSampleVectorStatsProbability, "1_0"},
+		{recordlayer.IndexOptionHNSWSampleVectorStatsProbability, "1.2.3"},
+		{recordlayer.IndexOptionHNSWSampleVectorStatsProbability, ""},
+		{recordlayer.IndexOptionHNSWM, ""},
+		{recordlayer.IndexOptionVectorMetric, "COSINE_METRIC"},
+		{recordlayer.IndexOptionVectorMetric, "EUCLIDEAN_SQUARE_METRIC"},
+		{recordlayer.IndexOptionVectorMetric, "cosine"},
+		{recordlayer.IndexOptionVectorMetric, "inner_product"},
+		{recordlayer.IndexOptionVectorMetric, "euclidean"},
+		{recordlayer.IndexOptionVectorMetric, "COSINE_METRIC "},
 	} {
 		It(fmt.Sprintf("%s=%q", c.option, c.value), func() {
 			expectWindowedVerdictAsJava(fmt.Sprintf("%s=%q", c.option, c.value), windowed(c.option, c.value))
+		})
+	}
+})
+
+// The configuration each engine READS from a windowed VECTOR index's options,
+// for spellings only Java's parsers read as the number (full-width digits, a
+// sign, a suffix, padding, an exponent): the validator admitting a value is not
+// enough, the maintainer must read the same number from it. Java's side is
+// HnswVectorIndexEngine.parseConfig (through HnswConformanceAccess), Go's
+// recordlayer.HNSWConfigOf. Each value differs from the default, so a reader that
+// fell back to the default would be seen.
+var _ = Describe("A windowed VECTOR index's options are read as Java reads them", func() {
+	for _, c := range []struct {
+		options map[string]string
+	}{
+		{map[string]string{recordlayer.IndexOptionHNSWM: "８", recordlayer.IndexOptionHNSWMMax: "+12", recordlayer.IndexOptionHNSWMMax0: "２４"}},
+		{map[string]string{recordlayer.IndexOptionHNSWEfConstruction: "１５０", recordlayer.IndexOptionHNSWStatsThreshold: "-3"}},
+		{map[string]string{recordlayer.IndexOptionHNSWSampleVectorStatsProbability: "0.25d", recordlayer.IndexOptionHNSWMaintainStatsProbability: " 2.5e-1 "}},
+		{map[string]string{recordlayer.IndexOptionHNSWSampleVectorStatsProbability: "0x1p-2", recordlayer.IndexOptionHNSWMaintainStatsProbability: ".125F"}},
+	} {
+		It(fmt.Sprintf("%v", c.options), func() {
+			p := windowedEdited(func(ix *gen.Index) {
+				for k, v := range c.options {
+					ix.Options = append(ix.Options, &gen.Index_Option{Key: proto.String(k), Value: proto.String(v)})
+				}
+			})
+			var java map[string]float64
+			Expect(NewJavaInvoker().InvokeAs(context.Background(), "vectorIndexConfigJava", map[string]any{
+				"protoBytes": bytesToInts(marshalMetaData(p)), "indexName": "w",
+			}, &java)).To(Succeed())
+			md, err := recordlayer.RecordMetaDataFromProto(proto.Clone(p).(*gen.MetaData))
+			Expect(err).NotTo(HaveOccurred())
+			cfg := recordlayer.HNSWConfigOf(md.GetIndex("w"))
+			goValues := map[string]float64{
+				"numDimensions": float64(cfg.NumDimensions), "m": float64(cfg.M), "mMax": float64(cfg.MMax),
+				"mMax0": float64(cfg.MMax0), "efConstruction": float64(cfg.EfConstruction), "efRepair": float64(cfg.EfRepair),
+				"statsThreshold": float64(cfg.StatsThreshold), "sampleVectorStatsProbability": cfg.SampleVectorStatsProbability,
+				"maintainStatsProbability": cfg.MaintainStatsProbability,
+			}
+			fmt.Fprintf(GinkgoWriter, "VECTOR_CONFIG %v java=%v go=%v\n", c.options, java, goValues)
+			for key := range c.options {
+				name := map[string]string{
+					recordlayer.IndexOptionHNSWM: "m", recordlayer.IndexOptionHNSWMMax: "mMax", recordlayer.IndexOptionHNSWMMax0: "mMax0",
+					recordlayer.IndexOptionHNSWEfConstruction: "efConstruction", recordlayer.IndexOptionHNSWStatsThreshold: "statsThreshold",
+					recordlayer.IndexOptionHNSWSampleVectorStatsProbability: "sampleVectorStatsProbability",
+					recordlayer.IndexOptionHNSWMaintainStatsProbability:     "maintainStatsProbability",
+				}[key]
+				Expect(name).NotTo(BeEmpty(), key)
+				Expect(goValues[name]).To(Equal(java[name]), "%s=%q", key, c.options[key])
+			}
 		})
 	}
 })
@@ -1079,7 +1246,8 @@ func expectWindowedVerdictAsJava(label string, p *gen.MetaData) {
 		"protoBytes": bytesToInts(marshalMetaData(p)),
 	}, &java)).To(Succeed())
 	_, goErr := recordlayer.RecordMetaDataFromProto(proto.Clone(p).(*gen.MetaData))
-	fmt.Fprintf(GinkgoWriter, "WINDOWED %s java=%t %s %q go=%T %v\n", label, java.Valid, java.Class, java.Error, goErr, goErr)
+	fmt.Fprintf(GinkgoWriter, "WINDOWED %s java=%t %s %q cause=%s %q go=%T %v cause=%v\n", label, java.Valid, java.Class, java.Error,
+		java.CauseClass, java.CauseError, goErr, goErr, errors.Unwrap(goErr))
 	Expect(goErr == nil).To(Equal(java.Valid), "Java: %t %s %q; Go: %v", java.Valid, java.Class, java.Error, goErr)
 	if java.Valid {
 		return
@@ -1090,6 +1258,27 @@ func expectWindowedVerdictAsJava(label string, p *gen.MetaData) {
 		var e *recordlayer.MetaDataError
 		Expect(errors.As(goErr, &e)).To(BeTrue(), "Go: %T %v", goErr, goErr)
 		goMessage = e.Message
+		// The parse failure behind "incorrect index options" is the cause, in
+		// both engines: a NumberFormatException's class and text are Java's, and
+		// so is an unknown metric's (Enum.valueOf's "No enum constant"); any
+		// other IllegalArgumentException's text is Go's own (DIVERGENCES.md,
+		// VECTOR).
+		switch java.CauseClass {
+		case "java.lang.NumberFormatException":
+			var nfe *recordlayer.NumberFormatError
+			Expect(errors.As(e.Cause, &nfe)).To(BeTrue(), "Go cause: %T %v", e.Cause, e.Cause)
+			Expect(nfe.Error()).To(Equal(java.CauseError), "the parse failure's text")
+		case "java.lang.IllegalArgumentException":
+			var iae *recordlayer.IllegalArgumentError
+			Expect(errors.As(e.Cause, &iae)).To(BeTrue(), "Go cause: %T %v", e.Cause, e.Cause)
+			if strings.HasPrefix(java.CauseError, "No enum constant ") {
+				Expect(iae.Message).To(Equal(java.CauseError), "the metric refusal's text")
+			}
+		case "":
+			Expect(e.Cause).To(BeNil(), "Java's exception has no cause")
+		default:
+			Fail("unexpected Java cause class " + java.CauseClass)
+		}
 	case "com.apple.foundationdb.record.RecordCoreException":
 		var e *recordlayer.RecordCoreError
 		Expect(errors.As(goErr, &e)).To(BeTrue(), "Go: %T %v", goErr, goErr)
@@ -1100,15 +1289,16 @@ func expectWindowedVerdictAsJava(label string, p *gen.MetaData) {
 	Expect(goMessage).To(Equal(java.Error))
 }
 
-// The online build's records-range preset for a record type whose key is a
-// string, as Java writes it: both engines save the same records under the same
-// meta-data (Order keyed "order-key", Customer by its union field, both primary
-// keys led by the record type key), mark the index on Order disabled, build it
-// without marking it readable, and the index's range-set key-value pairs are
-// equal. Java orders record type key tuples with Tuple.compareTo
-// (IndexingCommon.computeRecordsRange); Go gave up on a non-integer key and
-// built over the whole records space.
-var _ = Describe("The online build presets a string-keyed record type's range as Java does", func() {
+// The online build's records-range preset for a build of one index, as Java
+// writes it: both engines save the same records under the same meta-data
+// (Order keyed "order-key" or by its union field, Customer by its union field,
+// all primary keys led by the record type key), mark the index on Order
+// disabled, build it without marking it readable, and the index's range-set
+// key-value pairs are equal. Java presets the range of the index's record types
+// before any build, one target or several (OnlineIndexer.java:302-314,
+// IndexingMultiTargetByRecords.java:120), ordering record type key tuples with
+// Tuple.compareTo (IndexingCommon.computeRecordsRange), a string key included.
+var _ = Describe("The online build of one index presets its record types' range as Java does", func() {
 	for _, orderKey := range []any{"order-key", nil} {
 		It(fmt.Sprintf("writes the range set Java writes, Order keyed %v", orderKey), func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)

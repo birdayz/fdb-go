@@ -24,7 +24,9 @@ import (
 var _ = Describe("Map entries of a generated record type in wire order", func() {
 	ctx := context.Background()
 
-	structMetaData := func() *RecordMetaData {
+	var structMetaDataWith func(func(*RecordMetaDataBuilder)) *RecordMetaData
+	structMetaData := func() *RecordMetaData { return structMetaDataWith(nil) }
+	structMetaDataWith = func(edit func(*RecordMetaDataBuilder)) *RecordMetaData {
 		optional := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum()
 		fd, err := protodesc.NewFile(&descriptorpb.FileDescriptorProto{
 			Name:       proto.String("struct_records.proto"),
@@ -42,6 +44,9 @@ var _ = Describe("Map entries of a generated record type in wire order", func() 
 		Expect(err).NotTo(HaveOccurred())
 		builder := NewRecordMetaDataBuilder().SetRecords(fd)
 		builder.GetRecordType("Struct").SetPrimaryKey(RecordTypeKey())
+		if edit != nil {
+			edit(builder)
+		}
 		md, err := builder.Build()
 		Expect(err).NotTo(HaveOccurred())
 		return md
@@ -68,6 +73,56 @@ var _ = Describe("Map entries of a generated record type in wire order", func() 
 		}
 		return raw
 	}
+
+	// A saved record is indexed in the order its bytes were written, not in
+	// key order: stored fields [z], then saved as {z, a}, both string values
+	// "5", is written [z, a] (z, changed, in its stored position, the new key a
+	// after it), and the covering index's one key ("5", pk), written by both
+	// entries, holds the last one's, a; indexed in key order, [a, z], it would
+	// hold z. Through SaveRecord and SaveRecordBatch.
+	It("indexes a saved Struct in the order its fields were written", func() {
+		md := structMetaDataWith(func(b *RecordMetaDataBuilder) {
+			b.AddIndex("Struct", NewIndex("byValue", KeyWithValue(
+				NestFanOut("fields", Concat(Nest("value", Field("string_value")), Field("key"))), 1)))
+		})
+		idx := md.GetIndex("byValue")
+		for _, batch := range []bool{false, true} {
+			ks := specSubspace()
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = store.SaveRecord(&structpb.Struct{Fields: map[string]*structpb.Value{"z": structpb.NewStringValue("1")}})
+				return nil, err
+			})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+				Expect(err).NotTo(HaveOccurred())
+				rec := &structpb.Struct{Fields: map[string]*structpb.Value{"z": structpb.NewStringValue("5"), "a": structpb.NewStringValue("5")}}
+				if batch {
+					_, err = store.SaveRecordBatch([]proto.Message{rec})
+				} else {
+					_, err = store.SaveRecord(rec)
+				}
+				Expect(err).NotTo(HaveOccurred())
+				begin, end := store.IndexSubspace(idx).FDBRangeKeys()
+				kvs, err := rtx.Transaction().GetRange(fdb.KeyRange{Begin: begin, End: end}, fdb.RangeOptions{}).GetSliceWithError()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(kvs).To(HaveLen(1), "batch=%t", batch)
+				key, err := store.IndexSubspace(idx).Unpack(kvs[0].Key)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(key[0]).To(Equal("5"))
+				value, err := tuple.Unpack(kvs[0].Value)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(value).To(Equal(tuple.Tuple{"a"}), "batch=%t: the last entry written", batch)
+				loaded, err := store.LoadRecord(key[1:])
+				Expect(err).NotTo(HaveOccurred())
+				Expect(NestFanOut("fields", Field("key")).Evaluate(loaded, loaded.Record)).To(Equal([][]any{{"z"}, {"a"}}))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		}
+	})
 
 	It("reads a Struct's fields in the order its stored bytes hold them", func() {
 		md := structMetaData()

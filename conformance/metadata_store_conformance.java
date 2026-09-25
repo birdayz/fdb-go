@@ -1122,7 +1122,67 @@ class MetaDataStoreSteps extends ConformanceBase {
                 verdicts.add(t.getClass().getName());
             }
         }
-        final List<List<String>> kvs = runInContext(clusterFile, null, context -> {
+        final Map<String, Object> result = new HashMap<>();
+        result.put("verdicts", verdicts);
+        result.put("kvs", dumpIndexSpaces(clusterFile, ss));
+        return result;
+    }
+
+    /**
+     * Opens the store at subspace under metaData, whose indexes the ALWAYS_READABLE_CHECKER has
+     * FDBRecordStore.checkVersion rebuild in the open's transaction over the records already
+     * stored, and returns the index key-value pairs (spaces 2 and 3) relative to the subspace: an
+     * index Java builds from the stored record bytes.
+     */
+    @ConformanceStep("openStoreAndDumpIndexesJava")
+    public Map<String, Object> openStoreAndDumpIndexesJava(String clusterFile, byte[] subspace, byte[] metaData)
+            throws InvalidProtocolBufferException {
+        final RecordMetaData md = RecordMetaData.build(RecordMetaDataProto.MetaData.parseFrom(metaData, EXTENSION_REGISTRY));
+        final Subspace ss = new Subspace(subspace);
+        runInContext(clusterFile, null, context -> FDBRecordStore.newBuilder().setMetaDataProvider(md).setContext(context)
+                .setSubspace(ss).setUserVersionChecker(ALWAYS_READABLE_CHECKER).createOrOpen());
+        final Map<String, Object> result = new HashMap<>();
+        result.put("kvs", dumpIndexSpaces(clusterFile, ss));
+        return result;
+    }
+
+    /**
+     * Loads each record with primary key 1..count from the store at subspace under metaData and
+     * saves it unchanged (the default serializer: the record read back is a DynamicMessage), then
+     * returns the stored records (space 1) and the index key-value pairs (spaces 2 and 3), each
+     * relative to the subspace: the bytes a Java load-then-save writes.
+     */
+    @ConformanceStep("resaveRecordsJava")
+    public Map<String, Object> resaveRecordsJava(String clusterFile, byte[] subspace, byte[] metaData, long count)
+            throws InvalidProtocolBufferException {
+        final RecordMetaData md = RecordMetaData.build(RecordMetaDataProto.MetaData.parseFrom(metaData, EXTENSION_REGISTRY));
+        final Subspace ss = new Subspace(subspace);
+        for (long pk = 1; pk <= count; pk++) {
+            final Tuple primaryKey = Tuple.from(pk);
+            runInContext(clusterFile, null, context -> {
+                final FDBRecordStore store = FDBRecordStore.newBuilder().setMetaDataProvider(md).setContext(context)
+                        .setSubspace(ss).setUserVersionChecker(ALWAYS_READABLE_CHECKER).createOrOpen();
+                store.saveRecord(store.loadRecord(primaryKey).getRecord());
+                return null;
+            });
+        }
+        final List<List<String>> records = runInContext(clusterFile, null, context -> {
+            final byte[] prefix = ss.getKey();
+            final List<List<String>> out = new ArrayList<>();
+            for (com.apple.foundationdb.KeyValue kv : context.ensureActive().getRange(ss.range(Tuple.from(1L))).asList().join()) {
+                final byte[] rel = java.util.Arrays.copyOfRange(kv.getKey(), prefix.length, kv.getKey().length);
+                out.add(List.of(java.util.HexFormat.of().formatHex(rel), java.util.HexFormat.of().formatHex(kv.getValue())));
+            }
+            return out;
+        });
+        final Map<String, Object> result = new HashMap<>();
+        result.put("records", records);
+        result.put("kvs", dumpIndexSpaces(clusterFile, ss));
+        return result;
+    }
+
+    private List<List<String>> dumpIndexSpaces(String clusterFile, Subspace ss) {
+        return runInContext(clusterFile, null, context -> {
             final byte[] prefix = ss.getKey();
             final List<List<String>> out = new ArrayList<>();
             for (long space : new long[] {2L, 3L}) {
@@ -1134,10 +1194,6 @@ class MetaDataStoreSteps extends ConformanceBase {
             }
             return out;
         });
-        final Map<String, Object> result = new HashMap<>();
-        result.put("verdicts", verdicts);
-        result.put("kvs", kvs);
-        return result;
     }
 
     /**

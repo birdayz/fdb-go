@@ -21,6 +21,10 @@ type javaAnyVerdict struct {
 	Valid bool   `json:"valid"`
 	Error string `json:"error"`
 	Class string `json:"class"`
+	// CauseClass and CauseError are the exception's direct cause, empty when
+	// it has none.
+	CauseClass string `json:"causeClass"`
+	CauseError string `json:"causeError"`
 }
 
 // optionEvolutionMetaData is the demo records with one index of the given

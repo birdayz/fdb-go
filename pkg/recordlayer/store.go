@@ -665,7 +665,7 @@ func (store *FDBRecordStore) saveRecordInternal(
 	}
 
 	// Serialize directly into union wire format (no UnionDescriptor allocation)
-	data, err := serializeUnionOver(record, recordType, oldValue)
+	data, err := serializeUnionOver(record, recordType, store.storedRecordInner(oldValue, recordType))
 	if err != nil {
 		return nil, &RecordSerializationError{Cause: err}
 	}
@@ -2154,18 +2154,19 @@ func serializeUnion(record proto.Message, recordType *RecordType) ([]byte, error
 	return serializeUnionOver(record, recordType, nil)
 }
 
-// serializeUnionOver is serializeUnion for a record that replaces the stored
-// record prior (its union bytes; nil for a new record): a type that reaches a
-// map field keeps each map in the order prior stored it (marshalMapRecord,
+// serializeUnionOver is serializeUnion for a record that replaces a stored one
+// whose record bytes (inside the union) are priorInner, nil for a new record or
+// one of another type (storedRecordInner): a type that reaches a map field keeps
+// each map in the order priorInner stored it (marshalMapRecord,
 // record_wire_map_order.go), and is never written with vtproto's MarshalVT,
 // whose map order is Go's random iteration order.
-func serializeUnionOver(record proto.Message, recordType *RecordType, prior []byte) ([]byte, error) {
+func serializeUnionOver(record proto.Message, recordType *RecordType, priorInner []byte) ([]byte, error) {
 	if recordType.unionFieldNumber == 0 {
 		return nil, fmt.Errorf("no union field number for record type: %s", recordType.Name)
 	}
 
 	if recordType.reachesMap {
-		innerBytes, err := marshalMapRecord(record, unionInner(prior, recordType.unionFieldNumber))
+		innerBytes, err := marshalMapRecord(record, priorInner, recordType.mapReach)
 		if err != nil {
 			return nil, err
 		}
@@ -2280,6 +2281,44 @@ func (store *FDBRecordStore) deserializeAndDiscover(data []byte) (*RecordType, p
 		return rt, msg, newRecordWire(rt, innerBytes), nil
 	}
 	return nil, nil, nil, fmt.Errorf("union descriptor does not contain any known record type")
+}
+
+// storedRecordInner is the record bytes inside a stored record's union value,
+// found as deserializeAndDiscover finds them (the first length-delimited union
+// field naming a record type, under any of that type's union fields), when the
+// record they hold is of type recordType and the type reaches a map field; nil
+// otherwise, for which a save writes its maps in key order.
+func (store *FDBRecordStore) storedRecordInner(data []byte, recordType *RecordType) []byte {
+	if data == nil || !recordType.reachesMap {
+		return nil
+	}
+	for len(data) > 0 {
+		num, typ, n := protowire.ConsumeTag(data)
+		if n < 0 {
+			return nil
+		}
+		data = data[n:]
+		if typ == protowire.BytesType {
+			inner, m := protowire.ConsumeBytes(data)
+			if m < 0 {
+				return nil
+			}
+			if rt := store.metaData.fieldNumberToRecordType[num]; rt != nil {
+				if rt != recordType {
+					return nil
+				}
+				return inner
+			}
+			data = data[m:]
+			continue
+		}
+		m := protowire.ConsumeFieldValue(num, typ, data)
+		if m < 0 {
+			return nil
+		}
+		data = data[m:]
+	}
+	return nil
 }
 
 // unionInner is the inner bytes of the union field numbered field in data, nil

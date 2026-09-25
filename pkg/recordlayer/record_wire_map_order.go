@@ -1,6 +1,7 @@
 package recordlayer
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -34,12 +35,14 @@ import (
 //   - a record Go SAVES is written with its map entries in a chosen order and is
 //     evaluated from the bytes written: serializeUnion marshals a type that
 //     reaches a map with the deterministic marshal (never vtproto's MarshalVT,
-//     whose map order is Go's random iteration order), then orders each map as
-//     the record it replaces stored it, the keys the replaced record held first
-//     in its order and the rest after, in key order (mapKeyLess), as Java's
-//     parsed map keeps the stored order and appends a new key. A new record's
-//     maps are in key order. So a record Go loads and saves unchanged keeps its
-//     bytes' map order, and its index entries stay what they were.
+//     whose map order is Go's random iteration order), then writes each map as
+//     Java's load-then-save of the record it replaces writes it (rewriteMaps):
+//     that record's entries in their order, a key written twice included, each
+//     re-encoded with its key and value, for every key whose value is
+//     unchanged; a changed key once, at its first position; new keys after, in
+//     key order (mapKeyLess). A new record's maps are in key order. So a record
+//     Go loads and saves unchanged is written as Java writes it back, and its
+//     index entries stay what they were.
 //
 // The wire order is used only while the message still holds what its bytes
 // hold: a caller may mutate a loaded message, and one whose map no longer
@@ -49,6 +52,7 @@ import (
 // only for a record type that reaches a map field.
 type recordWire struct {
 	bytes []byte
+	reach mapReach
 
 	once    sync.Once
 	entries map[wireMapField][]protoreflect.Message
@@ -69,7 +73,7 @@ func newRecordWire(rt *RecordType, bytes []byte) *recordWire {
 	if rt == nil || !rt.reachesMap {
 		return nil
 	}
-	return &recordWire{bytes: bytes}
+	return &recordWire{bytes: bytes, reach: rt.mapReach}
 }
 
 // mapEntries returns the entries of map field fd of message m, a message
@@ -83,7 +87,7 @@ func (w *recordWire) mapEntries(root proto.Message, m protoreflect.Message, fd p
 	}
 	w.once.Do(func() {
 		w.entries = map[wireMapField][]protoreflect.Message{}
-		w.err = collectWireMapEntries(root.ProtoReflect(), w.bytes, w.entries, mapReach{})
+		w.err = collectWireMapEntries(root.ProtoReflect(), w.bytes, w.entries, w.reach)
 	})
 	if w.err != nil {
 		return nil, false
@@ -227,37 +231,64 @@ func wireEntriesMatchMap(entries []protoreflect.Message, mp protoreflect.Map, fd
 	return match
 }
 
-// mapReach answers whether a message type can hold a map field at any depth,
-// memoized for one walk or one meta-data build. It is never a global cache: a
-// meta-data load builds fresh descriptors, and a process-wide map keyed by them
-// would keep every loaded descriptor graph alive.
+// mapReach answers whether a message type can hold a map field at any depth.
+// newMapReach fills it at Build for every message type a meta-data's record
+// types reach, and it is read-only from then on, so the walks of every record
+// of the meta-data share it: a type it lacks (a descriptor from elsewhere) is
+// answered without being stored. It is never a global cache: a meta-data load
+// builds fresh descriptors, and a process-wide map keyed by them would keep
+// every loaded descriptor graph alive; this one lives as long as the meta-data.
 type mapReach map[protoreflect.MessageDescriptor]bool
+
+// newMapReach is the reach of every message type roots reach, message and group
+// fields followed: a type reaches a map if it has a map field or a message
+// field of a type that does, found as a fixpoint so recursive types terminate.
+func newMapReach(roots ...protoreflect.MessageDescriptor) mapReach {
+	var types []protoreflect.MessageDescriptor
+	seen := map[protoreflect.MessageDescriptor]bool{}
+	var visit func(md protoreflect.MessageDescriptor)
+	visit = func(md protoreflect.MessageDescriptor) {
+		if md == nil || seen[md] {
+			return
+		}
+		seen[md] = true
+		types = append(types, md)
+		fields := md.Fields()
+		for i := 0; i < fields.Len(); i++ {
+			visit(fields.Get(i).Message())
+		}
+	}
+	for _, md := range roots {
+		visit(md)
+	}
+	// Every type of the closure gets its answer, false included.
+	r := make(mapReach, len(types))
+	for _, md := range types {
+		r[md] = false
+	}
+	for changed := true; changed; {
+		changed = false
+		for _, md := range types {
+			if r[md] {
+				continue
+			}
+			fields := md.Fields()
+			for i := 0; i < fields.Len(); i++ {
+				if fd := fields.Get(i); fd.IsMap() || fd.Message() != nil && r[fd.Message()] {
+					r[md], changed = true, true
+					break
+				}
+			}
+		}
+	}
+	return r
+}
 
 func (r mapReach) reaches(md protoreflect.MessageDescriptor) bool {
 	if v, ok := r[md]; ok {
 		return v
 	}
-	v := reachesMap(md, map[protoreflect.FullName]bool{})
-	r[md] = v
-	return v
-}
-
-func reachesMap(md protoreflect.MessageDescriptor, visiting map[protoreflect.FullName]bool) bool {
-	if visiting[md.FullName()] {
-		return false
-	}
-	visiting[md.FullName()] = true
-	fields := md.Fields()
-	for i := 0; i < fields.Len(); i++ {
-		fd := fields.Get(i)
-		if fd.IsMap() {
-			return true
-		}
-		if (fd.Kind() == protoreflect.MessageKind || fd.Kind() == protoreflect.GroupKind) && reachesMap(fd.Message(), visiting) {
-			return true
-		}
-	}
-	return false
+	return newMapReach(md)[md]
 }
 
 // parseMapEntry reads one map entry's bytes as the entry message, its key and
@@ -272,8 +303,10 @@ func parseMapEntry(fd protoreflect.FieldDescriptor, body []byte) (*dynamicpb.Mes
 	return entry, nil
 }
 
-// fieldBody splits one field's value off raw: the field, its wire type, the
-// bytes of a message or group (nil for any other value), and the rest of raw.
+// fieldBody splits one field's value off raw: the field (nil when unknown, or
+// when the occurrence's wire type is not the field's, which a decoder keeps as
+// an unknown field), the bytes of a message or group (nil for any other
+// value), and the length consumed.
 func fieldBody(fields protoreflect.FieldDescriptors, raw []byte) (protoreflect.FieldDescriptor, []byte, int, error) {
 	num, typ, n := protowire.ConsumeTag(raw)
 	if n < 0 {
@@ -285,17 +318,17 @@ func fieldBody(fields protoreflect.FieldDescriptors, raw []byte) (protoreflect.F
 	}
 	value := raw[n : n+size]
 	fd := fields.ByNumber(num)
-	if fd == nil {
+	if fd == nil || !wireTypeFits(fd, typ) {
 		return nil, nil, n + size, nil
 	}
-	switch {
-	case typ == protowire.BytesType && fd.Kind() == protoreflect.MessageKind:
+	switch fd.Kind() {
+	case protoreflect.MessageKind:
 		b, k := protowire.ConsumeBytes(value)
 		if k < 0 {
 			return nil, nil, 0, protowire.ParseError(k)
 		}
 		return fd, b, n + size, nil
-	case typ == protowire.StartGroupType && fd.Kind() == protoreflect.GroupKind:
+	case protoreflect.GroupKind:
 		b, k := protowire.ConsumeGroup(num, value)
 		if k < 0 {
 			return nil, nil, 0, protowire.ParseError(k)
@@ -305,202 +338,335 @@ func fieldBody(fields protoreflect.FieldDescriptors, raw []byte) (protoreflect.F
 	return fd, nil, n + size, nil
 }
 
-// mapEntryValueBody is the bytes of a map entry's message value (field 2), nil
-// when it has none.
-func mapEntryValueBody(fd protoreflect.FieldDescriptor, entry []byte) ([]byte, error) {
-	var value []byte
-	fields := fd.Message().Fields()
-	for len(entry) > 0 {
-		vfd, body, n, err := fieldBody(fields, entry)
-		if err != nil {
-			return nil, err
-		}
-		if vfd != nil && vfd.Number() == 2 && body != nil {
-			value = body
-		}
-		entry = entry[n:]
+// wireTypeFits reports whether an occurrence of wire type typ is a value of fd,
+// as the decoder reads it (a packed repeated scalar is length-delimited).
+func wireTypeFits(fd protoreflect.FieldDescriptor, typ protowire.Type) bool {
+	switch fd.Kind() {
+	case protoreflect.MessageKind, protoreflect.StringKind, protoreflect.BytesKind:
+		return typ == protowire.BytesType
+	case protoreflect.GroupKind:
+		return typ == protowire.StartGroupType
+	case protoreflect.Fixed32Kind, protoreflect.Sfixed32Kind, protoreflect.FloatKind:
+		return typ == protowire.Fixed32Type || (fd.IsList() && typ == protowire.BytesType)
+	case protoreflect.Fixed64Kind, protoreflect.Sfixed64Kind, protoreflect.DoubleKind:
+		return typ == protowire.Fixed64Type || (fd.IsList() && typ == protowire.BytesType)
+	default:
+		return typ == protowire.VarintType || (fd.IsList() && typ == protowire.BytesType)
 	}
-	return value, nil
 }
 
-// mapOrders is, per map instance of a record (a path of field numbers, repeated
-// indexes and map keys), its keys in the order the record's bytes hold them, a
-// key written twice in its first position, as the LinkedHashMap of Java's
-// generated-message parse keeps it (a Go map holds the key once, so a Go save
-// collapses it; its value is the last one, as both engines' maps hold it).
-type mapOrders map[string][]any
+// priorBytesError is a failure to parse the bytes of the record a save
+// replaces: they do not parse as the record's type, so they have no map order
+// to keep, and the decoder refuses them wherever they are read.
+type priorBytesError struct{ err error }
 
-// collectMapOrders reads the map orders of raw, a message of type md.
-func collectMapOrders(md protoreflect.MessageDescriptor, raw []byte, path string, out mapOrders, reach mapReach) error {
-	occurrences := map[protoreflect.FieldNumber]int{}
-	fields := md.Fields()
+func (e *priorBytesError) Error() string { return "prior record bytes: " + e.err.Error() }
+func (e *priorBytesError) Unwrap() error { return e.err }
+
+// priorOccurrences is, for each message, group or map field of one message's
+// bytes, the bodies of the occurrences a decoder keeps (a map field's are its
+// entries), in order.
+func priorOccurrences(fields protoreflect.FieldDescriptors, raw []byte) (map[protowire.Number][][]byte, error) {
 	kept, err := oneofSurvivors(fields, raw)
 	if err != nil {
-		return err
+		return nil, &priorBytesError{err}
 	}
+	out := map[protowire.Number][][]byte{}
 	for offset := 0; offset < len(raw); {
 		fd, body, n, err := fieldBody(fields, raw[offset:])
 		if err != nil {
-			return err
+			return nil, &priorBytesError{err}
 		}
 		at := offset
 		offset += n
-		if fd == nil || body == nil || !kept(fd, at) {
-			continue
-		}
-		switch {
-		case fd.IsMap():
-			entry, err := parseMapEntry(fd, body)
-			if err != nil {
-				return err
-			}
-			key := entry.Get(fd.MapKey()).MapKey().Interface()
-			at := fmt.Sprintf("%s/%d", path, fd.Number())
-			seen := false
-			for _, k := range out[at] {
-				if k == key {
-					seen = true
-					break
-				}
-			}
-			if !seen {
-				out[at] = append(out[at], key)
-			}
-			if vmd := fd.MapValue().Message(); vmd != nil && reach.reaches(vmd) {
-				value, err := mapEntryValueBody(fd, body)
-				if err != nil {
-					return err
-				}
-				if err := collectMapOrders(vmd, value, fmt.Sprintf("%s{%v}", at, key), out, reach); err != nil {
-					return err
-				}
-			}
-		case !reach.reaches(fd.Message()):
-		case fd.IsList():
-			i := occurrences[fd.Number()]
-			occurrences[fd.Number()]++
-			if err := collectMapOrders(fd.Message(), body, fmt.Sprintf("%s/%d[%d]", path, fd.Number(), i), out, reach); err != nil {
-				return err
-			}
-		default:
-			if err := collectMapOrders(fd.Message(), body, fmt.Sprintf("%s/%d", path, fd.Number()), out, reach); err != nil {
-				return err
-			}
+		if fd != nil && body != nil && kept(fd, at) {
+			out[fd.Number()] = append(out[fd.Number()], body)
 		}
 	}
-	return nil
+	return out, nil
 }
 
-// orderMapEntries rewrites raw, a message of type md, in place: each run of
-// one map field's entries is put in prior's order for its instance, the keys
-// prior lists first and the rest after in their current order. Only the order
-// of whole entries moves, so no length changes.
-func orderMapEntries(md protoreflect.MessageDescriptor, raw []byte, path string, prior mapOrders, reach mapReach) error {
-	type entryRange struct {
-		start, end int
-		key        any
+// rewriteMaps is raw, the deterministic marshal of a message of type md (each
+// map in key order), with every map it reaches written as Java's load-then-save
+// of prior, the bytes of the message it replaces, writes it, nil prior leaving
+// raw as it is. Java's default serializer reads a record as a DynamicMessage,
+// whose map field is the list of entries in stored order, a key written twice
+// included, and writes that list back, each entry re-encoded with its key and
+// its value (measured: a stored entry without a value is written back with
+// its default). A Go map holds one value per key, so each map is written from
+// prior's entries in their order (mergeMapEntries); a singular message field is
+// matched with the merge of its kept occurrences in prior (bytes concatenated
+// parse as the merge), and a repeated one's elements with prior's by content
+// (elementPriors).
+func rewriteMaps(md protoreflect.MessageDescriptor, raw, prior []byte, reach mapReach) ([]byte, error) {
+	if prior == nil {
+		return raw, nil
 	}
-	occurrences := map[protoreflect.FieldNumber]int{}
 	fields := md.Fields()
-	var run []entryRange
-	var runField protoreflect.FieldDescriptor
-	flush := func() {
-		if len(run) > 1 {
-			rank := map[any]int{}
-			for i, k := range prior[fmt.Sprintf("%s/%d", path, runField.Number())] {
-				rank[k] = i
-			}
-			ordered := append([]entryRange(nil), run...)
-			sort.SliceStable(ordered, func(i, j int) bool {
-				ri, iok := rank[ordered[i].key]
-				rj, jok := rank[ordered[j].key]
-				switch {
-				case iok && jok:
-					return ri < rj
-				default:
-					return iok && !jok
-				}
-			})
-			buf := make([]byte, 0, run[len(run)-1].end-run[0].start)
-			for _, e := range ordered {
-				buf = append(buf, raw[e.start:e.end]...)
-			}
-			copy(raw[run[0].start:], buf)
-		}
-		run, runField = nil, nil
+	was, err := priorOccurrences(fields, prior)
+	if err != nil {
+		return nil, err
 	}
+	// occurrencesFrom is the bodies of fd's occurrences in raw from offset on.
+	occurrencesFrom := func(fd protoreflect.FieldDescriptor, offset int) ([][]byte, error) {
+		var bodies [][]byte
+		for offset < len(raw) {
+			next, body, k, err := fieldBody(fields, raw[offset:])
+			if err != nil {
+				return nil, err
+			}
+			if next == fd && body != nil {
+				bodies = append(bodies, body)
+			}
+			offset += k
+		}
+		return bodies, nil
+	}
+	out := make([]byte, 0, len(raw))
+	written := map[protowire.Number]bool{}
+	elements := map[protowire.Number][][]byte{}
+	element := map[protowire.Number]int{}
 	for offset := 0; offset < len(raw); {
 		fd, body, n, err := fieldBody(fields, raw[offset:])
 		if err != nil {
-			return err
+			return nil, err
 		}
-		start := offset
+		occurrence := raw[offset : offset+n]
 		offset += n
-		if runField != nil && fd != runField {
-			flush()
-		}
-		if fd == nil || body == nil {
-			continue
-		}
 		switch {
+		case fd == nil || body == nil:
+			out = append(out, occurrence...)
 		case fd.IsMap():
-			entry, err := parseMapEntry(fd, body)
+			// All of the map's entries are written where its first one was
+			// (the deterministic marshal writes them together).
+			if written[fd.Number()] {
+				continue
+			}
+			written[fd.Number()] = true
+			entries, err := occurrencesFrom(fd, offset-n)
 			if err != nil {
-				return err
+				return nil, err
 			}
-			key := entry.Get(fd.MapKey()).MapKey().Interface()
-			if vmd := fd.MapValue().Message(); vmd != nil && reach.reaches(vmd) {
-				value, err := mapEntryValueBody(fd, body)
-				if err != nil {
-					return err
-				}
-				if err := orderMapEntries(vmd, value, fmt.Sprintf("%s/%d{%v}", path, fd.Number(), key), prior, reach); err != nil {
-					return err
-				}
+			merged, err := mergeMapEntries(fd, entries, was[fd.Number()], reach)
+			if err != nil {
+				return nil, err
 			}
-			runField = fd
-			run = append(run, entryRange{start: start, end: offset, key: key})
+			out = append(out, merged...)
 		case !reach.reaches(fd.Message()):
-		case fd.IsList():
-			i := occurrences[fd.Number()]
-			occurrences[fd.Number()]++
-			if err := orderMapEntries(fd.Message(), body, fmt.Sprintf("%s/%d[%d]", path, fd.Number(), i), prior, reach); err != nil {
-				return err
-			}
+			out = append(out, occurrence...)
 		default:
-			if err := orderMapEntries(fd.Message(), body, fmt.Sprintf("%s/%d", path, fd.Number()), prior, reach); err != nil {
-				return err
+			var p []byte
+			if fd.IsList() {
+				if _, ok := elements[fd.Number()]; !ok {
+					current, err := occurrencesFrom(fd, offset-n)
+					if err != nil {
+						return nil, err
+					}
+					if elements[fd.Number()], err = elementPriors(fd.Message(), current, was[fd.Number()]); err != nil {
+						return nil, err
+					}
+				}
+				p = elements[fd.Number()][element[fd.Number()]]
+				element[fd.Number()]++
+			} else {
+				for _, b := range was[fd.Number()] {
+					p = append(p, b...)
+				}
+			}
+			rewritten, err := rewriteMaps(fd.Message(), body, p, reach)
+			if err != nil {
+				return nil, err
+			}
+			if fd.Kind() == protoreflect.GroupKind {
+				out = protowire.AppendTag(out, fd.Number(), protowire.StartGroupType)
+				out = append(out, rewritten...)
+				out = protowire.AppendTag(out, fd.Number(), protowire.EndGroupType)
+			} else {
+				out = protowire.AppendBytes(protowire.AppendTag(out, fd.Number(), protowire.BytesType), rewritten)
 			}
 		}
 	}
-	flush()
-	return nil
+	return out, nil
+}
+
+// elementPriors pairs each element of a repeated message field, current (the
+// bodies the deterministic marshal wrote), with the stored element whose maps
+// it is written after: the first unclaimed one of prior with its content (the
+// same position first), which is Java's own element when it is unchanged, as
+// Java's element keeps its own order however the list around it moved. An
+// element with no stored equal takes the stored element at its position if
+// that one is unclaimed, and otherwise none (its maps in key order): a Go
+// message carries no identity across a load and a save, so a changed element
+// that also moved cannot be told from a new one.
+func elementPriors(md protoreflect.MessageDescriptor, current, prior [][]byte) ([][]byte, error) {
+	canonical := func(body []byte) (string, error) {
+		m := dynamicpb.NewMessage(md)
+		if err := (proto.UnmarshalOptions{AllowPartial: true}).Unmarshal(body, m); err != nil {
+			return "", err
+		}
+		b, err := proto.MarshalOptions{Deterministic: true, AllowPartial: true}.Marshal(m)
+		return string(b), err
+	}
+	was := make([]string, len(prior))
+	for j, body := range prior {
+		c, err := canonical(body)
+		if err != nil {
+			return nil, &priorBytesError{err}
+		}
+		was[j] = c
+	}
+	claimed := make([]bool, len(prior))
+	out := make([][]byte, len(current))
+	matched := make([]bool, len(current))
+	for i, body := range current {
+		c, err := canonical(body)
+		if err != nil {
+			return nil, err
+		}
+		j := -1
+		if i < len(prior) && !claimed[i] && was[i] == c {
+			j = i
+		} else {
+			for k := range prior {
+				if !claimed[k] && was[k] == c {
+					j = k
+					break
+				}
+			}
+		}
+		if j >= 0 {
+			claimed[j], matched[i], out[i] = true, true, prior[j]
+		}
+	}
+	for i := range current {
+		if !matched[i] && i < len(prior) && !claimed[i] {
+			claimed[i], out[i] = true, prior[i]
+		}
+	}
+	return out, nil
+}
+
+// mergeMapEntries writes map field fd's entries: current, the entry bodies the
+// deterministic marshal wrote (one per key, in key order), over prior, the
+// entry bodies the replaced message stored. A key whose value is what prior
+// holds for it (its last entry, as a map reads it) keeps every entry prior
+// stored for it, each at its position, re-encoded with its own value
+// (canonicalEntry): Java's load-then-save of that list. A key whose value
+// changed is written once, at its first position, its value's own maps in the
+// order of prior's last value for it; a new key follows prior's keys, in key
+// order. A key prior held and the map no longer does is gone.
+func mergeMapEntries(fd protoreflect.FieldDescriptor, current, prior [][]byte, reach mapReach) ([]byte, error) {
+	keyOf := func(entry *dynamicpb.Message) any { return entry.Get(fd.MapKey()).MapKey().Interface() }
+	canonical := proto.MarshalOptions{Deterministic: true, AllowPartial: true}
+	now := map[any][]byte{}
+	var order []any
+	for _, body := range current {
+		entry, err := parseMapEntry(fd, body)
+		if err != nil {
+			return nil, err
+		}
+		now[keyOf(entry)] = body
+		order = append(order, keyOf(entry))
+	}
+	type priorEntry struct {
+		key   any
+		body  []byte
+		entry *dynamicpb.Message
+	}
+	var was []priorEntry
+	last := map[any]int{}
+	for _, body := range prior {
+		entry, err := parseMapEntry(fd, body)
+		if err != nil {
+			return nil, &priorBytesError{err}
+		}
+		last[keyOf(entry)] = len(was)
+		was = append(was, priorEntry{key: keyOf(entry), body: body, entry: entry})
+	}
+	// Unchanged is compared as canonical bytes, so a NaN value equals itself.
+	unchanged := map[any]bool{}
+	for k, i := range last {
+		body, ok := now[k]
+		if !ok {
+			continue
+		}
+		entry, err := parseMapEntry(fd, body)
+		if err != nil {
+			return nil, err
+		}
+		a, err := canonical.Marshal(entry)
+		if err != nil {
+			return nil, err
+		}
+		b, err := canonical.Marshal(was[i].entry)
+		if err != nil {
+			return nil, err
+		}
+		unchanged[k] = string(a) == string(b)
+	}
+	var out []byte
+	emit := func(entry []byte) {
+		out = protowire.AppendBytes(protowire.AppendTag(out, fd.Number(), protowire.BytesType), entry)
+	}
+	done := map[any]bool{}
+	for _, p := range was {
+		body, ok := now[p.key]
+		switch {
+		case !ok:
+		case unchanged[p.key]:
+			entry, err := canonicalEntry(fd, p.entry, p.body, reach)
+			if err != nil {
+				return nil, err
+			}
+			emit(entry)
+		case !done[p.key]:
+			done[p.key] = true
+			entry, err := rewriteMaps(fd.Message(), body, was[last[p.key]].body, reach)
+			if err != nil {
+				return nil, err
+			}
+			emit(entry)
+		}
+	}
+	for _, k := range order {
+		if _, had := last[k]; !had {
+			emit(now[k])
+		}
+	}
+	return out, nil
+}
+
+// canonicalEntry is a stored map entry as Java writes it back: its key and its
+// value (holdKeyAndValue set a missing one's default), in the deterministic
+// marshal, the value's own maps in the order body stores them.
+func canonicalEntry(fd protoreflect.FieldDescriptor, entry *dynamicpb.Message, body []byte, reach mapReach) ([]byte, error) {
+	raw, err := proto.MarshalOptions{Deterministic: true, AllowPartial: true}.Marshal(entry)
+	if err != nil {
+		return nil, err
+	}
+	return rewriteMaps(fd.Message(), raw, body, reach)
 }
 
 // marshalMapRecord is serializeUnion's inner bytes for a record whose type
 // reaches a map: the deterministic marshal (map entries in key order), each
-// map then ordered as prior, the inner bytes of the record it replaces (nil for
-// a new record), stored it. The required-field check is the one the record's
-// marshal path makes without a map: none for a vtproto message, protobuf-go's
-// for any other.
-func marshalMapRecord(record proto.Message, prior []byte) ([]byte, error) {
+// map then written as Java's load-then-save of prior writes it (rewriteMaps),
+// prior being the inner bytes of the record it replaces (nil for a new record,
+// whose maps stay in key order), reach the record type's (newMapReach). The
+// required-field check is the one the record's marshal path makes without a
+// map: none for a vtproto message, protobuf-go's for any other.
+func marshalMapRecord(record proto.Message, prior []byte, reach mapReach) ([]byte, error) {
 	_, vt := record.(interface{ MarshalVT() ([]byte, error) })
 	inner, err := proto.MarshalOptions{Deterministic: true, AllowPartial: vt}.Marshal(record)
 	if err != nil || prior == nil {
 		return inner, err
 	}
-	md := record.ProtoReflect().Descriptor()
-	reach := mapReach{}
-	orders := mapOrders{}
-	if err := collectMapOrders(md, prior, "", orders, reach); err != nil {
+	out, err := rewriteMaps(record.ProtoReflect().Descriptor(), inner, prior, reach)
+	if pe := (*priorBytesError)(nil); errors.As(err, &pe) {
 		// The replaced record's bytes do not parse as this type: nothing to
 		// keep, and the decoder refuses them wherever they are read.
-		return inner, nil //nolint:nilerr // key order stands
+		return inner, nil
 	}
-	if err := orderMapEntries(md, inner, "", orders, reach); err != nil {
-		return nil, err
-	}
-	return inner, nil
+	return out, err
 }
 
 // sortedMapEntries is a map's entries in key order (mapKeyLess), the order Go

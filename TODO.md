@@ -15080,3 +15080,13 @@ parsers for windowed VECTOR options, the window-under-OR class, the single-targe
 divergence for every key type, found by the new JVM spec), and nits. NEXT: the revision-14 gate
 (`ws-c-addendum-review-v14/`, storage over revisions 13 and 14).
 
+
+### RFC-257 WS-C revision 15 (booked 2026-09-25)
+
+LANDED (ws-c-design.md 7.15), folding the v14 gate's three NAKs (`ws-c-addendum-review-v14/`):
+a map is written as Java's load-then-save writes it, byte for byte (a key written twice keeps both
+entries; measured with a new Java re-save step), the stored record found under any of its type's
+union fields, repeated elements matched by content, no instance paths; the VECTOR maintainer reads
+its options with Java's parsers; "multiple points"; Java's four metric names for a windowed vector
+index; one map reach per meta-data; Java reads Go's re-saved bytes. NEXT: the revision-15 gate
+(`ws-c-addendum-review-v15/`).

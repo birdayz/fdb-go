@@ -1689,16 +1689,19 @@ var _ = Describe("SlidingWindowIndex validation", func() {
 		// The metric arm is separate from the numeric ones: parseHNSWConfig's
 		// default branch maps ANY unrecognised name to Euclidean, so a typo
 		// silently redefines what "nearest" means for every query the index
-		// serves. Java uses Metric.valueOf, which throws.
-		idx := newWindowedVectorIndex("sw_bad_metric", 2, gen.RowNumberWindowPredicate_ASC)
-		idx.Options[IndexOptionVectorMetric] = "COSIGN_METRIC"
-		builder := baseMetaData()
-		builder.AddIndex("Order", idx)
-		_, err := builder.Build()
-		Expect(err).To(MatchError("incorrect index options"), "Java's MetaDataException message, whole")
-		var iae *IllegalArgumentError
-		Expect(errors.As(err, &iae)).To(BeTrue(), "the cause names the option")
-		Expect(iae.Message).To(ContainSubstring("COSIGN_METRIC"))
+		// serves. Java uses Metric.valueOf, which throws, and knows only the four
+		// constants' names: parseHNSWConfig's lower-case aliases are refused too.
+		for _, metric := range []string{"COSIGN_METRIC", "cosine", "inner_product", "euclidean"} {
+			idx := newWindowedVectorIndex("sw_bad_metric", 2, gen.RowNumberWindowPredicate_ASC)
+			idx.Options[IndexOptionVectorMetric] = metric
+			builder := baseMetaData()
+			builder.AddIndex("Order", idx)
+			_, err := builder.Build()
+			Expect(err).To(MatchError("incorrect index options"), "Java's MetaDataException message, whole")
+			var iae *IllegalArgumentError
+			Expect(errors.As(err, &iae)).To(BeTrue(), "the cause is Enum.valueOf's refusal")
+			Expect(iae.Message).To(Equal("No enum constant com.apple.foundationdb.linear.Metric."+metric), "Enum.valueOf's text, whole")
+		}
 	})
 
 	It("accepts a windowed vector index whose options are all well-formed", func() {

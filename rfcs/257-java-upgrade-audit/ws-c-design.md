@@ -2462,7 +2462,10 @@ stored record held first, in its order, the rest after in key order, whole entri
 maps and maps in repeated elements by their instance path), and the new record is indexed in the
 order written (its `FDBStoredRecord` carries the written bytes). A key written twice is kept once, a
 Go map holding it once, in its first position with its last value, the order Java's generated-message
-parse (a LinkedHashMap) gives it. MEASURED, the wire-order JVM spec gains the re-save: Go loads each
+parse (a LinkedHashMap) gives it [Superseded → 7.15: Java's default serializer's load-then-save,
+measured, keeps both entries, each re-encoded with its key and value; Go now writes those bytes, and
+the instance paths are gone, a stored message matched structurally, a repeated element by content,
+the stored record found under any of its type's union fields]. MEASURED, the wire-order JVM spec gains the re-save: Go loads each
 record Java wrote and saves it; the stored key order is Java's but for the twice-written key, the
 maintained index is Java's six pairs less the dropped `x` entry, and a Go online build over the
 re-saved bytes equals it. Red on `529753bf6` (`{1: [a b], 3: [j k]}` against Java's `[b a]`, `[k j]`).
@@ -2478,7 +2481,8 @@ key order for that reason.
 :220): `javaParseInt` (already ported) and `javaParseDouble` (new, FloatingDecimal's grammar: trimmed
 at U+0020, an optional sign, NaN and Infinity, a hex significand with its binary exponent, ASCII
 decimal digits, an optional f/F/d/D suffix; an out-of-range decimal is an infinity or a zero), each
-refusal a `NumberFormatError` with Java's text. JVM spec "A windowed VECTOR index's options parse as
+refusal a `NumberFormatError` with Java's text [Superseded → 7.15: a second decimal point was not
+Java's "multiple points"; and the maintainer still read the options with `Sscanf`]. JVM spec "A windowed VECTOR index's options parse as
 Java parses them", 13 rows, both loaders' verdicts and texts equal; red on `529753bf6` for
 `hnswM=2147483648` and `１６`, and `0.5d`, ` 0.5 `, `inf`, `nan`, `1_0` (Go's `strconv` either way).
 DIVERGENCES' VECTOR entry states it and the two differences left for WS-D.
@@ -2520,7 +2524,9 @@ every records-scan build; the range sets are equal, red on `529753bf6` for both 
 
 **Evidence.** Revision 13's green runs were on its working tree, not the commit's. Revision 14's are
 run after the commit, on a clean tree (`save-evidence.sh`'s TREE shows HEAD, the index tree and an
-empty working diff), and are listed in the gate's prompt. The red runs are on `fdb-wsc10` at
+empty working diff), and are listed in the gate's prompt [Superseded → 7.15: they were the
+pre-commit hook's runs, not verbose, so the new specs showed only in the totals; revision 15's green
+is a verbose run on the committed tree]. The red runs are on `fdb-wsc10` at
 `529753bf6`'s tree plus the changed test files (`evidence/wsc14-rl-red`, `wsc14-conf-red`): red,
 the disjunction class spec and `TestGetTypedRecordStore_InvalidType` in `recordlayer_test` ("Ran
 3725 of 3726"), and 11 JVM specs (the re-save, both preset keys, the disjunction row, seven option
@@ -2528,3 +2534,110 @@ rows); green on both, as expected, the Struct spec, the string-keyed entry count
 behaviour predates this revision. Functions this revision adds (`serializeUnionOver`,
 `javaParseDouble`, `oneofSurvivors`) have unit tests that cannot compile on the old tree; their
 red is the JVM spec each belongs to, where one exists. No mutation was run.
+
+### 7.15 Revision 15: Java's load-then-save byte for byte, the maintainer's parsers, and Java's metric names
+
+Revision 14's gate (`ws-c-addendum-review-v14/`, commit `1bc97d6af`) returned three NAKs: Torvalds
+(six Lows), Graefe (three Lows and nits) and storage (one Medium and four Lows, over revisions 13 and
+14). No finding reopens a revision-12 to -14 fix. Revision 15 lands on the migration branch on top of
+`5d95cd27c` (WS-J step 2); the 7.14 sentences it changes are marked [Superseded → 7.15].
+
+**The maintainer reads the options as the validator does (storage 1, Medium; torvalds 1).** Revision
+14 had the windowed validator accept Java's spellings while `parseHNSWConfig` still read them with
+`fmt.Sscanf` and fell back to a default, so `hnswM=８` built (Java: 8) and was maintained with 16.
+`parseHNSWConfig` now reads every integer and double option with `javaParseInt` and
+`javaParseDouble` (a value that does not parse or is out of range still falls back, the permissive
+half DIVERGENCES' VECTOR entry keeps for WS-D). JVM spec "A windowed VECTOR index's options are read
+as Java reads them" compares the configuration each engine reads, Java's through
+`HnswVectorIndexEngine.parseConfig` (`conformance/HnswConformanceAccess.java`, a same-package
+accessor), Go's through `HNSWConfigOf`, for spellings only Java's parsers read and values that differ
+from the defaults; red on `5d95cd27c` for `hnswM=８, hnswMMax=+12, hnswMMax0=２４` and
+`hnswEfConstruction=１５０, hnswStatsThreshold=-3`; the two probability rows (`0.25d`, ` 2.5e-1 `,
+`0x1p-2`, `.125F`) are green on both, `Sscanf`'s `%g` reading the leading number.
+
+**Java's load-then-save, measured and matched (graefe 1).** A new JVM step, `resaveRecordsJava`,
+loads each record and saves it unchanged with Java's default serializer. Measured on the wire-order
+spec's records: Java keeps both entries of the key written twice (`x=1, y=2, x=3`), and writes the
+entry stored without a value back with its default (`k=0`), so its entries are re-encoded, not copied.
+`marshalMapRecord` now writes each map that way (`rewriteMaps`, `mergeMapEntries`,
+`record_wire_map_order.go`): the stored entries in their order; for a key whose value is unchanged
+(its canonical bytes equal the stored last value's), every stored entry of it, each re-encoded with
+its key and its own value (`canonicalEntry`), that value's maps in its own stored order; a changed key
+once, in its first stored position, its value's maps in the order of the stored last value; new keys
+after, in key order. The recursion walks the stored bytes beside the new ones: a singular message
+field against the concatenation of its kept occurrences (bytes concatenated parse as the merge), a
+map value against the stored entry it replaces, a repeated element against the stored element with
+its content (below). The spec now requires Go's re-saved records to equal Java's byte for byte, both
+indexes to stay Java's six pairs (the dropped `x` entry of revision 14 is kept), and the stored keys
+`{1: [b a], 2: [x y x], 3: [k j]}`; red on `5d95cd27c` (the bytes differ at record 2). DIVERGENCES
+gains an entry for what stays Go's: the order of a map Go's caller changed or built (a changed key at
+its first position, new keys in key order), where Java's is the caller's.
+
+**The stored record under any union field (torvalds 2, storage 2).** `serializeUnionOver` takes the
+stored record's inner bytes from `storedRecordInner`, which finds them as `deserializeAndDiscover`
+finds a record, under any union field of its type. The wire-order spec gains a record type with two
+union fields of `MapRec` (`_MapRec`, preferred by both loaders, and `MapRec_v0`): Java saves the
+records, each is rewritten under `MapRec_v0`, Go re-saves them, and the bytes, now under `_MapRec`,
+equal Java's re-save; red on `5d95cd27c` (`{1: [a b], 3: [j k]}`, `evidence/wsc15-red-first`; in the
+final red run the spec stops earlier, at the byte comparison).
+
+**No instance paths (torvalds 3, graefe and storage nits).** The path strings, whose unquoted string
+keys could name two maps alike and whose twice-written key merged both values' nested orders, are
+gone with `collectMapOrders`: the stored bytes are walked structurally. Unit tests: two maps of a
+recursive type a path of unquoted keys names alike, holding the same keys in opposite orders (red on
+`5d95cd27c`); a key written twice with message values, unchanged (both entries, each value's map in
+its own order) and changed (once, in the last value's order; red on `5d95cd27c`); a map in a singular
+message and maps in map values (green on both: those arms existed, and now have re-save tests,
+torvalds 4 and the graefe nit).
+
+**A repeated element is matched by content (storage 3).** Revision 14 matched the i-th element with
+the stored i-th, so an insertion or a removal gave an unchanged element another's order. An element
+now takes the first unclaimed stored element with its content (`elementPriors`), which for an
+unchanged element is its own, as Java's element keeps its own order; an element with no stored equal
+takes the stored element at its position if that one is unclaimed, and otherwise writes its maps in
+key order, since a Go message carries no identity across a load and a save (declared in
+DIVERGENCES). Unit subtests: an element inserted before two stored ones, the first removed, the two
+swapped.
+
+**A save is indexed in the order written (storage 4).** "indexes a saved Struct in the order its
+fields were written" (`record_wire_map_order_fdb_test.go`): stored `[z]`, saved `{z, a}` with equal
+values, written `[z, a]`, and the covering index's one key holds `a`, through `SaveRecord` and
+`SaveRecordBatch`. It is green on both trees (the behaviour is revision 14's); two of the milestone's
+mutation runs show it can fire, the saved record's wire dropped in `saveRecordInternal` and in
+`SaveRecordBatch` each reddening it with `z` (`evidence/wsc15-mutation`).
+
+**"multiple points" (torvalds 5, graefe 3, storage 5).** `javaParseDouble` throws FloatingDecimal's
+"multiple points" for a second point in the significand, before anything after it is read;
+`NumberFormatError.Text` replaces `Empty`. The row `hnswSampleVectorStatsProbability="1.2.3"`, and
+`expectWindowedVerdictAsJava` now compares the cause's class and, for a `NumberFormatException`, its
+text with Java's (`buildMetaDataAnyVerdict` returns the cause); red on `5d95cd27c`. Rows `""` for
+both an integer and a double option ("empty String", `For input string: ""`) are green on both.
+
+**Java's metric names (graefe 2).** The windowed validator took `cosine`, `inner_product` and
+`euclidean`, which Java's `Metric::valueOf` refuses (VectorOptionKey.java:236). It now takes the four
+constants' names only, and refuses any other with `Enum.valueOf`'s text, "No enum constant
+com.apple.foundationdb.linear.Metric.<name>", as the cause, which the spec compares. Six JVM rows; red
+on `5d95cd27c` for the three aliases and `"COSINE_METRIC "`. A plain VECTOR index still takes the
+aliases, WS-D's (DIVERGENCES).
+
+**One reach per meta-data (graefe nit).** `newMapReach` computes, at `Build`, whether each message
+type the record types reach can hold a map (a fixpoint, recursive types included); the record types
+share it read-only, so a record's walk no longer re-derives it, and a type outside it is answered
+without being stored.
+
+**Nits.** The preset spec is "The online build of one index presets its record types' range as Java
+does", its comment naming the single-target preset both rows were red for. An occurrence of a oneof
+member with another wire type is an unknown field to both decoders, not a switch of member
+(`fieldBody`, `wireTypeFits`; `TestMapEntriesOfAOneofSurviveAWrongWireTypeOccurrence`, red on
+`5d95cd27c`). The unit test comments say what they cover.
+
+**Java reads Go's bytes (torvalds 6).** A new JVM step, `openStoreAndDumpIndexesJava`, opens a store
+Java wrote without the index, holding Go's re-saved records, under the meta-data with it; Java's
+`checkVersion` rebuilds the index from those bytes, and it equals the index Go maintained.
+
+**Evidence.** Red: `evidence/wsc15-red` on `fdb-wsc10` at `5d95cd27c`'s tree plus the changed test
+files and the Java steps, with two adapters its TREE note names (the old `serializeUnionOver` took
+union bytes, and `HNSWConfigOf` is a one-line accessor); `wsc15-red-first` is an earlier state of the
+same run. Green: a verbose run of the changed specs on the committed tree, after the commit, and the
+pre-commit hook's full suite, both listed in the gate's prompt. Mutation runs: two (above).
+

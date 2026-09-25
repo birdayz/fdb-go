@@ -404,6 +404,11 @@ func TestJavaParseDouble(t *testing.T) {
 		{" x ", `For input string: "x"`},
 		{"１", `For input string: "１"`},
 		{"NaNd", `For input string: "NaNd"`},
+		{"1.2.3", "multiple points"},
+		{"..5", "multiple points"},
+		{" -.5.d ", "multiple points"},
+		{"1.2e3.4", `For input string: "1.2e3.4"`},
+		{"1.2x.3", `For input string: "1.2x.3"`},
 	} {
 		_, err := javaParseDouble(c.in)
 		var nfe *NumberFormatError
