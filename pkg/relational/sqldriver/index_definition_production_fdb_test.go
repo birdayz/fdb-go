@@ -13,6 +13,7 @@ import (
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/core/embedded"
 	"fdb.dev/pkg/relational/core/metadata"
 )
 
@@ -90,4 +91,58 @@ func TestFDB_IndexDefinitionProductionPathStoresTargetShapes(t *testing.T) {
 	if !slices.Equal(keys, []string{"unique", "permutedSize"}) {
 		t.Errorf("MX stores options %v, want the target's [unique permutedSize]", keys)
 	}
+}
+
+// One DDL front end (RFC-257 WS-J section 3.4): the template a CREATE SCHEMA
+// TEMPLATE executed by the driver stores is, byte for byte, the one the tooling
+// path (embedded.BuildSchemaTemplateFromDDLNamed, which the planner harness and
+// the conformance oracle use) builds from the same text. Every clause kind the
+// builder reads is present: WITH OPTIONS, a struct, tables, on-source,
+// as-select and aggregate indexes, index options and a vector index.
+func TestFDB_ExecutedTemplateIsTheToolingPathsTemplate(t *testing.T) {
+	t.Parallel()
+	setup := openTestDB(t, "/__SYS")
+	ctx := context.Background()
+	suffix := make([]byte, 6)
+	if _, err := rand.Read(suffix); err != nil {
+		t.Fatal(err)
+	}
+	name := "WSJONE_" + hex.EncodeToString(suffix)
+	body := "CREATE TYPE AS STRUCT sc (x BIGINT, y STRING) " +
+		"CREATE TABLE t (id BIGINT, s sc, a BIGINT, b STRING, g BIGINT, v BIGINT, PRIMARY KEY (id)) " +
+		"CREATE TABLE u (k STRING, w DOUBLE, e VECTOR(3, FLOAT), PRIMARY KEY (k)) " +
+		"CREATE INDEX t_ab ON t (a DESC, b) " +
+		"CREATE UNIQUE INDEX t_b AS SELECT b FROM t ORDER BY b " +
+		"CREATE INDEX t_sx AS SELECT s.x, a FROM t ORDER BY s.x, a " +
+		"CREATE INDEX t_sum AS SELECT sum(v) FROM t GROUP BY g " +
+		"CREATE INDEX t_cnt AS SELECT count(*) FROM t GROUP BY g " +
+		"CREATE INDEX t_ap1 AS SELECT a + 1 FROM t ORDER BY a + 1 " +
+		"CREATE VECTOR INDEX u_e USING HNSW ON u (e) OPTIONS (METRIC = EUCLIDEAN_METRIC)"
+	ddl := "CREATE SCHEMA TEMPLATE " + name + " " + body + " WITH OPTIONS (STORE_ROW_VERSIONS = true)"
+	built, err := embedded.BuildSchemaTemplateFromDDL(ddl)
+	if err != nil {
+		t.Fatalf("tooling path: %v", err)
+	}
+	want, err := built.Underlying().ToProto()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mwjoMustExec(t, setup, ctx, ddl)
+	t.Cleanup(func() { _, _ = setup.ExecContext(context.Background(), "DROP SCHEMA TEMPLATE IF EXISTS "+name) })
+
+	h := newEvolHarness(t)
+	h.mustRun(t, "load the stored template's bytes", func(txn api.Transaction) error {
+		stored, err := h.cat.SchemaTemplateCatalog().LoadTemplateProto(txn, name, built.Version())
+		if err != nil {
+			return err
+		}
+		if !proto.Equal(stored, want) {
+			t.Errorf("the executed CREATE stored another template than the tooling path builds:\n stored %v\n built  %v",
+				prototext.Format(stored), prototext.Format(want))
+		}
+		if len(stored.GetIndexes()) != 7 {
+			t.Errorf("stored %d indexes, want the 7 the DDL declares", len(stored.GetIndexes()))
+		}
+		return nil
+	})
 }

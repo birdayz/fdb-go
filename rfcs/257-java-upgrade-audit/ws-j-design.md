@@ -1526,6 +1526,13 @@ different metadata once. They become one function that builds the `metadata.Buil
 from a `CreateSchemaTemplateStatementContext`; the execution path saves what it
 returns, the tooling path returns it. The oracle then drives the production builder by
 construction, and the "(tooling path)" labels in this document are retired.
+STATUS (landed, section 8 step 2): `buildSchemaTemplate` (`embedded/ddl.go`) is the one front
+end; `execCreateSchemaTemplate` saves what it returns and `buildSchemaTemplateFromDDL` returns
+it. The two copies built the same metadata already and differed only in their errors: the
+tooling copy returned untyped errors where the execution path returns the SQLSTATE (42F59, or
+42601 for an unknown option); both now return the execution path's. Pinned by
+`TestFDB_ExecutedTemplateIsTheToolingPathsTemplate`: a template of every clause kind the builder
+reads, executed through the driver, stores the tooling path's MetaData, proto-equal.
 
 ### 3.5 Value-index expansion of nested leaves and function keys (F14) — query engine
 
@@ -1706,7 +1713,8 @@ SOURCE, the whole chain:
 
 MEASURED (multi_table_order: A, B, C; ia(A), ib(B), ia2(A)): final order C, B, A →
 type keys C=0, B=1, A=2; union fields C=1, B=2, A=3; index versions IB=2, IA=3, IA2=4;
-metadata version 4 (Go, tooling path: A=0, B=1, C=2; IA=2, IA2=3, IB=4). At scale:
+metadata version 4 (Go before this section's port, either front end: A=0, B=1, C=2; IA=2,
+IA2=3, IB=4). At scale:
 every one of the 180 metadata-diverge runs and the 4 index-diverge runs of section 0 is
 this.
 
@@ -2591,7 +2599,7 @@ reaches master before then. Within the unit and after it:
    DDL write) panicked in the tuple encoder on the first save; `LiteralKeyExpression`
    now evaluates an int32 as the integer Java's tuple packs (JVM spec "A literal key
    column is maintained as Java maintains it").
-2. 3.4 unify the front ends (no behaviour change; oracle unchanged).
+2. 3.4 unify the front ends (no behaviour change; oracle unchanged). STATUS: landed (3.4).
 3. 4 metadata order, companions last, and the carry rule (the EQUIVALENT definition over
    the raw catalog bytes, the re-added-name refusal (the former-index-key arm it relies on
    is ported already, WS-C 7.7), `allowIndexRebuilds`) with its FDB tests, the widening arm's end-to-end test 5 among

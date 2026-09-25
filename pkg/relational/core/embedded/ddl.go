@@ -146,6 +146,28 @@ func (c *EmbeddedConnection) execCreateSchemaTemplate(ctx context.Context, s *an
 	if err := c.checkSchemaTemplateDDLAllowed("CREATE SCHEMA TEMPLATE"); err != nil {
 		return 0, err
 	}
+	tmpl, err := buildSchemaTemplate(s)
+	if err != nil {
+		return 0, err
+	}
+	action := c.sess.Factory.SaveSchemaTemplate(tmpl, *api.NoOptions())
+	if err := c.runDDL(ctx, action); err != nil {
+		return 0, err
+	}
+	// Template change may affect any schema using it — flush the whole cache.
+	c.sess.ResetSchemaCache()
+	return 0, nil
+}
+
+// buildSchemaTemplate is Go's one DDL front end, Java's
+// DdlVisitor.visitCreateSchemaTemplateStatement (:493-566): it builds the
+// schema template a CREATE SCHEMA TEMPLATE statement declares, and nothing
+// else. The execution path (execCreateSchemaTemplate) saves what it returns;
+// the tooling path (buildSchemaTemplateFromDDL, the planner harness and the
+// conformance oracle) returns it, so both build the same metadata by
+// construction (RFC-257 WS-J section 3.4; they were two copies that had
+// already diverged once, over WITH OPTIONS).
+func buildSchemaTemplate(s *antlrgen.CreateSchemaTemplateStatementContext) (*metadata.RecordLayerSchemaTemplate, error) {
 	templateID := trimIdentifierQuotes(s.SchemaTemplateId().GetText())
 	b := metadata.NewSchemaTemplateBuilder().SetName(templateID)
 
@@ -153,7 +175,8 @@ func (c *EmbeddedConnection) execCreateSchemaTemplate(ctx context.Context, s *an
 	// Mirrors Java's DdlVisitor.visitCreateSchemaTemplateStatement: applied before
 	// the table/index passes below, since intermingleTbls changes how AddTable's
 	// primary keys are compiled at Build() time (buildPrimaryKeyExpression prepends
-	// RecordTypeKey() unless intermingled).
+	// RecordTypeKey() unless intermingled), and store_row_versions decides whether
+	// the __ROW_VERSION pseudo-column exists for index planning.
 	if oc := s.OptionsClause(); oc != nil {
 		for _, opt := range oc.AllOption() {
 			switch {
@@ -167,18 +190,18 @@ func (c *EmbeddedConnection) execCreateSchemaTemplate(ctx context.Context, s *an
 				// Unreachable through the grammar (option's three alternatives are
 				// exhaustive) — defensive default matching Java's
 				// Assert.failUnchecked(ErrorCode.SYNTAX_ERROR, ...).
-				return 0, api.NewErrorf(api.ErrCodeSyntaxError,
+				return nil, api.NewErrorf(api.ErrCodeSyntaxError,
 					"unknown option in schema template creation: %s", opt.GetText())
 			}
 		}
 	}
 
 	if err := rejectUnsupportedTemplateClauses(s.AllTemplateClause()); err != nil {
-		return 0, err
+		return nil, err
 	}
 
 	if err := registerStructDefinitions(s.AllTemplateClause(), b); err != nil {
-		return 0, err
+		return nil, err
 	}
 
 	// First pass: register tables (indexes reference them by name).
@@ -198,9 +221,9 @@ func (c *EmbeddedConnection) execCreateSchemaTemplate(ctx context.Context, s *an
 			// non-structured parse error still wraps (it carries no SQLSTATE to surface).
 			var apiErr *api.Error
 			if errors.As(err, &apiErr) {
-				return 0, err
+				return nil, err
 			}
-			return 0, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
+			return nil, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
 				"table %q: %v", tableName, err)
 		}
 		b.AddTablePrimaryKeyPaths(tableName, cols, pkCols)
@@ -218,23 +241,13 @@ func (c *EmbeddedConnection) execCreateSchemaTemplate(ctx context.Context, s *an
 			// does not wrap in-template index errors either. A non-structured error wraps.
 			var apiErr *api.Error
 			if errors.As(err, &apiErr) {
-				return 0, err
+				return nil, err
 			}
-			return 0, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate, "index: %v", err)
+			return nil, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate, "index: %v", err)
 		}
 	}
 
-	tmpl, err := b.Build()
-	if err != nil {
-		return 0, err
-	}
-	action := c.sess.Factory.SaveSchemaTemplate(tmpl, *api.NoOptions())
-	if err := c.runDDL(ctx, action); err != nil {
-		return 0, err
-	}
-	// Template change may affect any schema using it — flush the whole cache.
-	c.sess.ResetSchemaCache()
-	return 0, nil
+	return b.Build()
 }
 
 // trimIdentifierQuotes removes surrounding double/back quotes VERBATIM,

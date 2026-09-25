@@ -7538,7 +7538,8 @@ func BuildSchemaTemplateFromDDLNamed(schemaDDL, name string) (*metadata.RecordLa
 
 // buildSchemaTemplateFromDDL parses schemaDDL as a single
 // CREATE SCHEMA TEMPLATE statement and builds a
-// RecordLayerSchemaTemplate without performing any catalog write.
+// RecordLayerSchemaTemplate without performing any catalog write, through
+// buildSchemaTemplate, the front end CREATE SCHEMA TEMPLATE executes.
 func buildSchemaTemplateFromDDL(schemaDDL string) (*metadata.RecordLayerSchemaTemplate, error) {
 	wrapped := schemaDDL
 	if !startsWithCreateSchemaTemplate(schemaDDL) {
@@ -7568,60 +7569,8 @@ func buildSchemaTemplateFromDDL(schemaDDL string) (*metadata.RecordLayerSchemaTe
 	if !ok {
 		return nil, fmt.Errorf("schema DDL must be a CREATE SCHEMA TEMPLATE statement, got %T", cs)
 	}
-
-	templateID := trimIdentifierQuotes(stCtx.SchemaTemplateId().GetText())
-	b := metadata.NewSchemaTemplateBuilder().SetName(templateID)
-	// WITH OPTIONS(...) — the same three options execCreateSchemaTemplate
-	// applies, parsed BEFORE the table/index passes because they change how
-	// Build() compiles primary keys (intermingle) and whether the
-	// __ROW_VERSION pseudo-column exists for index planning
-	// (store_row_versions). Silently dropping them here built metadata that
-	// DIVERGED from what the production DDL path builds for the same text.
-	if oc := stCtx.OptionsClause(); oc != nil {
-		for _, opt := range oc.AllOption() {
-			switch {
-			case opt.ENABLE_LONG_ROWS() != nil:
-				b.SetEnableLongRows(opt.BooleanLiteral().TRUE() != nil)
-			case opt.INTERMINGLE_TABLES() != nil:
-				b.SetIntermingleTables(opt.BooleanLiteral().TRUE() != nil)
-			case opt.STORE_ROW_VERSIONS() != nil:
-				b.SetStoreRowVersions(opt.BooleanLiteral().TRUE() != nil)
-			default:
-				return nil, fmt.Errorf("unknown option in schema template creation: %s", opt.GetText())
-			}
-		}
-	}
-	if rejErr := rejectUnsupportedTemplateClauses(stCtx.AllTemplateClause()); rejErr != nil {
-		return nil, rejErr
-	}
-	if serr := registerStructDefinitions(stCtx.AllTemplateClause(), b); serr != nil {
-		return nil, serr
-	}
-	for _, clause := range stCtx.AllTemplateClause() {
-		td := clause.TableDefinition()
-		if td == nil {
-			continue
-		}
-		// Normalize the table name the same way execCreateSchemaTemplate and
-		// the column/index parsers do (NormalizeIdentifier upper-cases
-		// unquoted identifiers), so index lookups by table name match.
-		tableName := functions.NormalizeIdentifier(td.Uid().GetText())
-		cols, pkCols, tdErr := parseTableDefinition(td, b)
-		if tdErr != nil {
-			return nil, fmt.Errorf("table %q: %w", tableName, tdErr)
-		}
-		b.AddTablePrimaryKeyPaths(tableName, cols, pkCols)
-	}
-	for _, clause := range stCtx.AllTemplateClause() {
-		idxDef := clause.IndexDefinition()
-		if idxDef == nil {
-			continue
-		}
-		if idxErr := parseIndexDefinition(idxDef, b); idxErr != nil {
-			return nil, fmt.Errorf("index: %w", idxErr)
-		}
-	}
-	return b.Build()
+	// The production front end, the one CREATE SCHEMA TEMPLATE executes.
+	return buildSchemaTemplate(stCtx)
 }
 
 // explainStatement returns a trivial textual description of a parsed
