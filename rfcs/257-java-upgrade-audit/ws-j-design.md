@@ -2567,9 +2567,30 @@ reaches master before then. Within the unit and after it:
    race in both commit orders with a no-conflict control, the concurrent DROP SCHEMA) and
    `template_version_guard_test.go` (the in-memory equivalents and a `-race` interleaving
    that checks after every operation that no schema binds a version the catalog lacks),
-   red on the tree before it. `fleet.RestoreTemplateVersion` is not landed: its
-   carry-compatibility check is section 4's classification, so it lands with step 3's
-   first commit.
+   red on the tree before it. `fleet.RestoreTemplateVersion` landed after it
+   (`template_restore.go`; the fleet function delegates to the catalog's method, which runs
+   every check, so no exported path writes a template's bytes unchecked): the listing and
+   header reads in read-only transactions of 1,000 bindings, the restoring transaction's
+   own reads (the version, a limit-1 binding read, every stored version of the name), the
+   carry checks (i) to (iv) (`recordlayer.ClassifyIndexCarry` for (iii), in either order;
+   the validator's new `SetAllowSymmetricLiteralCarrierWidening`), the raw write, and a
+   retry from the listing on a conflict, a retry after commit_unknown_result that finds
+   exactly its bytes stored counting as done. Texts: 42F62 "schema template <n> version
+   <v> cannot be restored: it is stored"; 42F59 "... cannot be restored: no schema binds
+   it", "... : schema <db>/<s> has no store header in the keyspace", "... : the store of
+   schema <db>/<s> records metadata version <h>, above the restored metadata's <m>", and
+   "schema template <n> version <v> cannot be restored beside version <w>: <difference>".
+   Tests (`template_restore_fdb_test.go`): the restore and read-back, the stored and
+   unbound refusals, every header arm with the batch at 1, the header below md after a
+   rebind with no open, the one-history cases (agreeing, inverted, a type key, a type
+   renamed at its union field, a predicate, an index raised above or to at most L's
+   metadata version, an enum reordered, a literal carrier either way), the four conflict
+   windows with their attempt counts, and the first guard sequence. Not pinned: a VECTOR
+   column's options, which reach check (iv) through the same `DataType.Equal` as the enum.
+   Found on the way: a literal key column carried as `int_value` (the width F2 makes Go's
+   DDL write) panicked in the tuple encoder on the first save; `LiteralKeyExpression`
+   now evaluates an int32 as the integer Java's tuple packs (JVM spec "A literal key
+   column is maintained as Java maintains it").
 2. 3.4 unify the front ends (no behaviour change; oracle unchanged).
 3. 4 metadata order, companions last, and the carry rule (the EQUIVALENT definition over
    the raw catalog bytes, the re-added-name refusal (the former-index-key arm it relies on

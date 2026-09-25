@@ -213,76 +213,102 @@ var _ = Describe("Map and group key expressions are maintained as Java maintains
 			}},
 		}}},
 	} {
-		It(c.name, func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-			defer cancel()
-			clusterFile, err := sharedContainer.ClusterFile(ctx)
-			Expect(err).NotTo(HaveOccurred())
-			mdProto := mapMetaData(c.root)
-			mdProto.Indexes[0].Predicate = c.predicate
-			md, err := recordlayer.RecordMetaDataFromProto(proto.Clone(mdProto).(*gen.MetaData))
-			Expect(err).NotTo(HaveOccurred())
-			desc := md.GetRecordType("MapRec").Descriptor
-			record := func(id int64, entries map[string]int64, g *int64) []byte {
-				m := dynamicpb.NewMessage(desc)
-				m.Set(desc.Fields().ByName("id"), protoreflect.ValueOfInt64(id))
-				mf := desc.Fields().ByName("m")
-				mm := m.Mutable(mf).Map()
-				for k, v := range entries {
-					mm.Set(protoreflect.ValueOfString(k).MapKey(), protoreflect.ValueOfInt64(v))
-				}
-				if g != nil {
-					gf := desc.Fields().ByName("g")
-					gm := dynamicpb.NewMessage(gf.Message())
-					gm.Set(gf.Message().Fields().ByName("x"), protoreflect.ValueOfInt64(*g))
-					m.Set(gf, protoreflect.ValueOfMessage(gm))
-				}
-				b, err := proto.MarshalOptions{Deterministic: true}.Marshal(m)
-				Expect(err).NotTo(HaveOccurred())
-				return b
-			}
-			seven := int64(7)
-			records := [][]byte{record(1, map[string]int64{"b": 2, "a": 1}, &seven), record(2, nil, nil), record(3, map[string]int64{"c": 3}, nil)}
-			mdBytes, err := proto.Marshal(mdProto)
-			Expect(err).NotTo(HaveOccurred())
-			recordArgs := make([][]int, len(records))
-			for i, r := range records {
-				recordArgs[i] = BytesToIntArray(r)
-			}
-			javaSS := subspace.Sub(tuple.Tuple{"mapgroup_java", uuid.NewString()}...)
-			var java struct {
-				Verdicts []string   `json:"verdicts"`
-				KVs      [][]string `json:"kvs"`
-			}
-			Expect(NewJavaInvoker().InvokeAs(ctx, "saveRecordsAndDumpIndexesJava", map[string]any{
-				"clusterFile": clusterFile, "subspace": BytesToIntArray(javaSS.Bytes()),
-				"metaData": BytesToIntArray(mdBytes), "recordTypeName": "MapRec", "records": recordArgs,
-			}, &java)).To(Succeed())
-			GinkgoWriter.Printf("MAPGROUP %q verdicts=%v kvs=%v\n", c.name, java.Verdicts, java.KVs)
-			Expect(java.Verdicts).To(Equal([]string{"ok", "ok", "ok"}))
-			Expect(java.KVs).NotTo(BeEmpty())
+		It(c.name, func() { expectMaintainedAsJava(c.name, c.root, c.predicate) })
+	}
+})
 
-			goSS := subspace.Sub(tuple.Tuple{"mapgroup_go", uuid.NewString()}...)
-			db := recordlayer.NewFDBDatabase(sharedDB)
-			for _, rb := range records {
-				msg := dynamicpb.NewMessage(desc)
-				Expect(proto.Unmarshal(rb, msg)).To(Succeed())
-				_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
-					store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(goSS).CreateOrOpen()
-					if err != nil {
-						return nil, err
-					}
-					_, err = store.SaveRecord(msg)
-					return nil, err
-				})
-				Expect(err).NotTo(HaveOccurred())
-			}
-			goKVs, err := dumpIndexKVs(ctx, db, goSS)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(goKVs).To(Equal(java.KVs))
+// A literal key column is maintained as Java maintains it: Java's
+// Key.Evaluated.scalar holds the literal's Integer, Long or Float and Tuple
+// packs it, an Integer as the integer it is. Go refused an int_value literal at
+// the tuple encoder (an int32), which a store opened under Go-built DDL meta-data
+// (int_value since the literal-carrier fix) would meet on its first save.
+var _ = Describe("A literal key column is maintained as Java maintains it", func() {
+	for _, c := range []struct {
+		name string
+		lit  any
+	}{
+		{"an int literal (int_value)", int32(7)},
+		{"a long literal (long_value)", int64(7)},
+		{"a float literal (float_value)", float32(1.5)},
+		{"a string literal", "k"},
+	} {
+		It(c.name, func() {
+			expectMaintainedAsJava(c.name, recordlayer.Concat(recordlayer.Field("id"), recordlayer.Literal(c.lit)), nil)
 		})
 	}
 })
+
+// expectMaintainedAsJava saves the same records over mapRecordsFile through both
+// engines, one transaction each, under one value index whose root is root (its
+// predicate predicate), and requires the index key-value pairs to be equal.
+func expectMaintainedAsJava(label string, root recordlayer.KeyExpression, predicate *gen.Predicate) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	clusterFile, err := sharedContainer.ClusterFile(ctx)
+	Expect(err).NotTo(HaveOccurred())
+	mdProto := mapMetaData(root)
+	mdProto.Indexes[0].Predicate = predicate
+	md, err := recordlayer.RecordMetaDataFromProto(proto.Clone(mdProto).(*gen.MetaData))
+	Expect(err).NotTo(HaveOccurred())
+	desc := md.GetRecordType("MapRec").Descriptor
+	record := func(id int64, entries map[string]int64, g *int64) []byte {
+		m := dynamicpb.NewMessage(desc)
+		m.Set(desc.Fields().ByName("id"), protoreflect.ValueOfInt64(id))
+		mf := desc.Fields().ByName("m")
+		mm := m.Mutable(mf).Map()
+		for k, v := range entries {
+			mm.Set(protoreflect.ValueOfString(k).MapKey(), protoreflect.ValueOfInt64(v))
+		}
+		if g != nil {
+			gf := desc.Fields().ByName("g")
+			gm := dynamicpb.NewMessage(gf.Message())
+			gm.Set(gf.Message().Fields().ByName("x"), protoreflect.ValueOfInt64(*g))
+			m.Set(gf, protoreflect.ValueOfMessage(gm))
+		}
+		b, err := proto.MarshalOptions{Deterministic: true}.Marshal(m)
+		Expect(err).NotTo(HaveOccurred())
+		return b
+	}
+	seven := int64(7)
+	records := [][]byte{record(1, map[string]int64{"b": 2, "a": 1}, &seven), record(2, nil, nil), record(3, map[string]int64{"c": 3}, nil)}
+	mdBytes, err := proto.Marshal(mdProto)
+	Expect(err).NotTo(HaveOccurred())
+	recordArgs := make([][]int, len(records))
+	for i, r := range records {
+		recordArgs[i] = BytesToIntArray(r)
+	}
+	javaSS := subspace.Sub(tuple.Tuple{"mapgroup_java", uuid.NewString()}...)
+	var java struct {
+		Verdicts []string   `json:"verdicts"`
+		KVs      [][]string `json:"kvs"`
+	}
+	Expect(NewJavaInvoker().InvokeAs(ctx, "saveRecordsAndDumpIndexesJava", map[string]any{
+		"clusterFile": clusterFile, "subspace": BytesToIntArray(javaSS.Bytes()),
+		"metaData": BytesToIntArray(mdBytes), "recordTypeName": "MapRec", "records": recordArgs,
+	}, &java)).To(Succeed())
+	GinkgoWriter.Printf("MAPGROUP %q verdicts=%v kvs=%v\n", label, java.Verdicts, java.KVs)
+	Expect(java.Verdicts).To(Equal([]string{"ok", "ok", "ok"}))
+	Expect(java.KVs).NotTo(BeEmpty())
+
+	goSS := subspace.Sub(tuple.Tuple{"mapgroup_go", uuid.NewString()}...)
+	db := recordlayer.NewFDBDatabase(sharedDB)
+	for _, rb := range records {
+		msg := dynamicpb.NewMessage(desc)
+		Expect(proto.Unmarshal(rb, msg)).To(Succeed())
+		_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(goSS).CreateOrOpen()
+			if err != nil {
+				return nil, err
+			}
+			_, err = store.SaveRecord(msg)
+			return nil, err
+		})
+		Expect(err).NotTo(HaveOccurred())
+	}
+	goKVs, err := dumpIndexKVs(ctx, db, goSS)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(goKVs).To(Equal(java.KVs))
+}
 
 // A record's map entries are maintained in the order its bytes hold them, as
 // Java maintains them (record_wire_map_order.go). The root is a covering index

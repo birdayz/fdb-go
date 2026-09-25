@@ -7,6 +7,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/core/catalog"
 	"fdb.dev/pkg/relational/core/ddl"
 	"fdb.dev/pkg/relational/core/keyspace"
 )
@@ -52,6 +53,21 @@ func SaveTemplate(ctx context.Context, db *recordlayer.FDBDatabase, cat api.Stor
 	return inCatalogTx(ctx, db, func(txn api.Transaction) error {
 		return ddl.NewSaveSchemaTemplateConstantAction(tmpl, cat.SchemaTemplateCatalog()).Execute(txn)
 	})
+}
+
+// RestoreTemplateVersion restores a dropped template version from md, its stored
+// MetaData bytes (a backup of the version's catalog row), for the schemas still
+// bound to it: the one way out for a schema whose bound version DROP SCHEMA
+// TEMPLATE removed. ks is the keyspace the deployment opens its schemas with;
+// every bound store's header is read through it. The restore refuses a version
+// that is stored or that no schema binds, a bound store whose header is missing
+// or above md's metadata version, and bytes that are not one history with every
+// stored version of the template (RecordLayerStoreCatalog.RestoreTemplateVersion
+// states the checks; RFC-257 WS-J section 2). Java has no restore.
+func RestoreTemplateVersion(ctx context.Context, db *recordlayer.FDBDatabase, cat *catalog.RecordLayerStoreCatalog,
+	ks *keyspace.RelationalKeyspace, templateName string, version int, md []byte,
+) error {
+	return cat.RestoreTemplateVersion(ctx, db, ks, templateName, version, md)
 }
 
 // Migrate rebinds every target onto template version targetVersion, ONE

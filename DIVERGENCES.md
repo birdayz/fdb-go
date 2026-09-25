@@ -2899,9 +2899,8 @@ wire bytes differ.
 ### DeleteTemplateVersion refuses a version schemas still bind; DROP SCHEMA TEMPLATE does not (RFC-257 WS-J)
 
 The refusal is in this build (both catalogs; `pkg/relational/core/catalog/
-template_version_guard_fdb_test.go`). `fleet.RestoreTemplateVersion` is PENDING: it lands
-with RFC-257 WS-J section 8 step 3 (its carry-compatibility check is that step's
-classification), in the same merge.
+template_version_guard_fdb_test.go`), and so is `fleet.RestoreTemplateVersion`
+(`template_restore.go`, tests `template_restore_fdb_test.go`).
 
 `DeleteTemplateVersion(t, v)` is Go-only (the target's catalog drops whole templates).
 With the (name, version) guard it is refused while any schema binds (t, v), because a
@@ -2935,7 +2934,7 @@ operands").
 
 The guard is in this build, in both catalogs (`pkg/relational/core/catalog/
 template_bindings.go`; tests `template_version_guard_fdb_test.go` and
-`template_version_guard_test.go`); the restore named below is PENDING, as above.
+`template_version_guard_test.go`); so is the restore named below.
 
 Go saves new versions of a stored template (CREATE SCHEMA TEMPLATE over a stored name,
 `fleet.SaveTemplate`); the target's DDL has no such path, and its catalog does not look
@@ -3031,9 +3030,8 @@ version below the latest, and a Go one cannot (ws-j-design.md section 9 (w)).
 
 ### The template restore's refusals, and the inverted history with no exit (RFC-257 WS-J)
 
-PENDING, not in this build yet: the restore lands with RFC-257 WS-J section 8 step 3 (step 1's
-guard and gone-version refusal are in this build). Java has
-no restore. Go's `fleet.RestoreTemplateVersion` admits a dropped (t, v) only when it is one
+In this build (`pkg/relational/core/catalog/template_restore.go`, tests
+`template_restore_fdb_test.go`). Java has no restore. Go's `fleet.RestoreTemplateVersion` admits a dropped (t, v) only when it is one
 history with every stored version of t, and it refuses the rest, each with no Java
 counterpart. A template history whose versions invert (a lower template version with a
 higher metadata version) is refused, and it has no exit in Go:

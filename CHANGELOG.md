@@ -445,6 +445,9 @@ assets carry (`RELEASE.md` §Versioning).
   by `SaveRecord` and the aggregate functions, and a vector index option that does not parse is
   Java's `MetaDataError` "incorrect index options", its parse error the cause (`Unwrap`;
   `MetaDataError` gains `Cause`).
+- A literal key column holding an `int_value` (`Literal(int32(n))`, the width Go's DDL now writes,
+  as Java's) is maintained as the integer Java writes; it panicked in the tuple encoder on the
+  first save.
 - An index predicate's field path steps into a proto2 group as into a message, as Java's
   `FieldValue` does, where Go treated the record as not matching.
 - `KeyExpressionInvalidResultError.ActualType` names the Java class of the offending value, matching
@@ -456,6 +459,13 @@ assets carry (`RELEASE.md` §Versioning).
   stored (every version, for a template stored afresh), and `DeleteTemplateVersion` refuses a
   version a schema binds. The target accepts the first and rebinds those schemas to the new
   metadata. Both the FDB-backed and the in-memory catalog apply it.
+- **`fleet.RestoreTemplateVersion` restores a dropped template version** for the schemas still
+  bound to it (RFC-257 WS-J; Java has no restore), from the version's stored MetaData bytes: the
+  one way out for a schema whose version DROP SCHEMA TEMPLATE removed. It refuses a stored
+  version, a version no schema binds, a bound store with no header in the caller's keyspace or
+  one above the restored metadata version, and bytes that are not one history with the
+  template's stored versions (inverted versions, a changed record type key or name, an index that
+  differs without a rebuild, a column type that differs).
 - **A schema bound to a template version that is gone is refused as Java refuses it**: `LoadSchema`,
   `SaveSchema` over it and `RepairSchema` fail with 42F55 "SchemaTemplate=<n>, version=<v> is not
   in catalog", where Go's `SaveSchema` (both catalogs) and the in-memory `LoadSchema` and

@@ -15065,3 +15065,10 @@ validator's negative position; Java's bare "incorrect index options" with its ca
 through groups; CHANGELOG and design corrections; evidence saved with the tree it ran on. NEXT: the
 WS-C revision-13 delta gate (`ws-c-addendum-review-v13/`).
 
+### RFC-257 WS-J: fleet.RestoreTemplateVersion landed (booked 2026-09-25)
+
+LANDED (ws-j-design.md section 8 step 1, STATUS): the restore with its header batches, in-transaction
+reads, carry checks (i) to (iv) and retry, and a fix found on the way (an `int_value` literal key column
+panicked on save). Step 1 of section 8 is complete; NEXT is step 2 (the unified DDL front end), then
+step 3 (metadata order and the carry rule inside `CreateTemplate`).
+

@@ -1463,7 +1463,18 @@ func Literal(value any) *LiteralKeyExpression {
 
 // Evaluate returns the constant value regardless of the record.
 // Matches Java's LiteralKeyExpression.evaluateMessage() which ignores the record parameter.
+//
+// The value is the one the tuple layer encodes: Java's Key.Evaluated.scalar holds
+// the literal's Integer, which Tuple packs as the integer it is, while Go's tuple
+// encoder takes integers as int64 and refuses an int32. The literal keeps its
+// carrier (an int32 is written as int_value, the target's width) for ToProto.
 func (l *LiteralKeyExpression) Evaluate(_ *FDBStoredRecord[proto.Message], _ proto.Message) ([][]any, error) {
+	switch v := l.value.(type) {
+	case int32:
+		return [][]any{{int64(v)}}, nil
+	case int:
+		return [][]any{{int64(v)}}, nil
+	}
 	return [][]any{{l.value}}, nil
 }
 
