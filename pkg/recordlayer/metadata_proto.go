@@ -211,6 +211,10 @@ func RecordMetaDataFromProto(md *gen.MetaData) (*RecordMetaData, error) {
 	if md == nil {
 		return nil, &MetaDataError{Message: "nil metadata proto"}
 	}
+	// Java's reading of the bytes: a closed enum's undeclared number is an
+	// unknown field (proto_closed_enums.go), so a fan type Java cannot read is a
+	// missing one here too. The caller's proto takes that reading in place.
+	javaClosedEnums(md)
 
 	// Retain the stored records proto VERBATIM: a re-save must emit the same
 	// bytes Java (or a previous Go) wrote. It is cloned so that nothing the

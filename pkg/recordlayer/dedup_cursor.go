@@ -52,7 +52,7 @@ func Dedup[T any](
 
 	if len(continuation) > 0 {
 		var cont gen.DedupContinuation
-		if err := cont.UnmarshalVT(continuation); err != nil {
+		if err := unmarshalVTAsJava(&cont, continuation); err != nil {
 			// Java: throw new RecordCoreException("Error parsing continuation", ex)
 			//           .addLogInfo("raw_bytes", ...)  (DedupCursor's constructor).
 			// A corrupt continuation must fail, not silently restart from scratch:

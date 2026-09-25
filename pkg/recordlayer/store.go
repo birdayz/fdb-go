@@ -105,7 +105,14 @@ func (e *StoreIsFullyLockedError) Error() string {
 // lock states added by newer versions that we don't understand.
 // Matches Java's com.apple.foundationdb.record.UnknownStoreLockStateException.
 type UnknownStoreLockStateError struct {
+	// LockStateValue is the state as read: UNSPECIFIED (0) for a stored
+	// number the enum does not declare, which Java's parse leaves in the
+	// unknown fields and reads as the default.
 	LockStateValue int32
+	// UnknownFields is the lock-state message's unknown fields, Java's
+	// LogMessageKeys.VALUE (UnknownStoreLockStateException.java:49): an
+	// undeclared state number is there.
+	UnknownFields []byte
 }
 
 func (e *UnknownStoreLockStateError) Error() string {
@@ -310,7 +317,7 @@ func validateStoreLockState(storeHeader *gen.DataStoreInfo, bypassFullStoreLockR
 	// FORBID_RECORD_UPDATE is known and handled at mutation time, so skip it here.
 	if storeHeader.GetFormatVersion() >= formatVersionFullStoreLock {
 		if state != gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE {
-			return &UnknownStoreLockStateError{LockStateValue: int32(state)}
+			return &UnknownStoreLockStateError{LockStateValue: int32(state), UnknownFields: lockState.ProtoReflect().GetUnknown()}
 		}
 	}
 
@@ -2271,9 +2278,10 @@ func (store *FDBRecordStore) deserializeAndDiscover(data []byte) (*RecordType, p
 			if err := vu.UnmarshalVT(innerBytes); err != nil {
 				return nil, nil, nil, fmt.Errorf("failed to unmarshal %s: %w", rt.Name, err)
 			}
-		} else if err := proto.Unmarshal(innerBytes, msg); err != nil {
+		} else if err := javaUnmarshalOptions.Unmarshal(innerBytes, msg); err != nil {
 			return nil, nil, nil, fmt.Errorf("failed to unmarshal %s: %w", rt.Name, err)
 		}
+		rt.closedEnumsAsJava(msg)
 		return rt, msg, newRecordWire(rt, innerBytes), nil
 	}
 	return nil, nil, nil, fmt.Errorf("union descriptor does not contain any known record type")
@@ -2374,9 +2382,10 @@ func (store *FDBRecordStore) deserializeRecord(data []byte, recordType *RecordTy
 			if err := vu.UnmarshalVT(innerBytes); err != nil {
 				return nil, fmt.Errorf("failed to unmarshal %s: %w", recordType.Name, err)
 			}
-		} else if err := proto.Unmarshal(innerBytes, msg); err != nil {
+		} else if err := javaUnmarshalOptions.Unmarshal(innerBytes, msg); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal %s: %w", recordType.Name, err)
 		}
+		recordType.closedEnumsAsJava(msg)
 		return msg, nil
 	}
 	return nil, fmt.Errorf("union descriptor does not contain %s record", recordType.Name)

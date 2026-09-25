@@ -223,7 +223,7 @@ func loadLeaderboardDirectory(tx fdb.ReadTransaction, extraSubspace subspace.Sub
 		return nil, nil
 	}
 	pb := &gen.TimeWindowLeaderboardDirectory{}
-	if err := pb.UnmarshalVT(bytes); err != nil {
+	if err := unmarshalVTAsJava(pb, bytes); err != nil {
 		return nil, fmt.Errorf("loadLeaderboardDirectory: unmarshal: %w", err)
 	}
 	return newLeaderboardDirectoryFromProto(pb)
@@ -272,7 +272,7 @@ func loadLeaderboardSubDirectory(
 		}
 	} else {
 		pb := &gen.TimeWindowLeaderboardSubDirectory{}
-		if err := pb.UnmarshalVT(bytes); err != nil {
+		if err := unmarshalVTAsJava(pb, bytes); err != nil {
 			return nil, fmt.Errorf("loadSubDirectory: unmarshal: %w", err)
 		}
 		sub = &leaderboardSubDirectory{

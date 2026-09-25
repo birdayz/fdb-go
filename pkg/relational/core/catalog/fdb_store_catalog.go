@@ -279,8 +279,8 @@ func (c *RecordLayerStoreCatalog) SaveSchema(txn api.Transaction, s api.Schema, 
 	// A's rows as new type B's — silent data corruption, not an error. This
 	// is the validator the frl CLI's `meta evolve-check` runs (the faithful
 	// MetaDataEvolutionValidator.java:418 port), with the options the rebind
-	// sets; `--allow-no-version-change --allow-literal-carrier-widening`
-	// reproduces them. RepairSchema funnels through here too.
+	// sets; `--allow-no-version-change` reproduces them. RepairSchema funnels
+	// through here too.
 	if err := c.validateSchemaRebind(txn, s); err != nil {
 		return err
 	}

@@ -183,7 +183,7 @@ func (q *PendingWritesQueue[T]) decode(key tuple.Tuple, data []byte) (*PendingWr
 		}
 		return e
 	}
-	if err := proto.Unmarshal(data, envelope); err != nil {
+	if err := UnmarshalAsJava(data, envelope); err != nil {
 		return nil, storageError("Failed to parse pending writes queue entry", err)
 	}
 	if envelope.GetVersion() > PendingWritesQueueVersion {
@@ -234,7 +234,7 @@ func unmarshalPendingQueueAny(data *anypb.Any, message proto.Message) error {
 // The last KNOWN occurrence wins.
 func unmarshalPendingQueuePayload(data []byte, message proto.Message) error {
 	if _, ok := message.(*gen.PendingWritesQueueEntry); !ok {
-		return proto.Unmarshal(data, message)
+		return UnmarshalAsJava(data, message)
 	}
 	var known, unknown []byte
 	for len(data) > 0 {
@@ -264,7 +264,7 @@ func unmarshalPendingQueuePayload(data []byte, message proto.Message) error {
 		}
 		data = data[len(field):]
 	}
-	if err := proto.Unmarshal(known, message); err != nil {
+	if err := UnmarshalAsJava(known, message); err != nil {
 		return err
 	}
 	reflection := message.ProtoReflect()

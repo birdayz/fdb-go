@@ -2934,8 +2934,11 @@ schema binds (t, v), because a
 schema bound to a version that is gone has no exit that keeps its data (RepairSchema is
 refused by the gone-version check, and re-issuing (t, v) is the silent rebind the guard
 refuses). A version the target's `deleteTemplate` removed under a binding leaves that
-state in a shared catalog; Go's `CreateTemplate` refuses re-issuing it (a version at or
-below the latest, the next entry; above the latest, the guard). DROP SCHEMA TEMPLATE
+state in a shared catalog. Above the latest stored version the guard refuses re-issuing it;
+at or below the latest, `CreateTemplate` will refuse it with RFC-257 WS-J step 3 (the next
+entry, PENDING), and until then a library `CreateTemplate(t, v)` re-issues it, rebinding its
+schemas as the target's does. SQL and `fleet.SaveTemplate` refuse it already (the save
+action's `v′ <= latest` check). DROP SCHEMA TEMPLATE
 keeps the target's behaviour and drops regardless; the
 only way back for a schema it strands is `fleet.RestoreTemplateVersion` with the dropped
 version's exact metadata bytes, refused when any bound store's header records a metadata
@@ -3265,23 +3268,43 @@ difference is not a wire incompatibility: each engine indexes a record from the 
 and reads the other's bytes as it reads its own. It shows only where two entries of one map write
 one index key, whose value is the last entry's, or share a TEXT token.
 
-### Four key-expression shapes Java loads and Go refuses on load (RFC-257 WS-J)
+### Key-expression shapes Java loads and Go refuses on load (RFC-257 WS-J)
 
 `KeyExpressionFromProto` refuses, as untyped errors, four shapes Java's constructors take and
-fail on later, if at all (`key_expression_proto.go`):
-- a key expression nested deeper than `maxKeyExpressionDepth` (Go's recursion bound; Java's is
-  the JVM stack);
+fail on later, if at all (`key_expression_proto.go`), and the meta-data loader a fifth:
+- a key expression nested deeper than `maxKeyExpressionDepth` (128; Go's recursion bound).
+  From stored bytes this never differs from Java: both parse with protobuf-java's recursion
+  limit (100 nested messages, `recordlayer.UnmarshalAsJava`), which refuses a nesting past 49
+  levels in a meta-data proto in both engines (JVM spec "RFC-257 a key expression nested past
+  protobuf's recursion limit"); an in-memory proto nested past 128 is Go's alone to refuse;
 - a grouping whose `grouped_count` is outside `[0, columns]`
   (`GroupingKeyExpression(Grouping)` stores it unchecked, GroupingKeyExpression.java:55-57);
 - a key-with-value whose `split_point` is outside `[0, columns]`
   (`KeyWithValueExpression.java:63-65`, unchecked);
 - a split whose size is below one (`SplitKeyExpression.java:58-60`, unchecked; an evaluation
-  divides by it).
+  divides by it);
+- an index predicate's comparison operand with no value, which Java's
+  `IndexComparison.SimpleComparison(proto)` refuses with a `NullPointerException`
+  (`Objects.requireNonNull`) and Go with `RecordCoreError` "index comparison operand has no
+  value" (JVM spec "RFC-257 an index predicate's operand Java cannot read"); an operand with
+  two values is Java's own `RecordCoreException`, "More than one value encoded in value", in both.
 
-Each is metadata no index of either engine can maintain, refused where Go reads it rather than
-where the out-of-range count or size is first used. Inside a meta-data proto they are not
-wrapped in `MetaDataProtoDeserializationError`, since they are not Java's
-`DeserializationException`.
+That no index of either engine can maintain the first four is read from Java's source, not
+measured: Java's constructors store the count or size unchecked and the first use fails (an
+out-of-range column index, a division by zero); Go refuses where it reads the proto instead.
+Inside a meta-data proto they are not wrapped in `MetaDataProtoDeserializationError`, since
+they are not Java's `DeserializationException`.
+
+### A generated record type's bytes are decoded without Java's recursion limit (RFC-257 WS-J)
+
+A record whose type Go knows as a generated (vtproto) message is decoded by its `UnmarshalVT`,
+which has no recursion limit; a dynamic record, like every stored proto of the store and the
+catalogs, is decoded with protobuf-java's limit of 100 nested messages
+(`recordlayer.UnmarshalAsJava`, `javaUnmarshalOptions`). A generated record nested deeper than
+100 messages therefore loads in Go where Java's `DynamicMessage.parseFrom` refuses it. Every
+other part of Java's reading is applied to both: a closed enum's undeclared number is an unknown
+field (`proto_closed_enums.go`; JVM spec "A closed enum's undeclared number is read as Java reads
+it").
 
 
 ### RFC-209 group-existence companions: indexes Java's DDL does not create (RFC-257 WS-J)

@@ -1,6 +1,7 @@
 package recordlayer
 
 import (
+	"errors"
 	"testing"
 
 	"google.golang.org/protobuf/reflect/protodesc"
@@ -242,8 +243,12 @@ func TestValuePredicateIsNull(t *testing.T) {
 		ValuePredicate: &gen.ValuePredicate{
 			Value: []string{"price"},
 			Comparison: &gen.Comparison{
+				// Java's SimpleComparison(proto) requires an operand of any
+				// type (Objects.requireNonNull, IndexComparison.java:175)
+				// and ignores it for a null check.
 				SimpleComparison: &gen.SimpleComparison{
-					Type: gen.ComparisonType_IS_NULL.Enum(),
+					Type:    gen.ComparisonType_IS_NULL.Enum(),
+					Operand: &gen.Value{IntValue: proto.Int32(0)},
 				},
 			},
 		},
@@ -268,8 +273,12 @@ func TestValuePredicateNotNull(t *testing.T) {
 		ValuePredicate: &gen.ValuePredicate{
 			Value: []string{"price"},
 			Comparison: &gen.Comparison{
+				// Java's SimpleComparison(proto) requires an operand of any
+				// type (Objects.requireNonNull, IndexComparison.java:175)
+				// and ignores it for a null check.
 				SimpleComparison: &gen.SimpleComparison{
-					Type: gen.ComparisonType_NOT_NULL.Enum(),
+					Type:    gen.ComparisonType_NOT_NULL.Enum(),
+					Operand: &gen.Value{IntValue: proto.Int32(0)},
 				},
 			},
 		},
@@ -283,6 +292,23 @@ func TestValuePredicateNotNull(t *testing.T) {
 	}
 	if fn(&gen.Order{OrderId: proto.Int64(1)}) {
 		t.Fatal("NOT_NULL should not match when price is unset")
+	}
+}
+
+// A null check written as a SimpleComparison without an operand is refused, as
+// Java's Objects.requireNonNull refuses it; Java writes a null check as a
+// NullComparison.
+func TestValuePredicateNullCheckWithoutOperandIsRefused(t *testing.T) {
+	t.Parallel()
+	for _, typ := range []gen.ComparisonType{gen.ComparisonType_IS_NULL, gen.ComparisonType_NOT_NULL} {
+		_, err := predicateFromProto(&gen.Predicate{ValuePredicate: &gen.ValuePredicate{
+			Value:      []string{"price"},
+			Comparison: &gen.Comparison{SimpleComparison: &gen.SimpleComparison{Type: typ.Enum()}},
+		}})
+		var rce *RecordCoreError
+		if !errors.As(err, &rce) || rce.Message != "index comparison operand has no value" {
+			t.Errorf("%v without an operand: %v", typ, err)
+		}
 	}
 }
 
@@ -528,7 +554,8 @@ func TestComplexNestedPredicate(t *testing.T) {
 											Value: []string{"flower", "type"},
 											Comparison: &gen.Comparison{
 												SimpleComparison: &gen.SimpleComparison{
-													Type: gen.ComparisonType_IS_NULL.Enum(),
+													Type:    gen.ComparisonType_IS_NULL.Enum(),
+													Operand: &gen.Value{IntValue: proto.Int32(0)},
 												},
 											},
 										},
@@ -972,16 +999,41 @@ func TestCompareValuesFloat32Normalization(t *testing.T) {
 // 13. extractValueOperand
 // --------------------------------------------------------------------------
 
-func TestExtractValueOperandNil(t *testing.T) {
+// mustExtract is extractValueOperand for an operand it admits.
+func mustExtract(t *testing.T, v *gen.Value) any {
+	t.Helper()
+	got, err := extractValueOperand(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
+// An operand without a value is refused, as Java's
+// Objects.requireNonNull(fromProtoValue(operand)) refuses it, and one with two
+// values is fromProtoValue's own refusal; both are RecordCoreErrors.
+func TestExtractValueOperandRefusesNoneOrTwo(t *testing.T) {
 	t.Parallel()
-	if extractValueOperand(nil) != nil {
-		t.Fatal("nil Value should return nil")
+	for _, c := range []struct {
+		name string
+		v    *gen.Value
+		want string
+	}{
+		{"nil", nil, "index comparison operand has no value"},
+		{"empty", &gen.Value{}, "index comparison operand has no value"},
+		{"two values", &gen.Value{LongValue: proto.Int64(1), StringValue: proto.String("a")}, "More than one value encoded in value"},
+	} {
+		_, err := extractValueOperand(c.v)
+		var rce *RecordCoreError
+		if !errors.As(err, &rce) || rce.Message != c.want {
+			t.Errorf("%s: %v, want %q", c.name, err, c.want)
+		}
 	}
 }
 
 func TestExtractValueOperandLong(t *testing.T) {
 	t.Parallel()
-	v := extractValueOperand(&gen.Value{LongValue: proto.Int64(42)})
+	v := mustExtract(t, &gen.Value{LongValue: proto.Int64(42)})
 	if v != int64(42) {
 		t.Fatalf("LongValue: got %v (%T), want int64(42)", v, v)
 	}
@@ -989,7 +1041,7 @@ func TestExtractValueOperandLong(t *testing.T) {
 
 func TestExtractValueOperandInt(t *testing.T) {
 	t.Parallel()
-	v := extractValueOperand(&gen.Value{IntValue: proto.Int32(7)})
+	v := mustExtract(t, &gen.Value{IntValue: proto.Int32(7)})
 	// IntValue is promoted to int64
 	if v != int64(7) {
 		t.Fatalf("IntValue: got %v (%T), want int64(7)", v, v)
@@ -998,7 +1050,7 @@ func TestExtractValueOperandInt(t *testing.T) {
 
 func TestExtractValueOperandDouble(t *testing.T) {
 	t.Parallel()
-	v := extractValueOperand(&gen.Value{DoubleValue: proto.Float64(3.14)})
+	v := mustExtract(t, &gen.Value{DoubleValue: proto.Float64(3.14)})
 	if v != float64(3.14) {
 		t.Fatalf("DoubleValue: got %v (%T), want float64(3.14)", v, v)
 	}
@@ -1006,7 +1058,7 @@ func TestExtractValueOperandDouble(t *testing.T) {
 
 func TestExtractValueOperandFloat(t *testing.T) {
 	t.Parallel()
-	v := extractValueOperand(&gen.Value{FloatValue: proto.Float32(2.5)})
+	v := mustExtract(t, &gen.Value{FloatValue: proto.Float32(2.5)})
 	// FloatValue is promoted to float64
 	f, ok := v.(float64)
 	if !ok {
@@ -1019,11 +1071,11 @@ func TestExtractValueOperandFloat(t *testing.T) {
 
 func TestExtractValueOperandBool(t *testing.T) {
 	t.Parallel()
-	v := extractValueOperand(&gen.Value{BoolValue: proto.Bool(true)})
+	v := mustExtract(t, &gen.Value{BoolValue: proto.Bool(true)})
 	if v != true {
 		t.Fatalf("BoolValue: got %v (%T), want true", v, v)
 	}
-	v = extractValueOperand(&gen.Value{BoolValue: proto.Bool(false)})
+	v = mustExtract(t, &gen.Value{BoolValue: proto.Bool(false)})
 	if v != false {
 		t.Fatalf("BoolValue false: got %v (%T), want false", v, v)
 	}
@@ -1031,7 +1083,7 @@ func TestExtractValueOperandBool(t *testing.T) {
 
 func TestExtractValueOperandString(t *testing.T) {
 	t.Parallel()
-	v := extractValueOperand(&gen.Value{StringValue: proto.String("hello")})
+	v := mustExtract(t, &gen.Value{StringValue: proto.String("hello")})
 	if v != "hello" {
 		t.Fatalf("StringValue: got %v (%T), want 'hello'", v, v)
 	}
@@ -1040,22 +1092,13 @@ func TestExtractValueOperandString(t *testing.T) {
 func TestExtractValueOperandBytes(t *testing.T) {
 	t.Parallel()
 	data := []byte{0xDE, 0xAD, 0xBE, 0xEF}
-	v := extractValueOperand(&gen.Value{BytesValue: data})
+	v := mustExtract(t, &gen.Value{BytesValue: data})
 	bs, ok := v.([]byte)
 	if !ok {
 		t.Fatalf("BytesValue: got type %T, want []byte", v)
 	}
 	if len(bs) != 4 || bs[0] != 0xDE || bs[3] != 0xEF {
 		t.Fatalf("BytesValue: got %v, want %v", bs, data)
-	}
-}
-
-func TestExtractValueOperandEmpty(t *testing.T) {
-	t.Parallel()
-	// A Value with no fields set returns nil
-	v := extractValueOperand(&gen.Value{})
-	if v != nil {
-		t.Fatalf("empty Value: got %v (%T), want nil", v, v)
 	}
 }
 

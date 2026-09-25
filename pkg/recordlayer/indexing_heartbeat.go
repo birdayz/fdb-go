@@ -144,7 +144,7 @@ func (h *IndexingHeartbeat) checkAdmission(tx fdb.WritableTransaction, storeSubs
 
 		// Parse the heartbeat proto.
 		var hb gen.IndexBuildHeartbeat
-		if err := hb.UnmarshalVT(kv.Value); err != nil {
+		if err := unmarshalVTAsJava(&hb, kv.Value); err != nil {
 			continue // corrupt heartbeat, ignore
 		}
 
@@ -264,7 +264,7 @@ func ReadHeartbeats(tx fdb.ReadTransaction, storeSubspace subspace.Subspace, ind
 			return nil, nil, err
 		}
 		var hb gen.IndexBuildHeartbeat
-		if err := hb.UnmarshalVT(kv.Value); err != nil {
+		if err := unmarshalVTAsJava(&hb, kv.Value); err != nil {
 			hb = gen.IndexBuildHeartbeat{
 				Info:                      proto.String(InvalidHeartbeatInfo),
 				CreateTimeMilliseconds:    proto.Int64(0),

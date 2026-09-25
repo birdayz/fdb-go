@@ -10,6 +10,7 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -995,9 +996,12 @@ var _ = Describe("Error type coverage gaps", func() {
 				SetContext(rtx).SetMetaDataProvider(metaData).SetSubspace(ss).Open()
 			Expect(err).To(HaveOccurred())
 
+			// Java's parse keeps the undeclared 999 in the unknown fields and
+			// reads UNSPECIFIED, which it refuses, reporting the unknown fields.
 			var unknownErr *UnknownStoreLockStateError
 			Expect(errors.As(err, &unknownErr)).To(BeTrue())
-			Expect(unknownErr.LockStateValue).To(Equal(int32(999)))
+			Expect(unknownErr.LockStateValue).To(Equal(int32(gen.DataStoreInfo_StoreLockState_UNSPECIFIED)))
+			Expect(unknownErr.UnknownFields).To(Equal([]byte(protowire.AppendVarint(protowire.AppendTag(nil, 1, protowire.VarintType), 999))))
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())

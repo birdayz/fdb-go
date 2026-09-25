@@ -154,7 +154,11 @@ class MetaDataProtoSteps extends ConformanceBase {
         final var fd = com.google.protobuf.Descriptors.FileDescriptor.buildFrom(fdp, new com.google.protobuf.Descriptors.FileDescriptor[0]);
         final var msg = com.google.protobuf.DynamicMessage.parseFrom(fd.findMessageTypeByName(messageName), message);
         final Object value = com.apple.foundationdb.record.query.plan.cascades.values.MessageHelpers.getFieldOnMessage(msg, fieldName);
-        return Map.of("isNull", value == null, "value", String.valueOf(value));
+        // The driver's struct read of the same field: MessageTuple.getObject.
+        final int position = msg.getDescriptorForType().findFieldByName(fieldName).getIndex();
+        final Object tuple = new com.apple.foundationdb.relational.recordlayer.MessageTuple(msg).getObject(position);
+        return Map.of("isNull", value == null, "value", String.valueOf(value),
+                "tupleIsNull", tuple == null, "tupleValue", String.valueOf(tuple));
     }
 
     /**

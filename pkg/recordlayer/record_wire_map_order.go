@@ -251,6 +251,21 @@ type mapReach map[protoreflect.MessageDescriptor]bool
 // fields followed: a type reaches a map if it has a map field or a message
 // field of a type that does, found as a fixpoint so recursive types terminate.
 func newMapReach(roots ...protoreflect.MessageDescriptor) mapReach {
+	return newTypeReach(func(md protoreflect.MessageDescriptor) bool {
+		fields := md.Fields()
+		for i := 0; i < fields.Len(); i++ {
+			if fields.Get(i).IsMap() {
+				return true
+			}
+		}
+		return false
+	}, roots...)
+}
+
+// newTypeReach is, for every message type roots reach (message and group fields
+// followed), whether it or a type it reaches satisfies holds, found as a
+// fixpoint so recursive types terminate.
+func newTypeReach(holds func(protoreflect.MessageDescriptor) bool, roots ...protoreflect.MessageDescriptor) map[protoreflect.MessageDescriptor]bool {
 	var types []protoreflect.MessageDescriptor
 	seen := map[protoreflect.MessageDescriptor]bool{}
 	var visit func(md protoreflect.MessageDescriptor)
@@ -269,9 +284,9 @@ func newMapReach(roots ...protoreflect.MessageDescriptor) mapReach {
 		visit(md)
 	}
 	// Every type of the closure gets its answer, false included.
-	r := make(mapReach, len(types))
+	r := make(map[protoreflect.MessageDescriptor]bool, len(types))
 	for _, md := range types {
-		r[md] = false
+		r[md] = holds(md)
 	}
 	for changed := true; changed; {
 		changed = false
@@ -281,7 +296,7 @@ func newMapReach(roots ...protoreflect.MessageDescriptor) mapReach {
 			}
 			fields := md.Fields()
 			for i := 0; i < fields.Len(); i++ {
-				if fd := fields.Get(i); fd.IsMap() || fd.Message() != nil && r[fd.Message()] {
+				if fd := fields.Get(i); fd.Message() != nil && r[fd.Message()] {
 					r[md], changed = true, true
 					break
 				}
@@ -306,6 +321,9 @@ func parseMapEntry(fd protoreflect.FieldDescriptor, body []byte) (*dynamicpb.Mes
 	if err := (proto.UnmarshalOptions{Merge: true, AllowPartial: true}).Unmarshal(body, entry); err != nil {
 		return nil, err
 	}
+	// Java's DynamicMessage entry keeps a value it cannot read as an unknown
+	// field and reads the default (proto_closed_enums.go).
+	closedEnumsAsJava(entry, nil)
 	holdKeyAndValue(entry)
 	return entry, nil
 }
@@ -529,6 +547,8 @@ func elementPriorsWithin(md protoreflect.MessageDescriptor, current, prior [][]b
 		if err := (proto.UnmarshalOptions{AllowPartial: true}).Unmarshal(body, m); err != nil {
 			return "", err
 		}
+		// Compared as the record's elements read, stored and current alike.
+		closedEnumsAsJava(m, nil)
 		b, err := proto.MarshalOptions{Deterministic: true, AllowPartial: true}.Marshal(m)
 		return string(b), err
 	}

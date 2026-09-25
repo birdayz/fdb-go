@@ -167,34 +167,46 @@ func indexComparisonToQuery(c *gen.Comparison) (predicates.Comparison, error) {
 	default:
 		return predicates.Comparison{}, fmt.Errorf("unsupported comparison type %v", sc.GetType())
 	}
+	operand, err := literalFromProtoValue(sc.GetOperand())
+	if err != nil {
+		return predicates.Comparison{}, err
+	}
 	return predicates.Comparison{
 		Type:    typ,
-		Operand: values.LiteralValue(literalFromProtoValue(sc.GetOperand())),
+		Operand: values.LiteralValue(operand),
 	}, nil
 }
 
 // literalFromProtoValue mirrors LiteralKeyExpression.fromProtoValue
-// (LiteralKeyExpression.java:141-171): the first set field wins, in Java's
-// probe order.
-func literalFromProtoValue(v *gen.Value) any {
-	switch {
-	case v == nil:
-		return nil
-	case v.LongValue != nil:
-		return v.GetLongValue()
-	case v.IntValue != nil:
-		return v.GetIntValue()
-	case v.DoubleValue != nil:
-		return v.GetDoubleValue()
-	case v.FloatValue != nil:
-		return v.GetFloatValue()
-	case v.BoolValue != nil:
-		return v.GetBoolValue()
-	case v.StringValue != nil:
-		return v.GetStringValue()
-	case v.BytesValue != nil:
-		return v.GetBytesValue()
-	default:
-		return nil
+// (LiteralKeyExpression.java:134-173): the one field set, nil for none, and
+// "More than one value encoded in value" for several. The meta-data loader
+// refuses both of those in an index predicate first (extractValueOperand), so
+// this reads what it admitted.
+func literalFromProtoValue(v *gen.Value) (any, error) {
+	if v == nil {
+		return nil, nil
 	}
+	var value any
+	found := 0
+	for _, f := range []struct {
+		set bool
+		v   any
+	}{
+		{v.DoubleValue != nil, v.GetDoubleValue()},
+		{v.FloatValue != nil, v.GetFloatValue()},
+		{v.LongValue != nil, v.GetLongValue()},
+		{v.BoolValue != nil, v.GetBoolValue()},
+		{v.StringValue != nil, v.GetStringValue()},
+		{v.BytesValue != nil, v.GetBytesValue()},
+		{v.IntValue != nil, v.GetIntValue()},
+	} {
+		if f.set {
+			found++
+			value = f.v
+		}
+	}
+	if found > 1 {
+		return nil, fmt.Errorf("More than one value encoded in value")
+	}
+	return value, nil
 }

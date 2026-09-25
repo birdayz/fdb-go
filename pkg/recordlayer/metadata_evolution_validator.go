@@ -682,8 +682,8 @@ func (v *MetaDataEvolutionValidator) validateIndex(old *RecordMetaData, oldIdx *
 	// compared by keyExpressionEquals, Java's KeyExpression.equals, not by
 	// proto: a field's null interpretation is in its proto and not in
 	// FieldKeyExpression.equals, so a root that changes only that is the same
-	// root to Java and must be to Go. The literal-carrier arm is the Go
-	// extension the rebind option enables (section 3.2 of the WS-J design).
+	// root to Java and must be to Go. A literal's carrier is part of the root, as
+	// in Java, whose LiteralKeyExpression.equals compares protos.
 	expectedExpr := oldIdx.RootExpression
 	if v.allowsAnyFieldRenames() {
 		renamed, err := v.expectedRenamedIndexExpression(old, new, oldIdx, typeRenames)

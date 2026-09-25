@@ -171,7 +171,7 @@ func DeleteStore(ctx *FDBRecordContext, ss subspace.Subspace) error {
 		header := &gen.DataStoreInfo{}
 		// Malformed headers must not prevent deletion or leave cached state
 		// valid. Unknown fields and unsupported format numbers remain deletable.
-		if err := proto.Unmarshal(headerBytes, header); err != nil || header.GetCacheable() {
+		if err := UnmarshalAsJava(headerBytes, header); err != nil || header.GetCacheable() {
 			ctx.SetMetaDataVersionStamp()
 		}
 	}

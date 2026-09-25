@@ -234,6 +234,31 @@ func TestFDB_Restore_DroppedBoundVersion(t *testing.T) {
 	e.readsBack("/db", "s")
 }
 
+// The restore lists the schemas bound to the version through
+// TEMPLATES_VALUE_INDEX, and while that index is not READABLE it refuses rather
+// than finding none, as the version guard does.
+func TestFDB_Restore_FailsClosedOverAnUnreadableIndex(t *testing.T) {
+	t.Parallel()
+	e := newRestoreEnv(t)
+	v1 := demoMetaData(t, 3, withPriceIndex(2, 3, recordlayer.Field("price"), nil))
+	e.writeRow(1, v1)
+	e.bind("/db", "s", 1, v1)
+	e.dropTemplate()
+	mustRun(t, e.run, func(tx api.Transaction) error {
+		store, err := e.cat.openStore(tx)
+		if err != nil {
+			return err
+		}
+		_, err = store.MarkIndexWriteOnly(IdxTemplatesValue)
+		return err
+	})
+	wantAPIError(t, e.restore(1, v1, nil), api.ErrCodeInternalError,
+		"catalog index "+IdxTemplatesValue+" is WRITE_ONLY, so the schemas bound to template r cannot be read")
+	if got := e.storedRow(1); got != nil {
+		t.Fatal("a refused restore wrote the row")
+	}
+}
+
 // A stored version is not overwritten; a version nothing binds is not
 // restored.
 func TestFDB_Restore_RefusesStoredOrUnboundVersion(t *testing.T) {

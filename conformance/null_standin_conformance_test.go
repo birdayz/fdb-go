@@ -24,6 +24,7 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/relational/core/rowstruct"
 )
 
 // Java's Key.Evaluated.NullStandin (Key.java:394-421), end to end: a field's
@@ -497,8 +498,10 @@ var _ = Describe("RFC-257 a query reads a field as Java's getFieldOnMessage", fu
 			fdpBytes, err := proto.Marshal(fdp)
 			Expect(err).NotTo(HaveOccurred())
 			var java struct {
-				IsNull bool   `json:"isNull"`
-				Value  string `json:"value"`
+				IsNull      bool   `json:"isNull"`
+				Value       string `json:"value"`
+				TupleIsNull bool   `json:"tupleIsNull"`
+				TupleValue  string `json:"tupleValue"`
 			}
 			Expect(NewJavaInvoker().InvokeAs(context.Background(), "getFieldOnMessageJava", map[string]any{
 				"fileDescriptorProto": BytesToIntArray(fdpBytes), "messageName": "Rec",
@@ -519,7 +522,26 @@ var _ = Describe("RFC-257 a query reads a field as Java's getFieldOnMessage", fu
 				}
 			}
 			Expect(goValue).To(Equal(java.Value))
-			GinkgoWriter.Printf("GETFIELDONMESSAGE %s %v %s java=%t/%s go=%s\n", c.syntax, c.set, c.field, java.IsNull, java.Value, goValue)
+			// The driver's struct read is MessageTuple's, which differs from
+			// getFieldOnMessage only for an unset field that declares a default
+			// (null there); Go's rowstruct is its port.
+			rs, err := rowstruct.New(parsed)
+			Expect(err).NotTo(HaveOccurred())
+			attr, err := rs.AttributeByName(c.field)
+			Expect(err).NotTo(HaveOccurred())
+			goTuple := "null"
+			switch v := attr.(type) {
+			case nil:
+			case []any:
+				goTuple = fmt.Sprint(v)
+			default:
+				goTuple = fmt.Sprint(v)
+			}
+			Expect(goTuple).To(Equal(java.TupleValue), "MessageTuple's read")
+			wantTupleNull := c.javaNull || c.syntax == "proto2" && c.field == "d" && c.set == nil
+			Expect(java.TupleIsNull).To(Equal(wantTupleNull), "Java's MessageTuple read moved")
+			GinkgoWriter.Printf("GETFIELDONMESSAGE %s %v %s java=%t/%s tuple=%t/%s go=%s rowstruct=%s\n", c.syntax, c.set, c.field,
+				java.IsNull, java.Value, java.TupleIsNull, java.TupleValue, goValue, goTuple)
 		})
 	}
 })

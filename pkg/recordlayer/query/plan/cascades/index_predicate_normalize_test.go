@@ -259,3 +259,20 @@ func TestRowNumberWindowPredicateIsNeverFoldedAsATautology(t *testing.T) {
 			"would then be matched as if it held every record")
 	}
 }
+
+// literalFromProtoValue reads a stored comparison operand as Java's
+// LiteralKeyExpression.fromProtoValue does: the one value set, nil for none,
+// and a refusal for more than one, where it took the first field set.
+func TestLiteralFromProtoValueRefusesTwoValues(t *testing.T) {
+	t.Parallel()
+	if v, err := literalFromProtoValue(&gen.Value{IntValue: proto.Int32(3)}); err != nil || v != int32(3) {
+		t.Errorf("one value: %v, %v", v, err)
+	}
+	if v, err := literalFromProtoValue(&gen.Value{}); err != nil || v != nil {
+		t.Errorf("no value: %v, %v", v, err)
+	}
+	_, err := literalFromProtoValue(&gen.Value{LongValue: proto.Int64(1), StringValue: proto.String("a")})
+	if err == nil || err.Error() != "More than one value encoded in value" {
+		t.Errorf("two values: %v", err)
+	}
+}

@@ -145,7 +145,7 @@ type restoredMetaData struct {
 
 func loadRestoredMetaData(name string, version int, md []byte) (*restoredMetaData, error) {
 	p := &gen.MetaData{}
-	if err := proto.Unmarshal(md, p); err != nil {
+	if err := recordlayer.UnmarshalAsJava(md, p); err != nil {
 		return nil, api.WrapErrorf(err, api.ErrCodeInvalidSchemaTemplate,
 			"schema template %s version %d cannot be restored: its metadata does not parse", name, version)
 	}
@@ -193,7 +193,7 @@ func (c *RecordLayerStoreCatalog) checkBoundStores(ctx context.Context, db *reco
 						"schema %s/%s has no store header in the keyspace", b.DatabaseID, b.SchemaName)
 				}
 				header := &gen.DataStoreInfo{}
-				if err := proto.Unmarshal(raw, header); err != nil {
+				if err := recordlayer.UnmarshalAsJava(raw, header); err != nil {
 					return nil, errRestore(api.ErrCodeInvalidSchemaTemplate, name, version,
 						"the store header of schema %s/%s does not parse: %v", b.DatabaseID, b.SchemaName, err)
 				}
@@ -398,7 +398,7 @@ func carryCompatible(name string, version int, restored *restoredMetaData, row *
 			name, version, storedVersion, fmt.Sprintf(format, args...))
 	}
 	sp := &gen.MetaData{}
-	if err := proto.Unmarshal(row.GetMETA_DATA(), sp); err != nil {
+	if err := recordlayer.UnmarshalAsJava(row.GetMETA_DATA(), sp); err != nil {
 		return refuse("its metadata does not parse: %v", err)
 	}
 	smd, err := recordlayer.RecordMetaDataFromProto(proto.Clone(sp).(*gen.MetaData))

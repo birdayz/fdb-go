@@ -440,7 +440,7 @@ func (rc *FDBRecordContext) rangeMayChangeStoreStateLocked(begin, end []byte) bo
 			continue
 		}
 		header := &gen.DataStoreInfo{}
-		if err := header.UnmarshalVT(raw); err == nil && header.GetFormatVersion() >= formatVersionMinimum {
+		if err := unmarshalVTAsJava(header, raw); err == nil && header.GetFormatVersion() >= formatVersionMinimum {
 			return false
 		}
 	}
@@ -782,7 +782,7 @@ func (store *FDBRecordStore) LoadIndexingTypeStamp(index *Index) (*gen.IndexBuil
 		return nil, nil
 	}
 	stamp := &gen.IndexBuildIndexingStamp{}
-	if err := stamp.UnmarshalVT(data); err != nil {
+	if err := unmarshalVTAsJava(stamp, data); err != nil {
 		return nil, fmt.Errorf("unmarshal indexing type stamp: %w", err)
 	}
 	return stamp, nil

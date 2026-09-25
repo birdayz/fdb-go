@@ -198,6 +198,12 @@ type RecordType struct {
 	reachesMap bool
 	mapReach   mapReach
 
+	// closedEnumReach is, like mapReach, the meta-data's answer for every type
+	// its record types reach: whether a closed enum field can occur, which a
+	// decoded record must then read as Java reads it (proto_closed_enums.go).
+	reachesClosedEnum bool
+	closedEnumReach   *closedEnumReach
+
 	// newMessage creates a new empty instance of this record type's proto message.
 	// Pre-computed at Build() time via protoregistry. Returns concrete Go type
 	// (e.g. *gen.Order), not dynamicpb.
@@ -1253,9 +1259,11 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 		}
 	}
 	reach := newMapReach(roots...)
+	enumReach := newClosedEnumReach(roots...)
 	for _, rt := range types {
 		if rt.Descriptor != nil {
 			rt.reachesMap, rt.mapReach = reach.reaches(rt.Descriptor), reach
+			rt.reachesClosedEnum, rt.closedEnumReach = enumReach.reaches(rt.Descriptor), enumReach
 		}
 		if rt.UnionFieldDescriptor != nil {
 			rt.unionFieldNumber = rt.UnionFieldDescriptor.Number()

@@ -930,6 +930,204 @@ var _ = Describe("A record re-saved unchanged is written as Java's load-then-sav
 	})
 })
 
+// A proto2 enum field holding a number its enum does not declare is read as
+// protobuf-java reads it: not set, the number kept as an unknown field
+// (MessageReflection.mergeFieldFrom), where protobuf-go keeps it in the field.
+// A record's singular enum, an element of a repeated one and a nested message's
+// enum hold such numbers in raw stored bytes; Java's save of those bytes
+// maintains its indexes, and Go's online build over the raw bytes must write the
+// same entries (null for an absent enum, the declared elements of the repeated
+// one). Each engine then loads the raw records and saves them unchanged: the
+// bytes are equal, the numbers written back as unknown fields in field-number
+// order, around an unknown field the record already held.
+var _ = Describe("A closed enum's undeclared number is read as Java reads it", func() {
+	It("indexed as absent, re-saved as an unknown field", func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		clusterFile, err := sharedContainer.ClusterFile(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		optional := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum()
+		repeated := descriptorpb.FieldDescriptorProto_LABEL_REPEATED.Enum()
+		fld := func(name string, number int32, label *descriptorpb.FieldDescriptorProto_Label, typ descriptorpb.FieldDescriptorProto_Type, typeName string) *descriptorpb.FieldDescriptorProto {
+			f := &descriptorpb.FieldDescriptorProto{Name: proto.String(name), Number: proto.Int32(number), Label: label, Type: typ.Enum()}
+			if typeName != "" {
+				f.TypeName = proto.String(typeName)
+			}
+			return f
+		}
+		enum := descriptorpb.FieldDescriptorProto_TYPE_ENUM
+		fdp := &descriptorpb.FileDescriptorProto{
+			Name: proto.String("closed_enum.proto"), Package: proto.String("closedenum"), Syntax: proto.String("proto2"),
+			EnumType: []*descriptorpb.EnumDescriptorProto{{
+				Name: proto.String("E"),
+				Value: []*descriptorpb.EnumValueDescriptorProto{
+					{Name: proto.String("A"), Number: proto.Int32(1)},
+					{Name: proto.String("B"), Number: proto.Int32(2)},
+				},
+			}},
+			MessageType: []*descriptorpb.DescriptorProto{
+				{
+					Name: proto.String("EnumRec"),
+					Field: []*descriptorpb.FieldDescriptorProto{
+						fld("id", 1, optional, descriptorpb.FieldDescriptorProto_TYPE_INT64, ""),
+						fld("e", 2, optional, enum, ".closedenum.E"),
+						fld("r", 3, repeated, enum, ".closedenum.E"),
+						fld("h", 4, optional, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, ".closedenum.Holder"),
+						fld("z", 9, optional, descriptorpb.FieldDescriptorProto_TYPE_INT32, ""),
+					},
+				},
+				{Name: proto.String("Holder"), Field: []*descriptorpb.FieldDescriptorProto{fld("he", 1, optional, enum, ".closedenum.E")}},
+				{Name: proto.String("RecordTypeUnion"), Field: []*descriptorpb.FieldDescriptorProto{fld("_EnumRec", 1, optional, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, ".closedenum.EnumRec")}},
+			},
+		}
+		index := func(name string, root recordlayer.KeyExpression) *gen.Index {
+			return &gen.Index{
+				Name: proto.String(name), RecordType: []string{"EnumRec"}, RootExpression: root.ToKeyExpression(),
+				SubspaceKey: tuple.Tuple{name}.Pack(), AddedVersion: proto.Int32(2), LastModifiedVersion: proto.Int32(2),
+			}
+		}
+		withIndex := &gen.MetaData{
+			Records:     fdp,
+			RecordTypes: []*gen.RecordType{{Name: proto.String("EnumRec"), PrimaryKey: recordlayer.Field("id").ToKeyExpression()}},
+			Indexes: []*gen.Index{
+				index("by_e", recordlayer.Field("e")),
+				index("by_r", recordlayer.FanOut("r")),
+				index("by_he", recordlayer.Nest("h", recordlayer.Field("he"))),
+			},
+			Version: proto.Int32(2),
+		}
+		without := proto.Clone(withIndex).(*gen.MetaData)
+		without.Indexes, without.Version = nil, proto.Int32(1)
+
+		varint := func(num protowire.Number, v uint64) []byte {
+			return protowire.AppendVarint(protowire.AppendTag(nil, num, protowire.VarintType), v)
+		}
+		cat := func(parts ...[]byte) []byte {
+			var b []byte
+			for _, p := range parts {
+				b = append(b, p...)
+			}
+			return b
+		}
+		holder := func(he uint64) []byte {
+			return protowire.AppendBytes(protowire.AppendTag(nil, 4, protowire.BytesType), varint(1, he))
+		}
+		records := [][]byte{
+			// e 7, r [A, 7, B], h.he 9, z 5, and field 20 the record already
+			// holds as an unknown field.
+			cat(varint(1, 1), varint(2, 7), varint(3, 1), varint(3, 7), varint(3, 2), holder(9), varint(9, 5), varint(20, 3)),
+			cat(varint(1, 2), varint(2, 2), varint(3, 2), holder(1)),
+		}
+		recordArgs := make([][]int, len(records))
+		for i, r := range records {
+			recordArgs[i] = BytesToIntArray(r)
+		}
+		db := recordlayer.NewFDBDatabase(sharedDB)
+		javaSave := func(ss subspace.Subspace, md *gen.MetaData) [][]string {
+			mdBytes, err := proto.Marshal(md)
+			Expect(err).NotTo(HaveOccurred())
+			var java struct {
+				Verdicts []string   `json:"verdicts"`
+				KVs      [][]string `json:"kvs"`
+			}
+			Expect(NewJavaInvoker().InvokeAs(ctx, "saveRecordsAndDumpIndexesJava", map[string]any{
+				"clusterFile": clusterFile, "subspace": BytesToIntArray(ss.Bytes()),
+				"metaData": BytesToIntArray(mdBytes), "recordTypeName": "EnumRec", "records": recordArgs,
+			}, &java)).To(Succeed())
+			Expect(java.Verdicts).To(Equal([]string{"ok", "ok"}))
+			return java.KVs
+		}
+		overwriteRaw := func(ss subspace.Subspace) {
+			_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				for i, r := range records {
+					key := fdb.Key(ss.Sub(int64(recordlayer.RecordKey)).Pack(tuple.Tuple{int64(i + 1), int64(0)}))
+					rtx.Transaction().Set(key, protowire.AppendBytes(protowire.AppendTag(nil, 1, protowire.BytesType), r))
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		}
+		stored := func(ss subspace.Subspace) []string {
+			var out []string
+			_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				begin, end := ss.Sub(int64(recordlayer.RecordKey)).FDBRangeKeys()
+				kvs, err := rtx.Transaction().GetRange(fdb.KeyRange{Begin: begin, End: end}, fdb.RangeOptions{}).GetSliceWithError()
+				if err != nil {
+					return nil, err
+				}
+				for _, kv := range kvs {
+					out = append(out, hex.EncodeToString(kv.Value))
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(out).To(HaveLen(len(records)))
+			return out
+		}
+		md, err := recordlayer.RecordMetaDataFromProto(proto.Clone(withIndex).(*gen.MetaData))
+		Expect(err).NotTo(HaveOccurred())
+
+		// Java's save of the raw bytes, and its indexes.
+		javaKVs := javaSave(subspace.Sub(tuple.Tuple{"closedenum_java", uuid.NewString()}...), withIndex)
+		GinkgoWriter.Printf("CLOSED_ENUM java kvs=%v\n", javaKVs)
+
+		// Go's build over the raw bytes.
+		built := subspace.Sub(tuple.Tuple{"closedenum_build", uuid.NewString()}...)
+		Expect(javaSave(built, without)).To(BeEmpty())
+		overwriteRaw(built)
+		for _, name := range []string{"by_e", "by_r", "by_he"} {
+			indexer, err := recordlayer.NewOnlineIndexerBuilder().
+				SetDatabase(db).SetMetaData(md).SetIndex(md.GetIndex(name)).SetSubspace(built).Build()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = indexer.BuildIndex(ctx)
+			Expect(err).NotTo(HaveOccurred())
+		}
+		goKVs, err := dumpIndexKVs(ctx, db, built)
+		Expect(err).NotTo(HaveOccurred())
+		GinkgoWriter.Printf("CLOSED_ENUM go build kvs=%v\n", goKVs)
+		Expect(goKVs).To(Equal(javaKVs))
+
+		// Each engine loads the raw records and saves them unchanged.
+		javaRaw := subspace.Sub(tuple.Tuple{"closedenum_javaraw", uuid.NewString()}...)
+		goRaw := subspace.Sub(tuple.Tuple{"closedenum_goraw", uuid.NewString()}...)
+		for _, ss := range []subspace.Subspace{javaRaw, goRaw} {
+			Expect(javaSave(ss, withIndex)).To(Equal(javaKVs))
+			overwriteRaw(ss)
+		}
+		mdBytes, err := proto.Marshal(withIndex)
+		Expect(err).NotTo(HaveOccurred())
+		var javaResaved struct {
+			KVs [][]string `json:"kvs"`
+		}
+		Expect(NewJavaInvoker().InvokeAs(ctx, "resaveRecordsJava", map[string]any{
+			"clusterFile": clusterFile, "subspace": BytesToIntArray(javaRaw.Bytes()),
+			"metaData": BytesToIntArray(mdBytes), "count": len(records),
+		}, &javaResaved)).To(Succeed())
+		for id := int64(1); id <= int64(len(records)); id++ {
+			_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(goRaw).Open()
+				if err != nil {
+					return nil, err
+				}
+				rec, err := store.LoadRecord(tuple.Tuple{id})
+				if err != nil {
+					return nil, err
+				}
+				_, err = store.SaveRecord(rec.Record)
+				return nil, err
+			})
+			Expect(err).NotTo(HaveOccurred())
+		}
+		javaBytes, goBytes := stored(javaRaw), stored(goRaw)
+		GinkgoWriter.Printf("CLOSED_ENUM re-save java=%v go=%v\n", javaBytes, goBytes)
+		Expect(goBytes).To(Equal(javaBytes))
+		Expect(javaResaved.KVs).To(Equal(javaKVs))
+		goResavedKVs, err := dumpIndexKVs(ctx, db, goRaw)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(goResavedKVs).To(Equal(javaKVs))
+	})
+})
+
 // validatorIndex is one serialized index for indexValidationMetaData.
 type validatorIndex struct {
 	name, recordType, typ string

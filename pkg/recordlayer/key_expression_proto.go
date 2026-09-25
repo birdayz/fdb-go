@@ -3,6 +3,8 @@ package recordlayer
 import (
 	"fmt"
 
+	"google.golang.org/protobuf/reflect/protoreflect"
+
 	"fdb.dev/gen"
 )
 
@@ -263,13 +265,16 @@ func dimensionsFromProto(d *gen.Dimensions, depth int) (*DimensionsKeyExpression
 // fieldFromProto reconstructs a FieldKeyExpression from a proto Field, as
 // Java's FieldKeyExpression(Field) does (FieldKeyExpression.java:122-132): a
 // Field without its name or its fan type, both required fields that only an
-// in-memory proto or a partial parse can lack (an unknown fan type number is
-// parsed into the unknown fields, so it too is a missing fan type), is refused.
+// in-memory proto or a partial parse can lack, is refused. A fan type number
+// the enum does not declare is a missing fan type: protobuf-java parses it into
+// the unknown fields. protobuf-go keeps it in the field, which the meta-data
+// loader moves (proto_closed_enums.go); a Field that reaches here without that
+// load is read the same way.
 func fieldFromProto(f *gen.Field) (*FieldKeyExpression, error) {
 	if f.FieldName == nil {
 		return nil, &KeyExpressionDeserializationError{Message: "Serialized Field is missing field name"}
 	}
-	if f.FanType == nil {
+	if f.FanType == nil || !declaredEnum(f.ProtoReflect().Descriptor().Fields().ByName("fan_type"), protoreflect.EnumNumber(f.GetFanType())) {
 		return nil, &KeyExpressionDeserializationError{Message: "Serialized Field is missing fan type"}
 	}
 	return &FieldKeyExpression{

@@ -609,7 +609,7 @@ func encodeVectorScanContinuation(entries []*IndexEntry, innerPos int) []byte {
 // would fetch the wrong record / skip the remaining nearest rows).
 func (m *vectorIndexMaintainer) parseVectorScanContinuation(data []byte, prefix tuple.Tuple) ([]*IndexEntry, int, error) {
 	var contProto gen.VectorIndexScanContinuation
-	if err := contProto.UnmarshalVT(data); err != nil {
+	if err := unmarshalVTAsJava(&contProto, data); err != nil {
 		return nil, 0, &ContinuationParseError{RawBytes: data, Cause: err}
 	}
 
@@ -754,7 +754,7 @@ func (m *vectorIndexMaintainer) newVectorMultiPartitionCursor(
 	// a silent restart would re-emit rows the caller already consumed.
 	if len(continuation) > 0 {
 		var fm gen.FlatMapContinuation
-		if uerr := fm.UnmarshalVT(continuation); uerr != nil {
+		if uerr := unmarshalVTAsJava(&fm, continuation); uerr != nil {
 			return &errorCursor[*IndexEntry]{err: &ContinuationParseError{RawBytes: continuation, Cause: uerr}}
 		}
 		// OuterContinuation absent is a well-formed shape (Java flatMapPipelined:

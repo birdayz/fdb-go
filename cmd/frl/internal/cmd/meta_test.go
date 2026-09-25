@@ -425,8 +425,7 @@ func TestMetaEvolveCheck_ValidEvolution(t *testing.T) {
 }
 
 // writeLiteralMetaFile writes the demo metadata with one index over Order whose
-// root is add(price, lit), the shape the relational rebind's literal-carrier
-// arm judges.
+// root is add(price, lit), whose literal's carrier is part of the root.
 func writeLiteralMetaFile(t *testing.T, version int32, lit any) string {
 	t.Helper()
 	builder := recordlayer.NewRecordMetaDataBuilder().

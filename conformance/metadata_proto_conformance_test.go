@@ -108,22 +108,6 @@ func normalizeKeyExprJSON(s string) string {
 	return string(out)
 }
 
-func bytesToInts(b []byte) []int {
-	ints := make([]int, len(b))
-	for i, v := range b {
-		ints[i] = int(v)
-	}
-	return ints
-}
-
-func intsToBytes(ints []int) []byte {
-	b := make([]byte, len(ints))
-	for i, v := range ints {
-		b[i] = byte(v)
-	}
-	return b
-}
-
 // buildGoMetaData creates a Go RecordMetaData matching a specific config.
 // MUST match the Java buildMetaData() configs exactly.
 func buildGoMetaData(config string) *recordlayer.RecordMetaData {

@@ -78,6 +78,15 @@ java_test(
 # gazelle:exclude ws_f_probe_conformance_test.go
 # gazelle:exclude ws_f_record_layer_go_test.go
 # gazelle:exclude ws_j_index_fidelity_conformance_test.go
+# gazelle:exclude count_per_type_conformance_test.go
+# gazelle:exclude extension_options_conformance_test.go
+# gazelle:exclude fromless_select_java_probe_test.go
+# gazelle:exclude function_registry_conformance_test.go
+# gazelle:exclude index_option_evolution_conformance_test.go
+# gazelle:exclude key_expression_absent_child_conformance_test.go
+# gazelle:exclude key_validation_conformance_test.go
+# gazelle:exclude null_standin_conformance_test.go
+# gazelle:exclude subspace_key_identity_conformance_test.go
 
 # keep
 go_test(
@@ -142,6 +151,79 @@ go_test(
     ],
 )
 
+# The RFC-257 parity specs (the upgrade's JVM comparisons of what each engine
+# accepts, writes and reads) run in their own target for the reason
+# rfc257_oracle_test does: conformance_test measured 14m14s of its 900s on CI
+# with them, and a Ginkgo tree is one Go test function, which shard_count
+# cannot split. Hand-maintained (# keep), as the oracle target is: its srcs are
+# the parity specs plus the shared helper files they compile against.
+
+# keep
+go_test(
+    name = "rfc257_parity_test",
+    size = "large",
+    srcs = [
+        "conformance_suite_test.go",
+        "container_test.go",
+        "count_per_type_conformance_test.go",
+        "extension_options_conformance_test.go",
+        "fromless_select_java_probe_test.go",
+        "function_registry_conformance_test.go",
+        "index_option_evolution_conformance_test.go",
+        "java_invoker_test.go",
+        "key_expression_absent_child_conformance_test.go",
+        "key_validation_conformance_test.go",
+        "null_standin_conformance_test.go",
+        "store_helpers_test.go",
+        "subspace_key_identity_conformance_test.go",
+    ],
+    data = [
+        ":conformance_server",
+        "//pkg/recordlayer:testdata/hnsw_legacy_go_entry.json",
+    ],
+    tags = [
+        "conformance_java",
+        "resources:memory:500",
+    ],
+    deps = [
+        "//gen",
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/fdbgo/transport",
+        "//pkg/fdbgo/wire",
+        "//pkg/rabitq",
+        "//pkg/recordlayer",
+        "//pkg/recordlayer/query/executor",
+        "//pkg/recordlayer/query/plan/cascades",
+        "//pkg/recordlayer/query/plan/cascades/expressions",
+        "//pkg/recordlayer/query/plan/cascades/values",
+        "//pkg/recordlayer/query/plan/plans",
+        "//pkg/relational/api",
+        "//pkg/relational/conformance/plandiff",
+        "//pkg/relational/conformance/yamsql",
+        "//pkg/relational/core/catalog",
+        "//pkg/relational/core/embedded",
+        "//pkg/relational/core/rowstruct",
+        "//pkg/testcontainers/foundationdb",
+        "@com_github_google_uuid//:uuid",
+        "@com_github_onsi_ginkgo_v2//:ginkgo",
+        "@com_github_onsi_ginkgo_v2//types",
+        "@com_github_onsi_gomega//:gomega",
+        "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//encoding/prototext",
+        "@org_golang_google_protobuf//encoding/protowire",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protodesc",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//reflect/protoregistry",
+        "@org_golang_google_protobuf//types/descriptorpb",
+        "@org_golang_google_protobuf//types/dynamicpb",
+        "@org_golang_google_protobuf//types/known/anypb",
+        "@rules_go//go/runfiles",
+    ],
+)
+
 go_test(
     name = "conformance_test",
     # size="large" ⇒ 900s (long) bazel timeout. The un-gated A3 harness uses ONE
@@ -171,7 +253,6 @@ go_test(
         "count_conformance_test.go",
         "count_index_conformance_test.go",
         "count_not_null_index_conformance_test.go",
-        "count_per_type_conformance_test.go",
         "count_updates_index_conformance_test.go",
         "covering_index_conformance_test.go",
         "cross_join_order_mechanism_probe_test.go",
@@ -189,17 +270,13 @@ go_test(
         "entry_conforms_test.go",
         "error_conformance_test.go",
         "existence_check_conformance_test.go",
-        "extension_options_conformance_test.go",
         "fanout_index_conformance_test.go",
         "fault_inject_retry_conformance_test.go",
-        "fromless_select_java_probe_test.go",
-        "function_registry_conformance_test.go",
         "in_list_shapes_java_probe_test.go",
         "index_build_state_conformance_test.go",
         "index_conformance_test.go",
         "index_continuation_conformance_test.go",
         "index_ddl_metadata_conformance_test.go",
-        "index_option_evolution_conformance_test.go",
         "index_shape_helpers_test.go",
         "index_state_conformance_test.go",
         "isolation_conformance_test.go",
@@ -209,8 +286,6 @@ go_test(
         "join_using_chain_java_probe_test.go",
         "join_using_star_java_probe_test.go",
         "join_without_on_java_probe_test.go",
-        "key_expression_absent_child_conformance_test.go",
-        "key_validation_conformance_test.go",
         "lifecycle_error_test.go",
         "max_ever_version_index_conformance_test.go",
         "metadata_proto_conformance_test.go",
@@ -223,7 +298,6 @@ go_test(
         "multidimensional_options_conformance_test.go",
         "nested_groupby_key_java_probe_test.go",
         "nesting_index_conformance_test.go",
-        "null_standin_conformance_test.go",
         "numeric_cast_boundary_conformance_test.go",
         "online_indexer_conformance_test.go",
         "or_union_dedup_java_probe_test.go",
@@ -252,7 +326,6 @@ go_test(
         "store_header_v2_conformance_test.go",
         "store_helpers_test.go",
         "store_lifecycle_conformance_test.go",
-        "subspace_key_identity_conformance_test.go",
         "sum_index_conformance_test.go",
         "sum_overflow_join_leg_java_probe_test.go",
         "testdata_test.go",
@@ -312,7 +385,6 @@ go_test(
         "@com_github_onsi_gomega//:gomega",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//encoding/prototext",
-        "@org_golang_google_protobuf//encoding/protowire",
         "@org_golang_google_protobuf//proto",
         "@org_golang_google_protobuf//reflect/protodesc",
         "@org_golang_google_protobuf//reflect/protoreflect",

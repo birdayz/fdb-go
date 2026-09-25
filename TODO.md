@@ -15028,7 +15028,7 @@ Landed on this tree (ws-j-design.md 4d, the `NullStandin` bullet, which also cor
   target does, round-tripped, and not part of key-expression equality (as Java's `equals`).
 - `keyContainsNonUniqueNull` at the unique checks and COUNT_NOT_NULL's grouped columns: only
   NullStandin.NULL is ignored; a `UNIQUE`/`NOT_NULL` field's null and the arithmetic functions'
-  plain null collide and are counted. `RegisterNonUniqueNullFunction` for a Go function whose Java
+  plain null collide and are counted. `FunctionSpec.NullIsNonUnique` for a Go function whose Java
   twin returns `Key.Evaluated.NULL` (`collate_*`, `cardinality` register with it).
 - A proto3 field at its default is absent to key evaluation and to a query's reads, and an unset
   proto2 field's explicit default reads as the default in a query
@@ -15051,9 +15051,9 @@ it. Pinned against the JVM (NO_NULLS, maintainer by maintainer) and by Go specs 
 
 LANDED (ws-j-design.md section 8 step 1, STATUS): the (name, version) guard in both catalogs, the
 gone-version refusal with Java's text, the `DeleteTemplateVersion` refusal, and Java's catalog
-texts; FDB and in-memory tests red on `9ba005539`. OPEN in this unit: `fleet.RestoreTemplateVersion`
-(lands with step 3, whose section-4 classification is its carry-compatibility check), then steps 2
-and 3 of section 8. The DIVERGENCES entries for the guard and the delete refusal now say so.
+texts; FDB and in-memory tests red on `9ba005539`. `fleet.RestoreTemplateVersion` has landed since
+(its carry-compatibility check uses `ClassifyIndexCarry`); OPEN in this unit: step 3 of section 8
+(step 2 has landed). The DIVERGENCES entries for the guard and the delete refusal now say so.
 
 ### RFC-257 WS-C revision 13 (booked 2026-09-25)
 
@@ -15139,3 +15139,16 @@ element matching's cell-bound fallback and equal-element insertion declared and 
 evolution, dry-run, Config-check and entry-field pins; the alias named in an evolution refusal.
 NEXT: the revision-17 gate (`ws-c-addendum-review-v17/`). The WS-J design v17 gate returned three
 NAKs (`ws-j-design-review-v17/`), folded next into design v18.
+
+### RFC-257 WS-J design v18 and its code (booked 2026-09-25)
+
+LANDED with design v18 (ws-j-design.md 4f), folding the v17 gate's three NAKs
+(`ws-j-design-review-v17/`): every decode of bytes a Java engine shares reads a closed enum's
+undeclared number as Java does (`proto_closed_enums.go`: records, map entries, stored meta-data,
+store headers, stamps, pending writes, continuations) and parses with protobuf-java's recursion
+limit; an index predicate's operand read as Java reads it; the three field readers pinned to Java's
+`getFieldOnMessage` and `MessageTuple`; a stored template's load failure reported with Java's code;
+the restore failing closed over an unreadable index; the normative design text swept of the
+withdrawn design. The RFC-257 parity JVM specs moved to `//conformance:rfc257_parity_test`
+(conformance_test used 95% of its CI budget). NEXT: the v18 gate (`ws-j-design-review-v18/`), then
+step 3 (4e "Step 3, restated", with 4f's additions).

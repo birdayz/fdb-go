@@ -356,8 +356,9 @@ assets carry (`RELEASE.md` §Versioning).
   - a literal is stored with its own width: an INT literal as `int_value` (Go stored `long_value`), a
     FLOAT literal as `float_value`, and the bitmap entry size as the INT `10000`. A literal's carrier
     is part of its index's key, as Java's evolution validator reads it: a `long_value` against an
-    `int_value` of the same number is a changed key, refused by the rebind and by a template restore,
-    and rebuilt by a new template version (the carry rule, RFC-257 WS-J section 4). Templates an
+    `int_value` of the same number is a changed key, refused by the rebind and by a template restore
+    (a new template version will rebuild it through the carry rule, RFC-257 WS-J section 4, step 3,
+    not in this build yet). Templates an
     earlier Go build stored are pre-release data (above). An INT literal outside 32 bits is refused
     (XX000) instead of wrapping, whatever Go integer kind carries it;
   - index options are stored in Java's insertion order (`unique` first, then the type's options), where
@@ -367,8 +368,8 @@ assets carry (`RELEASE.md` §Versioning).
     an index clause names to the end of the table order, in clause order, where Go kept declaration
     order; the RFC-209 group-existence companions take the versions after every declared index. The
     WS-J oracle's 180 template runs whose metadata differed from the target's now store the target's
-    bytes (or differ only by the companions). A new version of a stored template keeps the stored
-    numbering through the carry rule (RFC-257 WS-J section 4).
+    bytes (or differ only by the companions). A new version of a stored template will keep the stored
+    numbering through the carry rule (RFC-257 WS-J section 4, step 3, not in this build yet).
 - **Long-arithmetic key functions read any numeric operand as Java's `getNullableLong` does**
   (truncating toward zero, NaN to 0, saturating), where Go refused every non-`int64` operand; the
   index entries equal the target's byte for byte (WS-J F2b spec). Go does not serve a query from such
@@ -408,7 +409,7 @@ assets carry (`RELEASE.md` §Versioning).
   and a function's plain null (the arithmetic functions'), collide and are counted, where Go
   ignored every null. `collate_*` and `cardinality` return the ignored null, as in Java; a Go
   function whose Java twin returns `Key.Evaluated.NULL` registers with
-  `RegisterNonUniqueNullFunction`. The interpretation is written back unchanged (Go rewrote
+  `FunctionSpec.NullIsNonUnique`. The interpretation is written back unchanged (Go rewrote
   `NOT_NULL` as `NOT_UNIQUE`) and, as in Java, is not part of an index's definition to the
   evolution validator. New API: `NullStandin`, `FieldWithNullStandin`.
 - **`IndexMaintenanceFilter` is ported** (Java's store option): `StoreBuilder.SetIndexMaintenanceFilter`
@@ -494,6 +495,25 @@ assets carry (`RELEASE.md` §Versioning).
   then refuses saves, searches and deletes of present entries; a cosine or dot-product index
   refuses its first save (Go stored 4-bit codes before, then refused every save). A row-number
   window under a disjunction is Java's `RecordCoreError`, not a `MetaDataError`.
+- **Stored bytes are read as protobuf-java reads them** (RFC-257 WS-J): a closed (proto2) enum field
+  holding a number its enum does not declare is not set, the number kept as an unknown field, where
+  protobuf-go kept it in the field. So a key expression whose fan type Java cannot read is refused
+  as "missing fan type" (Go read it as SCALAR); a record's such enum is indexed as null, as Java
+  indexes it, and written back as an unknown field, in Java's order; a store header's unreadable
+  record-count state is its default; an OrElse continuation whose state Java cannot read resumes as
+  UNDECIDED, as Java's does (Go refused it). Stored meta-data, store headers, index-build stamps, pending
+  writes, continuations and dynamic records are parsed with protobuf-java's recursion limit (100
+  nested messages), so bytes nested deeper than Java can parse are refused at parse in both engines.
+- A stored template whose meta-data fails to load is reported with Java's code: 42000 for a
+  meta-data error, XXXXX for a parse failure or any other record-layer error, where the catalog
+  reported XX000.
+- An index predicate's comparison operand with more than one value is refused when the meta-data is
+  loaded ("More than one value encoded in value", a `RecordCoreError`, as Java), and one with no
+  value too (Java: `NullPointerException`); Go took the first value set, or compared with nil.
+- `RecordMetaDataBuilder.SetRecords` reads the records file's extension options as Java's does
+  (schema, record type and field options: a record type's `since_version` and record type key, a
+  field's `index` option, which defines an index), so a records file that sets them loads with the
+  target's record type keys and indexes; Go ignored them.
 - An HNSW insert of a key already in the graph leaves the graph as it is, as Java's `Insert` does;
   Go deleted and re-inserted the node (reachable when an index build meets an entry a concurrent
   save indexed), rewiring edges Java leaves alone.

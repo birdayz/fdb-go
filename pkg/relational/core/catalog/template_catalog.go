@@ -33,11 +33,11 @@ func (c *InMemorySchemaTemplateCatalog) lockBindings() func() {
 	return c.bindings.mu.Unlock
 }
 
-// firstBinding is the version guard's read (template_bindings.go) over the
+// firstBindingHeld is the version guard's read (template_bindings.go) over the
 // store catalog: the first binding of templateName, in the order of Java's
 // TEMPLATES_VALUE_INDEX, at a version from `from` through `through` (a
 // negative bound is none). The store catalog's mutex must be held.
-func (c *InMemorySchemaTemplateCatalog) firstBinding(templateName string, from, through int) *boundSchema {
+func (c *InMemorySchemaTemplateCatalog) firstBindingHeld(templateName string, from, through int) *boundSchema {
 	if c.bindings == nil {
 		return nil
 	}
@@ -158,7 +158,7 @@ func (c *InMemorySchemaTemplateCatalog) CreateTemplate(txn api.Transaction, newT
 			from = v + 1
 		}
 	}
-	if bound := c.firstBinding(name, from, -1); bound != nil {
+	if bound := c.firstBindingHeld(name, from, -1); bound != nil {
 		return errBoundOnCreate(name, version, *bound)
 	}
 	if c.templates[name] == nil {
@@ -233,7 +233,7 @@ func (c *InMemorySchemaTemplateCatalog) DeleteTemplateVersion(txn api.Transactio
 		return nil
 	}
 	byVersion := c.templates[templateName]
-	if bound := c.firstBinding(templateName, version, version); bound != nil {
+	if bound := c.firstBindingHeld(templateName, version, version); bound != nil {
 		return errBoundOnDelete(templateName, version, *bound)
 	}
 	delete(byVersion, version)
