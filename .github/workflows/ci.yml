@@ -294,7 +294,10 @@ jobs:
       # A PR that teaches cmd/frl to use a symbol newer than the pin fails here,
       # and that is the correct verdict, not a false positive: such a change
       # breaks `go install ...@latest` the moment it merges. Land the pkg/ side
-      # first, let the pin bump, then land the cmd/frl side.
+      # first, let the pin bump, then land the cmd/frl side. A PR that must merge
+      # whole pins cmd/frl to one of its own commits carrying the pkg/ side
+      # (`GOWORK=off go get fdb.dev@<sha> && go mod tidy` in cmd/frl), so master
+      # installs at the merge; the nightly bump then moves the pin to master.
       - name: Build cmd/frl the way `go install` builds it
         working-directory: cmd/frl
         env:
