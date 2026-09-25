@@ -184,7 +184,7 @@ Vollkonti continuous 24/7 shifts via `/vollkonti`. Handovers in `shifts/`. One b
 
 `TODO.md` is the authoritative execution order — numbered items in 6 sequential phases, items inside a phase run in parallel unless gated. **At shift start, pick the lowest-numbered unchecked item whose gates are satisfied.** Handover follow-ups are suggestions, not the priority list. Finish what you start before moving on.
 
-**Working rhythm:** one thing at a time. Implement → `just test` → commit → push → next. One logical change per commit; don't batch unrelated features. Don't push unless asked.
+**Working rhythm:** one thing at a time. Implement → `just test` → commit → push → next. One logical change per commit; don't batch unrelated features.
 
 **High-output patterns (proven in swingshift-70, 11k+ LOC/shift):**
 - **Commit constantly.** Every green test = commit + push. Small commits (5-50 LOC each) maintain momentum and make rollback trivial. 80+ commits/shift is normal when you're flowing.
