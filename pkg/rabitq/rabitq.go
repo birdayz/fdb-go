@@ -51,6 +51,9 @@ func NewQuantizer(metric Metric, numExBits int) *Quantizer {
 	return &Quantizer{metric: metric, numExBits: numExBits}
 }
 
+// NumExBits is the quantizer's count of extra bits.
+func (q *Quantizer) NumExBits() int { return q.numExBits }
+
 // Encode quantizes a float64 vector into compact bytes for storage.
 func (q *Quantizer) Encode(vector []float64) []byte {
 	rq := NewRaBitQuantizer(q.metric, q.numExBits)

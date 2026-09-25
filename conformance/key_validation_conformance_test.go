@@ -7,13 +7,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/rabitq"
 	"fdb.dev/pkg/recordlayer"
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
@@ -621,6 +621,216 @@ var _ = Describe("Map entries are maintained in the record's wire order, as Java
 	})
 })
 
+// A record re-saved unchanged, by each engine, from the same stored bytes: a
+// proto3 records file (a map entry with a zero value and one with an empty key,
+// where a proto3 field at its zero has no presence), a key written twice with
+// message values whose maps are in different orders, a map in a map value, and a
+// oneof member numbered below the maps. Each engine re-saves both what Java's
+// first save wrote and the raw bytes themselves. The records without the oneof
+// are written byte for byte as Java writes them; the one with it differs only
+// in field order, as declared (DIVERGENCES.md, map entry order): protobuf-go
+// writes a oneof member after the other fields, Java in field-number order.
+var _ = Describe("A record re-saved unchanged is written as Java's load-then-save writes it", func() {
+	It("proto3 zeros, nested maps, a key written twice, a oneof", func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		clusterFile, err := sharedContainer.ClusterFile(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		optional := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum()
+		repeated := descriptorpb.FieldDescriptorProto_LABEL_REPEATED.Enum()
+		fld := func(name string, number int32, label *descriptorpb.FieldDescriptorProto_Label, typ descriptorpb.FieldDescriptorProto_Type, typeName string, oneof *int32) *descriptorpb.FieldDescriptorProto {
+			f := &descriptorpb.FieldDescriptorProto{Name: proto.String(name), Number: proto.Int32(number), Label: label, Type: typ.Enum(), OneofIndex: oneof}
+			if typeName != "" {
+				f.TypeName = proto.String(typeName)
+			}
+			return f
+		}
+		entry := func(name, valueType string, valueKind descriptorpb.FieldDescriptorProto_Type) *descriptorpb.DescriptorProto {
+			return &descriptorpb.DescriptorProto{
+				Name: proto.String(name),
+				Field: []*descriptorpb.FieldDescriptorProto{
+					fld("key", 1, optional, descriptorpb.FieldDescriptorProto_TYPE_STRING, "", nil),
+					fld("value", 2, optional, valueKind, valueType, nil),
+				},
+				Options: &descriptorpb.MessageOptions{MapEntry: proto.Bool(true)},
+			}
+		}
+		fdp := &descriptorpb.FileDescriptorProto{
+			Name: proto.String("resave_p3.proto"), Package: proto.String("resavep3"), Syntax: proto.String("proto3"),
+			MessageType: []*descriptorpb.DescriptorProto{
+				{
+					Name: proto.String("P3"),
+					Field: []*descriptorpb.FieldDescriptorProto{
+						fld("id", 1, optional, descriptorpb.FieldDescriptorProto_TYPE_INT64, "", nil),
+						fld("ha", 2, optional, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, ".resavep3.Holder", proto.Int32(0)),
+						fld("hb", 5, optional, descriptorpb.FieldDescriptorProto_TYPE_INT64, "", proto.Int32(0)),
+						fld("m", 3, repeated, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, ".resavep3.P3.MEntry", nil),
+						fld("mh", 4, repeated, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, ".resavep3.P3.MhEntry", nil),
+					},
+					OneofDecl: []*descriptorpb.OneofDescriptorProto{{Name: proto.String("choice")}},
+					NestedType: []*descriptorpb.DescriptorProto{
+						entry("MEntry", "", descriptorpb.FieldDescriptorProto_TYPE_INT64),
+						entry("MhEntry", ".resavep3.Holder", descriptorpb.FieldDescriptorProto_TYPE_MESSAGE),
+					},
+				},
+				{
+					Name:       proto.String("Holder"),
+					Field:      []*descriptorpb.FieldDescriptorProto{fld("hm", 1, repeated, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, ".resavep3.Holder.HmEntry", nil)},
+					NestedType: []*descriptorpb.DescriptorProto{entry("HmEntry", "", descriptorpb.FieldDescriptorProto_TYPE_INT64)},
+				},
+				{
+					Name:  proto.String("RecordTypeUnion"),
+					Field: []*descriptorpb.FieldDescriptorProto{fld("_P3", 1, optional, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, ".resavep3.P3", nil)},
+				},
+			},
+		}
+		mdProto := &gen.MetaData{
+			Records:     fdp,
+			RecordTypes: []*gen.RecordType{{Name: proto.String("P3"), PrimaryKey: recordlayer.Field("id").ToKeyExpression()}},
+			Version:     proto.Int32(1),
+		}
+		mdBytes, err := proto.Marshal(mdProto)
+		Expect(err).NotTo(HaveOccurred())
+		md, err := recordlayer.RecordMetaDataFromProto(proto.Clone(mdProto).(*gen.MetaData))
+		Expect(err).NotTo(HaveOccurred())
+
+		// Wire builders: an int64 map entry (its value written even when zero),
+		// a message-valued one, a Holder.
+		intEntry := func(num protowire.Number, key string, value int64) []byte {
+			body := protowire.AppendString(protowire.AppendTag(nil, 1, protowire.BytesType), key)
+			body = protowire.AppendVarint(protowire.AppendTag(body, 2, protowire.VarintType), uint64(value))
+			return protowire.AppendBytes(protowire.AppendTag(nil, num, protowire.BytesType), body)
+		}
+		holder := func(keys ...string) []byte {
+			var b []byte
+			for _, k := range keys {
+				b = append(b, intEntry(1, k, 1)...)
+			}
+			return b
+		}
+		msgEntry := func(num protowire.Number, key string, value []byte) []byte {
+			body := protowire.AppendString(protowire.AppendTag(nil, 1, protowire.BytesType), key)
+			body = protowire.AppendBytes(protowire.AppendTag(body, 2, protowire.BytesType), value)
+			return protowire.AppendBytes(protowire.AppendTag(nil, num, protowire.BytesType), body)
+		}
+		id := func(n int64) []byte {
+			return protowire.AppendVarint(protowire.AppendTag(nil, 1, protowire.VarintType), uint64(n))
+		}
+		cat := func(parts ...[]byte) []byte {
+			var b []byte
+			for _, p := range parts {
+				b = append(b, p...)
+			}
+			return b
+		}
+		records := [][]byte{
+			cat(id(1), intEntry(3, "b", 0), intEntry(3, "", 5), intEntry(3, "a", 0),
+				msgEntry(4, "k", holder("y", "x")), msgEntry(4, "k", holder("x", "y")), msgEntry(4, "j", holder("q", "p"))),
+			cat(id(2), protowire.AppendBytes(protowire.AppendTag(nil, 2, protowire.BytesType), holder("z", "y")), intEntry(3, "q", 1), intEntry(3, "p", 2)),
+		}
+		recordArgs := make([][]int, len(records))
+		for i, r := range records {
+			recordArgs[i] = BytesToIntArray(r)
+		}
+		db := recordlayer.NewFDBDatabase(sharedDB)
+		javaSave := func(ss subspace.Subspace) {
+			var java struct {
+				Verdicts []string `json:"verdicts"`
+			}
+			Expect(NewJavaInvoker().InvokeAs(ctx, "saveRecordsAndDumpIndexesJava", map[string]any{
+				"clusterFile": clusterFile, "subspace": BytesToIntArray(ss.Bytes()),
+				"metaData": BytesToIntArray(mdBytes), "recordTypeName": "P3", "records": recordArgs,
+			}, &java)).To(Succeed())
+			Expect(java.Verdicts).To(Equal([]string{"ok", "ok"}))
+		}
+		rewriteRaw := func(ss subspace.Subspace) {
+			_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				for i, r := range records {
+					key := fdb.Key(ss.Sub(int64(recordlayer.RecordKey)).Pack(tuple.Tuple{int64(i + 1), int64(0)}))
+					rtx.Transaction().Set(key, protowire.AppendBytes(protowire.AppendTag(nil, 1, protowire.BytesType), r))
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		}
+		stored := func(ss subspace.Subspace) [][]byte {
+			var out [][]byte
+			_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				begin, end := ss.Sub(int64(recordlayer.RecordKey)).FDBRangeKeys()
+				kvs, err := rtx.Transaction().GetRange(fdb.KeyRange{Begin: begin, End: end}, fdb.RangeOptions{}).GetSliceWithError()
+				if err != nil {
+					return nil, err
+				}
+				for _, kv := range kvs {
+					_, _, n := protowire.ConsumeTag(kv.Value)
+					inner, _ := protowire.ConsumeBytes(kv.Value[n:])
+					out = append(out, inner)
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(out).To(HaveLen(len(records)))
+			return out
+		}
+		javaResave := func(ss subspace.Subspace) {
+			Expect(NewJavaInvoker().InvokeAs(ctx, "resaveRecordsJava", map[string]any{
+				"clusterFile": clusterFile, "subspace": BytesToIntArray(ss.Bytes()),
+				"metaData": BytesToIntArray(mdBytes), "count": len(records),
+			}, &map[string]any{})).To(Succeed())
+		}
+		goResave := func(ss subspace.Subspace) {
+			for id := int64(1); id <= int64(len(records)); id++ {
+				_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+					store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
+					if err != nil {
+						return nil, err
+					}
+					rec, err := store.LoadRecord(tuple.Tuple{id})
+					if err != nil {
+						return nil, err
+					}
+					_, err = store.SaveRecord(rec.Record)
+					return nil, err
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+		}
+		// legacyOrder is Java's bytes with the oneof member (field 2) moved after
+		// the other top-level fields, protobuf-go's order.
+		legacyOrder := func(raw []byte) []byte {
+			var rest, oneof []byte
+			for len(raw) > 0 {
+				num, typ, n := protowire.ConsumeTag(raw)
+				m := protowire.ConsumeFieldValue(num, typ, raw[n:])
+				if num == 2 {
+					oneof = append(oneof, raw[:n+m]...)
+				} else {
+					rest = append(rest, raw[:n+m]...)
+				}
+				raw = raw[n+m:]
+			}
+			return append(rest, oneof...)
+		}
+		for _, raw := range []bool{false, true} {
+			javaSS := subspace.Sub(tuple.Tuple{"resave_p3_java", uuid.NewString()}...)
+			goSS := subspace.Sub(tuple.Tuple{"resave_p3_go", uuid.NewString()}...)
+			for _, ss := range []subspace.Subspace{javaSS, goSS} {
+				javaSave(ss)
+				if raw {
+					rewriteRaw(ss)
+				}
+			}
+			javaResave(javaSS)
+			goResave(goSS)
+			javaBytes, goBytes := stored(javaSS), stored(goSS)
+			GinkgoWriter.Printf("RESAVE_P3 raw=%t java=%x go=%x\n", raw, javaBytes, goBytes)
+			Expect(goBytes[0]).To(Equal(javaBytes[0]), "raw=%t: the record without the oneof, byte for byte", raw)
+			Expect(goBytes[1]).NotTo(Equal(javaBytes[1]), "raw=%t: the oneof member's position is the declared difference", raw)
+			Expect(goBytes[1]).To(Equal(legacyOrder(javaBytes[1])), "raw=%t: the record with the oneof, but for its member's position", raw)
+		}
+	})
+})
+
 // validatorIndex is one serialized index for indexValidationMetaData.
 type validatorIndex struct {
 	name, recordType, typ string
@@ -1110,111 +1320,138 @@ var _ = Describe("A windowed VECTOR index's options parse as Java parses them", 
 })
 
 // The configuration each engine READS from a windowed VECTOR index's options,
-// for spellings only Java's parsers read as the number (full-width digits, a
-// sign, a suffix, padding, an exponent): the validator admitting a value is not
-// enough, the maintainer must read the same number from it. Java's side is
-// HnswVectorIndexEngine.parseConfig (through HnswConformanceAccess), Go's
-// recordlayer.HNSWConfigOf. Each value differs from the default, so a reader that
-// fell back to the default would be seen.
+// the whole of it compared: for spellings only Java's parsers read as the number
+// (full-width digits, a sign, a suffix, padding, an exponent), for values in
+// Java's ranges that are not in the ranges Go's reader had (m 150), for the
+// engine-neutral aliases (vector*), and for Boolean.parseBoolean's case. The
+// validator admitting a value is not enough: the maintainer must read the same
+// configuration from it. Java's side is HnswVectorIndexEngine.parseConfig
+// (through HnswConformanceAccess), Go's recordlayer.HNSWConfigOf.
 var _ = Describe("A windowed VECTOR index's options are read as Java reads them", func() {
 	for _, c := range []struct {
-		options map[string]string
+		name string
+		edit func(*gen.Index)
 	}{
-		{map[string]string{recordlayer.IndexOptionHNSWM: "８", recordlayer.IndexOptionHNSWMMax: "+12", recordlayer.IndexOptionHNSWMMax0: "２４"}},
-		{map[string]string{recordlayer.IndexOptionHNSWEfConstruction: "１５０", recordlayer.IndexOptionHNSWStatsThreshold: "-3"}},
-		{map[string]string{recordlayer.IndexOptionHNSWSampleVectorStatsProbability: "0.25d", recordlayer.IndexOptionHNSWMaintainStatsProbability: " 2.5e-1 "}},
-		{map[string]string{recordlayer.IndexOptionHNSWSampleVectorStatsProbability: "0x1p-2", recordlayer.IndexOptionHNSWMaintainStatsProbability: ".125F"}},
+		{"hnswM=８ hnswMMax=+12 hnswMMax0=２４", setOptions(map[string]string{recordlayer.IndexOptionHNSWM: "８", recordlayer.IndexOptionHNSWMMax: "+12", recordlayer.IndexOptionHNSWMMax0: "２４"})},
+		{"hnswEfConstruction=１５０ hnswStatsThreshold=-3", setOptions(map[string]string{recordlayer.IndexOptionHNSWEfConstruction: "１５０", recordlayer.IndexOptionHNSWStatsThreshold: "-3"})},
+		{"probabilities 0.25d and ' 2.5e-1 '", setOptions(map[string]string{recordlayer.IndexOptionHNSWSampleVectorStatsProbability: "0.25d", recordlayer.IndexOptionHNSWMaintainStatsProbability: " 2.5e-1 "})},
+		{"probabilities 0x1p-2 and .125F", setOptions(map[string]string{recordlayer.IndexOptionHNSWSampleVectorStatsProbability: "0x1p-2", recordlayer.IndexOptionHNSWMaintainStatsProbability: ".125F"})},
+		{"m 150, mMax 150, mMax0 300, efRepair 150", setOptions(map[string]string{recordlayer.IndexOptionHNSWM: "150", recordlayer.IndexOptionHNSWMMax: "150", recordlayer.IndexOptionHNSWMMax0: "300", recordlayer.IndexOptionHNSWEfRepair: "150"})},
+		{"the metric under its alias vectorMetric", func(ix *gen.Index) {
+			dropOption(ix, recordlayer.IndexOptionVectorMetric)
+			setOptions(map[string]string{"vectorMetric": "COSINE_METRIC"})(ix)
+		}},
+		{"the dimension count under its alias vectorNumDimensions", func(ix *gen.Index) {
+			dropOption(ix, recordlayer.IndexOptionVectorNumDimensions)
+			setOptions(map[string]string{"vectorNumDimensions": "5"})(ix)
+		}},
+		{"booleans in upper case, RaBitQ under its aliases", setOptions(map[string]string{
+			recordlayer.IndexOptionHNSWUseInlining: "TRUE", recordlayer.IndexOptionVectorExtendCandidates: "True",
+			recordlayer.IndexOptionVectorKeepPrunedConnections: "yes", "vectorUseRaBitQ": "tRuE", "vectorRaBitQNumExBits": "6",
+		})},
+		{"limits at Java's bounds", setOptions(map[string]string{
+			recordlayer.IndexOptionHNSWMaxNumConcurrentNodeFetches: "64", recordlayer.IndexOptionHNSWMaxNumConcurrentNeighborhoodFetches: "1",
+			recordlayer.IndexOptionHNSWMaxNumConcurrentDeleteFromLayer: "10",
+		})},
 	} {
-		It(fmt.Sprintf("%v", c.options), func() {
-			p := windowedEdited(func(ix *gen.Index) {
-				for k, v := range c.options {
-					ix.Options = append(ix.Options, &gen.Index_Option{Key: proto.String(k), Value: proto.String(v)})
-				}
-			})
-			var java map[string]float64
+		It(c.name, func() {
+			p := windowedEdited(c.edit)
+			var java map[string]any
 			Expect(NewJavaInvoker().InvokeAs(context.Background(), "vectorIndexConfigJava", map[string]any{
 				"protoBytes": bytesToInts(marshalMetaData(p)), "indexName": "w",
 			}, &java)).To(Succeed())
 			md, err := recordlayer.RecordMetaDataFromProto(proto.Clone(p).(*gen.MetaData))
 			Expect(err).NotTo(HaveOccurred())
-			cfg := recordlayer.HNSWConfigOf(md.GetIndex("w"))
-			goValues := map[string]float64{
+			cfg, err := recordlayer.HNSWConfigOf(md.GetIndex("w"))
+			Expect(err).NotTo(HaveOccurred())
+			metric := map[recordlayer.VectorMetric]string{
+				recordlayer.VectorMetricEuclidean: "EUCLIDEAN_METRIC", recordlayer.VectorMetricEuclideanSquare: "EUCLIDEAN_SQUARE_METRIC",
+				recordlayer.VectorMetricCosine: "COSINE_METRIC", recordlayer.VectorMetricInnerProduct: "DOT_PRODUCT_METRIC",
+			}[cfg.Metric]
+			useRaBitQ, bits := false, float64(4)
+			if q, ok := cfg.Quantizer.(*rabitq.Quantizer); ok && q != nil {
+				useRaBitQ, bits = true, float64(q.NumExBits())
+			}
+			goValues := map[string]any{
 				"numDimensions": float64(cfg.NumDimensions), "m": float64(cfg.M), "mMax": float64(cfg.MMax),
 				"mMax0": float64(cfg.MMax0), "efConstruction": float64(cfg.EfConstruction), "efRepair": float64(cfg.EfRepair),
 				"statsThreshold": float64(cfg.StatsThreshold), "sampleVectorStatsProbability": cfg.SampleVectorStatsProbability,
-				"maintainStatsProbability": cfg.MaintainStatsProbability,
+				"maintainStatsProbability": cfg.MaintainStatsProbability, "metric": metric, "useInlining": cfg.UseInlining,
+				"extendCandidates": cfg.ExtendCandidates, "keepPrunedConnections": cfg.KeepPrunedConnections,
+				"useRaBitQ": useRaBitQ, "raBitQNumExBits": bits,
+				"maxNumConcurrentNodeFetches":         float64(cfg.MaxNumConcurrentNodeFetches),
+				"maxNumConcurrentNeighborhoodFetches": float64(cfg.MaxNumConcurrentNeighborhoodFetches),
+				"maxNumConcurrentDeleteFromLayer":     float64(cfg.MaxNumConcurrentDeleteFromLayer),
 			}
-			fmt.Fprintf(GinkgoWriter, "VECTOR_CONFIG %v java=%v go=%v\n", c.options, java, goValues)
-			for key := range c.options {
-				name := map[string]string{
-					recordlayer.IndexOptionHNSWM: "m", recordlayer.IndexOptionHNSWMMax: "mMax", recordlayer.IndexOptionHNSWMMax0: "mMax0",
-					recordlayer.IndexOptionHNSWEfConstruction: "efConstruction", recordlayer.IndexOptionHNSWStatsThreshold: "statsThreshold",
-					recordlayer.IndexOptionHNSWSampleVectorStatsProbability: "sampleVectorStatsProbability",
-					recordlayer.IndexOptionHNSWMaintainStatsProbability:     "maintainStatsProbability",
-				}[key]
-				Expect(name).NotTo(BeEmpty(), key)
-				Expect(goValues[name]).To(Equal(java[name]), "%s=%q", key, c.options[key])
+			if !useRaBitQ {
+				// Java's Config carries the count whether or not RaBitQ is on; Go's
+				// only in the quantizer.
+				goValues["raBitQNumExBits"] = java["raBitQNumExBits"]
 			}
+			fmt.Fprintf(GinkgoWriter, "VECTOR_CONFIG %s java=%v go=%v\n", c.name, java, goValues)
+			Expect(goValues).To(Equal(java))
 		})
 	}
 })
 
-// The sliding-window validator's arms, whole text and class on both engines:
-// Java's MetaDataException for each of its own arms and for the vector
-// validator's missing dimension count, and IndexPredicate's RecordCoreException
-// for a window under a disjunction.
-var _ = Describe("A windowed VECTOR index is validated as Java validates it", func() {
-	window := func() *gen.Predicate {
-		return &gen.Predicate{RowNumberWindowPredicate: &gen.RowNumberWindowPredicate{
-			OrderingField: []string{"price"}, Size: proto.Int32(3), Direction: gen.RowNumberWindowPredicate_ASC.Enum(),
-		}}
-	}
+// A windowed VECTOR index whose configuration Java's Config refuses, or whose
+// option is set under both of its names, is refused as Java refuses it, and one
+// Config admits is built by both: the whole Config constructor (Config.java:
+// 93-120) and VectorIndexOptionsHelper.validateNoAliasConflicts.
+var _ = Describe("A windowed VECTOR index's configuration is checked as Java's Config checks it", func() {
 	for _, c := range []struct {
 		name string
 		edit func(*gen.Index)
 	}{
-		{"a unique windowed index", func(ix *gen.Index) {
-			ix.Options = append(ix.Options, &gen.Index_Option{Key: proto.String("unique"), Value: proto.String("true")})
-		}},
-		{"a window under a disjunction alone (not decorated, so not refused)", func(ix *gen.Index) {
-			ix.Predicate = &gen.Predicate{OrPredicate: &gen.OrPredicate{Children: []*gen.Predicate{
-				window(), {ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}},
-			}}}
-		}},
-		// The decoration gate finds a window through AND only, so the placement
-		// check sees a window under an OR only beside a decorating one.
-		{"a window beside a window under a disjunction", func(ix *gen.Index) {
-			ix.Predicate = &gen.Predicate{AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{
-				window(), {OrPredicate: &gen.OrPredicate{Children: []*gen.Predicate{
-					{ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}}, window(),
-				}}},
-			}}}
-		}},
-		{"a window under a conjunction", func(ix *gen.Index) {
-			ix.Predicate = &gen.Predicate{AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{
-				window(), {ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}},
-			}}}
-		}},
-		{"a windowed index over two record types", func(ix *gen.Index) {
-			ix.RecordType = []string{"Order", "Customer"}
-		}},
-		{"a windowed index without its dimension count", func(ix *gen.Index) {
-			var kept []*gen.Index_Option
-			for _, o := range ix.Options {
-				if o.GetKey() != recordlayer.IndexOptionVectorNumDimensions {
-					kept = append(kept, o)
-				}
-			}
-			ix.Options = kept
-		}},
+		{"efConstruction 50", setOptions(map[string]string{recordlayer.IndexOptionHNSWEfConstruction: "50"})},
+		{"m 20 above the default mMax", setOptions(map[string]string{recordlayer.IndexOptionHNSWM: "20"})},
+		{"m 3", setOptions(map[string]string{recordlayer.IndexOptionHNSWM: "3"})},
+		{"mMax0 301", setOptions(map[string]string{recordlayer.IndexOptionHNSWMMax0: "301"})},
+		{"efRepair 3, below m", setOptions(map[string]string{recordlayer.IndexOptionHNSWEfRepair: "3"})},
+		{"RaBitQ with statsThreshold 5", setOptions(map[string]string{recordlayer.IndexOptionHNSWUseRaBitQ: "true", recordlayer.IndexOptionHNSWStatsThreshold: "5"})},
+		{"RaBitQ with 16 extra bits", setOptions(map[string]string{recordlayer.IndexOptionHNSWUseRaBitQ: "true", recordlayer.IndexOptionHNSWRaBitQNumExBits: "16"})},
+		{"RaBitQ with 9 extra bits", setOptions(map[string]string{recordlayer.IndexOptionHNSWUseRaBitQ: "true", recordlayer.IndexOptionHNSWRaBitQNumExBits: "9"})},
+		{"16 extra bits with RaBitQ off", setOptions(map[string]string{recordlayer.IndexOptionHNSWRaBitQNumExBits: "16"})},
+		{"maxNumConcurrentDeleteFromLayer 11", setOptions(map[string]string{recordlayer.IndexOptionHNSWMaxNumConcurrentDeleteFromLayer: "11"})},
+		{"the metric under both names", setOptions(map[string]string{"vectorMetric": "EUCLIDEAN_SQUARE_METRIC"})},
+		{"the dimension count under both names", setOptions(map[string]string{"vectorNumDimensions": "3"})},
+		{"no dimension count under either name", func(ix *gen.Index) { dropOption(ix, recordlayer.IndexOptionVectorNumDimensions) }},
 	} {
-		It(c.name, func() { expectWindowedVerdictAsJava(c.name, windowedEdited(c.edit)) })
+		It(c.name, func() {
+			expectWindowedVerdictAsJava(c.name, windowedEdited(c.edit))
+		})
 	}
 })
 
-// windowedEdited is the demo meta-data with a windowed VECTOR index "w" on
-// Order that Java builds (the sliding-window conformance shape), its Index
-// message edited by edit.
+// setOptions sets each option of an index proto, replacing its value when it is
+// set.
+func setOptions(opts map[string]string) func(*gen.Index) {
+	return func(ix *gen.Index) {
+		for k, v := range opts {
+			set := false
+			for _, o := range ix.Options {
+				if o.GetKey() == k {
+					o.Value, set = proto.String(v), true
+				}
+			}
+			if !set {
+				ix.Options = append(ix.Options, &gen.Index_Option{Key: proto.String(k), Value: proto.String(v)})
+			}
+		}
+	}
+}
+
+// dropOption removes an option from an index proto.
+func dropOption(ix *gen.Index, key string) {
+	kept := ix.Options[:0]
+	for _, o := range ix.Options {
+		if o.GetKey() != key {
+			kept = append(kept, o)
+		}
+	}
+	ix.Options = kept
+}
+
 func windowedEdited(edit func(*gen.Index)) *gen.MetaData {
 	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
@@ -1271,9 +1508,8 @@ func expectWindowedVerdictAsJava(label string, p *gen.MetaData) {
 		case "java.lang.IllegalArgumentException":
 			var iae *recordlayer.IllegalArgumentError
 			Expect(errors.As(e.Cause, &iae)).To(BeTrue(), "Go cause: %T %v", e.Cause, e.Cause)
-			if strings.HasPrefix(java.CauseError, "No enum constant ") {
-				Expect(iae.Message).To(Equal(java.CauseError), "the metric refusal's text")
-			}
+			// Metric.valueOf's text and Config's checks' texts are Java's.
+			Expect(iae.Message).To(Equal(java.CauseError), "the refusal's text")
 		case "":
 			Expect(e.Cause).To(BeNil(), "Java's exception has no cause")
 		default:
@@ -1295,7 +1531,8 @@ func expectWindowedVerdictAsJava(label string, p *gen.MetaData) {
 // all primary keys led by the record type key), mark the index on Order
 // disabled, build it without marking it readable, and the index's range-set
 // key-value pairs are equal. Java presets the range of the index's record types
-// before any build, one target or several (OnlineIndexer.java:302-314,
+// before any records-scan build, one target or several (a BY_INDEX build of one
+// target does not preset; OnlineIndexer.java:302-314,
 // IndexingMultiTargetByRecords.java:120), ordering record type key tuples with
 // Tuple.compareTo (IndexingCommon.computeRecordsRange), a string key included.
 var _ = Describe("The online build of one index presets its record types' range as Java does", func() {

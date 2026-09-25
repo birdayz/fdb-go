@@ -31,6 +31,7 @@ go_library(
         "fht_kac_rotator.go",
         "hnsw.go",
         "hnsw_distance_bytes.go",
+        "hnsw_options.go",
         "hnsw_stats.go",
         "hnsw_vector.go",
         "index.go",

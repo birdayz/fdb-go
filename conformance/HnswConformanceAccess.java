@@ -28,6 +28,15 @@ public final class HnswConformanceAccess {
         out.put("statsThreshold", config.statsThreshold());
         out.put("sampleVectorStatsProbability", config.sampleVectorStatsProbability());
         out.put("maintainStatsProbability", config.maintainStatsProbability());
+        out.put("metric", config.metric().name());
+        out.put("useInlining", config.useInlining());
+        out.put("extendCandidates", config.extendCandidates());
+        out.put("keepPrunedConnections", config.keepPrunedConnections());
+        out.put("useRaBitQ", config.useRaBitQ());
+        out.put("raBitQNumExBits", config.raBitQNumExBits());
+        out.put("maxNumConcurrentNodeFetches", config.maxNumConcurrentNodeFetches());
+        out.put("maxNumConcurrentNeighborhoodFetches", config.maxNumConcurrentNeighborhoodFetches());
+        out.put("maxNumConcurrentDeleteFromLayer", config.maxNumConcurrentDeleteFromLayer());
         return out;
     }
 }

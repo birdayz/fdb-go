@@ -30,6 +30,8 @@ import (
 	"math/bits"
 	"sort"
 
+	"fdb.dev/pkg/rabitq"
+
 	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -91,41 +93,15 @@ type HNSWConfig struct {
 	MaxNumConcurrentDeleteFromLayer     int // (0, 10], default 2  — layer deletion parallelism in Java
 }
 
-// ValidateHNSWConfig validates the HNSW configuration.
-// Matches Java's Config validation.
+// ValidateHNSWConfig is Java's Config constructor checks (Config.java:93-120)
+// over c, with Java's texts (hnswConfigChecks); the RaBitQ checks apply when c
+// has a RaBitQ quantizer.
 func ValidateHNSWConfig(c HNSWConfig) error {
-	if c.NumDimensions < 1 {
-		return fmt.Errorf("hnsw: numDimensions must be >= 1, got %d", c.NumDimensions)
+	useRaBitQ, bits := false, 0
+	if q, ok := c.Quantizer.(*rabitq.Quantizer); ok && q != nil {
+		useRaBitQ, bits = true, q.NumExBits()
 	}
-	if c.M < 4 || c.M > 200 {
-		return fmt.Errorf("hnsw: m must be in [4, 200], got %d", c.M)
-	}
-	if c.MMax < 4 || c.MMax > 200 {
-		return fmt.Errorf("hnsw: mMax must be in [4, 200], got %d", c.MMax)
-	}
-	if c.MMax0 < 4 || c.MMax0 > 300 {
-		return fmt.Errorf("hnsw: mMax0 must be in [4, 300], got %d", c.MMax0)
-	}
-	if c.EfConstruction < 100 || c.EfConstruction > 400 {
-		return fmt.Errorf("hnsw: efConstruction must be in [100, 400], got %d", c.EfConstruction)
-	}
-	// Cross-field invariants — Java Config constructor (Config.java:88-92):
-	//   Preconditions.checkArgument(m <= mMax, ...)
-	//   Preconditions.checkArgument(mMax <= mMax0, ...)
-	//   Preconditions.checkArgument(efRepair >= m && efRepair <= 400, ...)
-	if c.M > c.MMax {
-		return fmt.Errorf("hnsw: m (%d) must be <= mMax (%d)", c.M, c.MMax)
-	}
-	if c.MMax > c.MMax0 {
-		return fmt.Errorf("hnsw: mMax (%d) must be <= mMax0 (%d)", c.MMax, c.MMax0)
-	}
-	if c.EfRepair < c.M || c.EfRepair > 400 {
-		return fmt.Errorf("hnsw: efRepair must be in [m, 400] = [%d, 400], got %d", c.M, c.EfRepair)
-	}
-	if c.Quantizer != nil && c.StatsThreshold <= 10 {
-		return fmt.Errorf("hnsw: statThreshold out of range")
-	}
-	return nil
+	return hnswConfigChecks(c, useRaBitQ, bits)
 }
 
 // DefaultHNSWConfig returns a default HNSW configuration.

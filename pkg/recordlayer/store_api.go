@@ -387,8 +387,10 @@ func (store *FDBRecordStore) DryRunSaveRecord(
 	// STRICTER than Java (rejecting a preview Java allows). DryRunDeleteRecord already skips it
 	// for the same reason (Java line 1735). Pinned by TestFDB_DmlDryRun_LockedStorePreviews.
 
-	// Serialize directly into union wire format (no UnionDescriptor allocation)
-	data, err := serializeUnion(record, recordType)
+	// Serialize as the save would, over the stored record (a type holding a map
+	// is written in the stored record's map order), so the preview's sizes are
+	// the save's.
+	data, err := serializeUnionOver(record, recordType, store.storedRecordInner(oldValue, recordType))
 	if err != nil {
 		return nil, &RecordSerializationError{Cause: err}
 	}

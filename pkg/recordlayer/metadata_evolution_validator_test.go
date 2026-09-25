@@ -2613,14 +2613,14 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			old := buildMetaData(1, func(b *RecordMetaDataBuilder) {
 				idx := NewIndex("idx_vec", Field("price"))
 				idx.Type = IndexTypeVector
-				idx.Options = map[string]string{IndexOptionVectorMetric: "EUCLIDEAN"}
+				idx.Options = map[string]string{IndexOptionVectorMetric: "EUCLIDEAN_METRIC"}
 				b.AddIndex("Order", idx)
 			})
 
 			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
 				idx := NewIndex("idx_vec", Field("price"))
 				idx.Type = IndexTypeVector
-				idx.Options = map[string]string{IndexOptionVectorMetric: "COSINE"}
+				idx.Options = map[string]string{IndexOptionVectorMetric: "COSINE_METRIC"}
 				b.AddIndex("Order", idx)
 			})
 
@@ -2660,7 +2660,7 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			new := buildMetaData(2, func(b *RecordMetaDataBuilder) {
 				idx := NewIndex("idx_vec", Field("price"))
 				idx.Type = IndexTypeVector
-				idx.Options = map[string]string{IndexOptionHNSWM: "32"}
+				idx.Options = map[string]string{IndexOptionHNSWM: "32", IndexOptionHNSWMMax: "32"}
 				b.AddIndex("Order", idx)
 			})
 
@@ -2873,7 +2873,8 @@ func TestVectorOptionsComparedByEffectiveValue(t *testing.T) {
 		{"M changed", map[string]string{}, map[string]string{IndexOptionHNSWM: "8"}, IndexOptionHNSWM, true},
 		{"metric set to its default", map[string]string{}, map[string]string{IndexOptionVectorMetric: "EUCLIDEAN_METRIC"}, IndexOptionVectorMetric, false},
 		{"metric changed", map[string]string{}, map[string]string{IndexOptionVectorMetric: "COSINE_METRIC"}, IndexOptionVectorMetric, true},
-		{"an unrecognized metric beside the default", map[string]string{}, map[string]string{IndexOptionVectorMetric: "COSINE"}, IndexOptionVectorMetric, true},
+		{"a metric under its alias, the default", map[string]string{}, map[string]string{"vectorMetric": "EUCLIDEAN_METRIC"}, "vectorMetric", false},
+		{"a metric under its alias, changed", map[string]string{}, map[string]string{"vectorMetric": "COSINE_METRIC"}, "vectorMetric", true},
 		{"RaBitQ extra bits set to their default", map[string]string{}, map[string]string{IndexOptionHNSWRaBitQNumExBits: "4"}, IndexOptionHNSWRaBitQNumExBits, false},
 	} {
 		oldIdx := &Index{Name: "v", Type: IndexTypeVector, Options: c.old}
@@ -2887,6 +2888,15 @@ func TestVectorOptionsComparedByEffectiveValue(t *testing.T) {
 		case !c.refused && (err != nil || changed[c.option]):
 			t.Errorf("%s: %v (still changed: %t), want admitted and handled", c.name, err, changed[c.option])
 		}
+	}
+	// A metric no Metric constant names is Java's parse failure, Metric.valueOf's
+	// IllegalArgumentException, not taken for the default.
+	err := validateVectorIndexOptions(&Index{Name: "v", Type: IndexTypeVector, Options: map[string]string{}},
+		&Index{Name: "v", Type: IndexTypeVector, Options: map[string]string{IndexOptionVectorMetric: "COSINE"}},
+		map[string]bool{IndexOptionVectorMetric: true})
+	var iae *IllegalArgumentError
+	if !errors.As(err, &iae) || iae.Message != "No enum constant com.apple.foundationdb.linear.Metric.COSINE" {
+		t.Errorf("an unrecognized metric: %v, want Metric.valueOf's refusal", err)
 	}
 }
 

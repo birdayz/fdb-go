@@ -1394,7 +1394,7 @@ var _ = Describe("HNSW Inlining Storage", func() {
 				"hnswUseInlining":              "true",
 			},
 		}
-		config := parseHNSWConfig(idx)
+		config := mustParseHNSWConfig(idx)
 		Expect(config.UseInlining).To(BeTrue())
 		Expect(config.NumDimensions).To(Equal(128))
 
@@ -1406,7 +1406,7 @@ var _ = Describe("HNSW Inlining Storage", func() {
 				IndexOptionVectorNumDimensions: "128",
 			},
 		}
-		config2 := parseHNSWConfig(idx2)
+		config2 := mustParseHNSWConfig(idx2)
 		Expect(config2.UseInlining).To(BeFalse())
 	})
 
@@ -2008,12 +2008,14 @@ var _ = Describe("HNSW with RaBitQ", func() {
 			index := NewVectorIndex("threshold", Field("vector_data"), 4)
 			index.Options["hnswUseRaBitQ"] = "true"
 			index.Options[IndexOptionHNSWStatsThreshold] = fmt.Sprint(threshold)
-			parsed := parseHNSWConfig(index)
-			Expect(parsed.StatsThreshold).To(Equal(threshold))
+			parsed, err := parseHNSWConfig(index)
 			if threshold <= 10 {
-				Expect(ValidateHNSWConfig(parsed)).To(MatchError("hnsw: statThreshold out of range"))
-				Expect(ValidateHNSWConfig(config)).To(MatchError("hnsw: statThreshold out of range"))
+				// Config's check, Java's text, when the index is read.
+				Expect(err).To(MatchError("statThreshold out of range"))
+				Expect(ValidateHNSWConfig(config)).To(MatchError("statThreshold out of range"))
 			} else {
+				Expect(err).NotTo(HaveOccurred())
+				Expect(parsed.StatsThreshold).To(Equal(threshold))
 				Expect(ValidateHNSWConfig(config)).To(Succeed())
 			}
 		}
@@ -2053,7 +2055,7 @@ var _ = Describe("HNSW with RaBitQ", func() {
 				"hnswRaBitQNumExBits": "6",
 			},
 		}
-		config := parseHNSWConfig(idx)
+		config := mustParseHNSWConfig(idx)
 		Expect(config.Quantizer).NotTo(BeNil())
 		Expect(config.Quantizer.GetTypeByte()).To(Equal(byte(3)))
 		Expect(config.NumDimensions).To(Equal(32))
@@ -2065,22 +2067,33 @@ var _ = Describe("HNSW with RaBitQ", func() {
 			Type:    IndexTypeVector,
 			Options: map[string]string{},
 		}
-		config := parseHNSWConfig(idx)
+		config := mustParseHNSWConfig(idx)
 		Expect(config.Quantizer).To(BeNil())
 	})
 
-	It("parseHNSWConfig ignores invalid numExBits", func() {
-		idx := &Index{
-			Name: "test_vec",
-			Type: IndexTypeVector,
-			Options: map[string]string{
-				"hnswUseRaBitQ":       "true",
-				"hnswRaBitQNumExBits": "99",
-			},
+	// An extra-bit count Config refuses (outside 1 to 15) is refused as Java's
+	// Config refuses it, and one Config admits and Java's RaBitQuantizer does
+	// not (9 to 15) is refused where the maintainer makes the quantizer.
+	It("parseHNSWConfig refuses an extra-bit count Java refuses", func() {
+		for bits, want := range map[string]string{
+			"99": "raBitQNumExBits out of range",
+			"0":  "raBitQNumExBits out of range",
+			"9":  "RaBitQ encodes 1 to 8 extra bits",
+			"15": "RaBitQ encodes 1 to 8 extra bits",
+		} {
+			idx := &Index{
+				Name: "test_vec",
+				Type: IndexTypeVector,
+				Options: map[string]string{
+					"hnswUseRaBitQ":       "true",
+					"hnswRaBitQNumExBits": bits,
+				},
+			}
+			_, err := parseHNSWConfig(idx)
+			var iae *IllegalArgumentError
+			Expect(errors.As(err, &iae)).To(BeTrue(), "%s: %v", bits, err)
+			Expect(iae.Message).To(Equal(want), bits)
 		}
-		config := parseHNSWConfig(idx)
-		Expect(config.Quantizer).NotTo(BeNil())
-		// Out-of-range numExBits defaults to 4 inside the Quantizer
 	})
 
 	It("computeDistance handles both raw and RaBitQ vectors", func() {
@@ -2157,8 +2170,8 @@ var _ = Describe("VectorIndex Store Integration", func() {
 		ks := specSubspace()
 		// m=20 > default mMax=16 — a config Java's Config constructor rejects. The store
 		// must surface the error when it constructs the vector index maintainer, not
-		// silently build a bad graph. Revert-proof: drop the ValidateHNSWConfig call in
-		// newVectorIndexMaintainer and the save succeeds.
+		// silently build a bad graph. Revert-proof: drop Config's checks from
+		// readHNSWOptions and the save succeeds.
 		vecIdx := NewVectorIndex("vec_price_qty", Concat(Field("price"), Field("quantity")), 2)
 		vecIdx.Options[IndexOptionHNSWM] = "20"
 		builder := baseMetaData()
@@ -2176,7 +2189,7 @@ var _ = Describe("VectorIndex Store Integration", func() {
 			return nil, serr
 		})
 		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("m (20) must be <= mMax"))
+		Expect(err.Error()).To(ContainSubstring("m must be less than or equal to mMax"))
 	})
 
 	It("save records with int fields, SearchVectorIndex returns nearest", func() {
@@ -2821,7 +2834,7 @@ var _ = Describe("VectorIndex Store Integration", func() {
 		Expect(err).NotTo(HaveOccurred())
 		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store := open(rtx)
-			storage := newHNSWStorage(store.indexSubspace(index), parseHNSWConfig(index))
+			storage := newHNSWStorage(store.indexSubspace(index), mustParseHNSWConfig(index))
 			info, err := storage.loadAccessInfo(rtx.Transaction())
 			Expect(err).NotTo(HaveOccurred())
 			Expect(info.hasTransform()).To(BeTrue())
@@ -2877,7 +2890,7 @@ var _ = Describe("VectorIndex Store Integration", func() {
 		Expect(err).NotTo(HaveOccurred())
 		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store := open(rtx)
-			storage := newHNSWStorage(store.indexSubspace(index), parseHNSWConfig(index))
+			storage := newHNSWStorage(store.indexSubspace(index), mustParseHNSWConfig(index))
 			info, err := storage.loadAccessInfo(rtx.Transaction())
 			Expect(err).NotTo(HaveOccurred())
 			Expect(info.hasTransform()).To(BeTrue())
@@ -4203,7 +4216,7 @@ var _ = Describe("HNSW Extended Neighbor Selection", func() {
 				IndexOptionVectorKeepPrunedConnections: "true",
 			},
 		}
-		config := parseHNSWConfig(idx)
+		config := mustParseHNSWConfig(idx)
 		Expect(config.NumDimensions).To(Equal(64))
 		Expect(config.ExtendCandidates).To(BeTrue())
 		Expect(config.KeepPrunedConnections).To(BeTrue())
@@ -4215,7 +4228,7 @@ var _ = Describe("HNSW Extended Neighbor Selection", func() {
 				IndexOptionVectorNumDimensions: "32",
 			},
 		}
-		config2 := parseHNSWConfig(idx2)
+		config2 := mustParseHNSWConfig(idx2)
 		Expect(config2.ExtendCandidates).To(BeFalse())
 		Expect(config2.KeepPrunedConnections).To(BeFalse())
 
@@ -4227,7 +4240,7 @@ var _ = Describe("HNSW Extended Neighbor Selection", func() {
 				IndexOptionVectorKeepPrunedConnections: "false",
 			},
 		}
-		config3 := parseHNSWConfig(idx3)
+		config3 := mustParseHNSWConfig(idx3)
 		Expect(config3.ExtendCandidates).To(BeFalse())
 		Expect(config3.KeepPrunedConnections).To(BeFalse())
 	})
@@ -4248,7 +4261,7 @@ var _ = Describe("HNSW Extended Neighbor Selection", func() {
 				IndexOptionHNSWMaxNumConcurrentDeleteFromLayer:     "5",
 			},
 		}
-		config := parseHNSWConfig(idx)
+		config := mustParseHNSWConfig(idx)
 		Expect(config.MaxNumConcurrentNodeFetches).To(Equal(32))
 		Expect(config.MaxNumConcurrentNeighborhoodFetches).To(Equal(15))
 		Expect(config.MaxNumConcurrentDeleteFromLayer).To(Equal(5))
@@ -4259,37 +4272,41 @@ var _ = Describe("HNSW Extended Neighbor Selection", func() {
 			Name:    "test_vec_default_limits",
 			Options: map[string]string{},
 		}
-		config := parseHNSWConfig(idx)
+		config := mustParseHNSWConfig(idx)
 		Expect(config.MaxNumConcurrentNodeFetches).To(Equal(16))
 		Expect(config.MaxNumConcurrentNeighborhoodFetches).To(Equal(10))
 		Expect(config.MaxNumConcurrentDeleteFromLayer).To(Equal(2))
 	})
 
-	It("rejects out-of-range fetch limits and keeps defaults", func() {
-		idx := &Index{
-			Name: "test_vec_bad_limits",
-			Options: map[string]string{
-				IndexOptionHNSWMaxNumConcurrentNodeFetches:         "0",  // below min (must be > 0)
-				IndexOptionHNSWMaxNumConcurrentNeighborhoodFetches: "21", // above max (must be <= 20)
-				IndexOptionHNSWMaxNumConcurrentDeleteFromLayer:     "-1", // negative
-			},
+	// A limit Config refuses is refused, as Java's Config constructor refuses it
+	// (Config.java:114-120), in its order; none falls back to a default.
+	It("refuses out-of-range fetch limits as Java's Config does", func() {
+		for _, c := range []struct {
+			option, value, want string
+		}{
+			{IndexOptionHNSWMaxNumConcurrentNodeFetches, "0", "maxNumConcurrentNodeFetches must be (0, 64]"},
+			{IndexOptionHNSWMaxNumConcurrentNodeFetches, "65", "maxNumConcurrentNodeFetches must be (0, 64]"},
+			{IndexOptionHNSWMaxNumConcurrentNeighborhoodFetches, "21", "maxNumConcurrentNeighborhoodFetches must be (0, 20]"},
+			{IndexOptionHNSWMaxNumConcurrentDeleteFromLayer, "-1", "maxNumConcurrentDeleteFromLayer must be (0, 10]"},
+		} {
+			_, err := parseHNSWConfig(&Index{Name: "test_vec_bad_limits", Options: map[string]string{c.option: c.value}})
+			var iae *IllegalArgumentError
+			Expect(errors.As(err, &iae)).To(BeTrue(), "%s=%s: %v", c.option, c.value, err)
+			Expect(iae.Message).To(Equal(c.want))
 		}
-		config := parseHNSWConfig(idx)
-		// Out-of-range values should leave defaults unchanged.
-		Expect(config.MaxNumConcurrentNodeFetches).To(Equal(16))
-		Expect(config.MaxNumConcurrentNeighborhoodFetches).To(Equal(10))
-		Expect(config.MaxNumConcurrentDeleteFromLayer).To(Equal(2))
 	})
 
-	It("rejects non-numeric fetch limit values and keeps defaults", func() {
+	It("refuses a non-numeric fetch limit with Integer.parseInt's text", func() {
 		idx := &Index{
 			Name: "test_vec_nonnumeric_limits",
 			Options: map[string]string{
 				IndexOptionHNSWMaxNumConcurrentNodeFetches: "abc",
 			},
 		}
-		config := parseHNSWConfig(idx)
-		Expect(config.MaxNumConcurrentNodeFetches).To(Equal(16))
+		_, err := parseHNSWConfig(idx)
+		var nfe *NumberFormatError
+		Expect(errors.As(err, &nfe)).To(BeTrue(), "%v", err)
+		Expect(nfe.Error()).To(Equal(`For input string: "abc"`))
 	})
 
 	It("accepts boundary fetch limit values", func() {
@@ -4301,7 +4318,7 @@ var _ = Describe("HNSW Extended Neighbor Selection", func() {
 				IndexOptionHNSWMaxNumConcurrentDeleteFromLayer:     "10", // max valid
 			},
 		}
-		config := parseHNSWConfig(idx)
+		config := mustParseHNSWConfig(idx)
 		Expect(config.MaxNumConcurrentNodeFetches).To(Equal(64))
 		Expect(config.MaxNumConcurrentNeighborhoodFetches).To(Equal(1))
 		Expect(config.MaxNumConcurrentDeleteFromLayer).To(Equal(10))
@@ -4690,4 +4707,11 @@ func spanPKInt(span []byte) int64 {
 		panic(err)
 	}
 	return pk[0].(int64)
+}
+
+// mustParseHNSWConfig is parseHNSWConfig for an index whose options parse.
+func mustParseHNSWConfig(index *Index) HNSWConfig {
+	config, err := parseHNSWConfig(index)
+	Expect(err).NotTo(HaveOccurred())
+	return config
 }

@@ -214,7 +214,7 @@ var _ = Describe("Union identity persistence", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(proto.Equal(decoded, loaded.Record)).To(BeTrue())
 			}
-			wire, err := serializeUnion(loaded.Record, rt)
+			wire, err := serializeUnionOver(loaded.Record, rt, nil)
 			Expect(err).NotTo(HaveOccurred())
 			tag, _, n := protowire.ConsumeTag(wire)
 			Expect(n).To(BeNumerically(">", 0))

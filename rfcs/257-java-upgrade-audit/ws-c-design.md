@@ -1527,7 +1527,8 @@ of 7.8's class: claims wider than the code.
   present, the empty string included, with Java's MetaDataException, at build and in the check.
   The vector options' parsing (their `vector*` aliases, `vectorEngine`, Java's metric names and
   booleans) is WS-D's typed option catalog (ws-d-design.md, the catalog paragraph); 7.8's vector
-  claim holds for the `hnsw*` canonical names only.
+  claim holds for the `hnsw*` canonical names only [Superseded → 7.16: the HNSW reader is Java's
+  parseConfig, aliases, booleans, metric names and Config checks; the engine selector stays WS-D's].
 
 **Measured on both engines** (`wsc-v9/conf*.log`): the Describe "Index option changes in meta-data
 evolution" (30 option changes through Java's validator and Go's; same class, Java's whole message
@@ -2448,7 +2449,9 @@ find every revision-12 finding resolved. Revision 14 lands on the migration bran
 
 **No process-wide cache (graefe 1, Medium; torvalds 2).** Whether a record type can hold a map is
 now a `RecordType` field computed once at `Build` (`reachesMap`), as `unionFieldNumber` is; a walk
-over a record's bytes memoizes nested types for that walk only (`mapReach`, a value, never global).
+over a record's bytes memoizes nested types for that walk only (`mapReach`, a value, never global)
+[Superseded → 7.15/7.16: one reach per meta-data, computed at Build, and one per walk for a
+message of other descriptors].
 The `sync.Map` keyed by descriptor, which kept every loaded meta-data's descriptor graph alive, is
 gone.
 
@@ -2509,7 +2512,8 @@ every records-scan build; the range sets are equal, red on `529753bf6` for both 
 - `GetTypedRecordStore`'s unknown type is Java's text; the typed store's record copies carry the
   wire.
 - A oneof whose members both occur in a record's bytes: the entries read back are the surviving
-  member's from its last switch on (`oneofSurvivors`), as the decoder keeps them; the record no
+  member's from its last switch on (`oneofSurvivors`) [Superseded → 7.15: an occurrence with another
+  wire type is no switch], as the decoder keeps them; the record no
   longer falls back to key order. `TestMapEntriesOfAOneofMemberAreTheSurvivingOccurrences`.
 - A generated record type with a map through the store: google.protobuf.Struct as a record type,
   its stored bytes out of key order, read through `LoadRecord` and the record cursor, top-level and
@@ -2542,7 +2546,8 @@ Revision 14's gate (`ws-c-addendum-review-v14/`, commit `1bc97d6af`) returned th
 14). No finding reopens a revision-12 to -14 fix. Revision 15 lands on the migration branch on top of
 `5d95cd27c` (WS-J step 2); the 7.14 sentences it changes are marked [Superseded → 7.15].
 
-**The maintainer reads the options as the validator does (storage 1, Medium; torvalds 1).** Revision
+**The maintainer reads the options as the validator does (storage 1, Medium; torvalds 1)** [Superseded
+→ 7.16: it read the spellings as Java does, not Java's ranges, aliases or booleans]. Revision
 14 had the windowed validator accept Java's spellings while `parseHNSWConfig` still read them with
 `fmt.Sscanf` and fell back to a default, so `hnswM=８` built (Java: 8) and was maintained with 16.
 `parseHNSWConfig` now reads every integer and double option with `javaParseInt` and
@@ -2562,12 +2567,15 @@ entry stored without a value back with its default (`k=0`), so its entries are r
 `marshalMapRecord` now writes each map that way (`rewriteMaps`, `mergeMapEntries`,
 `record_wire_map_order.go`): the stored entries in their order; for a key whose value is unchanged
 (its canonical bytes equal the stored last value's), every stored entry of it, each re-encoded with
-its key and its own value (`canonicalEntry`), that value's maps in its own stored order; a changed key
+its key and its own value (`canonicalEntry`; [Superseded → 7.16: a proto3 zero key or value was
+dropped]), that value's maps in its own stored order; a changed key
 once, in its first stored position, its value's maps in the order of the stored last value; new keys
 after, in key order. The recursion walks the stored bytes beside the new ones: a singular message
 field against the concatenation of its kept occurrences (bytes concatenated parse as the merge), a
 map value against the stored entry it replaces, a repeated element against the stored element with
-its content (below). The spec now requires Go's re-saved records to equal Java's byte for byte, both
+its content (below). The spec now requires Go's re-saved records to equal Java's byte for byte [Superseded
+→ 7.16: for its proto2, oneof-free records; field order differs where a oneof member precedes a
+later field], both
 indexes to stay Java's six pairs (the dropped `x` entry of revision 14 is kept), and the stored keys
 `{1: [b a], 2: [x y x], 3: [k j]}`; red on `5d95cd27c` (the bytes differ at record 2). DIVERGENCES
 gains an entry for what stays Go's: the order of a map Go's caller changed or built (a changed key at
@@ -2590,7 +2598,8 @@ its own order) and changed (once, in the last value's order; red on `5d95cd27c`)
 message and maps in map values (green on both: those arms existed, and now have re-save tests,
 torvalds 4 and the graefe nit).
 
-**A repeated element is matched by content (storage 3).** Revision 14 matched the i-th element with
+**A repeated element is matched by content (storage 3)** [Superseded → 7.16: along a longest common
+subsequence, then by content in order]. Revision 14 matched the i-th element with
 the stored i-th, so an insertion or a removal gave an unchanged element another's order. An element
 now takes the first unclaimed stored element with its content (`elementPriors`), which for an
 unchanged element is its own, as Java's element keeps its own order; an element with no stored equal
@@ -2640,4 +2649,72 @@ files and the Java steps, with two adapters its TREE note names (the old `serial
 union bytes, and `HNSWConfigOf` is a one-line accessor); `wsc15-red-first` is an earlier state of the
 same run. Green: a verbose run of the changed specs on the committed tree, after the commit, and the
 pre-commit hook's full suite, both listed in the gate's prompt. Mutation runs: two (above).
+
+### 7.16 Revision 16: Java's parseConfig, whole; entries written whatever their value; elements matched in order
+
+Revision 15's gate (`ws-c-addendum-review-v15/`, commit `1c6059b91`) returned three NAKs: Graefe (one
+Medium, two Lows), Torvalds (one Medium, five Lows) and storage (four Lows). Every v14 finding is
+resolved; no revision-12 to -15 fix is undone. Revision 16 lands on top of `8e515423b` (WS-J v17's
+code half); the 7.14 and 7.15 sentences it changes are marked [Superseded → 7.16].
+
+**The HNSW configuration is Java's `parseConfig`, whole (graefe 1, Medium; torvalds 1, Medium; storage
+4; torvalds 4).** Revision 15 read the options' spellings as Java does and kept Go's own ranges, so
+the validator admitted `hnswM=150` (Java: m 150) and the maintainer built with 16; the evolution
+check still read the RaBitQ bit count with `Sscanf`; the `vector*` aliases and `Boolean.parseBoolean`
+were not read. One reader, `readHNSWOptions` (`hnsw_options.go`), is now the port of
+`HnswVectorIndexEngine.parseConfig` (:186-206): in its order, each shared option under its `vector*`
+alias when its `hnsw*` name is absent (VectorIndexOptionKeys.java:59-73), `Integer::parseInt`,
+`Double::parseDouble`, `Boolean::parseBoolean`, `Metric::valueOf`, Config's defaults, and then
+Config's constructor checks with their texts (Config.java:93-120). The windowed validator is Java's
+`VectorIndexHelper.validate`: the alias-conflict refusal first (a MetaDataError), then the reader, an
+IllegalArgumentException of it (a NumberFormatException included) under "incorrect index options".
+The maintainer (`parseHNSWConfig`) and the evolution check read with the same reader, so a
+configuration Java refuses fails the maintainer instead of taking a default, and the evolution check
+compares the RaBitQ count, the metric and the switch as parsed (a key covers its alias there too).
+RaBitQ with 9 to 15 bits, which Config admits and Java's `RaBitQuantizer` refuses when the index is
+maintained (RaBitQuantizer.java:76), is refused where Go's maintainer makes its quantizer, not
+silently encoded with 4 (`rabitq.NewQuantizer` clamped). A plain VECTOR index keeps two Go forms, the
+lower-case metric names and 128 dimensions when none are given, until WS-D. JVM specs: "options are
+read as Java reads them" now compares the WHOLE configuration (metric, booleans, RaBitQ, limits;
+`HnswConformanceAccess` reports them), with rows for m 150, the metric and the dimension count under
+their aliases, booleans in upper case and RaBitQ under its aliases, and the limits at their bounds;
+"configuration is checked as Java's Config checks it", 13 rows (efConstruction 50, m 20 above the
+default mMax, m 3, mMax0 301, efRepair below m, RaBitQ with a threshold of 5 and with 16 bits refused;
+9 bits and 16 bits with RaBitQ off admitted; a limit out of range; an option under both names; no
+dimension count). The IllegalArgumentException's text is now compared on every refusal.
+
+**An entry is written whatever its value (graefe 3, storage 1, torvalds 3b).** `canonicalEntry`
+marshalled the entry as a message, which drops a proto3 zero key or value for want of presence; it now
+writes the key and the value field by field (`appendEntryField`), as Java's MapEntry and protobuf-go's
+map marshal do. `TestSerializeUnionOverKeepsAProto3EntrysZeroKeyAndValue`.
+
+**"Byte for byte" scoped (graefe 2, storage 2, torvalds 3a and 3c).** protobuf-go's deterministic
+marshal writes a oneof member after the other fields (and an extension first); Java writes field-
+number order. The claims now say map entries, and DIVERGENCES' map-order entry declares the field
+order (and unknown fields' order, not measured). A new JVM spec, "A record re-saved unchanged is
+written as Java's load-then-save writes it", re-saves in both engines a proto3 record with a zero
+value, an empty key, a key written twice with message values in different nested orders and a map in
+a map value, byte for byte equal, and a record with a oneof member numbered below its maps, equal
+but for that member's position, which the spec computes from Java's bytes; each from Java's first
+save and from the raw bytes (torvalds 5: the raw path now meets an entry stored without a value in
+the wire-order spec too).
+
+**Elements matched along the list (storage 3, torvalds 2).** `elementPriors` pairs current and stored
+elements along a longest common subsequence of their contents (on a tie passing over the current
+element, so an element keeps the stored one at its own position when it can), then by content in
+order for the elements the subsequence leaves out (a swap), then by position; past 2^20 table cells,
+by content in order. Subtests: two equal elements after an insertion (each keeps its own order), the
+first replaced by an element equal to the second (the second keeps its own), and the earlier insert,
+removal and swap.
+
+**Nits.** `DryRunSaveRecord` serializes over the stored record, as the save does. A walk over a message
+whose descriptors are not the meta-data's computes one reach for that walk (`marshalMapRecord`,
+`recordWire`), not a closure per lookup. The preset comment says "records-scan build". 7.14's
+"memoizes nested types for that walk only" and the oneof "last switch" nit are marked.
+
+**Evidence.** Red: on `fdb-wsc10` at `8e515423b`'s tree plus the changed test files, the Java steps
+and an adapter for `HNSWConfigOf`'s new signature (`evidence/wsc16-red`, its TREE note). Green: a
+verbose run of the changed specs after the commit (`evidence/wsc16-green-commit`) and the pre-commit
+hook. Mutation runs: none this revision; revision 15's two are recorded with the mutated lines in
+`evidence/wsc15-mutation/README`.
 

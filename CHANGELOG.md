@@ -433,12 +433,15 @@ assets carry (`RELEASE.md` §Versioning).
   written twice with both its entries while its value is unchanged, each entry with its key and its
   value (a stored entry without a value is written with the default, as Java writes it); a changed
   key once, in its first position; new keys after, in key order; a new record's maps in key order.
-  It is indexed in the order written, so a record Java wrote that Go loads and saves unchanged is
-  stored byte for byte as Java's own load-then-save stores it, and neither engine's index changes
-  (JVM spec). The stored entries are read from whichever of the type's union fields holds the stored
-  record, and maps below the top level (in a message, in a map's values, in a repeated field's
-  elements, each matched to the stored element with the same content) are written the same way. vtproto's marshal, which
-  writes a map in Go's random order, is no longer used for such a type.
+  It is indexed in the order written, so a record Java wrote that Go loads and saves unchanged keeps
+  its map entries as Java's own load-then-save writes them, and neither engine's index changes; its
+  bytes are Java's but for field order, where protobuf-go writes a oneof member after the other
+  fields and Java in field-number order (JVM specs; DIVERGENCES.md). An entry's key and value are
+  written whatever their value, a proto3 zero included. The stored entries are read from whichever
+  of the type's union fields holds the stored record, and maps below the top level (in a message, in
+  a map's values, in a repeated field's elements, matched to the stored elements by content in list
+  order) are written the same way. vtproto's marshal, which writes a map in Go's random order, is no
+  longer used for such a type. A dry-run save previews those bytes.
 - **Key validation Java makes at build, Go makes** (RFC-257 WS-C): a MULTIDIMENSIONAL index's
   dimension columns must be protobuf `int64` ("the declared dimension columns have to be of type
   INT64"), so meta-data with dimensions over `int32` fields no longer builds; the prefix and
@@ -470,7 +473,15 @@ assets carry (`RELEASE.md` §Versioning).
   point is refused with Java's text, "multiple points". A windowed vector index's metric is one of
   Java's four `Metric` names; the lower-case aliases Go also read (`cosine`, `inner_product`,
   `euclidean`) are refused as Java's `Metric.valueOf` refuses them, its "No enum constant" text the
-  cause. A row-number window under a disjunction is Java's `RecordCoreError`, not a `MetaDataError`.
+  cause. The VECTOR maintainer and the windowed validator read the HNSW configuration as Java's
+  `HnswVectorIndexEngine.parseConfig` does: each shared option under its `vector*` alias when its
+  `hnsw*` name is absent, an option under both names refused, booleans as `Boolean.parseBoolean`
+  (any case), and Java's `Config` checks with their texts (`m` in 4 to 200, `m <= mMax <= mMax0`,
+  `efConstruction` in 100 to 400, ...), where Go's maintainer silently took a default for a value
+  outside its own ranges (it maintained `hnswM=150` with 16). A value that does not parse, a
+  metric no constant names, or a configuration `Config` refuses now fails the maintainer rather
+  than being replaced by a default; so does RaBitQ with more than 8 extra bits, which Java's
+  quantizer refuses. A row-number window under a disjunction is Java's `RecordCoreError`, not a `MetaDataError`.
 - A literal key column holding an `int_value` (`Literal(int32(n))`, the width Go's DDL now writes,
   as Java's) is maintained as the integer Java writes; it panicked in the tuple encoder on the
   first save.

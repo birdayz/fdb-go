@@ -2110,26 +2110,29 @@ delegate call Java's `SlidingWindowIndexValidator` ends with —
 `validateVectorIndexOptionsAtBuild` in `vector_index_validation.go`, called from
 `validateIndex` after `validateSlidingWindowIndex` for a windowed index. A plain
 VECTOR index runs no validator half at `Build`: `validateIndexType` has no VECTOR
-arm. Its integer and double options parse as Java's `VectorOptionKey` parses them
-(`Integer::parseInt`, `Double::parseDouble`; Go's `javaParseInt` and
-`javaParseDouble`), and its refusal is Java's: `MetaDataError` "incorrect index
-options" with the parse failure as its cause (`Unwrap`, a `NumberFormatError` with
-Java's text), and "need to specify the number of dimensions" for a missing count
-(the JVM specs "A windowed VECTOR index's options parse as Java parses them" and
-"A windowed VECTOR index is validated as Java validates it"). The maintainer's
-`parseHNSWConfig` reads the options with the same two parsers, so a value both
-engines accept is the same number to the index Go maintains as to Java's
-`HnswVectorIndexEngine` (the JVM spec "A windowed VECTOR index's options are read
-as Java reads them" compares the configuration each engine reads); a value that
-does not parse or is out of range still falls back to a default there, the
-permissive half above. The metric is one of
-the four `Metric` constants' names, as `Metric::valueOf` reads it, and any other
-name, `parseHNSWConfig`'s lower-case aliases included, is refused with
-`Enum.valueOf`'s "No enum constant" text as the cause (JVM rows); a plain VECTOR
-index still takes the aliases, until WS-D. Two differences remain until WS-D: a
-dimension count below one has an `IllegalArgumentError` cause whose text is Go's;
-and which options it checks is Go's list, not Java's engine-aware parse
-(`VectorIndexEngine.validate`, with its alias conflicts).
+arm. It is Java's `VectorIndexHelper.validate` for an HNSW index: an option set
+under both its `hnsw*` name and its `vector*` alias is refused ("vector index option
+specified under more than one name"), and the configuration is parsed as
+`HnswVectorIndexEngine.parseConfig` parses it (`readHNSWOptions`, `hnsw_options.go`):
+each shared option under its alias when its name is absent, `Integer::parseInt`,
+`Double::parseDouble`, `Boolean::parseBoolean` and `Metric::valueOf` (Go's
+`javaParseInt` and `javaParseDouble`; any case of `true`; the four constants' names),
+and `Config`'s constructor checks with their texts. A parse or check failure is
+`MetaDataError` "incorrect index options" with it as the cause (`Unwrap`, a
+`NumberFormatError` or an `IllegalArgumentError` with Java's text), and a missing
+count "need to specify the number of dimensions" (the JVM specs "A windowed VECTOR
+index's options parse as Java parses them", "... is validated as Java validates it"
+and "... configuration is checked as Java's Config checks it"). The maintainer reads
+with the same reader (`parseHNSWConfig`), so the configuration Go maintains is the one
+Java's engine reads (the JVM spec "A windowed VECTOR index's options are read as Java
+reads them" compares the whole configuration), and a configuration Java refuses fails
+the maintainer instead of taking a default. RaBitQ with 9 to 15 extra bits, which
+`Config` admits and Java's `RaBitQuantizer` refuses when the index is maintained, is
+refused where Go's maintainer makes its quantizer. For a PLAIN vector index the
+maintainer also takes two Go forms, the lower-case metric names (`cosine`,
+`inner_product`, `euclidean`) and 128 dimensions when none are given, which the
+windowed validator refuses, until WS-D. Not covered, WS-D's: the engine selector
+(`vectorEngine`; Go maintains HNSW only) and Java's structure half.
 
 **What is open, and why it is an owner call rather than a deferral:** applying
 the same validation to PLAIN vector indexes was implemented and MEASURED, and it
@@ -3215,18 +3218,27 @@ exhausts the planner's task budget (ws-e-design.md 4.1(b)).
 Java's default serializer (`DynamicMessageRecordSerializer`) reads a stored record as a
 DynamicMessage, whose map field is the list of its entries in stored order, a key written twice
 included, and a load-then-save writes that list back, each entry re-encoded with its key and its
-value. Go's load-then-save writes the same bytes: the JVM spec "Map entries are maintained in the
-record's wire order" compares the stored records of both engines' re-saves byte for byte, and both
-indexes are unchanged (`rewriteMaps`, `record_wire_map_order.go`).
+value. Go's load-then-save writes the same map entries (`rewriteMaps`, `record_wire_map_order.go`):
+the JVM specs "Map entries are maintained in the record's wire order" and "A record re-saved
+unchanged is written as Java's load-then-save writes it" compare both engines' re-saves byte for
+byte (proto2 and proto3, zero keys and values, a key written twice with message values, maps in
+map values, raw bytes with an entry missing its value), and both indexes are unchanged. The bytes
+differ in FIELD ORDER only: protobuf-go's deterministic marshal writes a oneof member after the
+other fields (and an extension first), where Java writes fields in number order, which the second
+spec pins as the one difference; unknown fields stay in Go's stored order (Java's order for them
+is not measured). Both engines read either order as the same record.
 
 A Go map holds one value per key and has no insertion order, so where Go's caller CHANGED a map,
 or built the record, the order is Go's: a changed key is written once, in its first stored
 position; a new key follows the stored ones, in key order; a new record's maps are in key order.
-An element of a repeated message field is matched to the stored element with its content, so an
-unchanged element keeps its own order wherever the list moved it, as Java's does; a changed
-element takes the stored element at its position when no other element took that one, and
-otherwise writes its maps in key order, where Java's keeps its own: a Go message carries no
-identity across a load and a save.
+An element of a repeated message field is matched to the stored elements by content, along a
+longest common subsequence of the two lists and then by content in order (`elementPriors`), so an
+unchanged run keeps its own order however elements were inserted, removed, changed or swapped
+around it, as Java's does; a changed element takes the stored element at its position when no
+other element took that one, and otherwise writes its maps in key order, where Java's keeps its
+own. A Go message carries no identity across a load and a save, so equal elements reordered among
+themselves are matched in order, and a changed element that also moved cannot be told from a new
+one.
 In Java the order is whatever the caller built, a generated message's map in insertion order (a
 key written twice collapsed to its first position), a DynamicMessage's in list order. The
 difference is not a wire incompatibility: each engine indexes a record from the bytes it wrote,

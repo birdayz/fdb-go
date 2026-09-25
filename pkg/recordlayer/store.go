@@ -2147,16 +2147,12 @@ func (store *FDBRecordStore) AddUniquenessViolationWithExisting(index *Index, in
 	return nil
 }
 
-// serializeUnion marshals a record into the UnionDescriptor wire format without
-// allocating a UnionDescriptor struct. Writes: tag(fieldNum, LEN) + varint(len) + innerBytes.
-// Wire-compatible with Java's UnionDescriptor serialization.
-func serializeUnion(record proto.Message, recordType *RecordType) ([]byte, error) {
-	return serializeUnionOver(record, recordType, nil)
-}
-
-// serializeUnionOver is serializeUnion for a record that replaces a stored one
-// whose record bytes (inside the union) are priorInner, nil for a new record or
-// one of another type (storedRecordInner): a type that reaches a map field keeps
+// serializeUnionOver marshals a record into the UnionDescriptor wire format
+// without allocating a UnionDescriptor struct: tag(fieldNum, LEN) + varint(len)
+// + innerBytes, wire-compatible with Java's UnionDescriptor serialization. The
+// record replaces a stored one whose record bytes (inside the union) are
+// priorInner, nil for a new record or one of another type (storedRecordInner):
+// a type that reaches a map field keeps
 // each map in the order priorInner stored it (marshalMapRecord,
 // record_wire_map_order.go), and is never written with vtproto's MarshalVT,
 // whose map order is Go's random iteration order.

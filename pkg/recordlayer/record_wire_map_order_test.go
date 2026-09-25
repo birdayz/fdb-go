@@ -265,7 +265,7 @@ func TestSerializeUnionWritesMapEntriesInKeyOrder(t *testing.T) {
 	for _, k := range []string{"d", "b", "c", "a", "e"} {
 		m.Set(protoreflect.ValueOfString(k).MapKey(), protoreflect.ValueOfInt64(1))
 	}
-	out, err := serializeUnion(msg, testRecordType(rec))
+	out, err := serializeUnionOver(msg, testRecordType(rec), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,7 +283,7 @@ func TestSerializeUnionWritesMapEntriesInKeyOrder(t *testing.T) {
 	if want := []string{"a", "b", "c", "d", "e"}; !reflect.DeepEqual(keys, want) {
 		t.Fatalf("written keys %v, want %v", keys, want)
 	}
-	again, err := serializeUnion(msg, testRecordType(rec))
+	again, err := serializeUnionOver(msg, testRecordType(rec), nil)
 	if err != nil || !bytes.Equal(out, again) {
 		t.Fatalf("not byte-stable: %v", err)
 	}
@@ -313,11 +313,11 @@ func TestSerializeUnionDoesNotUseVTMarshalForAMapType(t *testing.T) {
 		m.Set(protoreflect.ValueOfString(k).MapKey(), protoreflect.ValueOfInt64(1))
 	}
 	rt := testRecordType(rec)
-	got, err := serializeUnion(vtMapRecord{msg}, rt)
+	got, err := serializeUnionOver(vtMapRecord{msg}, rt, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want, err := serializeUnion(msg, rt)
+	want, err := serializeUnionOver(msg, rt, nil)
 	if err != nil || !bytes.Equal(got, want) {
 		t.Fatalf("serialized %x, want %x (%v)", got, want, err)
 	}
@@ -469,6 +469,35 @@ func TestSerializeUnionOverKeepsTheStoredMapOrder(t *testing.T) {
 		}
 	})
 
+	// Two stored elements of equal content in different orders, and one inserted
+	// before them: each keeps its own order, matched in order.
+	t.Run("equal elements after an insertion", func(t *testing.T) {
+		t.Parallel()
+		holder := func(keys ...string) []byte {
+			return protowire.AppendBytes(protowire.AppendTag(nil, 3, protowire.BytesType), holderBytes(keys...))
+		}
+		inner := append(holder("z", "y"), holder("y", "z")...)
+		msg := dynamicpb.NewMessage(rec)
+		if err := proto.Unmarshal(inner, msg); err != nil {
+			t.Fatal(err)
+		}
+		list := msg.Mutable(rec.Fields().ByName("h")).List()
+		stored := []protoreflect.Message{list.Get(0).Message(), list.Get(1).Message()}
+		fresh := list.NewElement().Message()
+		fresh.Mutable(fresh.Descriptor().Fields().ByName("hm")).Map().Set(protoreflect.ValueOfString("n").MapKey(), protoreflect.ValueOfInt64(1))
+		list.Truncate(0)
+		for _, m := range append([]protoreflect.Message{fresh}, stored...) {
+			list.Append(protoreflect.ValueOfMessage(m))
+		}
+		out, err := serializeUnionOver(msg, rt, inner)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := writtenKeys(t, unionInner(out, 1), 3), []string{"n", "z", "y", "y", "z"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("written keys %v, want %v", got, want)
+		}
+	})
+
 	// An unchanged element keeps its own stored order wherever it moved in the
 	// list, as Java's element does: it is matched to the stored element with
 	// its content, not to the one at its position.
@@ -502,6 +531,14 @@ func TestSerializeUnionOverKeepsTheStoredMapOrder(t *testing.T) {
 				list.Set(0, protoreflect.ValueOfMessage(stored[1]))
 				list.Set(1, protoreflect.ValueOfMessage(stored[0]))
 			}, []string{"q", "p", "z", "y"}},
+			// The first replaced by an element equal to the second: the second
+			// keeps its own stored order, and the new first takes the replaced
+			// element's (no key in common, so key order).
+			{"the first replaced by the second's equal", func(list protoreflect.List, stored []protoreflect.Message) {
+				equal := list.NewElement().Message()
+				proto.Merge(equal.Interface(), stored[1].Interface())
+				list.Set(0, protoreflect.ValueOfMessage(equal))
+			}, []string{"p", "q", "q", "p"}},
 		} {
 			t.Run(c.name, func(t *testing.T) {
 				t.Parallel()
@@ -759,5 +796,56 @@ func TestMapEntriesOfAOneofSurviveAWrongWireTypeOccurrence(t *testing.T) {
 	got := evaluateTuples(t, NestFanOut("ha", NestFanOut("hm", Field("key"))), decoded)
 	if want := [][]any{{"z"}, {"y"}}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("%v, want %v (the stored order)", got, want)
+	}
+}
+
+// A proto3 map entry whose key or value is its type's zero is written back with
+// both fields, as Java's MapEntry and protobuf-go's map marshal write it: an
+// unchanged re-save keeps the stored bytes, where marshalling the entry as a
+// message would drop the zero, which has no presence in proto3.
+func TestSerializeUnionOverKeepsAProto3EntrysZeroKeyAndValue(t *testing.T) {
+	t.Parallel()
+	optional := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum()
+	field := func(name string, number int32, label *descriptorpb.FieldDescriptorProto_Label, typ descriptorpb.FieldDescriptorProto_Type, typeName string) *descriptorpb.FieldDescriptorProto {
+		f := &descriptorpb.FieldDescriptorProto{Name: proto.String(name), Number: proto.Int32(number), Label: label, Type: typ.Enum()}
+		if typeName != "" {
+			f.TypeName = proto.String(typeName)
+		}
+		return f
+	}
+	fd, err := protodesc.NewFile(&descriptorpb.FileDescriptorProto{
+		Name: proto.String("wire_map_order_p3.proto"), Package: proto.String("wiremap3"), Syntax: proto.String("proto3"),
+		MessageType: []*descriptorpb.DescriptorProto{{
+			Name: proto.String("Rec"),
+			Field: []*descriptorpb.FieldDescriptorProto{
+				field("id", 1, optional, descriptorpb.FieldDescriptorProto_TYPE_INT64, ""),
+				field("m", 2, descriptorpb.FieldDescriptorProto_LABEL_REPEATED.Enum(), descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, ".wiremap3.Rec.MEntry"),
+			},
+			NestedType: []*descriptorpb.DescriptorProto{{
+				Name: proto.String("MEntry"),
+				Field: []*descriptorpb.FieldDescriptorProto{
+					field("key", 1, optional, descriptorpb.FieldDescriptorProto_TYPE_STRING, ""),
+					field("value", 2, optional, descriptorpb.FieldDescriptorProto_TYPE_INT64, ""),
+				},
+				Options: &descriptorpb.MessageOptions{MapEntry: proto.Bool(true)},
+			}},
+		}},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := fd.Messages().ByName("Rec")
+	// {"b": 0}, {"": 5}, {"a": 0}: out of key order, a zero value, an empty key.
+	inner := append(append(mapEntryBytes(2, kv("b", 0)), mapEntryBytes(2, kv("", 5))...), mapEntryBytes(2, kv("a", 0))...)
+	msg := dynamicpb.NewMessage(rec)
+	if err := proto.Unmarshal(inner, msg); err != nil {
+		t.Fatal(err)
+	}
+	out, err := serializeUnionOver(msg, testRecordType(rec), inner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := unionInner(out, 1); !bytes.Equal(got, inner) {
+		t.Fatalf("written %x, want the stored %x", got, inner)
 	}
 }

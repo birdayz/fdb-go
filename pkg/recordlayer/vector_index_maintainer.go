@@ -11,7 +11,6 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen"
-	"fdb.dev/pkg/rabitq"
 )
 
 // IndexOptionVectorNumDimensions specifies the number of vector dimensions.
@@ -119,12 +118,12 @@ func newVectorIndexMaintainer(
 	tx fdb.WritableTransaction,
 	store indexStoreContext,
 ) (*vectorIndexMaintainer, error) {
-	config := parseHNSWConfig(index)
-	// Validate the config (ranges + cross-field invariants), matching Java's Config
-	// constructor which throws on an invalid config. Without this Go would silently build
-	// a graph from a config Java rejects — e.g. m > mMax (new node selects more than the
-	// pruning cap → churn) or efRepair < m.
-	if err := ValidateHNSWConfig(config); err != nil {
+	// The configuration as Java's parseConfig reads it, Config's checks
+	// included: a configuration Java refuses is refused here rather than built
+	// with Go's own reading (for example m > mMax, a new node selecting more
+	// neighbours than the pruning cap, or efRepair < m).
+	config, err := parseHNSWConfig(index)
+	if err != nil {
 		return nil, fmt.Errorf("vector index %q: %w", index.Name, err)
 	}
 	return &vectorIndexMaintainer{
@@ -136,107 +135,9 @@ func newVectorIndexMaintainer(
 }
 
 // HNSWConfigOf is the HNSW configuration a VECTOR index's options declare, as
-// the maintainer reads it: Java's HnswVectorIndexEngine.parseConfig.
-func HNSWConfigOf(index *Index) HNSWConfig { return parseHNSWConfig(index) }
-
-// parseHNSWConfig reads HNSW configuration from index options. Each integer and
-// double option is read with Java's parser (VectorOptionKey's Integer::parseInt
-// and Double::parseDouble; javaParseInt, javaParseDouble), the one the build-time
-// validator reads it with (validateVectorIndexOptionsAtBuild), so a value both
-// accept means the same number to both. What is out of a range, or does not
-// parse, falls back to the default here, where Java's builder refuses it: the
-// VECTOR validator's port is WS-D's (DIVERGENCES.md, the VECTOR entry).
-func parseHNSWConfig(index *Index) HNSWConfig {
-	optInt := func(key string) (int, bool) {
-		v, ok := index.Options[key]
-		if !ok {
-			return 0, false
-		}
-		n, err := javaParseInt(v)
-		return int(n), err == nil
-	}
-	optFloat := func(key string) (float64, bool) {
-		v, ok := index.Options[key]
-		if !ok {
-			return 0, false
-		}
-		f, err := javaParseDouble(v)
-		return f, err == nil
-	}
-	numDims := 128 // default
-	if n, ok := optInt(IndexOptionVectorNumDimensions); ok {
-		numDims = n
-	}
-	config := DefaultHNSWConfig(numDims)
-	if v, ok := index.Options[IndexOptionVectorMetric]; ok {
-		switch v {
-		case "COSINE_METRIC", "cosine":
-			config.Metric = VectorMetricCosine
-		case "DOT_PRODUCT_METRIC", "inner_product":
-			config.Metric = VectorMetricInnerProduct
-		case "EUCLIDEAN_SQUARE_METRIC":
-			// Squared L2 (no sqrt), not a true metric — matches Java's
-			// EUCLIDEAN_SQUARE_METRIC (MetricDefinition.EuclideanSquareMetric).
-			config.Metric = VectorMetricEuclideanSquare
-		default:
-			// EUCLIDEAN_METRIC (true L2, sqrt) and any other value default to Euclidean.
-			config.Metric = VectorMetricEuclidean
-		}
-	}
-	if v, ok := index.Options[IndexOptionVectorExtendCandidates]; ok {
-		config.ExtendCandidates = v == "true"
-	}
-	if v, ok := index.Options[IndexOptionVectorKeepPrunedConnections]; ok {
-		config.KeepPrunedConnections = v == "true"
-	}
-	if efRepair, ok := optInt("hnswEfRepair"); ok && efRepair >= 0 {
-		config.EfRepair = efRepair
-	}
-	if v, ok := index.Options["hnswUseInlining"]; ok {
-		config.UseInlining = v == "true"
-	}
-	if p, ok := optFloat(IndexOptionHNSWSampleVectorStatsProbability); ok && p > 0 && p <= 1 {
-		config.SampleVectorStatsProbability = p
-	}
-	if p, ok := optFloat(IndexOptionHNSWMaintainStatsProbability); ok && p > 0 && p <= 1 {
-		config.MaintainStatsProbability = p
-	}
-	if t, ok := optInt(IndexOptionHNSWStatsThreshold); ok {
-		config.StatsThreshold = t
-	}
-	if v, ok := index.Options["hnswUseRaBitQ"]; ok && v == "true" {
-		numExBits := 4
-		if n, ok := optInt("hnswRaBitQNumExBits"); ok && n >= 1 && n <= 8 {
-			numExBits = n
-		}
-		config.Quantizer = rabitq.NewQuantizer(rabitq.Metric(config.Metric), numExBits)
-	}
-	if m, ok := optInt(IndexOptionHNSWM); ok && m >= 2 && m <= 128 {
-		config.M = m
-	}
-	if mMax, ok := optInt(IndexOptionHNSWMMax); ok && mMax >= 2 && mMax <= 256 {
-		config.MMax = mMax
-	}
-	if mMax0, ok := optInt(IndexOptionHNSWMMax0); ok && mMax0 >= 2 && mMax0 <= 512 {
-		config.MMax0 = mMax0
-	}
-	if efConstruction, ok := optInt(IndexOptionHNSWEfConstruction); ok && efConstruction >= 1 && efConstruction <= 2000 {
-		config.EfConstruction = efConstruction
-	}
-	// Concurrency limits — stored for Java round-trip compatibility.
-	// Go's synchronous FDB model doesn't use these for concurrency control.
-	// Matches Java's IndexOptions.HNSW_MAX_NUM_CONCURRENT_NODE_FETCHES etc.
-	if n, ok := optInt(IndexOptionHNSWMaxNumConcurrentNodeFetches); ok && n > 0 && n <= 64 {
-		config.MaxNumConcurrentNodeFetches = n
-	}
-	if n, ok := optInt(IndexOptionHNSWMaxNumConcurrentNeighborhoodFetches); ok && n > 0 && n <= 20 {
-		config.MaxNumConcurrentNeighborhoodFetches = n
-	}
-	if n, ok := optInt(IndexOptionHNSWMaxNumConcurrentDeleteFromLayer); ok && n > 0 && n <= 10 {
-		config.MaxNumConcurrentDeleteFromLayer = n
-	}
-	return config
-}
+// the maintainer reads it (parseHNSWConfig): Java's
+// HnswVectorIndexEngine.parseConfig, with Go's forms for a plain VECTOR index.
+func HNSWConfigOf(index *Index) (HNSWConfig, error) { return parseHNSWConfig(index) }
 
 // getSubspaceForPrefix returns the HNSW subspace scoped to the given prefix.
 // If the prefix is empty (no grouping), returns the base hnswSubspace.

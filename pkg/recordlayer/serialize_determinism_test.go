@@ -83,7 +83,7 @@ func newDeterminismTestMessage(md protoreflect.MessageDescriptor) proto.Message 
 	return m
 }
 
-// unwrapUnionInner extracts the inner record bytes from a serializeUnion output
+// unwrapUnionInner extracts the inner record bytes from a serializeUnionOver output
 // (a single length-delimited field tagged with unionFieldNumber).
 func unwrapUnionInner(t *testing.T, union []byte, unionFieldNumber protowire.Number) []byte {
 	t.Helper()
@@ -174,7 +174,7 @@ func assertAscendingFields(t *testing.T, md protoreflect.MessageDescriptor, msg 
 	}
 }
 
-// TestSerializeUnion_DynamicMessageDeterministic pins the fix in serializeUnion:
+// TestSerializeUnion_DynamicMessageDeterministic pins the fix in serializeUnionOver:
 // the reflection slow path (hit only by *dynamicpb.Message — the SQL/relational
 // row shape, which has no MarshalVT/SizeVT fast path) must serialize a given
 // record to byte-identical output on every call and in ascending field-number
@@ -186,7 +186,7 @@ func TestSerializeUnion_DynamicMessageDeterministic(t *testing.T) {
 	md := buildDeterminismTestMessageDesc(t)
 
 	// Guard the premise: a *dynamicpb.Message must NOT satisfy the VT fast/slow
-	// paths, so serializeUnion truly exercises the deterministic reflection path
+	// paths, so serializeUnionOver truly exercises the deterministic reflection path
 	// under test. Generated protos implement these interfaces and never get here.
 	var probe proto.Message = dynamicpb.NewMessage(md)
 	if _, ok := probe.(interface {
@@ -202,12 +202,12 @@ func TestSerializeUnion_DynamicMessageDeterministic(t *testing.T) {
 	rt := &RecordType{Name: "Rec", unionFieldNumber: 1}
 
 	// First serialization is the reference.
-	first, err := serializeUnion(newDeterminismTestMessage(md), rt)
+	first, err := serializeUnionOver(newDeterminismTestMessage(md), rt, nil)
 	if err != nil {
-		t.Fatalf("serializeUnion: %v", err)
+		t.Fatalf("serializeUnionOver: %v", err)
 	}
 	if len(first) == 0 {
-		t.Fatalf("serializeUnion produced empty output")
+		t.Fatalf("serializeUnionOver produced empty output")
 	}
 
 	// The inner record bytes must be in ascending field-number order (which for
@@ -219,12 +219,12 @@ func TestSerializeUnion_DynamicMessageDeterministic(t *testing.T) {
 	// order, the source of the original nondeterminism).
 	const iterations = 256
 	for i := 0; i < iterations; i++ {
-		got, err := serializeUnion(newDeterminismTestMessage(md), rt)
+		got, err := serializeUnionOver(newDeterminismTestMessage(md), rt, nil)
 		if err != nil {
-			t.Fatalf("serializeUnion iteration %d: %v", i, err)
+			t.Fatalf("serializeUnionOver iteration %d: %v", i, err)
 		}
 		if !bytes.Equal(got, first) {
-			t.Fatalf("serializeUnion not byte-stable at iteration %d:\n first=%x\n   got=%x", i, first, got)
+			t.Fatalf("serializeUnionOver not byte-stable at iteration %d:\n first=%x\n   got=%x", i, first, got)
 		}
 	}
 }
@@ -394,7 +394,7 @@ func topLevelFieldNumbers(t *testing.T, msg []byte) []protowire.Number {
 }
 
 // TestSerializeUnion_DeterministicBeatsPlainMarshal is the differential guard:
-// it asserts serializeUnion's inner bytes are EXACTLY the Deterministic:true
+// it asserts serializeUnionOver's inner bytes are EXACTLY the Deterministic:true
 // encoding, not merely self-consistent bytes.
 //
 // The repetition is load-bearing, not padding. A dynamicpb message keeps its
@@ -416,13 +416,13 @@ func TestSerializeUnion_DeterministicBeatsPlainMarshal(t *testing.T) {
 
 	const iterations = 256
 	for i := 0; i < iterations; i++ {
-		union, err := serializeUnion(newDeterminismTestMessage(md), rt)
+		union, err := serializeUnionOver(newDeterminismTestMessage(md), rt, nil)
 		if err != nil {
-			t.Fatalf("serializeUnion iteration %d: %v", i, err)
+			t.Fatalf("serializeUnionOver iteration %d: %v", i, err)
 		}
 		inner := unwrapUnionInner(t, union, rt.unionFieldNumber)
 		if !bytes.Equal(inner, want) {
-			t.Fatalf("serializeUnion inner bytes are not the Deterministic:true encoding at iteration %d:\n inner=%x\n  want=%x", i, inner, want)
+			t.Fatalf("serializeUnionOver inner bytes are not the Deterministic:true encoding at iteration %d:\n inner=%x\n  want=%x", i, inner, want)
 		}
 
 		// And the Deterministic:true encoding is itself stable across repeats.
@@ -496,6 +496,6 @@ func TestPersistedProtosHaveNoMapFields(t *testing.T) {
 		t.Fatalf("proto map field(s) reached from a persisted/continuation root: %v\n"+
 			"Generated-message proto.Marshal emits map entries in Go map order, so every "+
 			"proto.Marshal on these paths must now pass proto.MarshalOptions{Deterministic: true} "+
-			"(see serializeUnion and appendContProtoMessage).", withMaps)
+			"(see serializeUnionOver and appendContProtoMessage).", withMaps)
 	}
 }

@@ -15104,3 +15104,13 @@ before its listing; section 2's other two guard sequences; the in-memory lock he
 design names them, with a hooked interleaving test; since_version, two same-named record types and a
 two-valued key pinned against the JVM. NEXT: design v17's text (4e: the ruling applied to the carry
 tests, landed versus owed, Java's `deleteTemplate`), then the v17 gate, then step 3.
+
+### RFC-257 WS-C revision 16 (booked 2026-09-25)
+
+LANDED (ws-c-design.md 7.16), folding the v15 gate's three NAKs (`ws-c-addendum-review-v15/`): the
+HNSW configuration read as Java's `parseConfig` whole (aliases, booleans, metric names, Config's
+checks and texts) by one reader the windowed validator, the maintainer and the evolution check share;
+map entries written whatever their value (proto3 zeros); "byte for byte" scoped to map entries, the
+oneof field order declared and pinned against the JVM; repeated elements matched along a longest
+common subsequence; the dry run over the stored record; a per-walk reach for foreign descriptors.
+NEXT: the revision-16 gate (`ws-c-addendum-review-v16/`).

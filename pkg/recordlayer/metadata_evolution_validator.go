@@ -998,12 +998,20 @@ func validateVectorIndexOptions(oldIdx, newIdx *Index, changed map[string]bool) 
 	// VectorIndexOptionsHelper.disallowChange compares the parsed and defaulted
 	// values (VectorIndexOptionsHelper.java:120-147), so an option set to its
 	// default beside one left unset is no change; with Java's message.
-	oldConfig, newConfig := parseHNSWConfig(oldIdx), parseHNSWConfig(newIdx)
+	oldOpts, err := readHNSWOptions(oldIdx, true)
+	if err != nil {
+		return err
+	}
+	newOpts, err := readHNSWOptions(newIdx, true)
+	if err != nil {
+		return err
+	}
+	oldConfig, newConfig := oldOpts.config, newOpts.config
 	for _, o := range []struct {
 		key  string
 		same bool
 	}{
-		{IndexOptionVectorMetric, hnswMetricName(oldIdx) == hnswMetricName(newIdx)},
+		{IndexOptionVectorMetric, oldOpts.metric == newOpts.metric},
 		{IndexOptionVectorNumDimensions, oldConfig.NumDimensions == newConfig.NumDimensions},
 		{IndexOptionHNSWUseInlining, oldConfig.UseInlining == newConfig.UseInlining},
 		{IndexOptionHNSWM, oldConfig.M == newConfig.M},
@@ -1013,10 +1021,13 @@ func validateVectorIndexOptions(oldIdx, newIdx *Index, changed map[string]bool) 
 		{IndexOptionHNSWEfRepair, oldConfig.EfRepair == newConfig.EfRepair},
 		{IndexOptionVectorExtendCandidates, oldConfig.ExtendCandidates == newConfig.ExtendCandidates},
 		{IndexOptionVectorKeepPrunedConnections, oldConfig.KeepPrunedConnections == newConfig.KeepPrunedConnections},
-		{IndexOptionHNSWUseRaBitQ, (oldConfig.Quantizer != nil) == (newConfig.Quantizer != nil)},
-		{IndexOptionHNSWRaBitQNumExBits, hnswRaBitQNumExBits(oldIdx) == hnswRaBitQNumExBits(newIdx)},
+		{IndexOptionHNSWUseRaBitQ, oldOpts.useRaBitQ == newOpts.useRaBitQ},
+		{IndexOptionHNSWRaBitQNumExBits, oldOpts.raBitQNumExBits == newOpts.raBitQNumExBits},
 	} {
-		if !changed[o.key] {
+		// A key covers its alias (VectorOptionKey's names), as Java's
+		// validateChangedOptions reads it.
+		alias := hnswOptionAliases[o.key]
+		if !changed[o.key] && (alias == "" || !changed[alias]) {
 			continue
 		}
 		if !o.same {
@@ -1025,6 +1036,7 @@ func validateVectorIndexOptions(oldIdx, newIdx *Index, changed map[string]bool) 
 			}
 		}
 		delete(changed, o.key)
+		delete(changed, alias)
 	}
 
 	// Runtime-only options: always safe to change, just remove from changed.
@@ -1038,44 +1050,10 @@ func validateVectorIndexOptions(oldIdx, newIdx *Index, changed map[string]bool) 
 	}
 	for _, key := range runtime {
 		delete(changed, key)
+		delete(changed, hnswOptionAliases[key])
 	}
 
 	return nil
-}
-
-// hnswMetricName is the metric parseHNSWConfig selects, by name, for a metric
-// option it recognizes, and the option's own text for one it does not: the
-// parser reads an unrecognized name as Euclidean, which is not a statement that
-// the two names are the same metric, so two unrecognized or differing names stay
-// different.
-func hnswMetricName(idx *Index) string {
-	v, ok := idx.Options[IndexOptionVectorMetric]
-	if !ok {
-		return "EUCLIDEAN_METRIC"
-	}
-	switch v {
-	case "COSINE_METRIC", "cosine":
-		return "COSINE_METRIC"
-	case "DOT_PRODUCT_METRIC", "inner_product":
-		return "DOT_PRODUCT_METRIC"
-	case "EUCLIDEAN_SQUARE_METRIC":
-		return "EUCLIDEAN_SQUARE_METRIC"
-	case "EUCLIDEAN_METRIC":
-		return "EUCLIDEAN_METRIC"
-	}
-	return "unrecognized:" + v
-}
-
-// hnswRaBitQNumExBits is the RaBitQ extra-bit count parseHNSWConfig gives the
-// quantizer: the option when it reads as 1 to 8, else 4.
-func hnswRaBitQNumExBits(idx *Index) int {
-	if v, ok := idx.Options[IndexOptionHNSWRaBitQNumExBits]; ok {
-		var n int
-		if cnt, _ := fmt.Sscanf(v, "%d", &n); cnt == 1 && n >= 1 && n <= 8 {
-			return n
-		}
-	}
-	return 4
 }
 
 // validateMultidimensionalIndexOptions validates MULTIDIMENSIONAL (R-tree) option changes.
