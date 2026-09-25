@@ -41,6 +41,16 @@ func hnswOptionValue(index *Index, canonical string) (string, bool) {
 	return "", false
 }
 
+// VectorIndexMetricOption is an HNSW VECTOR index's metric option as Java's
+// VectorIndexOptionKeys.METRIC.read finds it: under hnswMetric, else under its
+// alias vectorMetric, and whether either is set. The planner reads a vector
+// index's metric through it (Java's VectorIndexExpansionVisitor reads it
+// through the same key), so the candidate's metric is the one the maintainer
+// builds the graph with.
+func VectorIndexMetricOption(index *Index) (string, bool) {
+	return hnswOptionValue(index, IndexOptionVectorMetric)
+}
+
 // hnswAliasConflict is VectorIndexOptionsHelper.validateNoAliasConflicts, the
 // first step of Java's VectorIndexHelper.validate: an option set under both its
 // canonical name and its alias is refused, even with equal values.
@@ -212,18 +222,17 @@ func hnswConfigChecks(c HNSWConfig, useRaBitQ bool, raBitQNumExBits int) error {
 
 // parseHNSWConfig is the configuration the VECTOR maintainer builds its graph
 // with: readHNSWOptions with Go's forms, and the RaBitQ quantizer when it is
-// enabled. Java's Config admits 1 to 15 extra bits, and its RaBitQuantizer, made
-// when the index is maintained, 1 to 8 (RaBitQuantizer.java:76, TIGHT_START's
-// length), which is where a higher count is refused, in both engines.
+// enabled. Java's Config admits 1 to 15 extra bits and its RaBitQuantizer 1 to 8
+// (RaBitQuantizer.java:76, TIGHT_START's length); Java constructs the quantizer
+// only when an operation first quantizes, so a count of 9 to 15 is refused
+// there (hnswGraph.raBitQuantizerAdmits), never here: the index is built, and
+// serves every operation that does not quantize, as in Java.
 func parseHNSWConfig(index *Index) (HNSWConfig, error) {
 	o, err := readHNSWOptions(index, true)
 	if err != nil {
 		return HNSWConfig{}, err
 	}
 	if o.useRaBitQ {
-		if o.raBitQNumExBits < 1 || o.raBitQNumExBits > 8 {
-			return HNSWConfig{}, &IllegalArgumentError{Message: "RaBitQ encodes 1 to 8 extra bits"}
-		}
 		o.config.Quantizer = rabitq.NewQuantizer(rabitq.Metric(o.config.Metric), o.raBitQNumExBits)
 	}
 	return o.config, nil

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -1488,4 +1489,112 @@ var _ = Describe("Vector pending entry conformance", func() {
 			fmt.Fprintf(GinkgoWriter, "VECTOR-QUEUE operation=%s payload=%s source-records=%d\n", operation, result.Payload, result.RecordCount)
 		}
 	})
+})
+
+// Java's HNSW constructs its RaBitQuantizer, whose constructor refuses more than
+// 8 extra bits while its Config admits up to 15, only where an operation
+// quantizes: Primitives.quantizer once the access info can use RaBitQ, and
+// Insert.firstInsert for a metric that is not translation-preserving. Both
+// engines maintain the same index through the record store, one save per
+// transaction, and each operation's outcome is compared: a Euclidean index
+// accepts saves until its centroid is established (statistics sampled and
+// maintained on every insert, threshold 11) and refuses every save, search and
+// delete after it; a cosine index refuses its first save; a search of the
+// empty index is served. 8 extra bits is the control.
+var _ = Describe("An HNSW index with more RaBitQ extra bits than the quantizer encodes is refused where Java constructs it", func() {
+	vectors := make([][]float64, 16)
+	for i := range vectors {
+		vectors[i] = make([]float64, 8)
+		for d := range vectors[i] {
+			vectors[i][d] = float64((i*7+d*3)%11) - 5 + 0.5*float64(d)
+		}
+	}
+	for _, c := range []struct {
+		metric string
+		bits   int
+	}{
+		{"EUCLIDEAN_METRIC", 9},
+		{"EUCLIDEAN_METRIC", 15},
+		{"COSINE_METRIC", 9},
+		{"EUCLIDEAN_METRIC", 8},
+	} {
+		It(fmt.Sprintf("%s with %d extra bits", c.metric, c.bits), func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+			defer cancel()
+			javaEnv, err := SetupTenantEnvironment(ctx, sharedContainer, "bits_java_"+uuid.New().String())
+			Expect(err).NotTo(HaveOccurred())
+			defer func() { Expect(javaEnv.Cleanup(ctx)).To(Succeed()) }()
+			goEnv, err := SetupTenantEnvironment(ctx, sharedContainer, "bits_go_"+uuid.New().String())
+			Expect(err).NotTo(HaveOccurred())
+			defer func() { Expect(goEnv.Cleanup(ctx)).To(Succeed()) }()
+
+			var java struct {
+				SearchEmpty string   `json:"searchEmpty"`
+				Inserts     []string `json:"inserts"`
+				Search      string   `json:"search"`
+				DeleteFirst string   `json:"deleteFirst"`
+			}
+			Expect(NewJavaInvoker().InvokeAs(ctx, "hnswExtraBitsProbe", map[string]any{
+				"clusterFile": javaEnv.ClusterFile, "tenantName": javaEnv.TenantName,
+				"subspace": BytesToIntArray(subspace.Sub(tuple.Tuple{}).Bytes()),
+				"metric":   c.metric, "numExBits": c.bits, "vectors": vectors,
+			}, &java)).To(Succeed())
+
+			index := recordlayer.NewVectorIndex("order_vector_bits", recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 8)
+			index.Options = map[string]string{
+				"hnswNumDimensions": "8", "hnswMetric": c.metric,
+				"hnswUseRaBitQ": "true", "hnswRaBitQNumExBits": fmt.Sprint(c.bits),
+				"hnswSampleVectorStatsProbability": "1.0", "hnswMaintainStatsProbability": "1.0", "hnswStatsThreshold": "11",
+			}
+			builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+			builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+			builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+			builder.AddIndex("Order", index)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+			outcome := func(fn func(*recordlayer.FDBRecordStore) error) string {
+				_, err := goEnv.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+					store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).
+						SetSubspace(subspace.Sub(tuple.Tuple{})).CreateOrOpen()
+					if err != nil {
+						return nil, err
+					}
+					return nil, fn(store)
+				})
+				var iae *recordlayer.IllegalArgumentError
+				switch {
+				case err == nil:
+					return "ok"
+				case errors.As(err, &iae):
+					return "java.lang.IllegalArgumentException"
+				default:
+					return fmt.Sprintf("%T: %v", err, err)
+				}
+			}
+			search := func(s *recordlayer.FDBRecordStore) error {
+				_, err := s.SearchVectorIndex(index, vectors[0], 3, 100)
+				return err
+			}
+			goSearchEmpty := outcome(search)
+			var goInserts []string
+			for i, v := range vectors {
+				goInserts = append(goInserts, outcome(func(s *recordlayer.FDBRecordStore) error {
+					_, err := s.SaveRecord(&gen.Order{OrderId: proto.Int64(int64(i)), VectorData: conformanceSerializeVector(v)})
+					return err
+				}))
+			}
+			goSearch := outcome(search)
+			goDelete := outcome(func(s *recordlayer.FDBRecordStore) error {
+				_, err := s.DeleteRecord(tuple.Tuple{int64(0)})
+				return err
+			})
+			fmt.Fprintf(GinkgoWriter, "EXTRA_BITS %s/%d java=%+v go={%s %v %s %s}\n", c.metric, c.bits, java,
+				goSearchEmpty, goInserts, goSearch, goDelete)
+			Expect(goSearchEmpty).To(Equal(java.SearchEmpty), "search of the empty index")
+			Expect(goInserts).To(Equal(java.Inserts), "each save")
+			Expect(goSearch).To(Equal(java.Search), "search")
+			Expect(goDelete).To(Equal(java.DeleteFirst), "delete of record 0")
+		})
+	}
 })

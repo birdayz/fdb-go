@@ -3,6 +3,7 @@
 package conformance_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"errors"
@@ -405,27 +406,30 @@ var _ = Describe("Map entries are maintained in the record's wire order, as Java
 
 		// The raw bytes themselves, indexed by Go: every stored record value is
 		// replaced by the union-wrapped raw bytes Java parsed.
-		raw := subspace.Sub(tuple.Tuple{"mapwire_raw", uuid.NewString()}...)
-		Expect(save(raw, without)).To(BeEmpty())
-		_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
-			begin, end := raw.Sub(int64(recordlayer.RecordKey)).FDBRangeKeys()
-			kvs, err := rtx.Transaction().GetRange(fdb.KeyRange{Begin: begin, End: end}, fdb.RangeOptions{}).GetSliceWithError()
-			if err != nil {
-				return nil, err
-			}
-			Expect(kvs).To(HaveLen(len(records)))
-			for _, kv := range kvs {
-				t, err := raw.Unpack(kv.Key)
+		overwriteRaw := func(ss subspace.Subspace) {
+			_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				begin, end := ss.Sub(int64(recordlayer.RecordKey)).FDBRangeKeys()
+				kvs, err := rtx.Transaction().GetRange(fdb.KeyRange{Begin: begin, End: end}, fdb.RangeOptions{}).GetSliceWithError()
 				if err != nil {
 					return nil, err
 				}
-				id := t[1].(int64)
-				union := protowire.AppendTag(nil, 1, protowire.BytesType)
-				rtx.Transaction().Set(kv.Key, protowire.AppendBytes(union, records[id-1]))
-			}
-			return nil, nil
-		})
-		Expect(err).NotTo(HaveOccurred())
+				Expect(kvs).To(HaveLen(len(records)))
+				for _, kv := range kvs {
+					t, err := ss.Unpack(kv.Key)
+					if err != nil {
+						return nil, err
+					}
+					id := t[1].(int64)
+					union := protowire.AppendTag(nil, 1, protowire.BytesType)
+					rtx.Transaction().Set(kv.Key, protowire.AppendBytes(union, records[id-1]))
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		}
+		raw := subspace.Sub(tuple.Tuple{"mapwire_raw", uuid.NewString()}...)
+		Expect(save(raw, without)).To(BeEmpty())
+		overwriteRaw(raw)
 		Expect(build(raw)).To(Equal(javaKVs))
 
 		// Go loads each record Java wrote and saves it unchanged, and so does
@@ -526,6 +530,36 @@ var _ = Describe("Map entries are maintained in the record's wire order, as Java
 		maintained, err := dumpIndexKVs(ctx, db, javaSS)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(maintained).To(Equal(javaKVs))
+
+		// The raw bytes re-saved: each engine loads stored bytes Java's save
+		// never wrote (record 3's entry without a value, record 1's two
+		// entries under one key) and saves them unchanged. Both write the same
+		// bytes, record 3's entry now with its default value, and leave the
+		// index as it was.
+		rawJava := subspace.Sub(tuple.Tuple{"mapwire_rawjava", uuid.NewString()}...)
+		rawGo := subspace.Sub(tuple.Tuple{"mapwire_rawgo", uuid.NewString()}...)
+		for _, ss := range []subspace.Subspace{rawJava, rawGo} {
+			Expect(save(ss, withIndex)).To(Equal(javaKVs))
+			overwriteRaw(ss)
+		}
+		var javaRawResaved struct {
+			Records [][]string `json:"records"`
+			KVs     [][]string `json:"kvs"`
+		}
+		Expect(NewJavaInvoker().InvokeAs(ctx, "resaveRecordsJava", map[string]any{
+			"clusterFile": clusterFile, "subspace": BytesToIntArray(rawJava.Bytes()),
+			"metaData": BytesToIntArray(mdBytes), "count": len(records),
+		}, &javaRawResaved)).To(Succeed())
+		resave(rawGo, md)
+		GinkgoWriter.Printf("MAPWIRE raw re-save java=%v go=%v\n", javaRawResaved.Records, recordKVs(rawGo))
+		Expect(javaRawResaved.Records).To(HaveLen(len(records)))
+		Expect(recordKVs(rawGo)).To(Equal(javaRawResaved.Records))
+		rawRecord3 := hex.EncodeToString(protowire.AppendBytes(protowire.AppendTag(nil, 1, protowire.BytesType), records[2]))
+		Expect(javaRawResaved.Records[2][1]).NotTo(Equal(rawRecord3), "the re-save rewrote record 3")
+		Expect(javaRawResaved.KVs).To(Equal(javaKVs))
+		rawMaintained, err := dumpIndexKVs(ctx, db, rawGo)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(rawMaintained).To(Equal(javaKVs))
 
 		// The re-saved bytes, copied under a store Java wrote without the
 		// index: Go builds the index over them, and Java, opening the store
@@ -723,10 +757,38 @@ var _ = Describe("A record re-saved unchanged is written as Java's load-then-sav
 			}
 			return b
 		}
+		// Entries with only one of their two fields, each written back by both
+		// engines with the other at its default.
+		keyOnly := func(num protowire.Number, key string) []byte {
+			body := protowire.AppendString(protowire.AppendTag(nil, 1, protowire.BytesType), key)
+			return protowire.AppendBytes(protowire.AppendTag(nil, num, protowire.BytesType), body)
+		}
+		valueOnly := func(num protowire.Number, value int64) []byte {
+			body := protowire.AppendVarint(protowire.AppendTag(nil, 2, protowire.VarintType), uint64(value))
+			return protowire.AppendBytes(protowire.AppendTag(nil, num, protowire.BytesType), body)
+		}
+		// An entry carrying a field its type does not declare, kept by both
+		// engines on a re-save that leaves the entry's key and value as they
+		// were.
+		unknownEntry := func(num protowire.Number, key string, value int64) []byte {
+			body := protowire.AppendString(protowire.AppendTag(nil, 1, protowire.BytesType), key)
+			body = protowire.AppendVarint(protowire.AppendTag(body, 2, protowire.VarintType), uint64(value))
+			body = protowire.AppendVarint(protowire.AppendTag(body, 10, protowire.VarintType), 2)
+			body = protowire.AppendVarint(protowire.AppendTag(body, 9, protowire.VarintType), 1)
+			body = protowire.AppendFixed32(protowire.AppendTag(body, 10, protowire.Fixed32Type), 3)
+			return protowire.AppendBytes(protowire.AppendTag(nil, num, protowire.BytesType), body)
+		}
 		records := [][]byte{
-			cat(id(1), intEntry(3, "b", 0), intEntry(3, "", 5), intEntry(3, "a", 0),
-				msgEntry(4, "k", holder("y", "x")), msgEntry(4, "k", holder("x", "y")), msgEntry(4, "j", holder("q", "p"))),
+			cat(id(1), intEntry(3, "b", 0), intEntry(3, "", 5), intEntry(3, "a", 0), keyOnly(3, "c"), valueOnly(3, 7), unknownEntry(3, "u", 3),
+				msgEntry(4, "k", holder("y", "x")), msgEntry(4, "k", holder("x", "y")), msgEntry(4, "j", holder("q", "p")),
+				keyOnly(4, "n"),
+				protowire.AppendVarint(protowire.AppendTag(nil, 12, protowire.VarintType), 2),
+				protowire.AppendVarint(protowire.AppendTag(nil, 11, protowire.VarintType), 1),
+				protowire.AppendFixed32(protowire.AppendTag(nil, 12, protowire.Fixed32Type), 3)),
 			cat(id(2), protowire.AppendBytes(protowire.AppendTag(nil, 2, protowire.BytesType), holder("z", "y")), intEntry(3, "q", 1), intEntry(3, "p", 2)),
+			// The oneof member stored after the maps.
+			cat(id(3), intEntry(3, "m", 1), msgEntry(4, "h", holder("v")),
+				protowire.AppendBytes(protowire.AppendTag(nil, 2, protowire.BytesType), holder("w", "v"))),
 		}
 		recordArgs := make([][]int, len(records))
 		for i, r := range records {
@@ -741,7 +803,7 @@ var _ = Describe("A record re-saved unchanged is written as Java's load-then-sav
 				"clusterFile": clusterFile, "subspace": BytesToIntArray(ss.Bytes()),
 				"metaData": BytesToIntArray(mdBytes), "recordTypeName": "P3", "records": recordArgs,
 			}, &java)).To(Succeed())
-			Expect(java.Verdicts).To(Equal([]string{"ok", "ok"}))
+			Expect(java.Verdicts).To(Equal([]string{"ok", "ok", "ok"}))
 		}
 		rewriteRaw := func(ss subspace.Subspace) {
 			_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -811,6 +873,20 @@ var _ = Describe("A record re-saved unchanged is written as Java's load-then-sav
 			}
 			return append(rest, oneof...)
 		}
+		// storedUnknownOrder is Java's bytes for record 1 with its unknown
+		// fields, and its entry "u"'s, in the order the raw record stores them.
+		storedUnknownOrder := func(b []byte) []byte {
+			swap := func(b []byte, javaHex, storedHex string) []byte {
+				j, err := hex.DecodeString(javaHex)
+				Expect(err).NotTo(HaveOccurred())
+				st, err := hex.DecodeString(storedHex)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(bytes.Count(b, j)).To(Equal(1), javaHex)
+				return bytes.Replace(b, j, st, 1)
+			}
+			b = swap(b, "480150025503000000", "500248015503000000")
+			return swap(b, "580160026503000000", "600258016503000000")
+		}
 		for _, raw := range []bool{false, true} {
 			javaSS := subspace.Sub(tuple.Tuple{"resave_p3_java", uuid.NewString()}...)
 			goSS := subspace.Sub(tuple.Tuple{"resave_p3_go", uuid.NewString()}...)
@@ -824,9 +900,32 @@ var _ = Describe("A record re-saved unchanged is written as Java's load-then-sav
 			goResave(goSS)
 			javaBytes, goBytes := stored(javaSS), stored(goSS)
 			GinkgoWriter.Printf("RESAVE_P3 raw=%t java=%x go=%x\n", raw, javaBytes, goBytes)
-			Expect(goBytes[0]).To(Equal(javaBytes[0]), "raw=%t: the record without the oneof, byte for byte", raw)
-			Expect(goBytes[1]).NotTo(Equal(javaBytes[1]), "raw=%t: the oneof member's position is the declared difference", raw)
-			Expect(goBytes[1]).To(Equal(legacyOrder(javaBytes[1])), "raw=%t: the record with the oneof, but for its member's position", raw)
+			// Both keep the unknown fields, record 1's own and those of its
+			// entry "u". Java writes a message's unknown fields as its
+			// UnknownFieldSet holds them, by field number and, within one
+			// field, varints before fixed32s; Go in the order they are stored.
+			// Over the bytes Java's first save wrote the two orders agree; over
+			// the raw bytes they are the declared difference.
+			want := javaBytes[0]
+			if raw {
+				want = storedUnknownOrder(want)
+			}
+			Expect(goBytes[0]).To(Equal(want), "raw=%t: the record without the oneof, byte for byte", raw)
+			for _, i := range []int{1, 2} {
+				Expect(goBytes[i]).NotTo(Equal(javaBytes[i]), "raw=%t record %d: the oneof member's position is the declared difference", raw, i+1)
+				Expect(goBytes[i]).To(Equal(legacyOrder(javaBytes[i])), "raw=%t record %d: the record with the oneof, but for its member's position", raw, i+1)
+			}
+			if raw {
+				// Java rewrites records 1 (entries missing a field) and 3 (the
+				// oneof member after the maps); Go rewrites record 1 and writes
+				// record 3 in its stored order, protobuf-go's. Record 2 is
+				// stored as Java writes it.
+				for _, i := range []int{0, 2} {
+					Expect(javaBytes[i]).NotTo(Equal(records[i]), "record %d: Java's re-save rewrote the stored bytes", i+1)
+				}
+				Expect(goBytes[0]).NotTo(Equal(records[0]), "record 1: Go's re-save rewrote the stored bytes")
+				Expect(javaBytes[1]).To(Equal(records[1]), "record 2 is stored as Java writes it")
+			}
 		}
 	})
 })
@@ -1452,6 +1551,62 @@ func dropOption(ix *gen.Index, key string) {
 	ix.Options = kept
 }
 
+// The sliding-window validator's arms, whole text and class on both engines:
+// Java's MetaDataException for each of its own arms and for the vector
+// validator's missing dimension count, and IndexPredicate's RecordCoreException
+// for a window under a disjunction.
+var _ = Describe("A windowed VECTOR index is validated as Java validates it", func() {
+	window := func() *gen.Predicate {
+		return &gen.Predicate{RowNumberWindowPredicate: &gen.RowNumberWindowPredicate{
+			OrderingField: []string{"price"}, Size: proto.Int32(3), Direction: gen.RowNumberWindowPredicate_ASC.Enum(),
+		}}
+	}
+	for _, c := range []struct {
+		name string
+		edit func(*gen.Index)
+	}{
+		{"a unique windowed index", func(ix *gen.Index) {
+			ix.Options = append(ix.Options, &gen.Index_Option{Key: proto.String("unique"), Value: proto.String("true")})
+		}},
+		{"a window under a disjunction alone (not decorated, so not refused)", func(ix *gen.Index) {
+			ix.Predicate = &gen.Predicate{OrPredicate: &gen.OrPredicate{Children: []*gen.Predicate{
+				window(), {ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}},
+			}}}
+		}},
+		// The decoration gate finds a window through AND only, so the placement
+		// check sees a window under an OR only beside a decorating one.
+		{"a window beside a window under a disjunction", func(ix *gen.Index) {
+			ix.Predicate = &gen.Predicate{AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{
+				window(), {OrPredicate: &gen.OrPredicate{Children: []*gen.Predicate{
+					{ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}}, window(),
+				}}},
+			}}}
+		}},
+		{"a window under a conjunction", func(ix *gen.Index) {
+			ix.Predicate = &gen.Predicate{AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{
+				window(), {ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}},
+			}}}
+		}},
+		{"a windowed index over two record types", func(ix *gen.Index) {
+			ix.RecordType = []string{"Order", "Customer"}
+		}},
+		{"a windowed index without its dimension count", func(ix *gen.Index) {
+			var kept []*gen.Index_Option
+			for _, o := range ix.Options {
+				if o.GetKey() != recordlayer.IndexOptionVectorNumDimensions {
+					kept = append(kept, o)
+				}
+			}
+			ix.Options = kept
+		}},
+	} {
+		It(c.name, func() { expectWindowedVerdictAsJava(c.name, windowedEdited(c.edit)) })
+	}
+})
+
+// windowedEdited is the demo meta-data with a windowed VECTOR index "w" on
+// Order that Java builds (the sliding-window conformance shape), its Index
+// message edited by edit.
 func windowedEdited(edit func(*gen.Index)) *gen.MetaData {
 	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
@@ -1496,10 +1651,8 @@ func expectWindowedVerdictAsJava(label string, p *gen.MetaData) {
 		Expect(errors.As(goErr, &e)).To(BeTrue(), "Go: %T %v", goErr, goErr)
 		goMessage = e.Message
 		// The parse failure behind "incorrect index options" is the cause, in
-		// both engines: a NumberFormatException's class and text are Java's, and
-		// so is an unknown metric's (Enum.valueOf's "No enum constant"); any
-		// other IllegalArgumentException's text is Go's own (DIVERGENCES.md,
-		// VECTOR).
+		// both engines, its class and text Java's: a NumberFormatException's,
+		// Enum.valueOf's "No enum constant", and Config's checks'.
 		switch java.CauseClass {
 		case "java.lang.NumberFormatException":
 			var nfe *recordlayer.NumberFormatError

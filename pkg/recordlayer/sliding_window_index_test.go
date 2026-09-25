@@ -1272,8 +1272,14 @@ var _ = Describe("SlidingWindowIndex", func() {
 							keys, vals := readSlidingWindowEntries(rtx.Transaction(), sw, partition)
 							pks := searchPKs(store, idx, nil)
 							for _, record := range saved {
-								// A changed payload makes delegate refresh observable even
-								// when the tracked entry key and membership stay identical.
+								// A changed payload makes the delegate's handling observable
+								// while the tracked entry key and membership stay identical:
+								// the window calls the delegate's insert for an entry in the
+								// window (SW_DELEGATE_INSERT), and the graph, holding the
+								// node already, leaves it at its stored vector, as Java's
+								// HNSW Insert does (Insert.java:195-197).
+								stored := record.Record.(*gen.Order)
+								storedX, storedY := stored.GetCoordX(), stored.GetCoordY()
 								refreshed := *record
 								refreshed.Record = proto.Clone(record.Record)
 								order := refreshed.Record.(*gen.Order)
@@ -1305,7 +1311,7 @@ var _ = Describe("SlidingWindowIndex", func() {
 									inserts = 1
 									vm, ok := unwrapVectorMaintainer(maintainer)
 									Expect(ok).To(BeTrue())
-									results, err := vm.SearchKNN(nil, []float64{float64(order.GetCoordX()), float64(order.GetCoordY())}, 10, 100)
+									results, err := vm.SearchKNN(nil, []float64{float64(storedX), float64(storedY)}, 10, 100)
 									Expect(err).NotTo(HaveOccurred())
 									found := false
 									for _, result := range results {

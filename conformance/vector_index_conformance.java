@@ -423,6 +423,96 @@ class VectorIndexSteps extends ConformanceBase {
         });
     }
 
+    private static RecordMetaData createExtraBitsMetaData(String metric, long numExBits) {
+        RecordMetaDataBuilder metaDataBuilder = RecordMetaData.newBuilder()
+            .setRecords(RecordLayerDemo.getDescriptor());
+        metaDataBuilder.getRecordType("Order")
+            .setPrimaryKey(Key.Expressions.field("order_id"));
+        metaDataBuilder.getRecordType("Customer")
+            .setPrimaryKey(Key.Expressions.field("customer_id"));
+        metaDataBuilder.getRecordType("TypedRecord")
+            .setPrimaryKey(Key.Expressions.field("id"));
+        metaDataBuilder.addIndex("Order", new Index("order_vector_bits",
+            new KeyWithValueExpression(Key.Expressions.field("vector_data"), 0),
+            IndexTypes.VECTOR,
+            Map.of(
+                IndexOptions.HNSW_NUM_DIMENSIONS, String.valueOf(RABITQ_NUM_DIMENSIONS),
+                IndexOptions.HNSW_METRIC, metric,
+                IndexOptions.HNSW_USE_RABITQ, "true",
+                IndexOptions.HNSW_RABITQ_NUM_EX_BITS, String.valueOf(numExBits),
+                IndexOptions.HNSW_SAMPLE_VECTOR_STATS_PROBABILITY, "1.0",
+                IndexOptions.HNSW_MAINTAIN_STATS_PROBABILITY, "1.0",
+                IndexOptions.HNSW_STATS_THRESHOLD, "11"
+            )));
+        return metaDataBuilder.build();
+    }
+
+    /** "ok", or the root cause's class of what the action threw. */
+    private static String extraBitsOutcome(Runnable action) {
+        try {
+            action.run();
+            return "ok";
+        } catch (RuntimeException e) {
+            Throwable t = e;
+            while (t.getCause() != null && t.getCause() != t) {
+                t = t.getCause();
+            }
+            return t.getClass().getName();
+        }
+    }
+
+    /**
+     * An HNSW index with RaBitQ at the given extra-bit count, maintained through
+     * the record store: a search of the empty index, then one save per vector,
+     * each in its own transaction, then a search and a delete of record 0,
+     * each reported as "ok" or its root cause's class. Statistics are sampled
+     * and maintained on every insert with threshold 11, so a Euclidean index
+     * establishes its centroid on a known insert.
+     */
+    @ConformanceStep("hnswExtraBitsProbe")
+    public Map<String, Object> hnswExtraBitsProbe(String clusterFile, byte[] subspace, String tenantName,
+            String metric, long numExBits, List<List<Number>> vectors) {
+        RecordMetaData md = createExtraBitsMetaData(metric, numExBits);
+        java.util.function.Function<FDBRecordContext, FDBRecordStore> open = context -> FDBRecordStore.newBuilder()
+            .setMetaDataProvider(md)
+            .setContext(context)
+            .setSubspace(new Subspace(subspace))
+            .setUserVersionChecker(ALWAYS_READABLE_CHECKER)
+            .createOrOpen();
+        java.util.function.Function<double[], String> search = query -> extraBitsOutcome(() ->
+            runInContext(clusterFile, tenantName, context -> {
+                VectorIndexScanBounds bounds = new VectorIndexScanBounds(TupleRange.ALL,
+                    Comparisons.Type.DISTANCE_RANK_LESS_THAN_OR_EQUAL, new DoubleRealVector(query), 3,
+                    VectorIndexScanOptions.empty());
+                return open.apply(context).scanIndex(md.getIndex("order_vector_bits"), bounds, null,
+                    ScanProperties.FORWARD_SCAN).asList().join();
+            }));
+        double[][] vecs = new double[vectors.size()][];
+        for (int i = 0; i < vecs.length; i++) {
+            vecs[i] = new double[vectors.get(i).size()];
+            for (int d = 0; d < vecs[i].length; d++) {
+                vecs[i][d] = vectors.get(i).get(d).doubleValue();
+            }
+        }
+        Map<String, Object> result = new java.util.LinkedHashMap<>();
+        result.put("searchEmpty", search.apply(vecs[0]));
+        List<String> inserts = new ArrayList<>();
+        for (int i = 0; i < vecs.length; i++) {
+            final long id = i;
+            final byte[] bytes = serializeVector(vecs[i]);
+            inserts.add(extraBitsOutcome(() -> runInContext(clusterFile, tenantName, context -> {
+                open.apply(context).saveRecord(Order.newBuilder().setOrderId(id)
+                    .setVectorData(ByteString.copyFrom(bytes)).build());
+                return null;
+            })));
+        }
+        result.put("inserts", inserts);
+        result.put("search", search.apply(vecs[0]));
+        result.put("deleteFirst", extraBitsOutcome(() -> runInContext(clusterFile, tenantName, context ->
+            open.apply(context).deleteRecord(Tuple.from(0L)))));
+        return result;
+    }
+
     /**
      * Parse a JSON array of doubles, e.g. "[1.0, 2.0, 3.0]".
      */

@@ -2097,13 +2097,13 @@ failures are rethrown as `MetaDataException("incorrect index options")`. The
 dimension count is MANDATORY there: `getConfig` throws `"need to specify the
 number of dimensions"` when `hnswNumDimensions` is absent.
 
-**Go:** no metadata-time vector validation exists. `parseHNSWConfig`
-(`vector_index_maintainer.go`) is written to be permissive — every option is read
-through an "if it parses and is in range, use it" guard — so a typo'd `hnswM`, an
-out-of-range `hnswEfConstruction` and an unrecognised `hnswMetric` all fall
-through to a DEFAULT. The index builds, writes, and serves queries, with a graph
-whose connectivity (or whose notion of "nearest") differs from the declaration,
-indistinguishably from a correctly-declared index.
+**Go (before RFC-257 WS-C):** no metadata-time vector validation existed, and the
+maintainer's option reader was permissive — every option was read through an "if it
+parses and is in range, use it" guard — so a typo'd `hnswM`, an out-of-range
+`hnswEfConstruction` and an unrecognised `hnswMetric` all fell through to a DEFAULT,
+and the index served queries with a graph whose connectivity (or notion of
+"nearest") differed from the declaration. The maintainer now reads as Java reads
+(below); what stays open is the plain index's build-time half.
 
 **What is closed:** the OPTION half, for windowed vector indexes only, as the
 delegate call Java's `SlidingWindowIndexValidator` ends with —
@@ -2127,8 +2127,15 @@ with the same reader (`parseHNSWConfig`), so the configuration Go maintains is t
 Java's engine reads (the JVM spec "A windowed VECTOR index's options are read as Java
 reads them" compares the whole configuration), and a configuration Java refuses fails
 the maintainer instead of taking a default. RaBitQ with 9 to 15 extra bits, which
-`Config` admits and Java's `RaBitQuantizer` refuses when the index is maintained, is
-refused where Go's maintainer makes its quantizer. For a PLAIN vector index the
+`Config` admits and Java's `RaBitQuantizer` refuses, is refused where Java constructs
+the quantizer, when an operation first quantizes (`hnswGraph.raBitQuantizerAdmits`):
+a Euclidean index accepts saves until its centroid is established and then refuses
+every save, search and delete of a present node, a cosine or dot-product index
+refuses its first save, and a search of an empty index is served (the JVM spec "An
+HNSW index with more RaBitQ extra bits than the quantizer encodes is refused where
+Java constructs it" compares each operation's outcome). The refusal is an
+`IllegalArgumentError`, Java's class; Guava's `checkArgument` gives Java's no message
+and Go's names the range. For a PLAIN vector index the
 maintainer also takes two Go forms, the lower-case metric names (`cosine`,
 `inner_product`, `euclidean`) and 128 dimensions when none are given, which the
 windowed validator refuses, until WS-D. Not covered, WS-D's: the engine selector
@@ -3218,25 +3225,38 @@ exhausts the planner's task budget (ws-e-design.md 4.1(b)).
 Java's default serializer (`DynamicMessageRecordSerializer`) reads a stored record as a
 DynamicMessage, whose map field is the list of its entries in stored order, a key written twice
 included, and a load-then-save writes that list back, each entry re-encoded with its key and its
-value. Go's load-then-save writes the same map entries (`rewriteMaps`, `record_wire_map_order.go`):
-the JVM specs "Map entries are maintained in the record's wire order" and "A record re-saved
-unchanged is written as Java's load-then-save writes it" compare both engines' re-saves byte for
-byte (proto2 and proto3, zero keys and values, a key written twice with message values, maps in
-map values, raw bytes with an entry missing its value), and both indexes are unchanged. The bytes
-differ in FIELD ORDER only: protobuf-go's deterministic marshal writes a oneof member after the
-other fields (and an extension first), where Java writes fields in number order, which the second
-spec pins as the one difference; unknown fields stay in Go's stored order (Java's order for them
-is not measured). Both engines read either order as the same record.
+value, then the fields the entry carries that its type does not declare. Go's load-then-save
+writes the same map entries (`rewriteMaps`, `record_wire_map_order.go`), an entry's unknown fields
+included: the JVM specs "Map entries are maintained in the record's wire order" and "A record
+re-saved unchanged is written as Java's load-then-save writes it" compare both engines' re-saves
+byte for byte (proto2 and proto3, zero keys and values, entries missing their key or their value,
+a key written twice with message values, maps in map values, entries and records with unknown
+fields, over the bytes Java's save wrote and over raw bytes Java never wrote), and the first
+spec's index is unchanged by either re-save. The bytes differ in FIELD ORDER only, two ways the
+second spec pins: protobuf-go's deterministic marshal writes a oneof member after the other fields
+(and an extension first), where Java writes fields in number order; and a message's unknown fields
+are written in the order they are stored, where Java writes them as its `UnknownFieldSet` holds
+them, by field number and, within one field, varints, fixed32s, fixed64s, length-delimited, groups.
+The two orders of unknown fields agree over any bytes Java wrote, which are in its order already.
+Both engines read either order as the same record.
 
 A Go map holds one value per key and has no insertion order, so where Go's caller CHANGED a map,
 or built the record, the order is Go's: a changed key is written once, in its first stored
-position; a new key follows the stored ones, in key order; a new record's maps are in key order.
-An element of a repeated message field is matched to the stored elements by content, along a
-longest common subsequence of the two lists and then by content in order (`elementPriors`), so an
-unchanged run keeps its own order however elements were inserted, removed, changed or swapped
-around it, as Java's does; a changed element takes the stored element at its position when no
-other element took that one, and otherwise writes its maps in key order, where Java's keeps its
-own. A Go message carries no identity across a load and a save, so equal elements reordered among
+position, from Go's map, which keeps no unknown fields of an entry (protobuf-go drops them when it
+decodes a map); a new key follows the stored ones, in key order; a new record's maps are in key
+order. An element of a repeated message field is matched to the stored elements by content, along
+a longest common subsequence of the two lists and then by content in order (`elementPriors`), so
+an unchanged run keeps its own order when elements are inserted, removed, changed or swapped around
+it, as Java's does, with two exceptions `TestElementPriorsMatching` pins. An inserted element equal
+in content to a stored one is not told from it: stored [B] saved as [B', B] pairs the stored B
+with B', the element at its position, and writes the B that was stored as a new element, its maps
+in key order, where Java keeps B's order. And past `maxLCSCells` (2^20) cells, the product of the
+two lists' lengths, no subsequence is computed and elements are matched by content in order, so an
+unchanged element can take an earlier stored element equal to it rather than its own (stored
+[A1, B, A2], A1 and A2 equal but for their maps' order, saved as [B, A]: A takes A1's order where
+Java's keeps A2's). A changed element takes the stored element at its position when no other
+element took that one, and otherwise writes its maps in key order, where Java's keeps its own. A
+Go message carries no identity across a load and a save, so equal elements reordered among
 themselves are matched in order, and a changed element that also moved cannot be told from a new
 one.
 In Java the order is whatever the caller built, a generated message's map in insertion order (a

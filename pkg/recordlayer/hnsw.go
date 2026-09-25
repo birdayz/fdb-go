@@ -93,17 +93,6 @@ type HNSWConfig struct {
 	MaxNumConcurrentDeleteFromLayer     int // (0, 10], default 2  — layer deletion parallelism in Java
 }
 
-// ValidateHNSWConfig is Java's Config constructor checks (Config.java:93-120)
-// over c, with Java's texts (hnswConfigChecks); the RaBitQ checks apply when c
-// has a RaBitQ quantizer.
-func ValidateHNSWConfig(c HNSWConfig) error {
-	useRaBitQ, bits := false, 0
-	if q, ok := c.Quantizer.(*rabitq.Quantizer); ok && q != nil {
-		useRaBitQ, bits = true, q.NumExBits()
-	}
-	return hnswConfigChecks(c, useRaBitQ, bits)
-}
-
 // DefaultHNSWConfig returns a default HNSW configuration.
 func DefaultHNSWConfig(numDimensions int) HNSWConfig {
 	return HNSWConfig{
@@ -172,6 +161,26 @@ func NewHNSWGraph(storage *hnswStorage, config HNSWConfig) *hnswGraph {
 // SetStats attaches I/O counters for profiling. Pass nil to disable.
 func (g *hnswGraph) SetStats(stats *HNSWStats) {
 	g.storage.stats = stats
+}
+
+// raBitQuantizerAdmits refuses an operation where Java constructs its
+// RaBitQuantizer for it and the constructor refuses the configured extra-bit
+// count: Primitives.quantizer (Primitives.java:174-182), which every insert
+// into a non-empty graph, every delete of a present node and every search of a
+// non-empty graph calls, constructs one once the access info can use RaBitQ
+// (a centroid is established, or at once for a metric that is not
+// translation-preserving), and Insert.firstInsert (Insert.java:274-285) for such
+// a metric. Java's Config admits 1 to 15 extra bits and the quantizer 1 to 8
+// (RaBitQuantizer.java:76), so 9 to 15 is refused exactly there: a Euclidean
+// index serves inserts until its centroid is established, and a search of an
+// empty graph or a delete of an absent node is served. Guava's
+// checkArgument carries no message; Go's error names the range.
+func (g *hnswGraph) raBitQuantizerAdmits(info *hnswAccessInfo) error {
+	q, ok := g.config.Quantizer.(*rabitq.Quantizer)
+	if !ok || q == nil || info == nil || !info.hasTransform() || rabitq.ValidNumExBits(q.NumExBits()) {
+		return nil
+	}
+	return &IllegalArgumentError{Message: fmt.Sprintf("RaBitQ encodes 1 to 8 extra bits, not %d", q.NumExBits())}
 }
 
 // buildTransform creates a transform from access info and the current config.
@@ -350,36 +359,37 @@ func (g *hnswGraph) Insert(tx fdb.WritableTransaction, primaryKey tuple.Tuple, v
 	accessKey := g.storage.accessSubspace.Pack(tuple.Tuple{})
 	accessFuture := tx.Get(fdb.Key(accessKey))
 
-	// Resolve existence check.
+	// Resolve both reads before acting on either, as Java combines them
+	// (Insert.java:184-194); an unresolved future must not outlive the call.
 	existData, existErr := existFuture.Get()
+	accessData, accessErr := accessFuture.Get()
 	if existErr != nil {
 		return fmt.Errorf("hnsw insert: existence check: %w", existErr)
 	}
+	if accessErr != nil {
+		return fmt.Errorf("hnsw insert: access info read: %w", accessErr)
+	}
 	if existData != nil {
-		// Node exists — populate cache with parsed data, delete and re-insert.
-		if vb, nb, parseErr := parseNodeValue(existData); parseErr == nil {
-			g.storage.cache[string(existKey)] = &parsedNode{vecBytes: vb, neighbors: nb}
-		}
-		if delErr := g.Delete(tx, primaryKey); delErr != nil {
-			return delErr
-		}
-		// Re-read access info after delete (may have changed entry point).
-		accessFuture = tx.Get(fdb.Key(accessKey))
+		// A node already in the graph is left as it is (Insert.java:195-197):
+		// the maintainer removes a record's old entry before inserting its new
+		// one, so an insert finds its key present only when the entry is
+		// already indexed, as when an index build reaches a record a
+		// concurrent save indexed. Deleting and re-inserting it rewired the
+		// graph Java leaves untouched.
+		return nil
 	}
 
 	// Determine insertion layer (deterministic per PK).
 	insertLayer := topLayer(primaryKey, g.config.M)
 
-	// Resolve access info.
-	accessData, accessErr := accessFuture.Get()
-	if accessErr != nil {
-		return fmt.Errorf("hnsw insert: access info read: %w", accessErr)
-	}
 	accessInfo, epErr := g.storage.parseAccessInfo(accessData)
 
 	if epErr != nil {
 		// No entry point — first node in the graph.
 		return g.firstInsert(tx, primaryKey, vector, insertLayer)
+	}
+	if err := g.raBitQuantizerAdmits(accessInfo); err != nil {
+		return err
 	}
 
 	// Build transform from access info (nil if no rotation configured).
@@ -583,6 +593,9 @@ func (g *hnswGraph) firstInsert(tx fdb.WritableTransaction, primaryKey tuple.Tup
 
 		// Zero centroid = no translation, rotation only.
 		info.centroid = make([]float64, g.config.NumDimensions)
+		if err := g.raBitQuantizerAdmits(info); err != nil {
+			return err
+		}
 
 		// Apply transform before encoding.
 		transform := g.buildTransform(info)
@@ -871,6 +884,9 @@ func (g *hnswGraph) Delete(tx fdb.WritableTransaction, primaryKey tuple.Tuple) e
 			return e // transient read — abort/retry, don't treat as already-deleted
 		}
 		return nil // already deleted or doesn't exist
+	}
+	if err := g.raBitQuantizerAdmits(accessInfo); err != nil {
+		return err
 	}
 
 	// Delete from each layer (0..topLayer(pk)), repairing the deleted node's neighbors
@@ -1191,6 +1207,9 @@ func (g *hnswGraph) Search(tx fdb.ReadTransaction, query []float64, k, efSearch 
 			return nil, e // transient read — propagate so the caller retries
 		}
 		return nil, nil // genuinely empty graph
+	}
+	if err := g.raBitQuantizerAdmits(accessInfo); err != nil {
+		return nil, err
 	}
 
 	// Apply transform to query vector so it's in the same coordinate system

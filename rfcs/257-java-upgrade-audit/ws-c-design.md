@@ -2472,7 +2472,9 @@ the stored record found under any of its type's union fields]. MEASURED, the wir
 record Java wrote and saves it; the stored key order is Java's but for the twice-written key, the
 maintained index is Java's six pairs less the dropped `x` entry, and a Go online build over the
 re-saved bytes equals it. Red on `529753bf6` (`{1: [a b], 3: [j k]}` against Java's `[b a]`, `[k j]`).
-`TestSerializeUnionOverKeepsTheStoredMapOrder` pins each case in Go.
+`TestSerializeUnionOverKeepsTheStoredMapOrder` pins each case in Go [Superseded → 7.17: it pins the
+top-level map's cases; maps in messages and map values are `TestSerializeUnionOverKeepsNestedMapOrders`'
+and the JVM re-save specs'].
 
 **Required fields (graefe 3).** The map arm's marshal makes the required-field check the record's
 path makes without a map: none for a vtproto message (`AllowPartial`), protobuf-go's for a dynamic
@@ -2672,7 +2674,8 @@ The maintainer (`parseHNSWConfig`) and the evolution check read with the same re
 configuration Java refuses fails the maintainer instead of taking a default, and the evolution check
 compares the RaBitQ count, the metric and the switch as parsed (a key covers its alias there too).
 RaBitQ with 9 to 15 bits, which Config admits and Java's `RaBitQuantizer` refuses when the index is
-maintained (RaBitQuantizer.java:76), is refused where Go's maintainer makes its quantizer, not
+maintained (RaBitQuantizer.java:76), is refused where Go's maintainer makes its quantizer [Superseded
+→ 7.17: where Java constructs it, when an operation first quantizes], not
 silently encoded with 4 (`rabitq.NewQuantizer` clamped). A plain VECTOR index keeps two Go forms, the
 lower-case metric names and 128 dimensions when none are given, until WS-D. JVM specs: "options are
 read as Java reads them" now compares the WHOLE configuration (metric, booleans, RaBitQ, limits;
@@ -2691,13 +2694,14 @@ map marshal do. `TestSerializeUnionOverKeepsAProto3EntrysZeroKeyAndValue`.
 **"Byte for byte" scoped (graefe 2, storage 2, torvalds 3a and 3c).** protobuf-go's deterministic
 marshal writes a oneof member after the other fields (and an extension first); Java writes field-
 number order. The claims now say map entries, and DIVERGENCES' map-order entry declares the field
-order (and unknown fields' order, not measured). A new JVM spec, "A record re-saved unchanged is
+order (and unknown fields' order, not measured [Superseded → 7.17: measured, and an entry's unknown
+fields were dropped]). A new JVM spec, "A record re-saved unchanged is
 written as Java's load-then-save writes it", re-saves in both engines a proto3 record with a zero
 value, an empty key, a key written twice with message values in different nested orders and a map in
 a map value, byte for byte equal, and a record with a oneof member numbered below its maps, equal
 but for that member's position, which the spec computes from Java's bytes; each from Java's first
 save and from the raw bytes (torvalds 5: the raw path now meets an entry stored without a value in
-the wire-order spec too).
+the wire-order spec too [Superseded → 7.17: it met it in a build only; both engines now re-save it]).
 
 **Elements matched along the list (storage 3, torvalds 2).** `elementPriors` pairs current and stored
 elements along a longest common subsequence of their contents (on a tie passing over the current
@@ -2718,3 +2722,95 @@ verbose run of the changed specs after the commit (`evidence/wsc16-green-commit`
 hook. Mutation runs: none this revision; revision 15's two are recorded with the mutated lines in
 `evidence/wsc15-mutation/README`.
 
+### 7.17 Revision 17: the quantizer refused where Java constructs it; entries' unknown fields; the planner's metric alias
+
+Revision 16's gate (`ws-c-addendum-review-v16/`, commit `826d8ce93`) returned three NAKs. Revision 17
+lands on top of `c1bc5a177` (WS-J step 3's first commit); the 7.14 to 7.16 sentences it changes are
+marked [Superseded → 7.17].
+
+**The windowed-validation Describe is back (Medium).** Revision 16 deleted the JVM Describe "A
+windowed VECTOR index is validated as Java validates it" with an edit meant for its neighbour; it is
+restored as it stood at `1c6059b91`, and runs green.
+
+**The planner reads the metric under its alias (Medium, query engine).** `tryVectorIndexCandidate`
+read `hnswMetric` alone, so an index whose metric is stored as `vectorMetric` (the name Java's
+`IndexOptions` tells users to write) was taken for Euclidean: a cosine QUALIFY over it found no
+vector candidate and was unplannable, and a Euclidean one matched an index the maintainer builds for
+cosine. The generator now reads `recordlayer.VectorIndexMetricOption`, Java's `METRIC.read`
+(`hnswMetric`, else `vectorMetric`), the key Java's `VectorIndexExpansionVisitor` reads.
+`TestVectorPlan_MetricUnderItsAlias` edits a built index's options to hold the metric only under
+the alias (Go's DDL writes `hnswMetric`); the harness plans over held meta-data through
+`planPhysicalForMetaData`, which `planPhysicalForTestObserved` now calls after building its
+template.
+
+**RaBitQ extra bits 9 to 15 are refused where Java constructs the quantizer (torvalds, storage).**
+Java's `Config` admits 1 to 15 and `RaBitQuantizer` 1 to 8, and Java builds the quantizer lazily:
+`Primitives.quantizer(accessInfo)` (Primitives.java:174-182) once the access info can use RaBitQ,
+which every insert into a non-empty graph, every delete of a present node and every search of a
+non-empty graph calls, and `Insert.firstInsert` (Insert.java:274-285) for a metric that is not
+translation-preserving. Revision 16 refused at maintainer construction, which refused every save of
+a Euclidean index that Java serves until its centroid is established. `parseHNSWConfig` now keeps
+the count, and `hnswGraph.raBitQuantizerAdmits` refuses at exactly those points (an
+`IllegalArgumentError`; Java's has no message). `rabitq.NewQuantizer` no longer replaces an
+unsupported count by 4 (`rabitq.ValidNumExBits` is the encoder's range); SPFresh's validation, which
+admitted 0 extra bits and then stored 4-bit codes sized as 1-bit ones, now requires 1 to 8. A JVM
+spec, "An HNSW index with more RaBitQ extra bits than the quantizer encodes is refused where Java
+constructs it", saves 16 vectors one per transaction into a Euclidean index at 9 and 15 bits, a
+cosine index at 9 and a control at 8, with statistics sampled on every insert and threshold 11,
+then searches and deletes: both engines accept 12 saves and refuse the rest, the search and the
+delete (Euclidean), refuse every save and serve the search and the delete (cosine), and serve all
+(8 bits).
+
+Reading Java's `Insert` for this showed a second difference, fixed with it: Java leaves a node
+already in the graph as it is (Insert.java:195-197), and Go deleted and re-inserted it. The
+maintainer removes a record's old entry before inserting the new one, so the case arises when an
+insert meets an entry already indexed (an index build reaching a record a concurrent save indexed);
+Go rewired the graph Java leaves untouched. Go now returns, after resolving both reads.
+`leaves a node already in the graph as it is` pins the unchanged graph bytes. Older specs that
+asserted Go's overwrite now assert Java's: two graph specs keep the first vector, the RaBitQ update
+spec deletes before it re-inserts, as the maintainer does, and the sliding window's "replays tracked
+inserts without bookkeeping" (32 rows) finds a tracked in-window record at its stored vector after
+the window's delegate insert, as Java's `SW_REINSERT_ALREADY_TRACKED` path leaves it.
+
+**Raw bytes re-saved by both engines (torvalds v15-5).** The wire-order spec re-saves the raw
+subspace in each engine (record 3's entry without a value, record 1's twice-written key); the bytes
+are equal, record 3 is rewritten, and the index is unchanged. The P3 spec's records gain an entry
+with only a key, one with only a value, a message-valued entry with only a key, an entry with
+unknown fields, record-level unknown fields, and a record whose oneof member follows its maps; over
+the raw bytes Java rewrites records 1 and 3.
+
+**An entry's unknown fields (storage).** Measured on that spec: Java's entry is a DynamicMessage and
+keeps its unknown fields, written after its key and value; Go's `canonicalEntry` dropped them, and
+its unchanged test compared whole entries, so an entry carrying one was taken for changed.
+`canonicalEntry` now appends the stored entry's unknown fields, and an entry is unchanged by its key
+and value alone (`TestSerializeUnionOverKeepsAMapEntrysUnknownFields`). The same run measured the
+order: Java writes a message's unknown fields by field number and, within a field, by wire type
+(its `UnknownFieldSet`); Go writes them as stored. Over bytes Java wrote the two agree; over raw
+bytes out of that order they are a declared field-order difference beside the oneof one
+(DIVERGENCES' map-order entry), which the spec pins.
+
+**The matching's limits declared and pinned (storage, torvalds).** `elementPriorsWithin` takes the
+cell bound; `TestElementPriorsMatching` pins the fallback past it (stored [A1, B, A2], saved as
+[B, A]: A takes A1 where the subsequence and Java give A2) and an inserted element equal to a stored
+one (stored [B] saved as [B', B]: B' takes B's order and the stored B is written in key order).
+DIVERGENCES no longer says "however elements were inserted".
+
+**Pins.** The evolution check's RaBitQ count in fullwidth digits, admitted, and changed, refused,
+by unit rows and JVM rows in "Index option changes in meta-data evolution" (also a metric changed
+under its alias). A refusal names the option name that changed, an alias included, as
+`disallowChange` does. `DryRunSaveRecord` over a stored Struct whose map writes a key twice previews
+the save's size. `hnswConfigChecks` has a row per check at and past each bound, texts included (the
+probabilities, NaN, the limits, and the first of two failures). `appendEntryField` equals
+protobuf-go's map marshal for every scalar key and value kind, zero values included (57 entries).
+
+**Nits.** `ValidateHNSWConfig` is deleted (its callers were tests; they call `hnswConfigChecks`).
+DIVERGENCES' "permissive … DEFAULT" paragraph is past tense, and its RaBitQ sentence says where the
+refusal is. `wsc15-red-first` is withdrawn as evidence: no hash identifies its test files, and
+`wsc15-red` stops at an earlier expectation of the same spec, so the older-union-field arm has a
+green pin only; its TREE says so. The hook's TREE records the index tree written before the commit
+and the commit's tree.
+
+**Evidence.** Red: `fdb-wsc10` at `c1bc5a177`'s tree plus the changed test files, the Java step and
+the named adapters (`evidence/wsc17-red`). Green: a verbose run of the changed specs after the
+commit, the "HNSW with RaBitQ" and "HNSW Config Validation" Describes included
+(`evidence/wsc17-green-commit`), and the pre-commit hook. Mutation runs: none.

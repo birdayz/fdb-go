@@ -11,6 +11,7 @@ import (
 	"math/rand"
 	"os"
 	"sort"
+	"strconv"
 	"time"
 
 	"fdb.dev/gen"
@@ -225,74 +226,80 @@ var _ = Describe("Layer Assignment", func() {
 	})
 })
 
+// hnswConfigChecks is Java's Config constructor (Config.java:93-120): every
+// check, at and past each bound, with its text, in Java's order (a
+// configuration failing two checks is refused with the first).
 var _ = Describe("HNSW Config Validation", func() {
-	It("accepts valid config", func() {
-		c := DefaultHNSWConfig(128)
-		Expect(ValidateHNSWConfig(c)).To(Succeed())
-	})
-
-	It("rejects numDimensions < 1", func() {
-		c := DefaultHNSWConfig(0)
-		Expect(ValidateHNSWConfig(c)).To(HaveOccurred())
-	})
-
-	It("rejects m out of range", func() {
-		c := DefaultHNSWConfig(128)
-		c.M = 3
-		Expect(ValidateHNSWConfig(c)).To(HaveOccurred())
-		c.M = 201
-		Expect(ValidateHNSWConfig(c)).To(HaveOccurred())
-	})
-
-	It("rejects mMax out of range", func() {
-		c := DefaultHNSWConfig(128)
-		c.MMax = 3
-		Expect(ValidateHNSWConfig(c)).To(HaveOccurred())
-		c.MMax = 201
-		Expect(ValidateHNSWConfig(c)).To(HaveOccurred())
-	})
-
-	It("rejects mMax0 out of range", func() {
-		c := DefaultHNSWConfig(128)
-		c.MMax0 = 3
-		Expect(ValidateHNSWConfig(c)).To(HaveOccurred())
-		c.MMax0 = 301
-		Expect(ValidateHNSWConfig(c)).To(HaveOccurred())
-	})
-
-	It("rejects efConstruction out of range", func() {
-		c := DefaultHNSWConfig(128)
-		c.EfConstruction = 99
-		Expect(ValidateHNSWConfig(c)).To(HaveOccurred())
-		c.EfConstruction = 401
-		Expect(ValidateHNSWConfig(c)).To(HaveOccurred())
-	})
-
-	// Cross-field invariants — Java Config.java:88-92. The default config satisfies them.
-	It("accepts the default config", func() {
-		Expect(ValidateHNSWConfig(DefaultHNSWConfig(128))).To(Succeed())
-	})
-
-	It("rejects m > mMax", func() {
-		c := DefaultHNSWConfig(128) // M=16, MMax=16
-		c.M = 20                    // 20 > 16, both individually in range
-		Expect(ValidateHNSWConfig(c)).To(HaveOccurred())
-	})
-
-	It("rejects mMax > mMax0", func() {
-		c := DefaultHNSWConfig(128) // MMax=16, MMax0=32
-		c.MMax = 40                 // 40 > 32, both individually in range
-		c.MMax0 = 32
-		Expect(ValidateHNSWConfig(c)).To(HaveOccurred())
-	})
-
-	It("rejects efRepair < m or efRepair > 400", func() {
-		c := DefaultHNSWConfig(128) // M=16, efRepair=64
-		c.EfRepair = 10             // 10 < m=16
-		Expect(ValidateHNSWConfig(c)).To(HaveOccurred())
-		c.EfRepair = 401 // > 400
-		Expect(ValidateHNSWConfig(c)).To(HaveOccurred())
-	})
+	type edit func(*HNSWConfig, *bool, *int)
+	set := func(f func(*HNSWConfig)) edit { return func(c *HNSWConfig, _ *bool, _ *int) { f(c) } }
+	withRaBitQ := func(f func(*HNSWConfig), bits int) edit {
+		return func(c *HNSWConfig, use *bool, b *int) { *use, *b = true, bits; f(c) }
+	}
+	same := func(*HNSWConfig) {}
+	for _, c := range []struct {
+		name string
+		edit edit
+		want string
+	}{
+		{"the default", set(same), ""},
+		{"numDimensions 0", set(func(c *HNSWConfig) { c.NumDimensions = 0 }), "numDimensions must be (1, MAX_INT]"},
+		{"numDimensions 1", set(func(c *HNSWConfig) { c.NumDimensions = 1 }), ""},
+		{"m 3", set(func(c *HNSWConfig) { c.M = 3 }), "m must be [4, 200]"},
+		{"m 201, also above mMax", set(func(c *HNSWConfig) { c.M = 201 }), "m must be [4, 200]"},
+		{"m 4", set(func(c *HNSWConfig) { c.M, c.EfRepair = 4, 64 }), ""},
+		{"mMax 3", set(func(c *HNSWConfig) { c.MMax = 3 }), "mMax must be [4, 200]"},
+		{"mMax 201", set(func(c *HNSWConfig) { c.MMax = 201 }), "mMax must be [4, 200]"},
+		{"mMax0 3", set(func(c *HNSWConfig) { c.MMax0 = 3 }), "mMax0 must be [4, 300]"},
+		{"mMax0 301", set(func(c *HNSWConfig) { c.MMax0 = 301 }), "mMax0 must be [4, 300]"},
+		{"mMax0 300", set(func(c *HNSWConfig) { c.MMax0 = 300 }), ""},
+		{"m above mMax", set(func(c *HNSWConfig) { c.M = c.MMax + 1 }), "m must be less than or equal to mMax"},
+		{"mMax above mMax0", set(func(c *HNSWConfig) { c.MMax = c.MMax0 + 1 }), "mMax must be less than or equal to mMax0"},
+		{"efConstruction 99", set(func(c *HNSWConfig) { c.EfConstruction = 99 }), "efConstruction must be [100, 400]"},
+		{"efConstruction 401", set(func(c *HNSWConfig) { c.EfConstruction = 401 }), "efConstruction must be [100, 400]"},
+		{"efConstruction 400", set(func(c *HNSWConfig) { c.EfConstruction = 400 }), ""},
+		{"efRepair below m", set(func(c *HNSWConfig) { c.EfRepair = c.M - 1 }), "efRepair must be [m, 400]"},
+		{"efRepair 401", set(func(c *HNSWConfig) { c.EfRepair = 401 }), "efRepair must be [m, 400]"},
+		{"efRepair m", set(func(c *HNSWConfig) { c.EfRepair = c.M }), ""},
+		{"RaBitQ at the defaults", withRaBitQ(same, 4), ""},
+		{"sample probability 0 without RaBitQ", set(func(c *HNSWConfig) { c.SampleVectorStatsProbability = 0 }), ""},
+		{"sample probability 0", withRaBitQ(func(c *HNSWConfig) { c.SampleVectorStatsProbability = 0 }, 4), "sampleVectorStatsProbability out of range"},
+		{"sample probability above 1", withRaBitQ(func(c *HNSWConfig) { c.SampleVectorStatsProbability = 1.0000001 }, 4), "sampleVectorStatsProbability out of range"},
+		{"sample probability NaN", withRaBitQ(func(c *HNSWConfig) { c.SampleVectorStatsProbability = math.NaN() }, 4), "sampleVectorStatsProbability out of range"},
+		{"sample probability 1", withRaBitQ(func(c *HNSWConfig) { c.SampleVectorStatsProbability = 1 }, 4), ""},
+		{"maintain probability 0", withRaBitQ(func(c *HNSWConfig) { c.MaintainStatsProbability = 0 }, 4), "maintainStatsProbability out of range"},
+		{"maintain probability above 1", withRaBitQ(func(c *HNSWConfig) { c.MaintainStatsProbability = 2 }, 4), "maintainStatsProbability out of range"},
+		{"maintain probability 1", withRaBitQ(func(c *HNSWConfig) { c.MaintainStatsProbability = 1 }, 4), ""},
+		{"stats threshold 10", withRaBitQ(func(c *HNSWConfig) { c.StatsThreshold = 10 }, 4), "statThreshold out of range"},
+		{"stats threshold 10 without RaBitQ", set(func(c *HNSWConfig) { c.StatsThreshold = 10 }), ""},
+		{"stats threshold 11", withRaBitQ(func(c *HNSWConfig) { c.StatsThreshold = 11 }, 4), ""},
+		{"0 extra bits", withRaBitQ(same, 0), "raBitQNumExBits out of range"},
+		{"16 extra bits", withRaBitQ(same, 16), "raBitQNumExBits out of range"},
+		{"15 extra bits", withRaBitQ(same, 15), ""},
+		{"16 extra bits without RaBitQ", func(_ *HNSWConfig, _ *bool, b *int) { *b = 16 }, ""},
+		{"node fetches 0", set(func(c *HNSWConfig) { c.MaxNumConcurrentNodeFetches = 0 }), "maxNumConcurrentNodeFetches must be (0, 64]"},
+		{"node fetches 65", set(func(c *HNSWConfig) { c.MaxNumConcurrentNodeFetches = 65 }), "maxNumConcurrentNodeFetches must be (0, 64]"},
+		{"node fetches 64", set(func(c *HNSWConfig) { c.MaxNumConcurrentNodeFetches = 64 }), ""},
+		{"neighborhood fetches 0", set(func(c *HNSWConfig) { c.MaxNumConcurrentNeighborhoodFetches = 0 }), "maxNumConcurrentNeighborhoodFetches must be (0, 20]"},
+		{"neighborhood fetches 21", set(func(c *HNSWConfig) { c.MaxNumConcurrentNeighborhoodFetches = 21 }), "maxNumConcurrentNeighborhoodFetches must be (0, 20]"},
+		{"neighborhood fetches 20", set(func(c *HNSWConfig) { c.MaxNumConcurrentNeighborhoodFetches = 20 }), ""},
+		{"delete concurrency 0", set(func(c *HNSWConfig) { c.MaxNumConcurrentDeleteFromLayer = 0 }), "maxNumConcurrentDeleteFromLayer must be (0, 10]"},
+		{"delete concurrency 11", set(func(c *HNSWConfig) { c.MaxNumConcurrentDeleteFromLayer = 11 }), "maxNumConcurrentDeleteFromLayer must be (0, 10]"},
+		{"delete concurrency 10", set(func(c *HNSWConfig) { c.MaxNumConcurrentDeleteFromLayer = 10 }), ""},
+		{"two failures, the first reported", set(func(c *HNSWConfig) { c.EfConstruction, c.MaxNumConcurrentNodeFetches = 0, 0 }), "efConstruction must be [100, 400]"},
+	} {
+		It(c.name, func() {
+			config, use, bits := DefaultHNSWConfig(128), false, 4
+			c.edit(&config, &use, &bits)
+			err := hnswConfigChecks(config, use, bits)
+			if c.want == "" {
+				Expect(err).NotTo(HaveOccurred())
+				return
+			}
+			var iae *IllegalArgumentError
+			Expect(errors.As(err, &iae)).To(BeTrue(), "%v", err)
+			Expect(iae.Message).To(Equal(c.want))
+		})
+	}
 })
 
 var _ = Describe("HNSW Graph Direct", func() {
@@ -442,7 +449,9 @@ var _ = Describe("HNSW Graph Direct", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("insert same PK twice (update), only one result", func() {
+	// Java's Insert leaves a present node as it is (Insert.java:195-197); an
+	// update is the maintainer's delete then insert.
+	It("insert same PK twice keeps the first node, only one result", func() {
 		graph := makeGraph(2)
 
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
@@ -450,16 +459,15 @@ var _ = Describe("HNSW Graph Direct", func() {
 
 			pk := tuple.Tuple{int64(42)}
 
-			// Insert at (0,0), then "update" to (5,5).
 			Expect(graph.Insert(tx, pk, []float64{0.0, 0.0})).To(Succeed())
 			Expect(graph.Insert(tx, pk, []float64{5.0, 5.0})).To(Succeed())
 
 			// Search for all nodes. Should get exactly 1 result.
-			results, err := graph.Search(tx, []float64{5.0, 5.0}, 10, 100)
+			results, err := graph.Search(tx, []float64{0.0, 0.0}, 10, 100)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(results).To(HaveLen(1))
 			Expect(tupleEqual(results[0].PrimaryKey, pk)).To(BeTrue())
-			// The node's vector should be the updated one (5,5), so distance to (5,5) = 0.
+			// The node keeps its first vector (0,0).
 			Expect(results[0].Distance).To(BeNumerically("~", 0.0, 1e-9))
 
 			return nil, nil
@@ -1268,7 +1276,7 @@ var _ = Describe("HNSW Inlining Storage", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("insert same PK twice (update) with inlining", func() {
+	It("insert same PK twice keeps the first node with inlining", func() {
 		graph := makeInliningGraph(2)
 
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
@@ -1279,7 +1287,7 @@ var _ = Describe("HNSW Inlining Storage", func() {
 			Expect(graph.Insert(tx, pk, []float64{0.0, 0.0})).To(Succeed())
 			Expect(graph.Insert(tx, pk, []float64{5.0, 5.0})).To(Succeed())
 
-			results, err := graph.Search(tx, []float64{5.0, 5.0}, 1, 100)
+			results, err := graph.Search(tx, []float64{0.0, 0.0}, 1, 100)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(results).To(HaveLen(1))
 			Expect(tupleEqual(results[0].PrimaryKey, pk)).To(BeTrue())
@@ -1741,7 +1749,9 @@ var _ = Describe("HNSW with RaBitQ", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("update (re-insert) works with RaBitQ", func() {
+	// An update is the maintainer's delete of the old entry and insert of the
+	// new one (an insert of a present key leaves the node as it is, below).
+	It("update (delete then insert) works with RaBitQ", func() {
 		graph := makeRaBitQGraph(4, 4)
 
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
@@ -1751,8 +1761,8 @@ var _ = Describe("HNSW with RaBitQ", func() {
 			vec1 := []float64{1.0, 0.0, 0.0, 0.0}
 			Expect(graph.Insert(tx, pk, vec1)).To(Succeed())
 
-			// Re-insert with a different vector (update semantics).
 			vec2 := []float64{100.0, 0.0, 0.0, 0.0}
+			Expect(graph.Delete(tx, pk)).To(Succeed())
 			Expect(graph.Insert(tx, pk, vec2)).To(Succeed())
 
 			// Search near new position should find it close.
@@ -2002,9 +2012,7 @@ var _ = Describe("HNSW with RaBitQ", func() {
 		config := DefaultHNSWConfig(4)
 		for _, threshold := range []int{-1, 0, 1, 10, 11, 1000} {
 			config.StatsThreshold = threshold
-			config.Quantizer = nil
-			Expect(ValidateHNSWConfig(config)).To(Succeed())
-			config.Quantizer = rabitq.NewQuantizer(rabitq.MetricEuclidean, 4)
+			Expect(hnswConfigChecks(config, false, 4)).To(Succeed())
 			index := NewVectorIndex("threshold", Field("vector_data"), 4)
 			index.Options["hnswUseRaBitQ"] = "true"
 			index.Options[IndexOptionHNSWStatsThreshold] = fmt.Sprint(threshold)
@@ -2012,11 +2020,11 @@ var _ = Describe("HNSW with RaBitQ", func() {
 			if threshold <= 10 {
 				// Config's check, Java's text, when the index is read.
 				Expect(err).To(MatchError("statThreshold out of range"))
-				Expect(ValidateHNSWConfig(config)).To(MatchError("statThreshold out of range"))
+				Expect(hnswConfigChecks(config, true, 4)).To(MatchError("statThreshold out of range"))
 			} else {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(parsed.StatsThreshold).To(Equal(threshold))
-				Expect(ValidateHNSWConfig(config)).To(Succeed())
+				Expect(hnswConfigChecks(config, true, 4)).To(Succeed())
 			}
 		}
 	})
@@ -2072,14 +2080,15 @@ var _ = Describe("HNSW with RaBitQ", func() {
 	})
 
 	// An extra-bit count Config refuses (outside 1 to 15) is refused as Java's
-	// Config refuses it, and one Config admits and Java's RaBitQuantizer does
-	// not (9 to 15) is refused where the maintainer makes the quantizer.
-	It("parseHNSWConfig refuses an extra-bit count Java refuses", func() {
+	// Config refuses it; one Config admits and Java's RaBitQuantizer does not
+	// (9 to 15) builds the configuration with that count, kept as it is, since
+	// Java refuses it only where an operation constructs the quantizer.
+	It("parseHNSWConfig refuses an extra-bit count Java's Config refuses and keeps one it admits", func() {
 		for bits, want := range map[string]string{
 			"99": "raBitQNumExBits out of range",
 			"0":  "raBitQNumExBits out of range",
-			"9":  "RaBitQ encodes 1 to 8 extra bits",
-			"15": "RaBitQ encodes 1 to 8 extra bits",
+			"9":  "",
+			"15": "",
 		} {
 			idx := &Index{
 				Name: "test_vec",
@@ -2089,11 +2098,110 @@ var _ = Describe("HNSW with RaBitQ", func() {
 					"hnswRaBitQNumExBits": bits,
 				},
 			}
-			_, err := parseHNSWConfig(idx)
+			config, err := parseHNSWConfig(idx)
+			if want == "" {
+				Expect(err).NotTo(HaveOccurred(), bits)
+				Expect(strconv.Itoa(config.Quantizer.(*rabitq.Quantizer).NumExBits())).To(Equal(bits))
+				continue
+			}
 			var iae *IllegalArgumentError
 			Expect(errors.As(err, &iae)).To(BeTrue(), "%s: %v", bits, err)
 			Expect(iae.Message).To(Equal(want), bits)
 		}
+	})
+
+	// Java's HNSW constructs its RaBitQuantizer, whose constructor refuses 9 to
+	// 15 extra bits, only where an operation quantizes (Primitives.quantizer
+	// once the access info can use RaBitQ; Insert.firstInsert for a metric that
+	// is not translation-preserving), so a Euclidean index serves inserts until
+	// its centroid is established and refuses every insert, search and delete of
+	// a present node after it, while a search of an empty graph and a delete of
+	// an absent node are served; a cosine index refuses its first insert.
+	It("refuses 9 to 15 extra bits where Java constructs the quantizer", func() {
+		const dims = 8
+		refused := func(err error) bool {
+			var iae *IllegalArgumentError
+			return errors.As(err, &iae) && iae.Message == "RaBitQ encodes 1 to 8 extra bits, not 9"
+		}
+		for _, metric := range []VectorMetric{VectorMetricEuclidean, VectorMetricCosine} {
+			config := HNSWConfig{
+				NumDimensions: dims, M: 4, MMax: 4, MMax0: 8, EfConstruction: 100, EfRepair: 64,
+				Metric:                       metric,
+				Quantizer:                    rabitq.NewQuantizer(rabitq.Metric(metric), 9),
+				SampleVectorStatsProbability: 1.0,
+				MaintainStatsProbability:     1.0,
+				StatsThreshold:               11,
+			}
+			storage := newHNSWStorage(specSubspace().Sub("hnsw-rabitq-bits9", int64(metric)), config)
+			graph := NewHNSWGraph(storage, config)
+			rng := rand.New(rand.NewSource(3))
+			vec := func() []float64 {
+				v := make([]float64, dims)
+				for d := range v {
+					v[d] = rng.NormFloat64()
+				}
+				return v
+			}
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				tx := rtx.Transaction()
+				results, serr := graph.Search(tx, vec(), 3, 100)
+				Expect(serr).NotTo(HaveOccurred(), "a search of an empty graph constructs no quantizer")
+				Expect(results).To(BeEmpty())
+				if metric == VectorMetricCosine {
+					Expect(refused(graph.Insert(tx, tuple.Tuple{int64(0)}, vec()))).To(BeTrue(),
+						"a cosine index quantizes its first node")
+					return nil, nil
+				}
+				inserted := 0
+				for ; inserted < 40; inserted++ {
+					if ierr := graph.Insert(tx, tuple.Tuple{int64(inserted)}, vec()); ierr != nil {
+						Expect(refused(ierr)).To(BeTrue(), "%v", ierr)
+						break
+					}
+				}
+				// The first node and the eleven sampled after it establish the
+				// centroid; the next insert is the first to quantize.
+				Expect(inserted).To(Equal(12))
+				info, lerr := storage.loadAccessInfo(tx)
+				Expect(lerr).NotTo(HaveOccurred())
+				Expect(info.hasTransform()).To(BeTrue())
+				_, serr = graph.Search(tx, vec(), 3, 100)
+				Expect(refused(serr)).To(BeTrue(), "%v", serr)
+				Expect(refused(graph.Delete(tx, tuple.Tuple{int64(0)}))).To(BeTrue())
+				Expect(graph.Delete(tx, tuple.Tuple{int64(1000)})).To(Succeed(),
+					"a delete of an absent node returns before the quantizer")
+				Expect(graph.Insert(tx, tuple.Tuple{int64(0)}, vec())).To(Succeed(),
+					"an insert of a present node returns before the quantizer")
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred(), fmt.Sprint(metric))
+		}
+	})
+
+	// Java's Insert leaves a node already in the graph as it is
+	// (Insert.java:195-197); Go deleted and re-inserted it, rewiring the
+	// graph's edges and storing the new vector.
+	It("leaves a node already in the graph as it is", func() {
+		const dims = 4
+		graph := makeRaBitQGraph(dims, 4)
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			for i := 0; i < 12; i++ {
+				Expect(graph.Insert(tx, tuple.Tuple{int64(i)}, []float64{float64(i), 1, 2, 3})).To(Succeed())
+			}
+			snapshot := func() []fdb.KeyValue {
+				r, perr := fdb.PrefixRange(graph.storage.dataSubspace.Bytes())
+				Expect(perr).NotTo(HaveOccurred())
+				kvs, gerr := tx.GetRange(r, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}).GetSliceWithError()
+				Expect(gerr).NotTo(HaveOccurred())
+				return kvs
+			}
+			before := snapshot()
+			Expect(graph.Insert(tx, tuple.Tuple{int64(5)}, []float64{-9, -9, -9, -9})).To(Succeed())
+			Expect(snapshot()).To(Equal(before), "the graph's bytes are unchanged")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
 	})
 
 	It("computeDistance handles both raw and RaBitQ vectors", func() {

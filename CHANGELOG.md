@@ -443,7 +443,8 @@ assets carry (`RELEASE.md` §Versioning).
   It is indexed in the order written, so a record Java wrote that Go loads and saves unchanged keeps
   its map entries as Java's own load-then-save writes them, and neither engine's index changes; its
   bytes are Java's but for field order, where protobuf-go writes a oneof member after the other
-  fields and Java in field-number order (JVM specs; DIVERGENCES.md). An entry's key and value are
+  fields and Java in field-number order, and unknown fields as stored where Java writes them by
+  field number (JVM specs; DIVERGENCES.md). An entry's key and value are
   written whatever their value, a proto3 zero included. The stored entries are read from whichever
   of the type's union fields holds the stored record, and maps below the top level (in a message, in
   a map's values, in a repeated field's elements, matched to the stored elements by content in list
@@ -487,8 +488,21 @@ assets carry (`RELEASE.md` §Versioning).
   `efConstruction` in 100 to 400, ...), where Go's maintainer silently took a default for a value
   outside its own ranges (it maintained `hnswM=150` with 16). A value that does not parse, a
   metric no constant names, or a configuration `Config` refuses now fails the maintainer rather
-  than being replaced by a default; so does RaBitQ with more than 8 extra bits, which Java's
-  quantizer refuses. A row-number window under a disjunction is Java's `RecordCoreError`, not a `MetaDataError`.
+  than being replaced by a default. RaBitQ with 9 to 15 extra bits, which `Config` admits and Java's
+  quantizer refuses, is refused (`IllegalArgumentError`) where Java constructs the quantizer, when an
+  operation first quantizes: a Euclidean index accepts saves until its centroid is established,
+  then refuses saves, searches and deletes of present entries; a cosine or dot-product index
+  refuses its first save (Go stored 4-bit codes before, then refused every save). A row-number
+  window under a disjunction is Java's `RecordCoreError`, not a `MetaDataError`.
+- An HNSW insert of a key already in the graph leaves the graph as it is, as Java's `Insert` does;
+  Go deleted and re-inserted the node (reachable when an index build meets an entry a concurrent
+  save indexed), rewiring edges Java leaves alone.
+- The planner reads a vector index's metric under its alias `vectorMetric` too, as Java does; an
+  index whose metric was stored only there was planned as Euclidean.
+- A stored map entry's unknown fields are kept when Go re-saves the record with that entry
+  unchanged, as Java keeps them; Go dropped them.
+- SPFresh's `spfreshRaBitQNumExBits` must be 1 to 8; 0 was accepted and then encoded with 4 bits
+  (`rabitq.NewQuantizer` no longer replaces an unsupported count).
 - A literal key column holding an `int_value` (`Literal(int32(n))`, the width Go's DDL now writes,
   as Java's) is maintained as the integer Java writes; it panicked in the tuple encoder on the
   first save.

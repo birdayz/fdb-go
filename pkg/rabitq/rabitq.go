@@ -43,12 +43,19 @@ type Quantizer struct {
 }
 
 // NewQuantizer creates a new RaBitQ quantizer implementing VectorQuantizer.
-// numExBits is clamped to [1, 8]; out-of-range values default to 4.
+// numExBits is kept as given: a count outside what the encoder supports
+// (ValidNumExBits) is refused by the caller where it first quantizes, as Java
+// refuses it where it constructs its RaBitQuantizer, never replaced by another
+// count, which would store codes of a width the configuration does not name.
 func NewQuantizer(metric Metric, numExBits int) *Quantizer {
-	if numExBits < 1 || numExBits > 8 {
-		numExBits = 4
-	}
 	return &Quantizer{metric: metric, numExBits: numExBits}
+}
+
+// ValidNumExBits reports whether the encoder supports numExBits extra bits:
+// 1 to 8, the range Java's RaBitQuantizer constructor checks
+// (RaBitQuantizer.java:76, TIGHT_START's length).
+func ValidNumExBits(numExBits int) bool {
+	return numExBits >= 1 && numExBits < len(tightStart)
 }
 
 // NumExBits is the quantizer's count of extra bits.
@@ -331,7 +338,7 @@ type RaBitQuantizer struct {
 // NewRaBitQuantizer creates a new quantizer with the given metric and bit precision.
 // numExBits must be in [1, 8].
 func NewRaBitQuantizer(metric Metric, numExBits int) *RaBitQuantizer {
-	if numExBits < 1 || numExBits > 8 {
+	if !ValidNumExBits(numExBits) {
 		panic(fmt.Sprintf("rabitq: numExBits must be in [1, 8], got %d", numExBits))
 	}
 	return &RaBitQuantizer{

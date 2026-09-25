@@ -15126,3 +15126,16 @@ literal-carrier arms (removed in `8e515423b`). The unit still gates the tree's m
 the landed fixes change what a template built from DDL stores, and without the carry rule a new
 version of an existing template renumbers its record types. Step 3 is restated in 4e ("Step 3,
 restated"); the design v17 gate is `ws-j-design-review-v17/`.
+
+### RFC-257 WS-C revision 17 (booked 2026-09-25)
+
+LANDED (ws-c-design.md 7.17), folding the v16 gate's three NAKs (`ws-c-addendum-review-v16/`): the
+windowed-validation JVM Describe restored; the planner's vector candidate reads the metric under its
+`vectorMetric` alias (a query-engine change, for the gate's Graefe lens); RaBitQ extra bits 9 to 15
+refused where Java constructs the quantizer (JVM spec per operation), with the HNSW insert of a
+present key left as Java leaves it and SPFresh's 0-bit count refused; raw bytes re-saved by both
+engines; a map entry's unknown fields kept, and unknown-field order measured and declared; the
+element matching's cell-bound fallback and equal-element insertion declared and pinned; the
+evolution, dry-run, Config-check and entry-field pins; the alias named in an evolution refusal.
+NEXT: the revision-17 gate (`ws-c-addendum-review-v17/`). The WS-J design v17 gate returned three
+NAKs (`ws-j-design-review-v17/`), folded next into design v18.

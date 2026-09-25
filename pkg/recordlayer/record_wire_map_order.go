@@ -498,21 +498,32 @@ func rewriteMaps(md protoreflect.MessageDescriptor, raw, prior []byte, reach map
 
 // elementPriors pairs each element of a repeated message field, current (the
 // bodies the deterministic marshal wrote), with the stored element whose maps
-// it is written after. The elements are matched by content along a longest
-// common subsequence of the two lists (on a tie the earlier current element is
-// passed over, so an element keeps the stored one at its own position when it
-// can), which pairs every unchanged run of elements with its own stored
-// elements, in order, however elements were inserted, removed or changed around
-// it: Java's element keeps its own order. The elements the subsequence leaves
-// out (moved past each other, a swap) then take the first unmatched stored
-// element with their content, in order; past maxLCSCells cells that is the
-// whole matching. A current element still unmatched takes the stored element at
-// its position when that one is unmatched too (an element changed in place),
-// and otherwise none (its maps in key order). A Go message carries no identity
-// across a load and a save, so equal elements reordered among themselves are
-// matched in order, and a changed element that also moved cannot be told from a
-// new one (DIVERGENCES.md).
+// it is written after: elementPriorsWithin at maxLCSCells.
 func elementPriors(md protoreflect.MessageDescriptor, current, prior [][]byte) ([][]byte, error) {
+	return elementPriorsWithin(md, current, prior, maxLCSCells)
+}
+
+// elementPriorsWithin matches the elements by content along a longest common
+// subsequence of the two lists when the table has at most maxCells cells (on a
+// tie the earlier current element is passed over, so an element keeps the
+// stored one at its own position when it can). That pairs an unchanged run of
+// elements with its own stored elements, in order, when elements are inserted,
+// removed or changed around it, so Java's element keeps its own order, unless
+// an inserted element equals a stored one: stored [B] saved as [B', B] with B'
+// equal to B pairs the stored B with B', the element at its position, and the
+// B that was stored is written as a new element (its maps in key order). The elements the subsequence leaves out (moved past each other,
+// a swap) then take the first unmatched stored element with their content, in
+// order; past maxCells cells that is the whole matching, and an unchanged
+// element can then take an earlier stored element equal to it in content
+// rather than its own (stored [A1, B, A2], A1 and A2 equal but for their maps'
+// order, saved as [B, A]: A takes A1's order where Java's keeps A2's). A current
+// element still unmatched takes the stored element at its position when that
+// one is unmatched too (an element changed in place), and otherwise none (its
+// maps in key order). A Go message carries no identity across a load and a
+// save, so equal elements reordered among themselves are matched in order, and
+// a changed element that also moved cannot be told from a new one
+// (DIVERGENCES.md).
+func elementPriorsWithin(md protoreflect.MessageDescriptor, current, prior [][]byte, maxCells int) ([][]byte, error) {
 	canonical := func(body []byte) (string, error) {
 		m := dynamicpb.NewMessage(md)
 		if err := (proto.UnmarshalOptions{AllowPartial: true}).Unmarshal(body, m); err != nil {
@@ -543,7 +554,7 @@ func elementPriors(md protoreflect.MessageDescriptor, current, prior [][]byte) (
 		match[i] = -1
 	}
 	claimed := make([]bool, m)
-	if n*m <= maxLCSCells {
+	if n*m <= maxCells {
 		lcs := make([][]int32, n+1)
 		for i := range lcs {
 			lcs[i] = make([]int32, m+1)
@@ -638,7 +649,17 @@ func mergeMapEntries(fd protoreflect.FieldDescriptor, current, prior [][]byte, r
 		last[keyOf(entry)] = len(was)
 		was = append(was, priorEntry{key: keyOf(entry), body: body, entry: entry})
 	}
-	// Unchanged is compared as canonical bytes, so a NaN value equals itself.
+	// Unchanged is compared as canonical bytes, so a NaN value equals itself,
+	// over the key and the value alone: the fields an entry carries beyond
+	// them are not part of the map (protobuf-go drops them when it decodes the
+	// map), and Java's load-then-save keeps them with the entry.
+	keyAndValue := func(entry *dynamicpb.Message) ([]byte, error) {
+		if len(entry.GetUnknown()) > 0 {
+			entry = proto.Clone(entry).(*dynamicpb.Message)
+			entry.SetUnknown(nil)
+		}
+		return canonical.Marshal(entry)
+	}
 	unchanged := map[any]bool{}
 	for k, i := range last {
 		body, ok := now[k]
@@ -649,11 +670,11 @@ func mergeMapEntries(fd protoreflect.FieldDescriptor, current, prior [][]byte, r
 		if err != nil {
 			return nil, err
 		}
-		a, err := canonical.Marshal(entry)
+		a, err := keyAndValue(entry)
 		if err != nil {
 			return nil, err
 		}
-		b, err := canonical.Marshal(was[i].entry)
+		b, err := keyAndValue(was[i].entry)
 		if err != nil {
 			return nil, err
 		}
@@ -696,7 +717,9 @@ func mergeMapEntries(fd protoreflect.FieldDescriptor, current, prior [][]byte, r
 // default; a proto3 entry's zero key or value too, which a marshal of the entry
 // as a message would drop for want of presence, and which protobuf-go's map
 // marshal and Java's MapEntry both write), the value's own maps in the order
-// body stores them.
+// body stores them, then the fields the entry carries that its type does not
+// declare, as body stores them (Java's entry is a DynamicMessage, which keeps
+// its unknown fields and writes them after its known ones).
 func canonicalEntry(fd protoreflect.FieldDescriptor, entry *dynamicpb.Message, body []byte, reach mapReach) ([]byte, error) {
 	keyFD, valueFD := fd.MapKey(), fd.MapValue()
 	out, err := appendEntryField(nil, keyFD, entry.Get(keyFD))
@@ -705,7 +728,11 @@ func canonicalEntry(fd protoreflect.FieldDescriptor, entry *dynamicpb.Message, b
 	}
 	vmd := valueFD.Message()
 	if vmd == nil {
-		return appendEntryField(out, valueFD, entry.Get(valueFD))
+		out, err = appendEntryField(out, valueFD, entry.Get(valueFD))
+		if err != nil {
+			return nil, err
+		}
+		return append(out, entry.GetUnknown()...), nil
 	}
 	value, err := proto.MarshalOptions{Deterministic: true, AllowPartial: true}.Marshal(entry.Get(valueFD).Message().Interface())
 	if err != nil {
@@ -724,7 +751,8 @@ func canonicalEntry(fd protoreflect.FieldDescriptor, entry *dynamicpb.Message, b
 			return nil, err
 		}
 	}
-	return protowire.AppendBytes(protowire.AppendTag(out, valueFD.Number(), protowire.BytesType), value), nil
+	out = protowire.AppendBytes(protowire.AppendTag(out, valueFD.Number(), protowire.BytesType), value)
+	return append(out, entry.GetUnknown()...), nil
 }
 
 // appendEntryField appends a map entry's scalar key or value, v of field fd,

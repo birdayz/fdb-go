@@ -608,12 +608,28 @@ func TestQuantizerInterface(t *testing.T) {
 	}
 }
 
+// TestNewQuantizerKeepsItsCount pins that a quantizer carries the extra-bit
+// count it was made with, whatever it is: an unsupported count used to be
+// replaced by 4, so an index configured for 0 or 9 bits stored 4-bit codes.
+// ValidNumExBits is the encoder's range, Java's RaBitQuantizer's 1 to 8.
+func TestNewQuantizerKeepsItsCount(t *testing.T) {
+	t.Parallel()
+	for _, bits := range []int{-1, 0, 1, 4, 8, 9, 15} {
+		if got := NewQuantizer(MetricEuclidean, bits).NumExBits(); got != bits {
+			t.Errorf("NewQuantizer(%d).NumExBits() = %d", bits, got)
+		}
+		if got, want := ValidNumExBits(bits), bits >= 1 && bits <= 8; got != want {
+			t.Errorf("ValidNumExBits(%d) = %t, want %t", bits, got, want)
+		}
+	}
+}
+
 // Scorer must be bit-identical to Distance — it exists only to hoist
 // allocations out of the per-code loop (RFC-094 094.4).
 func TestScorerMatchesDistance(t *testing.T) {
 	t.Parallel()
 	rng := rand.New(rand.NewSource(7))
-	for _, exBits := range []int{0, 1, 2} {
+	for _, exBits := range []int{1, 2, 4} {
 		q := NewQuantizer(MetricEuclidean, exBits)
 		for trial := 0; trial < 200; trial++ {
 			dims := 2 + rng.Intn(64)

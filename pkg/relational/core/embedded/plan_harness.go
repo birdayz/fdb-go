@@ -175,8 +175,21 @@ func planPhysicalForTestObserved(
 	if err != nil {
 		return nil, nil, fmt.Errorf("schema DDL: %w", err)
 	}
-	md := tmpl.Underlying()
+	return planPhysicalForMetaData(sql, tmpl.Underlying(), stats, verifyExtraction, reach, popts, observe)
+}
 
+// planPhysicalForMetaData is planPhysicalForTestObserved over meta-data the
+// caller holds, for a test whose meta-data DDL cannot write (an index option
+// under a name the DDL does not emit).
+func planPhysicalForMetaData(
+	sql string,
+	md *recordlayer.RecordMetaData,
+	stats properties.StatisticsProvider,
+	verifyExtraction bool,
+	reach *cascades.ReachabilityCollector,
+	popts plannerOptions,
+	observe func(logical.LogicalOperator, *expressions.Reference),
+) (plans.RecordQueryPlan, *cascades.ExtractionVerificationReport, error) {
 	root, err := parser.Parse(sql)
 	if err != nil {
 		return nil, nil, fmt.Errorf("parse SQL: %w", err)

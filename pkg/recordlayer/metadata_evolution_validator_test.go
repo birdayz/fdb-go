@@ -2876,6 +2876,25 @@ func TestVectorOptionsComparedByEffectiveValue(t *testing.T) {
 		{"a metric under its alias, the default", map[string]string{}, map[string]string{"vectorMetric": "EUCLIDEAN_METRIC"}, "vectorMetric", false},
 		{"a metric under its alias, changed", map[string]string{}, map[string]string{"vectorMetric": "COSINE_METRIC"}, "vectorMetric", true},
 		{"RaBitQ extra bits set to their default", map[string]string{}, map[string]string{IndexOptionHNSWRaBitQNumExBits: "4"}, IndexOptionHNSWRaBitQNumExBits, false},
+		// Integer.parseInt reads any Unicode decimal digit.
+		{
+			"RaBitQ extra bits in fullwidth digits",
+			map[string]string{IndexOptionHNSWUseRaBitQ: "true", IndexOptionHNSWRaBitQNumExBits: "8"},
+			map[string]string{IndexOptionHNSWUseRaBitQ: "true", IndexOptionHNSWRaBitQNumExBits: "\uff18"},
+			IndexOptionHNSWRaBitQNumExBits, false,
+		},
+		{
+			"RaBitQ extra bits changed",
+			map[string]string{IndexOptionHNSWUseRaBitQ: "true", IndexOptionHNSWRaBitQNumExBits: "8"},
+			map[string]string{IndexOptionHNSWUseRaBitQ: "true", IndexOptionHNSWRaBitQNumExBits: "4"},
+			IndexOptionHNSWRaBitQNumExBits, true,
+		},
+		{
+			"RaBitQ extra bits changed under their alias",
+			map[string]string{IndexOptionHNSWUseRaBitQ: "true"},
+			map[string]string{IndexOptionHNSWUseRaBitQ: "true", "vectorRaBitQNumExBits": "5"},
+			"vectorRaBitQNumExBits", true,
+		},
 	} {
 		oldIdx := &Index{Name: "v", Type: IndexTypeVector, Options: c.old}
 		newIdx := &Index{Name: "v", Type: IndexTypeVector, Options: c.new}
@@ -2885,6 +2904,10 @@ func TestVectorOptionsComparedByEffectiveValue(t *testing.T) {
 		switch {
 		case c.refused && (!errors.As(err, &evolErr) || !strings.HasPrefix(evolErr.Message, "attempted to change immutable vector index option")):
 			t.Errorf("%s: %v, want Java's refusal", c.name, err)
+		case c.refused && !strings.Contains(evolErr.Message, fmt.Sprintf("option=%q", c.option)):
+			// Java's disallowChange names the name that changed, an alias
+			// included.
+			t.Errorf("%s: %v, want the refusal to name %s", c.name, err, c.option)
 		case !c.refused && (err != nil || changed[c.option]):
 			t.Errorf("%s: %v (still changed: %t), want admitted and handled", c.name, err, changed[c.option])
 		}

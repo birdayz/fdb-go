@@ -124,6 +124,44 @@ var _ = Describe("Map entries of a generated record type in wire order", func() 
 		}
 	})
 
+	// A dry-run save serializes over the stored record, as the save does, so
+	// its preview is the save's size: the stored map writes key x twice, which
+	// the save keeps and a marshal of the loaded message, one entry per key,
+	// does not.
+	It("previews a dry-run save of a map type at the size the save writes", func() {
+		md := structMetaData()
+		rt := md.GetRecordType("Struct")
+		ks := specSubspace()
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+			saved, err := store.SaveRecord(&structpb.Struct{Fields: map[string]*structpb.Value{"a": structpb.NewStringValue("v")}})
+			Expect(err).NotTo(HaveOccurred())
+			key := fdb.Key(store.recordsSubspace.Pack(append(saved.PrimaryKey, int64(0))))
+			union := protowire.AppendTag(nil, 1, protowire.BytesType)
+			rtx.Transaction().Set(key, protowire.AppendBytes(union, structBytes(nil, "x", "y", "x")))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+			Expect(err).NotTo(HaveOccurred())
+			loaded, err := store.LoadRecord(tuple.Tuple{rt.GetRecordTypeKey()})
+			Expect(err).NotTo(HaveOccurred())
+			marshaled, err := proto.Marshal(loaded.Record)
+			Expect(err).NotTo(HaveOccurred())
+			dry, err := store.DryRunSaveRecord(loaded.Record, RecordExistenceCheckNone)
+			Expect(err).NotTo(HaveOccurred())
+			saved, err := store.SaveRecord(loaded.Record)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(dry.ValueSize).To(Equal(saved.ValueSize))
+			Expect(dry.ValueSize).To(Equal(len(protowire.AppendBytes(protowire.AppendTag(nil, 1, protowire.BytesType), structBytes(nil, "x", "y", "x")))))
+			Expect(dry.ValueSize).To(BeNumerically(">", len(marshaled)+2), "x written twice")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("reads a Struct's fields in the order its stored bytes hold them", func() {
 		md := structMetaData()
 		rt := md.GetRecordType("Struct")

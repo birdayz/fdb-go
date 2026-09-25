@@ -169,6 +169,9 @@ func TestValidateSPFreshConfig(t *testing.T) {
 	bad(func(c *SPFreshConfig) { c.Alpha = 1.0 }, "alpha")
 	bad(func(c *SPFreshConfig) { c.Kn = 0 }, "kn")
 	bad(func(c *SPFreshConfig) { c.NumExBits = 9 }, "exBits")
+	// 0 extra bits is not a count the RaBitQ encoder takes; it used to pass
+	// here and be replaced by 4 in the quantizer.
+	bad(func(c *SPFreshConfig) { c.NumExBits = 0 }, "exBits")
 	// Sidecar=false bricks maintenance (split/merge/GC hard-require the fp16
 	// sidecar; no source-record fallback exists) — must be a config error,
 	// never a silently degraded index.

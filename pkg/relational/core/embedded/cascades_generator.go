@@ -3855,7 +3855,7 @@ func tryVectorIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMetaD
 	if kwv, ok := idx.RootExpression.(*recordlayer.KeyWithValueExpression); ok {
 		partitionCount = kwv.SplitPoint()
 	}
-	metricOption := idx.Options[recordlayer.IndexOptionVectorMetric]
+	metricOption, _ := recordlayer.VectorIndexMetricOption(idx)
 	if idx.Type == recordlayer.IndexTypeVectorSPFresh {
 		metricOption = idx.Options[recordlayer.IndexOptionSPFreshMetric]
 		// The SPFresh maintainer rejects prefixed (grouped) scans; a

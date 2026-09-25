@@ -1025,14 +1025,21 @@ func validateVectorIndexOptions(oldIdx, newIdx *Index, changed map[string]bool) 
 		{IndexOptionHNSWRaBitQNumExBits, oldOpts.raBitQNumExBits == newOpts.raBitQNumExBits},
 	} {
 		// A key covers its alias (VectorOptionKey's names), as Java's
-		// validateChangedOptions reads it.
+		// validateChangedOptions reads it: disallowChange visits the key's
+		// names in order, its hnsw* name then its alias, and a refusal names
+		// the first of them that changed.
 		alias := hnswOptionAliases[o.key]
-		if !changed[o.key] && (alias == "" || !changed[alias]) {
+		name := o.key
+		switch {
+		case changed[o.key]:
+		case alias != "" && changed[alias]:
+			name = alias
+		default:
 			continue
 		}
 		if !o.same {
 			return &MetaDataEvolutionError{
-				Message: fmt.Sprintf("attempted to change immutable vector index option (index=%q, option=%q)", newIdx.Name, o.key),
+				Message: fmt.Sprintf("attempted to change immutable vector index option (index=%q, option=%q)", newIdx.Name, name),
 			}
 		}
 		delete(changed, o.key)

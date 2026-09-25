@@ -45,6 +45,8 @@ func optionEvolutionMetaData(kind string, options map[string]string, version int
 		recordType = "Customer"
 	case "value":
 		index = recordlayer.NewIndex("idx", recordlayer.Field("price"))
+	case "vector":
+		index = recordlayer.NewVectorIndex("idx", recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 3)
 	default:
 		Fail("unknown index kind " + kind)
 	}
@@ -121,6 +123,25 @@ var _ = Describe("Index option changes in meta-data evolution", func() {
 		{"unique true in two cases", "value", map[string]string{recordlayer.IndexOptionUnique: "true"}, map[string]string{recordlayer.IndexOptionUnique: "TRUE"}, "", ""},
 		{"unique added in upper case", "value", nil, map[string]string{recordlayer.IndexOptionUnique: "TRUE"}, "MetaDataException", "index adds uniqueness constraint"},
 		{"unique set to a non-boolean", "value", nil, map[string]string{recordlayer.IndexOptionUnique: "yes"}, "", ""},
+		// VECTOR: each option's effective value, read by Integer.parseInt and
+		// under either of its names.
+		{
+			"vector RaBitQ extra bits in fullwidth digits", "vector",
+			map[string]string{recordlayer.IndexOptionHNSWUseRaBitQ: "true", recordlayer.IndexOptionHNSWRaBitQNumExBits: "8"},
+			map[string]string{recordlayer.IndexOptionHNSWUseRaBitQ: "true", recordlayer.IndexOptionHNSWRaBitQNumExBits: "\uff18"},
+			"", "",
+		},
+		{
+			"vector RaBitQ extra bits changed", "vector",
+			map[string]string{recordlayer.IndexOptionHNSWUseRaBitQ: "true", recordlayer.IndexOptionHNSWRaBitQNumExBits: "8"},
+			map[string]string{recordlayer.IndexOptionHNSWUseRaBitQ: "true", recordlayer.IndexOptionHNSWRaBitQNumExBits: "4"},
+			"MetaDataException", "attempted to change immutable vector index option",
+		},
+		{
+			"vector metric changed under its alias", "vector", nil,
+			map[string]string{"vectorMetric": "COSINE_METRIC"},
+			"MetaDataException", "attempted to change immutable vector index option",
+		},
 	} {
 		It("validates as Java does: "+c.name, func() {
 			oldProto := optionEvolutionMetaData(c.kind, c.old, 3)

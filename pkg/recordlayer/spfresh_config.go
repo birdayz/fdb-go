@@ -3,6 +3,8 @@ package recordlayer
 import (
 	"fmt"
 	"strconv"
+
+	"fdb.dev/pkg/rabitq"
 )
 
 // SPFresh index options (RFC-094 §10). All structural options are immutable for
@@ -222,8 +224,11 @@ func ValidateSPFreshConfig(c SPFreshConfig) error {
 	if c.CooldownSec < 0 {
 		return fmt.Errorf("spfresh: cooldownSec must be >= 0, got %d", c.CooldownSec)
 	}
-	if c.NumExBits < 0 || c.NumExBits > 8 {
-		return fmt.Errorf("spfresh: raBitQNumExBits must be in [0, 8], got %d", c.NumExBits)
+	// The residual codes are RaBitQ's, whose encoder takes 1 to 8 extra bits.
+	// 0 used to pass here and then be replaced by 4 in the quantizer, so the
+	// index stored 4-bit codes while postingEntryBytes sized entries for 0.
+	if !rabitq.ValidNumExBits(c.NumExBits) {
+		return fmt.Errorf("spfresh: raBitQNumExBits must be in [1, 8], got %d", c.NumExBits)
 	}
 	// The sidecar is load-bearing for MAINTENANCE, not just re-rank: split
 	// 2-means, the chunked drain, merge drains, and GC re-homes all read the
