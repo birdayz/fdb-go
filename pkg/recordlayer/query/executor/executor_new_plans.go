@@ -2165,7 +2165,7 @@ func decodeUnionContinuation(data []byte, n int) ([]unionChildResume, error) {
 		return out, nil // all children fresh (START)
 	}
 	msg := &gen.UnionContinuation{}
-	if err := msg.UnmarshalVT(data); err != nil {
+	if err := recordlayer.UnmarshalVTAsJava(msg, data); err != nil {
 		return nil, &recordlayer.ContinuationParseError{Message: "invalid continuation", RawBytes: data, Cause: err}
 	}
 	// Java UnionCursorContinuation.from(parsed, n) always reads first + second

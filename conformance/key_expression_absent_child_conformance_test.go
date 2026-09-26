@@ -352,6 +352,41 @@ var _ = Describe("RFC-257 a key expression nested past protobuf's recursion limi
 		Expect(goErr).To(MatchError(ContainSubstring("exceeded maximum recursion depth")))
 		Expect(proto.Unmarshal(demo(50), &gen.MetaData{})).To(Succeed(), "protobuf-go's own default admits it")
 	})
+	// The shape above opens an even number of levels (2d+2: the meta-data,
+	// the index, then d key expressions and their nestings), so it cannot tell
+	// a limit of 100 levels from one of 101. protobuf-java counts only nested
+	// messages against its 100 (CodedInputStream.checkRecursionLimit), so a
+	// root admits 101 levels in all; protobuf-go counts the root too. A
+	// record-count key nested d deep opens 2d+1 levels: 101 at d = 50, which
+	// Java parses and Go refused at a limit of 100, and 103 at d = 51.
+	It("a record-count key opening 101 levels parses in both engines, 103 in neither", func() {
+		countKey := func(depth int) []byte {
+			p, err := proto.Marshal(&gen.MetaData{Version: proto.Int32(1), RecordCountKey: nested(depth)})
+			Expect(err).NotTo(HaveOccurred())
+			var withRecords gen.MetaData
+			Expect(proto.Unmarshal(demo(1), &withRecords)).To(Succeed())
+			withRecords.Indexes = nil
+			rest, err := proto.Marshal(&withRecords)
+			Expect(err).NotTo(HaveOccurred())
+			return append(rest, p...)
+		}
+		var java javaAnyVerdict
+		Expect(NewJavaInvoker().InvokeAs(context.Background(), "buildPartialMetaDataAnyVerdict", map[string]any{
+			"protoBytes": BytesToIntArray(countKey(50)),
+		}, &java)).To(Succeed())
+		GinkgoWriter.Printf("DEPTH 101 java=%t %s %q\n", java.Valid, java.Class, java.Error)
+		Expect(java.Class).NotTo(Equal("com.google.protobuf.InvalidProtocolBufferException"))
+		Expect(recordlayer.UnmarshalAsJava(countKey(50), &gen.MetaData{})).To(Succeed())
+
+		err := NewJavaInvoker().InvokeAs(context.Background(), "buildPartialMetaDataAnyVerdict", map[string]any{
+			"protoBytes": BytesToIntArray(countKey(51)),
+		}, &java)
+		var je *JavaError
+		Expect(errors.As(err, &je)).To(BeTrue(), "%v", err)
+		GinkgoWriter.Printf("DEPTH 103 java=%s %q\n", je.ExceptionFullClass, je.Message)
+		Expect(je.ExceptionFullClass).To(Equal("com.google.protobuf.InvalidProtocolBufferException"))
+		Expect(recordlayer.UnmarshalAsJava(countKey(51), &gen.MetaData{})).To(MatchError(ContainSubstring("exceeded maximum recursion depth")))
+	})
 })
 
 // A stored template's meta-data that fails to load is reported with Java's
@@ -400,6 +435,11 @@ var _ = Describe("RFC-257 a stored template Java cannot load", func() {
 		// A required field unset fails the full parse, before the key
 		// expression's own check.
 		{"a root field without its fan type", demo(index(&gen.KeyExpression{Field: &gen.Field{FieldName: proto.String("price")}}, nil)), "XXXXX"},
+		// Fan type 7 is not declared: protobuf-java's parse keeps it as an
+		// unknown field, and the required fan_type is then missing, so the
+		// full parse fails as above. Go read 7 into the field, passed its
+		// required check, and refused the key expression later (42000).
+		{"a root field of fan type 7", demo(index(&gen.KeyExpression{Field: &gen.Field{FieldName: proto.String("price"), FanType: gen.Field_FanType(7).Enum()}}, nil)), "XXXXX"},
 		{"an operand with two values", demo(index(price, &gen.Predicate{ValuePredicate: &gen.ValuePredicate{
 			Value: []string{"price"},
 			Comparison: &gen.Comparison{SimpleComparison: &gen.SimpleComparison{

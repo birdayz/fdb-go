@@ -36,6 +36,7 @@ import (
 	"fdb.dev/pkg/relational/conformance/plandiff"
 	"fdb.dev/pkg/relational/core/catalog"
 	"fdb.dev/pkg/relational/core/embedded"
+	"fdb.dev/pkg/relational/core/keyspace"
 	"fdb.dev/pkg/relational/core/metadata"
 	"fdb.dev/pkg/relational/core/parser"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
@@ -1660,10 +1661,33 @@ var _ = Describe("WS-J Go-stored template planned by the target", func() {
 		Expect(err).NotTo(HaveOccurred())
 		longTmpl, err := metadata.NewRecordLayerSchemaTemplateWithVersion(longName, longMD, goTmpl.Version())
 		Expect(err).NotTo(HaveOccurred())
+		// The build path refuses a key the target cannot plan (the lane check,
+		// ws-j-design.md section 3.2): bitmap_bucket_offset over (LONG, LONG).
 		_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			return nil, cat.SchemaTemplateCatalog().CreateTemplate(catalog.NewFDBTransaction(rtx), longTmpl)
 		})
-		Expect(err).NotTo(HaveOccurred(), "Go stores the long_value variant through its catalog library")
+		var laneErr *api.Error
+		Expect(errors.As(err, &laneErr)).To(BeTrue(), "%v", err)
+		Expect(string(laneErr.Code)).To(Equal("42F59"))
+		Expect(laneErr.Message).To(ContainSubstring("bitmap_bucket_offset has no lane for operand types (LONG, LONG)"))
+		// So the variant is what a tenant an earlier Go build served holds: a
+		// raw write of its catalog row, past the build path.
+		longBytes, err := proto.Marshal(longProto)
+		Expect(err).NotTo(HaveOccurred())
+		catalogMD, err := catalog.BuildCatalogMetaData()
+		Expect(err).NotTo(HaveOccurred())
+		_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetSubspace(catalog.DefaultCatalogSubspace()).
+				SetMetaDataProvider(catalogMD).Open()
+			if err != nil {
+				return nil, err
+			}
+			_, err = store.SaveRecord(&gen.Templates{
+				TEMPLATE_NAME: proto.String(longName), TEMPLATE_VERSION: proto.Int32(int32(goTmpl.Version())), META_DATA: longBytes,
+			})
+			return nil, err
+		})
+		Expect(err).NotTo(HaveOccurred(), "the long_value variant, written raw")
 		defer func() {
 			var dropped struct {
 				Dropped bool `json:"dropped"`
@@ -2793,10 +2817,14 @@ var _ = Describe("WS-J stored index protos read as Java reads them", func() {
 				var rootErr *recordlayer.KeyExpressionDeserializationError
 				Expect(errors.As(r.goErr, &rootErr)).To(BeTrue(), "%s: %v (%T), want Java's DeserializationException", r.name, r.goErr, r.goErr)
 				Expect(rootErr.Message).To(HavePrefix(r.goWant), r.name)
-				// The root is refused before the key is read: the only
-				// RecordCoreError in the chain is the root's refusal (Java's
-				// DeserializationException is a RecordCoreException).
-				Expect(errors.As(r.goErr, &core) && core.Message == rootErr.Message).To(BeTrue(), "%s: the root is refused before the key is read", r.name)
+				// The root is refused before the key is read: the chain's
+				// RecordCoreErrors are the MetaDataProtoDeserializationException
+				// (a MetaDataException, and so a RecordCoreException) and the
+				// root's refusal (Java's DeserializationException), and no key
+				// refusal.
+				var pde *recordlayer.MetaDataProtoDeserializationError
+				Expect(errors.As(r.goErr, &pde)).To(BeTrue(), r.name)
+				Expect(recordlayer.RecordCoreMessages(r.goErr)).To(Equal([]string{pde.Error(), rootErr.Message}), "%s: the root is refused before the key is read", r.name)
 			case "duplicate":
 				Expect(errors.As(r.goErr, &dup)).To(BeTrue(), "%s: %v (%T), want a DuplicateIndexOptionError", r.name, r.goErr, r.goErr)
 				Expect(dup.Error()).To(Equal(r.goWant), r.name)
@@ -2819,31 +2847,32 @@ var _ = Describe("WS-J stored index protos read as Java reads them", func() {
 // in the operator table, a SemanticException for a non-primitive operand,
 // ArithmeticValue.java:213-231). Go's key generator builds these keys without
 // consulting the lane table (ddl/generator.go, the ArithmeticValue and bit
-// ScalarFunctionValue arms), so its DDL stores a key the target can never plan
-// (ws-j-design.md section 3.2, "the lane check"). Both outcomes are asserted:
-// the target's, and Go's as it is on this tree (goNow), the divergence the design
-// measures; the step that raises the target's outcome at the clause replaces
-// goNow with the target's outcome.
+// ScalarFunctionValue arms), so its DDL stored a key the target can never plan
+// (ws-j-design.md section 3.2, "the lane check"): eight shapes stored, the two
+// STRUCT shapes refused by the metadata build with another message. The
+// generator now runs encapsulate's checks at the clause (encapsulateLane), and
+// Go's outcome is asserted equal to the target's on SQLSTATE and message: Go
+// renders an error as ERROR <code> "<message>" with no exception class, so the
+// target's class is not compared.
 var _ = Describe("WS-J bit and bitmap index keys over an operand with no lane", func() {
 	encapsulate := `ERROR XX000 VerifyException "unable to encapsulate arithmetic operation due to type mismatch(es)"`
 	complexArg := `ERROR XX000 SemanticException "The argument to an arithmetic operator expecting an argument of a primitive type, is invoked with an argument of a complex type, e.g. an array or a record."`
-	stored := "OK"
-	buildFails := `ERROR XX000 "build RecordMetaData"`
-	for _, c := range []struct{ name, body, want, goNow string }{
-		{"bitand_double", `create table t(id bigint, v double, primary key(id)) create index ix as select v & 1 from t order by v & 1`, encapsulate, stored},
-		{"bitand_float", `create table t(id bigint, v float, primary key(id)) create index ix as select v & 1 from t order by v & 1`, encapsulate, stored},
-		{"bitand_string", `create table t(id bigint, v string, primary key(id)) create index ix as select v & 1 from t order by v & 1`, encapsulate, stored},
-		{"bitand_boolean", `create table t(id bigint, v boolean, primary key(id)) create index ix as select v & 1 from t order by v & 1`, encapsulate, stored},
-		{"bitand_struct", `create type as struct s1(x bigint) create table t(id bigint, v s1, primary key(id)) create index ix as select v & 1 from t order by v & 1`, complexArg, buildFails},
-		{"bucket_offset_double", `create table t(id bigint, v double, primary key(id)) create index ix as select bitmap_bucket_offset(v) from t order by bitmap_bucket_offset(v)`, encapsulate, stored},
-		{"bucket_offset_float", `create table t(id bigint, v float, primary key(id)) create index ix as select bitmap_bucket_offset(v) from t order by bitmap_bucket_offset(v)`, encapsulate, stored},
-		{"bucket_offset_string", `create table t(id bigint, v string, primary key(id)) create index ix as select bitmap_bucket_offset(v) from t order by bitmap_bucket_offset(v)`, encapsulate, stored},
-		{"bucket_offset_boolean", `create table t(id bigint, v boolean, primary key(id)) create index ix as select bitmap_bucket_offset(v) from t order by bitmap_bucket_offset(v)`, encapsulate, stored},
-		{"bucket_offset_struct", `create type as struct s1(x bigint) create table t(id bigint, v s1, primary key(id)) create index ix as select bitmap_bucket_offset(v) from t order by bitmap_bucket_offset(v)`, complexArg, buildFails},
+	withoutClass := regexp.MustCompile(`^ERROR (\S+) \S+ `)
+	for _, c := range []struct{ name, body, want string }{
+		{"bitand_double", `create table t(id bigint, v double, primary key(id)) create index ix as select v & 1 from t order by v & 1`, encapsulate},
+		{"bitand_float", `create table t(id bigint, v float, primary key(id)) create index ix as select v & 1 from t order by v & 1`, encapsulate},
+		{"bitand_string", `create table t(id bigint, v string, primary key(id)) create index ix as select v & 1 from t order by v & 1`, encapsulate},
+		{"bitand_boolean", `create table t(id bigint, v boolean, primary key(id)) create index ix as select v & 1 from t order by v & 1`, encapsulate},
+		{"bitand_struct", `create type as struct s1(x bigint) create table t(id bigint, v s1, primary key(id)) create index ix as select v & 1 from t order by v & 1`, complexArg},
+		{"bucket_offset_double", `create table t(id bigint, v double, primary key(id)) create index ix as select bitmap_bucket_offset(v) from t order by bitmap_bucket_offset(v)`, encapsulate},
+		{"bucket_offset_float", `create table t(id bigint, v float, primary key(id)) create index ix as select bitmap_bucket_offset(v) from t order by bitmap_bucket_offset(v)`, encapsulate},
+		{"bucket_offset_string", `create table t(id bigint, v string, primary key(id)) create index ix as select bitmap_bucket_offset(v) from t order by bitmap_bucket_offset(v)`, encapsulate},
+		{"bucket_offset_boolean", `create table t(id bigint, v boolean, primary key(id)) create index ix as select bitmap_bucket_offset(v) from t order by bitmap_bucket_offset(v)`, encapsulate},
+		{"bucket_offset_struct", `create type as struct s1(x bigint) create table t(id bigint, v s1, primary key(id)) create index ix as select bitmap_bucket_offset(v) from t order by bitmap_bucket_offset(v)`, complexArg},
 		// Two faults: a lane-less index key BEFORE a later table the target
 		// refuses. The target registers every table before it generates any
 		// index (ws-j-design.md section 4), so the table's fault is reported.
-		{"bitand_double_then_bad_table", `create table t(id bigint, v double, primary key(id)) create index ix as select v & 1 from t order by v & 1 create table z(id bigint, x nosuchtype, primary key(id))`, `ERROR 42F18 RelationalException "could not find type 'NOSUCHTYPE'"`, `ERROR 42F18 "could not find type 'NOSUCHTYPE'"`},
+		{"bitand_double_then_bad_table", `create table t(id bigint, v double, primary key(id)) create index ix as select v & 1 from t order by v & 1 create table z(id bigint, x nosuchtype, primary key(id))`, `ERROR 42F18 RelationalException "could not find type 'NOSUCHTYPE'"`},
 	} {
 		It("the target refuses the DDL: "+c.name, func() {
 			ctx := context.Background()
@@ -2894,7 +2923,7 @@ var _ = Describe("WS-J bit and bitmap index keys over an operand with no lane", 
 			}()
 			fmt.Fprintf(GinkgoWriter, "WSJLANE %s target=%s go=%s\n", c.name, target, goOutcome)
 			Expect(target).To(Equal(c.want), "the target's outcome for %s", c.name)
-			Expect(goOutcome).To(Equal(c.goNow), "Go's outcome for %s on this tree", c.name)
+			Expect(goOutcome).To(Equal(withoutClass.ReplaceAllString(c.want, "ERROR $1 ")), "Go's outcome for %s, the target's", c.name)
 		})
 	}
 })
@@ -3102,4 +3131,399 @@ var _ = Describe("WS-J a table or struct named UnionDescriptor", func() {
 				map[string]error{"the target's stored template": nil, "Go's driver-built template": nil}))
 		})
 	}
+})
+
+// A column whose records-file field declares a proto2 default and is unset in
+// the stored record: Java's result row reads a message field through
+// MessageTuple (getFieldOnMessage: an unset field is null), and a top-level
+// SELECT * row is a MessageTuple of the stored message (QueryPlan), so both
+// SELECT * and SELECT d read null there, not the declared default. Each engine
+// creates the template through its own DDL, its catalog row is rewritten raw
+// with the defaults (library code can store such a records file; the DDL
+// cannot), a row with d and s unset is inserted through SQL, and each engine
+// reads it. Each engine reads its own catalog: the Go driver keeps its catalog
+// on a Go-only keyspace (TODO.md, "Go SQL driver stores the relational catalog
+// and user schemas on a Go-only keyspace").
+var _ = Describe("WS-J an unset field with a declared default reads as the target reads it", func() {
+	It("SELECT * and SELECT d", func() {
+		ctx := context.Background()
+		java := NewJavaInvoker()
+		clusterFile, err := sharedContainer.ClusterFile(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		clusterFilePath := writeClusterFileToTemp(clusterFile)
+		defer os.Remove(clusterFilePath)
+		suffix := strings.ReplaceAll(uuid.New().String()[:8], "-", "")
+		body := "create table t(id bigint, d bigint, s string, primary key(id))"
+		db := recordlayer.NewFDBDatabase(sharedDB)
+		// withDefaults writes template (to, 1) raw into the catalog at ss: the
+		// bytes of (from, 1) with D [default = 5] and S [default = "x"]. A name
+		// neither engine has loaded, so no cached template of the name hides
+		// the rewrite.
+		withDefaults := func(ss subspace.Subspace, from, to string) {
+			cat, err := catalog.NewRecordLayerStoreCatalog(ss)
+			Expect(err).NotTo(HaveOccurred())
+			catalogMD, err := catalog.BuildCatalogMetaData()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				p, err := cat.SchemaTemplateCatalog().LoadTemplateProto(catalog.NewFDBTransaction(rtx), from, 1)
+				if err != nil {
+					return nil, err
+				}
+				for _, m := range p.GetRecords().GetMessageType() {
+					if m.GetName() != "T" {
+						continue
+					}
+					for _, f := range m.GetField() {
+						switch f.GetName() {
+						case "D":
+							f.DefaultValue = proto.String("5")
+						case "S":
+							f.DefaultValue = proto.String("x")
+						}
+					}
+				}
+				b, err := proto.Marshal(p)
+				if err != nil {
+					return nil, err
+				}
+				store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetSubspace(ss).SetMetaDataProvider(catalogMD).Open()
+				if err != nil {
+					return nil, err
+				}
+				_, err = store.SaveRecord(&gen.Templates{TEMPLATE_NAME: proto.String(to), TEMPLATE_VERSION: proto.Int32(1), META_DATA: b})
+				return nil, err
+			})
+			Expect(err).NotTo(HaveOccurred())
+		}
+		queries := []string{
+			"SELECT * FROM T",
+			"SELECT d, s FROM T",
+			"SELECT id FROM T WHERE d IS NULL",
+			"SELECT id FROM T WHERE d = 5",
+		}
+
+		// The target.
+		name := "WSJDEF_" + suffix
+		var created struct {
+			Created bool `json:"created"`
+		}
+		Expect(java.InvokeAs(ctx, "createSchemaTemplatePersistentJava", map[string]any{
+			"clusterFile": clusterFile, "templateName": name, "schemaTemplateBody": body,
+		}, &created)).To(Succeed())
+		defer func() {
+			var dropped struct {
+				Dropped bool `json:"dropped"`
+			}
+			_ = java.InvokeAs(context.Background(), "dropSchemaTemplatePersistentJava", map[string]any{
+				"clusterFile": clusterFile, "templateName": name,
+			}, &dropped)
+		}()
+		withDefaults(catalog.DefaultCatalogSubspace(), name, name+"_D")
+		defer func() {
+			var dropped struct {
+				Dropped bool `json:"dropped"`
+			}
+			_ = java.InvokeAs(context.Background(), "dropSchemaTemplatePersistentJava", map[string]any{
+				"clusterFile": clusterFile, "templateName": name + "_D",
+			}, &dropped)
+		}()
+		var store struct {
+			DbPath     string `json:"dbPath"`
+			SchemaName string `json:"schemaName"`
+		}
+		Expect(java.InvokeAs(ctx, "wsjOpenStoreJava", map[string]any{"clusterFile": clusterFile, "templateName": name + "_D"}, &store)).To(Succeed())
+		defer func() {
+			var dropped struct {
+				Dropped bool `json:"dropped"`
+			}
+			_ = java.InvokeAs(context.Background(), "wsjDropDatabaseJava", map[string]any{"clusterFile": clusterFile, "dbPath": store.DbPath}, &dropped)
+		}()
+		// The defaults are not lost on the way: the template the catalog loads
+		// and the meta-data a schema's store opens with both declare them.
+		var probe struct {
+			CachedHasDefault bool   `json:"cachedHasDefault"`
+			CachedDefault    string `json:"cachedDefault"`
+			StoreHasDefault  bool   `json:"storeHasDefault"`
+		}
+		Expect(java.InvokeAs(ctx, "wsjTemplateDefaultsJava", map[string]any{"clusterFile": clusterFile, "templateName": name + "_D"}, &probe)).To(Succeed())
+		fmt.Fprintf(GinkgoWriter, "WSJDEFPROBE %+v\n", probe)
+		Expect(probe.CachedHasDefault && probe.StoreHasDefault && probe.CachedDefault == "5").To(BeTrue(), "%+v", probe)
+		var inserted struct {
+			Outcome string `json:"outcome"`
+		}
+		Expect(java.InvokeAs(ctx, "wsjExecuteJava", map[string]any{
+			"clusterFile": clusterFile, "dbPath": store.DbPath, "schemaName": store.SchemaName, "sql": "INSERT INTO T (id) VALUES (1)",
+		}, &inserted)).To(Succeed())
+		Expect(inserted.Outcome).To(Equal("OK 1"))
+		// The stored record, loaded by the core record layer under that
+		// meta-data: d is unset and MessageHelpers.getFieldOnMessage, FieldValue's
+		// reader, reads the default. A query does not: it reads a copy of the
+		// record in the plan's type (QueryResult.fromQueriedRecord), so d is null.
+		type recordRead struct {
+			HasField          bool   `json:"hasField"`
+			HasDefaultValue   bool   `json:"hasDefaultValue"`
+			GetFieldOnMessage string `json:"getFieldOnMessage"`
+		}
+		var rec recordRead
+		Expect(java.InvokeAs(ctx, "wsjRecordFieldJava", map[string]any{
+			"clusterFile": clusterFile, "dbPath": store.DbPath, "schemaName": store.SchemaName, "templateName": name + "_D", "pk": 1,
+		}, &rec)).To(Succeed())
+		fmt.Fprintf(GinkgoWriter, "WSJDEFREC %+v\n", rec)
+		Expect(rec).To(Equal(recordRead{HasField: false, HasDefaultValue: true, GetFieldOnMessage: "5"}))
+		var plan map[string]any
+		Expect(java.InvokeAs(ctx, "wsjQueryJava", map[string]any{
+			"clusterFile": clusterFile, "dbPath": store.DbPath, "schemaName": store.SchemaName, "querySql": "EXPLAIN SELECT d, s FROM T",
+		}, &plan)).To(Succeed())
+		Expect(fmt.Sprint(plan["rows"])).To(ContainSubstring("SCAN([IS T]) | MAP (_.D AS D, _.S AS S)"), "a FieldValue over the scanned record")
+		var javaRows []string
+		for _, q := range queries {
+			var target map[string]any
+			Expect(java.InvokeAs(ctx, "wsjQueryJava", map[string]any{
+				"clusterFile": clusterFile, "dbPath": store.DbPath, "schemaName": store.SchemaName, "querySql": q,
+			}, &target)).To(Succeed())
+			javaRows = append(javaRows, fmt.Sprint(target["rows"]))
+		}
+
+		// Go, through its own driver.
+		sysDB, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///__SYS?cluster_file=%s", clusterFilePath))
+		Expect(err).NotTo(HaveOccurred())
+		defer sysDB.Close()
+		goName := "WSJDEF_GO_" + suffix
+		dbPath := "/WSJDEF_DB_" + suffix
+		defer func() {
+			_, _ = sysDB.ExecContext(context.Background(), "DROP DATABASE IF EXISTS "+dbPath)
+			_, _ = sysDB.ExecContext(context.Background(), "DROP SCHEMA TEMPLATE IF EXISTS "+goName)
+			_, _ = sysDB.ExecContext(context.Background(), "DROP SCHEMA TEMPLATE IF EXISTS "+goName+"_D")
+		}()
+		_, err = sysDB.ExecContext(ctx, "CREATE SCHEMA TEMPLATE "+goName+" "+body)
+		Expect(err).NotTo(HaveOccurred())
+		withDefaults(keyspace.New(subspace.Sub()).CatalogSubspace(), goName, goName+"_D")
+		for _, stmt := range []string{"CREATE DATABASE " + dbPath, "CREATE SCHEMA " + dbPath + "/s WITH TEMPLATE " + goName + "_D"} {
+			_, err := sysDB.ExecContext(ctx, stmt)
+			Expect(err).NotTo(HaveOccurred(), stmt)
+		}
+		conn, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath))
+		Expect(err).NotTo(HaveOccurred())
+		defer conn.Close()
+		_, err = conn.ExecContext(ctx, "INSERT INTO T (id) VALUES (1)")
+		Expect(err).NotTo(HaveOccurred())
+		goRows := func(q string) string {
+			rows, err := conn.QueryContext(ctx, q)
+			if err != nil {
+				return "ERROR " + err.Error()
+			}
+			defer rows.Close()
+			cols, err := rows.Columns()
+			Expect(err).NotTo(HaveOccurred())
+			var out [][]any
+			for rows.Next() {
+				vals := make([]any, len(cols))
+				ptrs := make([]any, len(cols))
+				for i := range vals {
+					ptrs[i] = &vals[i]
+				}
+				Expect(rows.Scan(ptrs...)).To(Succeed())
+				for i, v := range vals {
+					if b, ok := v.([]byte); ok {
+						vals[i] = string(b)
+					}
+				}
+				out = append(out, vals)
+			}
+			Expect(rows.Err()).NotTo(HaveOccurred())
+			return fmt.Sprint(out)
+		}
+		var goOut []string
+		for i, q := range queries {
+			goOut = append(goOut, goRows(q))
+			fmt.Fprintf(GinkgoWriter, "WSJDEFAULT %q java=%s go=%s\n", q, javaRows[i], goOut[i])
+		}
+		Expect(goOut).To(Equal(javaRows))
+	})
+})
+
+// Section 4's tests whose v1 the target writes (ws-j-design.md section 4, 4e):
+// the target creates v1 through its DDL in the shared catalog, and Go carries
+// v2, built by its own DDL, from those stored bytes through its catalog library
+// (CreateTemplate at the Java-compatible catalog subspace). The record-type keys
+// and union fields are the target's, an unchanged index (a literal-bearing one
+// among them: F2's population, EQUIVALENT) is the target's Index message, a new
+// index is added above, and the target then serves v2: it creates a schema over
+// Go's carried template and plans a read through the new index. Test 5: a v1
+// holding a long_value bitmap entry size (written raw, the rows a Go build
+// before F2 stored) is carried as CHANGED to the int_value root Go's DDL builds,
+// and the target plans the bitmap reads over v2.
+var _ = Describe("WS-J a new version carried from the target's template", func() {
+	carriedFromJava := func(ctx context.Context, java *JavaInvoker, clusterFile, name string) (*gen.MetaData, *catalog.RecordLayerStoreCatalog, *recordlayer.FDBDatabase) {
+		cat, err := catalog.OpenRecordLayerStoreCatalog()
+		Expect(err).NotTo(HaveOccurred())
+		db := recordlayer.NewFDBDatabase(sharedDB)
+		var v1 *gen.MetaData
+		_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			var lerr error
+			v1, lerr = cat.SchemaTemplateCatalog().LoadTemplateProto(catalog.NewFDBTransaction(rtx), name, 1)
+			return nil, lerr
+		})
+		Expect(err).NotTo(HaveOccurred())
+		return v1, cat, db
+	}
+	byName := func(p *gen.MetaData) (map[string]*gen.RecordType, map[string]*gen.Index, map[string]int32) {
+		types, indexes, unions := map[string]*gen.RecordType{}, map[string]*gen.Index{}, map[string]int32{}
+		for _, rt := range p.GetRecordTypes() {
+			types[rt.GetName()] = rt
+		}
+		for _, idx := range p.GetIndexes() {
+			indexes[idx.GetName()] = idx
+		}
+		for _, m := range p.GetRecords().GetMessageType() {
+			if m.GetName() == "RecordTypeUnion" {
+				for _, f := range m.GetField() {
+					unions[f.GetTypeName()[strings.LastIndexByte(f.GetTypeName(), '.')+1:]] = f.GetNumber()
+				}
+			}
+		}
+		return types, indexes, unions
+	}
+	It("keeps the target's numbering and indexes, and the target serves the carried version", func() {
+		ctx := context.Background()
+		java := NewJavaInvoker()
+		clusterFile, err := sharedContainer.ClusterFile(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		name := "WSJCARRY_" + strings.ReplaceAll(uuid.New().String()[:8], "-", "")
+		// Java's order moves each indexed table to the end in clause order: v1's
+		// ib then nplus make it B, A. v2 adds an index on b after them, which
+		// moves B to the end again, so a fresh build of v2 numbers A before B;
+		// the carry keeps v1's numbering.
+		v1Body := "create table a(id bigint, x bigint, n bigint, primary key(id)) " +
+			"create table b(id bigint, y bigint, primary key(id)) " +
+			"create index ib as select y from b order by y " +
+			"create index nplus as select n + 1 from a order by n + 1"
+		var created struct {
+			Created bool `json:"created"`
+		}
+		Expect(java.InvokeAs(ctx, "createSchemaTemplatePersistentJava", map[string]any{
+			"clusterFile": clusterFile, "templateName": name, "schemaTemplateBody": v1Body,
+		}, &created)).To(Succeed())
+		defer func() {
+			var dropped struct {
+				Dropped bool `json:"dropped"`
+			}
+			_ = java.InvokeAs(context.Background(), "dropSchemaTemplatePersistentJava", map[string]any{"clusterFile": clusterFile, "templateName": name}, &dropped)
+		}()
+		v1, cat, db := carriedFromJava(ctx, java, clusterFile, name)
+		built, err := embedded.BuildSchemaTemplateFromDDLNamed(v1Body+" create index ib2 as select id, y from b order by id, y", name)
+		Expect(err).NotTo(HaveOccurred())
+		fresh, err := built.Underlying().ToProto()
+		Expect(err).NotTo(HaveOccurred())
+		freshTypes, _, freshUnions := byName(fresh)
+		v1Types, _, v1Unions := byName(v1)
+		Expect(proto.Equal(freshTypes["A"].GetExplicitKey(), v1Types["A"].GetExplicitKey()) && freshUnions["A"] == v1Unions["A"]).To(BeFalse(),
+			"a fresh build of v2 renumbers A, or the spec cannot tell a carry from none")
+		v2, err := metadata.NewRecordLayerSchemaTemplateWithVersion(name, built.Underlying(), 2)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			return nil, cat.SchemaTemplateCatalog().CreateTemplate(catalog.NewFDBTransaction(rtx), v2)
+		})
+		Expect(err).NotTo(HaveOccurred())
+		var stored *gen.MetaData
+		_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			var lerr error
+			stored, lerr = cat.SchemaTemplateCatalog().LoadTemplateProto(catalog.NewFDBTransaction(rtx), name, 2)
+			return nil, lerr
+		})
+		Expect(err).NotTo(HaveOccurred())
+		t1, i1, u1 := byName(v1)
+		t2, i2, u2 := byName(stored)
+		fmt.Fprintf(GinkgoWriter, "WSJCARRY keys v1=%v v2=%v unions v1=%v v2=%v\n", t1, t2, u1, u2)
+		for _, tbl := range []string{"A", "B"} {
+			Expect(proto.Equal(t2[tbl].GetExplicitKey(), t1[tbl].GetExplicitKey())).To(BeTrue(), "%s's record-type key", tbl)
+			Expect(u2[tbl]).To(Equal(u1[tbl]), "%s's union field", tbl)
+		}
+		for _, ix := range []string{"IB", "NPLUS"} {
+			Expect(proto.Equal(i2[ix], i1[ix])).To(BeTrue(), "%s is EQUIVALENT, carried as the target stored it: %v against %v", ix, i2[ix], i1[ix])
+		}
+		Expect(i2["IB2"]).NotTo(BeNil())
+		Expect(i2["IB2"].GetAddedVersion()).To(BeNumerically(">", v1.GetVersion()))
+		Expect(i2["IB2"].GetLastModifiedVersion()).To(Equal(i2["IB2"].GetAddedVersion()))
+
+		// The target serves Go's carried v2.
+		var served, plan map[string]any
+		setup := []string{"insert into a values (1, 10, 5), (2, 20, 6)", "insert into b values (1, 7), (2, 8)"}
+		Expect(java.InvokeAs(ctx, "runOnExistingTemplateJava", map[string]any{
+			"clusterFile": clusterFile, "templateName": name, "setupSqls": setup, "querySql": "SELECT id, y FROM b ORDER BY id, y",
+		}, &served)).To(Succeed())
+		Expect(java.InvokeAs(ctx, "runOnExistingTemplateJava", map[string]any{
+			"clusterFile": clusterFile, "templateName": name, "setupSqls": []string{}, "querySql": "EXPLAIN SELECT id, y FROM b ORDER BY id, y",
+		}, &plan)).To(Succeed())
+		fmt.Fprintf(GinkgoWriter, "WSJCARRY served=%v plan=%v\n", served["rows"], plan["rows"])
+		Expect(fmt.Sprint(served["rows"])).To(Equal("[[1 7] [2 8]]"))
+		Expect(fmt.Sprint(plan["rows"])).To(ContainSubstring("IB2"))
+	})
+
+	It("carries a long_value bitmap entry size as CHANGED, and the target plans the bitmap reads", func() {
+		ctx := context.Background()
+		java := NewJavaInvoker()
+		clusterFile, err := sharedContainer.ClusterFile(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		name := "WSJCARRY5_" + strings.ReplaceAll(uuid.New().String()[:8], "-", "")
+		body := "create table t(id bigint, v bigint, primary key(id)) " +
+			"create index agg_bucket as select bitmap_bucket_offset(id) from t order by bitmap_bucket_offset(id)"
+		built, err := embedded.BuildSchemaTemplateFromDDLNamed(body, name)
+		Expect(err).NotTo(HaveOccurred())
+		longProto, err := built.Underlying().ToProto()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(wsjWidenIntLiterals(longProto.ProtoReflect())).To(BeNumerically(">", 0))
+		longBytes, err := proto.Marshal(longProto)
+		Expect(err).NotTo(HaveOccurred())
+		catalogMD, err := catalog.BuildCatalogMetaData()
+		Expect(err).NotTo(HaveOccurred())
+		db := recordlayer.NewFDBDatabase(sharedDB)
+		_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetSubspace(catalog.DefaultCatalogSubspace()).SetMetaDataProvider(catalogMD).Open()
+			if err != nil {
+				return nil, err
+			}
+			_, err = store.SaveRecord(&gen.Templates{TEMPLATE_NAME: proto.String(name), TEMPLATE_VERSION: proto.Int32(1), META_DATA: longBytes})
+			return nil, err
+		})
+		Expect(err).NotTo(HaveOccurred())
+		defer func() {
+			var dropped struct {
+				Dropped bool `json:"dropped"`
+			}
+			_ = java.InvokeAs(context.Background(), "dropSchemaTemplatePersistentJava", map[string]any{"clusterFile": clusterFile, "templateName": name}, &dropped)
+		}()
+		v1, cat, _ := carriedFromJava(ctx, java, clusterFile, name)
+		v2, err := metadata.NewRecordLayerSchemaTemplateWithVersion(name, built.Underlying(), 2)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			return nil, cat.SchemaTemplateCatalog().CreateTemplate(catalog.NewFDBTransaction(rtx), v2)
+		})
+		Expect(err).NotTo(HaveOccurred())
+		var stored *gen.MetaData
+		_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			var lerr error
+			stored, lerr = cat.SchemaTemplateCatalog().LoadTemplateProto(catalog.NewFDBTransaction(rtx), name, 2)
+			return nil, lerr
+		})
+		Expect(err).NotTo(HaveOccurred())
+		_, i1, _ := byName(v1)
+		_, i2, _ := byName(stored)
+		Expect(i2["AGG_BUCKET"].GetAddedVersion()).To(Equal(i1["AGG_BUCKET"].GetAddedVersion()))
+		Expect(i2["AGG_BUCKET"].GetSubspaceKey()).To(Equal(i1["AGG_BUCKET"].GetSubspaceKey()))
+		Expect(i2["AGG_BUCKET"].GetLastModifiedVersion()).To(BeNumerically(">", v1.GetVersion()), "CHANGED: rebuilt when a store opens")
+		Expect(wsjWidenIntLiterals(proto.Clone(i2["AGG_BUCKET"]).ProtoReflect())).To(BeNumerically(">", 0), "the carried root holds int_value")
+
+		var served, plan map[string]any
+		read := "SELECT bitmap_bucket_offset(id) FROM t ORDER BY bitmap_bucket_offset(id)"
+		Expect(java.InvokeAs(ctx, "runOnExistingTemplateJava", map[string]any{
+			"clusterFile": clusterFile, "templateName": name, "setupSqls": []string{"insert into t values (1, 1), (3, 1), (10005, 2)"}, "querySql": read,
+		}, &served)).To(Succeed())
+		Expect(java.InvokeAs(ctx, "runOnExistingTemplateJava", map[string]any{
+			"clusterFile": clusterFile, "templateName": name, "setupSqls": []string{}, "querySql": "EXPLAIN " + read,
+		}, &plan)).To(Succeed())
+		fmt.Fprintf(GinkgoWriter, "WSJCARRY5 served=%v plan=%v\n", served["rows"], plan["rows"])
+		Expect(fmt.Sprint(served["rows"])).To(Equal("[[0] [0] [10000]]"))
+		Expect(fmt.Sprint(plan["rows"])).To(ContainSubstring("ISCAN(AGG_BUCKET <,>)"))
+	})
 })

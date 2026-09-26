@@ -451,7 +451,7 @@ var _ = Describe("HNSW Graph Direct", func() {
 	})
 
 	// Java's Insert leaves a present node as it is (Insert.java:195-197); an
-	// update is the maintainer's delete then insert.
+	// update whose entry changes is the maintainer's delete then insert.
 	It("insert same PK twice keeps the first node, only one result", func() {
 		graph := makeGraph(2)
 
@@ -2184,7 +2184,19 @@ var _ = Describe("HNSW with RaBitQ", func() {
 	// graph's edges and storing the new vector.
 	It("leaves a node already in the graph as it is", func() {
 		const dims = 4
-		graph := makeRaBitQGraph(dims, 4)
+		// Every insert samples its vector and none rolls the samples up or
+		// forms a centroid, so the samples subspace holds one per node and an
+		// insert that reached addToStatsIfNecessary would add one.
+		ss := specSubspace().Sub("hnsw-rabitq-present")
+		config := HNSWConfig{
+			NumDimensions: dims, M: 4, MMax: 4, MMax0: 8, EfConstruction: 100,
+			Metric:                       VectorMetricEuclidean,
+			Quantizer:                    rabitq.NewQuantizer(rabitq.MetricEuclidean, 4),
+			SampleVectorStatsProbability: 1,
+			MaintainStatsProbability:     0,
+			StatsThreshold:               1 << 20,
+		}
+		graph := NewHNSWGraph(newHNSWStorage(ss, config), config)
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			tx := rtx.Transaction()
 			for i := 0; i < 12; i++ {
@@ -2205,6 +2217,7 @@ var _ = Describe("HNSW with RaBitQ", func() {
 			}
 			before := snapshot()
 			Expect(before[1]).NotTo(BeEmpty(), "the access info is written")
+			Expect(before[2]).NotTo(BeEmpty(), "the samples are written, so an extra one would show")
 			Expect(graph.Insert(tx, tuple.Tuple{int64(5)}, []float64{-9, -9, -9, -9})).To(Succeed())
 			Expect(snapshot()).To(Equal(before), "the graph's bytes are unchanged")
 			return nil, nil

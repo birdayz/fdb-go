@@ -1498,12 +1498,13 @@ var _ = Describe("Vector pending entry conformance", func() {
 // engines maintain the same index through the record store, one save per
 // transaction, and each operation's outcome is compared: a Euclidean index
 // accepts saves until its centroid is established (statistics sampled and
-// maintained on every insert, threshold 11) and refuses every save, search and
-// delete after it; a cosine index refuses its first save; a search of the
-// empty index is served. A save that leaves a record's vector unchanged makes
-// no graph call in Java (StandardIndexMaintainer.update drops the entry common
-// to the old and the new record), so it is served even after the centroid; Go
-// skips it the same way. 8 extra bits is the control.
+// maintained on every insert, threshold 11) and after it refuses every save
+// that quantizes (one that inserts or deletes a node), every search and every
+// delete; a cosine index refuses its first save; a search of the empty index is
+// served. A save that leaves a record's vector unchanged makes no graph call in
+// Java (StandardIndexMaintainer.update drops the entry common to the old and
+// the new record), so it is served even after the centroid; Go skips it the
+// same way. 8 extra bits is the control.
 var _ = Describe("An HNSW index with more RaBitQ extra bits than the quantizer encodes is refused where Java constructs it", func() {
 	vectors := make([][]float64, 16)
 	for i := range vectors {

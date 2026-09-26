@@ -60,7 +60,7 @@ func unwrapContinuation(rawBytes []byte) []byte {
 		return nil
 	}
 	msg := &gen.KeyValueCursorContinuation{}
-	if err := unmarshalVTAsJava(msg, rawBytes); err != nil {
+	if err := UnmarshalVTAsJava(msg, rawBytes); err != nil {
 		// Parse failed — treat as old-format raw bytes. This restart-free
 		// tolerance is Java-verified, NOT the swallow-and-restart bug class:
 		// KeyValueCursorBase.Continuation.getInnerContinuation

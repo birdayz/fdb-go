@@ -579,6 +579,12 @@ func (store *FDBRecordStore) saveRecordInternal(
 	if recordType.PrimaryKey == nil {
 		return nil, &MetaDataError{Message: fmt.Sprintf("no primary key defined for record type: %s", recordTypeName)}
 	}
+	// A closed enum field holding a number its enum does not declare is read by
+	// every later load, in both engines, as unset (proto_closed_enums.go), so
+	// the record is keyed, counted, indexed and written as that reading: an
+	// update or delete that loads it then removes exactly the entries this save
+	// writes. The caller's message is not changed.
+	record = recordType.asJava(record)
 
 	// Extract primary key values using the flat evaluator (avoids [][]any alloc).
 	// The record type is supplied to the evaluation because a record-type-prefixed
@@ -2273,15 +2279,10 @@ func (store *FDBRecordStore) deserializeAndDiscover(data []byte) (*RecordType, p
 			remaining = remaining[m:]
 			continue
 		}
-		msg := rt.newMessage()
-		if vu, ok := msg.(interface{ UnmarshalVT([]byte) error }); ok {
-			if err := vu.UnmarshalVT(innerBytes); err != nil {
-				return nil, nil, nil, fmt.Errorf("failed to unmarshal %s: %w", rt.Name, err)
-			}
-		} else if err := javaUnmarshalOptions.Unmarshal(innerBytes, msg); err != nil {
+		msg, err := rt.unmarshalRecord(innerBytes)
+		if err != nil {
 			return nil, nil, nil, fmt.Errorf("failed to unmarshal %s: %w", rt.Name, err)
 		}
-		rt.closedEnumsAsJava(msg)
 		return rt, msg, newRecordWire(rt, innerBytes), nil
 	}
 	return nil, nil, nil, fmt.Errorf("union descriptor does not contain any known record type")
@@ -2377,15 +2378,10 @@ func (store *FDBRecordStore) deserializeRecord(data []byte, recordType *RecordTy
 			return nil, fmt.Errorf("failed to read field %d bytes", fieldNum)
 		}
 		_ = remaining[m:] // consume
-		msg := recordType.newMessage()
-		if vu, ok := msg.(interface{ UnmarshalVT([]byte) error }); ok {
-			if err := vu.UnmarshalVT(innerBytes); err != nil {
-				return nil, fmt.Errorf("failed to unmarshal %s: %w", recordType.Name, err)
-			}
-		} else if err := javaUnmarshalOptions.Unmarshal(innerBytes, msg); err != nil {
+		msg, err := recordType.unmarshalRecord(innerBytes)
+		if err != nil {
 			return nil, fmt.Errorf("failed to unmarshal %s: %w", recordType.Name, err)
 		}
-		recordType.closedEnumsAsJava(msg)
 		return msg, nil
 	}
 	return nil, fmt.Errorf("union descriptor does not contain %s record", recordType.Name)

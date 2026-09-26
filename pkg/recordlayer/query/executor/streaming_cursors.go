@@ -2059,7 +2059,7 @@ func decodeNLJContinuation(continuation []byte) (outerContinuation []byte, resum
 		return nil, nil, nil
 	}
 	fmc := &gen.FlatMapContinuation{}
-	if uerr := proto.Unmarshal(continuation, fmc); uerr != nil {
+	if uerr := recordlayer.UnmarshalAsJava(continuation, fmc); uerr != nil {
 		return nil, nil, &UnsupportedContinuationError{Shape: "nested loop join (unrecognized continuation bytes)"}
 	}
 	if len(fmc.GetOuterContinuation()) == 0 && len(fmc.GetInnerContinuation()) == 0 && len(fmc.GetCheckValue()) == 0 {

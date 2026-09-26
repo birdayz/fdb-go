@@ -591,13 +591,14 @@ deleteWhere, clear, disable and drop.
 
 The gate evaluates index entries, not records. Java's vector maintainer inherits
 StandardIndexMaintainer.update, which removes entries common to the old and new
-record before calling the engine (StandardIndexMaintainer.java:217-227); Go's
-vectorIndexMaintainer.Update overrides that and deletes and re-inserts
-unconditionally, so every HNSW record update today rewrites graph bytes the
-target never touches. WS-D fixes it: Update applies the existing
-removeCommonEntries (index_maintainer.go) before calling the engine, pinned by a
-JVM byte fixture that a non-vector field update leaves the partition bytes
-unchanged. NULL vector entries never reach the engine (VectorIndexMaintainer.java:
+record before calling the engine (StandardIndexMaintainer.java:217-227). [Landed
+with WS-C revision 18, ws-c-design.md 7.18 and 7.19: Go's vectorIndexMaintainer.Update
+applies removeCommonEntries before calling the engine; the pins are a Go byte
+comparison of the index subspace across a non-vector field update and a JVM
+comparison of each engine's outcome, not a JVM byte fixture.] Go's
+vectorIndexMaintainer.Update overrode that and deleted and re-inserted
+unconditionally, so every HNSW record update rewrote graph bytes the
+target never touches. NULL vector entries never reach the engine (VectorIndexMaintainer.java:
 357-363). Two paths DO pass an unchanged vector to the engine in the target and
 keep doing so in Go: queue replay (updateFromQueue applies old then new) and the
 sliding window. There the insert half is subject to the insert rules above, so a

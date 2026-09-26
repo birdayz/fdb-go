@@ -35,11 +35,13 @@ var _ = Describe("Index maintainer pending queue", func() {
 		Expect(window.IsPendingWriteQueueAllowed()).To(BeFalse())
 	})
 
-	// A save that leaves a record's vector entry unchanged makes no graph call,
-	// as Java's VectorIndexMaintainer (which inherits
-	// StandardIndexMaintainer.update's removal of entries common to the old
-	// and the new record) makes none: the index's bytes, access info and
-	// samples included, are unchanged. Go deleted and re-inserted the node.
+	// A save maintained in its own transaction that leaves a record's vector
+	// entry unchanged makes no graph call, as Java's VectorIndexMaintainer
+	// (which inherits StandardIndexMaintainer.update's removal of entries
+	// common to the old and the new record) makes none: the index's bytes are
+	// unchanged (this index has no RaBitQ, so it has no samples; the graph-level
+	// spec in vector_index_test.go pins those). Go deleted and re-inserted the
+	// node. The pending-write queue does not skip (next spec).
 	It("leaves the graph as it is when a save keeps the vector", func() {
 		index := NewVectorIndex("unchanged_vector", KeyWithValue(Concat(Field("quantity"), Field("price")), 1), 1)
 		builder := baseBuilder()
@@ -70,6 +72,41 @@ var _ = Describe("Index maintainer pending queue", func() {
 			_, err = store.SaveRecord(&gen.Order{OrderId: proto.Int64(5), Quantity: proto.Int32(1), Price: proto.Int32(500), CoordX: proto.Int64(99)})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(snapshot()).NotTo(Equal(before))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	// A save queued for a WRITE_ONLY_WITH_QUEUE index is serialized with both
+	// its entries, the old and the new, even when they are equal, as Java's
+	// VectorIndexMaintainer.serializePendingWriteQueue writes them
+	// (VectorIndexMaintainer.java:432-449): the skip of common entries is
+	// update's, and the queue's replay deletes then inserts. Both engines;
+	// this pins that no skip reaches the queue.
+	It("serializes both entries of a queued save that keeps the vector", func() {
+		index := NewVectorIndex("queued_unchanged", Concat(Field("price"), Field("quantity")), 2)
+		builder := baseBuilder()
+		builder.AddIndex("Order", index)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+		_, err = sharedDB.Run(context.Background(), func(rc *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().SetContext(rc).SetMetaDataProvider(md).SetSubspace(specSubspace()).Create()
+			Expect(err).NotTo(HaveOccurred())
+			maintainer, err := store.GetIndexMaintainer(index)
+			Expect(err).NotTo(HaveOccurred())
+			record := func(other int64) *FDBStoredRecord[proto.Message] {
+				return &FDBStoredRecord[proto.Message]{
+					Record:     &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(20), CoordX: proto.Int64(other)},
+					PrimaryKey: tuple.Tuple{int64(1)}, RecordType: md.GetRecordType("Order"),
+				}
+			}
+			data, err := maintainer.SerializePendingWriteQueue(record(1), record(2))
+			Expect(err).NotTo(HaveOccurred())
+			var decoded gen.OldAndNewIndexEntries
+			Expect(data.UnmarshalTo(&decoded)).To(Succeed())
+			Expect(decoded.GetOldEntries()).To(HaveLen(1))
+			Expect(decoded.GetNewEntries()).To(HaveLen(1))
+			Expect(proto.Equal(decoded.GetOldEntries()[0], decoded.GetNewEntries()[0])).To(BeTrue(), "the two entries are the equal ones")
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())

@@ -313,3 +313,51 @@ func TestInMemory_VersionGuard_BindAndDeleteSerialize(t *testing.T) {
 		})
 	}
 }
+
+// The third pair of the hooked interleaving (ws-j-design.md section 4e item 4):
+// a SaveSchema holding the catalog between its check and its bind of (h, 1),
+// and a DROP SCHEMA TEMPLATE of h followed by a fresh CreateTemplate of h. The
+// DROP takes only the template catalog's lock and completes; the fresh create
+// takes the store catalog's first, so it waits for the bind and then sees it,
+// and is refused naming the schema. Were the create not serialized with the
+// bind, it would see no binding, store a fresh h, and the bind would then land
+// on a version of the dropped history under the new one's name.
+func TestInMemory_VersionGuard_FreshCreateAfterDropSerializesWithBind(t *testing.T) {
+	t.Parallel()
+	c := NewInMemoryStoreCatalog()
+	tx := NewInMemoryTransaction()
+	tc := c.SchemaTemplateCatalog()
+	if err := tc.CreateTemplate(tx, buildTemplateAtVersion(t, "h", 1)); err != nil {
+		t.Fatal(err)
+	}
+	checked, release := make(chan struct{}), make(chan struct{})
+	c.beforeBind = func() {
+		close(checked)
+		<-release
+	}
+	bindErr := make(chan error, 1)
+	go func() {
+		bindErr <- c.SaveSchema(tx, buildTemplateAtVersion(t, "h", 1).GenerateSchema("/db", "s"), true)
+	}()
+	<-checked
+	if err := tc.DeleteTemplate(tx, "h", true); err != nil {
+		t.Fatalf("DROP SCHEMA TEMPLATE h: %v", err)
+	}
+	createErr := make(chan error, 1)
+	go func() { createErr <- tc.CreateTemplate(tx, buildTemplateAtVersion(t, "h", 1)) }()
+	select {
+	case err := <-createErr:
+		t.Fatalf("the fresh create returned (%v) while the bind held the catalog", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	if err := <-bindErr; err != nil {
+		t.Fatalf("the bind: %v", err)
+	}
+	c.beforeBind = nil
+	wantAPIError(t, <-createErr, api.ErrCodeInvalidSchemaTemplate,
+		"schema template h version 1 cannot be created: schemas are still bound to its dropped version 1 (/db/s)")
+	if ok, err := tc.DoesSchemaTemplateExist(tx, "h"); err != nil || ok {
+		t.Fatalf("h exists after the refused create: %t %v", ok, err)
+	}
+}

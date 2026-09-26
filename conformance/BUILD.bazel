@@ -133,6 +133,7 @@ go_test(
         "//pkg/relational/conformance/plandiff",
         "//pkg/relational/core/catalog",
         "//pkg/relational/core/embedded",
+        "//pkg/relational/core/keyspace",
         "//pkg/relational/core/metadata",
         "//pkg/relational/core/parser",
         "//pkg/relational/core/parser/gen",

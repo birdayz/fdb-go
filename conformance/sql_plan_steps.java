@@ -903,6 +903,75 @@ class SqlPlanSteps {
         return out;
     }
 
+    /**
+     * TEST-ONLY (RFC-257 WS-J): how the relational catalog reads template (templateName, 1): for
+     * table T's column D, whether the field declares a default in the template's cached meta-data
+     * (the catalog load), and in the meta-data a schema's store is opened with
+     * (CatalogMetaDataProvider: RecordMetaData.build of the template's toRecordMetadata().toProto()).
+     */
+    @ConformanceStep("wsjTemplateDefaultsJava")
+    public JsonObject wsjTemplateDefaultsJava(String clusterFile, String templateName) throws Exception {
+        ensureDriverRegistered(clusterFile);
+        JsonObject out = new JsonObject();
+        try (DirectFdbConnection connection = new DirectFdbConnection(sharedDatabase);
+             Transaction txn = connection.getTransactionManager().createTransaction(Options.NONE)) {
+            final StoreCatalog catalog = StoreCatalogProvider.getCatalog(txn, sharedKeySpace);
+            final var template = catalog.getSchemaTemplateCatalog().loadSchemaTemplate(txn, templateName, 1)
+                    .unwrap(com.apple.foundationdb.relational.recordlayer.metadata.RecordLayerSchemaTemplate.class);
+            final var cached = template.toRecordMetadata();
+            final var d = cached.getRecordType("T").getDescriptor().findFieldByName("D");
+            out.addProperty("cachedHasDefault", d.hasDefaultValue());
+            out.addProperty("cachedDefault", String.valueOf(d.getDefaultValue()));
+            final var rebuilt = com.apple.foundationdb.record.RecordMetaData.build(cached.toProto());
+            final var rd = rebuilt.getRecordType("T").getDescriptor().findFieldByName("D");
+            out.addProperty("storeHasDefault", rd.hasDefaultValue());
+            out.addProperty("sameInstance", cached == rebuilt);
+            txn.commit();
+        }
+        return out;
+    }
+
+    /**
+     * TEST-ONLY (RFC-257 WS-J): the one record of table T in a kept store, loaded
+     * through the core record layer with the meta-data a schema's store is opened with, and its
+     * column D read three ways: hasField, the field descriptor's hasDefaultValue, and
+     * MessageHelpers.getFieldOnMessage (FieldValue's reader).
+     */
+    @ConformanceStep("wsjRecordFieldJava")
+    public JsonObject wsjRecordFieldJava(String clusterFile, String dbPath, String schemaName, String templateName,
+                                         long pk) throws Exception {
+        ensureDriverRegistered(clusterFile);
+        JsonObject out = new JsonObject();
+        final com.apple.foundationdb.record.RecordMetaData md;
+        try (DirectFdbConnection connection = new DirectFdbConnection(sharedDatabase);
+             Transaction txn = connection.getTransactionManager().createTransaction(Options.NONE)) {
+            final StoreCatalog catalog = StoreCatalogProvider.getCatalog(txn, sharedKeySpace);
+            md = com.apple.foundationdb.record.RecordMetaData.build(catalog.getSchemaTemplateCatalog().loadSchemaTemplate(txn, templateName, 1)
+                    .unwrap(com.apple.foundationdb.relational.recordlayer.metadata.RecordLayerSchemaTemplate.class)
+                    .toRecordMetadata().toProto());
+            txn.commit();
+        }
+        try (com.apple.foundationdb.record.provider.foundationdb.FDBRecordContext ctx = sharedDatabase.openContext()) {
+            com.apple.foundationdb.subspace.Subspace ss = RelationalKeyspaceProvider
+                    .toDatabasePath(java.net.URI.create(dbPath), sharedKeySpace).schemaPath(schemaName).toSubspace(ctx);
+            final var store = com.apple.foundationdb.record.provider.foundationdb.FDBRecordStore.newBuilder()
+                    .setContext(ctx).setSubspace(ss).setMetaDataProvider(md)
+                    .setSerializer(com.apple.foundationdb.relational.recordlayer.storage.StoreConfig.DEFAULT_RELATIONAL_SERIALIZER)
+                    .open();
+            // The relational primary key leads with the record type key; the kept store holds one record.
+            final var rec = store.scanRecords(com.apple.foundationdb.record.TupleRange.ALL, null,
+                    com.apple.foundationdb.record.ScanProperties.FORWARD_SCAN).asList().join().get(0);
+            final com.google.protobuf.Message m = rec.getRecord();
+            final var d = m.getDescriptorForType().findFieldByName("D");
+            out.addProperty("class", m.getClass().getName());
+            out.addProperty("hasField", m.hasField(d));
+            out.addProperty("hasDefaultValue", d.hasDefaultValue());
+            out.addProperty("getFieldOnMessage", String.valueOf(com.apple.foundationdb.record.query.plan.cascades.values.MessageHelpers.getFieldOnMessage(m, d)));
+            out.addProperty("bytes", java.util.HexFormat.of().formatHex(m.toByteArray()));
+        }
+        return out;
+    }
+
     /** TEST-ONLY: drops a database {@link #wsjOpenStoreJava} kept. */
     @ConformanceStep("wsjDropDatabaseJava")
     public JsonObject wsjDropDatabaseJava(String clusterFile, String dbPath) throws Exception {

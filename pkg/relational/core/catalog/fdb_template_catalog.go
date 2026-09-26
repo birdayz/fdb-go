@@ -1,8 +1,6 @@
 package catalog
 
 import (
-	"errors"
-
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen"
@@ -97,6 +95,16 @@ func (c *RecordLayerStoreSchemaTemplateCatalog) LoadSchemaTemplateAtVersion(txn 
 	if err != nil {
 		return nil, err
 	}
+	msg, err := loadTemplateRowIn(store, templateName, version)
+	if err != nil {
+		return nil, err
+	}
+	return deserializeTemplate(msg)
+}
+
+// loadTemplateRowIn is the (name, version) catalog row, or
+// errTemplateVersionNotInCatalog when there is none.
+func loadTemplateRowIn(store *recordlayer.FDBRecordStore, templateName string, version int) (*gen.Templates, error) {
 	rec, err := store.LoadRecord(templateKeyAtVersion(templateName, version))
 	if err != nil {
 		return nil, err
@@ -109,7 +117,16 @@ func (c *RecordLayerStoreSchemaTemplateCatalog) LoadSchemaTemplateAtVersion(txn 
 		return nil, api.NewErrorf(api.ErrCodeInternalError,
 			"catalog template row has unexpected type %T", rec.Record)
 	}
-	return deserializeTemplate(msg)
+	return msg, nil
+}
+
+// templateRowProto is a catalog row's META_DATA unmarshalled, as stored.
+func templateRowProto(msg *gen.Templates) (*gen.MetaData, error) {
+	p := &gen.MetaData{}
+	if err := recordlayer.UnmarshalAsJava(msg.GetMETA_DATA(), p); err != nil {
+		return nil, api.WrapErrorf(err, api.ErrCodeInternalError, "template unmarshal")
+	}
+	return p, nil
 }
 
 // LoadTemplateProto returns the row's META_DATA unmarshalled, as stored.
@@ -118,34 +135,29 @@ func (c *RecordLayerStoreSchemaTemplateCatalog) LoadTemplateProto(txn api.Transa
 	if err != nil {
 		return nil, err
 	}
-	rec, err := store.LoadRecord(templateKeyAtVersion(templateName, version))
+	msg, err := loadTemplateRowIn(store, templateName, version)
 	if err != nil {
 		return nil, err
 	}
-	if rec == nil {
-		return nil, errTemplateVersionNotInCatalog(templateName, version)
-	}
-	msg, ok := rec.Record.(*gen.Templates)
-	if !ok {
-		return nil, api.NewErrorf(api.ErrCodeInternalError,
-			"catalog template row has unexpected type %T", rec.Record)
-	}
-	p := &gen.MetaData{}
-	if err := recordlayer.UnmarshalAsJava(msg.GetMETA_DATA(), p); err != nil {
-		return nil, api.WrapErrorf(err, api.ErrCodeInternalError, "template unmarshal")
-	}
-	return p, nil
+	return templateRowProto(msg)
 }
 
-// CreateTemplate persists a new (name, version): Java's
-// RecordLayerStoreSchemaTemplateCatalog.createTemplate, which refuses an
-// existing (name, version) with its text, "Schema template already exists"
-// (ErrCodeDuplicateSchemaTemplate), and validates no evolution; plus the
-// version guard (template_bindings.go), a declared Go extension that refuses a
-// new version while a schema binds a dropped version above the latest stored
-// one. The rest of the WS-J design's route (ws-j-design.md 4e, step 3: the
-// refusal of a version at or below the latest, the relational validator, the
-// carry, the lane and evolution checks) is not here yet.
+// CreateTemplate persists a new (name, version), the one build-path writer of
+// a template (ws-j-design.md section 4). In order:
+//   - an existing (name, version) is refused with Java's text, "Schema template
+//     already exists" (ErrCodeDuplicateSchemaTemplate), Java's createTemplate's
+//     only refusal;
+//   - a version at or below the latest stored one is refused, and the
+//     relational evolution validator runs against that latest version
+//     (refuseBelowLatest; both a declared extension, section 9 (w));
+//   - the version guard (template_bindings.go): a schema bound to a dropped
+//     version above the latest refuses the save;
+//   - a new version of a stored template is carried from the latest stored
+//     version's bytes (carryTemplate: record-type keys, union numbers and
+//     indexes kept, the lane check over the indexes it defines, the evolution
+//     validator with index rebuilds allowed), and the carried bytes are what is
+//     written; a fresh name is lane-checked (checkIndexLanes) and written as
+//     built.
 func (c *RecordLayerStoreSchemaTemplateCatalog) CreateTemplate(txn api.Transaction, newTemplate api.SchemaTemplate) error {
 	if newTemplate == nil {
 		return api.NewError(api.ErrCodeInvalidParameter, "template is nil")
@@ -169,13 +181,32 @@ func (c *RecordLayerStoreSchemaTemplateCatalog) CreateTemplate(txn api.Transacti
 		return api.NewErrorf(api.ErrCodeDuplicateSchemaTemplate,
 			"Schema template already exists: %s", rl.MetadataName())
 	}
-	// The version guard (template_bindings.go): no schema may bind a
-	// dropped version of the template above its latest stored one, every
-	// version when none is stored.
 	latest, found, err := latestTemplateVersion(store, rl.MetadataName())
 	if err != nil {
 		return err
 	}
+	var stored *gen.MetaData
+	if found {
+		row, err := loadTemplateRowIn(store, rl.MetadataName(), latest)
+		if err != nil {
+			return err
+		}
+		// The latest version reads back as a load reads it (its codes), before
+		// its bytes are taken as the carry's source.
+		latestTmpl, err := deserializeTemplate(row)
+		if err != nil {
+			return err
+		}
+		if stored, err = templateRowProto(row); err != nil {
+			return err
+		}
+		if err := refuseBelowLatest(latestTmpl, rl); err != nil {
+			return err
+		}
+	}
+	// The version guard (template_bindings.go): no schema may bind a
+	// dropped version of the template above its latest stored one, every
+	// version when none is stored.
 	from := -1
 	if found {
 		from = latest + 1
@@ -188,10 +219,24 @@ func (c *RecordLayerStoreSchemaTemplateCatalog) CreateTemplate(txn api.Transacti
 		return errBoundOnCreate(rl.MetadataName(), rl.Version(), *bound)
 	}
 
-	payload, err := serializeTemplate(rl)
+	var payload []byte
+	if found {
+		payload, _, err = carryTemplate(stored, rl)
+	} else if err = checkFreshLanes(rl); err == nil {
+		payload, err = serializeTemplate(rl)
+	}
 	if err != nil {
 		return err
 	}
+	return writeTemplateRow(store, rl, payload)
+}
+
+// writeTemplateRow is the build path's template writer: CreateTemplate hands
+// it the bytes it checked (the carried ones for a new version of a stored
+// name), and nothing else reaches it, so no caller builds a template whose
+// bytes CreateTemplate did not see. The restore, a raw-write route with its
+// own checks (template_restore.go), writes its row itself.
+func writeTemplateRow(store *recordlayer.FDBRecordStore, rl *metadata.RecordLayerSchemaTemplate, payload []byte) error {
 	rec := &gen.Templates{
 		TEMPLATE_NAME:    proto.String(rl.MetadataName()),
 		TEMPLATE_VERSION: proto.Int32(int32(rl.Version())),
@@ -374,8 +419,11 @@ func deserializeTemplate(msg *gen.Templates) (api.SchemaTemplate, error) {
 	}
 	md, err := recordlayer.RecordMetaDataFromProto(p)
 	if err != nil {
+		// Java tests the exception thrown, not its causes (`re instanceof
+		// MetaDataException`), so a MetaDataError that is only the cause of
+		// another exception is UNKNOWN.
 		code := api.ErrCodeUnknown
-		if mde := (*recordlayer.MetaDataError)(nil); errors.As(err, &mde) {
+		if recordlayer.IsMetaDataException(err) {
 			code = api.ErrCodeSyntaxOrAccessViolation
 		}
 		return nil, api.WrapErrorf(err, code, "template from-proto")

@@ -94,11 +94,15 @@ func TestFDB_IndexDefinitionProductionPathStoresTargetShapes(t *testing.T) {
 }
 
 // One DDL front end (RFC-257 WS-J section 3.4): the template a CREATE SCHEMA
-// TEMPLATE executed by the driver stores is, byte for byte, the one the tooling
+// TEMPLATE executed by the driver stores is proto-equal to the one the tooling
 // path (embedded.BuildSchemaTemplateFromDDLNamed, which the planner harness and
-// the conformance oracle use) builds from the same text. Every clause kind the
-// builder reads is present: WITH OPTIONS, a struct, tables, on-source,
-// as-select and aggregate indexes, index options and a vector index.
+// the conformance oracle use) builds from the same text. Both run one builder,
+// so this is a structural pin: the driver executes that builder and stores what
+// it built (the catalog's write of a fresh name does not re-derive it). The
+// clause kinds Go's DDL takes are present: WITH OPTIONS, a struct, tables,
+// on-source, as-select, filtered (WHERE) and aggregate indexes, index options
+// and a vector index; an enum is not (Go's DDL does not take CREATE TYPE AS
+// ENUM yet, ws-j-design.md section 5).
 func TestFDB_ExecutedTemplateIsTheToolingPathsTemplate(t *testing.T) {
 	t.Parallel()
 	setup := openTestDB(t, "/__SYS")
@@ -117,6 +121,7 @@ func TestFDB_ExecutedTemplateIsTheToolingPathsTemplate(t *testing.T) {
 		"CREATE INDEX t_sum AS SELECT sum(v) FROM t GROUP BY g " +
 		"CREATE INDEX t_cnt AS SELECT count(*) FROM t GROUP BY g " +
 		"CREATE INDEX t_ap1 AS SELECT a + 1 FROM t ORDER BY a + 1 " +
+		"CREATE INDEX t_where AS SELECT g FROM t WHERE g > 20 ORDER BY g " +
 		"CREATE VECTOR INDEX u_e USING HNSW ON u (e) OPTIONS (METRIC = EUCLIDEAN_METRIC)"
 	ddl := "CREATE SCHEMA TEMPLATE " + name + " " + body + " WITH OPTIONS (STORE_ROW_VERSIONS = true)"
 	built, err := embedded.BuildSchemaTemplateFromDDL(ddl)
@@ -140,8 +145,13 @@ func TestFDB_ExecutedTemplateIsTheToolingPathsTemplate(t *testing.T) {
 			t.Errorf("the executed CREATE stored another template than the tooling path builds:\n stored %v\n built  %v",
 				prototext.Format(stored), prototext.Format(want))
 		}
-		if len(stored.GetIndexes()) != 7 {
-			t.Errorf("stored %d indexes, want the 7 the DDL declares", len(stored.GetIndexes()))
+		if len(stored.GetIndexes()) != 8 {
+			t.Errorf("stored %d indexes, want the 8 the DDL declares", len(stored.GetIndexes()))
+		}
+		for _, ix := range stored.GetIndexes() {
+			if ix.GetName() == "T_WHERE" && ix.GetPredicate() == nil {
+				t.Error("T_WHERE is stored without its predicate")
+			}
 		}
 		return nil
 	})

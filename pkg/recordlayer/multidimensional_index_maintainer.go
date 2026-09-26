@@ -277,7 +277,7 @@ func (m *multidimensionalIndexMaintainer) Scan(
 		var resumePrefixBytes, resumeInnerBytes []byte
 		if len(continuation) > 0 {
 			var flatMapCont gen.FlatMapContinuation
-			if err := unmarshalVTAsJava(&flatMapCont, continuation); err != nil {
+			if err := UnmarshalVTAsJava(&flatMapCont, continuation); err != nil {
 				return &errorCursor[*IndexEntry]{
 					err: fmt.Errorf("MULTIDIMENSIONAL index %q: invalid prefix skip-scan continuation: %w", m.index.Name, err),
 				}
@@ -355,10 +355,10 @@ func (m *multidimensionalIndexMaintainer) scanBoundPrefix(
 	if len(continuation) > 0 {
 		var parsed bool
 		var flatMapCont gen.FlatMapContinuation
-		if err := unmarshalVTAsJava(&flatMapCont, continuation); err == nil && flatMapCont.InnerContinuation != nil {
+		if err := UnmarshalVTAsJava(&flatMapCont, continuation); err == nil && flatMapCont.InnerContinuation != nil {
 			// Java-compatible FlatMapContinuation wrapper.
 			var cont gen.MultidimensionalIndexScanContinuation
-			if err := unmarshalVTAsJava(&cont, flatMapCont.InnerContinuation); err == nil {
+			if err := UnmarshalVTAsJava(&cont, flatMapCont.InnerContinuation); err == nil {
 				if cont.LastHilbertValue != nil {
 					lastHV = new(big.Int).SetBytes(cont.LastHilbertValue)
 				}
@@ -378,7 +378,7 @@ func (m *multidimensionalIndexMaintainer) scanBoundPrefix(
 		if !parsed {
 			// Fallback: try raw MultidimensionalIndexScanContinuation (old Go format).
 			var cont gen.MultidimensionalIndexScanContinuation
-			if err := unmarshalVTAsJava(&cont, continuation); err != nil {
+			if err := UnmarshalVTAsJava(&cont, continuation); err != nil {
 				return &errorCursor[*IndexEntry]{
 					err: fmt.Errorf("MULTIDIMENSIONAL index %q: invalid continuation: %w", m.index.Name, err),
 				}
@@ -1135,7 +1135,7 @@ func unwrapMultidimensionalInner(cont RecordCursorContinuation) ([]byte, error) 
 		return nil, nil
 	}
 	var fmc gen.FlatMapContinuation
-	if err := unmarshalVTAsJava(&fmc, b); err != nil {
+	if err := UnmarshalVTAsJava(&fmc, b); err != nil {
 		return nil, fmt.Errorf("invalid per-prefix continuation: %w", err)
 	}
 	return fmc.InnerContinuation, nil

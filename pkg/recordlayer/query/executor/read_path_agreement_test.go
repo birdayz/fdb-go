@@ -29,10 +29,11 @@ import (
 //	3. rowstruct.MessageStruct      (rowstruct.go)     — the driver-visible STRUCT
 //
 // The third is Java's MessageTuple.getObject (MessageTuple.java:57-77), the
-// driver's struct read, not getFieldOnMessage: the two agree on every field
-// but an unset proto2 field that declares a default, which getFieldOnMessage
-// reads as the default and MessageTuple (hasField false) as null
-// (TestReadPathsMatchJavaGetFieldOnMessage).
+// driver's struct read. All three give Java's query read, which is
+// MessageTuple's, not getFieldOnMessage's: the two differ only on an unset
+// proto2 field that declares a default, which getFieldOnMessage reads as the
+// default and MessageTuple (hasField false) as null, and a query reads a copy
+// of the record that declares no default (TestReadPathsMatchJavasQueryRead).
 //
 // They agree today, but nothing forced them to: path 1 was wrong until
 // recently, which made the answer depend on which path a plan happened to
@@ -318,18 +319,19 @@ func TestReadPathAgreement_EmptyArrayAndAbsence(t *testing.T) {
 	}
 }
 
-// TestReadPathsMatchJavaGetFieldOnMessage runs Go's three field readers over
-// the cases the JVM spec "RFC-257 a query reads a field as Java's
-// getFieldOnMessage" measures against Java's MessageHelpers.getFieldOnMessage
-// (conformance/null_standin_conformance_test.go), and asserts each reader
-// gives Java's read: that spec pins the shared helper
+// TestReadPathsMatchJavasQueryRead runs Go's three field readers over the cases
+// the JVM spec "RFC-257 a query reads a field as Java's query reads it"
+// measures (conformance/null_standin_conformance_test.go), and asserts each
+// reader gives Java's query read: that spec pins the shared helper
 // (values.ProtoFieldReadsValue) against the JVM, and this pins every reader to
 // the same measured table, so a reader that stops going through the helper
-// cannot agree with the other two and still differ from Java. The driver's
-// struct reader is Java's MessageTuple, whose read of an unset field with a
-// declared default is null (hasField, MessageTuple.java:73-77), where
-// getFieldOnMessage reads the default; the table gives it that read.
-func TestReadPathsMatchJavaGetFieldOnMessage(t *testing.T) {
+// cannot agree with the other two and still differ from Java. An unset field
+// with a declared default is null in all three: Java's query reads a copy of
+// the record in the plan's type (QueryResult.fromQueriedRecord), and the
+// driver's struct reader, MessageTuple, reads hasField (MessageTuple.java:73-77);
+// only Java's raw MessageHelpers.getFieldOnMessage, which no query applies to
+// a stored record, reads the default.
+func TestReadPathsMatchJavasQueryRead(t *testing.T) {
 	t.Parallel()
 	file := func(syntax string) protoreflect.MessageDescriptor {
 		label := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum()
@@ -370,7 +372,7 @@ func TestReadPathsMatchJavaGetFieldOnMessage(t *testing.T) {
 	}{
 		{"proto2", nil, "a", readPathValue{null: true}, nil},
 		{"proto2", map[string]int64{"a": 0}, "a", readPathValue{scalar: "0"}, nil},
-		{"proto2", nil, "d", readPathValue{scalar: "7"}, &readPathValue{null: true}},
+		{"proto2", nil, "d", readPathValue{null: true}, nil},
 		{"proto2", map[string]int64{"d": 0}, "d", readPathValue{scalar: "0"}, nil},
 		{"proto2", nil, "r", readPathValue{isArr: true}, nil},
 		{"proto2", nil, "s", readPathValue{null: true}, nil},

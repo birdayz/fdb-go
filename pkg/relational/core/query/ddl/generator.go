@@ -843,6 +843,9 @@ func valueKeyExpression(v values.Value, res storageNames) (recordlayer.KeyExpres
 		if err != nil {
 			return nil, err
 		}
+		if _, err := encapsulateLane(name, []values.Value{val.Left, val.Right}); err != nil {
+			return nil, err
+		}
 		return recordlayer.FunctionExpr(name, recordlayer.Concat(left, right)), nil
 	case *values.ScalarFunctionValue:
 		// The bit operators parse as ScalarFunctionValues in Go; Java models
@@ -859,6 +862,9 @@ func valueKeyExpression(v values.Value, res storageNames) (recordlayer.KeyExpres
 				return nil, err
 			}
 			args = append(args, expr)
+		}
+		if _, err := encapsulateLane(name, val.Args); err != nil {
+			return nil, err
 		}
 		return recordlayer.FunctionExpr(name, argumentExpression(args)), nil
 	case *values.ConstantValue:
@@ -1003,6 +1009,57 @@ func literalInteger(v any) (n int64, ok bool, err error) {
 		return int64(x), true, nil
 	}
 	return 0, false, nil
+}
+
+// encapsulateLane is ArithmeticValue.encapsulate's check as the target runs it
+// at the index clause (ArithmeticValue.java:213-231), where it builds the
+// index's Values: each operand's type must be primitive (a SemanticException
+// otherwise), and the operator must have a lane over the two types (a
+// VerifyException otherwise), both XX000 with the target's message. Operands
+// are typed as Java types them (arithmeticOperandType), and an operand is
+// checked before the call that holds it, as Java encapsulates bottom-up, since
+// valueKeyExpression recurses into the operands first. Without this, Go's DDL
+// stored a key the target can never plan (RFC-257 WS-J section 3.2).
+func encapsulateLane(function string, operands []values.Value) (values.ArithmeticLane, error) {
+	if len(operands) != 2 {
+		return values.ArithmeticLane{}, api.NewErrorf(api.ErrCodeInternalError,
+			"arithmetic operator %s takes two operands, not %d", function, len(operands))
+	}
+	left, right := arithmeticOperandType(operands[0]), arithmeticOperandType(operands[1])
+	if !values.ArithmeticOperandIsPrimitive(left) || !values.ArithmeticOperandIsPrimitive(right) {
+		return values.ArithmeticLane{}, api.NewError(api.ErrCodeInternalError,
+			"The argument to an arithmetic operator expecting an argument of a primitive type, is invoked with an argument of a complex type, e.g. an array or a record.")
+	}
+	lane, ok := values.LookupArithmeticLane(function, left, right)
+	if !ok {
+		return values.ArithmeticLane{}, api.NewError(api.ErrCodeInternalError,
+			"unable to encapsulate arithmetic operation due to type mismatch(es)")
+	}
+	return lane, nil
+}
+
+// arithmeticOperandType is the type code of the Value Java builds for v as an
+// arithmetic operand: a nested arithmetic or bit operator by its lane's result
+// (Go's ArithmeticValue.Type promotes by its own rule, which differs from the
+// table's, e.g. for ADD over a STRING), anything else by its Type.
+func arithmeticOperandType(v values.Value) values.TypeCode {
+	switch val := v.(type) {
+	case *values.ArithmeticValue:
+		if name, err := arithmeticFunctionName(val.Op); err == nil {
+			if lane, err := encapsulateLane(name, []values.Value{val.Left, val.Right}); err == nil {
+				return lane.Result
+			}
+		}
+		return values.TypeCodeUnknown
+	case *values.ScalarFunctionValue:
+		if name, ok := bitFunctionName(val.FuncName); ok {
+			if lane, err := encapsulateLane(name, val.Args); err == nil {
+				return lane.Result
+			}
+			return values.TypeCodeUnknown
+		}
+	}
+	return v.Type().Code()
 }
 
 func unableToConstruct() error {

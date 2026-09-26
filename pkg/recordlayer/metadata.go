@@ -203,6 +203,11 @@ type RecordType struct {
 	// decoded record must then read as Java reads it (proto_closed_enums.go).
 	reachesClosedEnum bool
 	closedEnumReach   *closedEnumReach
+	// closedEnumRoot is this type's own plan in closedEnumReach, nil when it
+	// reaches no closed enum; decodeVT whether its vtproto decoder may read a
+	// record (a generated type that cannot nest past the record limit).
+	closedEnumRoot *closedEnumPlan
+	decodeVT       bool
 
 	// newMessage creates a new empty instance of this record type's proto message.
 	// Pre-computed at Build() time via protoregistry. Returns concrete Go type
@@ -1259,11 +1264,12 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 		}
 	}
 	reach := newMapReach(roots...)
-	enumReach := newClosedEnumReach(roots...)
+	enumReach := newClosedEnumReach(false, roots...)
 	for _, rt := range types {
 		if rt.Descriptor != nil {
 			rt.reachesMap, rt.mapReach = reach.reaches(rt.Descriptor), reach
 			rt.reachesClosedEnum, rt.closedEnumReach = enumReach.reaches(rt.Descriptor), enumReach
+			rt.closedEnumRoot, _, _ = enumReach.planFor(rt.Descriptor)
 		}
 		if rt.UnionFieldDescriptor != nil {
 			rt.unionFieldNumber = rt.UnionFieldDescriptor.Number()
@@ -1276,6 +1282,8 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 				rt.newMessage = func() proto.Message { return dynamicpb.NewMessage(desc) }
 			} else {
 				rt.newMessage = func() proto.Message { return msgType.New().Interface() }
+				_, hasVT := msgType.New().Interface().(interface{ UnmarshalVT([]byte) error })
+				rt.decodeVT = hasVT && vtBounded(rt.Descriptor, javaRecordRule.limit)
 			}
 			for i := 0; i < b.unionDescriptor.Fields().Len(); i++ {
 				field := b.unionDescriptor.Fields().Get(i)

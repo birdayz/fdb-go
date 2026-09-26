@@ -133,7 +133,15 @@ func (c *InMemorySchemaTemplateCatalog) LoadTemplateProto(txn api.Transaction, t
 	return p, nil
 }
 
-// CreateTemplate: persist a new (name, version). Error on duplicate.
+// CreateTemplate persists a new (name, version) through the FDB catalog's
+// route (RecordLayerStoreSchemaTemplateCatalog.CreateTemplate): the
+// exact-duplicate refusal, then refuseBelowLatest against the latest stored
+// version, the version guard, and for a new version of a stored name the carry
+// from the latest version's ToProto (carryTemplate, with the lane check over
+// the indexes it defines). What is stored is the template the carried bytes
+// load as; a fresh name is lane-checked (checkIndexLanes) and stored as given,
+// and so is a template that is not a RecordLayerSchemaTemplate, which has no
+// meta-data to carry or check.
 func (c *InMemorySchemaTemplateCatalog) CreateTemplate(txn api.Transaction, newTemplate api.SchemaTemplate) error {
 	if err := checkOpenTxn(txn); err != nil {
 		return err
@@ -150,16 +158,41 @@ func (c *InMemorySchemaTemplateCatalog) CreateTemplate(txn api.Transaction, newT
 	if _, ok := c.templates[name][version]; ok {
 		return api.NewErrorf(api.ErrCodeDuplicateSchemaTemplate, "Schema template already exists: %s", name)
 	}
+	var latest api.SchemaTemplate
+	for v, t := range c.templates[name] {
+		if latest == nil || v > latest.Version() {
+			latest = t
+		}
+	}
+	if latest != nil {
+		if err := refuseBelowLatest(latest, newTemplate); err != nil {
+			return err
+		}
+	}
 	// The version guard: no schema may bind a dropped version above the
 	// latest stored one, every version when none is stored.
 	from := -1
-	for v := range c.templates[name] {
-		if v+1 > from {
-			from = v + 1
-		}
+	if latest != nil {
+		from = latest.Version() + 1
 	}
 	if bound := c.firstBindingHeld(name, from, -1); bound != nil {
 		return errBoundOnCreate(name, version, *bound)
+	}
+	storedRL, latestRL := latest.(*metadata.RecordLayerSchemaTemplate)
+	rl, newRL := newTemplate.(*metadata.RecordLayerSchemaTemplate)
+	switch {
+	case latestRL && newRL:
+		stored, err := storedRL.Underlying().ToProto()
+		if err != nil {
+			return api.WrapErrorf(err, api.ErrCodeInternalError, "template to-proto")
+		}
+		if _, newTemplate, err = carryTemplate(stored, rl); err != nil {
+			return err
+		}
+	case newRL:
+		if err := checkFreshLanes(rl); err != nil {
+			return err
+		}
 	}
 	if c.templates[name] == nil {
 		c.templates[name] = map[int]api.SchemaTemplate{}

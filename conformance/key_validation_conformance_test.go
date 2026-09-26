@@ -960,64 +960,109 @@ var _ = Describe("A record re-saved unchanged is written as Java's load-then-sav
 // one). Each engine then loads the raw records and saves them unchanged: the
 // bytes are equal, the numbers written back as unknown fields in field-number
 // order, around an unknown field the record already held.
+// closedEnumMetaData is the closed-enum spec's meta-data: EnumRec, whose e, r,
+// h.he and map m hold a closed enum (E: A=1, B=2; the map's F: F0=0, F2=2),
+// indexed by_e, by_r, by_he, by_m and count_by_e, and EnumReq, whose required
+// need is one. without is the same meta-data with no index, at version 1.
+func closedEnumMetaData() (withIndex, without *gen.MetaData) {
+	optional := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum()
+	repeated := descriptorpb.FieldDescriptorProto_LABEL_REPEATED.Enum()
+	fld := func(name string, number int32, label *descriptorpb.FieldDescriptorProto_Label, typ descriptorpb.FieldDescriptorProto_Type, typeName string) *descriptorpb.FieldDescriptorProto {
+		f := &descriptorpb.FieldDescriptorProto{Name: proto.String(name), Number: proto.Int32(number), Label: label, Type: typ.Enum()}
+		if typeName != "" {
+			f.TypeName = proto.String(typeName)
+		}
+		return f
+	}
+	enum := descriptorpb.FieldDescriptorProto_TYPE_ENUM
+	fdp := &descriptorpb.FileDescriptorProto{
+		Name: proto.String("closed_enum.proto"), Package: proto.String("closedenum"), Syntax: proto.String("proto2"),
+		EnumType: []*descriptorpb.EnumDescriptorProto{
+			{
+				Name: proto.String("E"),
+				Value: []*descriptorpb.EnumValueDescriptorProto{
+					{Name: proto.String("A"), Number: proto.Int32(1)},
+					{Name: proto.String("B"), Number: proto.Int32(2)},
+				},
+			},
+			// A map's enum value type declares 0 first.
+			{
+				Name: proto.String("F"),
+				Value: []*descriptorpb.EnumValueDescriptorProto{
+					{Name: proto.String("F0"), Number: proto.Int32(0)},
+					{Name: proto.String("F2"), Number: proto.Int32(2)},
+				},
+			},
+		},
+		MessageType: []*descriptorpb.DescriptorProto{
+			{
+				Name: proto.String("EnumRec"),
+				Field: []*descriptorpb.FieldDescriptorProto{
+					fld("id", 1, optional, descriptorpb.FieldDescriptorProto_TYPE_INT64, ""),
+					fld("e", 2, optional, enum, ".closedenum.E"),
+					fld("r", 3, repeated, enum, ".closedenum.E"),
+					fld("h", 4, optional, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, ".closedenum.Holder"),
+					fld("m", 5, repeated, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, ".closedenum.EnumRec.MEntry"),
+					fld("z", 9, optional, descriptorpb.FieldDescriptorProto_TYPE_INT32, ""),
+				},
+				NestedType: []*descriptorpb.DescriptorProto{{
+					Name: proto.String("MEntry"),
+					Field: []*descriptorpb.FieldDescriptorProto{
+						fld("key", 1, optional, descriptorpb.FieldDescriptorProto_TYPE_STRING, ""),
+						fld("value", 2, optional, enum, ".closedenum.F"),
+					},
+					Options: &descriptorpb.MessageOptions{MapEntry: proto.Bool(true)},
+				}},
+			},
+			{Name: proto.String("Holder"), Field: []*descriptorpb.FieldDescriptorProto{fld("he", 1, optional, enum, ".closedenum.E")}},
+			{
+				Name: proto.String("EnumReq"),
+				Field: []*descriptorpb.FieldDescriptorProto{
+					fld("id", 1, optional, descriptorpb.FieldDescriptorProto_TYPE_INT64, ""),
+					fld("need", 2, descriptorpb.FieldDescriptorProto_LABEL_REQUIRED.Enum(), enum, ".closedenum.E"),
+				},
+			},
+			{Name: proto.String("RecordTypeUnion"), Field: []*descriptorpb.FieldDescriptorProto{
+				fld("_EnumRec", 1, optional, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, ".closedenum.EnumRec"),
+				fld("_EnumReq", 2, optional, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, ".closedenum.EnumReq"),
+			}},
+		},
+	}
+	index := func(name string, root recordlayer.KeyExpression) *gen.Index {
+		return &gen.Index{
+			Name: proto.String(name), RecordType: []string{"EnumRec"}, RootExpression: root.ToKeyExpression(),
+			SubspaceKey: tuple.Tuple{name}.Pack(), AddedVersion: proto.Int32(2), LastModifiedVersion: proto.Int32(2),
+		}
+	}
+	count := index("count_by_e", recordlayer.GroupAll(recordlayer.Field("e")))
+	count.Type = proto.String("count")
+	withIndex = &gen.MetaData{
+		Records: fdp,
+		RecordTypes: []*gen.RecordType{
+			{Name: proto.String("EnumRec"), PrimaryKey: recordlayer.Field("id").ToKeyExpression()},
+			{Name: proto.String("EnumReq"), PrimaryKey: recordlayer.Field("id").ToKeyExpression()},
+		},
+		Indexes: []*gen.Index{
+			index("by_e", recordlayer.Field("e")),
+			index("by_r", recordlayer.FanOut("r")),
+			index("by_he", recordlayer.Nest("h", recordlayer.Field("he"))),
+			index("by_m", recordlayer.NestFanOut("m", recordlayer.Concat(recordlayer.Field("key"), recordlayer.Field("value")))),
+			count,
+		},
+		Version: proto.Int32(2),
+	}
+	without = proto.Clone(withIndex).(*gen.MetaData)
+	without.Indexes, without.Version = nil, proto.Int32(1)
+	return withIndex, without
+}
+
 var _ = Describe("A closed enum's undeclared number is read as Java reads it", func() {
 	It("indexed as absent, re-saved as an unknown field", func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		clusterFile, err := sharedContainer.ClusterFile(ctx)
 		Expect(err).NotTo(HaveOccurred())
-		optional := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum()
-		repeated := descriptorpb.FieldDescriptorProto_LABEL_REPEATED.Enum()
-		fld := func(name string, number int32, label *descriptorpb.FieldDescriptorProto_Label, typ descriptorpb.FieldDescriptorProto_Type, typeName string) *descriptorpb.FieldDescriptorProto {
-			f := &descriptorpb.FieldDescriptorProto{Name: proto.String(name), Number: proto.Int32(number), Label: label, Type: typ.Enum()}
-			if typeName != "" {
-				f.TypeName = proto.String(typeName)
-			}
-			return f
-		}
-		enum := descriptorpb.FieldDescriptorProto_TYPE_ENUM
-		fdp := &descriptorpb.FileDescriptorProto{
-			Name: proto.String("closed_enum.proto"), Package: proto.String("closedenum"), Syntax: proto.String("proto2"),
-			EnumType: []*descriptorpb.EnumDescriptorProto{{
-				Name: proto.String("E"),
-				Value: []*descriptorpb.EnumValueDescriptorProto{
-					{Name: proto.String("A"), Number: proto.Int32(1)},
-					{Name: proto.String("B"), Number: proto.Int32(2)},
-				},
-			}},
-			MessageType: []*descriptorpb.DescriptorProto{
-				{
-					Name: proto.String("EnumRec"),
-					Field: []*descriptorpb.FieldDescriptorProto{
-						fld("id", 1, optional, descriptorpb.FieldDescriptorProto_TYPE_INT64, ""),
-						fld("e", 2, optional, enum, ".closedenum.E"),
-						fld("r", 3, repeated, enum, ".closedenum.E"),
-						fld("h", 4, optional, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, ".closedenum.Holder"),
-						fld("z", 9, optional, descriptorpb.FieldDescriptorProto_TYPE_INT32, ""),
-					},
-				},
-				{Name: proto.String("Holder"), Field: []*descriptorpb.FieldDescriptorProto{fld("he", 1, optional, enum, ".closedenum.E")}},
-				{Name: proto.String("RecordTypeUnion"), Field: []*descriptorpb.FieldDescriptorProto{fld("_EnumRec", 1, optional, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, ".closedenum.EnumRec")}},
-			},
-		}
-		index := func(name string, root recordlayer.KeyExpression) *gen.Index {
-			return &gen.Index{
-				Name: proto.String(name), RecordType: []string{"EnumRec"}, RootExpression: root.ToKeyExpression(),
-				SubspaceKey: tuple.Tuple{name}.Pack(), AddedVersion: proto.Int32(2), LastModifiedVersion: proto.Int32(2),
-			}
-		}
-		withIndex := &gen.MetaData{
-			Records:     fdp,
-			RecordTypes: []*gen.RecordType{{Name: proto.String("EnumRec"), PrimaryKey: recordlayer.Field("id").ToKeyExpression()}},
-			Indexes: []*gen.Index{
-				index("by_e", recordlayer.Field("e")),
-				index("by_r", recordlayer.FanOut("r")),
-				index("by_he", recordlayer.Nest("h", recordlayer.Field("he"))),
-			},
-			Version: proto.Int32(2),
-		}
-		without := proto.Clone(withIndex).(*gen.MetaData)
-		without.Indexes, without.Version = nil, proto.Int32(1)
+		withIndex, without := closedEnumMetaData()
 
 		varint := func(num protowire.Number, v uint64) []byte {
 			return protowire.AppendVarint(protowire.AppendTag(nil, num, protowire.VarintType), v)
@@ -1032,11 +1077,25 @@ var _ = Describe("A closed enum's undeclared number is read as Java reads it", f
 		holder := func(he uint64) []byte {
 			return protowire.AppendBytes(protowire.AppendTag(nil, 4, protowire.BytesType), varint(1, he))
 		}
+		entry := func(key string, values ...uint64) []byte {
+			body := protowire.AppendString(protowire.AppendTag(nil, 1, protowire.BytesType), key)
+			for _, v := range values {
+				body = append(body, varint(2, v)...)
+			}
+			return protowire.AppendBytes(protowire.AppendTag(nil, 5, protowire.BytesType), body)
+		}
 		records := [][]byte{
 			// e 7, r [A, 7, B], h.he 9, z 5, and field 20 the record already
 			// holds as an unknown field.
 			cat(varint(1, 1), varint(2, 7), varint(3, 1), varint(3, 7), varint(3, 2), holder(9), varint(9, 5), varint(20, 3)),
 			cat(varint(1, 2), varint(2, 2), varint(3, 2), holder(1)),
+			// The last DECLARED occurrence wins: e A then 7 reads A, and 7
+			// then B reads B.
+			cat(varint(1, 3), varint(2, 1), varint(2, 7)),
+			cat(varint(1, 4), varint(2, 7), varint(2, 2)),
+			// Map entries: k's value undeclared, j's declared, and i's
+			// declared then undeclared.
+			cat(varint(1, 5), entry("k", 7), entry("j", 2), entry("i", 2, 9)),
 		}
 		recordArgs := make([][]int, len(records))
 		for i, r := range records {
@@ -1054,7 +1113,10 @@ var _ = Describe("A closed enum's undeclared number is read as Java reads it", f
 				"clusterFile": clusterFile, "subspace": BytesToIntArray(ss.Bytes()),
 				"metaData": BytesToIntArray(mdBytes), "recordTypeName": "EnumRec", "records": recordArgs,
 			}, &java)).To(Succeed())
-			Expect(java.Verdicts).To(Equal([]string{"ok", "ok"}))
+			Expect(java.Verdicts).To(HaveLen(len(records)))
+			for _, v := range java.Verdicts {
+				Expect(v).To(Equal("ok"))
+			}
 			return java.KVs
 		}
 		overwriteRaw := func(ss subspace.Subspace) {
@@ -1095,7 +1157,7 @@ var _ = Describe("A closed enum's undeclared number is read as Java reads it", f
 		built := subspace.Sub(tuple.Tuple{"closedenum_build", uuid.NewString()}...)
 		Expect(javaSave(built, without)).To(BeEmpty())
 		overwriteRaw(built)
-		for _, name := range []string{"by_e", "by_r", "by_he"} {
+		for _, name := range []string{"by_e", "by_r", "by_he", "by_m", "count_by_e"} {
 			indexer, err := recordlayer.NewOnlineIndexerBuilder().
 				SetDatabase(db).SetMetaData(md).SetIndex(md.GetIndex(name)).SetSubspace(built).Build()
 			Expect(err).NotTo(HaveOccurred())
@@ -1145,6 +1207,182 @@ var _ = Describe("A closed enum's undeclared number is read as Java reads it", f
 		goResavedKVs, err := dumpIndexKVs(ctx, db, goRaw)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(goResavedKVs).To(Equal(javaKVs))
+	})
+
+	// Go-only state: a message Go holds in memory with an undeclared number in a
+	// closed enum field (Java cannot build one). Go keys, counts and indexes it
+	// as every later load, in either engine, reads the bytes Go writes for it
+	// (Java's save of those bytes, the oracle), so an update and a delete that
+	// load it remove exactly those entries. Before, Go indexed and counted it
+	// under the number, and the next update or delete, loading it as absent,
+	// left the number's entries behind.
+	It("a record Go holds with an undeclared number is saved, updated and deleted as Java reads it", func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		clusterFile, err := sharedContainer.ClusterFile(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		withIndex, _ := closedEnumMetaData()
+		md, err := recordlayer.RecordMetaDataFromProto(proto.Clone(withIndex).(*gen.MetaData))
+		Expect(err).NotTo(HaveOccurred())
+		rt := md.GetRecordType("EnumRec").Descriptor
+		fields := rt.Fields()
+		msg := dynamicpb.NewMessage(rt)
+		msg.Set(fields.ByName("id"), protoreflect.ValueOfInt64(1))
+		msg.Set(fields.ByName("e"), protoreflect.ValueOfEnum(7))
+		r := msg.Mutable(fields.ByName("r")).List()
+		r.Append(protoreflect.ValueOfEnum(1))
+		r.Append(protoreflect.ValueOfEnum(7))
+		h := msg.Mutable(fields.ByName("h")).Message()
+		h.Set(h.Descriptor().Fields().ByName("he"), protoreflect.ValueOfEnum(9))
+		msg.Mutable(fields.ByName("m")).Map().Set(protoreflect.ValueOfString("k").MapKey(), protoreflect.ValueOfEnum(7))
+		held, err := proto.Marshal(msg)
+		Expect(err).NotTo(HaveOccurred())
+
+		db := recordlayer.NewFDBDatabase(sharedDB)
+		mdBytes, err := proto.Marshal(withIndex)
+		Expect(err).NotTo(HaveOccurred())
+		// Java saves the bytes Go writes for each version of the record, in
+		// turn, into one store: the entries a Java save, then update, leaves.
+		javaKVs := func(recs ...[]byte) [][]string {
+			var java struct {
+				Verdicts []string   `json:"verdicts"`
+				KVs      [][]string `json:"kvs"`
+			}
+			args := make([][]int, len(recs))
+			for i, rec := range recs {
+				args[i] = BytesToIntArray(rec)
+			}
+			Expect(NewJavaInvoker().InvokeAs(ctx, "saveRecordsAndDumpIndexesJava", map[string]any{
+				"clusterFile": clusterFile, "subspace": BytesToIntArray(subspace.Sub(tuple.Tuple{"closedenum_heldjava", uuid.NewString()}...).Bytes()),
+				"metaData": BytesToIntArray(mdBytes), "recordTypeName": "EnumRec", "records": args,
+			}, &java)).To(Succeed())
+			Expect(java.Verdicts).To(HaveLen(len(recs)))
+			for _, v := range java.Verdicts {
+				Expect(v).To(Equal("ok"))
+			}
+			return java.KVs
+		}
+		ss := subspace.Sub(tuple.Tuple{"closedenum_held", uuid.NewString()}...)
+		run := func(f func(*recordlayer.FDBRecordStore) error) {
+			_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				return nil, f(store)
+			})
+			Expect(err).NotTo(HaveOccurred())
+		}
+		run(func(store *recordlayer.FDBRecordStore) error { _, err := store.SaveRecord(msg); return err })
+		Expect(msg.Get(fields.ByName("e")).Enum()).To(Equal(protoreflect.EnumNumber(7)), "the caller's message is not changed")
+		saved, err := dumpIndexKVs(ctx, db, ss)
+		Expect(err).NotTo(HaveOccurred())
+		want := javaKVs(held)
+		GinkgoWriter.Printf("CLOSED_ENUM held save go=%v java=%v\n", saved, want)
+		Expect(saved).To(Equal(want))
+
+		// An update: e B. Java's save of the bytes the update writes is the oracle.
+		updated := proto.Clone(msg).(*dynamicpb.Message)
+		updated.Set(fields.ByName("e"), protoreflect.ValueOfEnum(2))
+		run(func(store *recordlayer.FDBRecordStore) error { _, err := store.SaveRecord(updated); return err })
+		afterUpdate, err := dumpIndexKVs(ctx, db, ss)
+		Expect(err).NotTo(HaveOccurred())
+		updatedBytes, err := proto.Marshal(updated)
+		Expect(err).NotTo(HaveOccurred())
+		wantUpdate := javaKVs(held, updatedBytes)
+		GinkgoWriter.Printf("CLOSED_ENUM held update go=%v java=%v\n", afterUpdate, wantUpdate)
+		Expect(afterUpdate).To(Equal(wantUpdate))
+
+		// A delete leaves no index entry, and every count at zero.
+		run(func(store *recordlayer.FDBRecordStore) error {
+			_, err := store.DeleteRecord(tuple.Tuple{int64(1)})
+			return err
+		})
+		afterDelete, err := dumpIndexKVs(ctx, db, ss)
+		Expect(err).NotTo(HaveOccurred())
+		GinkgoWriter.Printf("CLOSED_ENUM held delete go=%v\n", afterDelete)
+		Expect(afterDelete).NotTo(BeEmpty(), "count_by_e keeps its group at zero")
+		for _, kv := range afterDelete {
+			Expect(kv[1]).To(MatchRegexp("^(00)+$"), "an entry left behind after the delete (only a count, at zero, may stay): %v", kv)
+		}
+	})
+
+	// protobuf-java checks a message's required fields after it parses it
+	// (DynamicMessage.buildParsed), so a required closed enum holding only an
+	// undeclared number, which its parse keeps as an unknown field, is a
+	// missing required field and the record is refused on load. protobuf-go's
+	// decode checked the field while it held the number, and Go read the record.
+	It("a required closed enum holding only an undeclared number is refused on load", func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		clusterFile, err := sharedContainer.ClusterFile(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		withIndex, _ := closedEnumMetaData()
+		md, err := recordlayer.RecordMetaDataFromProto(proto.Clone(withIndex).(*gen.MetaData))
+		Expect(err).NotTo(HaveOccurred())
+		mdBytes, err := proto.Marshal(withIndex)
+		Expect(err).NotTo(HaveOccurred())
+		varint := func(num protowire.Number, v uint64) []byte {
+			return protowire.AppendVarint(protowire.AppendTag(nil, num, protowire.VarintType), v)
+		}
+		db := recordlayer.NewFDBDatabase(sharedDB)
+		ss := subspace.Sub(tuple.Tuple{"closedenum_req", uuid.NewString()}...)
+		_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			_, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).CreateOrOpen()
+			return nil, err
+		})
+		Expect(err).NotTo(HaveOccurred())
+		// need 7; need A then 7 (declared, read as A); need 7 then B.
+		for i, body := range [][]byte{
+			append(varint(1, 10), varint(2, 7)...),
+			append(append(varint(1, 11), varint(2, 1)...), varint(2, 7)...),
+			append(append(varint(1, 12), varint(2, 7)...), varint(2, 2)...),
+		} {
+			_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				key := fdb.Key(ss.Sub(int64(recordlayer.RecordKey)).Pack(tuple.Tuple{int64(10 + i), int64(0)}))
+				rtx.Transaction().Set(key, protowire.AppendBytes(protowire.AppendTag(nil, 2, protowire.BytesType), body))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		}
+		var java struct {
+			Verdicts []string `json:"verdicts"`
+		}
+		Expect(NewJavaInvoker().InvokeAs(ctx, "loadRecordVerdictsJava", map[string]any{
+			"clusterFile": clusterFile, "subspace": BytesToIntArray(ss.Bytes()),
+			"metaData": BytesToIntArray(mdBytes), "pks": []int64{10, 11, 12},
+		}, &java)).To(Succeed())
+		var goVerdicts []string
+		for pk := int64(10); pk <= 12; pk++ {
+			_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ss).Open()
+				if err != nil {
+					return nil, err
+				}
+				rec, err := store.LoadRecord(tuple.Tuple{pk})
+				switch {
+				case err != nil:
+					goVerdicts = append(goVerdicts, "refused")
+				case rec == nil:
+					goVerdicts = append(goVerdicts, "none")
+				default:
+					// In field-number order, as Java writes a message; a
+					// dynamic message's own order is its map's.
+					b, err := proto.MarshalOptions{Deterministic: true}.Marshal(rec.Record)
+					if err != nil {
+						return nil, err
+					}
+					goVerdicts = append(goVerdicts, "ok "+hex.EncodeToString(b))
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		}
+		GinkgoWriter.Printf("CLOSED_ENUM required java=%v go=%v\n", java.Verdicts, goVerdicts)
+		Expect(java.Verdicts).To(HaveLen(3))
+		Expect(java.Verdicts[0]).To(HavePrefix("com.google.protobuf.InvalidProtocolBufferException"), "Java refuses the record")
+		Expect(goVerdicts[0]).To(Equal("refused"))
+		Expect(goVerdicts[1:]).To(Equal(java.Verdicts[1:]))
 	})
 })
 

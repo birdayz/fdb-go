@@ -1010,7 +1010,8 @@ func (f *fieldValue) descendResolvedPath(rootVal any) (any, error) {
 			// is what must be updated when the producers become ordinal-true —
 			// that edit is the signal these two debt entries are retirable.
 			//
-			// An unset singular field is NULL (ProtoFieldReadsValue).
+			// An unset singular field is NULL (ProtoFieldReadsValue), a
+			// declared default included.
 			v, found := protoFieldByName(rec.ProtoReflect(), acc.Field)
 			if !found {
 				if f.Resolved.FrontierPinned {
@@ -1035,16 +1036,23 @@ func (f *fieldValue) descendResolvedPath(rootVal any) (any, error) {
 // name (query_result.go); a mismatch is a lockstep break.
 const uuidProtoMessageName = "com.apple.foundationdb.record.UUID"
 
-// ProtoFieldReadsValue is the presence rule of Java's
-// MessageHelpers.getFieldOnMessage (MessageHelpers.java:124-142), by which a
-// query reads a record's field: a repeated field is always read (as its
-// list), a singular one when it is set or declares an explicit default, and
-// is otherwise NULL. Set is protobuf-java's hasField for either kind of
-// presence, so an implicit-presence (proto3) field at its default is NULL,
-// and an unset proto2 field with an explicit default reads the default (Get
-// returns it).
+// ProtoFieldReadsValue is the presence rule by which a query reads a record's
+// field: a repeated field is always read (as its list), a singular one only
+// when it is set, and is otherwise NULL. Set is protobuf-java's hasField for
+// either kind of presence, so an implicit-presence (proto3) field at its
+// default is NULL.
+//
+// An unset proto2 field that declares a default is NULL too, though Java's
+// field reader, MessageHelpers.getFieldOnMessage (MessageHelpers.java:124-142),
+// reads the default: a query never hands it the stored record.
+// QueryResult.fromQueriedRecord (QueryResult.java:256-281) first copies the
+// record into a message of the plan's type (MessageHelpers.deepCopyMessage,
+// which copies getAllFields, the set fields), whose descriptor, generated from
+// the type, declares no default. Measured through SQL on both engines
+// (conformance "WS-J an unset field with a declared default reads as the
+// target reads it"): SELECT *, a projection and a predicate all read NULL.
 func ProtoFieldReadsValue(m protoreflect.Message, fd protoreflect.FieldDescriptor) bool {
-	return fd.IsList() || fd.IsMap() || fd.HasDefault() || m.Has(fd)
+	return fd.IsList() || fd.IsMap() || m.Has(fd)
 }
 
 // protoFieldByName reads one field of a proto message by SQL identifier,

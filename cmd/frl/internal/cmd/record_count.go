@@ -67,8 +67,10 @@ func newRecordCountCmd() *cobra.Command {
 					return fmt.Errorf("record counting is not enabled for this store — add a record_count_key to the metadata (RecordMetaDataBuilder.SetRecordCountKey) or a universal COUNT index, and redeploy")
 				}
 				// The per-type count found no index to read: Java's
-				// RecordCoreException "Require a COUNT index on X".
-				if recordType != "" && errors.As(err, new(*recordlayer.RecordCoreError)) {
+				// RecordCoreException "Require a COUNT index on X". A
+				// MetaDataError is a RecordCoreError too (an unknown record
+				// type), and is not that diagnosis.
+				if recordType != "" && !recordlayer.IsMetaDataException(err) && errors.As(err, new(*recordlayer.RecordCoreError)) {
 					return fmt.Errorf("counting %s records needs a COUNT index on %s, a universal COUNT index grouped by record type, or a record_count_key that is the record type key: %w", recordType, recordType, err)
 				}
 				return err

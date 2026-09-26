@@ -77,11 +77,17 @@ func TestFDB_DDLErrorsProbe(t *testing.T) {
 	rejects("unknown_column_type",
 		"CREATE SCHEMA TEMPLATE de_badtype CREATE TABLE t (id BIGINT, x FROBNICATE, PRIMARY KEY (id))")
 
+	// The DDL builds version 1 in both engines, so a second CREATE SCHEMA
+	// TEMPLATE of a name is Java's createTemplate refusal of an existing
+	// (name, version): 42F62 DUPLICATE_SCHEMA_TEMPLATE, "Schema template already
+	// exists" (RecordLayerStoreSchemaTemplateCatalog.java:241-243). Go answered
+	// 42F59 when its save action refused a version at or below the latest
+	// before the duplicate.
 	t.Run("duplicate_template_name", func(t *testing.T) {
 		mwjoMustExec(t, db, ctx, "CREATE SCHEMA TEMPLATE de_ok CREATE TABLE t (id BIGINT, PRIMARY KEY (id))")
 		_, err := db.ExecContext(ctx, "CREATE SCHEMA TEMPLATE de_ok CREATE TABLE u (id BIGINT, PRIMARY KEY (id))")
-		if err == nil || !strings.Contains(err.Error(), "42F59") {
-			t.Errorf("duplicate template error = %v, want 42F59", err)
+		if err == nil || !strings.Contains(err.Error(), "42F62") || !strings.Contains(err.Error(), "Schema template already exists: de_ok") {
+			t.Errorf("duplicate template error = %v, want 42F62 Schema template already exists", err)
 		}
 	})
 }

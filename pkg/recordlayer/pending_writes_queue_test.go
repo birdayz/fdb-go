@@ -361,7 +361,7 @@ func FuzzPendingQueuePayload(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
 		t.Parallel()
 		message := &gen.PendingWritesQueueEntry{}
-		if err := unmarshalPendingQueuePayload(data, message); err != nil {
+		if err := UnmarshalAsJava(data, message); err != nil {
 			return
 		}
 		if message.GetOperation() != gen.PendingWritesQueueEntry_UPDATE && message.GetOperation() != gen.PendingWritesQueueEntry_DELETE_WHERE {
@@ -372,7 +372,7 @@ func FuzzPendingQueuePayload(f *testing.F) {
 			t.Fatal(err)
 		}
 		back := &gen.PendingWritesQueueEntry{}
-		if err := unmarshalPendingQueuePayload(wire, back); err != nil {
+		if err := UnmarshalAsJava(wire, back); err != nil {
 			t.Fatalf("decoded payload no longer decodes after serialization: %v", err)
 		}
 		if !proto.Equal(message, back) {

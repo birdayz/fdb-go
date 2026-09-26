@@ -318,12 +318,11 @@ func (r mapReach) reaches(md protoreflect.MessageDescriptor) bool {
 // Partial: a required field unset in a map value was the decoder's to refuse.
 func parseMapEntry(fd protoreflect.FieldDescriptor, body []byte) (*dynamicpb.Message, error) {
 	entry := dynamicpb.NewMessage(fd.Message())
-	if err := (proto.UnmarshalOptions{Merge: true, AllowPartial: true}).Unmarshal(body, entry); err != nil {
-		return nil, err
-	}
 	// Java's DynamicMessage entry keeps a value it cannot read as an unknown
 	// field and reads the default (proto_closed_enums.go).
-	closedEnumsAsJava(entry, nil)
+	if err := javaPartialRule.unmarshal(body, entry, dynamicReach(fd.Message())); err != nil {
+		return nil, err
+	}
 	holdKeyAndValue(entry)
 	return entry, nil
 }
@@ -542,13 +541,13 @@ func elementPriors(md protoreflect.MessageDescriptor, current, prior [][]byte) (
 // a changed element that also moved cannot be told from a new one
 // (DIVERGENCES.md).
 func elementPriorsWithin(md protoreflect.MessageDescriptor, current, prior [][]byte, maxCells int) ([][]byte, error) {
+	enums := dynamicReach(md)
 	canonical := func(body []byte) (string, error) {
 		m := dynamicpb.NewMessage(md)
-		if err := (proto.UnmarshalOptions{AllowPartial: true}).Unmarshal(body, m); err != nil {
+		// Compared as the record's elements read, stored and current alike.
+		if err := javaPartialRule.unmarshal(body, m, enums); err != nil {
 			return "", err
 		}
-		// Compared as the record's elements read, stored and current alike.
-		closedEnumsAsJava(m, nil)
 		b, err := proto.MarshalOptions{Deterministic: true, AllowPartial: true}.Marshal(m)
 		return string(b), err
 	}

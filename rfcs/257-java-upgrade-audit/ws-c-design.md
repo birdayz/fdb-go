@@ -2737,7 +2737,8 @@ restored as it stood at `1c6059b91`, and runs green.
 read `hnswMetric` alone, so an index whose metric is stored as `vectorMetric` (the name Java's
 `IndexOptions` tells users to write) was taken for Euclidean: a cosine QUALIFY over it found no
 vector candidate and was unplannable, and a Euclidean one matched an index the maintainer builds for
-cosine. The generator now reads `recordlayer.VectorIndexMetricOption`, Java's `METRIC.read`
+cosine. [Superseded → 7.18: `VectorIndexMetricOption` is deleted; the planner reads
+`recordlayer.VectorIndexMetric`, the maintainer's parse.] The generator now reads `recordlayer.VectorIndexMetricOption`, Java's `METRIC.read`
 (`hnswMetric`, else `vectorMetric`), the key Java's `VectorIndexExpansionVisitor` reads.
 `TestVectorPlan_MetricUnderItsAlias` edits a built index's options to hold the metric only under
 the alias (Go's DDL writes `hnswMetric`); the harness plans over held meta-data through
@@ -2827,7 +2828,9 @@ nits). Every v16 finding is resolved (measured), and revisions 12 to 16 are inta
 on top of `d2e47b8bd` (WS-J design v18's code); the 7.16 and 7.17 sentences it changes are marked
 [Superseded → 7.18].
 
-**An unchanged vector entry makes no graph call (graefe 1, torvalds 1, Medium).** Java's
+**An unchanged vector entry makes no graph call (graefe 1, torvalds 1, Medium).** [Scoped → 7.19:
+in a save `Update` applies with both records; a queued save and a windowed index still delete and
+re-insert, in both engines.] Java's
 `VectorIndexMaintainer` inherits `StandardIndexMaintainer.update`, which removes the entries the old
 and the new record share (key and value, `IndexEntry.equals`) before updating
 (StandardIndexMaintainer.java:209-228). Go's `vectorIndexMaintainer.Update` deleted and re-inserted
@@ -2839,7 +2842,8 @@ Pins: the JVM probe gains "a save of record 1 with its vector unchanged", after 
 both engines at 9, 15 and 8 bits (cosine refuses it as a first save of a record never inserted, in
 both); "leaves the graph as it is when a save keeps the vector" compares the whole index subspace
 across such a save, with a changed-vector save as the control. The present-node pin now snapshots
-the access info and the samples as well as the nodes.
+the access info and the samples as well as the nodes. [Superseded → 7.19: the samples half could
+not fail, its graph sampling nothing.]
 
 **SPFresh reads its configuration strictly, through one function (graefe 2 and 3, torvalds 2,
 storage 1).** Removing the clamp made a 0-bit SPFresh index, which an earlier build admitted, reach
@@ -2886,5 +2890,81 @@ message prefix; that the refusal names the alias is the unit test's.
 
 **Evidence.** Red: `fdb-wsc10` at `d2e47b8bd`'s tree plus the changed test files and the Java step
 (`evidence/wsc18-red`), and the 32 sliding-window rows of revision 17 on `c1bc5a177`'s tree (the red
-run 7.17 lacked; same evidence directory, its TREE note). Green: a verbose run of the changed specs
-after the commit (`evidence/wsc18-green-commit`) and the pre-commit hook. Mutation runs: none.
+run 7.17 lacked; same evidence directory, its TREE note). [7.19: the red of
+`TestVectorPlan_MetricIsTheMaintainers` in `embedded.log` comes from the adapter's
+`VectorIndexMetric`, which admits every value; the planner's own red is the planner-only run of an
+edited copy of the old planner, `scratch18-embedded-planner-only.log`, where it planned both queries.]
+Green: a verbose run of the changed specs after the commit (`evidence/wsc18-green-commit`) and the
+pre-commit hook. Mutation runs: none.
+
+### 7.19 Revision 19: the v18 gate's text, the samples pin, the queue pin, one metric reader
+
+Revision 19 answers the v18 gate (`ws-c-addendum-review-v18/`, candidate `6b4b7817d`): Graefe NAK
+(text wider than the code, one evidence gap), Torvalds NAK (a pin that cannot fail, superseded text,
+red evidence gaps) and storage ACK with three Lows. No finding was a defect in the code revision 18
+changed. It lands with WS-J design v19's code (ws-j-design.md 4g).
+
+**Scope of "no graph call" (graefe 1, storage 3).** The claim holds for a save that
+`vectorIndexMaintainer.Update` applies with both records. Two paths still delete and re-insert a node
+whose vector is unchanged, in both engines, and so are refused after the centroid with 9 to 15 extra
+bits in both: a save queued for a WRITE_ONLY_WITH_QUEUE index (`SerializePendingWriteQueue` sends
+both entries, `VectorIndexMaintainer.java:432-449`, and the replay deletes then inserts, :453-467), and
+a windowed index, whose sliding window calls its delegate once with the old record and once with the
+new (`SlidingWindowIndexMaintainer.java:381-388`). The sentences are scoped where they stood:
+DIVERGENCES' VECTOR entry, the CHANGELOG, TODO's revision-18 entry, `vectorIndexMaintainer.Update`'s
+comment and 7.18's heading paragraph (marked). A new pin, "serializes both entries of a queued save
+that keeps the vector", asserts the queue's serialization keeps both equal entries, so a skip cannot
+reach the queue unnoticed.
+
+**The samples pin (torvalds 1, storage 1, graefe 4).** "leaves a node already in the graph as it is"
+now runs on a graph that samples every insert and never rolls samples up or forms a centroid
+(`SampleVectorStatsProbability` 1, `MaintainStatsProbability` 0, `StatsThreshold` 2^20), and asserts
+the samples subspace is not empty before the second insert, so an insert that reached
+`addToStatsIfNecessary` would change it. The queue test's "samples included" comment, whose index has
+no RaBitQ, is rewritten.
+
+**Superseded text (graefe 3, torvalds 2, storage 2).** 7.17's `VectorIndexMetricOption` sentence is
+marked; `vector_index_conformance_test.go`'s "refuses every save" now says every save that quantizes;
+`vector_index_test.go`'s "an update is the maintainer's delete then insert" says an update whose
+entry changes; ws-d-design.md's paragraph that still said Go deletes and re-inserts unconditionally
+now points here.
+
+**One metric reader per engine (torvalds nit).** `hnswMetric(index, goForms)` is the HNSW metric read
+of both the maintainer (`readHNSWOptions`) and the planner (`VectorIndexMetric`), and `spfreshMetric`
+the SPFresh one of `parseSPFreshConfig` and `VectorIndexMetric`, so "parsed by the maintainer's own
+reader" is now literal. `TestParseSPFreshConfigRefusesWhatDoesNotParse` pins that both calls agree.
+
+**Typed refusals (torvalds nit).** `ValidateSPFreshConfig`'s refusals, and so every SPFresh entry
+point's, are `MetaDataError`s, as an HNSW index's refused configuration is Java's
+`MetaDataException` or `IllegalArgumentException`; the same test asserts the class.
+
+**The encoder's panic (graefe 5, torvalds nit).** `rabitq.Quantizer.Encode` still panics for a count
+outside 1 to 8, which `NewQuantizer` accepts. No path in the tree reaches it with such a count. The
+non-test `NewQuantizer` call sites are three (`git grep -n 'NewQuantizer(' -- '*.go' ':!*_test.go'`, the
+function's own definition aside; the control, the test files, finds 19 lines in three files). The
+HNSW one (`parseHNSWConfig`) builds the quantizer at parse with the stored count, and every graph
+operation that encodes (insert, the delete of a present node, both searches) calls
+`raBitQuantizerAdmits` first, which refuses 9 to 15. The two SPFresh ones (`spfreshNewRaBitQ`, and
+the zero-norm cosine scorer in `spfresh_build.go`) take an `SPFreshConfig`, every function taking one
+is unexported, and every config they are handed is `readSPFreshConfig`'s, whose validation refuses
+a count outside 1 to 8 (storage's v18 review measured the config reads).
+The "no path from a Quantizer to that panic" item of v17 storage 1 is answered by that gating, the
+"or" its Graefe and Torvalds versions offered, not by an error return.
+
+**CHANGELOG (torvalds nit, storage nit).** The metric line says an SPFresh "cosine" metric used to
+give a cosine candidate over an index maintained as Euclidean; the drop-and-add guidance names every
+configuration now refused (0 extra bits, an option that does not parse, a lower-case metric).
+
+**DIVERGENCES' minimal re-encoding (storage nit).** Scoped: measured for one varint value; tags and
+lengths are from protobuf-java's source.
+
+**Evidence (graefe 2, torvalds 3, storage nit).** `wsc18-green-commit`'s TREE counted one working file
+differing from the index and did not name it (the evidence script counted and did not list); the
+green that revision 18 rests on is the pre-commit hook's, whose index tree equals the commit's
+(`f7dd54ee9`), and the script now lists each differing file. Of the red gaps: the strict SPFresh parse
+and the typed refusal, and the queue pin, are red on `6b4b7817d`'s tree in this revision's red run
+(`evidence/wsj19-red`, which covers both workstreams' tests); part 1 of `wsc18-red` stays unhashed
+and is not relied on; the planner-only red of `TestVectorPlan_MetricIsTheMaintainers` was an edited
+copy (7.18 now says so); the other SPFresh entry points' arms were not shown red in `wsc18-red`
+(Ginkgo stopped at the rebalancer's), and are covered by the same red run.
+

@@ -150,6 +150,7 @@ go_test(
         "bytes_column_probe_test.go",
         "bytes_gt_index_conformance_probe_test.go",
         "cardinality_stale_key_rebuild_fdb_test.go",
+        "carry_rule_fdb_test.go",
         "cascades_fdb_test.go",
         "case_condition_boolean_required_fdb_test.go",
         "case_contexts_probe_test.go",

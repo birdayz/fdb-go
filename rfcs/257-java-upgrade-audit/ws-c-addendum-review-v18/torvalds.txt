@@ -1,0 +1,66 @@
+**NAK.** Candidate `6b4b7817d`, tree `f7dd54ee9`. The design blob hashes to SHA256 `dc1f380c06c5d67f47dd458a654013418eb074e94818dbdf240ba0ebbd47b344` and has 2890 lines; I measured both from the committed blob. The review was read-only. `git diff` and `git grep` were refused, so I read the delta with `git show`. "Measured" means read in evidence logs or git objects; everything else is from source.
+
+I found no defect in the code revision 18 changed. The NAK is on one v17 nit that is claimed resolved but whose pin cannot fail, on superseded text left in place, and on gaps in the red evidence.
+
+## Findings, most severe first
+
+**1. Low (source): the samples half of the present-node pin cannot fail, so the v17 storage nit is still open.**
+- 7.18 (ws-c-design.md:2841-2842) says the pin "now snapshots the access info and the samples". The spec (`vector_index_test.go:2192-2209`) uses `makeRaBitQGraph` (`:1472-1482`), which sets neither `SampleVectorStatsProbability` nor `MaintainStatsProbability`, so both are 0.
+- Nothing fills in defaults (`DefaultHNSWConfig`'s 0.5 at `hnsw.go:109` is not used here). `addToStatsIfNecessary` samples only when `nextDouble() < 0` (`hnsw.go:640`), which never happens.
+- So the samples subspace is empty before and after any insert. "Go returns before sampling" is still unpinned.
+- The same claim in `index_maintainer_queue_test.go:38-42` ("samples included") is vacuous too: that index has no RaBitQ.
+- **Fix:** set both probabilities to 1 with a threshold high enough that no centroid forms, and assert `before[2]` is not empty, as the spec already does for `before[1]`.
+
+**2. Low (source): superseded claims were not grepped out.**
+- **ws-c-design.md:2740 (7.17):** "The generator now reads `recordlayer.VectorIndexMetricOption`" is unmarked, and revision 18 deletes that function. 7.18 says the sentences it changes are marked. Outside review files, this is the only copy in the repo.
+- **ws-d-design.md:592-600:** says Go "deletes and re-inserts unconditionally … today" and that WS-D will fix it. Revision 18 already did. It also promises a JVM *byte* fixture; revision 18's JVM row compares outcomes, and bytes are compared only on the Go side. WS-D needs a pointer to 7.18.
+- **`conformance/vector_index_conformance_test.go:1501`:** still says the index "refuses every save", the exact phrase 7.18 calls wider than Java, and the next sentence contradicts it.
+- **`vector_index_test.go:453-454`:** "an update is the maintainer's delete then insert" is now true only when the entry changes.
+
+**3. Low (measured): the red evidence does not show everything it is cited for.**
+- **Strict SPFresh parse has no red:** `TestParseSPFreshConfigRefusesWhatDoesNotParse` pins the maintainer half of the "cosine"-read-as-Euclidean fix, and it never ran red. `spfresh_layout_test.go` was not among the copied files, and the TREE lists it as neither red nor green.
+- **Part 1 is unhashed:** the TREE header (lines 2-6) describes part 2's state; no hash identifies part 1's working files or `zz_redrun_adapter.go`. That is the same reason `wsc15-red-first` was withdrawn (its TREE, line 11).
+- **`embedded.log` red comes from the adapter:** the adapter's "admit everything" `VectorIndexMetric` fails the assertion at `:675`. The genuine red is the planner-only run of an edited copy (log :14-16: the old planner planned both queries). The TREE says this, but 7.18 (:2887) mentions neither the adapter nor the edited copy; 7.17 named its adapters.
+- **Only the rebalancer arm is shown red** in "every entry point refuses" (console.txt:109-115). Ginkgo stops at the first failure, so the refine, recall and integrity arms were never shown red.
+
+## Nits
+- **Metric parse still duplicated:** `VectorIndexMetric` repeats the maintainer's parsing steps rather than calling them (`hnswOptionValue` → `javaMetricName(v, true)` → `vectorMetricNamed`; `spfreshMetricNamed`). The key choice, the absent-metric default and `goForms` are duplicated from `readHNSWOptions` (`hnsw_options.go:117-123`) and `parseSPFreshConfig` (`spfresh_config.go:289-301`). "Parsed by the maintainer's own reader" (`:45-46`, design :2858) overstates this. Suggest one metric function both call.
+- **CHANGELOG:** "instead of a Euclidean one" is incomplete; an SPFresh "cosine" metric used to give a cosine candidate.
+- **Green TREE:** it records "working files differing from index: 1" and does not name the file, so it is not the clean tree the brief states. The index tree does equal the commit tree.
+- **Library panic:** `rabitq.Quantizer.Encode` still panics for counts `NewQuantizer` accepts. No in-repo caller reaches it (checked), but an error return would make that structural.
+- **Untyped errors:** `readSPFreshConfig`/`ValidateSPFreshConfig` return plain `fmt.Errorf`, and that is now the refusal every SPFresh entry point returns.
+
+## Checked and holding
+- **Update skip matches Java (source):**
+  - Java: `StandardIndexMaintainer.java:215-228`, `commonKeys` :391-400 (its `removeAll` removes every occurrence, as Go's set does), `IndexEntry.equals` :268-270.
+  - Go: `vector_index_maintainer.go:227-233` applies the skip only when both records are present; a filtered-out record gives nil, which matches Java's null check.
+  - Queue serialization keeps both entries in both engines (`index_maintainer_queue.go:24-49`, `VectorIndexMaintainer.java:432-449`).
+  - The sliding window splits its delegate calls in both engines (`sliding_window_index_maintainer.go:841,847`; Java :381-388), so the skip never applies there.
+  - Java's `isIdempotent` is true (:736-738).
+- **SPFresh (source):** every exported entry point gets its config from `readSPFreshConfig` or from the maintainer. That covers rebalance and the sweeper, refine and `RefineSPFreshIndexes`, recall, integrity, search, topology and build. Every function that takes an `SPFreshConfig` is unexported. The DDL's values (`ddl.go:462-482`) still parse.
+- **Planner (source):** both vector index types are handled, and no code references `vectorMetricOperator` or `VectorIndexMetricOption`. This is a query-engine change and needs Graefe's lens.
+- **Red (measured):**
+  - the unchanged-vector pin on `d2e47b8bd`'s tree: the neighbour lists changed (console :41-98);
+  - EXTRA_BITS re-save at Euclidean 9 and 15: Go refused where Java served (:245-280);
+  - the 32 sliding-window rows on `9a6333b4f` (= `c1bc5a177^{tree}`): 32 of 32 failed at `sliding_window_index_test.go:1320`. This resolves v17 Torvalds 3.
+- **Green (measured):**
+  - recordlayer: 196 of 3764 specs, including the named specs and all 32 sliding-window rows;
+  - conformance: 4 of 1574, with the re-save `ok` in both engines at 9 and 15 bits;
+  - parity: 2 of 276;
+  - embedded: the tests pass by name;
+  - hook: 43 of 95 targets executed, 95 pass, and the index tree equals the commit tree.
+- **P3 (measured):** Java's bytes contain field 11, then field 12's varint, fixed32, fixed64 and length-delimited, then 13 re-encoded minimally, in both raw lines. The stored order appears once, in Go's raw output. The place of groups is declared as read from source.
+
+## v17 findings
+| Finding | Status |
+|---|---|
+| Graefe 1, Torvalds 1 (unchanged-entry skip) | Resolved, red→green |
+| Graefe 2 (two metric parsers) | Resolved (duplication nit above) |
+| Graefe 3, Torvalds 2, Storage 1 (0-bit panic) | Resolved (source); CHANGELOG tells operators to drop and re-add the index |
+| Graefe 4, Storage 2 (unknown-field order) | Resolved, measured |
+| Torvalds 3 (sliding-window red) | Resolved, measured |
+| "Same PK replaces" comments | 0 hits in code; the leftovers are finding 2 |
+| Nits: `wsc15` TREE, mutation README, message-valued entry, alias row, alias e2e | Answered |
+| Storage nit: samples pinned | **Not resolved** (finding 1) |
+
+Revisions 12 to 17 are not contradicted by anything I read; the hook ran all 95 targets green. The preserved boundaries are untouched.

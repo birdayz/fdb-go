@@ -6,6 +6,7 @@ go_library(
         "accessor_name_path.go",
         "accessor_name_path_census.go",
         "alias_map.go",
+        "arithmetic_lanes.go",
         "coercion.go",
         "column_identity.go",
         "compare_ordered.go",

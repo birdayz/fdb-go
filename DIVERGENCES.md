@@ -2131,11 +2131,16 @@ the maintainer instead of taking a default. RaBitQ with 9 to 15 extra bits, whic
 the quantizer, when an operation first quantizes (`hnswGraph.raBitQuantizerAdmits`):
 a Euclidean index accepts saves until its centroid is established and then refuses
 every save that inserts or removes a vector entry, every search and every delete of a
-present node, a cosine or dot-product index refuses its first save, and a save that
-leaves a record's vector entry unchanged is served in both, as it makes no graph call
-(Java's `StandardIndexMaintainer.update` removes the entry common to the old and the
-new record, and Go's `vectorIndexMaintainer.Update` does too; Go deleted and
-re-inserted the node before), and a search of an empty index is served (the JVM spec "An
+present node, a cosine or dot-product index refuses its first save, and a save
+maintained in its own transaction that leaves a record's vector entry unchanged is
+served in both, as it makes no graph call (Java's `StandardIndexMaintainer.update`
+removes the entry common to the old and the new record, and Go's
+`vectorIndexMaintainer.Update` does too; Go deleted and re-inserted the node before);
+two paths still delete and re-insert such a node, in both engines, and so are refused
+after the centroid in both: a save queued for a WRITE_ONLY_WITH_QUEUE index (both
+entries are serialized, and the replay deletes then inserts) and a windowed index,
+whose sliding window calls its delegate once with the old record and once with the
+new. A search of an empty index is served (the JVM spec "An
 HNSW index with more RaBitQ extra bits than the quantizer encodes is refused where
 Java constructs it" compares each operation's outcome). The refusal is an
 `IllegalArgumentError`, Java's class; Guava's `checkArgument` gives Java's no message
@@ -2939,10 +2944,10 @@ schema bound to a version that is gone has no exit that keeps its data (RepairSc
 refused by the gone-version check, and re-issuing (t, v) is the silent rebind the guard
 refuses). A version the target's `deleteTemplate` removed under a binding leaves that
 state in a shared catalog. Above the latest stored version the guard refuses re-issuing it;
-at or below the latest, `CreateTemplate` will refuse it with RFC-257 WS-J step 3 (the next
-entry, PENDING), and until then a library `CreateTemplate(t, v)` re-issues it, rebinding its
-schemas as the target's does. SQL and `fleet.SaveTemplate` refuse it already (the save
-action's `v′ <= latest` check). DROP SCHEMA TEMPLATE
+at or below the latest, `CreateTemplate` refuses it, on every build path (the entry
+"CreateTemplate refuses more than an exact duplicate"; both sequences, a raw delete of a bound
+version below the latest and DROP / restore of the latest / the version a schema still binds,
+pinned by `TestFDB_CreateTemplate_RefusesAReIssueBelowTheLatest`). DROP SCHEMA TEMPLATE
 keeps the target's behaviour and drops regardless; the
 only way back for a schema it strands is `fleet.RestoreTemplateVersion` with the dropped
 version's exact metadata bytes, refused when any bound store's header records a metadata
@@ -2993,8 +2998,8 @@ keyspace question is decided.
 
 ### A new template version may not re-add, under its old name, an index a carried FormerIndex holds (RFC-257 WS-J)
 
-PENDING, not in this build yet: it lands with RFC-257 WS-J section 8 step 3 (the carry
-rule).
+In this build (`pkg/relational/core/catalog/template_carry.go`, `carryNumbering`; test
+`TestFDB_Carry_ReAddingADroppedNameIsRefused`).
 
 A new template version carries the stored version's record-type and index numbering
 (ws-j-design.md section 4), and an index the stored version had and the new one lacks
@@ -3009,9 +3014,12 @@ asks for a new name rather than a Go-only subspace key.
 
 ### An arithmetic function key with no lane is refused when hand-built metadata is saved as a template (RFC-257 WS-J)
 
-PENDING, not in this build yet: it lands with RFC-257 WS-J section 8 step 3, both halves:
-the build-path refusal and the DDL-origin refusal at the clause (the key generator
-consults the same lane table), so no build gives a DDL shape Go's 42F59.
+In this build, both halves: the build-path refusal (`pkg/relational/core/catalog/index_lanes.go`;
+tests `TestCreateTemplate_LaneCheck`, both catalogs, a fresh name and a new version, and
+`TestFDB_CreateTemplate_LaneCheckReadsOnlyTheIndexesASaveDefines`) and the DDL-origin refusal
+at the clause (`encapsulateLane` in the key generator; the WSJLANE spec asserts Go's outcome
+equal to the target's on all eleven shapes), both over one lane table, ArithmeticValue's 107
+rows (`values.LookupArithmeticLane`), so no build gives a DDL shape Go's 42F59.
 
 An index key of the ArithmeticValue family (the arithmetic, bit and bitmap functions) whose
 operands' types name no row of Java's operator table cannot be planned by the target:
@@ -3050,19 +3058,29 @@ other key form (strings, integers, bytes) resolves in both engines alike. The ca
 `OnlineIndexer.savedSourceIndex`, and `RecordMetaData.GetIndexFromSubspaceKey` states the
 difference.
 
-### CreateTemplate refuses more than an exact duplicate (RFC-257 WS-J)
+### CreateTemplate refuses more than an exact duplicate, and carries a new version (RFC-257 WS-J)
 
-PENDING, not in this build yet: it lands with RFC-257 WS-J section 8 step 3. Java's
+In this build (`fdb_template_catalog.go`, `template_catalog.go`, `template_carry.go`). Java's
 `createTemplate` refuses only an exact duplicate of a stored (t, v), with
-DUPLICATE_SCHEMA_TEMPLATE (`RecordLayerStoreSchemaTemplateCatalog.java:229-245`). Go's
-`CreateTemplate`, in both catalogs, refuses that duplicate first with the same code. It then
-refuses:
+DUPLICATE_SCHEMA_TEMPLATE (`RecordLayerStoreSchemaTemplateCatalog.java:229-245`), and stores
+the template it is given. Go's `CreateTemplate`, in both catalogs, refuses that duplicate
+first with the same code and text. It then refuses:
 - a version at or below the latest stored, with INVALID_SCHEMA_TEMPLATE;
 - a version the relational evolution validator refuses against the stored latest;
-- a version the version guard refuses.
+- a version the version guard refuses;
+- an index key with no lane (the entry above);
+- a new version the evolution validator, with index rebuilds allowed, refuses against the
+  stored latest.
 
-The first two checks moved into it from the save action. So a Java library caller can store a
-version below the latest, and a Go one cannot (ws-j-design.md section 9 (w)).
+And for a new version of a stored name it does not store the template it is given: it carries
+the stored latest's record-type keys, union fields and since-versions, splices each unchanged
+index's stored Index message in, gives a changed index a last-modified version above the stored
+metadata version, and turns a dropped one into a FormerIndex (ws-j-design.md section 4;
+`fleet.SaveTemplate` returns the template as stored). The first two refusals moved into it from
+the save action, which now calls only `CreateTemplate`, as Java's does. So a Java library caller
+can store a version below the latest, or a renumbered one, and a Go one cannot (ws-j-design.md
+section 9 (w)); a template the target's DDL created is carried as the target stored it (JVM spec
+"WS-J a new version carried from the target's template").
 
 ### The template restore's refusals, and the inverted history with no exit (RFC-257 WS-J)
 
@@ -3244,8 +3262,9 @@ protobuf-go's deterministic marshal writes a oneof member after the other fields
 first), where Java writes fields in number order; and a message's unknown fields are written as
 they are stored, where Java writes them as its `UnknownFieldSet` holds them, by field number and,
 within one field, varints, fixed32s, fixed64s, then length-delimited (measured; groups last, from
-protobuf-java's source, not measured), each re-encoded minimally (measured: a varint stored in a
-non-minimal encoding is written minimally by Java and as stored by Go). The two agree over any
+protobuf-java's source, not measured), each re-encoded minimally (measured for one value: a
+varint stored in a non-minimal encoding is written minimally by Java and as stored by Go; that
+tags and lengths are re-encoded minimally too is read from protobuf-java's source). The two agree over any
 bytes Java wrote, which are in its order and encoding already. Both engines read either as the
 same record.
 
@@ -3279,10 +3298,12 @@ one index key, whose value is the last entry's, or share a TEXT token.
 `KeyExpressionFromProto` refuses, as untyped errors, four shapes Java's constructors take and
 fail on later, if at all (`key_expression_proto.go`), and the meta-data loader a fifth:
 - a key expression nested deeper than `maxKeyExpressionDepth` (128; Go's recursion bound).
-  From stored bytes this never differs from Java: both parse with protobuf-java's recursion
-  limit (100 nested messages, `recordlayer.UnmarshalAsJava`), which refuses a nesting past 49
-  levels in a meta-data proto in both engines (JVM spec "RFC-257 a key expression nested past
-  protobuf's recursion limit"); an in-memory proto nested past 128 is Go's alone to refuse;
+  From stored bytes a meta-data proto never reaches it: both engines parse it with
+  protobuf-java's recursion limit (the root and 100 nested messages, `recordlayer.UnmarshalAsJava`;
+  JVM spec "RFC-257 a key expression nested past protobuf's recursion limit", an index root at
+  2d+2 levels and a record-count key at 2d+1, each at its last admitted depth and one past it),
+  so a key expression nests at most 50 levels there; an in-memory proto nested past 128 is Go's
+  alone to refuse;
 - a grouping whose `grouped_count` is outside `[0, columns]`
   (`GroupingKeyExpression(Grouping)` stores it unchecked, GroupingKeyExpression.java:55-57);
 - a key-with-value whose `split_point` is outside `[0, columns]`
@@ -3301,17 +3322,19 @@ out-of-range column index, a division by zero); Go refuses where it reads the pr
 Inside a meta-data proto they are not wrapped in `MetaDataProtoDeserializationError`, since
 they are not Java's `DeserializationException`.
 
-### A generated record type's bytes are decoded without Java's recursion limit (RFC-257 WS-J)
+### An unknown group nested past protobuf-java's recursion limit is read (RFC-257 WS-J)
 
-A record whose type Go knows as a generated (vtproto) message is decoded by its `UnmarshalVT`,
-which has no recursion limit; a dynamic record, like every stored proto of the store and the
-catalogs, is decoded with protobuf-java's limit of 100 nested messages
-(`recordlayer.UnmarshalAsJava`, `javaUnmarshalOptions`). A generated record nested deeper than
-100 messages therefore loads in Go where Java's `DynamicMessage.parseFrom` refuses it. Every
-other part of Java's reading is applied to both: a closed enum's undeclared number is an unknown
-field (`proto_closed_enums.go`; JVM spec "A closed enum's undeclared number is read as Java reads
-it").
-
+Every decode of bytes a Java engine shares reads them as protobuf-java parses them
+(`proto_closed_enums.go`, `javaDecodeRule`): known messages under Java's recursion limit (a root
+and 100 nested messages; a record, one level below Java's union, 100), a closed enum's
+undeclared number as an unknown field, occurrence by occurrence, and the required fields checked
+after. vtproto's decoders, which have no limit, read only types whose known messages cannot nest
+past it (`vtBounded`). What neither Go decoder bounds is an UNKNOWN group: protobuf-go skips it
+with its own limit (10,000 levels) and vtproto with none, where protobuf-java's `skipMessage`
+counts it against the 100. Bytes carrying a group nested 101 levels in a field the reader does
+not know load in Go and are refused by Java ("Protocol message had too many levels of
+nesting"). No engine writes such bytes: neither writes groups, and an unknown field is kept
+only as it was read.
 
 ### RFC-209 group-existence companions: indexes Java's DDL does not create (RFC-257 WS-J)
 

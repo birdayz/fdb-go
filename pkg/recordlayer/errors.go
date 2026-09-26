@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"fmt"
+	"reflect"
 
 	"github.com/google/uuid"
 
@@ -103,8 +104,94 @@ func (e *MetaDataError) Error() string {
 	return e.Message
 }
 
-// Unwrap returns the cause, so errors.As reaches it as Java's getCause does.
-func (e *MetaDataError) Unwrap() error { return e.Cause }
+// Unwrap reports this as the RecordCoreError Java's MetaDataException is (it
+// extends RecordCoreException), so a caller matching RecordCoreError catches it
+// as `catch (RecordCoreException)` does, and returns the cause, so errors.As
+// reaches it as Java's getCause does.
+func (e *MetaDataError) Unwrap() []error {
+	parent := &RecordCoreError{Message: e.Message}
+	if e.Cause == nil {
+		return []error{parent}
+	}
+	return []error{parent, e.Cause}
+}
+
+// metaDataException marks the Go types whose Java class is MetaDataException
+// or a subclass of it (IsMetaDataException).
+type metaDataException interface{ javaMetaDataException() }
+
+func (*MetaDataError) javaMetaDataException()                     {}
+func (*MetaDataProtoDeserializationError) javaMetaDataException() {}
+func (*UnknownIndexTypeError) javaMetaDataException()             {}
+func (*IndexVersionTooNewError) javaMetaDataException()           {}
+func (*IndexNotFoundError) javaMetaDataException()                {}
+
+// IsMetaDataException reports whether err's outermost Java exception is a
+// MetaDataException, as Java's `re instanceof MetaDataException` tests the
+// exception thrown and not its causes (ExceptionUtil.recordCoreToRelationalException).
+// The outermost Java exception is the first error of this package met walking
+// err's wrappers (fmt's %w, and the first of several), each of which is a Java
+// exception class; a MetaDataError that is only the cause of another is not.
+func IsMetaDataException(err error) bool {
+	e := OutermostJavaError(err)
+	_, ok := e.(metaDataException)
+	return ok
+}
+
+// OutermostJavaError is the first error of this package on err's chain of
+// wrappers, following the first of several; nil when there is none.
+func OutermostJavaError(err error) error {
+	for e := err; e != nil; {
+		if t := reflect.TypeOf(e); t.Kind() == reflect.Pointer && t.Elem().PkgPath() == recordLayerPkgPath {
+			return e
+		}
+		switch u := e.(type) {
+		case interface{ Unwrap() error }:
+			e = u.Unwrap()
+		case interface{ Unwrap() []error }:
+			if errs := u.Unwrap(); len(errs) > 0 {
+				e = errs[0]
+			} else {
+				e = nil
+			}
+		default:
+			e = nil
+		}
+	}
+	return nil
+}
+
+var recordLayerPkgPath = reflect.TypeOf(MetaDataError{}).PkgPath()
+
+// RecordCoreMessages is the message of every RecordCoreError in err's tree, in
+// errors.As order (depth first, each error before what it wraps), each once:
+// the Java RecordCoreExceptions an error is, and wraps, as their messages. A
+// test asserts with it which exceptions a refusal carries, where errors.As
+// finds only the first.
+func RecordCoreMessages(err error) []string {
+	var out []string
+	seen := map[string]bool{}
+	var walk func(error)
+	walk = func(e error) {
+		if e == nil {
+			return
+		}
+		if core, ok := e.(*RecordCoreError); ok && !seen[core.Message] {
+			seen[core.Message] = true
+			out = append(out, core.Message)
+		}
+		switch u := e.(type) {
+		case interface{ Unwrap() error }:
+			walk(u.Unwrap())
+		case interface{ Unwrap() []error }:
+			for _, c := range u.Unwrap() {
+				walk(c)
+			}
+		}
+	}
+	walk(err)
+	return out
+}
 
 // UnknownIndexTypeError is raised when no index maintainer implements an index's
 // type. It is the port of Java's registry miss:

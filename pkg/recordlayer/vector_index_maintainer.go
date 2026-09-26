@@ -207,7 +207,12 @@ func (m *vectorIndexMaintainer) splitPrefixAndVector(entry indexEntry) (prefix t
 // updating (StandardIndexMaintainer.java:215-228, skipUpdateForUnchangedKeys),
 // so a save that leaves the vector unchanged makes no graph call. Deleting and
 // re-inserting such a node rewired its edges, could move the entry point and
-// re-sampled the statistics, where Java's graph is untouched.
+// re-sampled the statistics, where Java's graph is untouched. That holds for a
+// save this method applies with both records; two paths still delete and
+// re-insert an unchanged node, in both engines: a save queued for a
+// WRITE_ONLY_WITH_QUEUE index (SerializePendingWriteQueue sends both entries,
+// and the replay deletes then inserts) and a windowed index's delegate, which
+// the sliding window calls once with the old record and once with the new.
 func (m *vectorIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
 	var entries [2][]indexEntry
 	for i, record := range []*FDBStoredRecord[proto.Message]{oldRecord, newRecord} {
@@ -630,7 +635,7 @@ func encodeVectorScanContinuation(entries []*IndexEntry, innerPos int) []byte {
 // would fetch the wrong record / skip the remaining nearest rows).
 func (m *vectorIndexMaintainer) parseVectorScanContinuation(data []byte, prefix tuple.Tuple) ([]*IndexEntry, int, error) {
 	var contProto gen.VectorIndexScanContinuation
-	if err := unmarshalVTAsJava(&contProto, data); err != nil {
+	if err := UnmarshalVTAsJava(&contProto, data); err != nil {
 		return nil, 0, &ContinuationParseError{RawBytes: data, Cause: err}
 	}
 
@@ -775,7 +780,7 @@ func (m *vectorIndexMaintainer) newVectorMultiPartitionCursor(
 	// a silent restart would re-emit rows the caller already consumed.
 	if len(continuation) > 0 {
 		var fm gen.FlatMapContinuation
-		if uerr := unmarshalVTAsJava(&fm, continuation); uerr != nil {
+		if uerr := UnmarshalVTAsJava(&fm, continuation); uerr != nil {
 			return &errorCursor[*IndexEntry]{err: &ContinuationParseError{RawBytes: continuation, Cause: uerr}}
 		}
 		// OuterContinuation absent is a well-formed shape (Java flatMapPipelined:

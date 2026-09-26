@@ -485,7 +485,10 @@ func resolvePendingProtoValuesDepth(v any, resolve protoDescriptorResolver, dept
 				return nil, fmt.Errorf("continuation: proto message type %q was encoded from a generated message but is not registered in this binary — cannot rebuild it", t.TypeName)
 			}
 			msg := mt.New().Interface()
-			if uErr := proto.Unmarshal(t.Bytes, msg); uErr != nil {
+			// Read as the row it was buffered from read: a record's value, as
+			// protobuf-java parses a record (proto_closed_enums.go), so a closed
+			// enum's undeclared number the row held as unknown stays unknown.
+			if uErr := recordlayer.UnmarshalRecordAsJava(t.Bytes, msg, false); uErr != nil {
 				return nil, fmt.Errorf("continuation: cannot unmarshal buffered proto message of type %q: %w", t.TypeName, uErr)
 			}
 			return msg, nil
@@ -506,7 +509,7 @@ func resolvePendingProtoValuesDepth(v any, resolve protoDescriptorResolver, dept
 			return nil, fmt.Errorf("continuation: descriptor resolver returned no descriptor for proto message type %q", t.TypeName)
 		}
 		msg := dynamicpb.NewMessage(desc)
-		if uErr := proto.Unmarshal(t.Bytes, msg); uErr != nil {
+		if uErr := recordlayer.UnmarshalRecordAsJava(t.Bytes, msg, false); uErr != nil {
 			return nil, fmt.Errorf("continuation: cannot unmarshal buffered proto message of type %q: %w", t.TypeName, uErr)
 		}
 		return msg, nil
@@ -815,7 +818,7 @@ func decodeAggregateContinuation(data []byte, numAggs int) (
 	err error,
 ) {
 	msg := &gen.AggregateCursorContinuation{}
-	if err := proto.Unmarshal(data, msg); err != nil {
+	if err := recordlayer.UnmarshalAsJava(data, msg); err != nil {
 		return nil, "", nil, fmt.Errorf("failed to unmarshal aggregate continuation: %w", err)
 	}
 
@@ -1186,7 +1189,7 @@ func decodeSortContinuation(
 		}
 	}
 	msg := &gen.MemorySortContinuation{}
-	if err := proto.Unmarshal(data, msg); err != nil {
+	if err := recordlayer.UnmarshalAsJava(data, msg); err != nil {
 		return nil, nil, false, fmt.Errorf("failed to unmarshal sort continuation: %w", err)
 	}
 	innerExhausted = len(msg.MinimumKey) > 0
@@ -1196,7 +1199,7 @@ func decodeSortContinuation(
 		// corrupt buffered record must fail the resume, not silently drop a
 		// row from the sorted output (wrong results, no error).
 		sr := &gen.SortedRecord{}
-		if pErr := proto.Unmarshal(srBytes, sr); pErr != nil {
+		if pErr := recordlayer.UnmarshalAsJava(srBytes, sr); pErr != nil {
 			return nil, nil, false, fmt.Errorf("failed to unmarshal sorted record %d in continuation: %w", i, pErr)
 		}
 		// SINGLE payload format (RFC-180 H6 — the pre-release tolerance

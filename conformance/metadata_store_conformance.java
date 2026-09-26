@@ -1181,6 +1181,39 @@ class MetaDataStoreSteps extends ConformanceBase {
         return result;
     }
 
+    /**
+     * Loads the record with each primary key in pks from the store at subspace under metaData and
+     * reports, per record, "ok " and the hex of the loaded record's bytes (the message the default
+     * serializer parsed, as a DynamicMessage, serialized again), "none" when there is no record, or
+     * the root exception's full class name and message: Java's reading of stored record bytes.
+     */
+    @ConformanceStep("loadRecordVerdictsJava")
+    public Map<String, Object> loadRecordVerdictsJava(String clusterFile, byte[] subspace, byte[] metaData, long[] pks)
+            throws InvalidProtocolBufferException {
+        final RecordMetaData md = RecordMetaData.build(RecordMetaDataProto.MetaData.parseFrom(metaData, EXTENSION_REGISTRY));
+        final Subspace ss = new Subspace(subspace);
+        final List<String> verdicts = new ArrayList<>();
+        for (long pk : pks) {
+            try {
+                verdicts.add(runInContext(clusterFile, null, context -> {
+                    final FDBRecordStore store = FDBRecordStore.newBuilder().setMetaDataProvider(md).setContext(context)
+                            .setSubspace(ss).setUserVersionChecker(ALWAYS_READABLE_CHECKER).createOrOpen();
+                    final var rec = store.loadRecord(Tuple.from(pk));
+                    return rec == null ? "none" : "ok " + java.util.HexFormat.of().formatHex(rec.getRecord().toByteArray());
+                }));
+            } catch (RuntimeException ex) {
+                Throwable t = ex;
+                while (t.getCause() != null && t.getCause() != t) {
+                    t = t.getCause();
+                }
+                verdicts.add(t.getClass().getName() + ": " + t.getMessage());
+            }
+        }
+        final Map<String, Object> result = new HashMap<>();
+        result.put("verdicts", verdicts);
+        return result;
+    }
+
     private List<List<String>> dumpIndexSpaces(String clusterFile, Subspace ss) {
         return runInContext(clusterFile, null, context -> {
             final byte[] prefix = ss.getKey();

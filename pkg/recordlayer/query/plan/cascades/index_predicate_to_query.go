@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/recordlayer/internal/protovalue"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -167,7 +168,10 @@ func indexComparisonToQuery(c *gen.Comparison) (predicates.Comparison, error) {
 	default:
 		return predicates.Comparison{}, fmt.Errorf("unsupported comparison type %v", sc.GetType())
 	}
-	operand, err := literalFromProtoValue(sc.GetOperand())
+	// The meta-data loader refused a Value it cannot read in an index
+	// predicate first (extractValueOperand), so this reads what it admitted,
+	// through the loader's own reader.
+	operand, err := protovalue.FromProto(sc.GetOperand())
 	if err != nil {
 		return predicates.Comparison{}, err
 	}
@@ -175,38 +179,4 @@ func indexComparisonToQuery(c *gen.Comparison) (predicates.Comparison, error) {
 		Type:    typ,
 		Operand: values.LiteralValue(operand),
 	}, nil
-}
-
-// literalFromProtoValue mirrors LiteralKeyExpression.fromProtoValue
-// (LiteralKeyExpression.java:134-173): the one field set, nil for none, and
-// "More than one value encoded in value" for several. The meta-data loader
-// refuses both of those in an index predicate first (extractValueOperand), so
-// this reads what it admitted.
-func literalFromProtoValue(v *gen.Value) (any, error) {
-	if v == nil {
-		return nil, nil
-	}
-	var value any
-	found := 0
-	for _, f := range []struct {
-		set bool
-		v   any
-	}{
-		{v.DoubleValue != nil, v.GetDoubleValue()},
-		{v.FloatValue != nil, v.GetFloatValue()},
-		{v.LongValue != nil, v.GetLongValue()},
-		{v.BoolValue != nil, v.GetBoolValue()},
-		{v.StringValue != nil, v.GetStringValue()},
-		{v.BytesValue != nil, v.GetBytesValue()},
-		{v.IntValue != nil, v.GetIntValue()},
-	} {
-		if f.set {
-			found++
-			value = f.v
-		}
-	}
-	if found > 1 {
-		return nil, fmt.Errorf("More than one value encoded in value")
-	}
-	return value, nil
 }

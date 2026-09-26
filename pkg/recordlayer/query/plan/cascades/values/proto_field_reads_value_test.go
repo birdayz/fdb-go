@@ -11,13 +11,14 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 )
 
-// TestProtoFieldByNameReadsAsGetFieldOnMessage pins protoFieldByName to Java's
-// MessageHelpers.getFieldOnMessage presence rule (MessageHelpers.java:124-142):
-// a proto3 field at its default reads NULL, an unset proto2 field with an
-// explicit default reads the default, and a repeated field reads its list.
-// The live-JVM comparison of the rule is
-// conformance/null_standin_conformance_test.go.
-func TestProtoFieldByNameReadsAsGetFieldOnMessage(t *testing.T) {
+// TestProtoFieldByNameReadsAsAQuery pins protoFieldByName to a query's read of
+// a record (ProtoFieldReadsValue): a proto3 field at its default reads NULL, an
+// unset proto2 field with an explicit default reads NULL too (Java's query
+// reads a copy of the record in the plan's type, which declares no default),
+// and a repeated field reads its list. The live-JVM comparisons are
+// conformance/null_standin_conformance_test.go (the readers) and "WS-J an
+// unset field with a declared default reads as the target reads it" (SQL).
+func TestProtoFieldByNameReadsAsAQuery(t *testing.T) {
 	t.Parallel()
 	message := func(t *testing.T, syntax string) protoreflect.MessageDescriptor {
 		t.Helper()
@@ -50,7 +51,7 @@ func TestProtoFieldByNameReadsAsGetFieldOnMessage(t *testing.T) {
 	}{
 		{"proto2", nil, "a", nil},
 		{"proto2", map[string]int64{"a": 0}, "a", int64(0)},
-		{"proto2", nil, "d", int64(7)},
+		{"proto2", nil, "d", nil},
 		{"proto2", map[string]int64{"d": 0}, "d", int64(0)},
 		{"proto3", nil, "a", nil},
 		{"proto3", map[string]int64{"a": 0}, "a", nil},

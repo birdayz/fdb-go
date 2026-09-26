@@ -346,7 +346,11 @@ func (c *RecordLayerStoreCatalog) validateSchemaRebind(txn api.Transaction, s ap
 			newTmpl.MetadataName(), newTmpl.Version(),
 			oldTmpl.MetadataName(), oldTmpl.Version())
 	}
-	validator := recordlayer.NewMetaDataEvolutionValidator().SetAllowNoVersionChange(true).Build()
+	// Index rebuilds are allowed, as CreateTemplate's carry allows them: the
+	// new version's CHANGED and NEW indexes sit above the stored metadata
+	// version, and the store rebuilds exactly those when it next opens under
+	// the rebound template (checkRebuildIndexes).
+	validator := recordlayer.NewMetaDataEvolutionValidator().SetAllowNoVersionChange(true).SetAllowIndexRebuilds(true).Build()
 	if verr := validator.Validate(oldRL.Underlying(), newRL.Underlying()); verr != nil {
 		return api.WrapErrorf(verr, api.ErrCodeInvalidSchemaTemplate,
 			"cannot rebind schema %s/%s from template %s@%d to %s@%d: metadata evolution rejected",

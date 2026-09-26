@@ -79,6 +79,8 @@ func (store *FDBRecordStore) SaveRecordBatch(
 		if recordType.PrimaryKey == nil {
 			return nil, &MetaDataError{Message: fmt.Sprintf("no primary key for: %s", recordTypeName)}
 		}
+		// As saveRecordInternal: the record as every later load reads it.
+		record = recordType.asJava(record)
 
 		// Record type supplied so a record-type-prefixed primary key can read
 		// its leading component off the type, as Java's saveTypedRecord does.

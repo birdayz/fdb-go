@@ -43,34 +43,38 @@ func hnswOptionValue(index *Index, canonical string) (string, bool) {
 }
 
 // VectorIndexMetric is the metric a vector index's maintainer builds it with,
-// parsed by the maintainer's own reader: for an HNSW VECTOR index the metric
-// option as Java's VectorIndexOptionKeys.METRIC.read finds it (hnswMetric,
-// else its alias vectorMetric; Euclidean when neither is set) read by
-// Metric.valueOf with the plain index's Go forms (javaMetricName), and for an
-// SPFresh index its spfreshMetric (spfreshMetricNamed). A value the maintainer
-// refuses is an error. The planner reads a vector index's metric through it
-// (Java's VectorIndexExpansionVisitor reads the engine's parsed Metric), so a
+// read by the maintainer's own metric reader: hnswMetric (the plain index's Go
+// forms admitted, as its maintainer reads them) for an HNSW VECTOR index, and
+// spfreshMetric for an SPFresh index. A value the maintainer refuses is an
+// error. The planner reads a vector index's metric through it (Java's
+// VectorIndexExpansionVisitor reads the engine's parsed Metric), so a
 // candidate's metric is always the one the index is maintained with.
 func VectorIndexMetric(index *Index) (VectorMetric, error) {
 	switch index.Type {
 	case IndexTypeVectorSPFresh:
-		v, ok := index.Options[IndexOptionSPFreshMetric]
-		if !ok {
-			return VectorMetricEuclidean, nil
-		}
-		return spfreshMetricNamed(v)
+		return spfreshMetric(index)
 	case IndexTypeVector:
-		v, ok := hnswOptionValue(index, IndexOptionVectorMetric)
-		if !ok {
-			return VectorMetricEuclidean, nil
-		}
-		name, err := javaMetricName(v, true)
+		name, err := hnswMetric(index, true)
 		if err != nil {
 			return VectorMetricEuclidean, err
 		}
 		return vectorMetricNamed(name), nil
 	}
-	return VectorMetricEuclidean, fmt.Errorf("index %q of type %q is not a vector index", index.Name, index.Type)
+	return VectorMetricEuclidean, &MetaDataError{Message: fmt.Sprintf("index %q of type %q is not a vector index", index.Name, index.Type)}
+}
+
+// hnswMetric is an HNSW index's metric as Java's parseConfig reads it: the
+// Metric constant name its metric option names, found as
+// VectorIndexOptionKeys.METRIC.read finds it (hnswMetric, else its alias
+// vectorMetric), read by Metric.valueOf with goForms (javaMetricName), and
+// EUCLIDEAN_METRIC when neither is set. The one metric reader of the
+// maintainer (readHNSWOptions) and the planner (VectorIndexMetric).
+func hnswMetric(index *Index, goForms bool) (string, error) {
+	v, ok := hnswOptionValue(index, IndexOptionVectorMetric)
+	if !ok {
+		return "EUCLIDEAN_METRIC", nil
+	}
+	return javaMetricName(v, goForms)
 }
 
 // hnswAliasConflict is VectorIndexOptionsHelper.validateNoAliasConflicts, the
@@ -115,13 +119,11 @@ type hnswOptions struct {
 // dimensions when none are given. The windowed validator reads with it false.
 func readHNSWOptions(index *Index, goForms bool) (hnswOptions, error) {
 	o := hnswOptions{metric: "EUCLIDEAN_METRIC", raBitQNumExBits: 4}
-	if v, ok := hnswOptionValue(index, IndexOptionVectorMetric); ok {
-		name, err := javaMetricName(v, goForms)
-		if err != nil {
-			return o, err
-		}
-		o.metric = name
+	name, err := hnswMetric(index, goForms)
+	if err != nil {
+		return o, err
 	}
+	o.metric = name
 	dims := 128
 	if v, ok := hnswOptionValue(index, IndexOptionVectorNumDimensions); ok {
 		n, err := javaParseInt(v)
@@ -134,7 +136,6 @@ func readHNSWOptions(index *Index, goForms bool) (hnswOptions, error) {
 	}
 	c := DefaultHNSWConfig(dims)
 	c.Metric = vectorMetricNamed(o.metric)
-	var err error
 	intOpt := func(name string, set *int) {
 		if v, ok := hnswOptionValue(index, name); ok && err == nil {
 			var n int32

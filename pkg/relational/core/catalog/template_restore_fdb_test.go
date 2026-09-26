@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/descriptorpb"
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -406,9 +407,74 @@ func TestFDB_Restore_OneHistory(t *testing.T) {
 	}
 }
 
+// withVector gives Order.vector_data a VECTOR column's options: its precision
+// and dimensions.
+func withVector(precision, dimensions int32) func(*gen.MetaData) {
+	return func(p *gen.MetaData) {
+		for _, m := range p.GetRecords().GetMessageType() {
+			if m.GetName() != "Order" {
+				continue
+			}
+			for _, f := range m.GetField() {
+				if f.GetName() == "vector_data" {
+					opts := &descriptorpb.FieldOptions{}
+					proto.SetExtension(opts, gen.E_Field, &gen.FieldOptions{VectorOptions: &gen.FieldOptions_VectorOptions{
+						Precision: proto.Int32(precision), Dimensions: proto.Int32(dimensions),
+					}})
+					f.Options = opts
+				}
+			}
+		}
+	}
+}
+
+// Check (iv), the relational validator, compares a VECTOR column's type
+// whole: two histories whose vector differs only in its dimensions (or its
+// precision) are refused, as the store's validator, which compares the field's
+// proto type, BYTES in both, would not refuse them; an equal vector is
+// admitted.
+func TestFDB_Restore_ComparesAVectorColumnWhole(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name                  string
+		precision, dimensions int32
+		want                  string // "" admits
+	}{
+		{"an equal vector", 32, 3, ""},
+		{"a vector of other dimensions", 32, 4, "type changes are not allowed"},
+		{"a vector of another precision", 16, 3, "type changes are not allowed"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			e := newRestoreEnv(t)
+			v3 := demoMetaData(t, 5, withVector(32, 3))
+			e.writeRow(3, v3)
+			e.bind("/db", "s", 3, v3)
+			e.dropTemplate()
+			e.writeRow(1, demoMetaData(t, 5, withVector(c.precision, c.dimensions)))
+			err := e.restore(3, v3, nil)
+			if c.want == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				e.readsBack("/db", "s")
+				return
+			}
+			var apiErr *api.Error
+			if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeInvalidSchemaTemplate || !strings.Contains(apiErr.Message, c.want) {
+				t.Fatalf("err = %v, want 42F59 %q", err, c.want)
+			}
+			if e.storedRow(3) != nil {
+				t.Fatal("a refused restore wrote the row")
+			}
+		})
+	}
+}
+
 // Two histories that differ only in a literal's carrier are two keys, in either
-// order, as Java's evolution validator reads a literal (LiteralKeyExpression's
-// equals compares the value object): the restore is refused and writes nothing.
+// order, as Java's evolution validator reads a literal (LiteralKeyExpression.equals
+// compares the literal's Value protos, LiteralKeyExpression.java:204-215): the
+// restore is refused and writes nothing.
 func TestFDB_Restore_RefusesALiteralCarrierChange(t *testing.T) {
 	t.Parallel()
 	root := func(lit any) recordlayer.KeyExpression {

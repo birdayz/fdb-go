@@ -312,6 +312,8 @@ func (store *FDBRecordStore) DryRunSaveRecord(
 	if recordType.PrimaryKey == nil {
 		return nil, &MetaDataError{Message: fmt.Sprintf("no primary key defined for record type: %s", recordTypeName)}
 	}
+	// As saveRecordInternal: the record as every later load reads it.
+	record = recordType.asJava(record)
 
 	// Record type supplied so a record-type-prefixed primary key resolves its
 	// leading component, matching the real save path (and Java's dry run,

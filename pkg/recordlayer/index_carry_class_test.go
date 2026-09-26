@@ -198,7 +198,8 @@ func TestClassifyIndexCarry_ReadAsJavaReadsIt(t *testing.T) {
 }
 
 // A literal's carrier is part of the key, as Java's validator reads it
-// (LiteralKeyExpression's equals compares the value object): a long_value against
+// (LiteralKeyExpression.equals compares the literal's Value protos,
+// LiteralKeyExpression.java:204-215): a long_value against
 // an int_value of the same number is CHANGED, either way. So is a root differing
 // only in a field's null_interpretation, which Java's validator does not compare
 // (FieldKeyExpression.equals leaves the standin out) but which changes what the

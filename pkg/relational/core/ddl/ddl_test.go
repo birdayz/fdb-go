@@ -404,7 +404,9 @@ func TestSchemaEvolution_SameVersion_Rejected(t *testing.T) {
 	g.Expect(f.SaveSchemaTemplate(v1, api.Options{}).Execute(txn)).To(gomega.Succeed())
 	err := f.SaveSchemaTemplate(v1, api.Options{}).Execute(txn)
 	g.Expect(err).To(gomega.HaveOccurred())
+	// An exact duplicate is Java's one refusal, first: DUPLICATE_SCHEMA_TEMPLATE,
+	// not the INVALID_SCHEMA_TEMPLATE of a version below the latest.
 	var apiErr *api.Error
 	g.Expect(errors.As(err, &apiErr)).To(gomega.BeTrue())
-	g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeInvalidSchemaTemplate))
+	g.Expect(apiErr.Code).To(gomega.Equal(api.ErrCodeDuplicateSchemaTemplate))
 }

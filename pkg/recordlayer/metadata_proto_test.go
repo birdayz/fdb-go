@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -783,11 +784,11 @@ func TestStoredIndexSubspaceKeyIsReadAsJavaReadsIt(t *testing.T) {
 			var dup *DuplicateIndexOptionError
 			switch {
 			case c.errType == "root" && errors.As(err, &pde) && errors.As(err, &rootErr) && strings.HasPrefix(rootErr.Message, c.errMsg) &&
-				errors.As(err, &core) && core.Message == rootErr.Message:
-				// The root's refusal, Java's DeserializationException (the only
-				// RecordCoreError in the chain) under its
-				// MetaDataProtoDeserializationException, before the empty key is
-				// read.
+				slices.Equal(RecordCoreMessages(err), []string{pde.Error(), rootErr.Message}):
+				// The root's refusal, Java's DeserializationException, under its
+				// MetaDataProtoDeserializationException (a RecordCoreException
+				// too, as a MetaDataException), before the empty key is read:
+				// no other RecordCoreError in the chain.
 			case c.errType == "DuplicateIndexOptionError" && errors.As(err, &dup):
 				if dup.Error() != c.errMsg {
 					t.Fatalf("message = %q, want %q", dup.Error(), c.errMsg)

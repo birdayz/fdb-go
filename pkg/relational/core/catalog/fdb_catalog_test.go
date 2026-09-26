@@ -415,6 +415,23 @@ func TestFDB_RepairSchema(t *testing.T) {
 	})).To(gomega.Succeed())
 }
 
+// rawCreateTemplate stores tmpl's bytes as they are, past CreateTemplate's
+// checks and carry: a template built any other way than the build path (a
+// restore, another writer), which the rebind validator still guards.
+func rawCreateTemplate(t *testing.T, cat *RecordLayerStoreCatalog, tx api.Transaction, tmpl api.SchemaTemplate) error {
+	t.Helper()
+	rl := tmpl.(*metadata.RecordLayerSchemaTemplate)
+	store, err := cat.SchemaTemplateCatalog().(*RecordLayerStoreSchemaTemplateCatalog).openStore(tx)
+	if err != nil {
+		return err
+	}
+	payload, err := serializeTemplate(rl)
+	if err != nil {
+		return err
+	}
+	return writeTemplateRow(store, rl, payload)
+}
+
 // TestFDB_SchemaRebindRejectsRecordTypeKeyChange pins the SaveSchema/
 // RepairSchema evolution guard on the axis that matters after the RFC-204
 // 0-based record-type-key rebase: the record type key is the LEADING tuple
@@ -425,14 +442,18 @@ func TestFDB_RepairSchema(t *testing.T) {
 // round-tripping the current build through its proto with the explicit
 // keys rewritten to the 1-based layout — the exact bytes a pre-rebase
 // catalog persisted.
+//
+// Through CreateTemplate the new version is carried from the stored one
+// (ws-j-design.md section 4), so it keeps key 1 and the rebind is admitted;
+// the guard is what refuses a version written past the build path.
 func TestFDB_SchemaRebindRejectsRecordTypeKeyChange(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
 	cat, run := newFDBCatalogInSubspace(t)
 	tc := cat.SchemaTemplateCatalog()
 
-	build := func() *metadata.RecordLayerSchemaTemplate {
-		b := metadata.NewSchemaTemplateBuilder().SetName("rebind-key-tmpl")
+	build := func(name string) *metadata.RecordLayerSchemaTemplate {
+		b := metadata.NewSchemaTemplateBuilder().SetName(name)
 		b.AddTable("T", []metadata.ColumnSpec{
 			metadata.NewColumnSpec("ID", api.NewLongType(false), 1),
 			metadata.NewColumnSpec("V", api.NewLongType(true), 2),
@@ -441,50 +462,76 @@ func TestFDB_SchemaRebindRejectsRecordTypeKeyChange(t *testing.T) {
 		g.Expect(err).ToNot(gomega.HaveOccurred())
 		return tmpl
 	}
+	versions := func(name string) (api.SchemaTemplate, api.SchemaTemplate) {
+		// v1: the PRE-RFC-204 shape — record type key = union field number
+		// (1-based). Produced from real stored-proto bytes, not the builder.
+		md1proto, err := build(name).Underlying().ToProto()
+		g.Expect(err).ToNot(gomega.HaveOccurred())
+		g.Expect(md1proto.GetRecordTypes()).To(gomega.HaveLen(1))
+		md1proto.RecordTypes[0].ExplicitKey = &gen.Value{LongValue: proto.Int64(1)}
+		md1, err := recordlayer.RecordMetaDataFromProto(md1proto)
+		g.Expect(err).ToNot(gomega.HaveOccurred())
+		tmpl1, err := metadata.NewRecordLayerSchemaTemplateWithVersion(name, md1, 1)
+		g.Expect(err).ToNot(gomega.HaveOccurred())
+		// v2: the current emitter's 0-based key.
+		md2proto, err := build(name).Underlying().ToProto()
+		g.Expect(err).ToNot(gomega.HaveOccurred())
+		md2, err := recordlayer.RecordMetaDataFromProto(md2proto)
+		g.Expect(err).ToNot(gomega.HaveOccurred())
+		tmpl2, err := metadata.NewRecordLayerSchemaTemplateWithVersion(name, md2, 2)
+		g.Expect(err).ToNot(gomega.HaveOccurred())
+		return tmpl1, tmpl2
+	}
+	bound := func(schema string) int {
+		var v int
+		g.Expect(run(func(tx api.Transaction) error {
+			s, lerr := cat.LoadSchema(tx, "/rebinddb", schema)
+			g.Expect(lerr).ToNot(gomega.HaveOccurred())
+			v = s.SchemaTemplate().Version()
+			return nil
+		})).To(gomega.Succeed())
+		return v
+	}
 
-	// v1: the PRE-RFC-204 shape — record type key = union field number
-	// (1-based). Produced from real stored-proto bytes, not the builder.
-	md1proto, err := build().Underlying().ToProto()
-	g.Expect(err).ToNot(gomega.HaveOccurred())
-	g.Expect(md1proto.GetRecordTypes()).To(gomega.HaveLen(1))
-	md1proto.RecordTypes[0].ExplicitKey = &gen.Value{LongValue: proto.Int64(1)}
-	md1, err := recordlayer.RecordMetaDataFromProto(md1proto)
-	g.Expect(err).ToNot(gomega.HaveOccurred())
-	tmpl1, err := metadata.NewRecordLayerSchemaTemplateWithVersion("rebind-key-tmpl", md1, 1)
-	g.Expect(err).ToNot(gomega.HaveOccurred())
-
-	// v2: the current emitter's 0-based key.
-	md2proto, err := build().Underlying().ToProto()
-	g.Expect(err).ToNot(gomega.HaveOccurred())
-	md2, err := recordlayer.RecordMetaDataFromProto(md2proto)
-	g.Expect(err).ToNot(gomega.HaveOccurred())
-	tmpl2, err := metadata.NewRecordLayerSchemaTemplateWithVersion("rebind-key-tmpl", md2, 2)
-	g.Expect(err).ToNot(gomega.HaveOccurred())
-
+	// Carried: v2 through CreateTemplate keeps v1's key, and the rebind is
+	// admitted.
+	carried1, carried2 := versions("rebind-key-tmpl")
 	g.Expect(run(func(tx api.Transaction) error {
-		g.Expect(tc.CreateTemplate(tx, tmpl1)).To(gomega.Succeed())
-		return cat.SaveSchema(tx, tmpl1.GenerateSchema("/rebinddb", "pub"), true)
+		g.Expect(tc.CreateTemplate(tx, carried1)).To(gomega.Succeed())
+		return cat.SaveSchema(tx, carried1.GenerateSchema("/rebinddb", "carried"), true)
 	})).To(gomega.Succeed())
 	g.Expect(run(func(tx api.Transaction) error {
-		return tc.CreateTemplate(tx, tmpl2)
+		return tc.CreateTemplate(tx, carried2)
 	})).To(gomega.Succeed())
+	g.Expect(run(func(tx api.Transaction) error {
+		stored, err := tc.LoadTemplateProto(tx, "rebind-key-tmpl", 2)
+		g.Expect(err).ToNot(gomega.HaveOccurred())
+		g.Expect(stored.GetRecordTypes()[0].GetExplicitKey().GetLongValue()).To(gomega.Equal(int64(1)), "the stored key is carried")
+		return nil
+	})).To(gomega.Succeed())
+	g.Expect(run(func(tx api.Transaction) error {
+		return cat.RepairSchema(tx, "/rebinddb", "carried")
+	})).To(gomega.Succeed())
+	g.Expect(bound("carried")).To(gomega.Equal(2))
 
-	// The rebind must be REJECTED, and the rejection must name the record
-	// type key change (the corruption axis), not a generic failure.
+	// Written raw: the rebind must be REJECTED, and the rejection must name
+	// the record type key change (the corruption axis), not a generic failure.
+	raw1, raw2 := versions("rebind-key-raw")
+	g.Expect(run(func(tx api.Transaction) error {
+		g.Expect(tc.CreateTemplate(tx, raw1)).To(gomega.Succeed())
+		return cat.SaveSchema(tx, raw1.GenerateSchema("/rebinddb", "pub"), true)
+	})).To(gomega.Succeed())
+	g.Expect(run(func(tx api.Transaction) error {
+		return rawCreateTemplate(t, cat, tx, raw2)
+	})).To(gomega.Succeed())
 	rebindErr := run(func(tx api.Transaction) error {
 		return cat.RepairSchema(tx, "/rebinddb", "pub")
 	})
 	g.Expect(rebindErr).To(gomega.HaveOccurred())
 	g.Expect(rebindErr.Error()).To(gomega.ContainSubstring("record type key changed"))
 	g.Expect(rebindErr.Error()).To(gomega.ContainSubstring("metadata evolution rejected"))
-
 	// The binding is untouched: still v1.
-	g.Expect(run(func(tx api.Transaction) error {
-		s, lerr := cat.LoadSchema(tx, "/rebinddb", "pub")
-		g.Expect(lerr).ToNot(gomega.HaveOccurred())
-		g.Expect(s.SchemaTemplate().Version()).To(gomega.Equal(1))
-		return nil
-	})).To(gomega.Succeed())
+	g.Expect(bound("pub")).To(gomega.Equal(1))
 }
 
 // TestFDB_SchemaRebindRejectsVersionGoingBackwards pins the OTHER arm of the
@@ -840,20 +887,24 @@ func TestFDB_Initialize(t *testing.T) {
 	})).To(gomega.Succeed())
 }
 
-// TestFDB_SchemaRebindRefusesALiteralCarrierChange pins, on real FDB, that the
-// rebind (RepairSchema) reads a literal's carrier as part of an index's key, as
-// Java's evolution validator does (LiteralKeyExpression's equals compares the
-// value object): a long_value against an int_value of the same number is refused
-// like a changed value, and the schema stays bound where it was.
-func TestFDB_SchemaRebindRefusesALiteralCarrierChange(t *testing.T) {
+// TestFDB_SchemaRebindOfALiteralCarrierChange pins, on real FDB, that a
+// literal's carrier is part of an index's key, as Java's evolution validator
+// reads it (LiteralKeyExpression.equals compares the literal's proto,
+// LiteralKeyExpression.java:204-215): a long_value against an int_value of the
+// same number is a changed key. Through CreateTemplate the new version carries
+// the index as CHANGED, above the stored meta-data version, so the rebind
+// admits it as an index rebuild; a version written past the build path, whose
+// index keeps its last-modified version, is refused like a changed value, and
+// the schema stays bound where it was.
+func TestFDB_SchemaRebindOfALiteralCarrierChange(t *testing.T) {
 	t.Parallel()
 	g := gomega.NewWithT(t)
 	cat, run := newFDBCatalogInSubspace(t)
 	tc := cat.SchemaTemplateCatalog()
 
 	// version tags the template; lit is the literal of the index `add(V, lit)`.
-	build := func(version int, lit *gen.Value) api.SchemaTemplate {
-		b := metadata.NewSchemaTemplateBuilder().SetName("widen-tmpl")
+	build := func(name string, version int, lit *gen.Value) api.SchemaTemplate {
+		b := metadata.NewSchemaTemplateBuilder().SetName(name)
 		b.AddTable("T", []metadata.ColumnSpec{
 			metadata.NewColumnSpec("ID", api.NewLongType(false), 1),
 			metadata.NewColumnSpec("V", api.NewLongType(true), 2),
@@ -877,33 +928,69 @@ func TestFDB_SchemaRebindRefusesALiteralCarrierChange(t *testing.T) {
 		})
 		md, err := recordlayer.RecordMetaDataFromProto(mdProto)
 		g.Expect(err).ToNot(gomega.HaveOccurred())
-		out, err := metadata.NewRecordLayerSchemaTemplateWithVersion("widen-tmpl", md, version)
+		out, err := metadata.NewRecordLayerSchemaTemplateWithVersion(name, md, version)
 		g.Expect(err).ToNot(gomega.HaveOccurred())
 		return out
 	}
 
-	v1 := build(1, &gen.Value{LongValue: proto.Int64(1)})
-	g.Expect(run(func(tx api.Transaction) error {
-		g.Expect(tc.CreateTemplate(tx, v1)).To(gomega.Succeed())
-		return cat.SaveSchema(tx, v1.GenerateSchema("/widendb", "pub"), true)
-	})).To(gomega.Succeed())
-
-	// v2 differs only in the carrier, v3 in the value: both refused, the binding
-	// stays at v1.
-	for version, lit := range map[int]*gen.Value{2: {IntValue: proto.Int32(1)}, 3: {LongValue: proto.Int64(2)}} {
+	bound := func(schema string) int {
+		var v int
 		g.Expect(run(func(tx api.Transaction) error {
-			return tc.CreateTemplate(tx, build(version, lit))
+			s, err := cat.LoadSchema(tx, "/widendb", schema)
+			g.Expect(err).ToNot(gomega.HaveOccurred())
+			v = s.SchemaTemplate().Version()
+			return nil
+		})).To(gomega.Succeed())
+		return v
+	}
+
+	// Carried: v2 differs only in the carrier, and is CHANGED.
+	carried1 := build("widen-carried", 1, &gen.Value{LongValue: proto.Int64(1)})
+	g.Expect(run(func(tx api.Transaction) error {
+		g.Expect(tc.CreateTemplate(tx, carried1)).To(gomega.Succeed())
+		return cat.SaveSchema(tx, carried1.GenerateSchema("/widendb", "carried"), true)
+	})).To(gomega.Succeed())
+	g.Expect(run(func(tx api.Transaction) error {
+		return tc.CreateTemplate(tx, build("widen-carried", 2, &gen.Value{IntValue: proto.Int32(1)}))
+	})).To(gomega.Succeed())
+	g.Expect(run(func(tx api.Transaction) error {
+		v1, err := tc.LoadTemplateProto(tx, "widen-carried", 1)
+		g.Expect(err).ToNot(gomega.HaveOccurred())
+		v2, err := tc.LoadTemplateProto(tx, "widen-carried", 2)
+		g.Expect(err).ToNot(gomega.HaveOccurred())
+		for _, idx := range v2.GetIndexes() {
+			if idx.GetName() == "VPLUS" {
+				g.Expect(idx.GetLastModifiedVersion()).To(gomega.BeNumerically(">", v1.GetVersion()), "CHANGED: rebuilt when a store opens")
+				g.Expect(idx.GetRootExpression().GetFunction().GetArguments().GetThen().GetChild()[1].GetValue().IntValue).ToNot(gomega.BeNil())
+			}
+		}
+		return nil
+	})).To(gomega.Succeed())
+	g.Expect(run(func(tx api.Transaction) error {
+		return cat.RepairSchema(tx, "/widendb", "carried")
+	})).To(gomega.Succeed())
+	g.Expect(bound("carried")).To(gomega.Equal(2))
+
+	// Written raw: v2 differs only in the carrier, v3 in the value, each with
+	// the index's last-modified version unchanged: both refused, the binding
+	// stays at v1.
+	raw1 := build("widen-raw", 1, &gen.Value{LongValue: proto.Int64(1)})
+	g.Expect(run(func(tx api.Transaction) error {
+		g.Expect(tc.CreateTemplate(tx, raw1)).To(gomega.Succeed())
+		return cat.SaveSchema(tx, raw1.GenerateSchema("/widendb", "pub"), true)
+	})).To(gomega.Succeed())
+	for _, c := range []struct {
+		version int
+		lit     *gen.Value
+	}{{2, &gen.Value{IntValue: proto.Int32(1)}}, {3, &gen.Value{LongValue: proto.Int64(2)}}} {
+		g.Expect(run(func(tx api.Transaction) error {
+			return rawCreateTemplate(t, cat, tx, build("widen-raw", c.version, c.lit))
 		})).To(gomega.Succeed())
 		rebindErr := run(func(tx api.Transaction) error {
 			return cat.RepairSchema(tx, "/widendb", "pub")
 		})
-		g.Expect(rebindErr).To(gomega.HaveOccurred(), "version %d", version)
-		g.Expect(rebindErr.Error()).To(gomega.ContainSubstring("key expression changed"), "version %d", version)
-		g.Expect(run(func(tx api.Transaction) error {
-			s, err := cat.LoadSchema(tx, "/widendb", "pub")
-			g.Expect(err).ToNot(gomega.HaveOccurred())
-			g.Expect(s.SchemaTemplate().Version()).To(gomega.Equal(1), "version %d", version)
-			return nil
-		})).To(gomega.Succeed())
+		g.Expect(rebindErr).To(gomega.HaveOccurred(), "version %d", c.version)
+		g.Expect(rebindErr.Error()).To(gomega.ContainSubstring("key expression changed"), "version %d", c.version)
+		g.Expect(bound("pub")).To(gomega.Equal(1), "version %d", c.version)
 	}
 }

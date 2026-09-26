@@ -434,12 +434,18 @@ var _ = Describe("RFC-257 NullStandin: absent fields, unique indexes and COUNT_N
 	}
 })
 
-// A query reads a record's field by Java's MessageHelpers.getFieldOnMessage
-// rule (MessageHelpers.java:124-142), the rule values.ProtoFieldReadsValue
-// ports: an implicit-presence (proto3) field at its default is null, as the
-// index's key evaluation reads it, and an unset proto2 field with an explicit
-// default reads the default.
-var _ = Describe("RFC-257 a query reads a field as Java's getFieldOnMessage", func() {
+// A query reads a record's field as Java's query does, the rule
+// values.ProtoFieldReadsValue ports: an implicit-presence (proto3) field at its
+// default is null, as the index's key evaluation reads it, and so is an unset
+// proto2 field with an explicit default. Java's field reader,
+// MessageHelpers.getFieldOnMessage (MessageHelpers.java:124-142), reads that
+// default, and this spec measures it (the helper's column); but a query never
+// applies it to the stored record: QueryResult.fromQueriedRecord copies the
+// record into the plan's type first (set fields only, and the type declares no
+// default), so the query's read is MessageTuple's, hasField, which this spec
+// measures too and Go is compared with. The SQL surface is measured end to end
+// by "WS-J an unset field with a declared default reads as the target reads it".
+var _ = Describe("RFC-257 a query reads a field as Java's query reads it", func() {
 	file := func(syntax string) *descriptorpb.FileDescriptorProto {
 		label := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum()
 		field := func(name string, number int32) *descriptorpb.FieldDescriptorProto {
@@ -521,10 +527,11 @@ var _ = Describe("RFC-257 a query reads a field as Java's getFieldOnMessage", fu
 					goValue = fmt.Sprint(v.Int())
 				}
 			}
-			Expect(goValue).To(Equal(java.Value))
-			// The driver's struct read is MessageTuple's, which differs from
-			// getFieldOnMessage only for an unset field that declares a default
-			// (null there); Go's rowstruct is its port.
+			// A query's read, and the driver's struct read, are MessageTuple's,
+			// which differs from getFieldOnMessage only for an unset field that
+			// declares a default (null there); Go's reader and its rowstruct
+			// are their ports.
+			Expect(goValue).To(Equal(java.TupleValue))
 			rs, err := rowstruct.New(parsed)
 			Expect(err).NotTo(HaveOccurred())
 			attr, err := rs.AttributeByName(c.field)

@@ -8,6 +8,7 @@ import (
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer/internal/protovalue"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -213,8 +214,13 @@ func RecordMetaDataFromProto(md *gen.MetaData) (*RecordMetaData, error) {
 	}
 	// Java's reading of the bytes: a closed enum's undeclared number is an
 	// unknown field (proto_closed_enums.go), so a fan type Java cannot read is a
-	// missing one here too. The caller's proto takes that reading in place.
-	javaClosedEnums(md)
+	// missing one here too. Stored bytes were decoded with that reading
+	// already (UnmarshalAsJava); a proto built in memory that holds such a
+	// number is read from a clone, so the caller's proto is not changed.
+	if x := generatedReach(md.ProtoReflect().Descriptor()); holdsUndeclared(md.ProtoReflect(), x) {
+		md = proto.Clone(md).(*gen.MetaData)
+		closedEnumsAsJava(md.ProtoReflect(), x, true)
+	}
 
 	// Retain the stored records proto VERBATIM: a re-save must emit the same
 	// bytes Java (or a previous Go) wrote. It is cloned so that nothing the
@@ -838,32 +844,15 @@ func protoDeserializationError(err error) error {
 }
 
 // valueFromProto deserializes a Value proto to a Go value, as Java's
-// LiteralKeyExpression.fromProtoValue does (LiteralKeyExpression.java:134-173):
-// the one field set, nil when none is, and a RecordCoreError "More than one
-// value encoded in value" when several are.
+// LiteralKeyExpression.fromProtoValue does (protovalue.FromProto): the one
+// field set, nil when none is, and a RecordCoreError "More than one value
+// encoded in value" when several are.
 func valueFromProto(p *gen.Value) (any, error) {
-	if p == nil {
-		return nil, nil
+	v, err := protovalue.FromProto(p)
+	if err != nil {
+		return nil, &RecordCoreError{Message: err.Error()}
 	}
-	var value any
-	found := 0
-	set := func(present bool, v any) {
-		if present {
-			found++
-			value = v
-		}
-	}
-	set(p.DoubleValue != nil, p.GetDoubleValue())
-	set(p.FloatValue != nil, p.GetFloatValue())
-	set(p.LongValue != nil, p.GetLongValue())
-	set(p.BoolValue != nil, p.GetBoolValue())
-	set(p.StringValue != nil, p.GetStringValue())
-	set(p.BytesValue != nil, p.BytesValue)
-	set(p.IntValue != nil, p.GetIntValue())
-	if found > 1 {
-		return nil, &RecordCoreError{Message: "More than one value encoded in value"}
-	}
-	return value, nil
+	return v, nil
 }
 
 // defaultExcludedDependencies matches Java's RecordMetaData.defaultExcludedDependencies.

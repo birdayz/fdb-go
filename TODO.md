@@ -14822,7 +14822,9 @@ Additions to the entry "RFC-257 progress — WS-D v9, WS-J v1 findings, heartbea
 version) guard refuses creating a template version while a schema row binds it and no
 template row is stored (ws-j-design.md section 2), so the migration copies every TEMPLATE
 row before any SCHEMA row that binds it; a schema row copied first makes the template's
-own copy trip the guard. (2) CARRY. A migrated tenant's width-only rebind is section 4's
+own copy trip the guard. (2) CARRY. [Superseded by ws-j-design.md 4e: WIDENED and
+`literalCarriersEquivalent` are withdrawn. A migrated tenant's width-only change is a
+CHANGED index under the carry, rebuilt above the stored metadata version.] A migrated tenant's width-only rebind is section 4's
 WIDENED class (the rebuilt root with the stored versions and subspace key, decided by
 `literalCarriersEquivalent`), not a stored-proto carry, so the moved `int_value` literal
 is what the new version stores.
@@ -15014,7 +15016,9 @@ pre-release Go data is not supported (umbrella RFC item 9; ws-j-design.md sectio
   `SaveEditedLegacyMetaData` with its writer argument, R1, R2, `checkReservedNumbers`, the
   store-open probe `LegacyRecordTypeKeyError`, `frl meta legacy-framing`, the route's
   `explicit_key` writes.
-- Step 3 now carries: `SetRecords` processing the target's extension options (schema,
+- [Superseded: these landed before step 3, in `a33336527`, `9ba005539` and `8e515423b`
+  (ws-j-design.md 4e item 2); step 3's own work landed with design v19 (the block "RFC-257 WS-J
+  design v19 and step 3" at the end of this file).] Step 3 now carries: `SetRecords` processing the target's extension options (schema,
   `(record)` since_version and record_type_key, `(field)` index/indexed/primary_key); the
   deserialization port with `NullStandin` (three standins, the unique check, COUNT_NOT_NULL,
   NO_NULLS, the null-message case), function-key arity by the argument's column size and each
@@ -15157,9 +15161,53 @@ step 3 (4e "Step 3, restated", with 4f's additions).
 
 LANDED (ws-c-design.md 7.18), folding the v17 gate's three NAKs (`ws-c-addendum-review-v17/`): the
 vector maintainer skips an entry the old and new record share, as Java's inherited update does (a
-save keeping the vector makes no graph call, and is served under 9 to 15 RaBitQ bits after the
-centroid, JVM-measured); SPFresh reads its configuration strictly through one function at every
+save keeping the vector makes no graph call when the index is maintained in its own transaction, and
+is served under 9 to 15 RaBitQ bits after the centroid, JVM-measured; a queued save and a windowed
+index still delete and re-insert, in both engines, ws-c-design.md 7.19); SPFresh reads its configuration strictly through one function at every
 entry point (no path to the encoder's panic; an unknown metric refused); the planner takes a vector
 index's metric from the maintainer's parse (`recordlayer.VectorIndexMetric`; query-engine change,
 for the gate's Graefe lens); Java's unknown-field order within a field and its minimal re-encoding
 measured and declared. NEXT: the revision-18 gate (`ws-c-addendum-review-v18/`).
+
+### RFC-257 WS-J design v19 and step 3; WS-C revision 19 (booked 2026-09-26)
+
+LANDED on this tree, folding the WS-J v18 gate's three NAKs and the WS-C v18 gate's two NAKs and
+one ACK (`ws-j-design-review-v18/`, `ws-c-addendum-review-v18/`); ws-j-design.md 4g and
+ws-c-design.md 7.19 hold the decisions:
+- Stored bytes are decoded as protobuf-java parses them (`javaDecodeRule`): occurrence by
+  occurrence when they hold a closed enum's undeclared number, required fields checked after,
+  Java's recursion limit (101 for a root, 100 for a record), closedness per field; a record Go
+  holds in memory is saved as Java reads it; every plain decode under `pkg/recordlayer`,
+  `pkg/relational` and `cmd` goes through the rule. Cost: `BenchmarkJavaRecordDecode`.
+- A query reads an unset field with a declared default as NULL, measured through SQL on both
+  engines; a VECTOR column in a stored template is a VECTOR, so the relational validator compares
+  its options.
+- Step 3: `CreateTemplate` of both catalogs refuses `v′ <= latest`, runs the relational
+  validator, carries a new version (record-type keys, union fields, EQUIVALENT indexes spliced,
+  CHANGED rebuilt, dropped ones former indexes, a re-added name refused), runs the lane check
+  and the evolution validator with index rebuilds; the save action calls only `CreateTemplate`;
+  `fleet.SaveTemplate` returns the stored template; the rebind allows index rebuilds; the DDL key
+  generator refuses a lane-less key at its clause with the target's XX000. Section 4's tests:
+  `pkg/relational/sqldriver/carry_rule_fdb_test.go`, `pkg/relational/core/catalog/
+  template_carry_fdb_test.go`, JVM "WS-J a new version carried from the target's template".
+- WS-C: the "no graph call" claims scoped (a queued save and a windowed index still delete and
+  re-insert), the samples pin made able to fail, a queue pin, one metric reader per vector engine,
+  SPFresh refusals typed.
+NEXT: the v19 gates (`ws-j-design-review-v19/`, `ws-c-addendum-review-v19/`), then step 4 (the
+existence policies: CREATE SCHEMA over a gone version is 42F55 in the FDB catalog; the in-memory
+catalog's XX000).
+
+### The Go driver folds an unquoted `?schema=` connection value; Java takes it verbatim (found 2026-09-26, source)
+
+- [ ] `EmbeddedConnection.SetDefaultSchema` normalizes the DSN's `schema` value as an SQL identifier
+  (`functions.NormalizeIdentifier`: unquoted folds to upper case), where Java's
+  `RecordLayerStorageCluster.parseConnectionQueryString` upper-cases the option NAME and keeps the
+  value verbatim, and `loadSchema` looks it up as given (RecordLayerStorageCluster.java:76-124). So
+  `?schema=s_abc` finds schema `S_ABC` in Go and `s_abc` in Java: a lower-case schema name a Java
+  DDL created quoted is unreachable from Go's DSN, and an upper-case one Go created unquoted is
+  unreachable from Java's lower-case DSN. The comment at `SetDefaultSchema` cites yamsql files
+  whose connects and creates happen to agree under folding; the yamsql runner may normalize on its
+  own. Found reading both sources while writing the WS-J default-value spec (whose first draft
+  failed for another reason, the driver's Go-only keyspace); not measured. Measure both engines over a quoted mixed-case schema and a lower-case unquoted DSN, then port
+  Java's lookup (the yamsql corpus pins the spellings that must keep working).
+

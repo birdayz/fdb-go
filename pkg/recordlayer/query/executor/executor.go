@@ -2185,7 +2185,7 @@ func executeDistinct(
 		var hasLast bool
 		if len(continuation) > 0 {
 			var dc gen.DedupContinuation
-			if uerr := dc.UnmarshalVT(continuation); uerr != nil {
+			if uerr := recordlayer.UnmarshalVTAsJava(&dc, continuation); uerr != nil {
 				return nil, fmt.Errorf("invalid streaming-distinct continuation: %w", uerr)
 			}
 			innerCont = dc.GetInnerContinuation()
@@ -2315,7 +2315,7 @@ func executeHashDistinct(
 	innerCont := continuation
 	if len(continuation) > 0 {
 		var dc gen.DistinctHashContinuation
-		if uerr := dc.UnmarshalVT(continuation); uerr != nil {
+		if uerr := recordlayer.UnmarshalVTAsJava(&dc, continuation); uerr != nil {
 			return nil, fmt.Errorf("invalid distinct-hash continuation: %w", uerr)
 		}
 		innerCont = dc.GetInnerContinuation()
@@ -3260,7 +3260,7 @@ func executeFlatMap(
 	var outerCont, innerCont, checkValue []byte
 	if len(continuation) > 0 {
 		var fmc gen.FlatMapContinuation
-		if err := proto.Unmarshal(continuation, &fmc); err != nil {
+		if err := recordlayer.UnmarshalAsJava(continuation, &fmc); err != nil {
 			// Java: RecordCursor.flatMapPipelined —
 			//   throw new RecordCoreException("error parsing continuation", ex).
 			// A corrupt continuation must fail, not silently restart from
@@ -4159,7 +4159,10 @@ func rematerializeProtoScalar(fd protoreflect.FieldDescriptor, value protoreflec
 		return protoreflect.Value{}, fmt.Errorf("executor: copying composite insert value: %w", err)
 	}
 	target := dynamicpb.NewMessage(fd.Message())
-	if err := (proto.UnmarshalOptions{AllowPartial: true}).Unmarshal(wireBytes, target); err != nil {
+	// Read as the target type's record value is read (proto_closed_enums.go): a
+	// closed enum's undeclared number the source held as an unknown field is
+	// not taken back into the field by the re-parse.
+	if err := recordlayer.UnmarshalRecordAsJava(wireBytes, target, true); err != nil {
 		return protoreflect.Value{}, fmt.Errorf("executor: copying composite insert value: %w", err)
 	}
 	return protoreflect.ValueOfMessage(target), nil

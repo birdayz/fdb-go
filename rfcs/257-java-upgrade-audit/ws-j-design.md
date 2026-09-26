@@ -1,6 +1,13 @@
 # RFC-257 WS-J design — catalog existence policies and index-definition fidelity
 
-Status: design v18, for Graefe + Torvalds + storage review. v18 answers the three v17 NAKs
+Status: design v19, for Graefe + Torvalds + storage review. v19 answers the three v18 NAKs
+(`ws-j-design-review-v18/`) in a new section 4g, and lands step 3 (section 8) with it: the decode
+of shared bytes reads occurrences as protobuf-java does (required fields after, Java's recursion
+limit at root and record, closedness per field), a message Go holds is saved as Java reads it, a
+query reads an unset default as NULL, a VECTOR column is a VECTOR, and `CreateTemplate` carries a
+new version of a stored template. v18's text follows, its superseded sentences marked [v19 → 4g].
+
+Status (v18): design v18, for Graefe + Torvalds + storage review. v18 answers the three v17 NAKs
 (`ws-j-design-review-v17/`) in a new section 4f, and rewrites in place every normative sentence
 the v17 gates found still stating the withdrawn design (sections 2, 3.2, 3.6, 4, 7, 8 and 9),
 each rewrite marked [v18]:
@@ -652,7 +659,9 @@ rows under different record-type keys), and nothing on the read path notices. Go
 therefore refuses to create a template version (t, v) while some schema binds (t, v) and
 no template (t, v) is stored: 42F59 INVALID_SCHEMA_TEMPLATE "schema template <t> version
 <v> cannot be created: schemas are still bound to a dropped template of that name and
-version (<db>/<schema>)", naming the first bound schema. The check is one range read of
+version (<db>/<schema>)" [v17 → 4e.5: the message is `template_bindings.go`'s, "schema template
+t version v cannot be created: schemas are still bound to its dropped version w (db/schema)"],
+naming the first bound schema. The check is one range read of
 the catalog's `TEMPLATES_VALUE_INDEX` (Java's own index on `(TEMPLATE_NAME,
 TEMPLATE_VERSION, DATABASE_ID, SCHEMA_NAME)`, SchemaSystemTable.java:58-63, ported in
 `catalog/metadata.go`), limit 1, inside the creating transaction: for a save of (t, v′),
@@ -1066,7 +1075,9 @@ version once step 3 lands; until then the rebind validator refuses it, so the in
 fails closed. Nothing admits a carrier difference: `SetAllowLiteralCarrierWidening`, its
 symmetric form, `frl meta evolve-check`'s flag and `literalCarriersEquivalent` were removed
 in `8e515423b`, and their specs assert the refusal (the Ginkgo carrier specs,
-`TestFDB_SchemaRebindRefusesALiteralCarrierChange`, `TestFDB_Restore_RefusesALiteralCarrierChange`,
+`TestFDB_SchemaRebindOfALiteralCarrierChange` [v19: renamed; through the carry the change is a
+CHANGED index the rebind admits as a rebuild, and a version written raw is refused],
+`TestFDB_Restore_RefusesALiteralCarrierChange`,
 `TestMetaEvolveCheck_LiteralCarrierIsPartOfTheKey`).
 What keeps a key the target cannot
 plan (a `long_value` bitmap entry size fails every query of the table, 3.5) out of
@@ -1972,13 +1983,15 @@ guard for templates built any other way. [v17 → 4e: tests 1, 3, 5 and 10 re-ba
 Java or this build wrote; WIDENED withdrawn.] FDB tests, one per case, each through
 `fleet.SaveTemplate` + `RepairSchema` and `fleet.Migrate`, rows written before the rebind
 read back by table after it:
-1. v1 stored with the OLD Go numbering (built by the pre-port builder, whose output the
+1. [v17 → 4e: v1 stored by the target's DDL; landed in v19 as the JVM spec "WS-J a new
+   version carried from the target's template", which also has the target serve v2] v1 stored with the OLD Go numbering (built by the pre-port builder, whose output the
    test pins), v2 adds an index on the first table: keys and union numbers unchanged,
    the new index built on open;
 2. v2 adds a TABLE (declared before an existing one, so Java's order would renumber):
    the old tables keep their keys, the new one takes the next key and a since-version,
    the rebind is admitted and the new table is writable;
-3. v2 CHANGES an index (the pre-F1 truncated `nested_then_top` root against the
+3. [v17 → 4e: the change is `(a)` to `(a, b)`; landed in v19 as
+   `TestFDB_Carry_ChangedIndexIsRebuiltOnOpen`, whose threshold is a non-empty store, 4g.10] v2 CHANGES an index (the pre-F1 truncated `nested_then_top` root against the
    corrected one): last-modified version above the stored metadata version, rebind
    admitted, the store rebuilds the index inline under the threshold (entries equal to a
    fresh build) and leaves it DISABLED above it (the planner does not use it);
@@ -1994,12 +2007,14 @@ read back by table after it:
 6. a tenant bound to v1 while v3 is carried from v2: admitted;
 7. [v18: red to green, not a mutation] case 1 through today's `CreateTemplate` (no carry,
    the tree before step 3): the rebind is refused by the validator ("record type key
-   changed"), recorded as step 3's red run on the parent tree;
+   changed"), recorded as step 3's red run on the parent tree [v19: a prediction when written;
+   4g item 11 records the measurement];
 8. a v2 whose metadata version is lower: refused (landed, Ginkgo spec);
 9. v2 changes ONLY an index's predicate (`WHERE v > 1` to `WHERE v > 2`): a CHANGED
    index, rebuilt on open, and a read through it after the rebind returns exactly the
    rows the new predicate admits (the case the validator alone would pass as unchanged);
-10. v2 differs from v1 ONLY in an index's option ORDER (v1 stored before F12): an
+10. [v17 → 4e: v1 stored by the target's DDL; landed in v19 as the JVM spec above (IB and NPLUS
+   EQUIVALENT, the target's Index messages) and `TestFDB_Carry_EquivalentIndexIsNotRebuilt`] v2 differs from v1 ONLY in an index's option ORDER (v1 stored before F12): an
    EQUIVALENT index, no rebuild, the stored bytes kept, and above the 200-record inline
    threshold the index stays READABLE (it would be left DISABLED if order counted);
    the same v1 with a SPARSE index (a predicate) in the pre-port fixture, built by the
@@ -2337,7 +2352,9 @@ Java's "Index ... already defined").
     the evolution case); conformance "a query reads a field as Java's getFieldOnMessage" (11 cases
     against `MessageHelpers.getFieldOnMessage` on the JVM); Go unit pins
     `TestNullStandin_*`, `keyContainsNonUniqueNull` (every arm of `nonUniqueNullColumns`), and
-    `TestProtoFieldByNameReadsAsGetFieldOnMessage`.
+    `TestProtoFieldByNameReadsAsGetFieldOnMessage` [v19 → 4g.6: the query's read is MessageTuple's;
+    the spec and the unit pin are renamed "…as Java's query reads it" and
+    `TestProtoFieldByNameReadsAsAQuery`].
 
 **Corrections.**
 - 9 (x) stated that Java admits an inverted history and serves the tenant. It does not: the
@@ -2349,7 +2366,8 @@ Java's "Index ... already defined").
 - The `DdlVisitor` citation for the template's build is `:263, :281, :319`; `:223-224` is
   nullability code.
 - "Go refuses on load only what the target also refuses" holds with 9 (u)'s exception (an index
-  over a synthetic record type), which the sentence now names.
+  over a synthetic record type), which the sentence now names [v19: and 9 (aa)'s, the untyped load
+  refusals].
 
 ## 4e. v17: the ruling applied to the carry rule, landed versus owed, and Java's `deleteTemplate`
 
@@ -2423,11 +2441,13 @@ Landed:
   reading its parent first; `KeyExpressionDeserializationError` a `RecordCoreError`;
   `MetaDataProtoDeserializationError` ("Error converting from protobuf", a `MetaDataError` with the
   cause) around index roots, primary keys, the record-count key and the subspace-counter faults;
-  `valueFromProto`'s "More than one value encoded in value" at its three read sites. JVM specs "RFC-257
+  `valueFromProto`'s "More than one value encoded in value" at its read sites [v19 → 4g.7: four
+  now, the index predicate's operand among them, through `protovalue.FromProto`]. JVM specs "RFC-257
   a key expression Java cannot deserialize is refused as Java refuses it" (5 key expressions alone,
   5 meta-data protos, a new partial-parse verdict step) and the extension-options rows.
 - Go's four untyped load refusals are declared (DIVERGENCES.md, "Four key-expression shapes Java
-  loads and Go refuses on load"); v16 said they were declared and they were not.
+  loads and Go refuses on load" [v19: retitled "Key-expression shapes Java loads and Go refuses on
+  load", with a fifth, the operand without a value, 4f.3]); v16 said they were declared and they were not.
 Owed by step 3 (below): F3's order with companions last, the carry route, the re-added-name refusal,
 the no-lane refusal and the DDL clause's XX000, and section 4's tests.
 
@@ -2496,7 +2516,8 @@ key; section 4's tests as re-based above and the two `deleteTemplate` sequences 
 v18 answers the v17 gate (`ws-j-design-review-v17/`, commit `d1ccff8c6`): Torvalds NAK (H1, M1 to
 M4, Lows), Graefe NAK (M1, M2, L1 to L7) and storage NAK (H1, M1, M2, L1 to L9).
 
-**1. A closed enum's undeclared number, at every decode (Torvalds H1, storage M2).** Measured:
+**1. A closed enum's undeclared number, at every decode (Torvalds H1, storage M2).** [v19 → 4g.1-3:
+the decode reads occurrences, and a message Go holds is saved as Java reads it.] Measured:
 protobuf-go keeps an undeclared number of a closed (proto2) enum in the field; protobuf-java
 parses it into the unknown fields (`MessageReflection.mergeFieldFrom`), so the field is unset.
 v17's claim that both engines park fan type 7 in the unknown fields was false for Go, and its JVM
@@ -2523,7 +2544,8 @@ reads as UNSPECIFIED, which both refuse at format version 14, and `UnknownStoreL
 carries the lock state's unknown fields, Java's logged value, where it carried the number. A null
 interpretation number outside the enum already read as NOT_UNIQUE in both.
 
-**2. protobuf-java's recursion limit (Graefe L4).** Measured: Java refuses a meta-data proto
+**2. protobuf-java's recursion limit (Graefe L4).** [v19 → 4g.4: 101 at a root, 100 at a record.]
+Measured: Java refuses a meta-data proto
 whose index root nests 50 levels ("Protocol message had too many levels of nesting",
 `InvalidProtocolBufferException`) and parses 49; protobuf-go's default admits both. The shared
 decodes now parse with Java's limit, 100 nested messages, which gives the same boundary (JVM spec
@@ -2540,7 +2562,8 @@ refusals); the query engine's `literalFromProtoValue` refuses two values too. JV
 index predicate's operand Java cannot read is refused as Java refuses it" (two values, none, and an
 admitted control).
 
-**4. The readers (Torvalds and storage L9, open since v16).** `TestReadPathsMatchJavaGetFieldOnMessage`
+**4. The readers (Torvalds and storage L9, open since v16).** [v19 → 4g.6: the query reads an
+unset default as NULL; the test is `TestReadPathsMatchJavasQueryRead`.] `TestReadPathsMatchJavaGetFieldOnMessage`
 runs Go's three field readers over the JVM spec's measured cases. It found that the driver's
 struct reader is Java's `MessageTuple`, not `getFieldOnMessage`: the two differ for an unset field
 that declares a default (null against the default). The JVM spec now measures `MessageTuple` too,
@@ -2590,6 +2613,184 @@ revision's red run is `evidence/wsj18-red` (its TREE names the tree and adapters
   F2's population in the re-based tests (a Java-DDL v1 with an `int_value` literal and a Go-DDL v2,
   EQUIVALENT; storage L8) are added to step 3's tests; the in-memory hooked test gets its red run
   with step 3 (storage L7).
+
+## 4g. v19: the decode reads the bytes, the save reads as Java, the query reads a copy
+
+v19 answers the v18 gate (`ws-j-design-review-v18/`, commit `d2e47b8bd`): Graefe NAK (H1, M1, M2,
+L1 to L8), Torvalds NAK (H1, H2, M1, M2, Lows) and storage NAK (H1, M1, M2, L1 to L7). It
+supersedes 4f items 1 to 4 where they differ; each superseded sentence there is marked below by
+item. Step 3 lands in the same revision (item 10).
+
+**1. The decode reads the bytes (storage H1, Torvalds H2, Graefe M1 and L1).** v18 moved a closed
+enum's undeclared number AFTER protobuf-go's decode (4f.1), and so after protobuf-go had checked
+required fields with the number still in the field, kept the LAST occurrence of the field, and
+cleared a oneof sibling for it. protobuf-java decides each occurrence as it parses
+(`MessageReflection.mergeFieldFrom`: an undeclared number goes to the unknown fields and the field
+is not touched), then checks required fields (`buildParsed`). So the field holds the last DECLARED
+occurrence, a oneof keeps its member, and a required closed enum holding only undeclared numbers is
+missing. Now every decode of shared bytes is `javaDecodeRule.unmarshal` (`proto_closed_enums.go`):
+a scan of the wire bytes, over the fields a closed-enum reach plan names, looks for an undeclared
+number; bytes with none (the case of every well-formed record) are decoded by protobuf-go as they
+are, which is Java's reading of them; bytes with one are decoded occurrence by occurrence
+(`merge`), each undeclared occurrence set aside for the unknown fields (at its place in Java's
+`UnknownFieldSet` order, by number and then varint, fixed32, fixed64, length-delimited, group), a
+packed list keeping its declared elements, a message field whose type reaches a closed enum
+decoded the same way one level down; then `proto.CheckInitialized`. A map entry follows the parse
+Java runs: a record is a DynamicMessage, whose entry is a message like any other (kept; its value
+the last declared occurrence, else the default); a generated type follows protoc's Java map code
+(an entry whose last value is undeclared goes whole to the unknown fields). Extensions resolve as
+Java parses: meta-data with its registry (protobuf-go's global registry holds the same generated
+extensions), a record and the vtproto-decoded protos with none. The special case in
+`pending_writes_queue.go` that did this for one field is deleted. Pins:
+`TestJavaDecodeRuleReadsOccurrencesAsJava` (each rule above); JVM: "a root field of fan type 7"
+in "RFC-257 a stored template Java cannot load" (XXXXX in both; Go gave 42000), "a required closed
+enum holding only an undeclared number is refused on load" (Java `InvalidProtocolBufferException:
+Message missing required fields`, Go refuses; Go read the record), and the closed-enum spec's
+records 3 and 4 (the last declared occurrence) and 5 (a map: an undeclared value, a declared one,
+and a declared one then an undeclared one; Java indexes the first as the default, and both
+engines re-save the record to equal bytes, which answers "the map arm is unmeasured").
+[Supersedes 4f.1's "moves such a number into the unknown fields" as the mechanism, and its map
+sentence for generated types.]
+
+**2. Closedness per field (Graefe L4).** Java asks the field
+(`FieldDescriptor.legacyEnumFieldTreatedAsClosed`): in a file with dependencies, a field is closed
+when its enum is or when the java feature `legacy_closed_enum` resolves true, its default in a
+proto2 file; Go asked the enum. `closedEnumField` ports it, reading the feature from a descriptor's
+options where it is set (an editions file) and the edition's default otherwise
+(`TestClosedEnumFieldIsJavasLegacyClosedEnum`: a proto2 field of a proto3 enum is closed; an
+editions field is open unless the feature is set).
+
+**3. A message Go holds (Graefe H1, Torvalds H1, storage M2).** A record Go builds in memory can
+hold an undeclared number in a closed enum field (a generated setter, dynamicpb); Java cannot build
+one. v18 indexed and counted it under the number, and the next load read it as absent, so an update
+or delete left the number's entries behind. Every save path (`saveRecordInternal`, the dry run, the
+batch save) now takes `RecordType.asJava`: the record as every later load reads the bytes Go writes
+for it, a clone when it moves anything, the caller's message unchanged. Go's two in-process round
+trips that re-parsed such bytes with protobuf-go (buffered continuation values, and
+`rematerializeProtoScalar`'s composite copy on INSERT…SELECT) decode through
+`UnmarshalRecordAsJava`. `RecordMetaDataFromProto` no longer changes the proto it is given (Torvalds
+Low): it reads a clone when the proto holds such a number
+(`TestRecordMetaDataFromProtoReadsAnUndeclaredEnumFromAClone`). JVM: "a record Go holds with an
+undeclared number is saved, updated and deleted as Java reads it": the entries of four indexes and
+a COUNT index after the save and after an update equal Java's saves of the same bytes, and a delete
+leaves only the count at zero.
+
+**4. The recursion limit (Graefe M2, Torvalds M1, storage M1).** protobuf-go counts the root
+message against `RecursionLimit`; protobuf-java counts only nested messages and refuses the 101st
+(`CodedInputStream.checkRecursionLimit`, before it raises the depth). So a root admits 101 levels
+in Java and v18's 100 admitted 100 in Go; the JVM row's shape opened an even number of levels and
+could not tell. `javaRootRule` is 101; a record, one level below Java's union, is 100. JVM: "a
+record-count key opening 101 levels parses in both engines, 103 in neither" (2d+1 levels; Go
+refused 101); `TestJavaDecodeRuleRecursionLimit` drives both limits through both decode paths.
+vtproto has no limit, so `UnmarshalVTAsJava` hands it only a type whose messages cannot open more
+levels than the limit (`vtBounded`, computed once per type); the store header, which holds a
+KeyExpression, and `RecursiveCursorContinuation` are decoded by protobuf-go under the limit
+(`TestUnmarshalVTAsJavaKeepsJavasRecursionLimit`); a record is never decoded by vtproto. Declared
+(DIVERGENCES.md): an unknown GROUP is consumed by protobuf-go with its own limit (10,000) and by
+vtproto with none, where protobuf-java refuses past 100. [Supersedes 4f.2's "100 nested messages,
+which gives the same boundary" and its vtproto sentence.]
+
+**5. Every decode (Torvalds M2).** The 17 plain decodes under `pkg/recordlayer`, `pkg/relational`
+and `cmd` (15 continuation and buffered-value decodes in `query/executor`, and `frl`'s store header
+and meta-data reads) go through the rule; after it, a grep for `proto.Unmarshal(`, `.UnmarshalVT(`
+and `UnmarshalOptions{` over those trees outside `proto_closed_enums.go` finds no non-test line.
+
+**6. The readers, per query (Graefe L3, Torvalds and storage Lows).** Measured through SQL on both
+engines, over a column whose records-file field declares a default and is unset in the record:
+`SELECT *`, `SELECT d, s`, `WHERE d IS NULL` and `WHERE d = 5` read NULL in the target, and Go read
+the default in all four. The mechanism is not `MessageTuple` alone: Java's plan is `SCAN([IS T]) |
+MAP (_.D AS D, _.S AS S)`, a FieldValue over the scanned record, and `getFieldOnMessage` reads the
+default on the stored record (measured in the same spec); but a query never hands it the stored
+record: `QueryResult.fromQueriedRecord` (QueryResult.java:256-281) copies the record into a message
+of the plan's type first (`MessageHelpers.deepCopyMessage`, set fields only), whose descriptor
+declares no default. `values.ProtoFieldReadsValue` is now that read (set, or repeated); the
+helper-level spec measures `getFieldOnMessage` and `MessageTuple` still and compares Go with the
+query's read. JVM spec "WS-J an unset field with a declared default reads as the target reads it"
+(it also pins that the defaults reach the store's meta-data). [Supersedes 4f.4: the readers are
+pinned to the query's read, not to `getFieldOnMessage`.] Found on the way, and filed where the next
+reader finds them: the Go driver folds an unquoted `?schema=` value where Java takes it verbatim
+(TODO.md, "The ?schema= connection value is folded"); the Go driver's catalog is on a Go-only
+keyspace (TODO.md, already filed).
+
+**7. One operand reader (Graefe L6).** `protovalue.FromProto` (`pkg/recordlayer/internal/
+protovalue`) is the reader of both the loader (`valueFromProto`, which reports its refusal as the
+`RecordCoreError` Java throws) and the planner's index-predicate translation, which cannot import
+the record layer; the planner's copy and its untyped error are deleted.
+
+**8. The error's class (storage L4, Graefe L8).** `MetaDataError` is a `RecordCoreError`, as Java's
+MetaDataException extends RecordCoreException. `deserializeTemplate` reports 42000 when the
+OUTERMOST Java exception is a MetaDataException (`recordlayer.IsMetaDataException`), as Java's
+`instanceof` tests the exception thrown and not its causes; a MetaDataError that is only the cause
+of another exception is UNKNOWN (`TestIsMetaDataExceptionTestsTheOutermostJavaException`).
+
+**9. Residue (Graefe L7, storage L2, L3, L5, Torvalds Lows).** Rewritten: the four test comments
+that said Java compares a literal's "value object"; TODO's F11 item (2), which still prescribed
+WIDENED; TODO's v16 "Step 3 now carries" note; section 2's guard message (marked [v17 → 4e.5]);
+3.6's "at its three read sites" and "Four key-expression shapes"; section 9 gains the untyped load
+refusals, five of them; section 4's test 7 is marked a prediction and tests 1, 3 and 10 point at
+4e's re-based bodies.
+
+**10. Step 3.** Landed in this revision, as 4e's "Step 3, restated" lists it:
+- `CreateTemplate` of both catalogs: the exact-duplicate refusal (Java's code and text), then
+  `refuseBelowLatest` (`v′ <= latest`, INVALID_SCHEMA_TEMPLATE, and the relational validator over the
+  stored latest), the version guard, and for a new version of a stored name `carryTemplate`:
+  `carryNumbering` over the stored latest's bytes (the FDB catalog reads the row, the in-memory one
+  its template's `ToProto`), the carried bytes read back through `deserializeTemplate` (what is
+  validated is what is stored), the lane check over the NEW and CHANGED indexes, and the evolution
+  validator with index rebuilds. A fresh name is lane-checked whole. The FDB catalog writes through
+  `writeTemplateRow`, which only `CreateTemplate` reaches (the restore writes its own row).
+- `SaveSchemaTemplateConstantAction.Execute` calls only `CreateTemplate`, as Java's does; a second
+  CREATE SCHEMA TEMPLATE of a name is now Java's 42F62 "Schema template already exists", where the
+  save action's refusal made it 42F59 (`TestFDB_DDLErrorsProbe`, `TestSchemaEvolution_SameVersion_Rejected`).
+- `fleet.SaveTemplate` returns the template as stored; `validateSchemaRebind` sets
+  `SetAllowIndexRebuilds(true)`.
+- The lane table, ArithmeticValue's 107 rows (`values/arithmetic_lanes.go`, checked row by row
+  against Java's enum when written), serves both the build-path check (`catalog/index_lanes.go`) and
+  the DDL clause (`encapsulateLane` in the key generator: the non-primitive operand's
+  SemanticException text, then the lane's VerifyException text, both XX000); WSJLANE now asserts
+  Go's outcome equal to the target's on all eleven shapes.
+- Tests: section 4's 2, 3, 4, 6, 9, 10 (Go's half) and 11 in `sqldriver/carry_rule_fdb_test.go`;
+  1, 5, 10 (the target's half) and F2's population (NPLUS, an `int_value` literal, EQUIVALENT) in
+  the JVM spec "WS-J a new version carried from the target's template"; the splice of `index_type`,
+  `value_expression` and an unknown field (`TestFDB_CreateTemplate_SplicesTheStoredIndexOfAnEquivalentIndex`);
+  both `deleteTemplate` sequences (`TestFDB_CreateTemplate_RefusesAReIssueBelowTheLatest`); (z)'s
+  races (`TestFDB_CreateTemplate_ConcurrentSavesOfOneName`); the lane check on both catalogs and both
+  routes, and its scope over the indexes a save defines; the in-memory hooked test's third pair
+  (`TestInMemory_VersionGuard_FreshCreateAfterDropSerializesWithBind`); the VECTOR row of check (iv)
+  (`TestFDB_Restore_ComparesAVectorColumnWhole`); `TestFDB_ExecutedTemplateIsTheToolingPathsTemplate`
+  says proto-equal, gains a WHERE index, and states that Go's DDL takes no enum yet. The rebind tests
+  that exercised a renumbered or carrier-changed v2 now drive both routes: through
+  `CreateTemplate` the rebind is admitted (the key carried, the index CHANGED), and a version
+  written past it is refused as before.
+
+Found while landing it, each fixed:
+- Test 3's "inline under the threshold" is inline only on an EMPTY store: a relational store has
+  no record-count key, so `getRecordCountForRebuildIndexes` reports any non-empty store as too
+  large (Java's own rule, FDBRecordStore.java:4862-4884). A tenant with rows gets the CHANGED index
+  DISABLED, its old entries cleared, the planner off it, until an online build; the test drives
+  that build.
+- A VECTOR column loaded from stored bytes was BYTES: `protoFieldToDataType` never read the vector
+  options Java's `Type.fromProtoType` reads, so check (iv), which the design said compares a
+  vector's options, compared BYTES with BYTES and admitted a change of dimensions (the VECTOR row
+  was red). Ported; `TestVectorColumnIsAVectorOfItsOptions`.
+- The fixture of "WS-J Go-stored template planned by the target" stored the `long_value` variant
+  through `CreateTemplate`, which the lane check now refuses (asserted); it is written raw, as 3.2
+  said it would be.
+
+**11. Evidence.** The red run is `evidence/wsj19-red` (the tree of `6b4b7817d` with this
+revision's tests and the adapters its TREE names); the JVM greens on the commit are
+`evidence/wsj19-green` (the parity and oracle targets run by name: the hook runs them, but its log
+names no spec). Mutation runs: none.
+
+**12. The decode's cost (storage L7).** `BenchmarkJavaRecordDecode` (a twelve-column proto2 record,
+dynamic, as a relational record is; 200,000 decodes, three runs each, load 2-3 on a 24-thread host):
+a type with no closed enum 3.30 µs with the rule and 3.31 µs with protobuf-go alone, within noise,
+since its reach plan is nil and it takes no scan; a type with a closed enum (a DDL ENUM column)
+3.66 µs against 3.44 µs, +6%, the scan of its bytes for an undeclared number; bytes that hold one
+4.38 µs, the occurrence-by-occurrence decode. The first cut scanned at +12%; a dense plan table,
+a one-byte tag path and each entry's enum values taken at plan time brought it to +6%. A generated
+record type bounded under the record limit still decodes through vtproto when the scan finds
+nothing.
 
 ## 5. Enum DDL (F6, F10)
 
@@ -2923,7 +3124,9 @@ reaches master before then. Within the unit and after it:
   with the same code, and then a version at or below the latest stored (INVALID_
   SCHEMA_TEMPLATE) and runs the relational validator against the stored latest (moved
   from the save action, section 4), and it runs the version guard (section 2). A Java library caller can store a version below the latest; a Go one
-  cannot.
+  cannot. [v19: landed with step 3, which adds the lane check, the carry and the evolution
+  validator with index rebuilds; DIVERGENCES.md "CreateTemplate refuses more than an exact
+  duplicate, and carries a new version".]
 - (x) The restore's own refusals have no Java counterpart (Java has no restore). A template
   history whose versions invert (a lower template version with a higher metadata version) is
   refused. The schemas bound to such a history bind a (t, v) that is not stored, so neither
@@ -2939,12 +3142,22 @@ reaches master before then. Within the unit and after it:
   calls carrying new versions from the same latest, or a new version racing a restore,
   serialize through FDB. Each reads the stored latest through `LoadSchemaTemplate`'s
   reverse range scan of `(t)`, unbounded and consumed for its first record
-  (`fdb_template_catalog.go:68-78`), which adds a read-conflict range over what it read, from
+  (`fdb_template_catalog.go:68-78`) [v19: `latestTemplateVersion`'s reverse scan, limited to
+  one row since v15], which adds a read-conflict range over what it read, from
   the key it returns to the end of `(t)`, covering every higher version. The other's write of `(t, v′)` lands in that range, so the second commit
   fails with 1020 and its retry reads the new latest. An FDB test commits one
   `CreateTemplate` of (t, 3) between the other's read of latest 2 and its commit of
   (t, 3), and asserts the conflict, and then that the retry is refused with
   DUPLICATE_SCHEMA_TEMPLATE, the exact-duplicate refusal `CreateTemplate` runs first. A
   second test races (t, 4) against (t, 3) from latest 2, and asserts the loser's retry is
-  refused with INVALID_SCHEMA_TEMPLATE when it is (t, 3) and admitted when it is (t, 4).
-
+  refused with INVALID_SCHEMA_TEMPLATE when it is (t, 3) and admitted when it is (t, 4)
+  [v19: landed, `TestFDB_CreateTemplate_ConcurrentSavesOfOneName`].
+- (aa) [v19] Go refuses on load, as untyped errors, five shapes Java's constructors take and fail on
+  later, if at all: a key expression nested deeper than `maxKeyExpressionDepth` (128; from stored
+  bytes a meta-data proto never reaches it, since both engines parse it under protobuf-java's
+  recursion limit, 4g.4), a grouping whose `grouped_count` is outside `[0, columns]`, a key-with-value
+  whose `split_point` is outside `[0, columns]`, a split whose size is below one, and an index
+  predicate's comparison operand with no value (Java's `NullPointerException`). That no index of
+  either engine can maintain the first four is read from Java's source (each constructor stores the
+  value unchecked and the first use fails), not measured. DIVERGENCES.md "Key-expression shapes
+  Java loads and Go refuses on load".

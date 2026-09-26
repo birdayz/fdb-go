@@ -70,7 +70,7 @@ func collectIndexingHeartbeats(tx fdb.ReadTransaction, storeSubspace subspace.Su
 			return nil, err
 		}
 		hb := &gen.IndexBuildHeartbeat{}
-		if err := unmarshalVTAsJava(hb, kv.Value); err != nil {
+		if err := UnmarshalVTAsJava(hb, kv.Value); err != nil {
 			out[id] = heartbeatEntry{hb: invalidHeartbeat()}
 			continue
 		}
@@ -99,7 +99,7 @@ func ClearIndexingHeartbeats(tx fdb.WritableTransaction, storeSubspace subspace.
 	for _, kv := range kvs {
 		var hb gen.IndexBuildHeartbeat
 		remove := true // an unparsable heartbeat is always cleared
-		if err := unmarshalVTAsJava(&hb, kv.Value); err == nil {
+		if err := UnmarshalVTAsJava(&hb, kv.Value); err == nil {
 			remove = nowMs >= hb.GetHeartbeatTimeMilliseconds()+minAgeMs
 		}
 		if remove {

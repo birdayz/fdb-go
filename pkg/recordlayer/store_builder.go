@@ -1011,7 +1011,7 @@ func (store *FDBRecordStore) checkStoreExists() (bool, *gen.DataStoreInfo, error
 
 	// Parse the store header
 	storeInfo := &gen.DataStoreInfo{}
-	if err := unmarshalVTAsJava(storeInfo, firstKV.Value); err != nil {
+	if err := UnmarshalVTAsJava(storeInfo, firstKV.Value); err != nil {
 		return false, nil, fmt.Errorf("failed to parse store header: %v", err)
 	}
 

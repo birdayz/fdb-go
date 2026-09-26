@@ -295,9 +295,33 @@ func TestParseSPFreshConfigRefusesWhatDoesNotParse(t *testing.T) {
 	if _, err := parseSPFreshConfig(idx); !errors.As(err, &iae) || iae.Message != "No enum constant com.apple.foundationdb.linear.Metric.cosine" {
 		t.Errorf("metric cosine: %v", err)
 	}
+	// A configuration the maintainer refuses is a MetaDataError, whether an
+	// option does not parse or a parsed value is out of range.
+	var mde *MetaDataError
 	if _, err := readSPFreshConfig(&Index{Name: "v", Type: IndexTypeVectorSPFresh, Options: map[string]string{
 		IndexOptionSPFreshNumDimensions: "8", IndexOptionSPFreshRaBitQNumExBits: "0",
-	}}); err == nil {
-		t.Error("readSPFreshConfig admitted 0 extra bits")
+	}}); !errors.As(err, &mde) || mde.Message != "spfresh: raBitQNumExBits must be in [1, 8], got 0" {
+		t.Errorf("readSPFreshConfig of 0 extra bits: %v, want the MetaDataError", err)
+	}
+	if _, err := readSPFreshConfig(&Index{Name: "v", Type: IndexTypeVectorSPFresh, Options: map[string]string{
+		IndexOptionSPFreshNumDimensions: "8", IndexOptionSPFreshLmax: "sixteen",
+	}}); !errors.As(err, &mde) {
+		t.Errorf("an option that does not parse: %v, want a MetaDataError", err)
+	}
+	// The planner's metric is the maintainer's: an SPFresh index reads its
+	// metric through the same reader, and the default is Euclidean.
+	for _, c := range []struct {
+		opts map[string]string
+		want VectorMetric
+	}{
+		{map[string]string{}, VectorMetricEuclidean},
+		{map[string]string{IndexOptionSPFreshMetric: "COSINE_METRIC"}, VectorMetricCosine},
+	} {
+		idx := &Index{Name: "v", Type: IndexTypeVectorSPFresh, Options: c.opts}
+		got, err := VectorIndexMetric(idx)
+		parsed, perr := spfreshMetric(idx)
+		if err != nil || perr != nil || got != c.want || parsed != got {
+			t.Errorf("%v: VectorIndexMetric %v %v, spfreshMetric %v %v, want %v", c.opts, got, err, parsed, perr, c.want)
+		}
 	}
 }

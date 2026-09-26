@@ -356,9 +356,9 @@ assets carry (`RELEASE.md` §Versioning).
   - a literal is stored with its own width: an INT literal as `int_value` (Go stored `long_value`), a
     FLOAT literal as `float_value`, and the bitmap entry size as the INT `10000`. A literal's carrier
     is part of its index's key, as Java's evolution validator reads it: a `long_value` against an
-    `int_value` of the same number is a changed key, refused by the rebind and by a template restore
-    (a new template version will rebuild it through the carry rule, RFC-257 WS-J section 4, step 3,
-    not in this build yet). Templates an
+    `int_value` of the same number is a changed key: a new template version rebuilds it through the
+    carry rule (below), and a rebind or a template restore of a version written past it refuses it.
+    Templates an
     earlier Go build stored are pre-release data (above). An INT literal outside 32 bits is refused
     (XX000) instead of wrapping, whatever Go integer kind carries it;
   - index options are stored in Java's insertion order (`unique` first, then the type's options), where
@@ -368,8 +368,31 @@ assets carry (`RELEASE.md` §Versioning).
     an index clause names to the end of the table order, in clause order, where Go kept declaration
     order; the RFC-209 group-existence companions take the versions after every declared index. The
     WS-J oracle's 180 template runs whose metadata differed from the target's now store the target's
-    bytes (or differ only by the companions). A new version of a stored template will keep the stored
-    numbering through the carry rule (RFC-257 WS-J section 4, step 3, not in this build yet).
+    bytes (or differ only by the companions). A new version of a stored template keeps the stored
+    numbering through the carry rule (below).
+- **A new version of a stored template is carried from the stored one** (RFC-257 WS-J section 4):
+  `CREATE SCHEMA TEMPLATE` over a stored name, `fleet.SaveTemplate` and a library `CreateTemplate`
+  keep the stored version's record type keys, union fields and since-versions (a new table takes the
+  next of each), store each unchanged index's stored Index message as it was (a deprecated
+  `index_type` or `value_expression`, unknown fields and extensions included), give a changed index
+  (its key, options, type or predicate) a last-modified version above the stored metadata version,
+  so a store rebuilds it when it next opens under the new version (inline when the store is empty,
+  otherwise DISABLED until an online build), and turn a dropped index into a former index, whose data
+  a store clears when it next opens. Re-adding an index under a dropped index's name is refused
+  (42F59), since the name is the former index's subspace key. `CreateTemplate` also refuses a version
+  at or below the latest stored and runs the relational and metadata evolution validators (moved from
+  the save action, which now calls only `CreateTemplate`, as Java's does); a second `CREATE SCHEMA
+  TEMPLATE` of a name is Java's 42F62 "Schema template already exists", where Go answered 42F59.
+  `fleet.SaveTemplate` returns the template as stored, `(api.SchemaTemplate, error)`: a caller must
+  rebind or compare against it, not the template it passed in. The schema rebind (`RepairSchema`)
+  admits a version that rebuilds indexes.
+- **An index key the target cannot plan is refused where it is defined** (RFC-257 WS-J section 3.2):
+  a bit, bitmap or arithmetic key function whose operands' types have no row in Java's operator
+  table (a `v & 1` over a DOUBLE, FLOAT, STRING or BOOLEAN column, a bitmap bucket over a
+  non-integer) is refused at its `CREATE SCHEMA TEMPLATE` clause with the target's XX000 and message,
+  where Go stored eight such shapes; hand-built metadata with such a key is refused by
+  `CreateTemplate` (42F59, naming the index and the types). A stored template that already holds one
+  keeps the index through a new version that does not restate it.
 - **Long-arithmetic key functions read any numeric operand as Java's `getNullableLong` does**
   (truncating toward zero, NaN to 0, saturating), where Go refused every non-`int64` operand; the
   index entries equal the target's byte for byte (WS-J F2b spec). Go does not serve a query from such
@@ -496,15 +519,31 @@ assets carry (`RELEASE.md` §Versioning).
   cosine or dot-product index
   refuses its first save (Go stored 4-bit codes before, then refused every save). A row-number
   window under a disjunction is Java's `RecordCoreError`, not a `MetaDataError`.
-- **Stored bytes are read as protobuf-java reads them** (RFC-257 WS-J): a closed (proto2) enum field
-  holding a number its enum does not declare is not set, the number kept as an unknown field, where
-  protobuf-go kept it in the field. So a key expression whose fan type Java cannot read is refused
-  as "missing fan type" (Go read it as SCALAR); a record's such enum is indexed as null, as Java
-  indexes it, and written back as an unknown field, in Java's order; a store header's unreadable
-  record-count state is its default; an OrElse continuation whose state Java cannot read resumes as
-  UNDECIDED, as Java's does (Go refused it). Stored meta-data, store headers, index-build stamps, pending
-  writes, continuations and dynamic records are parsed with protobuf-java's recursion limit (100
-  nested messages), so bytes nested deeper than Java can parse are refused at parse in both engines.
+- **Stored bytes are read as protobuf-java reads them** (RFC-257 WS-J): a closed enum field
+  occurrence holding a number its enum does not declare does not set the field; the number is kept as
+  an unknown field, where protobuf-go kept it in the field. The field keeps its last declared
+  occurrence, a oneof keeps its member, and a required closed enum holding only undeclared numbers is
+  missing, so the record or meta-data is refused as Java refuses it ("Message missing required
+  fields"; a stored template with fan type 7 is now XXXXX, as Java's). A record's such enum is indexed
+  as null, as Java indexes it, and written back as an unknown field, in Java's order; a record Go
+  builds in memory with such a number is keyed, counted, indexed and written as Java reads the bytes,
+  so an update or delete removes exactly the entries its save wrote (the caller's message is not
+  changed). A store header's unreadable record-count state is its default; an OrElse continuation
+  whose state Java cannot read resumes as UNDECIDED, as Java's does (Go refused it). A proto2 field of
+  an open enum counts as closed, as Java's `legacy_closed_enum` makes it. Every decode of stored
+  bytes (meta-data, store headers, index-build stamps, heartbeats, pending writes, continuations,
+  records, `frl`'s reads) is parsed with protobuf-java's recursion limit (a root and 100 nested
+  messages; a record, one level below Java's union, 100), so bytes nested deeper than Java can parse
+  are refused at parse in both engines. The cost is a scan of a record's bytes, only for a record type
+  that holds a closed enum (a DDL ENUM column): measured on a twelve-column record, 3.44 → 3.66 µs per
+  decode (`BenchmarkJavaRecordDecode`).
+- **A query reads an unset field that declares a default as NULL**, as Java's query does: Java reads a
+  copy of the record in the plan's type, which declares no default. `SELECT *`, a projection and a
+  predicate over such a column read the default in Go before.
+- **A VECTOR column stored in a template reads as VECTOR** (its precision and dimensions), as Java's
+  `Type.fromProtoType` reads it, where Go read it as BYTES; so a change of a vector column's
+  dimensions or precision is refused by the relational evolution validator and by a template
+  restore.
 - A stored template whose meta-data fails to load is reported with Java's code: 42000 for a
   meta-data error, XXXXX for a parse failure or any other record-layer error, where the catalog
   reported XX000.
@@ -516,17 +555,22 @@ assets carry (`RELEASE.md` §Versioning).
   field's `index` option, which defines an index), so a records file that sets them loads with the
   target's record type keys and indexes; Go ignored them.
 - A save that leaves a record's VECTOR index entry unchanged (another field changed) no longer
-  deletes and re-inserts its graph node: the entry common to the old and the new record is skipped,
-  as Java's `StandardIndexMaintainer.update` skips it, so the graph's edges, entry point and
-  statistics are untouched.
+  deletes and re-inserts its graph node when the save maintains the index in its own transaction:
+  the entry common to the old and the new record is skipped, as Java's
+  `StandardIndexMaintainer.update` skips it, so the graph's edges, entry point and statistics are
+  untouched. A save queued for a WRITE_ONLY_WITH_QUEUE index, and a windowed index, still delete and
+  re-insert the node, as Java's do.
 - An SPFresh index option that does not parse, and an SPFresh metric other than Java's four
   `Metric` names, are refused instead of read as their default ("cosine" was maintained as
   Euclidean while the planner read it as cosine), and every SPFresh entry point (the rebalancer,
   refine, recall, the integrity check) refuses a configuration the maintainer refuses rather than
-  running with it. An SPFresh index an earlier build stored with 0 extra bits must be dropped and
-  added again (the option is immutable under evolution).
-- The planner takes a vector index's metric from the maintainer's own parse, so a metric the
-  maintainer refuses gives no candidate instead of a Euclidean one.
+  running with it; the refusal is a `MetaDataError`. An SPFresh index an earlier build stored with a
+  configuration now refused (0 extra bits, an option that does not parse, a metric in lower case)
+  must be dropped and added again (the options are immutable under evolution).
+- The planner takes a vector index's metric from the maintainer's own reader, so a metric the
+  maintainer refuses gives no candidate: an HNSW index with an empty metric was a Euclidean
+  candidate, and an SPFresh "cosine" metric a cosine candidate over an index maintained as
+  Euclidean.
 - An HNSW insert of a key already in the graph leaves the graph as it is, as Java's `Insert` does;
   Go deleted and re-inserted the node (reachable when an index build meets an entry a concurrent
   save indexed), rewiring edges Java leaves alone.

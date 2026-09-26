@@ -447,7 +447,7 @@ func DecodeIntersectionContinuation(data []byte, n int) ([]IntersectionChildResu
 		return out, nil // all-fresh
 	}
 	var cont gen.IntersectionContinuation
-	if err := unmarshalVTAsJava(&cont, data); err != nil {
+	if err := UnmarshalVTAsJava(&cont, data); err != nil {
 		return nil, fmt.Errorf("decode intersection continuation: %w", err)
 	}
 	// Validate the encoded child count against n on ALL three field groups —

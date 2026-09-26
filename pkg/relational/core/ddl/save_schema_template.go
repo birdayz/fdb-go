@@ -2,46 +2,23 @@ package ddl
 
 import (
 	"fdb.dev/pkg/relational/api"
-	rlcatalog "fdb.dev/pkg/relational/core/catalog"
 )
 
-// SaveSchemaTemplateConstantAction persists a schema template.
-// If a previous version of the same template already exists, it runs the
-// RelationalSchemaEvolutionValidator to ensure the change is backward-compatible.
-// Mirrors Java's SaveSchemaTemplateConstantAction (api/ddl package).
+// SaveSchemaTemplateConstantAction persists a schema template. Mirrors Java's
+// SaveSchemaTemplateConstantAction (api/ddl package), which calls the
+// catalog's createTemplate and nothing else. Go's CreateTemplate also refuses
+// a version at or below the latest stored one, runs the relational evolution
+// validator against it, and carries the stored numbering into a new version
+// (ws-j-design.md section 4); every build-path writer gets those checks there.
 type SaveSchemaTemplateConstantAction struct {
-	template  api.SchemaTemplate
-	catalog   api.SchemaTemplateCatalog
-	validator *rlcatalog.RelationalSchemaEvolutionValidator
+	template api.SchemaTemplate
+	catalog  api.SchemaTemplateCatalog
 }
 
 func NewSaveSchemaTemplateConstantAction(template api.SchemaTemplate, catalog api.SchemaTemplateCatalog) *SaveSchemaTemplateConstantAction {
-	return &SaveSchemaTemplateConstantAction{
-		template:  template,
-		catalog:   catalog,
-		validator: rlcatalog.NewRelationalSchemaEvolutionValidator(),
-	}
+	return &SaveSchemaTemplateConstantAction{template: template, catalog: catalog}
 }
 
 func (a *SaveSchemaTemplateConstantAction) Execute(txn api.Transaction) error {
-	// If a previous version exists, validate evolution compatibility.
-	exists, err := a.catalog.DoesSchemaTemplateExist(txn, a.template.MetadataName())
-	if err != nil {
-		return err
-	}
-	if exists {
-		oldTemplate, loadErr := a.catalog.LoadSchemaTemplate(txn, a.template.MetadataName())
-		if loadErr != nil {
-			return loadErr
-		}
-		if a.template.Version() <= oldTemplate.Version() {
-			return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
-				"template %q: new version %d must be greater than current version %d",
-				a.template.MetadataName(), a.template.Version(), oldTemplate.Version())
-		}
-		if valErr := a.validator.Validate(oldTemplate, a.template); valErr != nil {
-			return valErr
-		}
-	}
 	return a.catalog.CreateTemplate(txn, a.template)
 }

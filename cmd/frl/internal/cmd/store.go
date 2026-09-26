@@ -9,7 +9,6 @@ import (
 
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/encoding/protojson"
-	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -186,7 +185,7 @@ func readStoreInfo(ctx context.Context, rec *recordlayer.FDBDatabase, ss subspac
 		return nil, fmt.Errorf("no store header at keyspace %s — store does not exist", keyHex(key))
 	}
 	info := &gen.DataStoreInfo{}
-	if err := proto.Unmarshal(bytes, info); err != nil {
+	if err := recordlayer.UnmarshalAsJava(bytes, info); err != nil {
 		return nil, fmt.Errorf("unmarshal DataStoreInfo: %w", err)
 	}
 	return info, nil

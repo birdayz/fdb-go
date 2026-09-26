@@ -162,8 +162,8 @@ var _ = Describe("MetaDataEvolutionValidator", func() {
 			})
 		}
 
-		// Java compares a literal by its value object (LiteralKeyExpression's
-		// equals), so a Long and an Integer of one number, or a Double and a Float
+		// Java compares a literal by its Value proto (LiteralKeyExpression.equals,
+		// LiteralKeyExpression.java:204-215), so a Long and an Integer of one number, or a Double and a Float
 		// of one value, are different keys, in either direction and wherever the
 		// literal sits (MetaDataEvolutionValidator.java:719): a changed key, which
 		// the index-rebuild option admits as a rebuild.

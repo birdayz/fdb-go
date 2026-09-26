@@ -10,7 +10,6 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
-	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/known/anypb"
@@ -197,7 +196,7 @@ func (q *PendingWritesQueue[T]) decode(key tuple.Tuple, data []byte) (*PendingWr
 		return nil, storageError("Pending writes queue entry payload type does not match the queue's bound type", nil)
 	}
 	payload := q.payloadType.New().Interface()
-	if err := unmarshalPendingQueuePayload(packed.GetValue(), payload); err != nil {
+	if err := UnmarshalAsJava(packed.GetValue(), payload); err != nil {
 		e.ExpectedType = string(q.payloadType.Descriptor().FullName())
 		return nil, storageError("Failed to unpack pending writes queue entry payload", err)
 	}
@@ -225,49 +224,5 @@ func unmarshalPendingQueueAny(data *anypb.Any, message proto.Message) error {
 	if !pendingQueueAnyHasType(data, name) {
 		return fmt.Errorf("pending queue Any type URL %q must end with /%s", data.GetTypeUrl(), name)
 	}
-	return unmarshalPendingQueuePayload(data.GetValue(), message)
-}
-
-// Java's proto2 required operation is a closed enum. Go's generated enum is
-// open: remove unknown numeric occurrences from the known-field stream before
-// decoding, then retain their int32 values as unknown fields, as Java does.
-// The last KNOWN occurrence wins.
-func unmarshalPendingQueuePayload(data []byte, message proto.Message) error {
-	if _, ok := message.(*gen.PendingWritesQueueEntry); !ok {
-		return UnmarshalAsJava(data, message)
-	}
-	var known, unknown []byte
-	for len(data) > 0 {
-		number, kind, tagLength := protowire.ConsumeTag(data)
-		if tagLength < 0 {
-			return protowire.ParseError(tagLength)
-		}
-		valueLength := protowire.ConsumeFieldValue(number, kind, data[tagLength:])
-		if valueLength < 0 {
-			return protowire.ParseError(valueLength)
-		}
-		field := data[:tagLength+valueLength]
-		closedUnknown := false
-		var enumValue int32
-		if number == 1 && kind == protowire.VarintType {
-			value, _ := protowire.ConsumeVarint(data[tagLength:])
-			// Java readEnum returns int32 even for an overwide wire varint.
-			// Classify after truncation, just as its generated enum switch does.
-			enumValue = int32(value)
-			closedUnknown = enumValue != 1 && enumValue != 2
-		}
-		if closedUnknown {
-			unknown = protowire.AppendTag(unknown, number, kind)
-			unknown = protowire.AppendVarint(unknown, uint64(int64(enumValue)))
-		} else {
-			known = append(known, field...)
-		}
-		data = data[len(field):]
-	}
-	if err := UnmarshalAsJava(known, message); err != nil {
-		return err
-	}
-	reflection := message.ProtoReflect()
-	reflection.SetUnknown(append(reflection.GetUnknown(), unknown...))
-	return nil
+	return UnmarshalAsJava(data.GetValue(), message)
 }
